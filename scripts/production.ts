@@ -111,6 +111,12 @@ export function classChanges(plan: Plan) {
   return { dropped: [...dropped].sort(), created: [...created].sort() };
 }
 
+/** The stack's database commands this plan runs: the hosted migrations and the pool database. */
+export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) =>
+  rows
+    .filter(({ fqn, action }) => ["Migrations", "PoolDatabase"].includes(fqn) && action !== "noop")
+    .map(({ fqn }) => fqn);
+
 /** One streamed turn through the public pool. Says why it failed by error class and status only. */
 export async function smoke(send: () => Promise<unknown>) {
   try {
@@ -175,13 +181,18 @@ async function main() {
   const Session = await import("alchemy/Alchemist/Session");
   const { storeCannotBootstrap } = await import("./release/state-store-guard.ts");
   const { rollbackTo, servingVersion } = await import("./release/worker-version.ts");
-  const { errorKind } = await import("./release/public-report.ts");
+  const { takeBackup } = await import("./release/database-safety.ts");
+  const { errorKind, progressTracker } = await import("./release/public-report.ts");
+  // Alchemy's own progress events: the resource that reported a failure, by name and type.
+  const tracker = progressTracker();
+  const progress = (event: unknown) => Effect.sync(() => tracker.track(event));
   const target = { entrypoint: resolve(root, "alchemy.run.ts"), stage: "production" };
   // Each run is its own Alchemy session, which reads the environment when it first loads the
   // stack. Alchemy's own log lines name scripts and hosts; the public log gets only ours.
   const run = <A>(effect: Fx.Effect<A, unknown, unknown>) =>
     Effect.runPromise(
       Effect.scoped(Effect.andThen(storeCannotBootstrap, effect)).pipe(
+        Effect.provideService(Alchemist.Progress, progress as never),
         Effect.provide(Alchemist.layer()),
         Effect.provide(Logger.layer([])),
         Effect.provide(FetchHttpClient.layer),
@@ -260,9 +271,35 @@ async function main() {
       yield* print(
         `Serving before the apply: ${serving.map((w) => `${w.fqn} ${w.version}`).join(", ") || "none"}`,
       );
+      // A re-point does not undo a database step: its recovery point is a backup taken just before.
+      const steps = databaseSteps(snapshot.resources);
+      if (steps.length) {
+        const name = `basalt-release-v3-${candidate.slice(0, 12)}-${process.env.GITHUB_RUN_ID ?? "local"}`;
+        const backup = yield* Effect.exit(
+          takeBackup({
+            organization: process.env.PLANETSCALE_ORGANIZATION ?? "",
+            tokenId: Redacted.make(process.env.PLANETSCALE_API_TOKEN_ID ?? ""),
+            token: Redacted.make(process.env.PLANETSCALE_API_TOKEN ?? ""),
+            database: "basalt",
+            branch: "main",
+            name,
+          }),
+        );
+        if (backup._tag === "Failure")
+          return yield* refuse(
+            `The backup before ${steps.join(", ")} failed (${errorKind(Cause.squash(backup.cause))}); nothing applied`,
+          );
+        yield* print(`Backed up the pool database before ${steps.join(", ")}: ${name}`);
+      }
+      // A restore of the controller's storage would be looked up by this time.
+      if (created.length) yield* print(`Creating classes at ${new Date().toISOString()}`);
       const exit = yield* Effect.exit(Alchemist.Stack.apply(snapshot as never));
-      if (exit._tag === "Failure")
-        yield* print(`::error::The apply failed: ${errorKind(Cause.squash(exit.cause))}`);
+      if (exit._tag === "Failure") {
+        const failed = tracker.context().resources.map(({ fqn, type }) => `${fqn} (${type})`);
+        yield* print(
+          `::error::The apply failed at ${failed.join(", ") || "no resource it reported"}: ${errorKind(Cause.squash(exit.cause))}`,
+        );
+      }
       return { serving, applied: exit._tag === "Success", creating: created.length > 0 };
     }),
   );

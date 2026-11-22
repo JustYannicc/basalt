@@ -4,6 +4,7 @@ import { HttpStatusFailure } from "./pool-acceptance/types.ts";
 import {
   classesDeclared,
   classChanges,
+  databaseSteps,
   fleetEnvironment,
   smoke,
   workersToRepoint,
@@ -85,6 +86,20 @@ test("deleting or replacing a Worker drops every class it hosts", () => {
     }).dropped,
     ["Gone: Ledger", "New: Ledger"],
   );
+});
+
+test("a backup is taken only for a plan that runs a database command", () => {
+  const row = (fqn: string, action: string) => ({ fqn, action });
+  assert.deepEqual(
+    databaseSteps([
+      row("Api", "update"),
+      row("Migrations", "update"),
+      row("PoolDatabase", "noop"),
+      row("PoolBackendBudget", "update"),
+    ]),
+    ["Migrations"],
+  );
+  assert.deepEqual(databaseSteps([row("PoolDatabase", "noop"), row("Router", "update")]), []);
 });
 
 test("the smoke passes on a served turn and names a failure by class and status only", async () => {
