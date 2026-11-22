@@ -5,7 +5,8 @@ export const nearDatabaseMs = 20;
 
 /**
  * What a runtime's readiness reports about its own distance to the database, measured once per boot
- * before Home starts. An image without the measurement reports nothing, which means unknown.
+ * over Home's own database pool before the node starts. An image without the measurement reports
+ * nothing, which means unknown.
  */
 export const RuntimeDistance = Schema.Struct({
   state: Schema.Literals(["pending", "measured", "failed", "held"]),

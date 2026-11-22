@@ -57,6 +57,11 @@ const identity = (value: Record<string, unknown>): Identity => {
 };
 const keyIdentity = (computer: StoredComputer) =>
   JSON.stringify([computer.id, computer.native?.grant, computer.pool, computer.user]);
+/**
+ * Device requests can be approved for ten minutes and setup intents last five, so no approval
+ * still under way wrote a row this old.
+ */
+const abandonedApproval = 60 * 60_000;
 /** A model device approved before its key could be minted. */
 class KeyRequest {
   readonly computer: string;
@@ -96,6 +101,28 @@ export class NativeComputers {
   }
   sync(registry: Registry) {
     this.streams.sync(registry);
+  }
+  /**
+   * A keyless `issuing` native row is an approval whose mint failed before the pool answered: the
+   * host never recorded its grant and nobody received a key, so the row goes. A key a lost mint
+   * reply left at Home is unreachable either way, and deleting the person clears it.
+   */
+  removeAbandoned(registry: Registry): number {
+    const before = this.deps.now() - abandonedApproval;
+    let removed = 0;
+    for (const computer of Object.values(registry)) {
+      if (
+        computer.state !== "issuing" ||
+        !computer.native ||
+        computer.native.key ||
+        computer.keyId !== undefined ||
+        !(Date.parse(computer.createdAt) <= before)
+      )
+        continue;
+      delete registry[computer.id];
+      removed++;
+    }
+    return removed;
   }
   private async assertion(envelope: unknown, prefix: string) {
     const value =

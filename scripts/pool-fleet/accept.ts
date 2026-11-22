@@ -79,7 +79,7 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   };
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
-    // Concurrent turns make the primary busier than an idle cell, so balancing sends one there.
+    // Ready cells take every turn; the root serves only while no cell is ready.
     const results = await Promise.all(Array.from({ length: burst }, () => traffic.turn(model)));
     const { primary, cells } = await observe();
     const count = { round, cell: 0, primary: 0, other: 0 };

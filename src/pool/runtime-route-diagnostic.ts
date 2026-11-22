@@ -24,6 +24,8 @@ const steps = [
   "endpoint_request",
   "port_lookup",
   "port_dispatch",
+  // The container's front layer (#1642): its failure costs resumability, never the runtime.
+  "resume_layer",
 ] as const;
 const reasons = [
   "slot_identity",
@@ -77,6 +79,10 @@ export function correlateEndpointRequest(value: object, requestId: string) {
 export function retainEndpointRequestId(source: object, destination: object) {
   const id = correlations.get(source);
   if (id) correlations.set(destination, id);
+}
+/** The failed dependency or deadline behind a refusal, when one is known. */
+export function runtimeFailureCause(error: unknown) {
+  return cause(error);
 }
 function cause(error: unknown): (typeof causes)[number] | undefined {
   if (error instanceof PoolStartupDeadline) return "startup_deadline";
