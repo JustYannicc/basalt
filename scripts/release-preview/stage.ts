@@ -553,6 +553,37 @@ async function stageRelease(
           error instanceof Error ? error.message : String(error),
         ).slice(0, 4_000);
       }
+      // Then two unscoped plans in a row with nothing applied between them: a row that stays
+      // non-noop in both plans on every plan, which no release can settle.
+      for (const label of ["unscoped-1", "unscoped-2"]) {
+        const planned = await runEntry("plan", subject, source, env, outputs, {
+          policy: null,
+          include: null,
+          tree: candidate,
+        }).catch((error: unknown) => ({
+          failed: redactor(source)(error instanceof Error ? error.message : String(error)).slice(
+            0,
+            1_000,
+          ),
+        }));
+        const changes =
+          (
+            planned as {
+              record?: {
+                changes?: { fqn: string; type?: string; action: string; changedProps?: unknown }[];
+              };
+            }
+          ).record?.changes ?? [];
+        result[label] =
+          "failed" in planned
+            ? planned
+            : changes.map(({ fqn, type, action, changedProps }) => ({
+                fqn,
+                type,
+                action,
+                changedProps,
+              }));
+      }
     });
     result.bootAfter = await bootOf("release-after");
     return result;
