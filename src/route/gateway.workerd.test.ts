@@ -8,6 +8,7 @@ import { routeAcquisitionPrefix } from "./acquisition-contract.ts";
 
 const routeId = "rt_" + "a".repeat(26);
 const strangerRoute = "rt_" + "z".repeat(26);
+const brokenRoute = "rt_" + "b".repeat(26);
 
 // Real workerd, real RouteGateway, RouteHost RPC and PoolRoutePeer relay; only the container is fake.
 const fixture = `
@@ -19,11 +20,13 @@ const fakes = [];
 const routed = (env) => ({ ...env, RouteGateway: env.WITHOUT_GATEWAY ? undefined : { jurisdiction: () => env.Gateways },
   PoolContainer: { jurisdiction: () => env.Controllers } });
 export class Gateways extends Gateway {
-  constructor(ctx, env) { const fake = new FakeGateway(); fakes.push(fake);
+  constructor(ctx, env) { const fake = new FakeGateway(); if (ctx.id.name !== '${brokenRoute}') fakes.push(fake);
     Object.defineProperty(ctx, 'container', { value: fake }); super(ctx, routed(env)); }
+  // A gateway object that resets mid-request, as an overloaded or redeployed one would.
+  async fetch(request) { if (this.ctx.id.name === '${brokenRoute}') throw new Error('reset'); return super.fetch(request); }
 }
 export class Controllers extends DurableObject {
-  async routeOwner({ routeId }) { return routeId === '${routeId}' ? 'org/org-1/user/person-1' : null; }
+  async routeOwner({ routeId }) { return routeId === '${routeId}' || routeId === '${brokenRoute}' ? 'org/org-1/user/person-1' : null; }
 }
 export class Peer extends PoolRoutePeer { constructor(ctx, env) { super(ctx, routed(env)); } }
 export class BarePeer extends PoolRoutePeer { constructor(ctx, env) { super(ctx, { ...routed(env), RouteGateway: undefined }); } }
@@ -38,6 +41,10 @@ export default { async fetch(request, env, ctx) {
     const peer = url.pathname.startsWith('/bare/') ? ctx.exports.BarePeer : ctx.exports.Peer;
     const target = 'http://route-peer.internal/route/' + url.pathname.split('/')[2];
     return peer({ props: { pool } }).fetch(new Request(target, { headers: request.headers }));
+  }
+  if (url.pathname === '/tunnel-post') {
+    const id = env.Gateways.idFromName('${routeId}');
+    return env.Gateways.get(id).fetch('http://route-gateway.internal/_internal/route/tunnel', { method: 'POST' });
   }
   if (url.pathname === '/direct') {
     const id = env.Gateways.idFromName('${routeId}');
@@ -196,6 +203,11 @@ test(
       );
       // Everything but the private tunnel waits for slice 2.
       assert.equal((await mf.dispatchFetch("http://fixture/direct")).status, 501);
+      assert.equal((await mf.dispatchFetch("http://fixture/tunnel-post")).status, 501);
+      // A gateway object that fails mid-request still answers the pool with a close code.
+      const broken = await open(mf, `/peer/${brokenRoute}`);
+      const reset = await broken.closed;
+      assert.deepEqual([reset.code, reset.reason], [1013, "route_gateway_unavailable"]);
 
       // A restarted container gets the sealed identity back without a new approval.
       await mf.dispatchFetch("http://fixture/crash");

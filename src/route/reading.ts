@@ -57,6 +57,16 @@ export interface Selection {
 }
 
 export function readingFromStatus(status: GatewayStatus, checkedAt: number): Observed {
+  const keyExpiry = epochMs(status.node.key_expiry);
+  // The gateway checks routing off before sign-in, so a signed-out node that routes nothing still
+  // reports route_off; the owner has to see that it needs a sign-in.
+  if (!status.node.logged_in && status.reason === "route_off")
+    status = {
+      ...status,
+      state: "needs_login",
+      reason:
+        keyExpiry !== null && keyExpiry <= checkedAt ? "route_key_expired" : "route_needs_login",
+    };
   const state =
     status.reason === "route_off"
       ? "off"
@@ -72,7 +82,7 @@ export function readingFromStatus(status: GatewayStatus, checkedAt: number): Obs
     tailnet: status.node.tailnet ?? null,
     deviceName: status.node.name ?? null,
     deviceId: status.node.id ?? null,
-    keyExpiry: epochMs(status.node.key_expiry),
+    keyExpiry,
     path: status.exit?.path ?? "unknown",
     relayRegion: status.exit?.relay_region ?? null,
     checkedAt,

@@ -164,3 +164,31 @@ test("signing in again is start on the same route: a fresh link, then connected,
   assert.equal((await storage.get<{ account: string }>("route-v1:meta"))?.account, "acct-1");
   assert.equal((await send(saved("exits"))).status, 200);
 });
+
+test("a namespace that throws on lookup answers unavailable, not a server error", async () => {
+  const { deps } = gatewayDependencies();
+  const at = deps.now();
+  const envelope = await signEnvelope(key, routeAcquisitionPrefix, {
+    routeId,
+    owner,
+    at,
+    expiresAt: at + 25_000,
+    action: "status",
+  });
+  const response = await handleRouteAcquisition(
+    new Request(`https://pool.invalid${routeAcquisitionPath}`, {
+      method: "POST",
+      body: JSON.stringify({ envelope }),
+    }),
+    {
+      signingKey: key,
+      previousSigningKey: undefined,
+      gateway: () => {
+        throw new Error("Jurisdiction restrictions are not implemented");
+      },
+      now: deps.now,
+    },
+  );
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { error: "route_gateway_unavailable" });
+});

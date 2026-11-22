@@ -25,6 +25,10 @@ export class FakeGateway implements GatewayContainer {
   pendingLogin = false;
   /** The next /select fails, as a timeout or a refused socket would. */
   failSelects = 0;
+  /** The real gateway checks routing off before sign-in; the default fake checks sign-in first. */
+  offFirst = false;
+  /** The next start ignores the identity it is given, as an expired or revoked node key would. */
+  forgetState = false;
 
   start(options: { enableInternet: boolean }) {
     if (!options.enableInternet) throw new Error("The gateway needs the internet");
@@ -56,11 +60,15 @@ export class FakeGateway implements GatewayContainer {
     const boot = this.boot!;
     const loggedIn = boot.state !== null;
     const selection = boot.selection;
-    const down = !loggedIn
-      ? "route_needs_login"
-      : !selection || selection.exit_id === null
+    const off = !selection || selection.exit_id === null;
+    const down =
+      this.offFirst && off
         ? "route_off"
-        : null;
+        : !loggedIn
+          ? "route_needs_login"
+          : off
+            ? "route_off"
+            : null;
     return {
       boot_id: boot.id,
       state: !loggedIn ? "needs_login" : down ? "down" : "ready",
@@ -91,7 +99,7 @@ export class FakeGateway implements GatewayContainer {
     if (!this.running || !this.reachable) throw new TypeError("connection refused");
     if (path === "/start" && method === "POST") {
       if (this.boot) return Response.json({ error: "route_gateway_unavailable" }, { status: 409 });
-      const state = (body as { state: string | null }).state;
+      const state = this.forgetState ? null : (body as { state: string | null }).state;
       this.starts.push(state);
       this.bootCount += 1;
       this.boot = { id: `boot-${this.bootCount}`, state, revision: 0 };

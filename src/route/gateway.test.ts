@@ -358,3 +358,87 @@ test("since holds while the state holds and restarts when it changes", async () 
   assert.equal(down.state, "down");
   assert.equal(down.since, deps.now());
 });
+
+test("a cold or unreachable route keeps its device id, names and key expiry while its identity lasts", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  container.crash();
+  const cold = await gateway.reading(caller);
+  assert.equal(cold.state, "off");
+  assert.equal(container.running, false);
+  assert.deepEqual(
+    [cold.deviceId, cold.deviceName, cold.tailnet],
+    ["node-1", "signalbox-route", "example-tailnet"],
+  );
+  assert.equal(cold.keyExpiry, Date.parse("2027-05-21T00:00:00Z"));
+  await gateway.disconnect(caller);
+  const gone = await gateway.reading(caller);
+  assert.deepEqual([gone.deviceId, gone.tailnet], [null, null]);
+});
+
+test("overlapping selects apply in order, and a failed one never reverts over a newer choice", async () => {
+  const { gateway, container, storage, advance } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.failSelects = 1;
+  const [second, third] = await Promise.allSettled([
+    gateway.select(caller, { exitId: "n2", whenDown: "stop" }),
+    gateway.select(caller, { exitId: "n3", whenDown: "stop" }),
+  ]);
+  assert.equal(second.status, "rejected");
+  assert.equal(third.status, "fulfilled");
+  assert.deepEqual(await storage.get("route-v1:selection"), { exitId: "n3", whenDown: "stop" });
+  advance(30_000);
+  await gateway.alarm();
+  assert.deepEqual(container.selects.at(-1), { exit_id: "n3", when_down: "stop" });
+});
+
+test("selects that all fail during a cold start leave the stored selection as it was", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  container.reachable = false;
+  const results = await Promise.allSettled([
+    gateway.select(caller, { exitId: "n2", whenDown: "stop" }),
+    gateway.select(caller, { exitId: "n3", whenDown: "stop" }),
+  ]);
+  assert.deepEqual(
+    results.map((result) => result.status),
+    ["rejected", "rejected"],
+  );
+  assert.deepEqual(await storage.get("route-v1:selection"), { exitId: "n1", whenDown: "stop" });
+});
+
+test("switching off succeeds during an outage and never starts compute", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.reachable = false;
+  const off = await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  assert.equal(off.state, "off");
+  assert.deepEqual(await storage.get("route-v1:selection"), { exitId: null, whenDown: "stop" });
+  assert.equal(storage.alarm, null);
+  container.crash();
+  container.reachable = true;
+  const starts = container.starts.length;
+  assert.equal((await gateway.select(caller, { exitId: null, whenDown: "stop" })).state, "off");
+  assert.equal(container.starts.length, starts);
+  assert.equal(container.running, false);
+});
+
+test("a signed-out node whose route is off reads as needing a sign-in, not connected", async () => {
+  const { gateway, container } = await joined();
+  container.offFirst = true;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  container.crash();
+  // Sign in again without Disconnect: the old seal is still stored, but the node lost its key.
+  container.forgetState = true;
+  await gateway.login(caller);
+  const reading = await gateway.reading(caller);
+  assert.equal(reading.state, "needs_login");
+  assert.deepEqual(await gateway.joinStatus(caller), { state: "waiting" });
+  container.approve();
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "connected",
+    tailnet: "example-tailnet",
+  });
+});

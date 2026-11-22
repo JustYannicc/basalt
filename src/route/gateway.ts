@@ -76,6 +76,7 @@ const startDeadlineMs = 30_000;
 
 export class RouteGatewayCore {
   private starting: Promise<void> | undefined;
+  private selecting: Promise<unknown> = Promise.resolve();
   private deps: GatewayDependencies;
   private gateway: GatewayControl;
   private identity: RouteIdentityStore;
@@ -148,25 +149,34 @@ export class RouteGatewayCore {
   }
 
   /**
-   * A select that does not reach the gateway changes nothing and is refused, so the host writes no
-   * rule for it; the stored selection, which every start and refresh re-applies, stays as it was.
+   * Choosing an exit that does not reach the gateway changes nothing and is refused, so the host
+   * writes no rule for it. Switching off always succeeds: it is the safe direction, it needs no
+   * compute, and a running gateway that misses it gets it again on its next start or refresh.
    */
   async select(caller: unknown, input: unknown): Promise<Reading> {
     await this.authorize(Schema.decodeUnknownSync(Caller, strict)(caller));
     const selection: Selection = Schema.decodeUnknownSync(SelectInput, strict)(input);
-    const previous = await this.deps.storage.get<Selection>(keys.selection);
-    await this.deps.storage.put(keys.selection, selection);
-    let status: GatewayStatus;
-    try {
-      await this.ensureStarted();
-      status = await this.gateway.select(selection);
-    } catch {
-      if (previous) await this.deps.storage.put(keys.selection, previous);
-      else await this.deps.storage.delete([keys.selection]);
-      throw new RouteRefused("route_gateway_unavailable");
-    }
-    await this.persistState(status);
-    const reading = await this.record(readingFromStatus(status, this.deps.now()));
+    const reading = await this.exclusive(async () => {
+      const previous = await this.deps.storage.get<Selection>(keys.selection);
+      await this.deps.storage.put(keys.selection, selection);
+      if (selection.exitId === null) {
+        if (this.gateway.running)
+          try {
+            return await this.applied(await this.gateway.select(selection));
+          } catch {}
+        return this.record(await this.idle(selection), true);
+      }
+      let status: GatewayStatus;
+      try {
+        await this.ensureStarted();
+        status = await this.gateway.select(selection);
+      } catch {
+        if (previous) await this.deps.storage.put(keys.selection, previous);
+        else await this.deps.storage.delete([keys.selection]);
+        throw new RouteRefused("route_gateway_unavailable");
+      }
+      return this.applied(status);
+    });
     await this.schedule();
     return reading;
   }
@@ -265,22 +275,40 @@ export class RouteGatewayCore {
       (await this.deps.storage.get(keys.loginUntil)) !== undefined;
     if (!live) {
       // A stopped gateway that routes nothing is read without starting compute.
-      const reading = (await this.identity.exists())
-        ? localReading("off", "route_off", selection, this.deps.now())
-        : localReading("needs_login", "route_needs_login", selection, this.deps.now());
-      return { reading: await this.record(reading) };
+      return { reading: await this.record(await this.idle(selection), true) };
     }
     try {
       await this.ensureStarted();
-      let status = await this.gateway.status();
-      // A select the gateway lost (a failed boot-time select, or two selects landing out of
-      // order) is re-sent, so the route never silently reads off or applies a stale when-down.
-      if (selection && !applied(status, selection)) status = await this.gateway.select(selection);
+      const observed = await this.gateway.status();
+      // A select the gateway lost (a failed boot-time select) is re-sent. It runs under the same
+      // lock as select and rereads the stored selection, so it can never undo a newer choice.
+      const status = await this.exclusive(async () => {
+        const current = await this.deps.storage.get<Selection>(keys.selection);
+        return current && !matches(observed, current) ? this.gateway.select(current) : observed;
+      });
       await this.persistState(status);
       return { reading: await this.record(readingFromStatus(status, this.deps.now())) };
     } catch (error) {
-      return { reading: await this.record(this.failed(error, selection)) };
+      return { reading: await this.record(this.failed(error, selection), true) };
     }
+  }
+
+  private async applied(status: GatewayStatus) {
+    await this.persistState(status);
+    return this.record(readingFromStatus(status, this.deps.now()));
+  }
+
+  private async idle(selection: Selection | undefined) {
+    return (await this.identity.exists())
+      ? localReading("off", "route_off", selection, this.deps.now())
+      : localReading("needs_login", "route_needs_login", selection, this.deps.now());
+  }
+
+  /** Selections change one at a time, so a revert or a heal never lands over a newer choice. */
+  private exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.selecting.then(work, work);
+    this.selecting = run.catch(() => {});
+    return run;
   }
 
   private failed(error: unknown, selection: Selection | undefined) {
@@ -288,9 +316,21 @@ export class RouteGatewayCore {
     return localReading("down", reason, selection, this.deps.now());
   }
 
-  private async record(observed: Observed): Promise<Reading> {
+  /**
+   * A reading made without the gateway (cold or unreachable) keeps the node's own names and key
+   * expiry from the last one while its identity is stored, so a switched-off route keeps its label
+   * and the device id that Disconnect removes.
+   */
+  private async record(observed: Observed, local = false): Promise<Reading> {
     const previous = await this.deps.storage.get<Reading>(keys.reading);
-    const reading = settle(previous, observed);
+    const known = local && previous && (await this.identity.exists()) ? previous : undefined;
+    const reading = settle(previous, {
+      ...observed,
+      tailnet: observed.tailnet ?? known?.tailnet ?? null,
+      deviceName: observed.deviceName ?? known?.deviceName ?? null,
+      deviceId: observed.deviceId ?? known?.deviceId ?? null,
+      keyExpiry: observed.keyExpiry ?? known?.keyExpiry ?? null,
+    });
     await this.deps.storage.put(keys.reading, reading);
     if (crossesDown(previous, reading)) {
       const meta = await this.deps.storage.get<RouteMeta>(keys.meta);
@@ -350,7 +390,7 @@ export class RouteGatewayCore {
  * Whether the gateway runs the stored selection. While the chosen exit is missing the gateway
  * reports no exit, so the select is re-sent each poll; it is idempotent.
  */
-function applied(status: GatewayStatus, selection: Selection) {
+function matches(status: GatewayStatus, selection: Selection) {
   if (status.when_down !== selection.whenDown) return false;
   if (selection.exitId === null) return status.reason === "route_off";
   return status.exit?.id === selection.exitId;
