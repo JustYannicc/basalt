@@ -6,9 +6,10 @@ import { historySeriesFailure } from "../../src/pool/model-history/series-diagno
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import {
   maxSummaryWindowRows,
-  summaryPriceTargets,
   summarySelection,
 } from "../../src/pool/model-history/summary-query.ts";
+import { summaryModeTargets } from "../../src/pool/model-history/summary-rollup-query.ts";
+import { timestamp } from "../../src/pool/model-history/record.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -59,8 +60,9 @@ test("a window over the row bound refuses after one bounded count, before any ag
 
     // The gate is a one-time filter: over the bound the targets scan never executes, and the count
     // itself stops one row past the bound.
-    const selection = await summarySelection(pool, "2025-10-01T00:00:00Z", to, fixture.authority);
-    const query = summaryPriceTargets(selection, 3);
+    const window = [timestamp("2025-10-01T00:00:00Z"), timestamp(to)] as const;
+    const selection = await summarySelection(pool, window[0], window[1], fixture.authority);
+    const query = summaryModeTargets(selection, 3, window);
     const plan = (await f.db.query(`EXPLAIN (ANALYZE, FORMAT JSON) ${query.text}`, query.values))
       .rows[0]!["QUERY PLAN"] as { Plan: PlanNode }[];
     const nodes = flatten(plan[0]!.Plan);

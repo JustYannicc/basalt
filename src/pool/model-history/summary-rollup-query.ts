@@ -166,7 +166,11 @@ function rollupPricedSql() {
   const records = `jsonb_to_recordset($7::jsonb) AS x(provider text,model text,currency text,input text,
     output text,cache_read text,cache_write text,request text,tier text,min_input text,as_of text,
     source text,version text,basis text,refresh_failed boolean)`;
-  return `priced AS (
+  // The price table is parsed once; each group then picks its rate from the parsed rows.
+  return `price_rows AS MATERIALIZED (
+      SELECT x.*,x.min_input::numeric AS min_input_tokens FROM ${records}
+      WHERE x.currency='USD' AND x.source='models.dev'
+    ), priced AS (
       SELECT s.*,p.price_version AS public_price_version,p.price_as_of AS public_price_as_of,
         p.price_basis AS public_price_basis,p.price_refresh_failed AS public_price_refresh_failed,
         (s.token_quality='legacy' AND coalesce(s.api_type,'') NOT IN ('responses','responses-compact','messages')) AS token_count_estimate,
@@ -195,10 +199,10 @@ function rollupPricedSql() {
         SELECT version AS price_version,as_of AS price_as_of,basis AS price_basis,refresh_failed AS price_refresh_failed,
           input::numeric AS input_rate,output::numeric AS output_rate,cache_read::numeric AS cache_read_rate,
           cache_write::numeric AS cache_write_rate,request::numeric AS request_rate
-        FROM ${records}
-        WHERE x.provider=s.provider AND x.model=s.model AND x.currency='USD' AND x.source='models.dev'
-          AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input::numeric<=s.context_band
-        ORDER BY (x.tier<>'*') DESC,x.min_input::numeric DESC LIMIT 1
+        FROM price_rows x
+        WHERE x.provider=s.provider AND x.model=s.model
+          AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input_tokens<=s.context_band
+        ORDER BY (x.tier<>'*') DESC,x.min_input_tokens DESC LIMIT 1
       ) p ON NOT s.counts_only
     )`;
 }

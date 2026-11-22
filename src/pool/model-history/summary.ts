@@ -17,7 +17,6 @@ import {
   maxSummaryProviderRows,
   maxSummaryWindowRows,
   summaryDailyQuery,
-  summaryPriceTargets,
   summarySelection,
 } from "./summary-query.ts";
 import { summaryCoverage } from "./summary-coverage.ts";
@@ -33,6 +32,9 @@ import {
   summaryModeTargets,
 } from "./summary-rollup-query.ts";
 import type { HistoryReadStep } from "./read-failure.ts";
+
+export const summarySessionSettings =
+  "SELECT set_config('statement_timeout','5s',true),set_config('jit','off',true)";
 
 type Prices = (
   targets: readonly { provider: string; model: string }[],
@@ -60,7 +62,8 @@ export async function poolUsageSummary(
   mark("begin");
   await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
-    await db.query("SET LOCAL statement_timeout = '5s'");
+    // JIT compiling these wide plans costs seconds and buys nothing on bounded reads.
+    await db.query(summarySessionSettings);
     let selection = await summarySelection(pool, readFrom, input.to, authority);
     // A pool whose rollup is ready reads it; every range boundary cuts its groups.
     const boundaries = [readFrom, input.from, input.to, previous.from, previous.to, heatmapFrom];

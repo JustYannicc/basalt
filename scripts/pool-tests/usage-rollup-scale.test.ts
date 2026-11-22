@@ -4,7 +4,7 @@ import pg from "pg";
 import type { OverviewApiPrice } from "../../apps/pool/overview-contract.ts";
 import { digest } from "../../src/pool/backend-users.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
-import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
+import { poolUsageSummary, summarySessionSettings } from "../../src/pool/model-history/summary.ts";
 import {
   planUsageRollup,
   runUsageRollup,
@@ -120,14 +120,14 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       by: "model" as const,
       authority: fixture.authority,
     };
-    const statements: { text: string; ms: number }[] = [];
+    const statements: { text: string; values?: unknown[]; ms: number }[] = [];
     const timed: HistoryDatabase = {
       query: async (text, values) => {
         const started = performance.now();
         try {
           return await f.db.query(text, values);
         } finally {
-          statements.push({ text, ms: performance.now() - started });
+          statements.push({ text, values, ms: performance.now() - started });
         }
       },
     };
@@ -153,6 +153,19 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       "ROLLUP_READ",
       JSON.stringify(statements.map(({ text, ms }) => [text.slice(0, 40), Math.round(ms)])),
     );
+    if (process.env.POOL_TEST_ROLLUP_EXPLAIN) {
+      await f.db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      for (const { text, values, ms } of statements)
+        if (ms > 200 && /^\s*WITH/.test(text)) {
+          const plan = await f.db.query(`EXPLAIN (ANALYZE, BUFFERS) ${text}`, values);
+          console.info(
+            "ROLLUP_PLAN",
+            Math.round(ms),
+            "\n" + plan.rows.map((r) => r["QUERY PLAN"]).join("\n"),
+          );
+        }
+      await f.db.query("ROLLBACK");
+    }
     assert.ok(statements.some(({ text }) => text.includes("basalt_model_usage_hourly")));
     assert.ok(statements.length <= 15, `${statements.length} statements`);
     const rollupMs = statements.reduce((n, { ms }) => n + ms, 0);
@@ -164,8 +177,18 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
 
     // The same read from raw rows, without the ready marker and without the window bound.
     await f.db.query("DELETE FROM basalt_model_usage_ready");
+    // The raw truth cannot answer inside 5 s at this size; only this comparison read may take longer.
+    const patient: HistoryDatabase = {
+      query: (text, values) =>
+        f.db.query(
+          text === summarySessionSettings
+            ? "SELECT set_config('statement_timeout','600s',true),set_config('jit','off',true)"
+            : text,
+          values,
+        ),
+    };
     const raw = await poolUsageSummary(
-      f.db,
+      patient,
       input,
       async () => ({ prices, issues: [] }),
       Date.parse(to),
