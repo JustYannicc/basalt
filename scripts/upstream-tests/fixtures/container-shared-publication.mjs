@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
+import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as HttpClient from "effect/http/HttpClient";
 import * as Response from "effect/http/HttpClientResponse";
@@ -68,7 +69,10 @@ const http = HttpClient.make((request, url) => {
       Response.fromWeb(
         request,
         pushed.has(repository)
-          ? new globalThis.Response(null, { status: 200, headers: { "docker-content-digest": DIGEST } })
+          ? new globalThis.Response(null, {
+              status: 200,
+              headers: { "docker-content-digest": DIGEST },
+            })
           : new globalThis.Response(null, { status: 404 }),
       ),
     );
@@ -118,7 +122,12 @@ const http = HttpClient.make((request, url) => {
   patches.push(body);
   // A PATCH accepts any configuration and changes no image (scratch trial, 22 Nov).
   const current = live.get(id);
-  const app = { ...current, ...body, configuration: current.configuration, version: current.version };
+  const app = {
+    ...current,
+    ...body,
+    configuration: current.configuration,
+    version: current.version,
+  };
   live.set(id, app);
   return ok(request, app);
 });
@@ -137,7 +146,8 @@ const providers = Layer.mergeAll(
   LiveContainerProvider(),
   Provider.succeed(Worker, {
     stables: ["id"],
-    precreate: ({ id }) => Effect.succeed({ id, namespaces: { Blue: "ns-blue", Green: "ns-green" } }),
+    precreate: ({ id }) =>
+      Effect.succeed({ id, namespaces: { Blue: "ns-blue", Green: "ns-green" } }),
     reconcile: ({ id, news }) =>
       Effect.succeed({ id, ...news, namespaces: { Blue: "ns-blue", Green: "ns-green" } }),
     delete: () => Effect.void,
@@ -183,11 +193,10 @@ const deploy = (program, store) =>
     provideFreshArtifactStore,
   );
 const imageOf = (name) => [...live.values()].find((app) => app.name === name)?.configuration?.image;
-const run = Effect.gen(function* () {
-  // (b) A first deploy: each colour builds into its own repository and runs its own reference.
+// (b) A first deploy: each colour builds into its own repository and runs its own reference.
+const ownRepositories = Effect.gen(function* () {
   reset();
-  const store = {};
-  const first = yield* Effect.exit(deploy(colours(), store));
+  const first = yield* Effect.exit(deploy(colours(), {}));
   assert.ok(Exit.isSuccess(first), "first deploy converges");
   assert.deepEqual(
     [imageOf("fixture-blue"), imageOf("fixture-green")],
@@ -198,23 +207,46 @@ const run = Effect.gen(function* () {
     "each colour runs its own repository",
   );
   assert.ok(pushed.has("fixture-blue") && pushed.has("fixture-green"), "both repositories pushed");
-
-  // (a) Production's state after a shared publication: blue runs green's repository, and blue's
-  // own repository never received the digest. An update with an unchanged input sends nothing.
+});
+// (a) Production's state after a shared publication: blue runs green's repository, and blue's
+// own repository never received the digest. An update with an unchanged input sends nothing.
+const unchangedOnAnotherRepository = Effect.gen(function* () {
+  reset();
+  const store = {};
+  assert.ok(Exit.isSuccess(yield* Effect.exit(deploy(colours(), store))), "setup deploy");
   const blue = [...live.values()].find((app) => app.name === "fixture-blue");
   live.set(blue.id, {
     ...blue,
-    configuration: { ...blue.configuration, image: `registry.cloudflare.com/fixture/fixture-green@${DIGEST}` },
+    configuration: {
+      ...blue.configuration,
+      image: `registry.cloudflare.com/fixture/fixture-green@${DIGEST}`,
+    },
   });
   pushed.delete("fixture-blue");
+  pushed.set("fixture-green", DIGEST);
   patches = [];
   rollouts = [];
   const again = yield* Effect.exit(deploy(colours({ rollout: { strategy: "immediate" } }), store));
-  assert.ok(Exit.isSuccess(again), `the unchanged update converges (rollouts: ${rollouts.join(", ")})`);
+  assert.ok(
+    Exit.isSuccess(again),
+    `the unchanged update converges (rollouts: ${rollouts.join(", ")})`,
+  );
   assert.deepEqual(rollouts, [], "no rollout: the configuration blue runs is unchanged");
   assert.equal(patches.length, 0, "no PATCH: nothing about blue differs from what it runs");
   assert.equal(imageOf("fixture-blue"), `registry.cloudflare.com/fixture/fixture-green@${DIGEST}`);
-  console.log(JSON.stringify({ builds, patches: patches.length, rollouts }));
+});
+// Each scenario runs on its own, so a regression in one cannot hide the other.
+const run = Effect.gen(function* () {
+  const failed = [];
+  for (const [name, scenario] of [
+    ["own repositories", ownRepositories],
+    ["unchanged input on another repository", unchangedOnAnotherRepository],
+  ]) {
+    const exit = yield* Effect.exit(scenario);
+    if (Exit.isFailure(exit)) failed.push(`${name}: ${String(Cause.squash(exit.cause))}`);
+  }
+  assert.deepEqual(failed, [], failed.join("\n"));
+  console.log(JSON.stringify({ scenarios: 2 }));
 }).pipe(
   Effect.provide(NodeServices.layer),
   Effect.provideService(AlchemyContext, { dotAlchemy, dev: false, adopt: false }),
