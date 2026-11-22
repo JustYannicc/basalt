@@ -1,3 +1,4 @@
+Upstream: https://github.com/router-for-me/CLIProxyAPI/pull/7911
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go b/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go
 index 9471299..aed5b73 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket_loss_test.go

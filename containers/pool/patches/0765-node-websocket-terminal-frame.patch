@@ -1,3 +1,4 @@
+Upstream: https://github.com/router-for-me/CLIProxyAPI/pull/7910
 diff --git a/sdk/api/handlers/openai/basalt_websocket_terminal_close_test.go b/sdk/api/handlers/openai/basalt_websocket_terminal_close_test.go
 new file mode 100644
 index 0000000..63f0fcf
