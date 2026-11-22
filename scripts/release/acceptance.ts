@@ -1,4 +1,5 @@
 import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
+import { AcceptanceFailure, HttpStatusFailure } from "../pool-acceptance/types.ts";
 import { deviceRefusal, refusedDevice } from "./acceptance-device.ts";
 import {
   healingAcceptanceWithinMs,
@@ -46,6 +47,70 @@ export async function servingBoot(credential: ModelAuth, client = new PoolAccept
 
 /** Recorded before the apply of a release that declares a root restart, when the pool did not answer. */
 export const NOT_SERVING = "not-serving";
+
+/**
+ * The models acceptance tests with, in order: the ones test turns use, which the pool's accounts
+ * serve. Acceptance never takes whatever the catalog lists first: the catalog is the runtime's own
+ * list, unchecked against what an account can serve, and on 22 Nov its first id was a model the
+ * provider refused on every turn, so a sound release failed its acceptance and rolled back.
+ */
+export const acceptanceModels = ["claude-opus-5-5", "gpt-6.1-sol"] as const;
+
+/** A configured model if the catalog lists it, else the first of `acceptanceModels` it lists. */
+export function acceptanceModel(ids: readonly string[], configured?: string) {
+  if (configured) {
+    if (!ids.includes(configured))
+      throw new Error(`The acceptance model ${configured} is not in /v1/models`);
+    return configured;
+  }
+  const model = acceptanceModels.find((id) => ids.includes(id));
+  if (!model)
+    throw new Error(`None of the acceptance models (${acceptanceModels.join(", ")}) is in /v1/models`);
+  return model;
+}
+
+/** Why one turn failed, in words that name no host: our own messages and the pool's status. */
+const turnFailure = (error: unknown) =>
+  error instanceof HttpStatusFailure
+    ? `HTTP ${error.status}`
+    : error instanceof AcceptanceFailure
+      ? error.message
+      : "no answer";
+
+/**
+ * Before the apply: the model acceptance will test with, and one real turn with it. A model the pool
+ * lists but cannot serve fails every turn, and after the apply that reads as the release failing and
+ * rolls it back; one turn here stops such a run before anything changes. It spends one model call,
+ * in a plan too.
+ */
+export async function acceptanceModelBeforeApply(
+  credential: ModelAuth,
+  client: PoolAcceptanceClient,
+  configured?: string,
+) {
+  const ids = await client.modelCatalog(credential).then(
+    (catalog) => catalog.ids,
+    (error: unknown) => {
+      throw new Error(
+        `/v1/models did not answer before the apply (${turnFailure(error)}); nothing was applied`,
+        { cause: error },
+      );
+    },
+  );
+  const model = acceptanceModel(ids, configured);
+  try {
+    await client.sendTurn(credential, model, {
+      id: crypto.randomUUID().toLowerCase(),
+      expectedRecords: 1,
+    });
+  } catch (error) {
+    throw new Error(
+      `The acceptance model ${model} did not serve one turn before the apply (${turnFailure(error)}); nothing was applied`,
+      { cause: error },
+    );
+  }
+  return model;
+}
 
 /**
  * The boot read before the apply. A refused device is never "not serving": nothing could accept the
@@ -260,9 +325,7 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
       cause,
     };
   }
-  const model = options.model ?? catalog.ids[0];
-  if (!model || !catalog.ids.includes(model))
-    throw new Error("The acceptance model is not in /v1/models");
+  const model = acceptanceModel(catalog.ids, options.model);
   const failures: string[] = [];
   const refusals: number[] = [];
   const boots: string[] = [catalog.boot];
