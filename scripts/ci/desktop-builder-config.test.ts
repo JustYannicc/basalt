@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 // Runs in Check's client-desktop job, after clients/desktop's dependencies are installed, against
 // the real locked Electron. The fixture test in scripts/ci-release-assets.test.ts covers the config
@@ -22,7 +23,7 @@ test("the generated electron-builder config carries the locked electron's checks
   const fixture = mkdtempSync(join(tmpdir(), "basalt-builder-config-"));
   try {
     const output = join(fixture, "electron-builder.json");
-    const script = new URL("./desktop-release-assets.ts", import.meta.url).pathname;
+    const script = fileURLToPath(new URL("./desktop-release-assets.ts", import.meta.url));
     execFileSync(process.execPath, [script, "builder-config", output], { stdio: "pipe" });
     const config = JSON.parse(readFileSync(output, "utf8"));
     const checksums = JSON.parse(readFileSync(installedElectron, "utf8"));
