@@ -113,8 +113,8 @@ test("a statement that times out is reported with its step, and the read still f
     ],
     "one line for the failing statement",
   );
-  // The session stops at its first timeout; closing the connection rolls the transaction back.
-  assert.equal(reliabilityStep(statements.at(-1) ?? ""), "unknown_outcomes");
+  // Postgres answered the cancelled statement, so the session stays usable and rolls back at once.
+  assert.deepEqual(statements.slice(-2).map(reliabilityStep), ["unknown_outcomes", "rollback"]);
   assert.doesNotMatch(JSON.stringify(errors.mock.calls), /canceling statement|fixture/);
 });
 

@@ -1,10 +1,12 @@
 import { safeJson } from "./safe-json.ts";
+import { selectionBoundary } from "./selection-boundary.ts";
 
 /**
  * What a stopped run says in public (the repository, its logs, step summaries and artifacts are
  * public) and what it keeps private. Public: the tagged reason in our own vocabulary, the error
- * class, and the key paths a plan refusal names. Private: names, ids, paths, values and raw
- * messages, which can carry hosts or account ids.
+ * class, the key paths a plan refusal names, and the check and resource names a selection boundary
+ * names (see selection-boundary.ts). Private: names, ids, paths, values and raw messages, which can
+ * carry hosts or account ids.
  */
 export interface FailureReport {
   readonly publicText: string;
@@ -195,11 +197,14 @@ const where = (context?: FailureContext) => {
 export function failureReport(error: unknown, context?: FailureContext): FailureReport {
   const publicLines: string[] = [];
   const detailLines: string[] = [];
+  let boundary: string | undefined;
   const seen = new Set<unknown>();
   const visit = (value: unknown, depth: number) => {
     if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
     seen.add(value);
     const record = value as Record<string, unknown>;
+    if (record._tag === "UnsafeSelectionBoundary" && typeof record.message === "string")
+      boundary ??= selectionBoundary(record.message);
     if (
       typeof record._tag === "string" &&
       /Refus|Refused|Failed|Unavailable|Possible|AfterApply/u.test(record._tag)
@@ -268,7 +273,9 @@ export function failureReport(error: unknown, context?: FailureContext): Failure
         detail: `${head}\n${detailLines.map((line) => `- ${line}`).join("\n")}\n${message}`,
       }
     : {
-        publicText: `${head}. The message is in the sealed detail.`,
+        publicText: boundary
+          ? `${head}\n- ${boundary}`
+          : `${head}. The message is in the sealed detail.`,
         detail: `${head}: ${message}`,
       };
 }
