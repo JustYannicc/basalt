@@ -949,6 +949,25 @@ try {
               .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
               .map((change) => change.fqn)
         : [];
+    // The secrets the release policy says a release changes by design: the one `--policy`
+    // names, else the job's POLICY. A policy that cannot be read forces nothing; every Worker is
+    // still rolled back where it can be.
+    let forceSecrets: ReadonlySet<string> = new Set();
+    if (command === "rollback")
+      try {
+        const named =
+          policy ??
+          (process.env.POLICY
+            ? decodeReleasePolicy(
+                JSON.parse(await readFile(resolve(root, process.env.POLICY), "utf8")),
+              )
+            : undefined);
+        forceSecrets = new Set(named?.rollback?.forceSecrets ?? []);
+      } catch {
+        console.error(
+          "::warning::The release policy could not be read; the rollback forces nothing.",
+        );
+      }
     const result = await run(
       Effect.gen(function* () {
         const at = (script: string) => ({
@@ -971,21 +990,35 @@ try {
           return yield* Effect.die(
             new Error("rollback needs --from <serving.json> or --fqn and --to"),
           );
-        const rolledBack: { fqn: string; version: string }[] = [];
+        const rolledBack: { fqn: string; version: string; forcedSecrets?: readonly string[] }[] =
+          [];
         // Every Worker is tried: one that fails must not leave the rest on the failed release.
         const failed: { fqn: string; cause: unknown }[] = [];
         for (const target of targets) {
           const exit = yield* Effect.exit(
             Effect.gen(function* () {
-              yield* rollbackTo(
+              return yield* rollbackTo(
                 at(yield* scriptName(target.fqn)),
                 target.version,
                 `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+                forceSecrets,
               );
             }),
           );
-          if (exit._tag === "Success") rolledBack.push(target);
-          else failed.push({ fqn: target.fqn, cause: exit.cause });
+          if (exit._tag === "Failure") {
+            failed.push({ fqn: target.fqn, cause: exit.cause });
+            continue;
+          }
+          const { forcedSecrets } = exit.value;
+          if (!forcedSecrets.length) {
+            rolledBack.push(target);
+            continue;
+          }
+          // Names from our own source, never values: the line is public.
+          console.log(
+            `Rolled back ${target.fqn} with force: only per-release secrets changed (${forcedSecrets.join(", ")})`,
+          );
+          rolledBack.push({ ...target, forcedSecrets });
         }
         if (failed.length)
           return yield* Effect.die(

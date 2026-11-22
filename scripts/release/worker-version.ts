@@ -67,52 +67,107 @@ export const servingVersion = (target: Target) =>
     return versions[0]!.version_id;
   });
 
-/** Deploys an earlier version at 100%, as `wrangler rollback` does; Cloudflare refuses it across a class change. */
-export const rollbackTo = (target: Target, versionId: string, message: string) =>
+/** Cloudflare's refusal to deploy a version while a secret differs from the value it ran with. */
+const SECRET_CHANGED = 10220;
+
+/**
+ * Cloudflare's whole changed-secret message, word for word. `force` overrides every block, not only
+ * this one, so a message with anything else in it (a removed secret, a changed binding) names no
+ * secrets here and is never forced.
+ */
+const SECRET_CHANGED_MESSAGE =
+  /^A secret has changed since this version was active\. If you are sure this is ok, add a \?force=true query parameter to allow the rollback\. The following secrets have changed: ([A-Za-z_][A-Za-z0-9_]*(?:, [A-Za-z_][A-Za-z0-9_]*)*)\.?$/u;
+
+/** The secrets a changed-secret refusal names, or undefined unless it is exactly that message. */
+export const changedSecrets = (message: string): readonly string[] | undefined =>
+  SECRET_CHANGED_MESSAGE.exec(message.trim())?.[1]?.split(", ");
+
+const errorsOf = (body: unknown) => {
+  const errors = (body as { errors?: unknown } | undefined)?.errors;
+  return Array.isArray(errors)
+    ? errors.slice(0, 5).map((error) => ({
+        code: (error as { code?: unknown })?.code ?? null,
+        message: String((error as { message?: unknown })?.message ?? ""),
+      }))
+    : [];
+};
+
+/**
+ * Deploys an earlier version at 100%, as `wrangler rollback` does. Cloudflare refuses it across a
+ * class change, and while a secret differs from the value the version ran with. That refusal is
+ * sent again with `force` only when every secret it names is in `forceSecrets`, the release
+ * policy's list of secrets whose value a release changes by design, and the refusal is exactly that
+ * one message: Cloudflare's `force` overrides every block, not only the changed secret. Cloudflare
+ * keeps a secret's value per version (changing one creates a new version), so the earlier version
+ * comes back with the value it ran with.
+ */
+export const rollbackTo = (
+  target: Target,
+  versionId: string,
+  message: string,
+  forceSecrets: ReadonlySet<string> = new Set(),
+) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
-    // Cloudflare's own answer is kept: its HTTP status and each error's code and message go into
-    // the refusal's detail, which the release keeps private (sealed), never in its public text.
-    const answer: { status?: number; errors?: { code: unknown; message: string }[] } = {};
+    // Cloudflare's own answers are kept: each HTTP status and error code and message go into the
+    // refusal's detail, which the release keeps private (sealed), never in its public text.
+    const answers: { status: number; errors: { code: unknown; message: string }[] }[] = [];
     const refused = (cause: unknown) =>
       new WorkerVersionRefusal({
         script: target.script,
         why: "Cloudflare did not accept the rollback deployment",
         fix: "Roll back by hand with wrangler rollback",
-        detail: { versionId, ...answer },
+        detail: { versionId, ...answers[0], ...(answers[1] ? { forced: answers[1] } : {}) },
         cause,
       });
-    const created = yield* client
-      .execute(
-        HttpClientRequest.post(url(target)).pipe(
-          HttpClientRequest.bearerToken(Redacted.value(target.token)),
-          HttpClientRequest.bodyJsonUnsafe({
-            strategy: "percentage",
-            versions: [{ version_id: versionId, percentage: 100 }],
-            annotations: { "workers/message": message.slice(0, 100) },
-          }),
-        ),
-      )
-      .pipe(
-        Effect.flatMap((response) =>
-          response.json.pipe(
-            Effect.catch(() => Effect.succeed(undefined)),
-            Effect.flatMap((body) => {
-              answer.status = response.status;
-              const errors = (body as { errors?: unknown } | undefined)?.errors;
-              if (Array.isArray(errors))
-                answer.errors = errors.slice(0, 5).map((error) => ({
-                  code: (error as { code?: unknown })?.code ?? null,
-                  message: String((error as { message?: unknown })?.message ?? "").slice(0, 300),
-                }));
-              return response.status >= 200 && response.status < 300
-                ? Schema.decodeUnknownEffect(Created)(body)
-                : Effect.fail(new Error(`HTTP ${response.status}`));
+    const deploy = (force: boolean) =>
+      client
+        .execute(
+          HttpClientRequest.post(`${url(target)}${force ? "?force=true" : ""}`).pipe(
+            HttpClientRequest.bearerToken(Redacted.value(target.token)),
+            HttpClientRequest.bodyJsonUnsafe({
+              strategy: "percentage",
+              versions: [{ version_id: versionId, percentage: 100 }],
+              annotations: { "workers/message": message.slice(0, 100) },
             }),
           ),
-        ),
-        Effect.mapError(refused),
-      );
+        )
+        .pipe(
+          Effect.flatMap((response) =>
+            response.json.pipe(
+              Effect.catch(() => Effect.succeed(undefined)),
+              Effect.map((body) => {
+                const errors = errorsOf(body);
+                answers.push({
+                  status: response.status,
+                  errors: errors.map((error) => ({
+                    ...error,
+                    message: error.message.slice(0, 300),
+                  })),
+                });
+                return { ok: response.status >= 200 && response.status < 300, body, errors };
+              }),
+            ),
+          ),
+          Effect.mapError(refused),
+        );
+    let reply = yield* deploy(false);
+    let forcedSecrets: readonly string[] = [];
+    if (!reply.ok) {
+      const [only, ...more] = reply.errors;
+      const named =
+        answers[0]?.status === 400 && only?.code === SECRET_CHANGED && !more.length
+          ? changedSecrets(only.message)
+          : undefined;
+      if (!named?.every((name) => forceSecrets.has(name)))
+        return yield* refused(new Error(`HTTP ${answers[0]?.status}`));
+      forcedSecrets = named;
+      reply = yield* deploy(true);
+      if (!reply.ok) return yield* refused(new Error(`HTTP ${answers[1]?.status} with force`));
+    }
+    const created = yield* Schema.decodeUnknownEffect(Created)(reply.body).pipe(
+      Effect.mapError(refused),
+    );
     const now = yield* servingVersion(target);
     if (now !== versionId)
       return yield* new WorkerVersionRefusal({
@@ -121,5 +176,5 @@ export const rollbackTo = (target: Target, versionId: string, message: string) =
         fix: "Roll back by hand with wrangler rollback",
         detail: { expected: versionId, serving: now },
       });
-    return created.result.id;
+    return { id: created.result.id, forcedSecrets };
   });
