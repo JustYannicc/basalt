@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The framework reference the Authoring Worker embeds names a declaration under `node_modules` from its first `node_modules` segment on, so two versions of one package keep their own names. It recorded each declaration's file relative to the workspace's parent, so a dependency's file climbed into the store directory a fresh install creates, and the reference, its digest and the Authoring Worker's bundle changed on every fresh install."
+    }
+  }
+}
