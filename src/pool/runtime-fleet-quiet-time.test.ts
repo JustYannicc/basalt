@@ -81,7 +81,7 @@ test("a second ready cell is not held by recent demand: only the first one is ke
 });
 
 test("a first start that misses its deadline is observed on the next quiet pass and becomes ready", async (context) => {
-  context.mock.method(console, "info", () => {});
+  const info = context.mock.method(console, "info", () => {});
   const f = quietFleet();
   let activated = false;
   const slot = await f.reserve({
@@ -96,7 +96,20 @@ test("a first start that misses its deadline is observed on the next quiet pass 
     ["uncertain"],
     "a start with no answer is uncertain, never assumed lost",
   );
-  assert.equal(f.calls.failedPasses, 1);
+  assert.equal(f.calls.failedPasses, 0, "the row's failure settles for that row; the pass goes on");
+  assert.equal(f.calls.starts, 1, "the same pass dispatched the reserved row's start");
+  assert.ok(
+    info.mock.calls.some(({ arguments: [line, fields] }) => {
+      const value = fields as { phase?: string; outcome?: string; ordinal?: number } | undefined;
+      return (
+        line === "POOL_RUNTIME_UPKEEP" &&
+        value?.phase === "reserved" &&
+        value.outcome === "error" &&
+        value.ordinal === 1
+      );
+    }),
+    "the start's failure is recorded for its row",
+  );
   rows = await f.pass();
   assert.deepEqual(
     rows.map((row) => row.phase),

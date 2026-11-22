@@ -41,6 +41,10 @@ const distance = (value: unknown) => {
   const decoded = Schema.decodeUnknownOption(RuntimeDistance)(value);
   return decoded._tag === "Some" ? { database: decoded.value } : {};
 };
+const ActivityCount = Schema.Struct({
+  active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  known: Schema.Boolean,
+});
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
@@ -200,12 +204,11 @@ export class BoundSlotDriver implements SlotDriver {
   }
   async drain(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "drain", { identity }, signal);
-    return Schema.decodeUnknownSync(
-      Schema.Struct({
-        active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-        known: Schema.Boolean,
-      }),
-    )(await response.json());
+    return Schema.decodeUnknownSync(ActivityCount)(await response.json());
+  }
+  async activity(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "activity", { identity }, signal);
+    return Schema.decodeUnknownSync(ActivityCount)(await response.json());
   }
   async retirement(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "retirement", { identity }, signal);
@@ -355,11 +358,15 @@ export async function runtimeRequest(
         )(value),
       );
       return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
-    } else if (action === "/drain") {
+    } else if (action === "/drain" || action === "/activity") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
       );
-      return Response.json(await endpoint.drain(identity, request.signal));
+      return Response.json(
+        await (action === "/activity"
+          ? endpoint.streamCount(identity)
+          : endpoint.drain(identity, request.signal)),
+      );
     } else if (action === "/retirement" || action === "/failed") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),

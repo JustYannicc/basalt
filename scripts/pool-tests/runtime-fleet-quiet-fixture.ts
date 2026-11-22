@@ -17,6 +17,8 @@ export interface QuietCell {
   observe?(target: SlotTarget): Promise<SlotIdentity | undefined>;
   drain?(): Promise<{ active: number; known: boolean }>;
   retired?(): Promise<boolean>;
+  /** Whether the provider proves a start that never served gone; by default it does. */
+  abandon?(): Promise<boolean>;
 }
 
 interface Options {
@@ -84,6 +86,8 @@ export function quietFleet(options: Options = {}) {
       },
       abortPool: () => {},
       drain: async () => (own().drain ? own().drain!() : { active: 0, known: true }),
+      // The cell's own count, the same one its drain reports.
+      activity: async () => (own().drain ? own().drain!() : { active: 0, known: true }),
       retire: async (_identity, begin) => {
         await begin();
         calls.retires++;
@@ -92,6 +96,7 @@ export function quietFleet(options: Options = {}) {
       },
       retired: async () => (own().retired ? own().retired!() : retired),
       failed: async () => false,
+      abandon: async () => (own().abandon ? own().abandon!() : true),
     };
   };
   const controller = () =>

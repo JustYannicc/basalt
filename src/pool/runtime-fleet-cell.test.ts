@@ -122,7 +122,8 @@ test("an absent observation secret holds draining capacity without destruction a
     now: Date.now,
   });
   f.secret(null);
-  await assert.rejects(fleet.upkeep(), /provider observation refused/);
+  // The refused provider read settles for its row; the pass itself goes on.
+  await fleet.upkeep();
   assert.equal(f.calls.destroy, 0);
   assert.equal((await state.inspect()).length, 1);
   assert.equal((await state.inspect())[0]?.phase, "draining");

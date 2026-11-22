@@ -31,6 +31,7 @@ import {
   type FleetConfiguration,
 } from "./configuration.ts";
 import { RuntimeFleetState } from "./state.ts";
+import { inPhaseFor } from "./phase-bounds.ts";
 import { RuntimeFleet } from "./controller.ts";
 import { boundFleetCell } from "./bound-cell.ts";
 import { RuntimeFleetPeers, type HomePeerEndpoint } from "./peers.ts";
@@ -309,7 +310,11 @@ export class PoolRuntimeFleet {
     return {
       permission: await this.configuration.inspect(operationId),
       replacement: operationId ? await this.replacement.inspect(operationId) : undefined,
-      resources: await this.state.inspect(),
+      // A held row has no time exit, so its age and reason show wherever the fleet is inspected.
+      resources: (await this.state.inspect()).map((row) => ({
+        ...row,
+        inPhaseMs: inPhaseFor(row, Date.now()),
+      })),
       bindings: this.deps
         .namespaces()
         .map(({ color, applicationId, imageInput }) => ({ color, applicationId, imageInput })),

@@ -517,6 +517,12 @@ export class RuntimeEndpoint {
       throw error;
     }
   }
+  /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
+  async streamCount(identity: SlotIdentity) {
+    this.bound(identity);
+    const row = await this.activity.inspect(identity);
+    return row ? { active: row.active, known: row.known } : { active: 0, known: false };
+  }
   drain(identity: SlotIdentity, signal: AbortSignal) {
     const trace = new PoolUpkeepTrace("endpoint");
     const fields = { ordinal: identity.homePeerOrdinal };
