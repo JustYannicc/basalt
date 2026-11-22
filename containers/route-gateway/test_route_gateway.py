@@ -3,6 +3,7 @@ import base64
 import contextlib
 import io
 import json
+import socket
 import struct
 import time
 import unittest
@@ -47,8 +48,18 @@ class RouteCheckTests(unittest.TestCase):
         for expected, actual in cases:
             self.assertEqual(actual, expected)
 
-    def test_key_expiry_outranks_logged_out(self):
-        self.assertEqual(check(snapshot=changed(logged_in=False, key_expired=True, selected=None)), "route_key_expired")
+    def test_earlier_steps_win_when_several_fail(self):
+        everything_wrong = changed(logged_in=False, key_expired=True, selected=None, active=None)
+        self.assertEqual(check(snapshot=everything_wrong, selection={"exit_id": None, "when_down": "stop"}), "route_off")
+        self.assertEqual(check(snapshot=everything_wrong, started=False), "route_needs_login")
+        self.assertEqual(check(snapshot=everything_wrong, alive=(None, None)), "route_key_expired")
+        gone = changed(selected="nOTHER", active=Exit(id="nEXIT", name="", online=False))
+        self.assertEqual(check(snapshot=gone, alive=(None, None)), "route_not_selected")
+        offline_and_stale = changed(active=Exit(id="nEXIT", name="", online=False))
+        self.assertEqual(check(snapshot=offline_and_stale, alive=(None, None)), "route_exit_offline")
+
+    def test_a_running_node_is_not_refused_for_its_expiry_clock(self):
+        self.assertIsNone(check(snapshot=changed(key_expired=True)))
 
 
 class SnapshotTests(unittest.TestCase):
@@ -72,6 +83,12 @@ class SnapshotTests(unittest.TestCase):
         status["Peer"]["key"]["CurAddr"] = ""
         self.assertEqual(parse_snapshot(status, {}, time.time()).active.relay_region, "fra")
 
+    def test_exit_that_stopped_offering_an_exit_route_is_missing(self):
+        status = self.status()
+        status["Peer"]["key"]["ExitNodeOption"] = False
+        snapshot = parse_snapshot(status, {"ExitNodeID": "nEXIT"}, time.time())
+        self.assertEqual(check(snapshot=snapshot), "route_exit_missing")
+
     def test_exit_gone_from_netmap_is_missing_even_while_reported_online(self):
         # Observed on 1.104.7: ExitNodeStatus stays online after control deletes the exit.
         snapshot = parse_snapshot(self.status(peers=False), {"ExitNodeID": "nEXIT"}, time.time())
@@ -89,6 +106,7 @@ class FakeAdapter:
     def __init__(self, snapshot=READY):
         self.snapshot_value, self.state, self.selected, self.started_with = snapshot, b"state-1", [], None
         self.login_url = "https://login.example.invalid/a/test"
+        self.start_error = None
         self.process = None
 
     async def snapshot(self):
@@ -98,6 +116,8 @@ class FakeAdapter:
         return value
 
     async def start(self, state):
+        if isinstance(self.start_error, Exception):
+            raise self.start_error
         self.started_with = state
 
     async def ping(self, ip):
@@ -158,7 +178,9 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
         self.stdout.__exit__(None, None, None)
         for server in (self.server, self.upstream_server):
             server.close()
-            await server.wait_closed()
+            # wait_closed also waits for open handlers; a failing test must not hang here.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(server.wait_closed(), 2)
 
     async def socks(self, request, greeting=b"\x05\x01\x00", payload=b""):
         reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
@@ -195,6 +217,38 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.upstream.requests), 1)
         self.assertEqual(self.upstream.relayed, [b""])
         self.assertEqual(self.records(), [{"route_refused": "route_exit_missing"}])
+
+    async def test_exit_status_failure_during_the_dial_is_refused(self):
+        self.adapter.snapshot_value = [READY, AdapterError("down")]
+        answer, _ = await self.socks(self.ipv4(), payload=b"request-bytes")
+        self.assertEqual(answer[1], 0x02)
+        self.assertEqual(self.records(), [{"route_refused": "route_status_unavailable"}])
+
+    async def test_an_upstream_reset_releases_the_connection(self):
+        async def resetting(reader, writer):
+            await reader.readexactly(3)
+            writer.write(b"\x05\x00")
+            await reader.readexactly(10)
+            writer.write(b"\x05\x00\x00\x01" + b"\x00" * 6)
+            await writer.drain()
+            # Linger 0 turns the close into a TCP reset, as a dropped far end would send.
+            writer.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            writer.transport.abort()
+
+        server = await asyncio.start_server(resetting, "127.0.0.1", 0)
+        self.forwarder.upstream_port = server.sockets[0].getsockname()[1]
+        reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+        writer.write(b"\x05\x01\x00" + self.ipv4())
+        self.assertEqual((await reader.readexactly(12))[3], 0)
+        # The client stays idle and open: only the forwarder can free the slot.
+        self.assertEqual(await asyncio.wait_for(reader.read(), 2), b"")
+        for _ in range(50):
+            if self.forwarder.active == 0:
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(self.forwarder.active, 0)
+        writer.close()
+        server.close()
 
     async def test_stop_refuses_without_dialling(self):
         self.adapter.snapshot_value = changed(active=None)
@@ -275,6 +329,15 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self.adapter.started_with, b"state-1")
         self.assertEqual((await self.start())[0], 409)
+        self.assertEqual((await self.call("POST", "/start", b"not json"))[0], 409)
+
+    async def test_a_failed_start_can_be_retried(self):
+        self.adapter.start_error = PermissionError("shm")
+        self.assertEqual(await self.start(), (503, {"error": "route_status_unavailable"}))
+        self.assertFalse(self.forwarder.started)
+        self.adapter.start_error = None
+        self.assertEqual((await self.start())[0], 200)
+        self.assertTrue(self.forwarder.started)
 
     async def test_bad_requests(self):
         self.assertEqual(await self.call("POST", "/start", {"state": None, "extra": 1}), (400, {"error": "bad_request"}))
@@ -320,9 +383,12 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.call("GET", "/state"))[1], {"state": base64.b64encode(b"state-1").decode(), "state_revision": 0})
         self.adapter.state = b"state-2"
         self.assertEqual((await self.call("GET", "/status"))[1]["state_revision"], 1)
+        await self.call("POST", "/select", {"exit_id": "nEXIT", "when_down": "stop"})
         self.assertEqual((await self.call("POST", "/logout"))[1], {})
-        self.assertEqual((await self.call("GET", "/state"))[1]["state_revision"], 2)
-        self.assertIsNone(self.forwarder.selection["exit_id"])
+        self.adapter.snapshot_value = changed(logged_in=False, tailnet=None)
+        status = (await self.call("GET", "/status"))[1]
+        self.assertEqual((status["state"], status["reason"], status["state_revision"]), ("needs_login", "route_needs_login", 2))
+        self.assertEqual((await self.call("GET", "/state"))[1]["state"], "")
 
     async def test_adapter_failure_is_a_reason_code(self):
         await self.start()

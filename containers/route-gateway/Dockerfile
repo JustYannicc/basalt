@@ -6,7 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && groupadd --system gateway \
     && useradd --system --no-create-home --gid gateway gateway
 COPY --from=tailscale /usr/local/bin/tailscaled /usr/local/bin/tailscaled
-COPY --from=tailscale /usr/local/bin/tailscale /usr/local/bin/tailscale
 WORKDIR /opt/route-gateway
 COPY adapter_tailscale.py forwarder.py control.py healthcheck.py /opt/route-gateway/
 ENV PYTHONUNBUFFERED=1 \

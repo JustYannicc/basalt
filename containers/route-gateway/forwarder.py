@@ -34,10 +34,8 @@ def route_check(started, snapshot, selection, alive, now):
         return "route_needs_login"
     if snapshot is None:
         return "route_status_unavailable"
-    if snapshot.key_expired:
-        return "route_key_expired"
     if not snapshot.logged_in:
-        return "route_needs_login"
+        return "route_key_expired" if snapshot.key_expired else "route_needs_login"
     reason = exit_check(snapshot, exit_id)
     if reason is not None:
         return reason
@@ -95,19 +93,22 @@ async def read_reply(reader):
     return head + await reader.readexactly(size + 2)
 
 
-async def pump(reader, writer):
-    try:
-        while data := await reader.read(65536):
-            writer.write(data)
-            await writer.drain()
-        if writer.can_write_eof():
-            writer.write_eof()
-    except (ConnectionError, OSError):
-        pass
-
-
 async def splice(client, upstream):
+    """Copy both ways. A clean EOF half-closes; an error on either side aborts both, so a
+    reset never leaves the other direction waiting with its connection slot held."""
     (client_reader, client_writer), (upstream_reader, upstream_writer) = client, upstream
+
+    async def pump(reader, writer):
+        try:
+            while data := await reader.read(65536):
+                writer.write(data)
+                await writer.drain()
+            if writer.can_write_eof():
+                writer.write_eof()
+        except (ConnectionError, OSError):
+            client_writer.transport.abort()
+            upstream_writer.transport.abort()
+
     await asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
     upstream_writer.close()
 

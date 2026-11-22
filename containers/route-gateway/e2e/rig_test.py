@@ -360,6 +360,14 @@ class Rig:
                     gateway_log=self.refusals()[-1], raw_tailscaled_proxy=raw, raw_echo_saw=self.echo_from("raw-proxy"))
         self.evidence["final_status"] = self.status()
 
+        # Logout leaves the tailnet and discards the identity: the next /state is a fresh node.
+        before = self.gateway_call("GET", "/state")[1]["state"]
+        logged_out = self.gateway_call("POST", "/logout")
+        after_status = self.status()
+        after = self.gateway_call("GET", "/state")[1]["state"]
+        self.evidence["logout"] = {"response": logged_out, "status": after_status, "state_changed": before != after,
+                                   "still_registered": self.headscale("nodes", "list", "-o", "json").count("signalbox-route")}
+
     def teardown(self):
         removed = {"containers": 0, "networks": 0, "images": 0}
         for name in self.names.values():

@@ -20,7 +20,15 @@ SOCKS_PORT = 1080
 MAX_BODY = 16 * 1024
 MAX_HEADERS = 64
 REVISION_EVERY_S = 2.0
-STATUS_TEXT = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed", 409: "Conflict", 503: "Service Unavailable"}
+STATUS_TEXT = {
+    200: "OK",
+    400: "Bad Request",
+    404: "Not Found",
+    405: "Method Not Allowed",
+    409: "Conflict",
+    500: "Internal Server Error",
+    503: "Service Unavailable",
+}
 
 
 class Refusal(Exception):
@@ -118,13 +126,13 @@ class Gateway:
             raise Refusal(409, "route_gateway_unavailable")
         try:
             return await handler(body)
-        except adapter_module.AdapterError:
+        except (adapter_module.AdapterError, OSError):
             raise Refusal(503, "route_status_unavailable")
 
     async def start(self, body):
-        value = fields(body, ("state",), ("state",))
         if self.boot_id is not None:
             raise Refusal(409, "bad_request")
+        value = fields(body, ("state",), ("state",))
         state = value["state"]
         if state is not None and not isinstance(state, str):
             raise Refusal(400, "bad_request")
@@ -136,7 +144,7 @@ class Gateway:
         self.state_hash = hashlib.sha256(blob).hexdigest()
         try:
             await self.adapter.start(blob or None)
-        except adapter_module.AdapterError:
+        except BaseException:
             self.boot_id = None
             raise
         self.forwarder.started = True
@@ -171,7 +179,6 @@ class Gateway:
     async def logout(self, body):
         fields(body, ())
         await self.adapter.logout()
-        self.forwarder.selection = {"exit_id": None, "when_down": self.forwarder.selection["when_down"]}
         self.forwarder.alive = (None, None)
         return {}
 
@@ -192,6 +199,9 @@ class Gateway:
         except (ConnectionError, OSError):
             writer.close()
             return
+        except Exception as error:
+            forwarder_module.log({"control_error": type(error).__name__})
+            status, payload = 500, {"error": "route_gateway_unavailable"}
         data = json.dumps(payload).encode()
         writer.write(
             f"HTTP/1.1 {status} {STATUS_TEXT[status]}\r\nContent-Type: application/json\r\n"
@@ -243,11 +253,16 @@ async def main():
 
     async def daemon_exit():
         # tailscaled gone means the route is gone: exit so the DO restarts the container.
-        while adapter.process is None:
-            await asyncio.sleep(0.5)
-        await adapter.process.wait()
-        forwarder_module.log({"route_gateway_exit": "tailscaled"})
-        os._exit(1)
+        # A stop the adapter intended (logout) replaces or clears `adapter.process` first.
+        while True:
+            process = adapter.process
+            if process is None:
+                await asyncio.sleep(0.5)
+                continue
+            await process.wait()
+            if adapter.process is process:
+                forwarder_module.log({"route_gateway_exit": "tailscaled"})
+                os._exit(1)
 
     tasks += [asyncio.create_task(revisions()), asyncio.create_task(daemon_exit())]
     async with control, socks:

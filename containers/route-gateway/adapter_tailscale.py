@@ -5,6 +5,7 @@ different route adapter can replace this module without touching them.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import datetime
 import json
@@ -80,10 +81,12 @@ def parse_snapshot(status, prefs, now):
         if peer.get("ExitNodeOption")
     )
     # tailscaled keeps reporting ExitNodeStatus, online, after control removes the exit from
-    # the netmap, and its proxy then dials direct; only a peer still in the netmap counts.
+    # the netmap or withdraws its exit route, and its proxy then dials direct; only a peer
+    # still in the netmap and still offering an exit route counts.
     active = None
     exit_status = status.get("ExitNodeStatus")
-    known = peers.get(exit_status.get("ID")) if exit_status else None
+    offering = {item.id: item for item in exits}
+    known = offering.get(exit_status.get("ID")) if exit_status else None
     if known:
         ips = [ip.split("/")[0] for ip in exit_status.get("TailscaleIPs") or [] if "." in ip]
         active = dataclasses.replace(known, online=bool(exit_status.get("Online")), ip=ips[0] if ips else known.ip)
@@ -156,7 +159,15 @@ class TailscaleAdapter:
                 return
             except AdapterError:
                 await asyncio.sleep(0.1)
+        await self._stop()
         raise AdapterError("tailscaled_not_ready")
+
+    async def _stop(self):
+        # Clearing `process` first tells the exit watcher this stop is intended.
+        process, self.process = self.process, None
+        if process is not None and process.returncode is None:
+            process.terminate()
+            await process.wait()
 
     async def snapshot(self):
         status = await _local_api("GET", "/localapi/v0/status")
@@ -180,7 +191,7 @@ class TailscaleAdapter:
         await _local_api("POST", "/localapi/v0/start", {"UpdatePrefs": prefs})
         await _local_api("POST", "/localapi/v0/login-interactive")
         for _ in range(100):
-            status = await _local_api("GET", "/localapi/v0/status?peers=false")
+            status = await _local_api("GET", "/localapi/v0/status?peers=false") or {}
             if status.get("AuthURL"):
                 return status["AuthURL"]
             if status.get("BackendState") == "Running":
@@ -197,6 +208,12 @@ class TailscaleAdapter:
 
     async def logout(self):
         await _local_api("POST", "/localapi/v0/logout", timeout=10.0)
+        # tailscaled keeps its machine key and profile in the state file after a logout, so
+        # start over from nothing: the next /state carries no identity of the old device.
+        await self._stop()
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(STATE_FILE)
+        await self.start(None)
 
     def read_state(self):
         try:
