@@ -1,0 +1,66 @@
+diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+--- a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+@@ -1,17 +1,30 @@
+-import { Effect } from "effect";
++import { Clock, Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { catalogAppRelease } from "./catalog-app-release.ts";
+ 
++/**
++ * A sweep fails only on what a retry can fix (build memory, compiler capacity, storage); its job
++ * then ends failed after its own retries. That organization's untouched copies would stay a
++ * release behind, so a later sweep is queued for the same release, at most this many in all.
++ */
++const sweepsPerRelease = 4;
++/** Longer than a failed job's own retries, so a requeue never races the attempt it replaces. */
++const requeueAfter = "1 hour";
++/** Ticks run often; one isolate looks for failed sweeps at most this often. */
++const requeueCheckMs = 10 * 60 * 1000;
++
+ /**
+  * Once per Basalt release, queue one sweep per organization that holds a copy of the feed's apps,
+  * run as a member who can manage apps. Jobs wait for the replacement server, as pool upgrades do.
++ * Afterwards, an organization whose sweeps for the release all failed gets another, later one.
+  */
+ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRelease) => {
+   let completed = false;
++  let checked = Number.NEGATIVE_INFINITY;
+   const name = `${catalogAppJobPrefix}${release}`;
+   const apps = new URL("apps/", feedUrl).href;
+-  return Effect.gen(function* () {
++  const queue = Effect.gen(function* () {
+     if (completed) return;
+     const sql = yield* SqlClient.SqlClient;
+     const done = yield* sql`select 1 from private_hosted_data_steps
+@@ -44,4 +57,29 @@ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRele
+     // No invocation-owned I/O is retained; failures leave the next tick eligible.
+     completed = true;
+   });
++  // Concurrent isolates serialize on the marker row, so two ticks never queue the same retry.
++  const requeue = Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`select 1 from private_hosted_data_steps
++          where name = ${name} and run = 'apply' for update`;
++        yield* sql`insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++          select ${name} || ':' || gen_random_uuid()::text, 'member', organization_id,
++            (array_agg(user_id order by updated_at desc))[1], now()
++          from hosted_provisioning
++          where kind = 'member' and id like ${`${name}:%`}
++          group by organization_id
++          having bool_and(status = 'failed') and count(*) < ${sweepsPerRelease}
++            and max(updated_at) < now() - ${requeueAfter}::interval`;
++      }),
++    );
++  });
++  return Effect.gen(function* () {
++    yield* queue;
++    const now = yield* Clock.currentTimeMillis;
++    if (!completed || now - checked < requeueCheckMs) return;
++    yield* requeue;
++    checked = now;
++  });
+ };
