@@ -221,10 +221,29 @@ test("observe proves a running target beside a destroyed neighbour listed as pro
   );
 });
 
-test("of the documented states only stopped and inactive count as stopped; failed and unknown may still run", async () => {
+test("a target the provider lists as stopped or failed is present, each with its own reason", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const stopped = { driverStopped: true } as const;
+  for (const state of ["stopped", "failed"]) {
+    const f = await fixture({ targetState: state, siblingState: "inactive" });
+    assert.equal(
+      await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+      false,
+    );
+  }
+  assert.deepEqual(
+    lines.mock.calls.map((call) => call.arguments),
+    [
+      ["POOL_PROVIDER_ABSENCE", { reason: "stopped" }],
+      ["POOL_PROVIDER_ABSENCE", { reason: "failed" }],
+    ],
+  );
+});
+
+test("of the documented states only inactive counts as stopped; stopped, failed and unknown may still run", async () => {
   const stopped = { driverStopped: true } as const;
   for (const [state, absent] of [
-    ["stopped", true],
+    ["stopped", false],
     ["inactive", true],
     ["failed", false],
     ["unknown", false],

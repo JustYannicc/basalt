@@ -44,15 +44,17 @@ const documentedStates = new Set([
   "unknown",
 ]);
 /**
- * The closed stopped list is "stopped" and "inactive" from that reference; production reported
- * "inactive" for a destroyed instance. The reference does not say what either means or whether
- * such an instance can start again; it reports the application's configured image for an instance
- * without a placement, which suggests inactive means no placement. That is an assumption. "failed"
- * stays out: a failed start can return to running. Nothing here keeps a stopped instance stopped;
- * the endpoint's retired record does, by refusing every later start (an admit over that record is
- * not refused, and no current path reaches it).
+ * The closed stopped list is exactly "inactive", the state production reported for a destroyed
+ * instance. The reference does not say what inactive means or whether such an instance can start
+ * again; it reports the application's configured image for an instance without a placement, which
+ * suggests inactive means no placement. That is an assumption. "stopped" and "failed" are not in
+ * it: their Durable Object can start them again, so they count as present, each with its own
+ * reason. What keeps a retired instance stopped is the endpoint's retired record, which its start
+ * refuses; an admit over that record is not refused, and no current path reaches it.
  */
-const stopped = (state: string) => state === "stopped" || state === "inactive";
+const stopped = (state: string) => state === "inactive";
+/** Any other instance that may still run refuses the whole read, as any answer but running did. */
+const unsettled = (state: string) => state !== "running" && !stopped(state);
 /** Given only by a caller whose driver independently reported this exact boot stopped. */
 export interface DriverStopped {
   readonly driverStopped: true;
@@ -65,6 +67,8 @@ type AbsenceRefusal =
   | "instances"
   | "unknown_state"
   | "slow"
+  | "stopped"
+  | "failed"
   | "listed";
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
 export class ProviderObservationRefused extends Error {
@@ -182,8 +186,11 @@ export class RuntimeProviderReader {
       let instances: string[] | undefined;
       if (instanceId !== undefined) {
         const listed = await this.instances(base, expected, signal);
-        // Only the named instance must run; a stopped sibling holds no compute.
-        if (!listed.some((value) => value.id === instanceId && value.state === "running"))
+        // The named instance must run; an inactive sibling holds no compute, any other refuses.
+        if (
+          !listed.some((value) => value.id === instanceId && value.state === "running") ||
+          listed.some((value) => value.id !== instanceId && unsettled(value.state))
+        )
           throw new ProviderObservationRefused();
         instances = listed.filter((value) => !stopped(value.state)).map((value) => value.id);
         const after = await application();
@@ -222,7 +229,7 @@ export class RuntimeProviderReader {
   }
   /**
    * Absent means not listed. With the driver's own report that this boot stopped, an instance the
-   * provider lists only as stopped is absent too; nothing else stands in for the provider.
+   * provider lists only as inactive is absent too; nothing else stands in for the provider.
    */
   async absent(
     expected: RuntimeProviderTarget,
@@ -271,13 +278,12 @@ export class RuntimeProviderReader {
       if (canonicalProviderValue(before) !== canonicalProviderValue(after)) return "proof";
       if (this.now() - at > 30_000) return "slow";
       // An empty application has no listed instance at all, a stopped one included.
-      const present =
-        instanceId === undefined
-          ? listed.length > 0
-          : listed.some(
-              (value) => value.id === instanceId && !(driverStopped && stopped(value.state)),
-            );
-      return present ? "listed" : undefined;
+      if (instanceId === undefined) return listed.length > 0 ? "listed" : undefined;
+      if (listed.some((value) => value.id !== instanceId && unsettled(value.state)))
+        return "instances";
+      const target = listed.find((value) => value.id === instanceId);
+      if (!target || (driverStopped && stopped(target.state))) return undefined;
+      return target.state === "stopped" || target.state === "failed" ? target.state : "listed";
     } catch (error) {
       return error instanceof UndocumentedInstanceState ? "unknown_state" : stage;
     }
@@ -296,10 +302,8 @@ export class RuntimeProviderReader {
         if (
           states.has(value.id) ||
           value.application_id !== expected.applicationId ||
-          // Every other documented state may still run, so it refuses, as any answer but running did.
-          (state !== "running" && !stopped(state)) ||
-          // A stopped instance holds no compute on any image.
-          (!stopped(state) && !value.image.endsWith(`@${expected.imageDigest}`))
+          // A running instance must run the admitted image; the callers judge every other state.
+          (state === "running" && !value.image.endsWith(`@${expected.imageDigest}`))
         )
           throw new ProviderObservationRefused();
         states.set(value.id, value.status.state);
