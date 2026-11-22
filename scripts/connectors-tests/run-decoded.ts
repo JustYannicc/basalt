@@ -1,9 +1,9 @@
 import { Effect, Schema } from "effect";
 
 /** An app operation or workflow as the tools harnesses evaluate it: its input schema and its run. */
-interface Runnable<Context, Input> {
+interface Runnable<Context, Input, Output, Failure> {
   readonly input: Schema.Codec<Input, unknown>;
-  readonly run: (context: Context, input: Input) => Effect.Effect<unknown, unknown>;
+  readonly run: (context: Context, input: Input) => Effect.Effect<Output, Failure>;
 }
 
 /**
@@ -11,8 +11,8 @@ interface Runnable<Context, Input> {
  * TypeScript so the harnesses' Effect calls are type-checked; the harnesses themselves stay
  * JavaScript and never name the effect package.
  */
-export const runDecoded = async <Context, Input>(
-  runnable: Runnable<Context, Input>,
+export const runDecoded = async <Context, Input, Output, Failure>(
+  runnable: Runnable<Context, Input, Output, Failure>,
   context: Context,
   input: unknown,
 ) => {
