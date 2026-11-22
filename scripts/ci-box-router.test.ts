@@ -754,13 +754,16 @@ test("declared shard jobs and benched named jobs use the router expression; ever
 
 test("a named job routes by its exact id, and the gate accepts it only when the job is selected", () => {
   assert.equal(routedJob("production-ops-identity:credentials"), "production-ops-identity");
-  assert.equal(routedJob("human-in-the-loop-cloud"), "human-in-the-loop-cloud");
+  assert.equal(routedJob("client-connection"), "client-connection");
   for (const invalid of [
     "production-ops-identity",
     "production-ops-identity:nope",
     "production-ops-identity:credentials:x",
-    "human-in-the-loop-cloud:credentials",
-    "human-in-the-loop",
+    "client-connection:credentials",
+    "client-mobile",
+    // Benched jobs only: one without a green single in its Checks' floor stays hosted.
+    "fast",
+    "host-managed-accounts-local",
     ":credentials",
   ])
     assert.equal(routedJob(invalid), undefined, invalid);
@@ -782,7 +785,9 @@ test("a named job routes by its exact id, and the gate accepts it only when the 
   );
   // The fast lane's jobs run in every Check, so the gate takes them on the box with no heavy job.
   assert.ok(
-    !gateErrors(needs, [], ["fast", "client-connection"]).includes("Invalid box-job selection"),
+    !gateErrors(needs, [], ["browser-install", "client-connection"]).includes(
+      "Invalid box-job selection",
+    ),
   );
 });
 

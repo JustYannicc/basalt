@@ -29,11 +29,11 @@ const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
 /** Declared e2e shard rows route, planned from their files' measured durations. */
 export const declaredJobs = ["declared-self-host", "declared-local", "declared-cloud"];
 /**
- * Other jobs route only once a box bench has run them at hosted speed. `minutes` is the slowest
- * hosted run in full Check 44894443635 (account-acquisition: the planned time after its split), or
- * for the fast lane's jobs in batch three's pull request run 44910641265; `timeout` is the job's
- * own, which the workflow test keeps equal to ci.yml. A matrix job routes leg by leg, as
- * `<job>:<leg>`.
+ * Other jobs route only once a box bench has run them, with every step green, within the floor of
+ * the Checks they run in; a job joins this table with its bench. `minutes` is the slowest hosted
+ * run in full Check 44894443635, or for the fast lane's jobs in batch three's pull request run
+ * 44910641265; `timeout` is the job's own, which the workflow test keeps equal to ci.yml. A matrix
+ * job routes leg by leg, as `<job>:<leg>`.
  */
 export const namedJobs: Record<
   string,
@@ -52,12 +52,8 @@ export const namedJobs: Record<
     },
     timeout: 25,
   },
-  "account-acquisition": { minutes: 12.9, timeout: 30 },
-  "upstream-contracts": { minutes: 11.3, timeout: 25 },
-  "human-in-the-loop-cloud": { minutes: 10.5, timeout: 25 },
-  "host-managed-accounts-local": { minutes: 9.4, timeout: 20 },
-  // The fast lane, which every pull request push runs.
-  fast: { minutes: 15.6, timeout: 35 },
+  // The fast lane's, which every pull request push runs. `fast` itself stays hosted: it is the
+  // fast lane's longest job, so the box would have to beat GitHub's runners at it.
   "client-connection": { minutes: 5.3, timeout: 12 },
   "browser-install": { minutes: 1.8, timeout: 10 },
 };
