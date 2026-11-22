@@ -270,7 +270,7 @@
         {
           "identity": "cliproxy-home-live-owner-members",
           "file": "0732-home-live-owner-members.patch",
-          "sha256": "ce7ee2b825584b67e5aeb82cb1a36f66b2bf6f457d1dd2e39bac52d69e85dc43",
+          "sha256": "dd4048134e1ce97c0ea1d066136760b329795302d28cc97a0f17d101332e71bb",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0732 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home's lifecycle cleanup lets a peer cancel a stale node membership only after the Home that holds it has stopped heartbeating, keeps a Home fencing its own stale nodes, and passes the live-owner, silent-owner, expired-owner and own-node regressions."

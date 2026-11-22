@@ -1,3 +1,176 @@
+diff --git a/internal/cluster/coordination_pool_pooler_postgres_test.go b/internal/cluster/coordination_pool_pooler_postgres_test.go
+new file mode 100644
+index 0000000..0816897
+--- /dev/null
++++ b/internal/cluster/coordination_pool_pooler_postgres_test.go
+@@ -0,0 +1,167 @@
++package cluster
++
++import (
++	"context"
++	"fmt"
++	"math/rand/v2"
++	"net/url"
++	"os"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"gorm.io/gorm"
++)
++
++// pooledPlacementDSN returns the isolated transaction pooler with production's limits: five server
++// connections for the whole database, shared by every Home login.
++func pooledPlacementDSN(t *testing.T) string {
++	t.Helper()
++	dsn := os.Getenv("HOME_TEST_POOLED_DSN")
++	if dsn == "" {
++		t.Skip("isolated transaction pooler required")
++	}
++	parsed, errParse := url.Parse(dsn)
++	if errParse != nil {
++		t.Fatal(errParse)
++	}
++	if parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" {
++		t.Fatal("local fixture required")
++	}
++	return dsn
++}
++
++type latencyMax struct {
++	mu  sync.Mutex
++	max time.Duration
++	n   int
++}
++
++func (l *latencyMax) observe(started time.Time) {
++	elapsed := time.Since(started)
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	l.n++
++	if elapsed > l.max {
++		l.max = elapsed
++	}
++}
++
++// Behind the pooler, request transactions waiting on locks pin server connections while the
++// coordination pool serves the readiness listing's config write and a burst of node reconnects.
++// Heartbeats and liveness refreshes must stay far inside their 20 s and 3 s limits.
++func TestHomeDBPoolCoordinationKeepsLivenessBehindAPinnedPooler(t *testing.T) {
++	dsn := pooledPlacementDSN(t)
++	ctx := t.Context()
++	mainConns := 6
++	cfg := PGSQLConfig{PostgresURI: dsn, SchemaOwner: "basalt_pool_owner", MaxOpenConns: &mainConns, CoordinationMaxOpenConns: 2}
++	mainDB, errMain := Open(ctx, cfg)
++	if errMain != nil {
++		t.Fatal(errMain)
++	}
++	coordinationDB, errCoordination := OpenCoordination(ctx, cfg)
++	if errCoordination != nil {
++		t.Fatal(errCoordination)
++	}
++	t.Cleanup(func() {
++		for _, db := range []*gorm.DB{mainDB, coordinationDB} {
++			if sqlDB, errDB := db.DB(); errDB == nil {
++				_ = sqlDB.Close()
++			}
++		}
++	})
++	if errMigrate := AutoMigrate(mainDB); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	repo, coordination := NewRepository(mainDB), NewRepository(coordinationDB)
++	home, errHome := repo.RegisterHomeIncarnation(ctx, "127.0.0.1", 20000+rand.IntN(20000), []string{"credential_concurrency_foundation_v1"})
++	if errHome != nil {
++		t.Fatal(errHome)
++	}
++	revision, errConfig := repo.UpdateLifecycleConfig(ctx, 20*time.Second, config.DefaultCredentialConcurrencyConfig())
++	if errConfig != nil {
++		t.Fatal(errConfig)
++	}
++	run := fmt.Sprintf("pooler-%d", time.Now().UnixNano())
++	member, errMember := coordination.SubscribeMembership(ctx, SubscribeMembershipRequest{
++		Fingerprint: run + "-watched", NodeID: "cpa-watched", Home: home, ProtocolVersion: 1, LifecycleConfigRevision: revision,
++	})
++	if errMember != nil {
++		t.Fatal(errMember)
++	}
++	lifetime := ConnectionLifetime{Fingerprint: member.CertificateFingerprint, ConnectedAt: member.ConnectedAt, Home: home}
++
++	// Three request transactions hold pooler server connections: one holds a lock, two wait on it.
++	lockKey := rand.Int64()
++	holder := mainDB.Begin()
++	if errLock := holder.Exec("SELECT pg_advisory_xact_lock(?)", lockKey).Error; errLock != nil {
++		t.Fatal(errLock)
++	}
++	var waiters sync.WaitGroup
++	for range 2 {
++		waiters.Add(1)
++		go func() {
++			defer waiters.Done()
++			_ = mainDB.WithContext(context.WithoutCancel(ctx)).Transaction(func(tx *gorm.DB) error {
++				return tx.Exec("SELECT pg_advisory_xact_lock(?)", lockKey).Error
++			})
++		}()
++	}
++	defer func() {
++		_ = holder.Commit().Error
++		waiters.Wait()
++	}()
++	time.Sleep(200 * time.Millisecond)
++
++	stress, stop := context.WithCancel(ctx)
++	defer stop()
++	var load sync.WaitGroup
++	load.Add(2)
++	go func() { // The readiness listing's config read runs a locking write; here every 100 ms instead of 60 s.
++		defer load.Done()
++		for stress.Err() == nil {
++			_, _ = coordination.EnsureLifecycleConfig(stress, 20*time.Second)
++			time.Sleep(100 * time.Millisecond)
++		}
++	}()
++	go func() { // A reconnect burst: 30 nodes subscribing at once, twice.
++		defer load.Done()
++		for round := range 2 {
++			var burst sync.WaitGroup
++			for i := range 30 {
++				burst.Add(1)
++				go func() {
++					defer burst.Done()
++					_, _ = coordination.SubscribeMembership(stress, SubscribeMembershipRequest{
++						Fingerprint: fmt.Sprintf("%s-burst-%d-%d", run, round, i), NodeID: fmt.Sprintf("cpa-%d-%d", round, i),
++						Home: home, ProtocolVersion: 1, LifecycleConfigRevision: revision,
++					})
++				}()
++			}
++			burst.Wait()
++		}
++	}()
++	var heartbeat, liveness latencyMax
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		started := time.Now()
++		if errBeat := coordination.HeartbeatHomeIncarnation(ctx, home); errBeat != nil {
++			t.Fatal(errBeat)
++		}
++		heartbeat.observe(started)
++		started = time.Now()
++		if errRefresh := coordination.RefreshCPALiveness(ctx, lifetime); errRefresh != nil {
++			t.Fatal(errRefresh)
++		}
++		liveness.observe(started)
++		time.Sleep(50 * time.Millisecond)
++	}
++	stop()
++	load.Wait()
++	t.Logf("behind the pooler with 3 of 5 server connections pinned: heartbeat max %s over %d, liveness refresh max %s over %d",
++		heartbeat.max, heartbeat.n, liveness.max, liveness.n)
++	if heartbeat.max > time.Second || liveness.max > time.Second {
++		t.Fatalf("coordination slowed behind the pooler: heartbeat max %s, liveness refresh max %s", heartbeat.max, liveness.max)
++	}
++}
 diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
 index 22a1c6c..d7ca86d 100644
 --- a/internal/cluster/coordinator.go
@@ -147,7 +320,7 @@ index 0000000..f040385
 +	}
 +}
 diff --git a/internal/cluster/quiescence.go b/internal/cluster/quiescence.go
-index cf1977d..5727c8d 100644
+index cf1977d..754e9f3 100644
 --- a/internal/cluster/quiescence.go
 +++ b/internal/cluster/quiescence.go
 @@ -143,8 +143,11 @@ func beginFingerprintCancellationForMembershipTx(ctx context.Context, tx *gorm.D
@@ -181,11 +354,11 @@ index cf1977d..5727c8d 100644
  	db, errDB := r.database()
  	if errDB != nil {
  		return errDB
-@@ -189,11 +192,44 @@ func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint str
+@@ -189,11 +192,39 @@ func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint str
  		if !membership.LastSeenAt.Before(now.Add(-membership.CPAHeartbeatTimeout)) {
  			return nil
  		}
-+		if !membershipOwnedBy(membership, self) {
++		if !membershipOwnedByHome(membership, self) {
 +			ownerLive, errOwner := homeIncarnationLiveTx(tx, membership.HomeIP, membership.HomePort, membership.HomeStartedAt, now)
 +			if errOwner != nil {
 +				return errOwner
@@ -199,11 +372,6 @@ index cf1977d..5727c8d 100644
  	})
  }
  
-+func membershipOwnedBy(membership CPANodeMembershipRecord, home HomeIncarnationID) bool {
-+	return strings.TrimSpace(membership.HomeIP) == strings.TrimSpace(home.IP) &&
-+		membership.HomePort == home.Port && membership.HomeStartedAt.Equal(home.StartedAt)
-+}
-+
 +// homeIncarnationLiveTx reports whether a Home is active and heartbeated within the node heartbeat
 +// timeout. It reads the lifecycle row without locking it.
 +func homeIncarnationLiveTx(tx *gorm.DB, ip string, port int, startedAt time.Time, now time.Time) (bool, error) {
