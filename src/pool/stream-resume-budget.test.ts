@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
-import { resumeLayerPort, toLayer } from "./stream-resume.ts";
+import { resumeLayerPort, spareWindowMs, toLayer } from "./stream-resume.ts";
 
 // Its own file: the resend copies' budget is one count per isolate, so no other test may share it.
 const kept = 4 * 1024 * 1024;
-/** How long a kept copy can still be re-sent. */
-const spareWindowMs = 20_000;
 const marked = () =>
   new Request("http://pool/v1/responses", {
     method: "POST",

@@ -43,7 +43,7 @@ const spareBudgetBytes = 32 * 1024 * 1024;
  * unreachable node within the layer's 5 s dial limit, before it reads a body byte. Past this a copy
  * only costs memory, so it is dropped and its share given back.
  */
-const spareWindowMs = 20_000;
+export const spareWindowMs = 20_000;
 // Each share also carries its own deadline: a request the platform cancels never runs its timers,
 // and its bytes must not stay counted for the life of the isolate.
 const spares = new Map<object, { bytes: number; until: number }>();
