@@ -403,13 +403,16 @@ func TestCallerLeavingBeforeTheHeadersCancelsAMarkedUpstream(t *testing.T) {
 		t.Fatal("a marked call kept running after its caller left before any answer")
 	}
 	<-done
-	resp, err := http.Get(layer.URL + "/__basalt/resume/v1/6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f")
+	resume, _ := http.NewRequest(http.MethodGet, layer.URL+resumePrefix+"6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f", nil)
+	resume.Header.Set(resumeFromHeader, "0")
+	resume.Header.Set(resumeBootHeader, testBoot)
+	resp, err := http.DefaultClient.Do(resume)
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		t.Fatal("a call cancelled before its answer is still resumable")
+	if resp.StatusCode != http.StatusGone || resp.Header.Get(resumeStateHeader) != "gone" {
+		t.Fatalf("a call cancelled before its answer answered %d %q", resp.StatusCode, resp.Header.Get(resumeStateHeader))
 	}
 }
 
@@ -430,5 +433,21 @@ func TestTheNodesOwnResumeHeadersNeverReachTheController(t *testing.T) {
 	}
 	if plain.Header.Get(resumeHeader) != "" || marked.Header.Get(resumeHeader) != "v1" {
 		t.Fatalf("resume headers: plain %q marked %q", plain.Header.Get(resumeHeader), marked.Header.Get(resumeHeader))
+	}
+}
+
+func TestAMarkedCallAsksForIdentityAndAnEncodedAnswerIsNotResumable(t *testing.T) {
+	upstream := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write([]byte("compressed"))
+	})
+	layer := newLayerServer(t, upstream)
+	resp, _ := rawCall(t, layer.URL, "POST /v1/messages HTTP/1.1\r\nHost: pool\r\nAccept-Encoding: gzip\r\n"+
+		"X-Basalt-Resumable: 1\r\nX-Basalt-Request-Id: 6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e61\r\nContent-Length: 0\r\n\r\n")
+	if seen := <-upstream.seen; seen.Header.Get("Accept-Encoding") != "identity" {
+		t.Fatalf("the node was asked for %q", seen.Header.Get("Accept-Encoding"))
+	}
+	if resp.Header.Get(resumeHeader) != "" {
+		t.Fatal("an encoded answer was offered for resume")
 	}
 }

@@ -45,7 +45,9 @@ func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
 		upstreamFailure(w, err)
 		return
 	}
-	if resp.StatusCode/100 != 2 {
+	// Offsets count raw bytes; an answer the node encoded anyway would resume at the wrong one.
+	encoded := resp.Header.Get("Content-Encoding")
+	if resp.StatusCode/100 != 2 || (encoded != "" && !strings.EqualFold(encoded, "identity")) {
 		// Only a successful answer is worth resuming; anything else passes through as it is. Its
 		// body is still read on the upstream context, so that context ends only with this call.
 		l.store.remove(c)
@@ -59,7 +61,9 @@ func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
 		writeTrailers(w, resp)
 		return
 	}
-	if !early() {
+	// A finished request context means the caller can't have the headers, even when stopping the
+	// cancel won the race against it.
+	if !early() || r.Context().Err() != nil {
 		// The caller left before the headers and the call is already cancelled: drop it whole.
 		resp.Body.Close()
 		l.abandon(c)
