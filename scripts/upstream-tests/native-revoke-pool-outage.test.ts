@@ -152,8 +152,9 @@ test("a revoke whose cleanup can't be recorded leaves the device's grant as it w
   const refused = await connectRevoke(d, computer);
   assert.equal(refused.status, 502, await refused.clone().text());
   assert.equal((await grantOf(d)).revoked, false);
-  assert.equal(await stateOf(d, computer), "active");
   assert.equal((await d.access(d.tokens.access_token)).status, 200);
+  // Connect fell back to the pool, which took the revoke; the host's next pass ends the grant.
+  assert.equal(await stateOf(d, computer), "revoking");
 });
 
 test("with the pool up, revoking a device removes it at the pool before answering", async (t) => {
