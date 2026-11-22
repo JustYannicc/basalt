@@ -426,3 +426,39 @@ class SupervisorTests(unittest.TestCase):
             [row["state"] for marker, row in records if marker == "POOL_HOME_RECOVERY"],
             ["attempt", "exhausted"],
         )
+
+
+class FirstBootStartupBoundTests(unittest.TestCase):
+    """A first boot is the quiet case: no recovery episode, only the startup budget."""
+
+    def wait(self, answers_at: float | None) -> tuple[str | Exception, Clock, Stop]:
+        clock = Clock()
+        stop = Stop(clock)
+        child = SimpleNamespace(
+            name="home",
+            process=Mock(poll=Mock(return_value=None)),
+            config_empty=threading.Event(),
+        )
+        def ready(_key: str) -> bool:
+            return answers_at is not None and clock.now >= answers_at
+
+        with (
+            patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)),
+            patch.object(supervisor, "management_ready", side_effect=ready),
+        ):
+            try:
+                return supervisor.wait_for_home(child, "fixture", stop), clock, stop
+            except Exception as error:
+                return error, clock, stop
+
+    def test_a_home_that_never_answers_gets_exactly_the_startup_budget(self) -> None:
+        outcome, clock, stop = self.wait(None)
+        self.assertIsInstance(outcome, supervisor.StartupError)
+        self.assertEqual(clock.now, supervisor.STARTUP_TIMEOUT_SECONDS)
+        self.assertEqual(set(stop.waits), {0.5})
+
+    def test_a_home_that_answers_inside_the_budget_is_ready_at_its_first_answer(self) -> None:
+        last = supervisor.STARTUP_TIMEOUT_SECONDS - 0.5
+        outcome, clock, _ = self.wait(last)
+        self.assertEqual(outcome, "ready")
+        self.assertEqual(clock.now, last)

@@ -7,6 +7,7 @@ import http.server
 import json
 import threading
 import unittest
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
@@ -49,6 +50,40 @@ class NativePolicyReadinessTests(unittest.TestCase):
 
             clock.advance(500_000_000)
             self.assertFalse(ready.snapshot()[0])
+
+    def test_policy_loop_keeps_the_lease_alive_through_a_quiet_minute(self) -> None:
+        clock = FakeClock()
+        ready = readiness.Readiness(MANAGEMENT_KEY, clock.now_ns)
+        ready.set_ready(True)
+        monitor = PolicyHealthMonitor(ready, MANAGEMENT_KEY)
+        end = clock.value + 60_000_000_000
+        lapses: list[int] = []
+
+        def probe(*_: object) -> tuple[ProbeState, str | None]:
+            # Every probe takes its whole budget.
+            clock.advance(250_000_000)
+            return "healthy", INSTANCE_A
+
+        class QuietStop:
+            def is_set(self) -> bool:
+                return clock.value >= end
+
+            def wait(self, seconds: float) -> bool:
+                for _ in range(2):
+                    if not ready.snapshot()[0]:
+                        lapses.append(clock.value)
+                    clock.advance(int(seconds * 500_000_000))
+                return self.is_set()
+
+        with (
+            patch.object(policy_monitor, "probe_home_policy", side_effect=probe),
+            patch.object(
+                policy_monitor, "time", SimpleNamespace(monotonic=lambda: clock.value / 1e9)
+            ),
+        ):
+            monitor.run(cast(threading.Event, QuietStop()))
+        self.assertEqual(lapses, [])
+        self.assertTrue(ready.snapshot()[0])
 
     def test_plugin_unload_loses_readiness_and_restored_instance_recovers(self) -> None:
         clock = FakeClock()
