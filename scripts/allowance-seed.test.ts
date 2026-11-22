@@ -39,7 +39,7 @@ test("a seed row inside the renewal lead fails while a source runs later, and re
 });
 
 test("offline, every row stays and stale rows are named warnings, never a failure", async () => {
-  const unavailable: typeof fetch = async () => new Response(null, { status: 503 });
+  const unavailable = async () => new Response(null, { status: 503 });
   const result = await renewSeed(committed, { now, fetch: unavailable });
   assert.deepEqual(result.overdue, []);
   assert.ok(result.stale.some((row) => row.key.startsWith("anthropic/max_20x/604800s")));
@@ -47,7 +47,7 @@ test("offline, every row stays and stale rows are named warnings, never a failur
 });
 
 test("a source that answers but no longer parses keeps its committed rows", async () => {
-  const broken: typeof fetch = async (input) =>
+  const broken = async (input: RequestInfo | URL) =>
     String(input).includes("planyield")
       ? new Response("<html>challenge</html>", { status: 200 })
       : new Response(null, { status: 503 });
