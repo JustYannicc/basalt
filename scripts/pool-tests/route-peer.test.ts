@@ -13,6 +13,11 @@ import {
   handleAccountKeyMirror,
 } from "../../src/pool/account-key-mirror.ts";
 import { readHomeConfigProxies } from "../../src/pool/account-config-mirror.ts";
+import { HomeAccountAcquisitions } from "../../src/pool/account-acquisition.ts";
+import {
+  accountAcquisitionPath,
+  accountAcquisitionPrefix,
+} from "../../src/pool/account-acquisition-contract.ts";
 import {
   RouteAssignments,
   routeProxyUrl,
@@ -571,6 +576,87 @@ test(
       assert.ok(!blocked.ok, `an unresolved member served (${blocked.status})`);
       assert.deepEqual((await records()).provider, [], "an unresolved member reached the provider");
 
+      // A routed owner's sign-in on Home with the session proxy (carry 0758): the code exchange
+      // reaches the route as a CONNECT, is never looked up directly, and the refused route ends
+      // the sign-in as route_unavailable. Skipped on a Home without the capability.
+      const capabilities = (await home.data("/capabilities")).capabilities as
+        | Record<string, unknown>
+        | undefined;
+      let signIn: Record<string, unknown> = { skipped: "Home lacks oauth_session_proxy_v1" };
+      if (capabilities?.oauth_session_proxy_v1 === true) {
+        const retained = new Map<string, unknown>();
+        const acquisitions = new HomeAccountAcquisitions(
+          {
+            get: async <T>(key: string) => structuredClone(retained.get(key)) as T | undefined,
+            put: async (key: string, value: unknown) =>
+              void retained.set(key, structuredClone(value)),
+            getAlarm: async () => null,
+            setAlarm: async () => {},
+          },
+          home,
+          signingKey,
+          { begin: async () => "rig-marker", settle: async () => {} },
+          undefined,
+          () => Date.now(),
+          {
+            beginSignIn: (session, entry) => routes.beginSignIn(session, entry),
+            settleSignIn: (session, references) => routes.settleSignIn(session, references),
+            homogeneous: async () => true,
+          },
+        );
+        const acquire = async (action: string, input: Record<string, unknown> = {}) => {
+          const at = Date.now();
+          const envelope = await signEnvelope(signingKey, accountAcquisitionPrefix, {
+            owner: "organization:rig",
+            provider: "claude",
+            operation: "connect:rig",
+            action,
+            at,
+            expiresAt: at + 20_000,
+            ...input,
+          });
+          const response = await acquisitions.handle(
+            new Request(`https://pool.example${accountAcquisitionPath}`, {
+              method: "POST",
+              body: JSON.stringify({ envelope }),
+            }),
+          );
+          return (await response.json()) as Record<string, unknown>;
+        };
+        await reset();
+        const started = await acquire("start", {
+          hasRules: true,
+          route: { routeId: route, owner },
+        });
+        assert.equal(typeof started.session, "string", JSON.stringify(started));
+        const authorization = new URL(String(started.url));
+        const redirect = authorization.searchParams.get("redirect_uri")!;
+        const state = authorization.searchParams.get("state")!;
+        await acquire("submit", {
+          session: started.session,
+          value: `${redirect}?code=fixture-code&state=${encodeURIComponent(state)}`,
+        });
+        const finished = await until(async () => {
+          const answer = await acquire("status", { session: started.session });
+          return answer.state === "failed" || answer.state === "connected" ? answer : undefined;
+        }, 90_000);
+        const seen = await records();
+        const exchange = seen.connects.filter(
+          (item) => item.route === route && item.host !== "models.example.test",
+        );
+        assert.ok(
+          exchange.length > 0,
+          `the code exchange never reached the route: ${JSON.stringify(seen)}`,
+        );
+        for (const item of exchange)
+          assert.ok(!seen.dns.includes(item.host), `${item.host} was looked up directly`);
+        assert.deepEqual(finished, { state: "failed", message: "route_unavailable" });
+        signIn = {
+          exchange: [...new Set(exchange.map((item) => `${item.host}:${item.port}`))],
+          finished,
+        };
+      }
+
       console.log(
         "ROUTE_PROOF",
         JSON.stringify({
@@ -580,6 +666,7 @@ test(
           directRefresh,
           bootDirect,
           backgroundDirect,
+          signIn,
         }),
       );
     } finally {
