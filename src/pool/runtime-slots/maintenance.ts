@@ -48,7 +48,7 @@ export class RuntimeMaintenance {
     signal.throwIfAborted();
     if (ctx.container!.running) return { identity, stopped: false };
     // Retain interrupted activity as unknown; only the dead compute identity is retired.
-    await store.put(identity, { ...record, retired: true, failed: true });
+    await store.retire(identity, { ...record, retired: true, failed: true });
     return { identity, stopped: true };
   }
 }

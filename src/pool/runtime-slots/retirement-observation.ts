@@ -99,7 +99,7 @@ export async function observeRuntimeRetirement(
     if (!retired) {
       await trace.run(
         "retired_record",
-        () => store.put(identity, { ...record, retired: true }),
+        () => store.retire(identity, { ...record, retired: true }),
         () => ({ recovered: true }),
         signal,
       );

@@ -14,7 +14,7 @@ import {
   sealConfiguration,
   type RuntimeConfiguration,
 } from "./configuration.ts";
-import type { RuntimeState } from "./runtime-state.ts";
+import type { OwnedRuntimeStorage, RuntimeState } from "./runtime-state.ts";
 
 const Authorization = Schema.Union([LaunchAuthorization, UnattestedActive]);
 const WitnessRecord = Schema.Struct({
@@ -30,26 +30,44 @@ export type WitnessRecord = typeof WitnessRecord.Type;
 
 /** A fleet start its controller abandoned: no admission or start reaches its slot again. */
 const abandonedStartKey = (slot: string) => `runtime-slots-v1:start-abandoned:${slot}`;
+const alarmTargetKey = "runtime-alarm-v1:target";
 
 /** Private configuration and launch provenance share the allocated per-slot witness record. */
 export class RuntimeWitnessStore {
   private storage: RuntimeState["storage"];
   private secret: string;
-  constructor(storage: RuntimeState["storage"], secret: string) {
+  private owned?: OwnedRuntimeStorage;
+  /** `owned` is given only where this store's storage is a runtime Durable Object's own. */
+  constructor(storage: RuntimeState["storage"], secret: string, owned?: OwnedRuntimeStorage) {
     this.storage = storage;
     this.secret = secret;
+    this.owned = owned;
+  }
+  /**
+   * A slot's last write: retired, abandoned or its start aborted. A runtime object holds exactly one
+   * slot, so the refresh alarm and target its start left are dropped in the same turn and commit
+   * with it. The provider lists a retired cell whose object an alarm wakes as running, with a place.
+   */
+  async ended(write: () => Promise<unknown>) {
+    await Promise.all([
+      write(),
+      ...(this.owned ? [this.owned.delete(alarmTargetKey), this.owned.deleteAlarm()] : []),
+    ]);
+  }
+  retire(target: SlotTarget, record: WitnessRecord & { retired: true }) {
+    return this.ended(() => this.put(target, record));
   }
   abandon(target: SlotTarget) {
-    return this.storage.put(abandonedStartKey(target.slotId), { target });
+    return this.ended(() => this.storage.put(abandonedStartKey(target.slotId), { target }));
   }
   async abandoned(slot: string) {
     return (await this.storage.get(abandonedStartKey(slot))) !== undefined;
   }
   retainAlarmTarget(target: SlotTarget) {
-    return this.storage.put("runtime-alarm-v1:target", target);
+    return this.storage.put(alarmTargetKey, target);
   }
   async alarmTarget() {
-    const value = await this.storage.get("runtime-alarm-v1:target");
+    const value = await this.storage.get(alarmTargetKey);
     return value === undefined ? undefined : Schema.decodeUnknownSync(SlotTarget)(value);
   }
   async retained(slot: string) {
