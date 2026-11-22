@@ -3118,6 +3118,13 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        # Composite steps inherit this env; the action itself takes no export input.
+        env:
+          BUN_EXPORT_AS: EXECUTOR_MOTEL_BUN
+        with:
+          bun-version: 1.4.4
       - run: npm run prepare:upstream
       - name: Build the isolated account test assets
         working-directory: .upstream

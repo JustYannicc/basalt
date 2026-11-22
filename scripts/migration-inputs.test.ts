@@ -57,10 +57,11 @@ test("every file preparation writes into the migration's key is named", () => {
   const carried = new Set<string>();
   for (const name of readdirSync(`${root}patches`))
     if (name.endsWith(".patch"))
+      // A text addition names /dev/null; a binary one has only its diff header's new file mode.
       for (const match of readFileSync(`${root}patches/${name}`, "utf8").matchAll(
-        /^--- \/dev\/null\n\+\+\+ b\/(.+)$/gm,
+        /^--- \/dev\/null\n\+\+\+ b\/(.+)$|^diff --git a\/\S+ b\/(\S+)\nnew file mode /gm,
       ))
-        carried.add(match[1]!);
+        carried.add((match[1] ?? match[2])!);
   // A file rewritten for every revision would run the migration, and everything waiting on it,
   // on every release. Exclude it from the key if the migration does not import it.
   assert.deepEqual(

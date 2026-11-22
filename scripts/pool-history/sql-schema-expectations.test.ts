@@ -11,7 +11,7 @@ import { storageSchemas } from "../../.upstream/packages/sdk/src/implementation/
 import { currentStorageSchema } from "../../.upstream/packages/sdk/src/implementation/storage-current.ts";
 import { registrySchema } from "../../.upstream/packages/app-registry/src/implementation/storage-runtime.ts";
 import { historySchemaMigrations } from "../../src/pool/model-history/schema.ts";
-import { observeSqlVersions } from "./sql-schema-contract.ts";
+import { observeSqlVersions } from "../release/sql-schema-contract.ts";
 
 const root = resolve(import.meta.dirname, "../..");
 const product = (entries: string, journal = "private_hosted_migrations") =>
