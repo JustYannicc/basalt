@@ -10,6 +10,7 @@ import { fleetRouting } from "./runtime-fleet/production.ts";
 import { decodeResumeTarget } from "./stream-resume.ts";
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { forwardRecoverably } from "./runtime-fleet/retry.ts";
+import { rootFallbackBurst } from "./runtime-fleet/root-fallback.ts";
 
 const responseModule = "./native-response.worker.ts";
 const { nativeResponse } = (await import(responseModule)) as {
@@ -530,4 +531,102 @@ test("a marked answer cut mid-body never counts against its runtime, and logs on
   await assert.rejects(plainCut);
   await f.settle();
   assert.ok((await f.state.inspect()).some((row) => row.phase === "quarantined"));
+});
+
+const burst = async (f: ReturnType<typeof fixture>, size: number) =>
+  Promise.all(
+    Array.from({ length: size }, async () => {
+      const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+      return {
+        status: response.status,
+        retryAfter: response.headers.get("Retry-After"),
+        body: await response.text(),
+      };
+    }),
+  );
+
+test("with no ready cell, a burst sends the root at most its fallback bucket; the rest are refused unsent", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const answers = await burst(f, 25);
+  assert.equal(f.calls.legacy, rootFallbackBurst, "the root takes only the bucket");
+  const refused = answers.filter((answer) => answer.status === 503);
+  assert.equal(refused.length, 25 - rootFallbackBurst);
+  // The retryable answer clients already follow, and nothing was sent anywhere for it.
+  assert.ok(refused.every((answer) => answer.retryAfter === "1"));
+  assert.equal(f.calls.dispatches, 0);
+  const lines = log.mock.calls.filter((call) => call.arguments[0] === "POOL_ROOT_FALLBACK_REFUSED");
+  assert.equal(lines.length, 25 - rootFallbackBurst);
+  await f.settle();
+  assert.equal(await f.state.primaryActive(), 0, "a refused call holds no root reservation");
+});
+
+test("a model catalog read never takes a root fallback token", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const reads = await Promise.all(
+    Array.from({ length: rootFallbackBurst + 5 }, async () => {
+      const response = await f.fleet.forward(
+        new Request("https://synthetic.invalid/v1/models"),
+        "pool",
+        f.legacy,
+        () => {},
+      );
+      await response.text();
+      return response.status;
+    }),
+  );
+  assert.ok(reads.every((status) => status === 200));
+  assert.equal(f.calls.legacy, rootFallbackBurst + 5);
+  await f.settle();
+});
+
+test("a call the fleet refuses for capacity takes a root fallback token too", async (context) => {
+  context.mock.method(console, "error", () => {});
+  // No primary route: with no cell, acquire refuses for capacity and the call goes to the root.
+  const f = fixture(4, 1, { primaryAvailable: () => false });
+  const answers = await burst(f, 15);
+  assert.equal(f.calls.legacy, rootFallbackBurst);
+  assert.equal(answers.filter((answer) => answer.status === 503).length, 15 - rootFallbackBurst);
+  await f.settle();
+});
+
+test("the root fallback refills at its rate, and a ready cell ends its effect", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await burst(f, rootFallbackBurst + 1);
+  assert.equal(f.calls.legacy, rootFallbackBurst);
+  // A second at 1.2 a second earns one call back, and only one.
+  f.advance(200 + 1_000);
+  const next = await burst(f, 2);
+  assert.deepEqual(next.map((answer) => answer.status).sort(), [200, 503]);
+  assert.equal(f.calls.legacy, rootFallbackBurst + 1);
+  await f.settle();
+  // With a ready cell the root is no longer the fallback: every call is served, none refused.
+  await f.add();
+  const responses = await Promise.all(
+    Array.from({ length: 3 }, () => f.fleet.forward(request(), "pool", f.legacy, () => {})),
+  );
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200, 200],
+  );
+  assert.equal(f.calls.dispatches, 3);
+  await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
+  await f.settle();
+});
+
+test("a refused call still asks the fleet to grow", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await burst(f, rootFallbackBurst);
+  await f.settle();
+  assert.equal(f.calls.starts, 0, "no pressure yet, so no growth");
+  // Past the growth throttle, with demand, the only call is one the root's bucket refuses.
+  f.pressure(3);
+  f.advance(500);
+  const [refused] = await burst(f, 1);
+  assert.equal(refused!.status, 503);
+  await f.settle();
+  assert.ok(f.calls.starts >= 1, "the refused call still started a cell");
 });

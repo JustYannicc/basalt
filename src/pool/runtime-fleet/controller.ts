@@ -21,6 +21,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
+import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
 /** A far cell is started again at most this many times before it serves from its last draw. */
@@ -125,6 +126,7 @@ export class RuntimeFleet {
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
   private dispatches = new FleetDispatches();
   private failures: FleetFailures;
+  private rootFallback: RootFallback;
   constructor(deps: Dependencies) {
     if (
       !Number.isSafeInteger(deps.targetActive) ||
@@ -143,6 +145,7 @@ export class RuntimeFleet {
       this.deps.changed?.();
       this.grow();
     });
+    this.rootFallback = new RootFallback(() => deps.now());
   }
   refreshPolicy() {
     this.atCapacity = false;
@@ -297,6 +300,11 @@ export class RuntimeFleet {
         refuseRuntime("fleet_acquire", error);
       // With no sibling capacity the primary is the only route. A recent primary failure or a failed
       // recovery warm-up is only a hint: the request's own fresh admission on the primary decides.
+      // Its rate is capped, so a burst can't starve the root's own Home; a refused call still grows.
+      if (rootFallbackCounts(request) && !this.rootFallback.take()) {
+        this.grow();
+        return rootFallbackRefused(request);
+      }
       // Start legacy admission before reading pressure so the triggering request is counted too.
       const response = legacy(request, beforeDispatch).then((answer) =>
         stampResumeTarget(answer, { kind: "primary" }),
@@ -305,6 +313,22 @@ export class RuntimeFleet {
       return response;
     }
     const { reservation, dispatched } = acquired;
+    // The root as the only route takes the same capped rate as the capacity fallback above.
+    if (
+      reservation.kind === "primary" &&
+      reservation.alone &&
+      rootFallbackCounts(request) &&
+      !this.rootFallback.take()
+    ) {
+      this.grow();
+      dispatched();
+      try {
+        await reservation.release();
+      } catch (error) {
+        refuseRuntime("fleet_release", error);
+      }
+      return rootFallbackRefused(request);
+    }
     let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
       reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
     this.grow();
