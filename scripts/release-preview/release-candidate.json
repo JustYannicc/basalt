@@ -1,5 +1,5 @@
 {
-  "branch": "rehearse/red-1601-00fce24c",
+  "branch": "rehearse/candidate-5a172c9d",
   "policy": "code",
-  "note": "Lane 5 release runs (apply A, apply B, the red run). Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
+  "note": "Lane 6 release B and A: the release-fixes candidate 5a172c9d with its stage-only overlay. Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
 }
