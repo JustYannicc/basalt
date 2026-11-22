@@ -48,6 +48,7 @@ import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop } from "./forced-stop.ts";
+import { RuntimeAuditProbe } from "./audit-probe.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -118,12 +119,14 @@ export class RuntimeEndpoint {
     });
     this.wrap = wrap;
     this.options = options;
+    const audit = new RuntimeAuditProbe((port) => ctx.container!.getTcpPort(port));
     this.forcedStop = new RuntimeForcedStop({
       ctx,
       store: this.store,
       activity: this.activity,
       health: (identity, signal) => this.health(identity, signal),
       readiness: (configuration, signal) => this.channel.health(configuration, signal),
+      audit: (configuration, bootId, signal) => audit.slowAudit(configuration, bootId, signal),
     });
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {

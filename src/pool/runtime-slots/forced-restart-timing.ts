@@ -6,6 +6,15 @@
 
 /** A selected runtime that runs but refuses this long, with no successful read between, is stopped. */
 export const unservingBoundMs = 60_000;
+/**
+ * How long past `unservingBoundMs` a stop may wait while the only thing wrong is the readiness
+ * audit's database read missing its 2 s deadline (`runtime-slots/audit-probe.ts`). Counted from the
+ * first refusal, so the deferral ends 60 + 180 s in, whatever the evidence then says. A heal's worst
+ * case is about 60 + 180 + 30 (stop grace) + 180 (startup) = 450 s, inside the code-restart
+ * acceptance's 658 s wait (`forcedRestartServesWithinHeldStreamsMs + destroyAndMembershipMs`), and
+ * the two together stay under the held-streams bound that wait is built on. Change both with care.
+ */
+export const auditDeferralMs = 180_000;
 /** Forced restarts allowed per hour, counted by the controller. */
 export const forcedRestartsPerHour = 3;
 /** Forced stops allowed per hour, counted again by the container's own object before the signal. */

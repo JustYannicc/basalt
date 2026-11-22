@@ -6,12 +6,14 @@ import type { ControllerState } from "./runtime-state.ts";
 import type { RuntimeConfiguration } from "./configuration.ts";
 import type { PoolStatus } from "../lifecycle.ts";
 import {
+  auditDeferralMs,
   exitConfirmationMs,
   forcedStopGraceMs,
   forcedStopsPerHour,
   leakedStreamsMs,
   restartStartBoundMs,
   servingReadMs,
+  unservingBoundMs,
 } from "./forced-restart-timing.ts";
 
 const stopsKey = "runtime-endpoint-v1:forced-stops";
@@ -37,6 +39,12 @@ interface Dependencies {
   health(identity: SlotIdentity, signal: AbortSignal): Promise<unknown>;
   /** The container's readiness answer, whoever's boot it is. */
   readiness(configuration: RuntimeConfiguration, signal: AbortSignal): Promise<PoolStatus>;
+  /** Evidence that this boot refuses only because the readiness audit's database read is slow. */
+  audit(
+    configuration: RuntimeConfiguration,
+    bootId: string,
+    signal: AbortSignal,
+  ): Promise<{ listingMs: number } | undefined>;
 }
 
 /**
@@ -67,6 +75,8 @@ export class RuntimeForcedStop {
       (at) => at > now - hourMs,
     );
     if (recent.length >= forcedStopsPerHour) return { stopped: false, hard: false, limited: true };
+    if (await this.slowAuditDefers(identity, configuration, refusingSince, signal))
+      throw new SlotRefused("selection");
     await ctx.storage.put(stopsKey, [...recent, now]);
     const path = await this.signal(container);
     console.error(
@@ -110,6 +120,41 @@ export class RuntimeForcedStop {
     } catch {
       return Date.now() - authorization.at > restartStartBoundMs;
     }
+  }
+  /**
+   * The pinned root's readiness also fails when its node-list audit misses 2 s on a slow database,
+   * which a restart doesn't cure. Only positive evidence of exactly that defers the stop, and only
+   * until `auditDeferralMs` past the bound from the first refusal; the controller's clock keeps
+   * running, so a later refusal of any other kind is stopped at once.
+   */
+  private async slowAuditDefers(
+    identity: SlotIdentity,
+    configuration: RuntimeConfiguration,
+    refusingSince: number,
+    signal: AbortSignal,
+  ) {
+    const refusingMs = Date.now() - refusingSince;
+    if (refusingMs >= unservingBoundMs + auditDeferralMs) return false;
+    let evidence: { listingMs: number } | undefined;
+    try {
+      evidence = await this.deps.audit(
+        configuration,
+        identity.bootId,
+        AbortSignal.any([signal, AbortSignal.timeout(servingReadMs)]),
+      );
+    } catch {
+      // The probe's own failure is another cause: it never protects.
+      return false;
+    }
+    if (!evidence) return false;
+    console.info("POOL_SELECTED_RECOVERY", {
+      phase: "stop_deferred",
+      cause: "audit_slow",
+      slot: identity.slotId,
+      deferredSeconds: Math.max(0, Math.round((refusingMs - unservingBoundMs) / 1_000)),
+      listingMs: evidence.listingMs,
+    });
+    return true;
   }
   /** The streams counted active on this boot and since when their count has stood still. */
   private async heldBy(identity: SlotIdentity, refusingSince: number) {
