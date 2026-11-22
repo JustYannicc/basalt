@@ -44,15 +44,15 @@ const documentedStates = new Set([
   "unknown",
 ]);
 /**
- * The closed stopped list is exactly "inactive", the state production reported for a destroyed
- * instance. The reference does not say what inactive means or whether such an instance can start
- * again; it reports the application's configured image for an instance without a placement, which
- * suggests inactive means no placement. That is an assumption. "stopped" and "failed" stay out:
- * their Durable Object can start them again. What keeps a retired instance stopped is the
- * endpoint's retired record, which its start refuses; an admit over that record is not refused,
- * and no current path reaches it.
+ * The closed stopped list is "stopped" and "inactive" from that reference; production reported
+ * "inactive" for a destroyed instance. The reference does not say what either means or whether
+ * such an instance can start again; it reports the application's configured image for an instance
+ * without a placement, which suggests inactive means no placement. That is an assumption. "failed"
+ * stays out: a failed start can return to running. Nothing here keeps a stopped instance stopped;
+ * the endpoint's retired record does, by refusing every later start (an admit over that record is
+ * not refused, and no current path reaches it).
  */
-const stopped = (state: string) => state === "inactive";
+const stopped = (state: string) => state === "stopped" || state === "inactive";
 /** Given only by a caller whose driver independently reported this exact boot stopped. */
 export interface DriverStopped {
   readonly driverStopped: true;

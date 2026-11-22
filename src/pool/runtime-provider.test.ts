@@ -221,10 +221,10 @@ test("observe proves a running target beside a destroyed neighbour listed as pro
   );
 });
 
-test("of the documented states only inactive counts as stopped; stopped, failed and unknown may still run", async () => {
+test("of the documented states only stopped and inactive count as stopped; failed and unknown may still run", async () => {
   const stopped = { driverStopped: true } as const;
   for (const [state, absent] of [
-    ["stopped", false],
+    ["stopped", true],
     ["inactive", true],
     ["failed", false],
     ["unknown", false],
