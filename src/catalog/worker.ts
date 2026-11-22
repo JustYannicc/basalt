@@ -17,6 +17,8 @@ import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { vercelSource, withVercelSignIn } from "./vercel.ts";
 import { notionSource } from "./notion.ts";
 import { spotifySource } from "./spotify.ts";
+import { gmailSource } from "./gmail.ts";
+import { googleSource } from "./google.ts";
 import { recipeAdditions } from "./recipes/index.ts";
 import { providerApps } from "./provider-apps/index.ts";
 import { aws } from "./aws/index.ts";
@@ -58,6 +60,8 @@ export const carriedSources: Readonly<Record<string, { package: string }>> = {
   clerk: clerkSource,
   spotify: spotifySource,
   exa: exaSource,
+  gmail: gmailSource,
+  google: googleSource,
   github: githubSource,
 };
 const reviewedOAuth = oauthReviews(oauthReviewData);
