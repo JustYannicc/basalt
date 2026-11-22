@@ -14,6 +14,10 @@ import {
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime, PoolRuntimeBlue, PoolRuntimeGreen } from "./runtime-do.worker.ts";
 export { PoolHomePeer } from "./home-peer.worker.ts";
+export { RouteGateway } from "../route/gateway.worker.ts";
+import { routeAcquisition, type RouteGateway } from "../route/gateway.worker.ts";
+import { routeAcquisitionPath } from "../route/acquisition-contract.ts";
+export { PoolRoutePeer } from "../route/pool-peer.worker.ts";
 import type { PoolRuntime } from "./runtime-do.worker.ts";
 import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
@@ -156,6 +160,7 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   PoolRuntime?: DurableObjectNamespace<PoolRuntime>;
   PoolRuntimeBlue?: DurableObjectNamespace<PoolRuntime>;
   PoolRuntimeGreen?: DurableObjectNamespace<PoolRuntime>;
+  RouteGateway?: DurableObjectNamespace<RouteGateway>;
   POOL_BLUE_APPLICATION_ID?: string;
   POOL_BLUE_IMAGE_HASH?: string;
   POOL_GREEN_APPLICATION_ID?: string;
@@ -1184,6 +1189,7 @@ export async function handlePoolWorkerRequest(
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       jobs: env.BulkUsageImport,
     });
+  if (pathname === routeAcquisitionPath) return routeAcquisition(request, env);
   // Answered here, without waking the container.
   if (pathname === poolReleasePath)
     return poolRelease(request, env, undefined, () => singleton(env).imageReleaseReady());
