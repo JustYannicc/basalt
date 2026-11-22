@@ -22,6 +22,7 @@ import {
 import {
   historyUsageRollupBackfillVersion,
   historyUsageRollupPath,
+  usageRollupHoldLimitMs,
   usageRollupHourLimitMs,
   usageRollupWalPerCall,
 } from "../src/pool/model-history/usage-rollup-backfill.ts";
@@ -385,7 +386,7 @@ export async function runHistoryOperator(
           typeof callWal !== "number" ||
           !Number.isSafeInteger(callWal) ||
           callWal < 0 ||
-          !["budget", "wal", "lock", "slow_hour"].includes(String(report.stopped))
+          !["budget", "wal", "lock", "slow_hour", "slow_hold"].includes(String(report.stopped))
         )
           throw new Error("Invalid usage rollup progress");
         wal += callWal;
@@ -401,6 +402,10 @@ export async function runHistoryOperator(
         if (report.stopped === "slow_hour")
           throw new Error(
             `Usage rollup stopped: hour ${String(report.slowHour)} took longer than its ${usageRollupHourLimitMs} ms limit three times; a person decides how to recompute it`,
+          );
+        if (report.stopped === "slow_hold")
+          throw new Error(
+            `Usage rollup stopped: hour ${String(report.slowHour)} held the pool longer than ${usageRollupHoldLimitMs} ms, past which writers could time out; a person decides whether to resume`,
           );
         if (wal >= usageRollupWalTotal)
           throw new Error(

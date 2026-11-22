@@ -182,7 +182,7 @@ test("the usage rollup backfill resumes with the same approval until the endpoin
     const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
     const plan = {
       status: "dry-run",
-      version: "usage_rollup_backfill_v2",
+      version: "usage_rollup_backfill_v3",
       digest: "e".repeat(64),
       plan: { pools: [] },
       writes: false,
@@ -242,7 +242,7 @@ async function rollupOperator(responses: (post: number) => Record<string, unknow
   const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
   const plan = {
     status: "dry-run",
-    version: "usage_rollup_backfill_v2",
+    version: "usage_rollup_backfill_v3",
     digest: "f".repeat(64),
     plan: { pools: [] },
     writes: false,
@@ -325,6 +325,28 @@ test("an hour slower than its limit three times stops the backfill and says how 
       apply,
       /2026-01-01T05:00:00.000Z took longer than its 150 ms limit three times; a person decides/,
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a backfill that held the pool past its hold limit stops the script and names the hour", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const { apply, bodies, cleanup } = await rollupOperator(() => ({
+    status: "progress",
+    stopped: "slow_hold",
+    slowHour: "2026-01-01T06:00:00.000Z",
+    maxHoldMs: 420,
+    walBytes: 0,
+    pools: [{ recomputedHours: 1 }],
+  }));
+  try {
+    await assert.rejects(
+      apply,
+      /2026-01-01T06:00:00.000Z held the pool longer than 350 ms, past which writers could time out/,
+    );
+    assert.equal(bodies.length, 1, "no further call after a hold over the limit");
   } finally {
     await cleanup();
   }

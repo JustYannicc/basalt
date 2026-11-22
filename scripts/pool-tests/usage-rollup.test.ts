@@ -7,6 +7,7 @@ import {
   handleUsageRollupOperation,
   planUsageRollup,
   runUsageRollup,
+  usageRollupHoldLimitMs,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { insertRequests } from "../../src/pool/model-history/store.ts";
 import { seriesFixture } from "./series-fixture.ts";
@@ -239,8 +240,16 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
     const slow = await runUsageRollup(f.db, plan, 60_000, undefined, undefined, 1);
     assert.equal(slow.stopped, "slow_hour");
     assert.ok(typeof slow.slowHour === "string");
+    // A hold measured over its limit stops the run after that hour, naming it; the hour is done.
+    let tick = 0;
+    const held = await runUsageRollup(f.db, plan, 60_000, () => (tick += usageRollupHoldLimitMs + 50));
+    assert.equal(held.stopped, "slow_hold");
+    assert.ok(typeof held.slowHour === "string");
+    assert.equal(held.pools[0]!.recomputedHours, 1);
+    assert.ok(held.maxHoldMs > usageRollupHoldLimitMs);
     const resumed = await runUsageRollup(f.db, plan, 60_000);
     assert.equal(resumed.status, "complete");
+    assert.ok(resumed.maxHoldMs <= usageRollupHoldLimitMs, `a hold of ${resumed.maxHoldMs} ms`);
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });
 });

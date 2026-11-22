@@ -5,7 +5,7 @@ import { maxSummaryRollupGroups } from "./summary-rollup-query.ts";
 import { historyUsageRollupVersion, usageRollupLockClass } from "./usage-rollup-schema.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
-export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
+export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
 /**
  * The most write-ahead log the database may write during one backfill call before it stops at the
  * next hour boundary. It counts every writer's WAL, not only the backfill's, so concurrent writes
@@ -13,11 +13,17 @@ export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
  */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
- * How long one hour's recompute may hold the pool once the backfill has it. A writer that arrives
- * then waits this, one round trip and the commit, which no timeout bounds, inside its own 500 ms.
- * There is no raise: a hour slower three times in a row stops the run, naming it, for a person.
+ * How long one hour's recompute may run once the backfill holds the pool. There is no raise: an
+ * hour slower three times in a row stops the run, naming it, for a person.
  */
 export const usageRollupHourLimitMs = 150;
+/**
+ * The longest the backfill may hold the pool, measured from sending the statement that takes the
+ * lock until its commit returns, which bounds the hold on the server. A writer arriving meanwhile
+ * waits at most this, inside its own 500 ms lock timeout. The hold is the recompute, one round trip
+ * and a commit that does not wait for the WAL flush; a hold over this stops the run, naming the hour.
+ */
+export const usageRollupHoldLimitMs = 350;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -106,20 +112,22 @@ export async function runUsageRollup(
   hourLimitMs = usageRollupHourLimitMs,
 ) {
   const started = now();
-  // The write-ahead log this call adds, measured on the server before every hour it starts.
+  // The write-ahead log this call adds, measured on the server before every hour it starts. The
+  // insert position counts WAL a commit that skipped the flush has not written out yet.
   const walStart = String(
-    (await db.query("SELECT pg_current_wal_lsn()::text AS lsn")).rows[0]?.lsn ?? "",
+    (await db.query("SELECT pg_current_wal_insert_lsn()::text AS lsn")).rows[0]?.lsn ?? "",
   );
   const walWritten = async () =>
     Number(
       (
-        await db.query("SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::text AS bytes", [
+        await db.query("SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1::pg_lsn)::text AS bytes", [
           walStart,
         ])
       ).rows[0]?.bytes ?? 0,
     );
-  let stop: "budget" | "wal" | "lock" | "slow_hour" | undefined;
+  let stop: "budget" | "wal" | "lock" | "slow_hour" | "slow_hold" | undefined;
   let slowHour: string | undefined;
+  let maxHoldMs = 0;
   const pools: {
     pool: string;
     recomputedHours: number;
@@ -158,14 +166,23 @@ export async function runUsageRollup(
       for (;;) {
         await db.query("BEGIN");
         try {
-          // A try-lock never queues, so no writer ever waits behind a backfill that is itself waiting.
-          // Once held, the pool is held for the recompute and the commit only.
-          const locked = await db.query(
-            `SELECT set_config('statement_timeout',$2,true),set_config('TimeZone','UTC',true),
-              pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1)) AS locked`,
-            [item.pool, `${hourLimitMs}ms`],
+          // The hour's recompute and its marker commit together, so a commit that skips the WAL
+          // flush can lose only whole hours to a crash, and the next run recomputes them.
+          await db.query(
+            `SELECT set_config('statement_timeout',$1,true),set_config('TimeZone','UTC',true),
+              set_config('synchronous_commit','off',true)`,
+            [`${hourLimitMs}ms`],
           );
-          if (locked.rows[0]?.locked !== true) {
+          // A try-lock never queues, so no writer ever waits behind a backfill that is itself
+          // waiting. Taking it in the recompute's own statement leaves one round trip in the hold.
+          const holdStarted = now();
+          const written = await db.query(
+            `SELECT CASE WHEN pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1))
+              THEN basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour')
+              END AS groups`,
+            [item.pool, at],
+          );
+          if (written.rows[0]?.groups === null || written.rows[0]?.groups === undefined) {
             await db.query("ROLLBACK");
             if (++refused >= 5) {
               stop = "lock";
@@ -174,13 +191,16 @@ export async function runUsageRollup(
             await new Promise((resolve) => setTimeout(resolve, 50));
             continue;
           }
-          const written = await db.query(
-            "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour') AS groups",
-            [item.pool, at],
-          );
           await db.query("COMMIT");
-          groups += Number(written.rows[0]?.groups ?? 0);
+          const held = now() - holdStarted;
+          maxHoldMs = Math.max(maxHoldMs, held);
+          groups += Number(written.rows[0].groups);
           recomputedHours++;
+          if (held > usageRollupHoldLimitMs) {
+            stop = "slow_hold";
+            slowHour = at;
+            break hours;
+          }
           break;
         } catch (error) {
           await db.query("ROLLBACK").catch(() => {});
@@ -230,6 +250,7 @@ export async function runUsageRollup(
     status: complete ? ("complete" as const) : ("progress" as const),
     ...(complete ? {} : { stopped: stop ?? "budget" }),
     ...(slowHour ? { slowHour } : {}),
+    maxHoldMs: Math.round(maxHoldMs),
     walBytes: await walWritten(),
     pools,
   };
@@ -240,7 +261,7 @@ export async function handleUsageRollupOperation(request: Request, db: HistoryDa
   if (request.method === "GET") {
     const planned = await planUsageRollup(db);
     // The apply measures its write-ahead log; a role that cannot read it fails here, before writes.
-    await db.query("SELECT pg_current_wal_lsn()");
+    await db.query("SELECT pg_current_wal_insert_lsn()");
     return Response.json(
       { status: "dry-run", version: historyUsageRollupBackfillVersion, ...planned, writes: false },
       { headers },

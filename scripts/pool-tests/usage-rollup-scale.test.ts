@@ -8,6 +8,7 @@ import { poolUsageSummary, summarySessionSettings } from "../../src/pool/model-h
 import {
   planUsageRollup,
   runUsageRollup,
+  usageRollupHoldLimitMs,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { maxSummaryRollupGroups } from "../../src/pool/model-history/summary-rollup-query.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
@@ -111,7 +112,7 @@ async function scaleCase(shape: Shape) {
 
     const planned = await planUsageRollup(f.db);
     const walBefore = String(
-      (await f.db.query("SELECT pg_current_wal_lsn()::text AS lsn")).rows[0]!.lsn,
+      (await f.db.query("SELECT pg_current_wal_insert_lsn()::text AS lsn")).rows[0]!.lsn,
     );
     assert.equal(planned.plan.pools.length, 1);
     // A backfill stopped by its budget, then resumed by later runs, while a writer races it.
@@ -143,7 +144,8 @@ async function scaleCase(shape: Shape) {
       });
       const backfillStarted = performance.now();
       let hours = 0,
-        backfillWal = 0;
+        backfillWal = 0,
+        longestHold = 0;
       for (;;) {
         if (raceError) throw raceError;
         runs++;
@@ -151,6 +153,10 @@ async function scaleCase(shape: Shape) {
         groups += result.pools.reduce((n, item) => n + item.groups, 0);
         hours += result.pools.reduce((n, item) => n + item.recomputedHours, 0);
         backfillWal = Math.max(backfillWal, result.walBytes);
+        longestHold = Math.max(longestHold, result.maxHoldMs);
+        // The deadline is on the backfill's own hold, not only on the writer that waits behind it.
+        assert.notEqual(result.stopped, "slow_hold", `the backfill held the pool ${result.maxHoldMs} ms`);
+        assert.ok(result.maxHoldMs <= usageRollupHoldLimitMs, `a hold of ${result.maxHoldMs} ms`);
         // The cap counts all WAL the database writes during the call, the racing writer's too, and
         // stops before the hour after it is crossed: one hour's WAL, plus anyone else's, past 32 MiB.
         assert.ok(
@@ -166,6 +172,7 @@ async function scaleCase(shape: Shape) {
           runs,
           ms: Math.round(performance.now() - backfillStarted),
           largestCallWal: backfillWal,
+          longestHoldMs: longestHold,
           race: shape.race,
         }),
       );
@@ -179,7 +186,7 @@ async function scaleCase(shape: Shape) {
     assert.ok(runs > 1, "the backfill stopped and resumed");
     const measured = (
       await f.db.query(
-        `SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::bigint AS wal,
+        `SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1::pg_lsn)::bigint AS wal,
           pg_total_relation_size('basalt_model_usage_hourly') AS rollup,
           pg_total_relation_size('basalt_model_usage_hours') AS hours,
           (SELECT sum(pg_total_relation_size(c.oid)) FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid
