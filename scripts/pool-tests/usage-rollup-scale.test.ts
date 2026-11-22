@@ -83,6 +83,9 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
     await f.db.query("ANALYZE basalt_model_requests");
 
     const planned = await planUsageRollup(f.db);
+    const walBefore = String(
+      (await f.db.query("SELECT pg_current_wal_lsn()::text AS lsn")).rows[0]!.lsn,
+    );
     assert.equal(planned.plan.pools.length, 1);
     // A backfill stopped by its budget, then resumed by later runs, while a writer races it.
     const writer = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
@@ -112,6 +115,18 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       await writer.end();
     }
     assert.ok(runs > 1, "the backfill stopped and resumed");
+    const measured = (
+      await f.db.query(
+        `SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1::pg_lsn)::bigint AS wal,
+          pg_total_relation_size('basalt_model_usage_hourly') AS rollup,
+          pg_total_relation_size('basalt_model_usage_hours') AS hours,
+          (SELECT sum(pg_total_relation_size(c.oid)) FROM pg_inherits i JOIN pg_class c ON c.oid=i.inhrelid
+            WHERE i.inhparent='basalt_model_requests'::regclass) AS history`,
+        [walBefore],
+      )
+    ).rows[0]!;
+    // The racing writer's own inserts are in this WAL too; the backfill's share is below it.
+    console.info("ROLLUP_BYTES", JSON.stringify(measured));
 
     const input = {
       pool,
