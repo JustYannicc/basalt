@@ -67,6 +67,7 @@ export interface ServiceCredentials {
   readonly models?: typeof Service.Type;
   readonly tools?: typeof ToolsService.Type;
 }
+/** An empty name means a tools-only device, which uses no pool: see `namesNoPool`. */
 const PoolDisplay = Schema.Struct({ id: Schema.NonEmptyString, name: Schema.String });
 export const ConnectionDisplay = Schema.Struct({
   account: Schema.Struct({

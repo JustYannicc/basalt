@@ -56,6 +56,8 @@ function fixture(
         if (/^\/api\/organizations\/[^/]+\/apps\/[^/]+\/access$/.test(path))
           return json({ creator: "user-1", audience: { kind: "private" } });
         if (path === "/api/auth/api-key/delete") return json({ success: true });
+        // A computer set up with a link, not a native device: no native grant names it.
+        if (path === "/api/auth/native/devices/revoke") return json({ revoked: false });
         throw Error(`Unexpected native path: ${path}`);
       },
     },
@@ -873,6 +875,53 @@ test("browser metadata excludes credentials; links over five minutes are refused
   assert.equal(long.calls.at(-1)!.path, "/api/auth/api-key/delete");
 });
 
+test("Connect's list says which devices were approved without models", async () => {
+  const toolsOnly = { ...computer, id: "computer-2", state: "active", tools: true, models: false };
+  const f = fixture({
+    pool: ({ path }) =>
+      path.endsWith("/computers") ? json({ computers: [computer, toolsOnly] }) : undefined,
+  });
+  const response = await f.request("/setup/v1/computers?intent=signed-selection");
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.deepEqual((await response.json()).computers, [computer, toolsOnly]);
+  const malformed = fixture({
+    pool: ({ path }) =>
+      path.endsWith("/computers")
+        ? json({ computers: [{ ...toolsOnly, models: "no" }] })
+        : undefined,
+  });
+  assert.equal(
+    (await malformed.request("/setup/v1/computers?intent=signed-selection")).status,
+    502,
+  );
+});
+
+test("Connect tells the pool whether each tools-only device's person still belongs to its organization", async () => {
+  const devices = [
+    { grant: "native:here", computer: "a".repeat(32), toolsOrganization: "organization-1" },
+    { grant: "native:left", computer: "b".repeat(32), toolsOrganization: "organization-left" },
+  ];
+  const reported = async (organizations?: Response) => {
+    const f = fixture({
+      tools: ({ path }) =>
+        path === "/api/auth/native/devices"
+          ? json({ devices })
+          : path === "/api/auth/organization/list"
+            ? organizations
+            : undefined,
+    });
+    const response = await f.request("/setup/v1/computers?intent=signed-selection");
+    assert.equal(response.status, 200, await response.clone().text());
+    return f.calls.find((call) => call.path === "/__setup/v1/computers")!.input.native;
+  };
+  assert.deepEqual(await reported(), [
+    { ...devices[0], member: true },
+    { ...devices[1], member: false },
+  ]);
+  // Without the organization list, membership is unknown rather than lost.
+  assert.deepEqual(await reported(json({}, 503)), devices);
+});
+
 test("claims need no session, negotiate JSON or markdown and consume exactly once", async () => {
   for (const format of ["json", "markdown"]) {
     const f = fixture();
@@ -909,14 +958,16 @@ test("paired revocation runs model revoke, native tools delete, then finalizatio
     f.calls.map((c) => c.path),
     [
       "/api/auth/get-session",
+      "/api/auth/native/devices/revoke",
       "/__setup/v1/validate",
       "/__setup/v1/revoke",
       "/api/auth/api-key/delete",
       "/__setup/v1/revoked",
     ],
   );
-  assert.equal(f.calls[2]!.input.id, "computer-1");
-  assert.deepEqual(f.calls[3]!.input, { keyId: "tools-key-1" });
+  assert.deepEqual(f.calls[1]!.input, { computer: "computer-1" });
+  assert.equal(f.calls[3]!.input.id, "computer-1");
+  assert.deepEqual(f.calls[4]!.input, { keyId: "tools-key-1" });
 });
 
 test("failed tools revoke never finalizes; retry accepts native KEY_NOT_FOUND only", async () => {
@@ -1045,8 +1096,41 @@ test("revoking a models-only computer skips the tools token delete", async () =>
   assert.equal(response.status, 200);
   assert.deepEqual(
     f.calls.map((c) => c.path),
-    ["/api/auth/get-session", "/__setup/v1/validate", "/__setup/v1/revoke", "/__setup/v1/revoked"],
+    [
+      "/api/auth/get-session",
+      "/api/auth/native/devices/revoke",
+      "/__setup/v1/validate",
+      "/__setup/v1/revoke",
+      "/__setup/v1/revoked",
+    ],
   );
+});
+
+test("removing a link-setup computer doesn't need the tools service to answer", async () => {
+  const f = fixture({
+    tools: ({ path }) =>
+      path === "/api/auth/native/devices/revoke" ? json({ error: "unavailable" }, 503) : undefined,
+    pool: ({ path }) => (path.endsWith("/revoke") ? json({ toolsKeyId: null }) : undefined),
+  });
+  const response = await f.request("/setup/v1/computers/computer-1?intent=signed-selection", {
+    method: "DELETE",
+  });
+  assert.equal(response.status, 200, await response.clone().text());
+  assert.equal(f.calls.at(-1)?.path, "/__setup/v1/revoked");
+});
+
+test("removing a native device fails closed while the tools service doesn't answer", async () => {
+  const f = fixture({
+    tools: ({ path }) =>
+      path === "/api/auth/native/devices/revoke" ? json({ error: "unavailable" }, 503) : undefined,
+    pool: ({ path }) =>
+      path.endsWith("/revoke") ? json({ toolsKeyId: null, grant: "native:device-1" }) : undefined,
+  });
+  const response = await f.request("/setup/v1/computers/computer-1?intent=signed-selection", {
+    method: "DELETE",
+  });
+  assert.equal(response.status, 502);
+  assert.ok(!f.calls.some((c) => c.path.endsWith("/revoked")), "it isn't reported removed");
 });
 
 test("renaming is one signed request with a valid name", async () => {
