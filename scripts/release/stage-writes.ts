@@ -42,7 +42,7 @@ export type StageVerdict =
    */
   | {
       readonly kind: "prove";
-      readonly family: "Worker" | "Workflow" | "container application";
+      readonly family: "Worker" | "Workflow" | "container application" | "Worker domain";
       readonly name: string;
     };
 
@@ -99,6 +99,16 @@ const REPOSITORY_NAME = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/u;
 const REFERENCE = /^(?:sha256:[a-f0-9]{64}|[A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/u;
 
 /**
+ * Whether a hostname is named for this stage: under its own DNS label in the stage domain. A stage
+ * name outside the disposable shapes never owns a hostname: `test-app` must not reach
+ * `app.<production zone>`.
+ */
+export const stageHostname = (scope: Pick<StageScope, "label" | "domain">, host: string) =>
+  /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
+  !!scope.domain &&
+  (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
+
+/**
  * The verdict on one write, from its method, URL and JSON body. Reads (GET, HEAD) are never
  * judged; every other method is, whatever it does. `isOwned` holds what this run created too.
  */
@@ -114,12 +124,7 @@ export function stageWriteVerdict(
     resource,
     field,
   });
-  // A stage name outside the disposable shapes never owns a hostname: `test-app` must not reach
-  // `app.<production zone>`.
-  const labelled = (host: string) =>
-    /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
-    !!scope.domain &&
-    (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
+  const labelled = (host: string) => stageHostname(scope, host);
   const path = url.pathname;
   // The registry holds production's images too. The one write a stage sends it is a rehearsal
   // teardown's delete of a manifest or tag in a repository named for the stage.
@@ -219,6 +224,19 @@ export function stageWriteVerdict(
     if (!scope.accountId || decoded(account[1]!) !== scope.accountId)
       return refuse(`container application ${decoded(application)}`, "account");
     return { kind: "prove", family: "container application", name: decoded(application) };
+  }
+  // Detaching a hostname by an id the stage's State never recorded: only Cloudflare can place it.
+  // The guard's fresh read must show both that the hostname is named for this stage and that it
+  // serves a Worker the stage's State owns; one without the other is refused (wire-guard.ts).
+  const domain = /^\/workers\/domains\/([^/]+)$/u.exec(rest)?.[1];
+  if (domain !== undefined && method === "DELETE" && !isOwned(decoded(domain))) {
+    // That read goes to the request's own origin and account, so both must be the deployment's
+    // before it vouches for anything.
+    if (url.hostname.toLowerCase() !== CLOUDFLARE_API_HOST)
+      return refuse(`Worker domain ${decoded(domain)}`, "host");
+    if (!scope.accountId || decoded(account[1]!) !== scope.accountId)
+      return refuse(`Worker domain ${decoded(domain)}`, "account");
+    return { kind: "prove", family: "Worker domain", name: decoded(domain) };
   }
   for (const [pattern, family, mode] of ACCOUNT) {
     const match = pattern.exec(rest);

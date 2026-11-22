@@ -22,6 +22,7 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   createdIdentities,
   REGISTRY_HOST,
+  stageHostname,
   stageWriteVerdict,
   type StageScope,
   type StageVerdict,
@@ -543,6 +544,58 @@ const proveStageApplication = (
   });
 
 /**
+ * A stage's delete of a Workers custom domain whose id its State never recorded: a fresh read, sent
+ * around the guard with the request's credentials, must answer this id with BOTH a hostname under
+ * the stage's own label AND a service that is a Worker the stage's State owns. Either one alone, a
+ * missing or unreadable domain, or a read that answers another id is refused. The value never
+ * names the hostname, which can be production's.
+ */
+const proveStageDomain = (
+  scope: StageScope,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  id: string,
+) =>
+  Effect.gen(function* () {
+    const response = yield* Effect.promise(() =>
+      // Like the application proof's read: a redirect answers from an address no rule checked.
+      inner(`${accountBase(url)}/workers/domains/${encodeURIComponent(id)}`, {
+        headers: authHeaders(request),
+        redirect: "manual",
+      }).catch(() => undefined),
+    );
+    const body = response?.ok
+      ? ((yield* Effect.promise(() => response.json().catch(() => null))) as {
+          result?: { id?: unknown; hostname?: unknown; service?: unknown };
+        } | null)
+      : null;
+    const domain = body?.result?.id === id ? body.result : undefined;
+    const hostname = typeof domain?.hostname === "string" ? domain.hostname.toLowerCase() : "";
+    const service = typeof domain?.service === "string" ? domain.service : "";
+    const named = stageHostname(scope, hostname);
+    // The State's own record only: a Worker this run proved by its tags is not enough here.
+    const served = service !== "" && scope.owned.includes(service);
+    if (named && served) return;
+    return yield* refuse(
+      {
+        resource: `Worker domain ${id}`,
+        method: request.method,
+        path: template(apiPath(url.pathname)),
+      },
+      "stage",
+      named ? "service" : "hostname",
+      !response
+        ? "unreadable"
+        : !domain
+          ? `HTTP ${response.status}`
+          : named
+            ? "not a Worker the stage's State owns"
+            : "not under the stage's own label",
+    );
+  });
+
+/**
  * A Worker or Workflow name the stage's State does not record: Cloudflare places it. Absent means
  * this run creates it; present, it must carry this stage's Alchemy tags (a Worker) or run on a
  * Worker the stage owns (a Workflow). Anything unreadable is refused.
@@ -629,6 +682,12 @@ const stageGate = (
       yield* proveStageApplication(scope, inner, request, url, verdict.name);
       // Admits this delete past the unattached-application check; it owns nothing else.
       provenDeletes.add(verdict.name);
+      return undefined;
+    }
+    if (verdict.kind === "prove" && verdict.family === "Worker domain") {
+      yield* proveStageDomain(scope, inner, request, url, verdict.name);
+      // Proven once, a retry of the same delete passes by its id.
+      ownedHere.add(verdict.name);
       return undefined;
     }
     if (verdict.kind === "prove") {
