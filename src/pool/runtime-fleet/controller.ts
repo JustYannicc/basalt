@@ -92,8 +92,10 @@ interface Dependencies {
   demandAt?(at: number): void;
 }
 
-/** The concurrency target triggers growth; it never becomes another fixed inference cap. */
-function markedCut(identity: SlotIdentity, error: unknown) {
+/** A marked answer's cut mid-body, logged instead of counted against its runtime. */
+function markedCut(identity: SlotIdentity, error: unknown, signal: AbortSignal) {
+  // A client that left cut nothing, as for a runtime's own failures.
+  if (signal.aborted) return;
   console.error(
     "POOL_RESUMABLE_STREAM_CUT",
     JSON.stringify({
@@ -104,6 +106,7 @@ function markedCut(identity: SlotIdentity, error: unknown) {
   );
 }
 
+/** The concurrency target triggers growth; it never becomes another fixed inference cap. */
 export class RuntimeFleet {
   private deps: Dependencies;
   private growing?: Promise<void>;
@@ -340,7 +343,7 @@ export class RuntimeFleet {
         onClose: () => {},
         failed: (error) =>
           marked
-            ? markedCut(reservation.identity, error)
+            ? markedCut(reservation.identity, error, request.signal)
             : this.failures.failed(reservation.identity, error, request.signal),
         release: () => {
           this.deps.defer(reservation.release().then(() => this.deps.changed?.()));

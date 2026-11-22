@@ -94,7 +94,7 @@ export function decodeResumeInput(value: unknown) {
 
 /** The front layer's read for the rest of an answer, from the offset the entry delivered. */
 export function resumeRequest(input: { requestId: string; from: number; boot: string }) {
-  return new Request(`http://pool${streamResumePath}${input.requestId}`, {
+  return new Request(new URL(`${streamResumePath}${input.requestId}`, "http://pool"), {
     method: "GET",
     headers: {
       [streamResumeFromHeader]: String(input.from),
@@ -156,10 +156,11 @@ function spareOf(request: Request) {
   const size = request.body ? Number(request.headers.get("Content-Length") ?? Number.NaN) : 0;
   if (!Number.isSafeInteger(size) || size < 0 || size > spareBytes) return undefined;
   if (spareHeld + size > spareBudgetBytes) return undefined;
+  const copy = request.clone();
   spareHeld += size;
   let held = true;
   return {
-    request: request.clone(),
+    request: copy,
     release() {
       if (held) spareHeld -= size;
       held = false;
@@ -197,7 +198,9 @@ export async function toLayer(
 ): Promise<Response> {
   if (new URL(request.url).pathname.startsWith(streamResumePath)) return resumeRead(request, send);
   const spare = spareOf(request);
+  let resent = false;
   const toNode = (copy: Request) => {
+    resent = true;
     const headers = new Headers(copy.headers);
     headers.delete(streamResumableHeader);
     return send(new Request(copy, { headers }), 8317);
@@ -227,7 +230,7 @@ export async function toLayer(
     );
   } finally {
     spare?.release();
-    void spare?.request.body?.cancel().catch(() => {});
+    if (!resent) void spare?.request.body?.cancel().catch(() => {});
   }
 }
 

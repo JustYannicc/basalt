@@ -871,7 +871,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   /** The rest of an answer an earlier instance of this object was streaming when it ended (#1642). */
   async resume(input: unknown): Promise<Response> {
     const parsed = decodeResumeInput(input);
-    // A resume is a model call: while this object hands over it is refused like one.
+    // While this object hands over, a resume answers gone, so the stream ends with today's terminal.
     if (!parsed || this.handover.draining) return resumeGone();
     const request = resumeRequest(parsed);
     return this.handoverCount.track(request, async () => {
