@@ -110,9 +110,14 @@ export const homeFailure = (error: unknown) =>
  */
 export function revokedByPerson(row: StoredComputer) {
   if (row.restoredWithoutHistory) return false;
-  // Under access removal, the state it had before removal began says whether its person revoked it.
+  // Under access removal, only a person's revoke sets `revoked`; otherwise the state it had before
+  // removal began says whether its person revoked it.
   if (row.removalPending)
-    return row.beforeRemoval?.state === "revoking" || row.beforeRemoval?.state === "revoked";
+    return (
+      row.state === "revoked" ||
+      row.beforeRemoval?.state === "revoking" ||
+      row.beforeRemoval?.state === "revoked"
+    );
   if (row.state === "revoking" || row.state === "revoked") return true;
   return row.state === "removed" && row.removedFor !== "access";
 }
@@ -239,7 +244,8 @@ export class NativeComputers {
         delete computer.link;
         delete computer.restoredWithoutHistory;
         // Under access removal, the revoke is recorded for when removal finishes the row.
-        if (computer.beforeRemoval) computer.beforeRemoval.state = "revoking";
+        if (computer.beforeRemoval && computer.beforeRemoval.state !== "revoked")
+          computer.beforeRemoval.state = "revoking";
         await this.deps.save(registry);
         // The saved state stops requests and active streams before Home cleanup can fail.
         await this.deps.revokeKeys(computer);

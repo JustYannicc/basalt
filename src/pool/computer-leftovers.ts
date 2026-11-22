@@ -32,7 +32,7 @@ export class ComputerLeftovers {
   private revoking = new Map<string, Promise<void>>();
   private retryAt = new Map<string, number>();
   private homeRetryAt = 0;
-  private undecidedReported: number | undefined;
+  private pendingFromActiveReported: number | undefined;
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
@@ -103,17 +103,18 @@ export class ComputerLeftovers {
    * Tools-only rows an older release left that show their person revoked them (a `removed` row
    * with no recorded reason, or one under removal that began during a revoke) are finished
    * revoked, so membership can never bring them back. One count-only line reports them, and the
-   * rows under removal that began from `active`, which can't be told apart from an access removal.
+   * tools-only rows under removal that began from `active`: a legacy one of those can't be told
+   * apart from an access removal, and a person-deletion sweep also leaves them.
    */
   private async finishLegacy(registry: Registry, now: number) {
     let revoked = 0;
-    let undecided = 0;
+    let pendingFromActive = 0;
     for (const computer of Object.values(registry)) {
       if (computer.native?.models !== false || computer.restoredWithoutHistory) continue;
       const pending = computer.removalPending === true;
       if (!pending && computer.state !== "removed") continue;
       if (!revokedByPerson(computer)) {
-        if (pending) undecided++;
+        if (pending) pendingFromActive++;
         continue;
       }
       computer.state = "revoked";
@@ -126,9 +127,10 @@ export class ComputerLeftovers {
       revoked++;
     }
     if (revoked) await this.deps.save(registry);
-    if (revoked || undecided !== this.undecidedReported) {
-      if (revoked || undecided) console.info("POOL_LEGACY_TOOLS_ONLY_ROWS", { revoked, undecided });
-      this.undecidedReported = undecided;
+    if (revoked || pendingFromActive !== this.pendingFromActiveReported) {
+      if (revoked || pendingFromActive)
+        console.info("POOL_TOOLS_ONLY_ROWS_FINISHED", { revoked, pendingFromActive });
+      this.pendingFromActiveReported = pendingFromActive;
     }
   }
   /** Finish the row if nothing changed it while Home was asked. */
