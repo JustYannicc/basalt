@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Recorded version recovery is a main-only mode of the existing rollback workflow, bound to the latest failed production record, exact Actions run and attempt, verified artifact digest and reviewed manifest/receipt pair. An uncredentialed job builds only the exact candidate local assets. The protected job verifies and consumes that same run's retained prepared environment and invokes the existing recovery entry without database admission, migration or restore. A continuation names the prior recovery run and retains its bound progress. Production credentials and the release lock stay shared; refusals preserve evidence and never retry a write."
+    }
+  }
+}

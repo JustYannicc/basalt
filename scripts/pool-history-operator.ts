@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { nodePoolOperations } from "./pool-operations-node.ts";
 import { historyObject } from "../src/pool/model-history/record.ts";
 import {
   HistoryOperatorFailure,
@@ -31,6 +32,25 @@ type Platform = {
   env: { POOL_OPERATIONS: { fetch(request: Request): Promise<Response> } };
   dispose(): Promise<void>;
 };
+
+type Wrangler = {
+  getPlatformProxy(options: {
+    configPath: string;
+    persist: false;
+    remoteBindings: true;
+  }): Promise<Platform>;
+};
+
+export async function connectHistoryPlatform(
+  configPath: string,
+  load: () => Wrangler = () =>
+    createRequire(new URL("./startup-profiler/package.json", import.meta.url))("wrangler"),
+) {
+  const wrangler = await historyOperatorStep("operator.load-wrangler", async () => load());
+  return historyOperatorStep("operator.connect", () =>
+    wrangler.getPlatformProxy({ configPath, persist: false, remoteBindings: true }),
+  );
+}
 
 export function historyOperatorOptions(args: string[]) {
   const { values } = parseArgs({
@@ -207,6 +227,7 @@ export async function runHistoryOperator(
   options: ReturnType<typeof historyOperatorOptions>,
   accountId: string,
   connect?: (path: string) => Promise<Platform>,
+  bridge = nodePoolOperations,
 ) {
   if (
     options.operation === "journal-activation" &&
@@ -261,14 +282,10 @@ export async function runHistoryOperator(
       }),
       { mode: 0o600 },
     );
-    const open: (configPath: string) => Promise<Platform> =
+    // Wrangler's remote binding dispatcher requires Node even when the activation client uses Bun.
+    const open =
       connect ??
-      (async (configPath: string) => {
-        const { getPlatformProxy } = createRequire(
-          new URL("./startup-profiler/package.json", import.meta.url),
-        )("wrangler");
-        return getPlatformProxy({ configPath, persist: false, remoteBindings: true });
-      });
+      (process.versions.bun ? () => bridge(accountId, options.worker) : connectHistoryPlatform);
     platform = await historyOperatorStep("operator.connect", () => open(configPath));
     if (approvedSchemaState) {
       const response = await platform.env.POOL_OPERATIONS.fetch(

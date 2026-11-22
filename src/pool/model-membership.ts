@@ -1,6 +1,6 @@
 import { digest } from "./backend-users.ts";
 import { modelKeyScope } from "./key-scope.ts";
-import { policyHeader, policyUsePrefix } from "./membership-contract.ts";
+import { modelUseAssertionTtlMs, policyHeader, policyUsePrefix } from "./membership-contract.ts";
 import { NativeMemberships } from "./membership.ts";
 import type { RefusalIdentity } from "./gateway-failure.ts";
 import { signEnvelope } from "./token.ts";
@@ -29,11 +29,13 @@ export async function modelMembership(
   connectionString: string | undefined,
   streams: NativeStreams,
   native?: ModelIdentity,
+  recoverAdmission?: (signal: AbortSignal) => Promise<boolean>,
 ): Promise<{
   request: Request;
   identity?: RefusalIdentity;
   pool?: string;
   lease?: NativeStreamLease;
+  assertionExpiresAt?: number;
 }> {
   const headers = new Headers(request.headers);
   headers.delete(policyHeader);
@@ -54,16 +56,25 @@ export async function modelMembership(
   // Register before authority and signing so a concurrent veto cannot miss this admission.
   const lease = streams.acquire(crypto.randomUUID(), pool, cleaned.signal);
   try {
-    const policy = await memberships.authority(pool).catch(() => {
-      throw new ModelMembershipUnavailable(identity);
-    });
+    let policy;
+    try {
+      policy = await memberships.authority(pool);
+    } catch {
+      if (!(await recoverAdmission?.(lease.signal))) throw new ModelMembershipUnavailable(identity);
+      lease.signal.throwIfAborted();
+      policy = await memberships.authority(pool).catch(() => {
+        throw new ModelMembershipUnavailable(identity);
+      });
+    }
+    let assertionExpiresAt: number | undefined;
     if (policy) {
+      assertionExpiresAt = Date.now() + modelUseAssertionTtlMs;
       headers.set(
         policyHeader,
         await signEnvelope(signingKey, policyUsePrefix, {
           pool,
           revision: policy.revision,
-          expiresAt: Date.now() + 2 * 60 * 60_000,
+          expiresAt: assertionExpiresAt,
         }),
       );
     }
@@ -72,9 +83,11 @@ export async function modelMembership(
       identity,
       pool,
       lease,
+      assertionExpiresAt,
     };
   } catch (error) {
     lease.release();
+    void cleaned.body?.cancel().catch(() => {});
     throw error;
   }
 }

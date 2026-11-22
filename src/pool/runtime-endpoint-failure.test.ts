@@ -1,3 +1,4 @@
+import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
@@ -26,27 +27,31 @@ const target = {
 };
 function endpoint(error: unknown) {
   let reads = 0;
+  const storage = Object.assign(new SlotMemory(), {
+    getAlarm: async () => null,
+    setAlarm: async () => {},
+  });
+  storage.get = async <T>(): Promise<T | undefined> => {
+    reads++;
+    throw error;
+  };
   const ctx = {
     id: { toString: () => target.instanceId },
-    storage: {
-      get: async <T>(): Promise<T | undefined> => {
-        reads++;
-        throw error;
-      },
-      put: async () => {},
-      getAlarm: async () => null,
-      setAlarm: async () => {},
-    },
+    storage,
     waitUntil: () => {},
     container: {
       running: false,
       start: () => {},
       destroy: async () => {},
+      monitor: async () => {},
       setInactivityTimeout: async () => {},
       getTcpPort: () => ({ fetch: async () => new Response() }),
     },
   };
-  return { value: new RuntimeEndpoint(ctx, env, "runtime", code), reads: () => reads };
+  return {
+    value: new RuntimeEndpoint(ctx, env, "runtime", code, (response) => response),
+    reads: () => reads,
+  };
 }
 function request(body = JSON.stringify({ target, privateBody: "PRIVATE_REQUEST_BODY" })) {
   return new Request("http://runtime/start?token=PRIVATE_QUERY", {
@@ -56,44 +61,26 @@ function request(body = JSON.stringify({ target, privateBody: "PRIVATE_REQUEST_B
   });
 }
 
-for (const error of [
-  new TypeError("Connection lost in runtime storage"),
-  new PoolStartupDeadline(),
-  new PoolRuntimeUnhealthy(),
-  new SlotRefused("identity"),
-])
-  test(`endpoint refusal records its actual cause without changing the public response: ${error.constructor.name}`, async (context) => {
+for (const [error, reason] of [
+  [new PoolStartupDeadline(), "transport"],
+  [new PoolRuntimeUnhealthy(), "unhealthy"],
+  [new SlotRefused("identity"), "slot_identity"],
+] as const)
+  test(`expected endpoint failures remain typed refusals: ${error.constructor.name}`, async (context) => {
     const log = context.mock.method(console, "error", () => {});
     const f = endpoint(error);
     const before = { name: error.name, message: error.message, stack: error.stack };
     const response = await runtimeRequest(request(), f.value);
     assert.equal(response.status, 409);
-    assert.deepEqual([...response.headers], [["content-type", "application/json"]]);
-    assert.deepEqual(await response.json(), { error: "runtime-refused" });
-    assert.equal(f.reads(), 1);
-    assert.equal(log.mock.calls.length, 1, "the dropped cause must be recorded");
-    const [event, diagnostic] = log.mock.calls[0]!.arguments;
-    assert.equal(event, "POOL_RUNTIME_ENDPOINT_FAILURE");
-    assert.ok(diagnostic && typeof diagnostic === "object");
-    assert.deepEqual(diagnostic, {
-      hop: "endpoint_route",
-      operation: "start",
-      status: 409,
-      runtime: {
-        role: "runtime",
-        instanceId: target.instanceId,
-        applicationId: env.POOL_RUNTIME_APPLICATION_ID,
-        ...code,
-      },
-      exception: {
-        class: error.constructor.name,
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      },
+    assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), "endpoint_route");
+    assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Reason"), reason);
+    assert.deepEqual(await response.json(), {
+      error: "runtime-refused",
+      reason: `runtime_endpoint_route_${reason}`,
     });
+    assert.equal(f.reads(), 1);
+    assert.equal(log.mock.calls.length, 0);
     assert.deepEqual({ name: error.name, message: error.message, stack: error.stack }, before);
-    assert.ok(!JSON.stringify(diagnostic).includes("PRIVATE_"));
   });
 
 test("endpoint cause removes configured and labelled credentials before logging", async (context) => {
@@ -112,7 +99,8 @@ test("endpoint cause removes configured and labelled credentials before logging"
   const f = endpoint(error);
   await runtimeRequest(request(), f.value);
   const serialized = JSON.stringify(log.mock.calls[0]?.arguments);
-  assert.ok(serialized.includes("Storage refused"));
+  assert.ok(serialized.includes("Error"));
+  assert.ok(!serialized.includes("Storage refused"));
   for (const secret of [...secrets, "PRIVATE_REQUEST_BODY", "PRIVATE_HEADER", "PRIVATE_QUERY"])
     assert.ok(!serialized.includes(secret), "credential or request content leaked");
   assert.ok(
@@ -124,27 +112,25 @@ test("endpoint cause removes configured and labelled credentials before logging"
 test("invalid request diagnostics never include JSON input excerpts or unknown operation text", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const f = endpoint(new Error("unused"));
-  await runtimeRequest(request("PRIVATE_REQUEST_BODY is not JSON"), f.value);
-  const serialized = JSON.stringify(log.mock.calls[0]?.arguments);
-  assert.equal(log.mock.calls.length, 1);
-  assert.ok(serialized.includes("SyntaxError"));
-  assert.ok(!serialized.includes("PRIVATE_REQUEST_BODY"));
+  const response = await runtimeRequest(request("PRIVATE_REQUEST_BODY is not JSON"), f.value);
+  assert.equal(response.status, 409);
+  assert.equal(log.mock.calls.length, 0);
+  assert.ok(!JSON.stringify(await response.json()).includes("PRIVATE_REQUEST_BODY"));
   assert.equal(f.reads(), 0);
 });
 
 test("schema failure diagnostics omit multiline input excerpts", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const f = endpoint(new Error("unused"));
-  await runtimeRequest(
+  const response = await runtimeRequest(
     request(
       JSON.stringify({ target: { ...target, instanceId: { privateBody: "PRIVATE_SCHEMA_BODY" } } }),
     ),
     f.value,
   );
-  const serialized = JSON.stringify(log.mock.calls[0]?.arguments);
-  assert.equal(log.mock.calls.length, 1);
-  assert.ok(serialized.includes("SchemaError"));
-  assert.ok(!serialized.includes("PRIVATE_SCHEMA_BODY"));
+  assert.equal(response.status, 409);
+  assert.equal(log.mock.calls.length, 0);
+  assert.ok(!JSON.stringify(await response.json()).includes("PRIVATE_SCHEMA_BODY"));
   assert.equal(f.reads(), 0);
 });
 
@@ -153,9 +139,27 @@ test("non-Error throws are identified without serializing their content", async 
   const failure = { message: "PRIVATE_THROWN_CONTENT", body: "PRIVATE_REQUEST_BODY" };
   const f = endpoint(failure);
   const response = await runtimeRequest(request(), f.value);
-  assert.equal(response.status, 409);
+  assert.equal(response.status, 500);
   assert.equal(log.mock.calls.length, 1);
   const serialized = JSON.stringify(log.mock.calls[0]!.arguments);
-  assert.ok(serialized.includes("NonError"));
+  assert.ok(serialized.includes("other"));
   assert.ok(!serialized.includes("PRIVATE_"));
+});
+
+test("an unexpected storage transport defect keeps its request ID without leaking error text", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const error = new TypeError("PRIVATE_STORAGE_FAILURE");
+  const f = endpoint(error);
+  const response = await runtimeRequest(request(), f.value);
+  assert.equal(response.status, 500);
+  const body = await response.json();
+  assert.equal(body.error, "runtime-defect");
+  assert.equal(response.headers.get("X-Request-Id"), body.requestId);
+  assert.equal(f.reads(), 1);
+  assert.equal(log.mock.calls.length, 1);
+  const serialized = JSON.stringify(log.mock.calls[0]!.arguments);
+  assert.ok(serialized.includes(body.requestId));
+  assert.ok(serialized.includes("TypeError"));
+  assert.ok(!JSON.stringify([body, serialized]).includes("PRIVATE_"));
+  assert.equal(error.message, "PRIVATE_STORAGE_FAILURE");
 });

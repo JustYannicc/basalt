@@ -1,3 +1,5 @@
+import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
+import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
@@ -81,8 +83,10 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyBulkSchemaVersion,
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
+        historyJournalPrepareVersion,
+        historyRowSchemaVersion,
         historySchemaVersion,
-      ],
+      ].sort(),
     );
     assert.deepEqual(
       (await readRequests(db, query)).records[0],

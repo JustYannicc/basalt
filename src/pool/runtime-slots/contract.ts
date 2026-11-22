@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import type { RuntimeDistance } from "../runtime-distance.ts";
 
 const Identifier = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
 const Counter = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
@@ -12,6 +13,9 @@ export const SlotTarget = Schema.Struct({
   instanceId: Identifier,
   imageDigest: Schema.String.check(Schema.isPattern(/^sha256:[a-f0-9]{64}$/u)),
   imageInput: Identifier,
+  homePeerOrdinal: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 128 })),
+  ),
 });
 export type SlotTarget = typeof SlotTarget.Type;
 export const SlotIdentity = Schema.Struct({ ...SlotTarget.fields, bootId: Identifier });
@@ -25,6 +29,19 @@ export const SlotRecord = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
   fenced: Schema.Boolean,
+  /** When the fence command last fenced the slot, for the operator; other fences don't record it. */
+  fencedAt: Schema.optional(Schema.Number),
+  /**
+   * How the last unfence ended the fence: with a passing proof, or by handing a slot that couldn't
+   * prove itself back to recovery, after which it serves only once `proven`.
+   */
+  unfenced: Schema.optional(
+    Schema.Struct({
+      by: Schema.Literals(["proof", "recovery"]),
+      at: Schema.Number,
+      proven: Schema.Boolean,
+    }),
+  ),
   retirement: Schema.optional(
     Schema.Struct({
       operationId: Identifier,
@@ -33,6 +50,11 @@ export const SlotRecord = Schema.Struct({
   ),
 });
 export type SlotRecord = typeof SlotRecord.Type;
+/**
+ * Handed back to recovery by an unfence: no model call, and nothing reports it serving, until
+ * current policies reach its boot. Home calls and installs do reach it; that is how they get there.
+ */
+export const awaitsProof = (slot: SlotRecord | undefined) => slot?.unfenced?.proven === false;
 export const SlotSelection = Schema.Struct({
   epoch: Counter,
   active: SlotRecord,
@@ -54,10 +76,21 @@ export const PromotionIntent = Schema.Struct({
   policyDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
 });
 export type PromotionIntent = typeof PromotionIntent.Type;
+const slotRefusals = [
+  "identity",
+  "selection",
+  "policy",
+  "unhealthy",
+  "draining",
+  "uncertain",
+] as const;
+export const PromotionRefusal = Schema.Literals([...slotRefusals, "timeout", "unclassified"]);
+export type PromotionRefusal = typeof PromotionRefusal.Type;
 export const PromotionReceipt = Schema.Struct({
   format: Schema.Literal("pool-promotion-receipt-v1"),
   intent: PromotionIntent,
   status: Schema.Literals(["started", "promoted", "refused"]),
+  reason: Schema.optional(PromotionRefusal),
   at: Schema.Number,
   epoch: Counter,
   policies: Schema.Array(PolicyRevision),
@@ -76,6 +109,7 @@ export interface SlotHealth {
   identity: SlotIdentity;
   // Uses the controller's monotonic clock, like RuntimeProtection.
   policyLeaseUntil: number;
+  database?: RuntimeDistance;
 }
 export interface SlotDriver {
   start(target: SlotTarget, signal: AbortSignal): Promise<SlotHealth>;
@@ -88,7 +122,9 @@ export interface SlotDriver {
     signal: AbortSignal,
   ): Promise<void>;
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327): Promise<Response>;
+  drain(identity: SlotIdentity, signal: AbortSignal): Promise<{ active: number; known: boolean }>;
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal): Promise<void>;
+  retirement(identity: SlotIdentity, signal: AbortSignal): Promise<RuntimeRetirementObservation>;
 }
 export interface SlotSnapshot {
   selection?: SlotSelection;
@@ -96,8 +132,22 @@ export interface SlotSnapshot {
   denials: readonly NativeMembershipPolicy[];
   digest: string;
 }
+export const RuntimeRetirementObservation = Schema.Struct({
+  identity: SlotIdentity,
+  retired: Schema.Boolean,
+  running: Schema.Boolean,
+  retireNotStarted: Schema.optional(Schema.Literal(true)),
+  provider: Schema.optional(
+    Schema.Struct({
+      accountId: Identifier,
+      namespaceId: Identifier,
+      applicationConfigDigest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+    }),
+  ),
+});
+export type RuntimeRetirementObservation = typeof RuntimeRetirementObservation.Type;
 export class SlotRefused extends Error {
-  readonly reason: "identity" | "selection" | "policy" | "unhealthy" | "draining" | "uncertain";
+  readonly reason: (typeof slotRefusals)[number];
   constructor(reason: SlotRefused["reason"]) {
     super(`Pool runtime slot refused: ${reason}`);
     this.reason = reason;

@@ -3,7 +3,6 @@ import { matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
 import { areas, heavyJobs, sharedInputs, staticInputs } from "./areas.ts";
 import { matchingDeclarations, readDeclarations } from "./declarations.ts";
-import { configuredBoatJobs as parseBoatJobs } from "./boat.ts";
 import { carryTargets, frozenInputMatcher, isRelativeInput } from "./inputs.ts";
 
 export { carryTargets } from "./inputs.ts";
@@ -56,14 +55,6 @@ export function selectPaths(paths: readonly string[]) {
     declaredFiles: complete ? null : [...declaredFiles].sort(),
     jobs: heavyJobs.filter((job) => reasons.has(job)),
     reasons: Object.fromEntries([...reasons].map(([job, paths]) => [job, [...paths]])),
-  };
-}
-
-export function jobRoutes(jobs: readonly string[], configuredBoatJobs: string) {
-  const configured = parseBoatJobs(configuredBoatJobs);
-  return {
-    hostedJobs: jobs.filter((job) => !configured.includes(job)),
-    boatJobs: jobs.filter((job) => configured.includes(job)),
   };
 }
 

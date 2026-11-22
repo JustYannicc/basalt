@@ -1,0 +1,169 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
+import { PoolAlarms } from "./alarms.ts";
+import { PoolLifecycle } from "./lifecycle.ts";
+
+function fixture(existing: number | null = null) {
+  const memory = new SlotMemory();
+  let alarm = existing,
+    now = 100;
+  const storage = {
+    get: memory.get.bind(memory),
+    put: memory.put.bind(memory),
+    transaction: memory.transaction.bind(memory),
+    getAlarm: async () => alarm,
+    setAlarm: async (at: number) => {
+      alarm = at;
+    },
+  };
+  return {
+    storage,
+    scheduler: new PoolAlarms(storage, () => now),
+    current: () => alarm,
+    fire: (at: number) => {
+      now = at;
+      alarm = null;
+    },
+    now: () => now,
+  };
+}
+
+test("an earlier fleet deadline preserves an already scheduled Home operation through reconstruction", async () => {
+  const f = fixture(5_000);
+  await f.scheduler.schedule("fleet", 200);
+  assert.equal(f.current(), 200);
+  f.fire(200);
+  const restored = new PoolAlarms(f.storage, f.now);
+  assert.deepEqual(await restored.take(), { home: false, fleet: true });
+  await restored.rearm();
+  assert.equal(f.current(), 5_000);
+  f.fire(5_000);
+  assert.deepEqual(await restored.take(), { home: true, fleet: false });
+});
+
+test("concurrent Home and fleet scheduling keeps each earliest deadline and does not run Home at fleet cadence", async () => {
+  const f = fixture();
+  await Promise.all([
+    f.scheduler.schedule("home", 500),
+    f.scheduler.schedule("fleet", 200),
+    f.scheduler.schedule("home", 600),
+    f.scheduler.schedule("fleet", 250),
+  ]);
+  assert.equal(f.current(), 200);
+  f.fire(200);
+  assert.deepEqual(await f.scheduler.take(), { home: false, fleet: true });
+  await f.scheduler.schedule("fleet", 300);
+  f.fire(300);
+  assert.deepEqual(await f.scheduler.take(), { home: false, fleet: true });
+  await f.scheduler.rearm();
+  assert.equal(f.current(), 500);
+});
+
+test("a retained alarm without new bookkeeping still runs its Home upkeep once", async () => {
+  const f = fixture();
+  assert.deepEqual(await f.scheduler.take(), { home: true, fleet: false });
+  assert.deepEqual(await f.scheduler.take(), { home: false, fleet: false });
+});
+
+test("lifecycle warmth retains its Home deadline behind an earlier fleet alarm", async () => {
+  const f = fixture();
+  let running = false;
+  await f.scheduler.schedule("fleet", 200);
+  const lifecycle = new PoolLifecycle(
+    {
+      running: () => running,
+      start: () => {
+        running = true;
+      },
+      stop: async () => {
+        running = false;
+      },
+      keepAlive: async () => {},
+      status: async () => ({ boot_id: "retained-boot", started_at: "fixture" }),
+      schedule: (at) => f.scheduler.schedule("home", at),
+    },
+    f.storage,
+    "revision",
+    {
+      now: f.now,
+      sleep: async () => {
+        throw new Error("No startup wait expected");
+      },
+    },
+  );
+  await lifecycle.warm();
+  assert.equal(f.current(), 200);
+  f.fire(200);
+  assert.deepEqual(await f.scheduler.take(), { home: false, fleet: true });
+  await f.scheduler.rearm();
+  assert.equal(f.current(), 300_100);
+  f.fire(300_100);
+  assert.deepEqual(await new PoolAlarms(f.storage, f.now).take(), { home: true, fleet: false });
+});
+
+const selected = async () => true;
+
+test("a missing alarm is armed only while a runtime is selected", async () => {
+  const f = fixture();
+  let asked = 0;
+  await f.scheduler.ensure(async () => (asked++, false));
+  assert.equal(asked, 1);
+  assert.equal(f.current(), null, "nothing is selected, so nothing is armed");
+  assert.equal(await f.storage.get("pool-alarm-v1:deadlines"), undefined, "and nothing is written");
+  // An alarm that is set is only lowered, whatever is selected, so the check is not needed.
+  const armed = fixture(5_000);
+  await armed.scheduler.schedule("fleet", 200);
+  await armed.storage.setAlarm(5_000);
+  await armed.scheduler.ensure(async () => (asked++, false));
+  assert.equal(asked, 1, "a set alarm asks for no selection");
+  assert.equal(armed.current(), 200);
+});
+
+test("a missing alarm is armed for both owners at once, and an armed one is left alone", async () => {
+  const f = fixture();
+  await f.scheduler.ensure(selected);
+  assert.equal(f.current(), 100, "a runtime is selected and nothing was armed, so both run now");
+  assert.deepEqual(await f.scheduler.take(), { home: true, fleet: true });
+  const armed = fixture(5_000);
+  await armed.scheduler.ensure(selected);
+  assert.equal(armed.current(), 5_000, "an armed alarm keeps its deadline");
+});
+
+test("an isolate checks for a missing alarm at most once every five seconds", async () => {
+  const f = fixture(5_000);
+  await f.scheduler.ensure(selected);
+  f.fire(4_000);
+  await f.scheduler.ensure(selected);
+  assert.equal(f.current(), null, "within five seconds of the last check, no read and no arm");
+  f.fire(5_100);
+  await f.scheduler.ensure(selected);
+  assert.equal(f.current(), 5_100);
+});
+
+test("arming a missing alarm writes both owners at once, so a take right after its write sees both due", async () => {
+  const f = fixture();
+  let raced: { home: boolean; fleet: boolean } | undefined;
+  let racing = false;
+  const transaction = f.storage.transaction;
+  // A take that lands right after the arming's first write, as an alarm handler can.
+  f.storage.transaction = (async (work: Parameters<typeof transaction>[0]) => {
+    const result = await transaction(work);
+    if (!racing) {
+      racing = true;
+      raced = await f.scheduler.take();
+    }
+    return result;
+  }) as typeof transaction;
+  await f.scheduler.ensure(selected);
+  assert.deepEqual(raced, { home: true, fleet: true });
+});
+
+test("an alarm another writer moved later is lowered back to the earliest stored deadline", async () => {
+  const f = fixture();
+  await f.scheduler.schedule("fleet", 200);
+  // A lock deadline written straight to the native alarm replaces the earlier fleet one.
+  await f.storage.setAlarm(5_000);
+  await f.scheduler.ensure(selected);
+  assert.equal(f.current(), 200);
+});

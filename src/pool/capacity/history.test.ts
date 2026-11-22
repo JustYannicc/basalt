@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { capacityWeight } from "./weights.ts";
+import { capacityWeight as resolveWeight } from "./weights.ts";
 import { CapacityHistory, type CapacityExpectedCohort } from "./history.ts";
 import type { CapacityReading } from "./normalize.ts";
 import { ChunkStorage, type UsageStorage } from "../usage-storage.ts";
+import { seedCatalog } from "../allowances/data.ts";
+import * as weights from "./weights.ts";
 
 class Memory implements UsageStorage {
   values = new Map<string, unknown>();
@@ -20,6 +22,10 @@ class Memory implements UsageStorage {
 
 const hour = 3_600_000;
 const start = Date.parse("2026-11-03T10:05:00Z");
+// Seed allowances expire on a date, so the real clock would turn a known policy unknown.
+const weightClock = Date.parse("2026-11-13T12:00:00Z");
+const capacityWeight = (provider: string, plan: string, seconds: number) =>
+  resolveWeight(provider, plan, seconds, { now: weightClock });
 const expected = (accounts: number): CapacityExpectedCohort[] => [
   { provider: "claude", windowSeconds: 18_000, accounts },
 ];
@@ -782,4 +788,94 @@ test("aggregate provenance preserves each account's evidence dates", async () =>
     point!.last.weights.map((weight) => weight.allowance?.expiresAt).sort(),
     [start + hour, start + 2 * hour].sort(),
   );
+});
+
+test("an account moving between unit cohorts as its calibration forms and lapses keeps both trained", async () => {
+  const history = new CapacityHistory(new Memory());
+  const expected = [{ provider: "claude", windowSeconds: 604_800, accounts: 2 }];
+  const proEq = { id: "claude-pro-equivalent", label: "Pro-eq" };
+  const tokens = { id: '["observed-tokens","anthropic","profile"]', label: "observed tokens" };
+  const weekly = (account: string, at: number, ratio: number, options: Partial<CapacityReading>) =>
+    reading(account, ratio * (options.full ?? 1), {
+      windowSeconds: 604_800,
+      mode: "fixed",
+      observedAt: at,
+      resetAt: start + 7 * 24 * hour,
+      ...options,
+    });
+  const policy = (at: number, ratio: number, revision = "policy-20") =>
+    weekly("max-seat", at, ratio, { plan: "Max 20x", full: 20, unit: proEq, revision });
+  const calibrated = (at: number, ratio: number) =>
+    weekly("max-seat", at, ratio, {
+      plan: "Max 20x",
+      full: 900_000,
+      unit: tokens,
+      source: "account-calibration",
+      revision: "calibration-v1:900000",
+    });
+  const pro = (at: number, ratio: number) =>
+    weekly("pro-seat", at, ratio, { plan: "Pro", full: 1, unit: proEq, revision: "pro" });
+  const observe = (at: number, max: CapacityReading, ratio: number) =>
+    history.observe("calibration", { at, expected, readings: [max, pro(at, ratio)] });
+  let at = start;
+  await observe(at, policy(at, 1), 1);
+  for (const [index, max] of [calibrated, policy, calibrated, policy].entries()) {
+    at += hour;
+    await observe(at, max(at, 0.9 - index * 0.05), 0.95 - index * 0.05);
+  }
+  const after = await history.demandData("calibration");
+  assert.deepEqual(after.cohortTrackingSince, {});
+  assert.equal(after.trackingSince, start);
+
+  // A returning account that brings a new revision is still a policy change for its cohort.
+  at += hour;
+  await observe(at, policy(at, 0.6, "policy-25"), 0.7);
+  const changed = await history.demandData("calibration");
+  assert.equal(
+    changed.cohortTrackingSince?.[JSON.stringify(["claude", 604_800, "fixed", proEq.id])],
+    Math.ceil(at / hour) * hour,
+  );
+});
+
+test("an expired allowance keeps its cohort's training until a source decides", async () => {
+  const history = new CapacityHistory(new Memory());
+  const expected = [{ provider: "claude", windowSeconds: 604_800, accounts: 1 }];
+  const expiry = seedCatalog.entries.find(
+    (entry) =>
+      entry.vendor === "anthropic" && entry.plan === "max_20x" && entry.windowSeconds === 604_800,
+  )!.expiresAt!;
+  const sample = (at: number, ratio: number) => {
+    const weight = weights.capacityWeight("claude", "Max 20x", 604_800, { now: at });
+    return reading("max-seat", ratio * weight.multiplier, {
+      plan: "Max 20x",
+      windowSeconds: 604_800,
+      mode: "fixed",
+      observedAt: at,
+      resetAt: expiry + 7 * 24 * hour,
+      full: weight.multiplier,
+      source: weight.source,
+      knownWeight: weight.known,
+      revision: weight.revision,
+      unit: weight.unit,
+      allowance: weight.allowance,
+    });
+  };
+  const first = expiry - 2 * hour;
+  await history.observe("max", { at: first, expected, readings: [sample(first, 1)] });
+  await history.observe("max", {
+    at: first + hour,
+    expected,
+    readings: [sample(first + hour, 0.9)],
+  });
+  const before = await history.demandData("max");
+  const aged = expiry + hour;
+  const stale = sample(aged, 0.8);
+  await history.observe("max", { at: aged, expected, readings: [stale] });
+  const after = await history.demandData("max");
+  assert.deepEqual(after.cohortTrackingSince, {});
+  assert.equal(after.trackingSince, before.trackingSince);
+  assert.equal(stale.full, 20);
+  assert.equal(stale.revision, "2026-11-09-max20x-20");
+  assert.ok(stale.allowance!.expiresAt! <= aged);
+  assert.match(stale.allowance!.detail!, /source expired/);
 });

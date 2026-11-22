@@ -14,6 +14,9 @@ export function e2eCorrections(root: string) {
     "retained-pool-overview",
     "topic-scoped-pool-fixtures",
     "executor-v2-fixtures",
+    "embedded-app-assertion-diagnostics",
+    "embedded-browser-boundaries",
+    "setup-http-status",
   ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);

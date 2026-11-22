@@ -4,26 +4,51 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 
 /** One integrated hosted connection, with the provider's consent emulated on its HTTPS fixture. */
-export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory, check }) {
+export function proveZohoMcpUi({
+  Effect,
+  target,
+  actors,
+  app,
+  fixture,
+  directory,
+  check,
+  diagnostics,
+}) {
+  const capture = (error, phase = diagnostics.phase) => {
+    // Effect wraps rejected promises; keep the original browser error class before that boundary.
+    diagnostics.error ??= error;
+    diagnostics.failurePhase ??= phase;
+    throw error;
+  };
   return Effect.gen(function* () {
+    diagnostics.phase = "zoho-mcp-browser-launch";
     const { chromium } = createRequire(join(import.meta.dirname, "../.upstream/package.json"))(
       "playwright",
     );
     const browser = yield* Effect.acquireRelease(
-      Effect.promise(() => chromium.launch({ headless: true })),
-      (value) => Effect.promise(() => value.close()),
+      Effect.promise(() => chromium.launch({ headless: true }).catch(capture)),
+      (value) =>
+        Effect.promise(() =>
+          value.close().catch((error) => capture(error, "zoho-mcp-browser-cleanup")),
+        ),
     );
+    diagnostics.phase = "zoho-mcp-browser-context";
     const context = yield* Effect.acquireRelease(
       Effect.promise(() =>
-        browser.newContext({
-          viewport: { width: 1280, height: 900 },
-          recordVideo: { dir: join(directory, "video"), size: { width: 1280, height: 900 } },
-          userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version().split(".")[0]}.0.0.0 Safari/537.36`,
-        }),
+        browser
+          .newContext({
+            viewport: { width: 1280, height: 900 },
+            recordVideo: { dir: join(directory, "video"), size: { width: 1280, height: 900 } },
+            userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browser.version().split(".")[0]}.0.0.0 Safari/537.36`,
+          })
+          .catch(capture),
       ),
-      (value) => Effect.promise(() => value.close()),
+      (value) =>
+        Effect.promise(() =>
+          value.close().catch((error) => capture(error, "zoho-mcp-browser-cleanup")),
+        ),
     );
-    return yield* Effect.promise(async () => {
+    const flow = async () => {
       await context.addCookies(actors.owner.cookies);
       const consent = Promise.withResolvers();
       const events = [];
@@ -74,7 +99,9 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
       });
       const appUrl = `${target.metadata.origin}/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
       try {
+        diagnostics.phase = "zoho-mcp-open-app";
         await page.goto(appUrl);
+        diagnostics.phase = "zoho-mcp-connect-dialog";
         await page.getByRole("button", { name: "Connect new account", exact: true }).click();
         const method = page.getByRole("combobox", { name: "Sign-in method" });
         await method.waitFor({ state: "visible" });
@@ -83,8 +110,10 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
           path: join(directory, "zoho-rest-default-1280.png"),
           animations: "disabled",
         });
+        diagnostics.phase = "zoho-mcp-method";
         await method.click();
         await page.getByRole("option", { name: /Sign in with Zoho People \(MCP\)/ }).click();
+        diagnostics.phase = "zoho-mcp-endpoint-entry";
         const input = page.getByLabel("MCP server URL", { exact: true });
         await input.waitFor({ state: "visible" });
         assert.equal(await input.getAttribute("type"), "password");
@@ -105,6 +134,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
           );
         }
         await page.setViewportSize({ width: 1280, height: 900 });
+        diagnostics.phase = "zoho-mcp-endpoint-validation";
         const proceed = page.getByRole("button", { name: "Continue", exact: true });
         assert.equal(await proceed.isDisabled(), true);
         await input.fill("http://unlisted.invalid/mcp");
@@ -117,6 +147,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
         await page.getByRole("button", { name: "Show MCP server URL", exact: true }).click();
         assert.equal(await input.getAttribute("type"), "text");
         await page.getByRole("button", { name: "Hide MCP server URL", exact: true }).click();
+        diagnostics.phase = "zoho-mcp-endpoint-save";
         const saved = page.waitForResponse(
           (response) =>
             response.request().method() === "POST" &&
@@ -126,6 +157,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
         assert.equal((await saved).status(), 200);
         await page.locator('[data-mcp-endpoint="configured"]').waitFor();
         assert.equal(await input.count(), 0, "The private URL is cleared after saving");
+        diagnostics.phase = "zoho-mcp-oauth-ready";
         for (const width of [1280, 390]) {
           await page.setViewportSize({ width, height: 900 });
           await page
@@ -142,8 +174,10 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
             response.request().method() === "POST" &&
             new URL(response.url()).pathname.endsWith("/oauth/complete"),
         });
+        diagnostics.phase = "zoho-mcp-oauth-consent";
         await page.getByRole("button", { name: "Sign in with Zoho People", exact: true }).click();
         const { callback, loopback } = await consent.promise;
+        diagnostics.phase = "zoho-mcp-oauth-callback";
         if (loopback) {
           await page
             .getByLabel("Address of the page you landed on", { exact: true })
@@ -151,6 +185,7 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
           await page.getByRole("button", { name: "Connect account", exact: true }).click();
         }
         assert.equal((await completed).status(), 200);
+        diagnostics.phase = "zoho-mcp-connected";
         await page.goto(appUrl);
         await page.getByRole("button", { name: "Connect new account", exact: true }).waitFor();
         for (const width of [1280, 390]) {
@@ -160,9 +195,12 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
             animations: "disabled",
           });
         }
+        diagnostics.phase = "zoho-mcp-browser-assertions";
         check("hosted masked endpoint flow completes OAuth", true, true);
         check("hosted connect has no browser errors", errors, []);
       } catch (error) {
+        diagnostics.error ??= error;
+        diagnostics.failurePhase ??= diagnostics.phase;
         for (const [index, current] of context.pages().entries()) {
           await current
             .screenshot({
@@ -180,10 +218,12 @@ export function proveZohoMcpUi({ Effect, target, actors, app, fixture, directory
         }
         throw error;
       } finally {
+        if (!diagnostics.error) diagnostics.phase = "zoho-mcp-browser-cleanup";
         await writeFile(join(directory, "browser-events.json"), JSON.stringify(events, null, 2));
         await page.close();
         if (video) await video.saveAs(join(directory, "zoho-mcp-flow.webm"));
       }
-    });
+    };
+    return yield* Effect.promise(() => flow().catch(capture));
   });
 }

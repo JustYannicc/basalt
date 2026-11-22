@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { retryGitHubReads } from "../releases/github-retry.ts";
 
 export type MainCandidate = { head: string };
 
@@ -17,7 +18,10 @@ async function json(fetcher: MainCandidateFetch, token: string, url: string): Pr
       "User-Agent": "basalt-release",
     },
   });
-  if (!response.ok) throw new Error(`GitHub request for the main release candidate failed with HTTP ${response.status}`);
+  if (!response.ok)
+    throw new Error(
+      `GitHub request for the main release candidate failed with HTTP ${response.status}`,
+    );
   return response.json();
 }
 
@@ -26,26 +30,36 @@ class MainHistory {
   readonly #get: (path: string) => Promise<unknown>;
 
   constructor(repository: string, token: string, fetcher: MainCandidateFetch) {
-    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error("GITHUB_REPOSITORY must identify the repository");
-    this.#get = (path) => json(fetcher, token, `https://api.github.com/repos/${repository}${path}`);
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
+      throw new Error("GITHUB_REPOSITORY must identify the repository");
+    const github = retryGitHubReads(fetcher);
+    this.#get = (path) => json(github, token, `https://api.github.com/repos/${repository}${path}`);
   }
 
   async mainHead(): Promise<string> {
-    const main = await this.#get("/commits/main") as { sha?: unknown };
+    const main = (await this.#get("/commits/main")) as { sha?: unknown };
     if (typeof main.sha !== "string") throw new Error("GitHub returned no main head");
     return main.sha.toLowerCase();
   }
 
   /** One page of commits after `ancestor`; a single-commit page is enough to read containment. */
-  async #compare(ancestor: string, descendant: string, page = 1, perPage = 1): Promise<{ contained: boolean; total: number; commits: string[] }> {
-    const comparison = await this.#get(`/compare/${ancestor}...${descendant}?per_page=${perPage}&page=${page}`) as
-      { status?: unknown; total_commits?: unknown; commits?: unknown };
+  async #compare(
+    ancestor: string,
+    descendant: string,
+    page = 1,
+    perPage = 1,
+  ): Promise<{ contained: boolean; total: number; commits: string[] }> {
+    const comparison = (await this.#get(
+      `/compare/${ancestor}...${descendant}?per_page=${perPage}&page=${page}`,
+    )) as { status?: unknown; total_commits?: unknown; commits?: unknown };
     return {
       // "ahead" means `descendant` is `ancestor` plus newer commits; "behind" or "diverged" means it doesn't contain it.
       contained: comparison.status === "identical" || comparison.status === "ahead",
       total: typeof comparison.total_commits === "number" ? comparison.total_commits : 0,
       commits: Array.isArray(comparison.commits)
-        ? comparison.commits.map((commit: { sha?: unknown }) => String(commit.sha).toLowerCase()).filter((value) => sha.test(value))
+        ? comparison.commits
+            .map((commit: { sha?: unknown }) => String(commit.sha).toLowerCase())
+            .filter((value) => sha.test(value))
         : [],
     };
   }
@@ -60,20 +74,36 @@ class MainHistory {
     const first = await this.#compare(candidate, mainHead, 1, comparePage);
     if (!first.contained) throw new Error("main does not contain the release candidate");
     for (let page = Math.max(1, Math.ceil(first.total / comparePage)); page >= 1; page--) {
-      const { commits } = page === 1 ? first : await this.#compare(candidate, mainHead, page, comparePage);
+      const { commits } =
+        page === 1 ? first : await this.#compare(candidate, mainHead, page, comparePage);
       yield* [...commits].reverse();
     }
   }
 
   /** Commits among `filter`'s push Check runs on main that passed. */
   async #passed(filter: Record<string, string>): Promise<Set<string>> {
-    const query = new URLSearchParams({ ...filter, event: "push", branch: "main", per_page: "100" });
-    const runs = await this.#get(`/actions/workflows/ci.yml/runs?${query}`) as { workflow_runs?: unknown };
-    if (!Array.isArray(runs.workflow_runs)) throw new Error("GitHub returned no Check runs for the main release candidate");
-    return new Set(runs.workflow_runs
-      .filter((run: { head_sha?: unknown; conclusion?: unknown; event?: unknown; path?: unknown }) =>
-        typeof run.head_sha === "string" && run.event === "push" && run.conclusion === "success" && run.path === ".github/workflows/ci.yml")
-      .map((run: { head_sha: string }) => run.head_sha.toLowerCase()));
+    const query = new URLSearchParams({
+      ...filter,
+      event: "push",
+      branch: "main",
+      per_page: "100",
+    });
+    const runs = (await this.#get(`/actions/workflows/ci.yml/runs?${query}`)) as {
+      workflow_runs?: unknown;
+    };
+    if (!Array.isArray(runs.workflow_runs))
+      throw new Error("GitHub returned no Check runs for the main release candidate");
+    return new Set(
+      runs.workflow_runs
+        .filter(
+          (run: { head_sha?: unknown; conclusion?: unknown; event?: unknown; path?: unknown }) =>
+            typeof run.head_sha === "string" &&
+            run.event === "push" &&
+            run.conclusion === "success" &&
+            run.path === ".github/workflows/ci.yml",
+        )
+        .map((run: { head_sha: string }) => run.head_sha.toLowerCase()),
+    );
   }
 
   async passedPushCheck(commit: string): Promise<boolean> {
@@ -87,8 +117,12 @@ class MainHistory {
 
   async isReleaseUpdate(commit: string): Promise<boolean> {
     const pulls = await this.#get(`/commits/${commit}/pulls`);
-    if (!Array.isArray(pulls)) throw new Error("GitHub returned no pull request list for the main release candidate");
-    return pulls.some((pull: { head?: { ref?: unknown } }) => typeof pull.head?.ref === "string" && pull.head.ref.startsWith("release-updates/"));
+    if (!Array.isArray(pulls))
+      throw new Error("GitHub returned no pull request list for the main release candidate");
+    return pulls.some(
+      (pull: { head?: { ref?: unknown } }) =>
+        typeof pull.head?.ref === "string" && pull.head.ref.startsWith("release-updates/"),
+    );
   }
 }
 
@@ -112,15 +146,35 @@ export async function validateMainCandidate(
   fetcher: MainCandidateFetch = fetch,
 ): Promise<MainCandidate> {
   const history = new MainHistory(repository, token, fetcher);
-  const head = candidate === undefined ? fullSha(checkedOut, "checked-out main commit") : fullSha(candidate, "release candidate");
+  const head =
+    candidate === undefined
+      ? fullSha(checkedOut, "checked-out main commit")
+      : fullSha(candidate, "release candidate");
   const mainHead = await history.mainHead();
-  if (candidate === undefined && mainHead !== head) throw new Error("the checked-out commit is not the current main head");
-  if (!await history.contains(head, mainHead)) throw new Error("main does not contain the release candidate");
-  if (!await history.passedPushCheck(head)) throw new Error("the main release candidate has no successful push Check");
+  if (candidate === undefined && mainHead !== head)
+    throw new Error("the checked-out commit is not the current main head");
+  if (!(await history.contains(head, mainHead)))
+    throw new Error("main does not contain the release candidate");
+  if (!(await history.passedPushCheck(head)))
+    throw new Error("the main release candidate has no successful push Check");
   // Upstream update PRs must keep their live preview proof, which only the PR-based manual release checks.
   if (await history.isReleaseUpdate(head))
-    throw new Error("the release candidate is a release update; release it through Manual release with its pull request");
+    throw new Error(
+      "the release candidate is a release update; release it through Manual release with its pull request",
+    );
   return { head };
+}
+
+/** Whether the push Check completed successfully on exactly this main commit. */
+export async function passedMainPushCheck(
+  repository: string,
+  token: string,
+  commit: string,
+  fetcher: MainCandidateFetch = fetch,
+): Promise<boolean> {
+  return new MainHistory(repository, token, fetcher).passedPushCheck(
+    fullSha(commit, "main commit"),
+  );
 }
 
 /**
@@ -141,8 +195,11 @@ export async function newerMainCandidate(
   for await (const commit of history.newerThan(base, mainHead)) {
     passed ??= await history.recentlyPassed();
     // A merged side branch lists commits that don't contain the candidate; main's head was just compared.
-    if (passed.has(commit) && !await history.isReleaseUpdate(commit) &&
-        (commit === mainHead || await history.contains(base, commit)))
+    if (
+      passed.has(commit) &&
+      !(await history.isReleaseUpdate(commit)) &&
+      (commit === mainHead || (await history.contains(base, commit)))
+    )
       return commit;
   }
   return undefined;
@@ -158,26 +215,46 @@ export function mainCandidateOutputLines(candidate: MainCandidate): string {
  * `newest` releases the newest valid main commit containing the candidate, falling back to the
  * candidate. `newer` only reports that newer commit, if any, for Deploy to hand off.
  */
-export async function runMainCandidateCli(env = process.env, mode = process.argv[2], fetcher: MainCandidateFetch = fetch): Promise<void> {
+export async function runMainCandidateCli(
+  env = process.env,
+  mode = process.argv[2],
+  fetcher: MainCandidateFetch = fetch,
+): Promise<void> {
   const token = env.GH_TOKEN ?? env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN is required");
-  if (env.GITHUB_REF !== "refs/heads/main") throw new Error("manual main releases run only from main");
-  if (mode !== undefined && mode !== "newest" && mode !== "newer") throw new Error("usage: main-candidate.ts [newest|newer]");
+  if (env.GITHUB_REF !== "refs/heads/main")
+    throw new Error("manual main releases run only from main");
+  if (mode !== undefined && mode !== "newest" && mode !== "newer")
+    throw new Error("usage: main-candidate.ts [newest|newer]");
   const repository = env.GITHUB_REPOSITORY ?? "";
   const requested = env.MAIN_RELEASE_CANDIDATE?.trim() || undefined;
   if ((env.MAIN_RELEASE_REQUIRE_CANDIDATE === "true" || mode === "newer") && !requested)
     throw new Error("the release candidate is missing; start a new release");
   let lines: string;
   // The walk only returns a commit that already meets every release check.
-  const newer = requested && mode ? await newerMainCandidate(repository, token, requested, fetcher) : undefined;
+  const newer =
+    requested && mode ? await newerMainCandidate(repository, token, requested, fetcher) : undefined;
   if (mode === "newer") lines = `newer=${newer ?? ""}\n`;
   else {
-    const candidate = newer ? { head: newer } : await validateMainCandidate(repository, token, env.MAIN_RELEASE_CHECKOUT ?? "", requested, fetcher);
+    const candidate = newer
+      ? { head: newer }
+      : await validateMainCandidate(
+          repository,
+          token,
+          env.MAIN_RELEASE_CHECKOUT ?? "",
+          requested,
+          fetcher,
+        );
     lines = mainCandidateOutputLines(candidate);
     if (env.GITHUB_STEP_SUMMARY)
-      appendFileSync(env.GITHUB_STEP_SUMMARY, `Selected release candidate: \`${candidate.head}\`.\n`, { encoding: "utf8", mode: 0o600 });
+      appendFileSync(
+        env.GITHUB_STEP_SUMMARY,
+        `Selected release candidate: \`${candidate.head}\`.\n`,
+        { encoding: "utf8", mode: 0o600 },
+      );
   }
-  if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, lines, { encoding: "utf8", mode: 0o600 });
+  if (env.GITHUB_OUTPUT)
+    appendFileSync(env.GITHUB_OUTPUT, lines, { encoding: "utf8", mode: 0o600 });
   process.stdout.write(lines);
 }
 

@@ -1,4 +1,4 @@
-import { parseClosedErrorClass } from "../connectors-tests/guidance-failure.ts";
+import { parseClosedErrorClass, zohoMcpPhases } from "../connectors-tests/guidance-failure.ts";
 import { compilerDiagnostic } from "../catalog-compat/build-failure.mjs";
 
 const phases = new Set([
@@ -31,6 +31,7 @@ const phases = new Set([
   "global-client-preference",
   "tenant-public-client",
   "company-guidance",
+  ...zohoMcpPhases,
 ]);
 const kinds = new Set([
   "assertion",
@@ -66,6 +67,8 @@ const sources = new Set([
   "catalog-compat.mjs",
   "elevenlabs-discovery.mjs",
   "zoho-people.mjs",
+  "zoho-people-mcp.mjs",
+  "zoho-people-mcp-ui.mjs",
 ]);
 const count = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
 const packageId = /^[a-z0-9][a-z0-9._-]{0,63}$/;
@@ -178,12 +181,31 @@ export function connectorDiagnostic(stage, input, failureFile = false) {
     .filter((line) => line.startsWith("CONNECTORS_PROOF_FAILURE "))
     .map(parseClosedErrorClass)
     .find((value) => value !== undefined);
+  const assertion =
+    value.operation === "Manage-only admins get no App tab or prewarm" &&
+    value.phase === "embedded-manage-only-admin" &&
+    ["no-app-tab-or-frame", "no-app-prewarm"].includes(value.assertion)
+      ? {
+          operation: value.operation,
+          assertion: value.assertion,
+          counters: Object.fromEntries(
+            ["AppLinks", "iframes", "adminLocationReads"].flatMap((name) =>
+              count(value.counters?.[name]) ? [[name, value.counters[name]]] : [],
+            ),
+          ),
+        }
+      : undefined;
+  if (assertion) {
+    phase = "embedded-manage-only-admin";
+    kind = "assertion";
+  }
   return {
     stage,
     outcome: failed ? "failed" : value.code === 0 ? "passed" : "observed",
     phase,
     kind,
     ...errorClass,
+    ...assertion,
     ...(Number.isInteger(value.code) && value.code >= 0 && value.code <= 255
       ? { code: value.code }
       : {}),

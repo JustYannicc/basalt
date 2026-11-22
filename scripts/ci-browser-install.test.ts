@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -61,10 +61,16 @@ if (name === 'sudo') {
   } else execute(args[0], args.slice(1));
 } else if (name === 'bunx') {
   execute(join(root, '.upstream/node_modules/.bin/playwright'), args.slice(1));
-} else if (name === 'dpkg') {
-  record(name, args);
-  assert.ok(args.slice(1).every((path) => existsSync(path)), 'local install requires downloaded debs');
-  if (mode === 'partial') process.exit(1);
+} else if (name === 'apt-get' && args[0] === 'install') {
+  record('install', args);
+  for (const flag of ['-y', '--no-remove', '--no-install-recommends', 'Dir::Etc::SourceList=/dev/null', 'Dir::Etc::SourceParts=' + join(root, 'tmp/apt-no-sources')])
+    assert.ok(args.includes(flag), 'the cached install must stay offline and all or nothing: ' + flag);
+  assert.ok(!args.includes('--no-download'), '--no-download refuses local debs');
+  const debs = args.filter((arg) => arg.endsWith('.deb'));
+  assert.ok(debs.length > 0 && debs.every((path) => existsSync(path)), 'local install requires downloaded debs');
+  // apt refuses the whole set before dpkg runs, so nothing is installed.
+  if (mode === 'partial') process.exit(100);
+  record('installed-debs', debs.map((path) => basename(path)));
   if (mode === 'slow') {
     const progress = setInterval(() => { record('unpack-progress', []); console.log('Unpacking fixture package...'); }, 5000);
     setTimeout(() => { clearInterval(progress); writeFileSync(join(root, 'installed'), 'yes'); }, 62000);
@@ -83,9 +89,19 @@ if (name === 'sudo') {
     execute('curl', ['--silent', '--show-error', '--max-time', '75', ${JSON.stringify(url)}]);
   if (config) writeFileSync(join(root, 'tmp/playwright-apt/libfixture_1_amd64.deb'), 'downloaded fixture');
   else writeFileSync(join(root, 'installed'), 'yes');
+} else if (name === 'apt-cache') {
+  record(name, args);
+  assert.equal(args[0], 'madison');
+  // The archive no longer offers libgone, though the offline install may have left it installed.
+  if (args.at(-1) !== 'libgone') console.log(' ' + args.at(-1) + ' | 2 | http://archive.ubuntu.com/ubuntu resolute/universe amd64 Packages');
+} else if (name === 'apt-get') {
+  record(name, args);
+  assert.equal(args[0], 'download');
+  if (mode === 'top-up-fail') process.exit(100);
+  for (const name of args.slice(1)) writeFileSync(name + '_2_amd64.deb', 'current ' + name);
 } else throw new Error('Unexpected fixture command ' + name);
 `;
-  for (const name of ["sudo", "bunx", "dpkg"])
+  for (const name of ["sudo", "bunx", "apt-cache", "apt-get"])
     writeFileSync(join(bin, name), mock, { mode: 0o755 });
   writeFileSync(join(root, ".upstream/node_modules/.bin/playwright"), mock, { mode: 0o755 });
   // macOS names GNU timeout gtimeout; the production runner names it timeout.
@@ -136,7 +152,7 @@ test("a restored package cache installs offline without an index refresh or mirr
       !result.calls.some((call) => call.name === "playwright" && !call.args.includes("--dry-run")),
       "a cache hit must not invoke the network installer",
     );
-    assert.ok(result.calls.some((call) => call.name === "dpkg"));
+    assert.ok(result.calls.some((call) => call.name === "install"));
     assert.deepEqual(
       result.calls
         .filter((call) => call.name === "playwright")
@@ -184,7 +200,7 @@ test("two failed mirrors exhaust the fixed attempt count", async () => {
     const attempts = result.calls.filter((call) => call.name === "playwright");
     assert.equal(attempts.length, 2);
     assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
-    assert.ok(!result.calls.some((call) => call.name === "dpkg"));
+    assert.ok(!result.calls.some((call) => call.name === "install"));
     assert.ok(attempts[0]!.args.at(-1)!.includes("http://archive.ubuntu.com/"));
     assert.ok(attempts[1]!.args.at(-1)!.includes("http://azure.archive.ubuntu.com/"));
     assert.equal(
@@ -197,62 +213,115 @@ test("two failed mirrors exhaust the fixed attempt count", async () => {
 });
 
 for (const hit of [true, false]) {
-  test(`a progressing local install can exceed the mirror deadline after a cache ${hit ? "hit" : "miss"}`, async () => {
-    const fixture_ = fixture("slow");
+  test(
+    `a progressing local install can exceed the mirror deadline after a cache ${hit ? "hit" : "miss"}`,
+    { timeout: 90_000 },
+    async () => {
+      const fixture_ = fixture("slow");
+      try {
+        const start = Date.now();
+        const result = await fixture_.run(hit);
+        const seconds = (Date.now() - start) / 1000;
+        assert.equal(result.code, 0, result.output);
+        assert.ok(seconds >= 62, `local installation ended after ${seconds}s`);
+        assert.ok(result.calls.filter((call) => call.name === "unpack-progress").length >= 12);
+        assert.ok(result.calls.some((call) => call.name === "install"));
+        assert.equal(
+          result.calls.filter((call) => call.name === "download-only").length,
+          hit ? 0 : 1,
+        );
+        console.log(
+          `Progressing local install after cache ${hit ? "hit" : "miss"} completed in ${seconds.toFixed(2)}s`,
+        );
+      } finally {
+        fixture_.dispose();
+      }
+    },
+  );
+}
+
+test(
+  "a mirror that accepts connections but never responds reaches the fallback within 70 seconds",
+  { timeout: 90_000 },
+  async () => {
+    const sockets = new Set<import("node:net").Socket>();
+    const server = createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const fixture_ = fixture("stall", `http://127.0.0.1:${address.port}/`);
     try {
       const start = Date.now();
-      const result = await fixture_.run(hit);
+      const result = await fixture_.run(false);
       const seconds = (Date.now() - start) / 1000;
       assert.equal(result.code, 0, result.output);
-      assert.ok(seconds >= 62, `local installation ended after ${seconds}s`);
-      assert.ok(result.calls.filter((call) => call.name === "unpack-progress").length >= 12);
-      assert.ok(result.calls.some((call) => call.name === "dpkg"));
-      assert.equal(
-        result.calls.filter((call) => call.name === "download-only").length,
-        hit ? 0 : 1,
+      const attempts = result.calls.filter(
+        (call) => call.name === "playwright" && !call.args.includes("--dry-run"),
       );
-      console.log(
-        `Progressing local install after cache ${hit ? "hit" : "miss"} completed in ${seconds.toFixed(2)}s`,
+      assert.equal(attempts.length, 2);
+      assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
+      assert.equal(result.calls.filter((call) => call.name === "install").length, 1);
+      assert.equal(
+        result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
+          .length,
+        1,
+      );
+      assert.ok(seconds >= 59 && seconds < 70, `mirror failover took ${seconds}s`);
+      console.log(`Stalled mirror failed over and installed in ${seconds.toFixed(2)}s`);
+    } finally {
+      fixture_.dispose();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  },
+);
+
+test("a download never installs debs left from an older image's cache", async () => {
+  const fixture_ = fixture();
+  try {
+    writeFileSync(join(fixture_.root, "tmp/playwright-apt/libstale_0_amd64.deb"), "older image");
+    const result = await fixture_.run(false);
+    assert.equal(result.code, 0, result.output);
+    const installed = result.calls.filter((call) => call.name === "installed-debs");
+    assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
+  } finally {
+    fixture_.dispose();
+  }
+});
+
+test("a download after a partial offline install still caches every restored package", async () => {
+  for (const mode of ["success", "top-up-fail"]) {
+    const fixture_ = fixture(mode);
+    try {
+      // The offline step already applied libkept, so the download fetches only libfixture.
+      for (const name of ["libkept", "libgone"])
+        writeFileSync(join(fixture_.root, `tmp/playwright-apt/${name}_1_amd64.deb`), "older image");
+      const result = await fixture_.run(false);
+      assert.equal(result.code, 0, result.output);
+      const installed = result.calls.filter((call) => call.name === "installed-debs");
+      assert.deepEqual(installed.at(-1)?.args, ["libfixture_1_amd64.deb"]);
+      // A package the archive no longer has isn't needed, so it's skipped, not fetched.
+      const downloads = result.calls.filter(
+        (call) => call.name === "apt-get" && call.args[0] === "download",
+      );
+      assert.deepEqual(
+        downloads.map((call) => call.args),
+        [["download", "libkept"]],
+      );
+      // A failed top-up saves nothing rather than a partial set.
+      assert.deepEqual(
+        readdirSync(join(fixture_.root, "tmp/playwright-apt"))
+          .filter((file) => file.endsWith(".deb"))
+          .sort(),
+        mode === "success" ? ["libfixture_1_amd64.deb", "libkept_2_amd64.deb"] : [],
       );
     } finally {
       fixture_.dispose();
     }
-  });
-}
-
-test("a mirror that accepts connections but never responds reaches the fallback within 70 seconds", async () => {
-  const sockets = new Set<import("node:net").Socket>();
-  const server = createServer((socket) => {
-    sockets.add(socket);
-    socket.on("close", () => sockets.delete(socket));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== "string");
-  const fixture_ = fixture("stall", `http://127.0.0.1:${address.port}/`);
-  try {
-    const start = Date.now();
-    const result = await fixture_.run(false);
-    const seconds = (Date.now() - start) / 1000;
-    assert.equal(result.code, 0, result.output);
-    const attempts = result.calls.filter(
-      (call) => call.name === "playwright" && !call.args.includes("--dry-run"),
-    );
-    assert.equal(attempts.length, 2);
-    assert.equal(result.calls.filter((call) => call.name === "download-only").length, 2);
-    assert.equal(result.calls.filter((call) => call.name === "dpkg").length, 1);
-    assert.equal(
-      result.calls.filter((call) => call.name === "playwright" && call.args.includes("--dry-run"))
-        .length,
-      1,
-    );
-    assert.ok(seconds >= 59 && seconds < 70, `mirror failover took ${seconds}s`);
-    console.log(`Stalled mirror failed over and installed in ${seconds.toFixed(2)}s`);
-  } finally {
-    fixture_.dispose();
-    for (const socket of sockets) socket.destroy();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
   }
 });

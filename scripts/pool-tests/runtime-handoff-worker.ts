@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { Schema } from "effect";
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
+import { runtimeApplicationFixture } from "./runtime-provider-fixture.ts";
 import { runtimeFixtureCode, runtimeGrant, joinedRuntimeProof } from "./runtime-handoff-proofs.ts";
 import { StartAuthorization } from "../../src/pool/runtime-slots/admission-proof.ts";
 import {
@@ -10,15 +11,23 @@ import {
   membershipReadPrefix,
 } from "../../src/pool/membership-contract.ts";
 import { nativeMembershipKey } from "../../src/pool/runtime-slots/storage.ts";
-import type { EndpointEnvironment } from "../../src/pool/runtime-slots/endpoint.ts";
+import type {
+  EndpointEnvironment,
+  EndpointOptions,
+} from "../../src/pool/runtime-slots/endpoint.ts";
 import { deploymentReadinessPrefix } from "../../src/pool/deployment-readiness.ts";
 import { openEnvelope, signEnvelope, signPoolToken } from "../../src/pool/token.ts";
 import type {
   PromotionIntent,
   SlotSelection,
   SlotTarget,
+  SlotIdentity,
 } from "../../src/pool/runtime-slots/contract.ts";
 import type { PoolView } from "../../apps/pool/contract.ts";
+import type { RuntimeStub } from "../../src/pool/runtime-slots/transport.ts";
+import type { StartupAbortIntent } from "../../src/pool/runtime-slots/startup-abort-contract.ts";
+import type { HomePeerEndpoint } from "../../src/pool/runtime-fleet/peers.ts";
+type RuntimeWorker = RuntimeStub & HomePeerEndpoint & { alarm(): Promise<void> };
 import type { ProbeResult } from "../../src/pool/availability.ts";
 
 const hooks = registerHooks({
@@ -39,12 +48,30 @@ const hooks = registerHooks({
 const workerPath = "../../src/pool/worker.ts";
 const {
   PoolContainer,
+  PoolRuntimeBlue,
+  PoolRuntimeGreen,
+  handlePoolWorkerRequest,
 }: {
+  handlePoolWorkerRequest: (
+    request: Request,
+    env: {
+      POOL_AUTH_DATABASE: { connectionString: string };
+      PoolContainer: {
+        jurisdiction(value: string): {
+          getByName(name: string): { fetch(request: Request): Promise<Response> };
+        };
+      };
+    },
+    lookup: (connection: string, candidates: readonly string[]) => Promise<boolean>,
+  ) => Promise<Response>;
+  PoolRuntimeBlue: new (ctx: object, env: object) => RuntimeWorker;
+  PoolRuntimeGreen: new (ctx: object, env: object) => RuntimeWorker;
   PoolContainer: new (
     ctx: object,
     env: object,
   ) => {
     fetch(request: Request): Promise<Response>;
+    alarm(): Promise<void>;
     runtimeHandoff(request: Request): Promise<Response>;
     deploymentReady(): Promise<{ bootId: string; instanceId: string }>;
     availabilityProbe(pool: string, includeRuntime?: boolean): Promise<ProbeResult>;
@@ -54,7 +81,24 @@ const {
 } = await import(workerPath);
 hooks.deregister();
 
-export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt?: boolean } = {}) {
+export const runtimeWorkerClasses = { blue: PoolRuntimeBlue, green: PoolRuntimeGreen };
+type RuntimeFixture = Awaited<ReturnType<typeof handoffRuntime>>;
+export async function handoffWorker(
+  options: {
+    candidateTarget?: Partial<SlotTarget>;
+    candidateEndpoint?: EndpointOptions;
+    candidateProvider?: { accountId: string; namespaceId: string; applicationConfigDigest: string };
+    rotateSigningKey?: boolean;
+    adopt?: boolean;
+    bindings?:
+      | Record<string, unknown>
+      | ((context: {
+          old: RuntimeFixture;
+          candidate: RuntimeFixture;
+          env: EndpointEnvironment;
+        }) => Promise<Record<string, unknown>>);
+  } = {},
+) {
   const oldTarget: SlotTarget = {
     format: "pool-runtime-slot-v1",
     controllerId: "a".repeat(64),
@@ -73,6 +117,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     instanceId: "c".repeat(64),
     imageDigest: `sha256:${"d".repeat(64)}`,
     imageInput: "2".repeat(16),
+    ...options.candidateTarget,
   };
   const env = {
     POOL_DATABASE_URL: "postgresql://fixture@database.invalid/pool",
@@ -95,7 +140,10 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
         }
       : {}),
   };
-  const candidate = await handoffRuntime(candidateTarget, nextEnv, { home: old.home });
+  const candidate = await handoffRuntime(candidateTarget, nextEnv, {
+    home: old.home,
+    endpoint: options.candidateEndpoint,
+  });
   const claims = { pool: "pool-a", owner: "fixture-owner", organization: "fixture-organization" };
   const now = Date.now();
   const policy = {
@@ -144,8 +192,46 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     refusalsVersion: 2,
   });
   let loseStartReply = false;
+  const bindings =
+    typeof options.bindings === "function"
+      ? await options.bindings({ old, candidate, env: nextEnv })
+      : options.bindings;
+  const previousFetch = globalThis.fetch;
+  const providerRuntimes = options.candidateProvider ? [old] : [old, candidate];
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const runtime = providerRuntimes.find(
+      (runtime) =>
+        url.pathname ===
+          `/client/v4/accounts/${"1".repeat(32)}/containers/applications/${runtime.target.applicationId}` ||
+        url.pathname ===
+          `/client/v4/accounts/${"1".repeat(32)}/containers/applications/${runtime.target.applicationId}/instances-v2`,
+    );
+    if (url.origin !== "https://api.cloudflare.com" || !runtime) return previousFetch(input, init);
+    assert.equal(init?.method, "GET");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer synthetic-provider-read");
+    const application = runtimeApplicationFixture(runtime.target);
+    return Response.json({
+      success: true,
+      errors: [],
+      result: url.pathname.endsWith("instances-v2")
+        ? runtime.ctx.container.running
+          ? [
+              {
+                id: runtime.target.instanceId,
+                application_id: application.id,
+                status: { state: "running" },
+                image: application.configuration.image,
+              },
+            ]
+          : []
+        : application,
+      result_info: { next_page_token: "" },
+    });
+  };
   const workerEnv = {
     ...env,
+    POOL_PROVIDER_OBSERVATION_TOKEN: { get: async () => "synthetic-provider-read" },
     PoolRuntime: {
       jurisdiction: () => ({
         idFromString: (id: string) => id,
@@ -200,6 +286,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
         });
       },
     },
+    ...bindings,
   };
   let worker = new PoolContainer(old.ctx, workerEnv);
   const command = async (
@@ -207,11 +294,22 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     fields: {
       proof?: string;
       target?: SlotTarget;
-      intent?: PromotionIntent;
+      intent?: PromotionIntent | StartupAbortIntent;
       operationId?: string;
+      identity?: SlotIdentity;
+      sourceSha?: string;
+      configurationFingerprint?: string;
+      configuration?: import("../../src/pool/runtime-fleet/configuration.ts").FleetConfiguration;
+      expectedDigest?: string;
+      update?: import("../../src/pool/runtime-fleet/image-update.ts").ImageUpdateIntent;
+      pool?: string;
+      nonce?: string;
+      operator?: string;
+      at?: number;
+      expiresAt?: number;
     } = {},
   ) => {
-    const at = Date.now();
+    const at = fields.at ?? Date.now();
     return worker.runtimeHandoff(
       new Request("http://operations/runtime-handoff", {
         method: "POST",
@@ -221,7 +319,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
             action,
             ...fields,
             at,
-            expiresAt: at + 60_000,
+            expiresAt: fields.expiresAt ?? at + 60_000,
           }),
         }),
       }),
@@ -234,7 +332,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     assert.equal(adopted.status, 200, await adopted.clone().text());
     adoptionAck = await adopted.json();
   }
-  let currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv) };
+  let currentEnv = { ...workerEnv, ...(options.adopt === false ? {} : nextEnv), ...bindings };
   // Model and Home requests keep the admitted runtime settings after current bindings advance.
   worker = new PoolContainer(old.ctx, currentEnv);
   const token = await signPoolToken(env.POOL_APP_SIGNING_KEY, claims);
@@ -246,8 +344,8 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     );
     return { response, body: (await response.json()) as PoolView };
   };
-  const model = () =>
-    worker.forward(new Request("https://pool.invalid/v1/models"), {
+  const model = (request = new Request("https://pool.invalid/v1/models")) =>
+    worker.forward(request, {
       pool: claims.pool,
       person: claims.owner,
     });
@@ -271,7 +369,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     return ((await response.json()) as { result: { selection: SlotSelection; digest: string } })
       .result;
   };
-  const startGrant = () => runtimeGrant(candidate, old.storage, "start");
+  const startGrant = () => runtimeGrant(candidate, old.storage, "start", options.candidateProvider);
   const joined = (grant: Awaited<ReturnType<typeof startGrant>>) =>
     joinedRuntimeProof(
       candidate,
@@ -298,8 +396,59 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     policy,
     worker,
     command,
+    stage: async (proof: string) => {
+      const response = await command("stage", { proof });
+      if (!response.ok) return response;
+      const grant = Schema.decodeUnknownSync(StartAuthorization)(
+        await openEnvelope(old.env.POOL_DEPLOYMENT_KEY!, "pool-runtime-attestation-v1", proof),
+      );
+      await old.storage.when(`runtime-slots-v1:startup:${grant.target.slotId}`, (value) =>
+        Schema.is(Schema.Struct({ status: Schema.Literals(["ready", "failed"]) }))(value),
+      );
+      const observed = await command("stage-inspect", { target: grant.target });
+      const record = Schema.decodeUnknownSync(
+        Schema.Struct({
+          result: Schema.Struct({
+            status: Schema.String,
+            identity: Schema.optional(Schema.Unknown),
+          }),
+        }),
+      )(await observed.json()).result;
+      return record.status === "ready"
+        ? Response.json({ result: record.identity })
+        : Response.json({ error: "runtime-startup-failed" }, { status: 409 });
+    },
     view,
     model,
+    publicModel: (
+      request: Request,
+      identity: import("../../src/pool/model-membership.ts").ModelIdentity | undefined,
+    ) =>
+      handlePoolWorkerRequest(
+        request,
+        {
+          POOL_AUTH_DATABASE: { connectionString: "postgresql://fixture@database.invalid/auth" },
+          PoolContainer: {
+            jurisdiction: (value) => {
+              assert.equal(value, "eu");
+              return {
+                getByName: (name) => {
+                  assert.equal(name, "control-plane");
+                  return {
+                    fetch: (forwarded) =>
+                      worker.forward(forwarded, identity ?? { pool: "invalid", person: "invalid" }),
+                  };
+                },
+              };
+            },
+          },
+        },
+        async () => identity !== undefined,
+      ),
+    alarm: async () => {
+      await old.storage.delete("fixture-alarm");
+      return worker.alarm();
+    },
     reserve,
     inspect,
     startGrant,
@@ -308,7 +457,12 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
     loseStartReply: () => {
       loseStartReply = true;
     },
-    advanceCurrentBindings: (bindings: Partial<EndpointEnvironment>) => {
+    advanceCurrentBindings: (
+      bindings: Partial<EndpointEnvironment> & {
+        POOL_BLUE_IMAGE_HASH?: string;
+        POOL_GREEN_IMAGE_HASH?: string;
+      },
+    ) => {
       currentEnv = { ...currentEnv, ...bindings };
       worker = new PoolContainer(old.ctx, currentEnv);
       return worker;
@@ -321,6 +475,7 @@ export async function handoffWorker(options: { rotateSigningKey?: boolean; adopt
       return worker;
     },
     cleanup: async () => {
+      globalThis.fetch = previousFetch;
       await old.cleanup();
       await candidate.cleanup();
     },

@@ -178,7 +178,8 @@ test("every workflow job preparing upstream E2E assets gets the separate collect
   const action = parse(
     readFileSync(join(repositoryRoot, ".github/actions/setup-bun/action.yml"), "utf8"),
   );
-  assert.equal(action.inputs["export-as"].required, false);
+  // The shared action stays unchanged: the collector step passes its export name as step env.
+  assert.equal(action.inputs["export-as"], undefined);
   const filesBelow = (root: string): string[] =>
     readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
       if (entry.isDirectory() && ["node_modules", ".git"].includes(entry.name)) return [];
@@ -205,7 +206,12 @@ test("every workflow job preparing upstream E2E assets gets the separate collect
       const steps =
         (
           job as {
-            steps?: Array<{ uses?: string; with?: Record<string, string>; run?: string }>;
+            steps?: Array<{
+              uses?: string;
+              with?: Record<string, string>;
+              env?: Record<string, string>;
+              run?: string;
+            }>;
           }
         ).steps ?? [];
       const callerIndexes = steps.flatMap((step, index) => {
@@ -222,14 +228,14 @@ test("every workflow job preparing upstream E2E assets gets the separate collect
         (step) =>
           (step.uses === setupBun &&
             step.with?.["bun-version"] === "${{ env.E2E_BUN_VERSION }}" &&
-            step.with?.["export-as"] === undefined) ||
+            step.env?.BUN_EXPORT_AS === undefined) ||
           (step.uses === "oven-sh/setup-bun@v2" && step.with?.["bun-version"] === "1.4.2"),
       );
       const collectorIndex = steps.findIndex(
         (step) =>
           step.uses === setupBun &&
           step.with?.["bun-version"] === "1.4.4" &&
-          step.with?.["export-as"] === "EXECUTOR_MOTEL_BUN",
+          step.env?.BUN_EXPORT_AS === "EXECUTOR_MOTEL_BUN",
       );
       const callerIndex = Math.min(...callerIndexes);
       assert.ok(

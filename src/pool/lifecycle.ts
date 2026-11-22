@@ -1,4 +1,5 @@
 import { isModelLifetimePath } from "./model-lifetime-contract.ts";
+import type { RuntimeDistance } from "./runtime-distance.ts";
 export const poolLifecycle = {
   idleTimeoutMs: 2 * 60 * 60_000,
   refreshMs: 5 * 60_000,
@@ -10,6 +11,9 @@ export interface PoolStatus {
   started_at: string;
   policyLeaseUntil?: number;
   launch?: { generation: number; tokenHash: string };
+  database?: RuntimeDistance;
+  /** The container's front layer is up and keeps resumable answers (#1642). */
+  resume?: "v1";
 }
 
 /** A warm runtime lost readiness. The caller can retry after its protection recovers. */
@@ -31,6 +35,7 @@ export interface RuntimeDriver {
   stop(): Promise<void>;
   keepAlive(milliseconds: number): Promise<void>;
   status(): Promise<PoolStatus>;
+  schedule?(at: number): Promise<void>;
 }
 
 export interface RuntimeStorage {
@@ -173,6 +178,7 @@ export class PoolLifecycle {
 
   private async schedule() {
     const next = this.clock.now() + poolLifecycle.refreshMs;
+    if (this.driver.schedule) return this.driver.schedule(next);
     const scheduled = await this.storage.getAlarm();
     if (scheduled === null || scheduled > next) await this.storage.setAlarm(next);
   }

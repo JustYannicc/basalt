@@ -3,7 +3,9 @@ import { test } from "node:test";
 import { handoffWorker } from "../../scripts/pool-tests/runtime-handoff-worker.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import type { PromotionReceipt } from "./runtime-slots/contract.ts";
+import { LegacyActivity } from "./runtime-slots/legacy-activity.ts";
 import { nativeMembershipKey, slotSelectionKey } from "./runtime-slots/storage.ts";
+import peerProgram from "./home-peer-program.json" with { type: "json" };
 
 async function successfulView(f: Awaited<ReturnType<typeof handoffWorker>>, fresh: boolean) {
   const { response, body } = await f.view(fresh);
@@ -11,6 +13,38 @@ async function successfulView(f: Awaited<ReturnType<typeof handoffWorker>>, fres
   assert.ok(!("error" in body), JSON.stringify(body));
   assert.ok(body.accounts.some((account) => account.id === "auth-a"));
 }
+
+test("the signed operator command starts only the admitted legacy helper and retries inspect the same process", async (context) => {
+  const f = await handoffWorker();
+  context.after(f.cleanup);
+  const input = {
+    operationId: "bootstrap-signed",
+    identity: f.old.identity(),
+    sourceSha: peerProgram.sourceSha,
+    configurationFingerprint: await f.old.digest(),
+  };
+  const first = await f.command("peer-bootstrap", input);
+  assert.equal(first.status, 200, await first.clone().text());
+  assert.equal((await first.json()).result.observation, "ready");
+  assert.equal(f.old.helper.starts, 1);
+  assert.equal(f.old.calls.start, 0);
+  assert.equal(f.old.calls.destroy, 0);
+  f.reconstruct();
+  const again = await f.command("peer-bootstrap", input);
+  assert.equal(again.status, 200);
+  assert.equal((await again.json()).result.observation, "ready");
+  assert.equal(f.old.helper.starts, 1);
+  assert.equal(
+    (await f.command("peer-bootstrap", { ...input, configurationFingerprint: "0".repeat(64) }))
+      .status,
+    409,
+  );
+  assert.equal(
+    (await f.command("peer-bootstrap", { ...input, sourceSha: "0".repeat(64) })).status,
+    409,
+  );
+  assert.equal(f.old.helper.starts, 1);
+});
 
 test("real Worker and SQLite preserve first-attempt fresh and snapshot reads during candidate start, then switch every path", async (context) => {
   const f = await handoffWorker();
@@ -32,7 +66,7 @@ test("real Worker and SQLite preserve first-attempt fresh and snapshot reads dur
     }
   };
   const grant = await f.startGrant();
-  const staging = f.command("stage", { proof: grant.envelope });
+  const staging = f.stage(grant.envelope);
   try {
     await entered.promise;
     await successfulView(f, true);
@@ -82,7 +116,7 @@ test("a real retired-denial rejection refuses promotion while the selected old r
     if (policy.pool === "retired-pool") throw new Error("fixture retired denial rejected");
   };
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+  assert.equal((await f.stage(grant.envelope)).status, 409);
   await successfulView(f, true);
   await successfulView(f, false);
   const joined = await f.joined(grant),
@@ -101,7 +135,7 @@ test("a lost actual start reply survives controller reconstruction and recovers 
   context.after(f.cleanup);
   const grant = await f.startGrant();
   f.loseStartReply();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+  assert.equal((await f.stage(grant.envelope)).status, 409);
   assert.equal(f.candidate.calls.start, 1);
   assert.equal((await f.inspect()).selection.candidate?.identity, undefined);
   f.reconstruct();
@@ -129,10 +163,11 @@ test("promotion keeps an old response body alive and refuses destruction until t
     );
   const oldResponse = await f.model();
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   const intent = await f.intent(),
     joined = await f.joined(grant);
   assert.equal((await f.command("promote", { proof: joined.envelope, intent })).status, 200);
+  f.reconstruct();
   assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
   assert.equal(f.old.calls.destroy, 0);
   const reader = oldResponse.body!.getReader();
@@ -141,9 +176,61 @@ test("promotion keeps an old response body alive and refuses destruction until t
   assert.equal(next.headers.get("X-Signalbox-Pool-Boot"), f.candidate.identity().bootId);
   await next.body?.cancel();
   await reader.cancel();
+  f.old.hooks.connections = async () => 1;
+  assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
+  assert.equal(f.old.calls.destroy, 0);
+  f.old.hooks.connections = async () => 0;
   const operationId = crypto.randomUUID();
   assert.equal((await f.command("drain", { operationId })).status, 200);
   assert.equal((await f.command("drain", { operationId })).status, 200);
+  assert.equal(f.old.calls.destroy, 1);
+});
+
+async function promoted(f: Awaited<ReturnType<typeof handoffWorker>>) {
+  const grant = await f.startGrant();
+  assert.equal((await f.stage(grant.envelope)).status, 200);
+  const intent = await f.intent(),
+    joined = await f.joined(grant);
+  assert.equal((await f.command("promote", { proof: joined.envelope, intent })).status, 200);
+}
+
+test("legacy counts leaked by a dead isolate cannot hold the old generation's drain open", async (context) => {
+  const f = await handoffWorker();
+  context.after(f.cleanup);
+  await promoted(f);
+  // The pre-scoping v1 count production may already hold, and a v2 count from another isolate.
+  await f.old.storage.put("runtime-legacy-activity-v1", 1);
+  await new LegacyActivity(f.old.storage, "dead-isolate").acquire();
+  f.reconstruct();
+  const operationId = crypto.randomUUID();
+  assert.equal((await f.command("drain", { operationId })).status, 200);
+  assert.equal(f.old.calls.destroy, 1);
+});
+
+test("a live legacy request in this isolate still blocks the drain without any old connection", async (context) => {
+  const f = await handoffWorker();
+  context.after(f.cleanup);
+  await promoted(f);
+  const complete = await new LegacyActivity(f.old.storage).acquire();
+  f.reconstruct();
+  assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
+  assert.equal(f.old.calls.destroy, 0);
+  await complete();
+  assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 200);
+  assert.equal(f.old.calls.destroy, 1);
+});
+
+test("an established old connection still blocks the drain after a dead isolate's count is dropped", async (context) => {
+  const f = await handoffWorker();
+  context.after(f.cleanup);
+  await promoted(f);
+  await f.old.storage.put("runtime-legacy-activity-v1", 1);
+  f.reconstruct();
+  f.old.hooks.connections = async () => 1;
+  assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 409);
+  assert.equal(f.old.calls.destroy, 0);
+  f.old.hooks.connections = async () => 0;
+  assert.equal((await f.command("drain", { operationId: crypto.randomUUID() })).status, 200);
   assert.equal(f.old.calls.destroy, 1);
 });
 
@@ -151,7 +238,7 @@ test("a real dirty reservation during promotion aborts the old stream and preven
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   f.old.hooks.model = async () =>
     new Response(
       new ReadableStream({
@@ -204,7 +291,7 @@ test("a lost SQLite promotion acknowledgement retains its atomic selection and r
   const f = await handoffWorker();
   context.after(f.cleanup);
   const grant = await f.startGrant();
-  assert.equal((await f.command("stage", { proof: grant.envelope })).status, 200);
+  assert.equal((await f.stage(grant.envelope)).status, 200);
   const intent = await f.intent(),
     joined = await f.joined(grant);
   let lost = false;
@@ -232,9 +319,16 @@ test("a lost SQLite promotion acknowledgement retains its atomic selection and r
   assert.equal(f.old.calls.destroy, 0);
 });
 
-test("an admitted selection with a missing runtime binding refuses requests without warming the legacy container", async (context) => {
+test("an admitted remote selection with a missing runtime binding refuses requests without warming the legacy container", async (context) => {
   const f = await handoffWorker();
   context.after(f.cleanup);
+  const grant = await f.startGrant();
+  assert.equal((await f.stage(grant.envelope)).status, 200);
+  const joined = await f.joined(grant);
+  assert.equal(
+    (await f.command("promote", { intent: await f.intent(), proof: joined.envelope })).status,
+    200,
+  );
   const worker = f.reconstruct(false);
   await assert.rejects(worker.deploymentReady());
   assert.equal((await f.model()).status, 503);
@@ -243,7 +337,7 @@ test("an admitted selection with a missing runtime binding refuses requests with
   assert.equal("error" in view.body && view.body.error, "backend_unavailable");
   assert.equal(f.old.calls.start, 0);
   assert.equal(f.old.calls.destroy, 0);
-  assert.equal(f.candidate.calls.start, 0);
+  assert.equal(f.candidate.calls.start, 1);
 });
 
 test("explicit Worker warming renews the selected boot while read-only availability probes leave its idle timer alone", async (context) => {

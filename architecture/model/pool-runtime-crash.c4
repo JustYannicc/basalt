@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Runtime crash injection uses the private operator-signed handoff command, bound to the current controller and selected primary boot, a single durable nonce and a thirty-second expiry. A healthy serving sibling with spare capacity is mandatory. The container owner verifies a controller-signed capacity observation lasting at most one second, persists an audit, rechecks the exact current boot after that commit and then sends SIGKILL, and never retires, fences, promotes or repairs the target. A consumed or uncertain nonce cannot signal again. Inspection only reads audit, identity and readiness. A crash may instead target a ready fleet cell that is not the primary. Either target is killed only after its own Home, read on /topology immediately before the kill, proves it is a follower: the elected master, a missing master or a failed read refuses, because only the master refreshes provider tokens. A primary target skips that read only where the stage binds POOL_ALLOW_MASTER_CRASH exactly \"true\", which only disposable test stages do; a cell target never skips it. Normal bounded recovery detects and restarts the crashed compute; production recovery acceptance requires concurrent successful real requests and measured detection-to-ready evidence."
+    }
+  }
+}

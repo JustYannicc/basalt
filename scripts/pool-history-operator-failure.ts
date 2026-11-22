@@ -1,5 +1,5 @@
 export type HistoryOperatorField =
-  | `operator.${"connect" | "request" | "response.status" | "response.json" | "invoke"}`
+  | `operator.${"load-wrangler" | "connect" | "request" | "response.status" | "response.json" | "invoke"}`
   | `report.${
       | "version"
       | "schemaHash"

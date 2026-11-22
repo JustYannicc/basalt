@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Account outage polling proofs join each accepted report or terminal transport failure before advancing virtual time. Success bodies finish before their accepted-state waiter attaches. Distinct visible plan markers identify successful attempts; a test-side observer records each failed retry entering the row error notice waiting state before aborting it. Every retry holds trailing revision reads and must remain unjoined until release, so transport completion and a previous error cannot stand in for the current accepted state. Existing request counts, thirty-second initial window, one-, two-, four- and five-minute retries, transport failures and deadlines remain unchanged. Product polling and authority code are unchanged."
+    }
+  }
+}

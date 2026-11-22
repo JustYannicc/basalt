@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-asset-session-renewal",
+  "file": "0673-alchemy-asset-session-renewal.patch",
+  "content_sha256": "be3a32848aea73281a67a3395a4386fd040cf9757f8cd72688abf2017f4dbd9e",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "The pinned Alchemy upload hook renews a captured Worker's asset upload session for its own manifest; remove only with the upload hook carry after the repeated-sample asset token regressions pass."
+}

@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { historySchemaMigrations } from "../src/pool/model-history/schema.ts";
-import { releaseWorkers } from "./release-barrier/barrier.ts";
 import {
   classify,
   clientConfig,
@@ -365,66 +364,6 @@ test("history migration retries roll back and reopen both sessions before comple
     "end cluster",
     "end pool",
   ]);
-});
-
-test("a failed history migration stops the release before any Worker activation", async () => {
-  const fake = cluster({
-    answer: (sql) =>
-      sql === 'SET LOCAL ROLE "basalt_pool_owner"' ? postgresError("42501") : undefined,
-  });
-  const activations: string[] = [];
-  let uploads = 0;
-  let migrationFailure = "";
-  await assert.rejects(
-    releaseWorkers(
-      {
-        candidate: "a".repeat(40),
-        stack: "basalt",
-        stage: "production",
-        workers: [
-          {
-            id: "ModelGateway",
-            accountId: "fixture",
-            scriptName: "fixture-model-gateway",
-            metadata: { mainModule: "main.js" },
-            files: [
-              {
-                name: "main.js",
-                type: "application/javascript+module",
-                bytes: new TextEncoder().encode("export default {}"),
-              },
-            ],
-            baseline: [{ versionId: "old-gateway", percentage: 100 }],
-          },
-        ],
-      },
-      {
-        record: async () => {},
-        beforeActivate: () =>
-          provisionPoolDatabase({
-            runtimeLogin: "pool_runtime",
-            connect: fake.connect,
-            ...instant,
-          }).catch((error: Error) => {
-            migrationFailure = error.message;
-            throw error;
-          }),
-        provider: {
-          upload: async () => {
-            uploads++;
-            return { versionId: "new-gateway", startupTimeMs: 1 };
-          },
-          baseline: async (worker) => worker.baseline,
-          activate: async (worker) => void activations.push(worker.id),
-        },
-      },
-    ),
-    /Release barrier refused: barrier-operation-failed/,
-  );
-  assert.match(migrationFailure, /migrate model request history.*42501/);
-  assert.equal(uploads, 1);
-  assert.deepEqual(activations, []);
-  assert.ok(fake.statements.includes("ROLLBACK"));
 });
 
 test("an unknown Home table owner remains typed and refuses before any ownership or trigger write", async () => {

@@ -1,5 +1,5 @@
-import { provisionPublicSiteWaitlist } from "./scripts/release-barrier/public-site-waitlist.ts";
-import { provisionVaultAttachments } from "./scripts/release-barrier/vault-attachments.ts";
+import { provisionPublicSiteWaitlist } from "./infrastructure/public-site-waitlist.ts";
+import { provisionVaultAttachments } from "./infrastructure/vault-attachments.ts";
 import { productionOpsRelease } from "./.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { compilerCacheConfiguration } from "./.upstream/apps/hosted/cloud/src/implementation/compiler-cache-config.ts";
 import * as Alchemy from "alchemy";
@@ -27,12 +27,11 @@ import {
 import AppPages from "./.upstream/apps/hosted/cloud/src/app-ui.ts";
 import { Api } from "./.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 import { stackState } from "./.upstream/apps/hosted/cloud/src/infrastructure/state.ts";
-import { releaseStackState } from "./scripts/release-barrier/read-only-state.ts";
 import { previewDatabase } from "./.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
 
 export default Alchemy.Stack(
   "basalt",
-  { providers: cloudProviders, state: releaseStackState(stackState) },
+  { providers: cloudProviders, state: stackState },
   Effect.gen(function* () {
     const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
     const stage = yield* Stage;
@@ -121,7 +120,12 @@ export default Alchemy.Stack(
         CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
         CLOUD_SOURCE_NAMESPACE: preview?.sourceNamespace ?? deployment.sourceNamespace,
       },
-      memo: false,
+      // The Router reads this command's outcome. A plan cannot know the outcome of a command that
+      // runs on every plan, so the Router would plan as an update forever. Keyed on what the
+      // command reads, it runs when that changes. The brand file is not in the key: the script
+      // takes only its namespace name from it, and that name is passed above. A test stage builds
+      // under its own brand, which would otherwise change the key between a deploy and a plan.
+      memo: { include: ["ensure-artifacts.ts", "artifacts-http-failure.ts"] },
       timeout: "1 minute",
     });
     yield* cloudDeployment;

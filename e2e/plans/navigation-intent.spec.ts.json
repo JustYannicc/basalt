@@ -43,6 +43,7 @@
     ".upstream/packages/dashboard-start/package.json",
     ".upstream/packages/dashboard-start/src/implementation/loaded-value.ts",
     ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
-    ".upstream/packages/ui/src/contracts/refresh.ts"
+    ".upstream/packages/ui/src/contracts/refresh.ts",
+    ".upstream/apps/hosted/web/src/contracts/apps.ts"
   ]
 }

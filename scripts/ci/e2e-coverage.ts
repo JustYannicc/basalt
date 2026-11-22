@@ -14,6 +14,7 @@ import {
   type Workflow,
 } from "./e2e-workflow.ts";
 import type { readDeclarations } from "./declarations.ts";
+import { planDeclaredShards, readDeclaredDurations, runKey, shardRuns } from "./shards.ts";
 import type { filesForTarget as targetFiles } from "../../.upstream/e2e/test-plan.ts";
 import type { Plan } from "./e2e-inventory.ts";
 
@@ -26,6 +27,16 @@ export function coverageInventory(
   additionalWorkflows: Workflow[] = [],
 ) {
   const tests = testInventory(root, plans);
+  // How many of each matrix job's planned shards carry a pair, keyed "<job> <group> <file>".
+  const assigned = new Map<string, number>();
+  for (const [job, { include }] of Object.entries(
+    planDeclaredShards(declarations, readDeclaredDurations(root)),
+  ))
+    for (const shard of include)
+      for (const run of shardRuns(shard.runs)) {
+        const key = job + " " + runKey(run);
+        assigned.set(key, (assigned.get(key) ?? 0) + 1);
+      }
   const records: CoverageRecord[] = tests.map((test) => {
     const declaration = declarations.files[test.file];
     const groups = (declaration?.runs[test.key ?? ""] ?? []).filter((id) => {
@@ -41,14 +52,17 @@ export function coverageInventory(
         expandedRuns(step.run, workflow.jobs[group.job]!).some((run) =>
           shellCommands(run).some((command) => {
             const words = delegatedCommand(command);
+            // The shard row's pairs are the whole argument list, and the plan select emits must
+            // hand this pair to exactly one of the job's shards.
             if (group.matrix)
               return (
+                words.length === 3 &&
                 words[0] === "bun" &&
                 words[1] === "scripts/ci/run-declared.ts" &&
-                words[2] === "${{ matrix.group }}" &&
-                words[3] === "${{ matrix.file }}" &&
+                words[2] === "${{ matrix.runs }}" &&
                 workflow.jobs[group.job]?.strategy?.matrix ===
-                  "${{ fromJSON(needs.select.outputs.matrices)['" + group.job + "'] }}"
+                  "${{ fromJSON(needs.select.outputs.matrices)['" + group.job + "'] }}" &&
+                assigned.get(group.job + " " + runKey({ group: id, file: test.file })) === 1
               );
             const filter = words.indexOf("--test-name");
             const pattern = filter !== -1 && groupSelectors(id).includes(words[filter + 1] ?? "");
@@ -135,7 +149,14 @@ export function coverageInventory(
   }));
 }
 
-export type CoverageRecord = { id: string; source: string; selected: boolean; plan?: Plan };
+export type CoverageRecord = {
+  id: string;
+  source: string;
+  selected: boolean;
+  plan?: Plan;
+  // The declared groups whose runner step selects this test; absent for scripts.
+  groups?: string[];
+};
 export type FingerprintedRecord = CoverageRecord & { fingerprint: string };
 export type ExceptionGroup = { reason: string; entries: Record<string, string> };
 

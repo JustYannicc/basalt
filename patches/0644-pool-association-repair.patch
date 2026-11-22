@@ -1,0 +1,322 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+index f8e8a18e2..09d69aa23 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/diagnostics.ts
+@@ -1,3 +1,7 @@
++import {
++  PoolAssociationRepairRefused,
++  poolAssociationRepairReasons,
++} from "./migrations/pool-association-repair-v1.ts";
+ import { AppCodeId, VersionId } from "@executor-js/sdk/core";
+ import { DeploymentSourceRefused } from "../../implementation/source-preservation.ts";
+ import { retainedReasonCodes } from "./retained-frameworks-reasons.ts";
+@@ -80,7 +84,9 @@ export const FailureReceipt = Schema.Struct({
+   causeKind: Schema.optionalKey(Schema.Literals(["failure", "defect", "interrupted", "composite"])),
+   reason: Schema.optionalKey(Schema.Literal("stale_plan")),
+   source: Schema.optionalKey(SourceRefusal),
+-  reasonCode: Schema.optionalKey(Schema.Literals(retainedReasonCodes)),
++  reasonCode: Schema.optionalKey(
++    Schema.Literals([...retainedReasonCodes, ...poolAssociationRepairReasons]),
++  ),
+   retainedRead: Schema.optionalKey(RetainedFrameworkReadDiagnostic),
+ });
+ type FailureReceipt = typeof FailureReceipt.Type;
+@@ -116,6 +122,13 @@ function classified(error: unknown, phase: Phase): FailureReceipt | undefined {
+       ...(Option.isSome(source) ? { source: source.value } : {}),
+     };
+   }
++  if (error instanceof PoolAssociationRepairRefused)
++    return {
++      format: "basalt-production-ops-failure-v1",
++      category: "refused",
++      phase,
++      reasonCode: error.reasonCode,
++    };
+   if (error instanceof ProviderAppsRefused || error instanceof ProductionOperationRefused) {
+     const guard = knownRefusalGuard(error.message);
+     const reasonCode =
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+index edf1dfc7b..b42e5a0b9 100644
+--- a/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations.ts
+@@ -1,3 +1,4 @@
++import { poolAssociationRepairV1 } from "./migrations/pool-association-repair-v1.ts";
+ import { googleDuplicateBindingsV1 } from "./migrations/google-duplicate-bindings-v1.ts";
+ import { atlassianFamilyAdoptionV1 } from "./migrations/atlassian-family-adoption-v1.ts";
+ import { atlassianAccountIdentityV1 } from "./migrations/atlassian-account-identity-v1.ts";
+@@ -9,6 +10,7 @@ import type { ProductionMigration } from "./contracts.ts";
+ 
+ /** Migration modules land with their owning feature and remain inert until an exact-ID GO. */
+ export const productionMigrations: Readonly<Record<string, ProductionMigration>> = {
++  [poolAssociationRepairV1.name]: poolAssociationRepairV1,
+   [atlassianFamilyAdoptionV1.name]: atlassianFamilyAdoptionV1,
+   [releasedRetirementV1.name]: releasedRetirementV1,
+   [providerAppsOpenAIAnthropic.name]: providerAppsOpenAIAnthropic,
+diff --git a/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts
+new file mode 100644
+index 0000000..176c88b8b 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/production-ops/migrations/pool-association-repair-v1.ts
+@@ -0,0 +1,262 @@
++import { Data, Effect, Schema } from "effect";
++import { SqlClient } from "effect/sql";
++import type { Json, ProductionMigration } from "../contracts.ts";
++import { canonical, sha256 } from "../crypto.ts";
++
++const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,256}$/u));
++const Request = Schema.Struct({
++  organization: Id,
++  slot: Id,
++  app: Id,
++  actualOwner: Schema.NullOr(
++    Schema.String.check(Schema.isPattern(/^(organization|user):[A-Za-z0-9_-]{1,256}$/u)),
++  ),
++  operation: Schema.Literals(["clear", "repoint"]),
++  replacement: Schema.optionalKey(Id),
++});
++const Rows = Schema.Array(Schema.Struct({ row: Schema.Record(Schema.String, Schema.Json) }));
++const object = (value: Json | undefined): value is Record<string, Json> =>
++  value !== null && typeof value === "object" && !Array.isArray(value);
++export const poolAssociationRepairReasons = [
++  "replacement-selection",
++  "organization-missing",
++  "metadata-invalid",
++  "pool-map-invalid",
++  "slot-app-mismatch",
++  "app-owner-drift",
++  "association-already-valid",
++  "old-app-still-exists",
++  "repoint-credential-proof-unavailable",
++  "replacement-ownership-mismatch",
++  "replacement-version-mismatch",
++  "replacement-lineage-mismatch",
++  "replacement-already-registered",
++  "plan-drift",
++  "organization-write-count",
++] as const;
++export class PoolAssociationRepairRefused extends Data.TaggedError("PoolAssociationRepairRefused")<{
++  readonly reasonCode: (typeof poolAssociationRepairReasons)[number];
++}> {}
++const refuse = (reasonCode: (typeof poolAssociationRepairReasons)[number]) =>
++  Effect.fail(new PoolAssociationRepairRefused({ reasonCode }));
++const read = (
++  table: "organization" | "executor_apps" | "executor_deployments" | "hosted_app_access",
++  id: string,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const rows = yield* sql
++      .unsafe(`select to_jsonb(entry) as row from ${table} entry where id = $1`, [id])
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++    return rows[0]?.row;
++  });
++
++const prepare = (raw: Json) =>
++  Effect.gen(function* () {
++    const input = yield* Schema.decodeUnknownEffect(Request)(raw);
++    if ((input.operation === "repoint") !== (input.replacement !== undefined))
++      return yield* refuse("replacement-selection");
++    const row = yield* read("organization", input.organization);
++    if (row === undefined || typeof row.metadata !== "string")
++      return yield* refuse("organization-missing");
++    const rawMetadata = row.metadata;
++    const decoded = yield* Effect.try({
++      try: () => JSON.parse(rawMetadata),
++      catch: () => new PoolAssociationRepairRefused({ reasonCode: "metadata-invalid" }),
++    });
++    const metadata = yield* Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Json))(
++      decoded,
++    );
++    const pools = metadata.basaltPools;
++    if (!object(pools)) return yield* refuse("pool-map-invalid");
++    const before = pools[input.slot];
++    if (!object(before) || before.app !== input.app) return yield* refuse("slot-app-mismatch");
++    const app = yield* read("executor_apps", input.app);
++    const actualOwner = app?.owner ?? null;
++    if (actualOwner !== input.actualOwner) return yield* refuse("app-owner-drift");
++    if (actualOwner === `organization:${input.organization}`)
++      return yield* refuse("association-already-valid");
++    const dependencies: Json[] = [app ?? null];
++    if (input.operation === "repoint") {
++      // A foreign app is never moved, and app-scoped credentials cannot be inherited by another app.
++      if (app !== undefined) return yield* refuse("old-app-still-exists");
++      if (before.account !== undefined || before.tokenKeyVersion !== undefined)
++        return yield* refuse("repoint-credential-proof-unavailable");
++      const replacement = yield* read("executor_apps", input.replacement!);
++      const access = yield* read("hosted_app_access", input.replacement!);
++      const owner = `organization:${input.organization}`;
++      const person = before.owner ?? input.slot;
++      if (
++        replacement?.owner !== owner ||
++        access?.organization_id !== input.organization ||
++        access.creator_id !== person
++      )
++        return yield* refuse("replacement-ownership-mismatch");
++      if (typeof before.version !== "string" || replacement.active_deployment !== before.version)
++        return yield* refuse("replacement-version-mismatch");
++      const version = yield* read("executor_deployments", before.version);
++      if (version?.owner !== owner || version.code !== replacement.code)
++        return yield* refuse("replacement-lineage-mismatch");
++      const sql = yield* SqlClient.SqlClient;
++      const references = yield* sql`select o.id from organization o cross join lateral
++      jsonb_each(case when jsonb_typeof(o.metadata::jsonb -> 'basaltPools') = 'object'
++        then o.metadata::jsonb -> 'basaltPools' else '{}'::jsonb end) p
++      where p.value ->> 'app' = ${input.replacement}`;
++      if (references.length !== 0) return yield* refuse("replacement-already-registered");
++      dependencies.push(replacement, access, version);
++    }
++    const sql = yield* SqlClient.SqlClient;
++    // PostgreSQL preserves numbers and unrelated fields that JavaScript JSON parsing can round.
++    const changed =
++      input.operation === "clear"
++        ? sql`metadata::jsonb #- array['basaltPools', ${input.slot}]`
++        : sql`jsonb_set(metadata::jsonb, array['basaltPools', ${input.slot}, 'app'],
++          to_jsonb(${input.replacement!}::text), false)`;
++    const proposed = yield* sql`with proposed as (
++      select metadata::jsonb as original, ${changed} as next from organization
++      where id = ${input.organization})
++      select next::text as metadata,
++        (original #> array['basaltPools', ${input.slot}])::text as before,
++        (next #> array['basaltPools', ${input.slot}])::text as after from proposed`.pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.Array(
++            Schema.Struct({
++              metadata: Schema.String,
++              before: Schema.String,
++              after: Schema.NullOr(Schema.String),
++            }),
++          ),
++        ),
++      ),
++    );
++    const next = proposed[0];
++    if (proposed.length !== 1 || next === undefined) return yield* refuse("organization-missing");
++    const nextMetadata = next.metadata;
++    const nextRow = { ...row, metadata: nextMetadata };
++    return {
++      changes: [
++        {
++          table: "organization",
++          key: { id: input.organization },
++          action: "update" as const,
++          beforeSha256: sha256(canonical(row)),
++          afterSha256: sha256(canonical(nextRow)),
++        },
++      ],
++      data: {
++        organization: input.organization,
++        slot: input.slot,
++        app: input.app,
++        operation: input.operation,
++        actualOwner: input.actualOwner,
++        replacement: input.replacement ?? null,
++        before: next.before,
++        after: next.after,
++        recordedVersion: typeof before.version === "string" ? before.version : null,
++        nextMetadata,
++        dependenciesSha256: sha256(canonical(dependencies)),
++      },
++    };
++  });
++const PlanData = Schema.Struct({
++  organization: Id,
++  slot: Id,
++  app: Id,
++  operation: Schema.Literals(["clear", "repoint"]),
++  actualOwner: Schema.NullOr(Schema.String),
++  replacement: Schema.NullOr(Id),
++  before: Schema.String,
++  after: Schema.NullOr(Schema.String),
++  recordedVersion: Schema.NullOr(Schema.String),
++  nextMetadata: Schema.String,
++  dependenciesSha256: Schema.String,
++});
++
++export const poolAssociationRepairV1: ProductionMigration = {
++  name: "pool-association-repair-v1",
++  revision: "1",
++  tables: ["organization"],
++  inspect: prepare,
++  lockAuthority: (raw) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(Request)(raw);
++      const sql = yield* SqlClient.SqlClient;
++      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-access:${input.organization}`}, 0))`;
++      // Match the normal writer's access -> organization -> pool lock order.
++      yield* sql`select id from organization where id = ${input.organization} for no key update`;
++      const row = yield* read("organization", input.organization);
++      const metadata = yield* Effect.try(() => JSON.parse(String(row?.metadata)));
++      const decoded = yield* Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Json))(
++        metadata,
++      );
++      const pools = decoded.basaltPools;
++      const slot = object(pools) ? pools[input.slot] : undefined;
++      const person = object(slot) && typeof slot.owner === "string" ? slot.owner : input.slot;
++      yield* sql`select pg_advisory_xact_lock(hashtextextended(${`basalt-pool:${input.organization}:${person}`}, 0))`;
++      const ids = [
++        input.app,
++        ...(input.replacement === undefined ? [] : [input.replacement]),
++      ].sort();
++      for (const id of ids)
++        yield* sql`select id from executor_apps where id = ${id} for update nowait`;
++      if (input.replacement !== undefined) {
++        yield* sql`select id from hosted_app_access where id = ${input.replacement} for update nowait`;
++        if (object(slot) && typeof slot.version === "string")
++          yield* sql`select id from executor_deployments where id = ${slot.version} for update nowait`;
++      }
++    }),
++  apply: (request, plan) =>
++    Effect.gen(function* () {
++      const current = yield* prepare(request);
++      if (canonical(current) !== canonical(plan)) return yield* refuse("plan-drift");
++      const sql = yield* SqlClient.SqlClient;
++      const rows = yield* sql`update organization set metadata = ${current.data.nextMetadata}
++      where id = ${current.data.organization} returning id`;
++      if (rows.length !== 1) return yield* refuse("organization-write-count");
++    }),
++  verify: (raw, plan) =>
++    Effect.gen(function* () {
++      const input = yield* Schema.decodeUnknownEffect(Request)(raw);
++      const expected = yield* Schema.decodeUnknownEffect(PlanData)(plan.data);
++      const row = yield* read("organization", input.organization);
++      const app = yield* read("executor_apps", input.app);
++      const dependencies: Json[] = [app ?? null];
++      if (input.replacement !== undefined) {
++        dependencies.push(
++          (yield* read("executor_apps", input.replacement)) ?? null,
++          (yield* read("hosted_app_access", input.replacement)) ?? null,
++          expected.recordedVersion !== null
++            ? ((yield* read("executor_deployments", expected.recordedVersion)) ?? null)
++            : null,
++        );
++      }
++      const sql = yield* SqlClient.SqlClient;
++      const registrations =
++        input.replacement === undefined
++          ? []
++          : yield* sql`
++        select o.id, p.key as slot from organization o cross join lateral
++        jsonb_each(case when jsonb_typeof(o.metadata::jsonb -> 'basaltPools') = 'object'
++          then o.metadata::jsonb -> 'basaltPools' else '{}'::jsonb end) p
++        where p.value ->> 'app' = ${input.replacement}`;
++      const checks = {
++        uniqueReplacement:
++          input.replacement === undefined ||
++          (registrations.length === 1 &&
++            registrations[0]?.id === input.organization &&
++            registrations[0]?.slot === input.slot),
++        exactOrganization:
++          row !== undefined && sha256(canonical(row)) === plan.changes[0]?.afterSha256,
++        unchangedDependencies: sha256(canonical(dependencies)) === expected.dependenciesSha256,
++        requestBound:
++          input.organization === expected.organization &&
++          input.slot === expected.slot &&
++          input.app === expected.app &&
++          input.operation === expected.operation &&
++          (input.replacement ?? null) === expected.replacement &&
++          input.actualOwner === expected.actualOwner,
++      };
++      return { ok: Object.values(checks).every(Boolean), checks };
++    }),
++};

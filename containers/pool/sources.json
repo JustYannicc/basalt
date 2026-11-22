@@ -257,18 +257,63 @@
             "mode": "manual",
             "requires": "Retire only when pinned Home excludes expired OAuth credentials and its five-minute dispatch safety window before model-state, scheduler, full-credential and affinity admission. Prove no stale upstream dispatch, next-account fallback, clean temporary unavailability, same-UUID fresh replacement and quota-deadline compatibility through native public requests."
           }
+        },
+        {
+          "identity": "cliproxy-home-coordination-pool",
+          "file": "0691-home-coordination-pool.patch",
+          "sha256": "b8ecfbdecf0d5f32c090146b9cef540539f36fd33050d46efd423ea29a6cfbcd",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup, node liveness, the cluster TLS fingerprint check and the management node listing (GET /v8/management/nodes) while the main pool is saturated, and passes the saturated-main-pool heartbeat, node-lookup and node-listing regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-live-owner-members",
+          "file": "0732-home-live-owner-members.patch",
+          "sha256": "aa330d14219db67dd987e6112a78406dfed8b17f597eab3a93ff16e2f4869f7b",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0732 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home's lifecycle cleanup lets a peer cancel a stale node membership only after the Home that holds it has stopped heartbeating or the membership is past a bounded backstop, keeps a Home fencing its own stale nodes, and passes the live-owner, silent-owner, expired-owner, backstop and own-node regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-heartbeat-fresh-lease",
+          "file": "0735-home-heartbeat-fresh-lease.patch",
+          "sha256": "921477ab7ee1521cfe4af1ee648f165331df76d2a0e00dae726ccf6f3c834110",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0735 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home records a heartbeat without the election gate's row lock while the gate names the oldest live node, that node holds the master flag and its lease is fresh, renews the master's lease with one conditional update that never waits on a held gate, keeps the master flag no longer than the lease it read, and passes the follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-database-distance",
+          "file": "0741-home-database-distance.patch",
+          "sha256": "76954703d9c0d54c6e4a5fc2671b40e89bc4c3559deabd8e7ba89eec2489d932",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0741 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home serves a management read of its shortest database round trip over its coordination pool, with the median and slowest samples beside it, measured after one unmeasured warm-up with per-sample and total budgets, answering unavailable below three samples, and passes the measured-distance and unavailable-database regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-node-liveness-floor",
+          "file": "0736-home-node-liveness-floor.patch",
+          "sha256": "0f237ef4e9a9b3c25671ec9cf6fae375f8223e68bd24cca2ab13318c1c5b61c3",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0736 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home stores a node liveness timeout of at least its configured floor on every membership it creates, clamped inside its lifecycle safety rule, every Home in the cluster runs that code or a cluster-wide timeout of at least the floor, and it passes the stored-floor, short-stall, past-the-floor and lifecycle-rule regressions."
+          }
         }
       ]
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "e96d4c4818851cf0e96d27b2bc8b67379e449d9e",
-      "sha256": "21ab830fea73afd9a462ef85f4c71ca0e971c6db5cee49f52521de47add4449a",
+      "commit": "14144df573c77e8e0e1eeaa450d3e63a068372df",
+      "sha256": "4abeb81824c36f7606fd7743c3703ca584405ac96bd8aee889441c79a771a699",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
-          "file": "cliproxy-node-v8.0.51-metadata-only.patch",
-          "sha256": "dc68c2f4dde4c0601bdc6bb7cb731e98f2c7098431f380265bb531b280f0ab84",
+          "file": "0646-node-metadata-only.patch",
+          "sha256": "2cbb8e38f631147d34728bf3bca80580dac340c4570a9bf632e7d49e34b73289",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
@@ -285,8 +330,8 @@
         },
         {
           "identity": "cliproxy-node-usage-credit-routing",
-          "file": "0507-node-usage-credit-routing.patch",
-          "sha256": "4c5935844c7130f55a230fa134423a73cbc30c8edd0ca07992dea611f9ed94dc",
+          "file": "0647-node-usage-credit-routing.patch",
+          "sha256": "8c533c1df298c15c92259c73c896fb2850bb294ae233bef72e43755fd2fcf0e1",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
@@ -330,8 +375,8 @@
         },
         {
           "identity": "cliproxy-node-terminal-request-id",
-          "file": "0592-node-terminal-request-id.patch",
-          "sha256": "1212239730812b277f6cc5007024e9f2f24c68910eb6f0e92c84db735bfce42b",
+          "file": "0648-node-terminal-request-id.patch",
+          "sha256": "e7df8e0f931c0e1096c0a9746657a5571d1c8031bd7e2778fe004b627594e130",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned Node propagates validated per-request terminal correlation identities through HTTP, multiplexed Responses and duplex successor usage, preserves independent trace and billing execution identities through metadata-only reporting, and passes the request, privacy and model-drain regressions."
@@ -348,8 +393,8 @@
         },
         {
           "identity": "cliproxy-node-no-postwrite-replay",
-          "file": "0599-node-no-postwrite-replay.patch",
-          "sha256": "ac31a3fd18d9808402086fd766ca73328ad0c18ad157c00ab61ae28e92997c51",
+          "file": "0649-node-no-postwrite-replay.patch",
+          "sha256": "acfdb8d1b7b6f1e70e181e4655befe10a06b1df73a416c59103c1ec010d7b3e2",
           "retirement": {
             "mode": "manual",
             "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
@@ -366,8 +411,8 @@
         },
         {
           "identity": "cliproxy-node-generation-submission",
-          "file": "0611-node-generation-submission.patch",
-          "sha256": "10d0e78169a3fdd262e77742963b830c49fc3b60c2424d4a3692079938c309b0",
+          "file": "0650-node-generation-submission.patch",
+          "sha256": "c84bb8361bd862612183f1b07abd03ecc924d2c7f9ff580586ca7427be1b0f16",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
@@ -382,7 +427,9 @@
       "tag": "v1.0.5",
       "commit": "19d9868ffa24e94a2919ea1d1a761afa634de669",
       "sha256": "79b6ae8702b0ace76c10102d42a1401259e7dc772baacce2d47c90c33c6b25e7",
-      "auth_providers": ["gemini-cli"]
+      "auth_providers": [
+        "gemini-cli"
+      ]
     }
   }
 }

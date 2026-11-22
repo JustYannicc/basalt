@@ -183,6 +183,37 @@ test("unknown phase, kind, source and extra data cannot enter the projected reco
   });
 });
 
+test("Zoho browser failures retain their phase and original error class without endpoint data", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/zoho-people-mcp/ci");
+  const error = new Error(`locator.click: Timeout 30000ms exceeded ${credential} ${tenant}`);
+  error.name = "TimeoutError";
+  error.stack += "\n    at e2e/zoho-people-mcp-ui.mjs:131:20";
+  const failure = describeGuidanceFailure(error, "zoho-mcp-endpoint-save");
+  await put(join(run, "failure.txt"), `${failure.publicLine}\n${failure.privateDetail}`);
+  await put(
+    join(run, "partial-results.json"),
+    JSON.stringify(Array.from({ length: 50 }, () => ({ name: tenant, actual: credential }))),
+  );
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  const records = summary.runs[0].records;
+  assert.equal(records.find((record) => record.stage === "partial-report").checks, 50);
+  assert.deepEqual(
+    records.find((record) => record.stage === "failure"),
+    {
+      stage: "failure",
+      outcome: "failed",
+      phase: "zoho-mcp-endpoint-save",
+      kind: "timeout",
+      errorName: "TimeoutError",
+      marker: "timeout",
+      location: "zoho-people-mcp-ui.mjs:131",
+    },
+  );
+  assert.ok(!JSON.stringify(summary).includes(credential));
+  assert.ok(!JSON.stringify(summary).includes(tenant));
+});
+
 test("an unconfirmed report stays observed while tenant startup failures retain their phase", () => {
   assert.equal(connectorDiagnostic("report", { checks: [] }).outcome, "observed");
   assert.deepEqual(
@@ -285,6 +316,58 @@ test("guidance launch failures retain their closed class in the collected artifa
     assert.ok(!serialized.includes(credential) && !serialized.includes(tenant));
     assert.ok(!serialized.includes("https://") && !serialized.includes("/private/"));
   }
+});
+
+test("a failure keeps its class whatever directory its stack and paths name", () => {
+  const classify = (template, checkout) => {
+    const message = template.replaceAll("{checkout}", checkout);
+    const error = new Error(message);
+    error.stack = [
+      `Error: ${message}`,
+      `    at proveCompanyGuidance (${checkout}/scripts/connectors-tests/zendesk-company-guidance.mjs:31:8)`,
+      `    at async main (${checkout}/scripts/connectors-tests/run.ts:12:3)`,
+    ].join("\n");
+    return describeGuidanceFailure(error, "company-guidance").publicLine;
+  };
+  for (const [template, kind, marker] of [
+    ["No usable sandbox!", "runtime", "sandbox"],
+    ["unexpected fixture state", "runtime", "other"],
+    ["Timeout 30000ms exceeded", "timeout", "timeout"],
+    ["ENOENT: no such file or directory, open '{checkout}/run.json'", "runtime", "other"],
+    ["Cannot find module 'file://{checkout}/e2e/missing.mjs'", "module-load", "other"],
+  ])
+    for (const checkout of [
+      "/home/runner/work/basalt",
+      "/home/runner/timeout/basalt",
+      "/srv/ECONNREFUSED-SyntaxError-EACCES/basalt",
+    ])
+      assert.equal(
+        classify(template, checkout),
+        `CONNECTORS_PROOF_FAILURE phase=company-guidance kind=${kind} at=zendesk-company-guidance.mjs:31 error=Error marker=${marker}`,
+        `${template} in ${checkout}`,
+      );
+});
+
+test("a failure is classified by its cause chain, not only its outer message", () => {
+  const timeout = new Error("page.goto: Timeout 30000ms exceeded");
+  timeout.name = "TimeoutError";
+  const wrapped = new Error("company guidance did not load", { cause: timeout });
+  assert.match(
+    describeGuidanceFailure(wrapped, "company-guidance").publicLine,
+    / kind=timeout .* error=Error marker=timeout$/,
+  );
+  const refused = Object.assign(new AggregateError([], ""), { code: "ECONNREFUSED" });
+  assert.match(
+    describeGuidanceFailure(new Error("tenant unreachable", { cause: refused }), "company-guidance")
+      .publicLine,
+    / kind=connection .* marker=other$/,
+  );
+  const cyclic = new Error("cyclic failure");
+  cyclic.cause = cyclic;
+  assert.match(
+    describeGuidanceFailure(cyclic, "company-guidance").publicLine,
+    / kind=runtime .* marker=other$/,
+  );
 });
 
 test("unknown error names and markers cannot enter connector artifacts", () => {

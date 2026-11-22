@@ -4,14 +4,15 @@ import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/impl
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { RuntimeSlotStorage } from "../../src/pool/runtime-slots/storage.ts";
 import {
-  RuntimeAttestation,
+  VerifiedRuntimeAttestation,
   decodeAdmissionProof,
   runtimeAttestationFormat,
-  type StartAuthorization,
+  type LaunchAuthorization,
 } from "../../src/pool/runtime-slots/admission-proof.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
 import type { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import type { RuntimeSqlite } from "./runtime-handoff-storage.ts";
+import { runtimeProviderFixture } from "./runtime-provider-fixture.ts";
 
 export const runtimeFixtureCode = {
   candidate: productionOpsRelease,
@@ -42,9 +43,11 @@ export async function selectionProof(storage: RuntimeSqlite) {
 export async function runtimeGrant(
   runtime: Awaited<ReturnType<typeof handoffRuntime>>,
   controller: RuntimeSqlite,
-  kind: "start" | "unattested-active",
+  kind: "start" | "initial-start" | "unattested-active",
+  provider?: { accountId: string; namespaceId: string; applicationConfigDigest: string },
 ) {
   const now = Date.now();
+  const observation = provider ?? (await runtimeProviderFixture(runtime.target));
   const proof = decodeAdmissionProof({
     format: runtimeAttestationFormat,
     kind,
@@ -55,12 +58,12 @@ export async function runtimeGrant(
     configurationFingerprint: await runtime.digest(),
     selection: await selectionProof(controller),
     provider: {
-      accountId: "fixture-account",
-      namespaceId: `namespace-${runtime.target.applicationId}`,
+      accountId: observation.accountId,
+      namespaceId: observation.namespaceId,
+      applicationConfigDigest: observation.applicationConfigDigest,
       applicationId: runtime.target.applicationId,
       applicationVersion: runtime.target.applicationVersion,
       imageDigest: runtime.target.imageDigest,
-      applicationConfigDigest: "a".repeat(64),
       observationDigest: "b".repeat(64),
       observedAt: now,
       ...(kind === "unattested-active" ? { instanceId: runtime.target.instanceId } : {}),
@@ -77,15 +80,15 @@ export async function runtimeGrant(
 export async function joinedRuntimeProof(
   runtime: Awaited<ReturnType<typeof handoffRuntime>>,
   controller: RuntimeSqlite,
-  authorization: StartAuthorization,
+  authorization: LaunchAuthorization,
 ) {
   const observed = await runtime.endpoint.witness(runtime.target);
   assert.equal(observed.kind, "witness");
   assert.ok("witness" in observed && observed.witness?.bootId);
   const now = Date.now();
-  const proof = Schema.decodeUnknownSync(RuntimeAttestation)({
+  const proof = Schema.decodeUnknownSync(VerifiedRuntimeAttestation)({
     ...authorization,
-    kind: "attested",
+    kind: authorization.kind === "initial-start" ? "initial-attested" : "attested",
     bootId: observed.witness.bootId,
     launch: observed.witness.launch,
     selection: await selectionProof(controller),

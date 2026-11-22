@@ -32,17 +32,20 @@ const connection = (id: string, app: AppId, apps?: readonly AppId[]): Connection
     createdAt: "2026-11-10T08:00:00.000Z",
     updatedAt: "2026-11-10T08:00:00.000Z",
   }) as unknown as Connection;
+// A grant device authorization issued; an agent's passes `issuedToDevice` false.
 const agent = (
   id: string,
   access: ConnectedAgent["access"],
   connectedAt: string,
   name: string | null = "Signalbox Obsidian Sync",
+  issuedToDevice = true,
 ): ConnectedAgent => ({
   id: GrantId.make(id),
   name,
   connectedAt,
   lastActiveAt: null,
   access,
+  issuedToDevice,
 });
 const through = (id: string) =>
   ({ kind: "connection", connection: ConnectionId.make(id), name: `Obsidian · ${id}` }) as const;
@@ -146,7 +149,7 @@ test("an agent's wider connection that includes the vault app is not a device", 
   );
 });
 
-test("a single-app connection is a device only when scoped to sync tools and run as the app", () => {
+test("a device is a grant device authorization issued through a connection for the vault alone, run as the app, whatever its tools", () => {
   const scoped = (id: string, tools: unknown, runsAs: unknown = [{ kind: "app" }]) =>
     ({
       ...connection(id, vault),
@@ -159,14 +162,20 @@ test("a single-app connection is a device only when scoped to sync tools and run
       scoped("extra", { kind: "selected", names: [...obsidianTools, "deleteNote"] }),
       scoped("user", { kind: "selected", names: obsidianTools }, [{ kind: "user" }]),
       scoped("plugin", { kind: "selected", names: obsidianTools.slice(0, 5) }),
+      scoped("reader", { kind: "selected", names: ["listNotes", "readNote"] }),
     ],
-    ["all", "extra", "user", "plugin"].map((id) =>
-      agent(`g-${id}`, through(id), "2026-11-10T08:00:00.000Z"),
-    ),
+    [
+      ...["all", "extra", "user", "plugin"].map((id) =>
+        agent(`g-${id}`, through(id), "2026-11-10T08:00:00.000Z"),
+      ),
+      // Agents holding only sync tools, through their own connection or a device's.
+      agent("g-reader", through("reader"), "2026-11-10T08:00:00.000Z", "Claude Code", false),
+      agent("g-borrower", through("plugin"), "2026-11-10T08:00:00.000Z", "Claude Code", false),
+    ],
   );
   assert.deepEqual(
     devices.map((device) => device.agent),
-    ["g-plugin"],
+    ["g-all", "g-extra", "g-plugin"],
   );
 });
 

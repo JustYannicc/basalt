@@ -1,3 +1,4 @@
+import { runtimeFailureCode, type RuntimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import { upstreamOutcomeUnknown } from "../../clients/contracts/model-error.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
@@ -5,6 +6,7 @@ import { withHistoryDatabase } from "./model-history/database.ts";
 import { recordGatewayRefusal } from "./model-history/gateway.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { ProtectionRefusal } from "./runtime-protection.ts";
+import type { HomeDatabasePoolObservation } from "./home-database-pool.ts";
 
 interface Dependencies extends SentryEnv {
   POOL_MODEL_HISTORY_ENABLED?: string;
@@ -17,7 +19,7 @@ export interface RefusalIdentity {
   appId?: string;
   requirement?: string;
 }
-export interface GatewayFailureDiagnostic {
+export interface GatewayFailureDiagnostic extends Partial<RuntimeRouteDiagnostic> {
   guard:
     | "native_identity"
     | "model_membership"
@@ -36,9 +38,16 @@ export interface GatewayFailureDiagnostic {
     | "Error"
     | "unknown";
   refusalReason: GatewayFailureDiagnostic["guard"] | ProtectionRefusal["reason"];
+  /** Last counters Home reported, so a refusal shows whether its database queue was full. */
+  homeDatabasePool?: HomeDatabasePoolObservation | null;
 }
 
-/** Fixed metadata joins the caller's retryable response, its failed history row and error trace. */
+/**
+ * Fixed metadata joins the caller's retryable response, its error trace and its failed history row.
+ * The row keeps the attempt's identity, which the request's terminal evidence and Home usage share,
+ * so reliability counts the request once; an endpoint correlation id would never join them. The
+ * log line carries both ids, so the client's request id still leads to the row.
+ */
 export function gatewayUnavailable(
   env: Dependencies,
   request: Request,
@@ -46,16 +55,19 @@ export function gatewayUnavailable(
   started: number,
   defer: (work: Promise<unknown>) => void,
   diagnostic: GatewayFailureDiagnostic,
-  requestId = crypto.randomUUID(),
+  attemptRequestId = crypto.randomUUID(),
+  requestedModel?: Promise<string | null>,
 ): Response {
+  const traceRequestId = diagnostic.runtimeEndpointRequestId ?? attemptRequestId;
   const pathname = new URL(request.url).pathname;
   console.error("POOL_GATEWAY_FAILURE", {
     code: "pool_protection_unavailable",
     status: 503,
-    requestId,
+    requestId: traceRequestId,
+    attemptRequestId,
     ...diagnostic,
   });
-  defer(captureError(env, "pool_failure", pathname, undefined, requestId));
+  defer(captureError(env, "pool_failure", pathname, undefined, traceRequestId));
   if (env.POOL_MODEL_HISTORY_ENABLED === "true")
     defer(
       (async () => {
@@ -65,14 +77,16 @@ export function gatewayUnavailable(
           if (scope?.pools.length === 1)
             caller = { pool: scope.pools[0]!, person: scope.person, keyId: scope.keyId };
         }
+        const model = await requestedModel;
         if (caller)
           await withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
             recordGatewayRefusal(db, {
               ...caller,
-              requestId,
+              requestId: attemptRequestId,
               at: new Date().toISOString(),
               pathname,
               latencyMs: performance.now() - started,
+              requestedModel: model,
             }),
           );
       })().catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1")),
@@ -83,6 +97,14 @@ export function gatewayUnavailable(
         code: "pool_protection_unavailable",
         type: "server_error",
         retryable: true,
+        ...(diagnostic.runtimeStep && diagnostic.runtimeReason
+          ? {
+              reason: runtimeFailureCode({
+                runtimeStep: diagnostic.runtimeStep,
+                runtimeReason: diagnostic.runtimeReason,
+              }),
+            }
+          : {}),
         message: "The pool's account protection is temporarily unavailable. Retry shortly.",
       },
     },
@@ -91,7 +113,7 @@ export function gatewayUnavailable(
       headers: {
         "Retry-After": "2",
         "Cache-Control": "no-store",
-        "X-Request-Id": requestId,
+        "X-Request-Id": traceRequestId,
       },
     },
   );
@@ -112,5 +134,5 @@ export function gatewayOutcomeUnknown(
   });
   defer(captureError(env, "pool_failure", new URL(request.url).pathname, undefined, requestId));
   // Home may have billed this attempt, so it cannot be recorded as an uncharged refusal.
-  return upstreamOutcomeUnknown(requestId);
+  return upstreamOutcomeUnknown(requestId, new URL(request.url).pathname);
 }

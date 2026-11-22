@@ -1,3 +1,5 @@
+import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
+import { historyRowSchemaVersion } from "../../src/pool/model-history/history-row-schema.ts";
 import {
   historyImportCompletionVersion,
   historyImportCompletionStatements,
@@ -216,8 +218,10 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
         historyBulkSchemaVersion,
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
+        historyJournalPrepareVersion,
+        historyRowSchemaVersion,
         historySchemaVersion,
-      ],
+      ].sort(),
     );
     assert.equal(await appAttributionReady(db), true);
     const after = await modelHistorySchemaPlan(db);
@@ -425,8 +429,10 @@ test("a retained v4 database applies v6 after v8 and preserves imported rows and
         historyBulkSchemaVersion,
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
+        historyJournalPrepareVersion,
+        historyRowSchemaVersion,
         historySchemaVersion,
-      ],
+      ].sort(),
     );
     assert.deepEqual(
       (await db.query("SELECT row_to_json(r)::text AS row FROM basalt_model_import_jobs r")).rows,

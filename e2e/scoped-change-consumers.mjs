@@ -8,7 +8,11 @@ import { join, resolve } from "node:path";
 import { Effect, Redacted } from "effect";
 import { root, runtime, until } from "./recipes/harness.mjs";
 import { poolCloudHarness } from "./recipes/pool-cloud-harness.mjs";
+import { changeFeedRecoveryProof } from "./recipes/change-feed-recovery-proof.mjs";
 import { startScopedChangeFixture } from "./recipes/scoped-change-fixture.mjs";
+import { accountTrafficProof } from "./recipes/account-traffic-proof.mjs";
+import { accountTrafficPrivacyProof } from "./recipes/account-traffic-privacy-proof.mjs";
+import { holdInitialAccountsProjection } from "./recipes/initial-accounts-projection.mjs";
 import { cloudLocks } from "../.upstream/e2e/support/cloud-locks.ts";
 import { Target } from "../.upstream/e2e/support/platform.ts";
 import { roleHost } from "../.upstream/e2e/support/role-hosts.ts";
@@ -22,6 +26,7 @@ import { redactLogText } from "../src/feedback/logs.ts";
 const { chromium } = createRequire(join(root, ".upstream/package.json"))("playwright");
 const args = process.argv.slice(2);
 const accountsOnly = args.includes("--accounts-only");
+const trafficOnly = args.includes("--traffic-only");
 const directory = resolve(
   args.find((arg) => !arg.startsWith("--")) ??
     join(root, ".generated/scoped-change-consumers", randomBytes(6).toString("hex")),
@@ -113,6 +118,14 @@ const program = Effect.gen(function* () {
         from hosted_change_pending p where scope=$1 and topic='accounts' and resource='*'`,
       params: [scope],
     });
+  const maintenanceTick = () =>
+    Effect.promise(async () => {
+      const response = await fetch(
+        `${h.origin}/cdn-cgi/handler/scheduled?cron=${encodeURIComponent("* * * * *")}`,
+      );
+      assert.equal(response.status, 200, "the controlled maintenance tick succeeds");
+      await response.text();
+    }).pipe(Effect.timeout("60 seconds"));
   // A pass can precede a provisioning tail. Each bounded retry drives the public delivery path.
   const barrier = () => {
     const progress = { attempts: 0, last: undefined };
@@ -150,7 +163,15 @@ const program = Effect.gen(function* () {
       rows.some((row) => row.kind === "team") && rows.every((row) => row.status === "succeeded"),
     "initial organization provisioning did not finish before measuring reads",
   );
+  const beforeMaintenance = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+  // Initial provisioning does not include the first tick's account checks and rollout jobs.
+  yield* maintenanceTick();
   yield* barrier();
+  const afterMaintenance = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+  diagnostics.initialMaintenance = {
+    before: beforeMaintenance.revisions,
+    after: afterMaintenance.revisions,
+  };
   const browser = yield* Effect.acquireRelease(
     Effect.promise(() => chromium.launch({ headless: true })),
     (browser) => Effect.promise(() => browser.close()),
@@ -158,6 +179,28 @@ const program = Effect.gen(function* () {
 
   yield* browserWork(() => h.fixture.scoped.initialize(pool.id, identity.user.id));
   yield* browserWork(() => h.fixture.scoped.commitRequest("synthetic-account-baseline"));
+  if (trafficOnly) {
+    yield* accountTrafficProof({
+      h,
+      database,
+      browser,
+      pool,
+      saved,
+      check,
+      diagnostics,
+      directory,
+    });
+    yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
+    return {
+      complete: true,
+      accountsProved: true,
+      poolProved: false,
+      checks,
+      screenshots,
+      syntheticOnly: true,
+      diagnostics,
+    };
+  }
   const seriesReads = () =>
     h.fixture.scoped.reads.filter((read) => read.kind === "poolUsageSeries").length;
   const successReads = () =>
@@ -183,8 +226,16 @@ const program = Effect.gen(function* () {
           : route.abort("blockedbyclient");
       }),
     );
-    yield* browserWork(() => splitRoutedReads(context, browserOrigin));
+    const initialProjection =
+      width === 1280
+        ? yield* browserWork(() =>
+            holdInitialAccountsProjection(context, () => splitRoutedReads(context, browserOrigin)),
+          )
+        : undefined;
+    if (initialProjection === undefined)
+      yield* browserWork(() => splitRoutedReads(context, browserOrigin));
     const page = yield* browserWork(() => context.newPage());
+    if (initialProjection) yield* Effect.addFinalizer(() => Effect.sync(initialProjection.release));
     let reads = 0,
       routingReads = 0;
     diagnostics.accountProgress = { width, phase: "initial", responses: [], heads: [] };
@@ -227,8 +278,12 @@ const program = Effect.gen(function* () {
       (diagnostics.pageErrors ??= []).push(redactLogText(String(error)));
     });
     const currentReads = [];
+    const lastSuccessResponses = [];
+    let initialAccountsResponse;
     page.on("response", (response) => {
       const pathname = new URL(response.url()).pathname;
+      if (pathname.endsWith("/pool-usage/last-success") && response.status() === 200)
+        lastSuccessResponses.push(response);
       if (pathname.endsWith("/changes/current")) {
         currentReads.push(response);
         void response
@@ -242,6 +297,8 @@ const program = Effect.gen(function* () {
           .catch(() => undefined);
       }
       if (resources(new URL(response.url()))) {
+        if (response.request().method() === "GET" && response.status() === 200)
+          initialAccountsResponse ??= response;
         const entry = { status: response.status(), labels: [] };
         progress.responses.push(entry);
         void response
@@ -312,6 +369,22 @@ const program = Effect.gen(function* () {
               response.status() === 200,
           ),
     );
+    const joinInitialProjection = async () => {
+      const response =
+        initialAccountsResponse ??
+        (await page.waitForResponse(
+          (response) =>
+            response.request().method() === "GET" &&
+            resources(new URL(response.url())) &&
+            response.status() === 200,
+        ));
+      await response.finished();
+    };
+    yield* browserWork(() =>
+      initialProjection
+        ? initialProjection.verifyJoin(page, joinInitialProjection, row(label), updating())
+        : joinInitialProjection(),
+    );
     yield* browserWork(async () => {
       await resourceIdle();
       await updating().waitFor({ state: "hidden" });
@@ -326,6 +399,7 @@ const program = Effect.gen(function* () {
       reads - idle,
       0,
     );
+    initialProjection?.assertJoined();
 
     let enter, release;
     const started = new Promise((resolve) => {
@@ -422,6 +496,16 @@ const program = Effect.gen(function* () {
       "the Accounts page did not read pool usage",
     );
     yield* browserWork(resourceIdle);
+    yield* browserWork(async () => {
+      const response =
+        lastSuccessResponses[0] ??
+        (await page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname.endsWith("/pool-usage/last-success") &&
+            response.status() === 200,
+        ));
+      await response.finished();
+    });
     const usageBefore = { series: seriesReads(), success: successReads() };
     assert.ok(usageBefore.series >= 2, "the real Accounts page loaded both pool usage ranges");
     assert.ok(usageBefore.success > 0, "the mapped Accounts page read last-success");
@@ -498,6 +582,16 @@ const program = Effect.gen(function* () {
       acceptedUsage,
     );
     progress.phase = "pool-account-routing";
+    yield* browserWork(async () => {
+      await page.goto(
+        `${browserOrigin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=app`,
+      );
+      await page
+        .frameLocator('[data-app-frames] iframe:not([src*="/history"])')
+        .getByRole("heading", { name: "How much are we using?", exact: true })
+        .waitFor();
+    });
+
     yield* browserWork(() =>
       page.route(
         (url) => url.pathname.endsWith("/pool-credit-policy"),
@@ -556,6 +650,15 @@ const program = Effect.gen(function* () {
       routingReads - routingBefore,
       1,
     );
+    if (width === 390) {
+      const before = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+      yield* maintenanceTick();
+      const after = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
+      diagnostics.hostRouting.controlledTick = {
+        before: before.revisions,
+        after: after.revisions,
+      };
+    }
     const duplicateHeads = yield* h.request("GET", `${h.prefix}/changes/current?pool=${pool.id}`);
     yield* browserWork(() => h.fixture.scoped.duplicate());
     yield* browserWork(() => page.clock.runFor(200).then(flush));
@@ -574,11 +677,27 @@ const program = Effect.gen(function* () {
       routingReads - routingBefore,
       1,
     );
+    if (width === 390)
+      check(
+        "Pool Accounts at 390: settled maintenance tick leaves measured heads unchanged",
+        diagnostics.hostRouting.controlledTick.after,
+        diagnostics.hostRouting.controlledTick.before,
+      );
     diagnostics.hostRouting.relevant = routingReads;
     yield* browserWork(() => shot("routing-after"));
     yield* browserWork(() => page.goto("about:blank"));
   }
   diagnostics.accounts = { proved: true, widths: [1280, 390] };
+  yield* changeFeedRecoveryProof({
+    h,
+    browser,
+    database,
+    label,
+    check,
+    diagnostics,
+    directory,
+    accountReads,
+  });
   if (!accountsOnly) {
     let model = "synthetic-model-before";
     const baseline = yield* browserWork(() => h.fixture.scoped.commitRequest(model));
@@ -847,6 +966,8 @@ const program = Effect.gen(function* () {
     }
     diagnostics.pool = { proved: true, widths: [1280, 390], engine: h.fixture.scoped.engine };
   }
+  yield* accountTrafficProof({ h, database, browser, pool, saved, check, diagnostics, directory });
+  yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
   check("browser has no uncaught product error", (diagnostics.pageErrors ??= []), []);
   return {
     complete: !accountsOnly,

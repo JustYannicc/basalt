@@ -14,12 +14,45 @@ import {
   type SlotRecord,
   type SlotSelection,
 } from "./contract.ts";
-import { currentPolicies, healthy, proveSlot, slotClock, type SlotClock } from "./proof.ts";
-import { RuntimeSlotStorage, slotSelectionKey } from "./storage.ts";
+import {
+  currentPolicies,
+  healthy,
+  proveSlot,
+  retiredDenials,
+  slotClock,
+  staleLeases,
+  type SlotClock,
+} from "./proof.ts";
+import { RuntimeSlotStorage, slotSelectionKey, type SlotStorage } from "./storage.ts";
 import { SlotStreams } from "./streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
-import { SlotRetirement } from "./retirement.ts";
+import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
+import { runtimeFailureCause, runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { notServing } from "./forced-restart.ts";
+import { SlotRetirement, type RetirementProvider } from "./retirement.ts";
 import { SlotPromotion } from "./promotion.ts";
+import { SlotFirstStart } from "./first-start.ts";
+
+/**
+ * The proof failed because the runtime itself refused: it isn't running, answers unhealthy or as
+ * another boot, or doesn't answer in time. A controller-side refusal or a defect is not one.
+ * An endpoint's refusal arrives as `uncertain`, so its closed reason decides, as for the forced
+ * restart; a failure of the endpoint's own storage or signing is not the runtime's.
+ */
+export function proofRefusedByRuntime(refusal: unknown) {
+  if (
+    !(refusal instanceof SlotRefused) &&
+    !(refusal instanceof PoolRuntimeUnhealthy) &&
+    !(refusal instanceof DOMException && refusal.name === "TimeoutError")
+  )
+    return false;
+  const failed = runtimeFailureCause(refusal);
+  return (
+    notServing.has(runtimeFailureDiagnostic(refusal, "slot_health").runtimeReason) &&
+    failed !== "dependency_storage" &&
+    failed !== "dependency_signing"
+  );
+}
 
 interface Dependencies {
   controllerId: string;
@@ -28,12 +61,16 @@ interface Dependencies {
   driver: SlotDriver;
   streams: SlotStreams;
   clock?: SlotClock;
+  beforeStage?(target: SlotTarget, transaction: SlotStorage): Promise<void>;
+  beforePromote?(intent: PromotionIntent, transaction: SlotStorage): Promise<void>;
+  retirementProvider?: RetirementProvider;
 }
 /** Inert until a private integration supplies admitted runtime drivers and existing DO storage. */
 export class RuntimeSlots {
   private clock: SlotClock;
   private deps: Dependencies;
   readonly retirement: SlotRetirement;
+  readonly firstStart: SlotFirstStart;
   private promotion: SlotPromotion;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -42,7 +79,14 @@ export class RuntimeSlots {
     };
     this.clock = deps.clock ?? slotClock;
     this.promotion = new SlotPromotion(this.deps, this.clock);
-    this.retirement = new SlotRetirement(deps.storage, deps.driver, deps.streams, this.clock);
+    this.retirement = new SlotRetirement(
+      deps.storage,
+      deps.driver,
+      deps.streams,
+      this.clock,
+      deps.retirementProvider,
+    );
+    this.firstStart = new SlotFirstStart(deps, this.clock);
   }
 
   async inspect() {
@@ -71,9 +115,10 @@ export class RuntimeSlots {
     });
   }
 
-  async stage(
+  async prepareStage(
     value: SlotTarget,
     expected?: { epoch: number; active: SlotIdentity; digest: string },
+    prepared?: (transaction: SlotStorage) => Promise<void>,
   ) {
     const target = Schema.decodeUnknownSync(SlotTarget)(value);
     if (target.controllerId !== this.deps.controllerId) throw new SlotRefused("identity");
@@ -96,13 +141,37 @@ export class RuntimeSlots {
       )
         throw new SlotRefused("selection");
       currentPolicies(snapshot, this.clock);
+      await prepared?.(transaction);
+      await this.deps.beforeStage?.(target, transaction);
       await transaction.put(slotSelectionKey, {
         ...selection,
         candidate: { target, fenced: false },
       });
     });
+    return target;
+  }
+
+  async stage(
+    value: SlotTarget,
+    expected?: { epoch: number; active: SlotIdentity; digest: string },
+    admit?: () => Promise<void>,
+  ) {
+    const target = await this.prepareStage(value, expected);
+    await admit?.();
+    return this.startStage(target, AbortSignal.timeout(180_000));
+  }
+
+  async startStage(target: SlotTarget, signal: AbortSignal) {
+    const beforeStart = await this.inspect();
+    if (
+      !beforeStart.selection?.candidate ||
+      !sameTarget(beforeStart.selection.candidate.target, target) ||
+      beforeStart.selection?.candidate?.fenced ||
+      beforeStart.selection?.candidate?.retirement
+    )
+      throw new SlotRefused("selection");
     // Registration precedes startup. Concurrent revocation sees even an unready candidate.
-    const health = await this.deps.driver.start(target, AbortSignal.timeout(180_000));
+    const health = await this.deps.driver.start(target, signal);
     const identity = this.identity(health.identity);
     if (!sameTarget(identity, target)) throw new SlotRefused("identity");
     healthy(health, identity, this.clock);
@@ -119,6 +188,11 @@ export class RuntimeSlots {
         candidate: { ...selection.candidate, identity },
       });
     });
+    return this.verifyCandidate(identity);
+  }
+
+  async verifyCandidate(identity: SlotIdentity) {
+    const target = identity;
     const before = await this.inspect();
     const proof = await proveSlot(this.deps.driver, identity, before, this.clock);
     await this.deps.storage.transact(async (current, transaction) => {
@@ -128,6 +202,7 @@ export class RuntimeSlots {
         selection.candidate.fenced ||
         selection.candidate.retirement ||
         !sameTarget(selection.candidate.target, target) ||
+        !sameIdentity(selection.candidate.identity, identity) ||
         current.digest !== before.digest
       )
         throw new SlotRefused("selection");
@@ -153,7 +228,7 @@ export class RuntimeSlots {
   async observeCandidate() {
     const before = await this.inspect();
     const candidate = before.selection?.candidate;
-    if (!candidate || candidate.retirement) throw new SlotRefused("selection");
+    if (!candidate || candidate.retirement || candidate.fenced) throw new SlotRefused("selection");
     const health = await this.deps.driver.observe(candidate.target, AbortSignal.timeout(2_000));
     const identity = this.identity(health.identity);
     if (
@@ -168,6 +243,7 @@ export class RuntimeSlots {
         !selection ||
         !current ||
         current.retirement ||
+        current.fenced ||
         !sameTarget(current.target, candidate.target) ||
         (current.identity && !sameIdentity(current.identity, identity))
       )
@@ -211,30 +287,103 @@ export class RuntimeSlots {
       if (!role) throw new SlotRefused("identity");
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: true },
+        [role]: {
+          ...selection[role],
+          fenced: true,
+          fencedAt: this.clock.now(),
+          unfenced: undefined,
+        },
       });
     });
     this.deps.streams.abortSlot(executionKey(identity));
   }
 
-  async unfence(identity: SlotIdentity) {
+  /**
+   * Ends a fence. A slot that proves its health and takes current policies serves at once. An active
+   * slot that can't goes back to recovery instead, unproven: no model call routes to it until current
+   * policies reach its boot, by its proof or recovery's restart. A fenced boot may still hold clean
+   * grants from before its fence for the plugin's 24-hour grace, so the gate, not time, is the guard.
+   * A fence that lands while this runs wins.
+   */
+  async unfence(
+    identity: SlotIdentity,
+  ): Promise<{ by: "proof" } | { by: "recovery"; cause: "leases" | "runtime" }> {
     this.identity(identity);
     const before = await this.inspect();
-    const proof = await proveSlot(this.deps.driver, identity, before, this.clock);
+    retiredDenials(before);
+    const fencedAt = (["active", "candidate", "draining"] as const)
+      .map((role) => before.selection?.[role])
+      .find((slot) => sameIdentity(slot?.identity, identity))?.fencedAt;
+    // A fence stops membership renewing, so a clean lease runs out a few seconds in and no proof
+    // can pass until a Home read renews it. That read needs the slot unfenced: recovery's turn.
+    // The endpoint is still asked first, so its own refusal keeps the fence as on the proof path.
+    if (staleLeases(before, this.clock)) {
+      let refused = false;
+      try {
+        healthy(
+          await this.deps.driver.health(identity, AbortSignal.timeout(2_000)),
+          identity,
+          this.clock,
+        );
+      } catch (refusal) {
+        if (!proofRefusedByRuntime(refusal)) throw refusal;
+        refused = true;
+      }
+      if (await this.returnToRecovery(identity, fencedAt))
+        return { by: "recovery", cause: refused ? "runtime" : "leases" };
+      throw new SlotRefused("policy");
+    }
+    let proof: Awaited<ReturnType<typeof proveSlot>>;
+    try {
+      proof = await proveSlot(this.deps.driver, identity, before, this.clock);
+    } catch (refusal) {
+      // Only a runtime that isn't serving goes back to recovery; a policy or selection refusal, or a
+      // defect, stays an error for the operator.
+      if (!proofRefusedByRuntime(refusal) || !(await this.returnToRecovery(identity, fencedAt)))
+        throw refusal;
+      return { by: "recovery", cause: "runtime" };
+    }
     await this.deps.storage.transact(async (snapshot, transaction) => {
       const selection = snapshot.selection;
       if (!selection || snapshot.digest !== before.digest) throw new SlotRefused("selection");
       const role = (["active", "candidate", "draining"] as const).find((role) =>
         sameIdentity(selection[role]?.identity, identity),
       );
-      if (!role || selection[role]?.retirement) throw new SlotRefused("selection");
+      if (!role || selection[role]?.retirement || selection[role]?.fencedAt !== fencedAt)
+        throw new SlotRefused("selection");
       currentPolicies(snapshot, this.clock);
       currentPolicies(before, this.clock);
       healthy(proof, identity, this.clock);
       await transaction.put(slotSelectionKey, {
         ...selection,
-        [role]: { ...selection[role], fenced: false },
+        [role]: {
+          ...selection[role],
+          fenced: false,
+          unfenced: { by: "proof", at: this.clock.now(), proven: true },
+        },
       });
+    });
+    return { by: "proof" };
+  }
+  /** Unfences the active slot unproven, for recovery; false when that isn't this slot's case. */
+  private returnToRecovery(identity: SlotIdentity, fencedAt: number | undefined) {
+    const now = this.clock.now();
+    return this.deps.storage.transact(async ({ selection }, transaction) => {
+      const active = selection?.active;
+      // Recovery acts on the active slot alone; a fenced candidate or draining slot needs its proof.
+      if (
+        !selection ||
+        !active?.fenced ||
+        !sameIdentity(active.identity, identity) ||
+        active.retirement
+      )
+        return false;
+      if (active.fencedAt !== fencedAt) throw new SlotRefused("selection");
+      await transaction.put(slotSelectionKey, {
+        ...selection,
+        active: { ...active, fenced: false, unfenced: { by: "recovery", at: now, proven: false } },
+      });
+      return true;
     });
   }
 

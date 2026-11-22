@@ -4,9 +4,6 @@ inputs:
   bun-version:
     description: Exact Bun version present in the archive pins.
     required: true
-  export-as:
-    description: Optional environment variable to receive the absolute Bun binary path without adding it to PATH.
-    required: false
 runs:
   using: composite
   steps:
@@ -23,10 +20,19 @@ runs:
     - shell: bash
       env:
         BUN_VERSION: ${{ inputs.bun-version }}
-        BUN_EXPORT_AS: ${{ inputs.export-as }}
       run: node scripts/ci/setup-bun.ts install "$BUN_VERSION"
     - uses: actions/cache/save@v4
       if: steps.cache.outputs.cache-hit != 'true'
       with:
         path: ${{ steps.binary.outputs.archive }}
         key: ${{ steps.binary.outputs.key }}
+    # On the box, every CI container sees one writable directory; this Check's jobs share their own
+    # e2e:prepare cache in it, so each step builds once per Check. Hosted runners build their own, and
+    # the release runners, self-hosted too, get no BASALT_BOX_SHARED from the box.
+    - name: Share e2e build outputs among this Check's jobs on the box
+      if: runner.environment == 'self-hosted'
+      shell: bash
+      run: |
+        if [ -n "${BASALT_BOX_SHARED:-}" ] && [ -d "$BASALT_BOX_SHARED" ]; then
+          echo "EXECUTOR_E2E_CACHE=$BASALT_BOX_SHARED/e2e-prepare/$GITHUB_RUN_ID" >> "$GITHUB_ENV"
+        fi

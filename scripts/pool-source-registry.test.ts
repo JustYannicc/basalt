@@ -193,7 +193,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.file,
           name === "home"
             ? "0506-home-usage-credits.patch"
-            : "0507-node-usage-credit-routing.patch",
+            : "0647-node-usage-credit-routing.patch",
         );
         assert.match(
           patch.retirement.requires,
@@ -375,7 +375,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without a schema or lease change/);
       } else if (patch.identity === "cliproxy-node-terminal-request-id") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0592-node-terminal-request-id.patch");
+        assert.equal(patch.file, "0648-node-terminal-request-id.patch");
         assert.match(
           patch.retirement.requires,
           /validated per-request terminal correlation identities/,
@@ -433,7 +433,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /without inference replay or a byte-lifetime cap/);
       } else if (patch.identity === "cliproxy-node-no-postwrite-replay") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0599-node-no-postwrite-replay.patch");
+        assert.equal(patch.file, "0649-node-no-postwrite-replay.patch");
         assert.match(patch.retirement.requires, /terminal unknown-outcome classification/);
         assert.match(patch.retirement.requires, /real post-write EOF/);
         assert.match(patch.retirement.requires, /empty accepted model-pool stream/);
@@ -498,7 +498,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(patch.retirement.requires, /funding-denial and missing-validator controls/);
       } else if (patch.identity === "cliproxy-node-generation-submission") {
         assert.equal(name, "node");
-        assert.equal(patch.file, "0611-node-generation-submission.patch");
+        assert.equal(patch.file, "0650-node-generation-submission.patch");
         assert.match(patch.retirement.requires, /guards only generation sends/);
         assert.match(
           patch.retirement.requires,
@@ -508,6 +508,61 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
+        );
+      } else if (patch.identity === "cliproxy-home-coordination-pool") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0691-home-coordination-pool.patch");
+        assert.match(patch.retirement.requires, /pgsql\.coordination-max-open-conns/);
+        assert.match(patch.retirement.requires, /while the main pool is saturated/);
+        assert.match(
+          patch.retirement.requires,
+          /saturated-main-pool heartbeat, node-lookup and node-listing regressions/,
+        );
+        assert.match(patch.retirement.requires, /management node listing/);
+      } else if (patch.identity === "cliproxy-home-live-owner-members") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0732-home-live-owner-members.patch");
+        assert.match(
+          patch.retirement.requires,
+          /only after the Home that holds it has stopped heartbeating/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-node-liveness-floor") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0736-home-node-liveness-floor.patch");
+        assert.match(
+          patch.retirement.requires,
+          /node liveness timeout of at least its configured floor/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /stored-floor, short-stall, past-the-floor and lifecycle-rule regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-database-distance") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0741-home-database-distance.patch");
+        assert.match(
+          patch.retirement.requires,
+          /shortest database round trip over its coordination pool/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /measured-distance and unavailable-database regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-heartbeat-fresh-lease") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0735-home-heartbeat-fresh-lease.patch");
+        assert.match(patch.retirement.requires, /without the election gate's row lock/);
+        assert.match(
+          patch.retirement.requires,
+          /keeps the master flag no longer than the lease it read/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions/,
         );
       } else {
         assert.ok(

@@ -1,12 +1,15 @@
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
-import * as Output from "alchemy/Output";
-import * as Command from "alchemy/Command";
+import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
-import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
+import { poolWorkerAcceptance } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
+import { fleetBindings, fleetClasses, fleetInfrastructure } from "./fleet-deployment.ts";
+import { readinessImageInput } from "./image-release-plan.ts";
+import { bindPoolObservation } from "./fleet-observation.ts";
+import { rootContainer } from "./root-image-pin.ts";
 import { poolWorkerDatabase } from "./worker-database.ts";
 import { telemetryBindings, workerObservability } from "../telemetry/deployment.ts";
 import { validSentryDsn } from "../telemetry/sentry-target.ts";
@@ -15,12 +18,18 @@ import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { ArtifactsCredentials } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
 
-// Alchemy beta.80 forwards these Cloudflare API fields but omits them from its type.
-// https://developers.cloudflare.com/containers/concepts/placement/
-const euPlacement: Cloudflare.ContainerApplication.Constraints & {
-  jurisdiction: "eu";
-  regions: ("EEUR" | "WEUR")[];
-} = { jurisdiction: "eu", regions: ["EEUR", "WEUR"] };
+/**
+ * Killing the elected Home master can lose a provider token rotation, which logs an account out.
+ * Only a disposable stage, which holds test accounts, may do it. Every other stage, production
+ * included, carries no binding, and the controller then refuses.
+ */
+export const masterCrashBinding = Effect.gen(function* () {
+  // Annotated so the absent case stays an absent key, which is what a Worker binding map accepts.
+  const binding: { POOL_ALLOW_MASTER_CRASH?: string } = (yield* Stage).startsWith("test-")
+    ? { POOL_ALLOW_MASTER_CRASH: "true" }
+    : {};
+  return binding;
+});
 
 export const poolWorker = Effect.gen(function* () {
   const probeTarget = yield* Config.String("POOL_AVAILABILITY_TARGET").pipe(Config.withDefault(""));
@@ -39,17 +48,8 @@ export const poolWorker = Effect.gen(function* () {
     );
   const database = yield* poolDatabaseInfrastructure;
   const workerDatabase = yield* poolWorkerDatabase(database.workerOrigin);
-  const image = Cloudflare.Container("PoolContainer", {
-    context: fileURLToPath(new URL("../../containers/pool/", import.meta.url)),
-    className: "PoolContainer",
-    // The snapshot policy rejects placement constraints. EU enforcement takes priority.
-    schedulingPolicy: "default",
-    instanceType: "basic",
-    maxInstances: 1,
-    constraints: euPlacement,
-    observability: { logs: { enabled: true } },
-  });
-  const application = yield* image.Application;
+  const { image, application, imageHash, imageInput, pinnedInput } = yield* rootContainer;
+  const fleet = yield* fleetInfrastructure;
   // Set only while rotating: the Worker still accepts pool tokens signed with it.
   const previousSigningKey = yield* Config.option(Config.Redacted("POOL_APP_SIGNING_KEY_PREVIOUS"));
   const worker = yield* Cloudflare.Worker("PoolWorker", {
@@ -60,11 +60,17 @@ export const poolWorker = Effect.gen(function* () {
     observability: workerObservability,
     env: {
       PoolContainer: image,
+      ...fleetBindings(fleet, yield* fleetClasses),
+      POOL_CONTAINER_APPLICATION_ID: application.applicationId,
+      ...(yield* masterCrashBinding),
+      // No release in this layer names a candidate image, so a pinned root expects the pin.
+      POOL_DESIRED_IMAGE_INPUT: yield* readinessImageInput(pinnedInput, false).pipe(Effect.orDie),
       BulkUsageImport: Cloudflare.DurableObject("ArtifactsTokenCoordinator", {
         className: "ArtifactsTokenCoordinator",
         scriptName: (yield* ArtifactsCredentials).workerName,
       }),
       POOL_DATABASE_URL: database.runtimeUrl,
+      POOL_DATABASE_READY: database.runtimeReady,
       POOL_AUTH_DATABASE: workerDatabase,
       POOL_DEPLOYMENT_KEY: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
       POOL_MANAGEMENT_KEY: yield* Config.Redacted("POOL_MANAGEMENT_KEY"),
@@ -80,53 +86,20 @@ export const poolWorker = Effect.gen(function* () {
       ...(Option.isSome(previousSigningKey)
         ? { POOL_APP_SIGNING_KEY_PREVIOUS: previousSigningKey.value }
         : {}),
-      POOL_IMAGE_HASH: application.hash.pipe(
-        Output.map((hash) => {
-          if (!hash?.image) throw new Error("The pool image has no build revision");
-          return hash.image;
-        }),
-      ),
+      POOL_IMAGE_HASH: imageHash,
       ...(probeTarget ? { POOL_AVAILABILITY_TARGET: probeTarget } : {}),
       ...(recoveryTarget ? { POOL_AUTOMATIC_RECOVERY_TARGET: recoveryTarget } : {}),
     },
   });
-  yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
+  yield* bindPoolObservation(worker, Boolean(fleet));
+  yield* poolWorkerAcceptance(worker, {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,
-    databases: ["basalt_pool"],
-    deployment: worker.hash,
     candidate: productionOpsRelease,
-    readiness: {
-      worker: worker.workerName,
-      accountId: application.accountId,
-      key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
-      workerInput: poolWorkerRevision,
-      imageHash: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
-    },
+    accountId: application.accountId,
+    key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
+    workerInput: poolWorkerRevision,
+    imageHash: imageInput,
   });
-  const receiptPath = yield* Config.String("BASALT_POOL_IMAGE_RECEIPT").pipe(
-    Config.withDefault(""),
-  );
-  if (receiptPath) {
-    yield* Command.Exec("PoolImagePublicationReceipt", {
-      command: "node capture-pool-image.ts",
-      cwd: fileURLToPath(new URL("../../scripts/deploy-safety/", import.meta.url)),
-      env: {
-        BASALT_POOL_IMAGE_RECEIPT: receiptPath,
-        GITHUB_SHA: yield* Config.NonEmptyString("GITHUB_SHA"),
-        CLOUDFLARE_ACCOUNT_ID: application.accountId,
-        CLOUDFLARE_API_TOKEN: yield* Config.Redacted("CLOUDFLARE_API_TOKEN"),
-        POOL_APPLICATION_ID: application.applicationId,
-        POOL_IMAGE_INPUT_HASH: application.hash.pipe(Output.map((hash) => hash?.image ?? "")),
-        POOL_IMAGE_DIGEST: application.hash.pipe(Output.map((hash) => hash?.digest ?? "")),
-        POOL_IMAGE_REF: application.configuration.pipe(
-          Output.map((configuration) => configuration.image),
-        ),
-        POOL_WORKER_READY: worker.workerName,
-      },
-      memo: false,
-      timeout: "1 minute",
-    });
-  }
   return worker;
 });

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Only a moving-head read failure schedules a reconfirmation timer, at one, three and nine seconds with a three-reconfirm cap per failed recovery cycle. A new foreground or connection handshake resets the budget when no recovery read is in flight; repeated signals never duplicate an in-flight cycle. Heartbeats and handshakes can also reconfirm; signals that actually refresh the watch, activity changes, manual retry and unmount cancel pending timers. Healthy watches schedule no recovery timer; the global heartbeat remains at fifteen seconds. Every reconfirm uses the unchanged authoritative before/body/after fence and principal binding. Never-settling heads remain fail-closed, healthy idle signals cause no head or body read, and an explicit retry remains available after the automatic budget ends. UI copy, layout, and the real first-entry overlap assertions and deadlines stay unchanged."
+    }
+  }
+}

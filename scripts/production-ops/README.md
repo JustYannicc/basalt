@@ -223,6 +223,115 @@ The successful workflow upload must finish before apply. Download and decrypt
 that snapshot and recipient key available for recovery. A snapshot alone is not
 a verified restore. Restoring data needs its own reviewed operation and GO.
 
+## Repair a stale pool registration
+
+After the operation is deployed, select `pool-association-repair-v1` with
+`action=migrate`, `mode=dry-run`, and an exact request:
+
+```json
+{"organization":"<organization-id>","slot":"<metadata-slot-id>","app":"<recorded-app-id>","actualOwner":null,"operation":"clear"}
+```
+
+`actualOwner` must match the app's current owner exactly, or be `null` when the
+app is absent globally. A valid organization-owned association refuses. The
+encrypted plan shows the slot before and after as exact JSON text, the full organization row
+hashes and dependency hash. Review it and use the standard saved-plan apply
+with an explicit GO for those IDs and checksum. Apply refuses any changed row
+or dependency and records one transaction receipt. Replay verifies without
+repeating the write.
+
+`clear` removes only that registration. Existing reconciliation treats a
+missing app as deliberate deletion; clearing can allow a fresh default pool
+on a later setup job. Decide that consequence before approving it.
+
+For a proven replacement, use `operation=repoint` and add
+`"replacement":"<existing-replacement-app-id>"`. The old app must be absent
+globally. The replacement must already belong to the organization and recorded
+creator, use the exact saved deployment and code lineage, and have no other
+registration. A recorded account or token-key version refuses because an
+app-bound credential cannot be inherited safely. This branch changes only the
+app pointer and preserves the rest of the slot. Missing provenance refuses;
+it never reconstructs apps or moves ownership. Journal activation does not
+run this repair automatically.
+
+## Adopt Cloudflare accounts into the Cloudflare family
+
+An app keeps its provider ref when a version only adds OAuth scopes, so a
+Cloudflare app installed before the full-scope declaration still holds the ref
+its first definition derived. Every app that declares Cloudflare now derives
+the family's canonical ref, so those apps cannot link the older accounts.
+`cloudflare-family-adoption-v1` moves one organization's accounts and the
+versions that name the retained ref onto the family ref:
+
+```json
+{"organization":"<organization-id>","from":"<retained-provider-ref>","to":"<family-provider-ref>","accounts":[{"account":"<account-id>","generation":<credential-generation>}]}
+```
+
+List every account still under `from` with the `accounts` inventory. The
+selection must be exact. Take `to` from the requirement of an app that already declares the
+current Cloudflare provider. The runtime derives the family ref from the host's
+Cloudflare declaration, refuses a `to` that differs, and refuses a `from` whose
+stored definition is a different provider. An organization with several
+retained Cloudflare refs needs one adoption per ref. It also refuses a sign-in
+still in progress, an acquisition outside the selection and an OAuth client
+saved under the retained ref. The dry run lists each account, version,
+connection and acquisition with its before and after hashes, the apps whose
+versions move, the links it keeps and the apps already on `to` that start
+offering the moved accounts. Review those app IDs before the GO.
+Account IDs, credentials, generations and links never change; provider rows are
+only read. Apply with the standard saved-plan GO. Inside the GO every written
+row must match its planned hash and every kept link must still exist and
+resolve to the family ref. The check after commit and any replay only require
+that the moved rows still name the family ref and that nothing in the
+organization, links included, names `from`, so renewals, renames, unlinks and
+apps moving to other providers after the GO don't read as a failed migration.
+
+It refuses `declaration-not-family` while an app whose active version names
+`from` still declares the first Cloudflare definition: a copy of that app, or
+that source deployed as a new app, would derive `from` again. Update those apps
+to the current catalog version first (the update keeps `from`, so the GO still
+moves them), then dry-run again. A new app built later from a source that
+declares the first definition, for example a copy of a version rolled back to
+it, derives `from` again and needs another adoption.
+
+A deploy that read the app's active version before the GO commits could write
+`from` back. Run the GO only once every server runs the release that carries
+this migration, so no deploy still runs the code from before it. The dry run
+and the GO itself (the apply re-inspects inside its transaction) refuse while
+either of these is true, read from the same database:
+
+- `release-in-flight`: a release's catalog app sweep for the organization is
+  still `queued` or `running` (`hosted_provisioning`, ID prefix
+  `basalt-catalog-apps:`). Wait for it, then dry-run again.
+- `deploy-in-flight`: an app whose active version names `from` has reserved a
+  deploy that has not activated (`executor_apps.deploy_sequence` is above
+  `activated_sequence`). Wait for the deploy to finish, then dry-run again. A
+  deploy that failed keeps reading this way until the app's next successful
+  deploy; update the app once, then dry-run again. Activating a version also
+  clears it, without finishing the deploy.
+
+The GO also takes the row lock of every app that owns a version it moves, so
+deploys and activations of those apps wait for it and then read the moved
+versions. It takes the organization's access lock without waiting and reports
+busy when a link change holds it; retry the GO. An API-token account a person
+adds for an app's requirement locks that app and re-reads the requirement in
+its own transaction, so one saved around the GO is refused rather than saved
+under `from`; the person adds it again. Deploys choose provider refs again under that lock, from the version
+they built on, so a deploy that read `from` before the GO writes the family ref
+after it. The GO is done
+only after two more dry runs with the same request and `"accounts": []`: one
+right after the GO, and one after the first deploy of the organization's
+Cloudflare apps that finishes later (the next release's catalog sweep, or an
+update). Each must report `changes: 0`. Any other result means something names
+`from` again: `account-set-changed` means an account was saved under it (list
+it with the `accounts` inventory and adopt it with a new exact selection), and
+a plan with changes lists the versions to move; review it and GO it. Two
+refusals mean the check could not run rather than that something names `from`:
+`family-ref-changed` (a release changed the shared Cloudflare declaration, which
+ships with its own adoption) and `retained-provider-not-family` (another
+organization's deploy changed the shared provider row under `from`). Then read
+the `accounts` inventory and the `pools` backup for rows that still name `from`.
+
 ## Retire redundant Google bindings
 
 Use `google-duplicate-bindings-v1` with

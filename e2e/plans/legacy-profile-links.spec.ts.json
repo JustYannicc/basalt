@@ -1,7 +1,28 @@
 {
-  "scenarios": {},
-  "runs": {},
-  "inherited": ["legacyProfileLinks"],
+  "scenarios": {
+    "legacyProfileLinks": {
+      "fixtures": "actors",
+      "legacyStorage": true,
+      "managementApps": ["owner", "admin"],
+      "title": "hosted profiles upgrade to members' user links, each account linked to the requirement its profile selected it for",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted members and their profiles; local has one subject, and its MCP profile targets scenario upgrades its profiles."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Legacy rows need a runner-owned database; Cloud cases share one Worker and database."
+        }
+      }
+    }
+  },
+  "runs": {
+    "legacyProfileLinks": ["declared:self-host"]
+  },
   "inputs": [
     ".upstream/apps/hosted/cloud/src/app-data.ts",
     ".upstream/apps/hosted/cloud/src/infrastructure/background-jobs.ts",

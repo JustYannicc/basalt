@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-accounts-tab-device-grants",
+  "file": "0723-accounts-tab-device-grants.patch",
+  "content_sha256": "5bec2b39d392ea32f586e3ba1aecd4ce3f581ce5312fc54b50059d654a2536ed",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

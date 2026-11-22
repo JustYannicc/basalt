@@ -27,6 +27,23 @@ import {
 export const startupLimitMs = 1_000;
 /** A budget well under it: CI runners and Cloudflare's machines differ, and startup varies run to run. */
 export const startupBudgetMs = 400;
+/**
+ * Workers Cloudflare has measured near its limit (Api reported 325 ms to over 1 s for one build, McpServer
+ * 900 ms) get a tighter budget, so their growth fails here before a release is refused for it. Their CI
+ * medians were 186–239 ms (Api) and 168–208 ms (McpServer); each budget sits about a third above the slowest.
+ */
+export const workerStartupBudgetMs = { Api: 325, McpServer: 300 } as const satisfies Record<
+  string,
+  number
+>;
+const firstEventSuffix = " (first event)";
+// A lazy Worker's first-event measurement is its application, so it keeps that Worker's budget.
+export const startupBudgetFor = (name: string): number => {
+  const worker = name.endsWith(firstEventSuffix) ? name.slice(0, -firstEventSuffix.length) : name;
+  return Object.hasOwn(workerStartupBudgetMs, worker)
+    ? workerStartupBudgetMs[worker as keyof typeof workerStartupBudgetMs]
+    : startupBudgetMs;
+};
 /** Cloudflare's size limit, uncompressed; there is no compressed limit. */
 export const sizeLimitBytes = 64 * 1024 * 1024;
 /** Fail at half of it. Upstream's own per-Worker upload budgets are far tighter. */
@@ -35,6 +52,11 @@ export const sizeBudgetBytes = sizeLimitBytes / 2;
 const compatibility = { date: "2026-09-08", flags: ["nodejs_compat"] };
 /** Workers whose rejection blocked a production deploy; the check fails if any is missing. */
 export const requiredWorkers = ["Api", "Router"];
+/**
+ * Workers that import their application on the first event (`lazyEntrypoint` in their build).
+ * Cloudflare no longer evaluates that application at upload, so this check evaluates it instead.
+ */
+export const firstEventWorkers = ["Api"];
 
 /** One built Worker: its upload directory and the module Cloudflare starts. */
 export interface WorkerBundle {
@@ -99,6 +121,18 @@ export const reachableModules = (
   return [...reached].toSorted();
 };
 
+/** The application module a lazy entry imports on its first event: its one relative `import()`. */
+export const firstEventModule = (bundle: WorkerBundle, read: (module: string) => string) => {
+  const imported = [
+    ...read(bundle.entry).matchAll(/\bimport\(\s*["'`](\.\.?\/[^"'`]+)["'`]\s*\)/g),
+  ].map(([, specifier]) => posix.join(posix.dirname(bundle.entry), specifier!));
+  if (imported.length !== 1 || !bundle.modules.includes(imported[0]!))
+    throw new Error(
+      `${bundle.name} imports its application on its first event, so its entry must import exactly one uploaded module dynamically; found ${imported.join(", ") || "none"}`,
+    );
+  return imported[0]!;
+};
+
 export const readBundle = (name: string, from: string): WorkerBundle => {
   // workerd names modules by absolute path.
   const directory = resolve(from);
@@ -135,10 +169,11 @@ export const median = (values: ReadonlyArray<number>) => {
 /** Every budget a measurement crosses, as messages; empty when it fits. */
 export const violations = (measurement: Measurement) => {
   const startup = median(measurement.startupMs);
+  const budget = startupBudgetFor(measurement.name);
   return [
-    ...(startup > startupBudgetMs
+    ...(startup > budget
       ? [
-          `${measurement.name} starts in ${startup.toFixed(1)} ms of CPU (median); the budget is ${startupBudgetMs} ms, against Cloudflare's ${startupLimitMs} ms limit`,
+          `${measurement.name} starts in ${startup.toFixed(1)} ms of CPU (median); the budget is ${budget} ms, against Cloudflare's ${startupLimitMs} ms limit`,
         ]
       : []),
     ...(measurement.bytes > sizeBudgetBytes
@@ -157,6 +192,8 @@ export interface MeasureOptions {
   readonly onProfile?: (profile: CpuProfile, run: number) => void;
   /** Profiles one start; tests replace the workerd run. */
   readonly start?: () => Promise<CpuProfile>;
+  /** The module to evaluate, when it is not the entry: a lazy entry's application. */
+  readonly main?: string;
   /** The first wait before retrying an inconclusive start; it doubles, to at most eight times the first. */
   readonly backoffMs?: number;
   /** Waits between attempts; tests record delays without depending on wall time. */
@@ -182,7 +219,12 @@ export const measure = async (
   const start =
     options.start ??
     (() =>
-      profileStartup(bundle.name, join(bundle.directory, bundle.entry), contents, compatibility));
+      profileStartup(
+        bundle.name,
+        join(bundle.directory, options.main ?? bundle.entry),
+        contents,
+        compatibility,
+      ));
   const startupMs: number[] = [];
   let inconclusive = 0;
   while (startupMs.length < runs) {
@@ -207,7 +249,7 @@ export const measure = async (
   }
   const files = [...contents.values()];
   return {
-    name: bundle.name,
+    name: options.main ? `${bundle.name}${firstEventSuffix}` : bundle.name,
     bytes: files.reduce((total, file) => total + file.length, 0),
     gzipBytes: files.reduce((total, file) => total + gzipSync(file, { level: 9 }).length, 0),
     startupMs,
@@ -219,7 +261,11 @@ const kib = (bytes: number) => `${(bytes / 1024).toFixed(1)} KiB`;
 
 export const report = (measurements: ReadonlyArray<Measurement>) =>
   [
-    `Startup CPU budget ${startupBudgetMs} ms (Cloudflare limit ${startupLimitMs} ms); size budget ${kib(sizeBudgetBytes)} (limit ${kib(sizeLimitBytes)}).`,
+    `Startup CPU budget ${startupBudgetMs} ms, ${Object.entries(workerStartupBudgetMs)
+      .map(([name, ms]) => `${name} ${ms} ms`)
+      .join(
+        ", ",
+      )} (Cloudflare limit ${startupLimitMs} ms); size budget ${kib(sizeBudgetBytes)} (limit ${kib(sizeLimitBytes)}).`,
     "",
     "| Worker | Uncompressed | Gzip | Startup CPU, median | Runs (ms) | Inconclusive starts retried |",
     "|---|---:|---:|---:|---|---:|",
@@ -253,22 +299,35 @@ if (import.meta.main) {
     console.log(
       `Profiling ${bundle.name} (${relative(root, join(bundle.directory, bundle.entry))})`,
     );
-    try {
-      measurements.push(
-        await measure(bundle, runs, {
-          onProfile: (profile, run) => {
-            if (profiles)
-              writeFileSync(
-                join(profiles, `${bundle.name}-${run + 1}.cpuprofile`),
-                JSON.stringify(profile),
-              );
-          },
-        }),
-      );
-    } catch (error) {
-      if (!(error instanceof InconclusiveStartup)) throw error;
-      unknown.push(error.message);
-    }
+    const mains = firstEventWorkers.includes(bundle.name)
+      ? [
+          undefined,
+          firstEventModule(bundle, (module) =>
+            readFileSync(join(bundle.directory, module), "utf8"),
+          ),
+        ]
+      : [undefined];
+    for (const main of mains)
+      try {
+        measurements.push(
+          await measure(bundle, runs, {
+            main,
+            onProfile: (profile, run) => {
+              if (profiles)
+                writeFileSync(
+                  join(
+                    profiles,
+                    `${bundle.name}${main ? "-first-event" : ""}-${run + 1}.cpuprofile`,
+                  ),
+                  JSON.stringify(profile),
+                );
+            },
+          }),
+        );
+      } catch (error) {
+        if (!(error instanceof InconclusiveStartup)) throw error;
+        unknown.push(error.message);
+      }
   }
   const table = report(measurements);
   console.log(`\n${table}`);

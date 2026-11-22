@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "The runtime adapter redeems a Worker asset completion token once. The Alchemy upload hook exposes a fresh asset upload session for the captured request's own manifest and files. Startup admission redeems the frozen token on a Worker's first upload and a renewed, never-redeemed token on each later sample; a missing or repeated token refuses before the upload. The frozen manifest itself never changes."
+    }
+  }
+}
