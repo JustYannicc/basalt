@@ -1,0 +1,68 @@
+diff --git a/packages/mcp-auth/src/contracts/device-label.ts b/packages/mcp-auth/src/contracts/device-label.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/mcp-auth/src/contracts/device-label.ts
+@@ -0,0 +1,23 @@
++// No imports: clients that bundle this rule, such as the Obsidian plugin, compare their own
++// labels with the stored ones without shipping Effect.
++
++/** The longest device-reported label kept, in characters. */
++export const deviceReportLimit = 80;
++
++/**
++ * One device-reported label as it is kept: control and formatting characters removed, spacing
++ * collapsed, at most `deviceReportLimit` characters. Nothing when nothing printable is left.
++ */
++export const deviceReportLabel = (value: string | undefined) => {
++  if (value === undefined) return undefined;
++  const label = Array.from(
++    value
++      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
++      .replace(/\s+/gu, " ")
++      .trim(),
++  )
++    .slice(0, deviceReportLimit)
++    .join("")
++    .trim();
++  return label.length === 0 ? undefined : label;
++};
+diff --git a/packages/mcp-auth/src/contracts/device.ts b/packages/mcp-auth/src/contracts/device.ts
+--- a/packages/mcp-auth/src/contracts/device.ts
++++ b/packages/mcp-auth/src/contracts/device.ts
+@@ -1,5 +1,8 @@
+ /** RFC 8628 device authorization: what the verification page and the CLI share with the server. */
+ import { Schema } from "effect";
++import { deviceReportLabel } from "./device-label.ts";
++
++export { deviceReportLabel, deviceReportLimit } from "./device-label.ts";
+ 
+ /** The dashboard page where a signed-in person enters or confirms a device's user code. */
+ export const deviceVerificationPath = "/device";
+@@ -33,27 +36,6 @@ export const DeviceReport = Schema.Struct({
+ });
+ export type DeviceReport = typeof DeviceReport.Type;
+ 
+-/** The longest device-reported label kept, in characters. */
+-export const deviceReportLimit = 80;
+-
+-/**
+- * One device-reported label as it is kept: control and formatting characters removed, spacing
+- * collapsed, at most `deviceReportLimit` characters. Nothing when nothing printable is left.
+- */
+-export const deviceReportLabel = (value: string | undefined) => {
+-  if (value === undefined) return undefined;
+-  const label = Array.from(
+-    value
+-      .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
+-      .replace(/\s+/gu, " ")
+-      .trim(),
+-  )
+-    .slice(0, deviceReportLimit)
+-    .join("")
+-    .trim();
+-  return label.length === 0 ? undefined : label;
+-};
+-
+ /** What a device request reports, from its optional fields; nothing when it reports nothing. */
+ export const deviceReport = (fields: {
+   readonly device_name?: string | undefined;
