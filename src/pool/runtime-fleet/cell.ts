@@ -175,7 +175,10 @@ export class FleetHandoffCell implements FleetCell {
       "provider_absent",
       () =>
         awaitProbe(
-          () => this.deps.provider.absent(this.deps.application, identity.instanceId, observation),
+          () =>
+            this.deps.provider.absent(this.deps.application, identity.instanceId, observation, {
+              driverStopped: true,
+            }),
           observation,
         ),
       (absent) => ({ absent }),
@@ -192,7 +195,9 @@ export class FleetHandoffCell implements FleetCell {
     }
     if (actual?.stopped) {
       if (!sameIdentity(actual.identity, identity)) return false;
-      return this.deps.provider.absent(this.deps.application, identity.instanceId);
+      return this.deps.provider.absent(this.deps.application, identity.instanceId, undefined, {
+        driverStopped: true,
+      });
     }
     if (active !== 0) return false;
     try {
