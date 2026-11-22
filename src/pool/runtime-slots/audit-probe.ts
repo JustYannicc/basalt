@@ -76,7 +76,8 @@ export class RuntimeAuditProbe {
     deadlineMs: number,
     signal: AbortSignal,
   ) {
-    const response = await this.port(port).fetch(`http://pool${path}`, {
+    const destination = this.port(port);
+    const response = await destination.fetch(`http://pool${path}`, {
       headers,
       signal: AbortSignal.any([signal, AbortSignal.timeout(deadlineMs)]),
     });
