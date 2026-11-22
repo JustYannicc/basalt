@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from . import supervisor
-from .db_distance import Distance
 from .readiness import Readiness, ReadyHandler
 
 try:
@@ -143,14 +142,11 @@ class SelectedSupervisorTests(unittest.TestCase):
                 "create_node_jwt": Mock(return_value=("node", "jwt")),
                 "check_services": Mock(return_value=services),
                 "ServiceHealth": self.service_health,
-                "DatabasePoolPoll": Mock(),
+                "home_database_distance": Mock(return_value=5),
                 "PolicyHealthMonitor": Monitor,
                 "terminate_children": Mock(side_effect=at_terminate),
             }.items():
                 stack.enter_context(patch.object(supervisor, name, value))
-            stack.enter_context(
-                patch.object(supervisor.db_distance, "measure_database", return_value=Distance("measured", 5, 6, 7))
-            )
             stack.enter_context(patch.object(supervisor.time, "monotonic", clock))
             stack.enter_context(patch.object(supervisor.signal, "signal"))
             stack.enter_context(patch.dict(os.environ, environment))
@@ -333,7 +329,8 @@ class BlockingStream(io.TextIOBase):
 
 class OutputPipeTests(unittest.TestCase):
     def test_a_stalled_container_stdout_never_stalls_home(self) -> None:
-        line = "[CLIProxyAPIHome] [2026-11-19 00:00:00] [--------] [warn ] SLOW SQL >= 200ms [300ms] [rows:1] SELECT 1"
+        # A line the supervisor forwards, so a stalled stdout fills the output queue.
+        line = "[CLIProxyAPIHome] [2026-11-19 00:00:00] [--------] [error] usage derived-column backfill batch failed"
         script = f"import sys\nfor _ in range(20000):\n    sys.stdout.write({line!r} + '\\n')\n"
         stream = BlockingStream()
         self.addCleanup(stream.release.set)
