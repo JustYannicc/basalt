@@ -427,6 +427,29 @@ test("with a device outside a dedicated acceptance pool, the device alone proves
   }
 });
 
+test("with a dedicated acceptance pool both usage checks cover every one of the lane's turns", async () => {
+  const lane = await harness();
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const acceptance = ("result" in result && result.result) as {
+      acceptance?: { usageRecords?: unknown; ownerUsageRecords?: unknown };
+    };
+    assert.equal(acceptance.acceptance?.usageRecords, 7);
+    assert.equal(acceptance.acceptance?.ownerUsageRecords, 7);
+    // The owner read asks for exactly the sessions the device read back: the six of the round a
+    // cell served and the final turn.
+    const owner = lane.poolReads.filter((read) => read.path === "/pool/v1/usage");
+    const device = lane.usageReads.flatMap((read) =>
+      new URL(read.path, "http://local").searchParams.getAll("session"),
+    );
+    assert.equal(owner.length, 7);
+    assert.deepEqual(new Set(owner.map((read) => read.session)), new Set(device));
+  } finally {
+    await lane.close();
+  }
+});
+
 test("with a dedicated acceptance pool the usage check still runs and fails on a foreign account", async () => {
   const lane = await harness({ usageAccount: "someone-else" });
   try {

@@ -335,11 +335,16 @@ export async function harness(options: HarnessOptions = {}) {
   }[] = [];
   const sessionOrder = new Map<string, number>();
   /** Every read of the pool's owner routes, with the authorization it carried. */
-  const poolReads: { path: string; authorization: string | null }[] = [];
+  const poolReads: { path: string; session: string | null; authorization: string | null }[] = [];
   const pool = await listen(async (request) => {
-    const path = new URL(request.url!, "http://local").pathname;
+    const url = new URL(request.url!, "http://local");
+    const path = url.pathname;
     if (path.startsWith("/pool/v1/") && path !== nativeUsagePath)
-      poolReads.push({ path, authorization: request.headers.authorization ?? null });
+      poolReads.push({
+        path,
+        session: url.searchParams.get("session"),
+        authorization: request.headers.authorization ?? null,
+      });
     if (path === "/v1/models" || path === "/v1/chat/completions")
       modelCalls.push({
         call: `${request.method} ${path}`,
@@ -352,7 +357,6 @@ export async function harness(options: HarnessOptions = {}) {
     const headers = { "X-Signalbox-Pool-Boot": "primary-boot" };
     if (path === "/v1/models") return Response.json({ data: [{ id: "model-a" }] }, { headers });
     if (path === nativeUsagePath) {
-      const url = new URL(request.url!, "http://local");
       const ids = url.searchParams.getAll("session");
       usageReads.push({
         path: url.pathname + url.search,
