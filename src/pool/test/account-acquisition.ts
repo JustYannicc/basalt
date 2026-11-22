@@ -44,6 +44,7 @@ export function fixture(
   const members = new Set<string>();
   let status: Record<string, unknown> = { status: "wait" };
   let failStart = false;
+  let startReply: (() => Response) | undefined;
   let statusError: Error | undefined;
   let callbackStatus: number | undefined;
   const home = new HomeClient(async (path, init) => {
@@ -52,6 +53,7 @@ export function fixture(
     const url = new URL(path, "https://fixture.invalid");
     if (url.pathname.endsWith("/oauth/auth-url")) {
       if (failStart) throw new Error("Lost response after send");
+      if (startReply) return startReply();
       return Response.json({
         state: "home-state",
         url:
@@ -133,6 +135,9 @@ export function fixture(
     },
     restart() {
       controller = make();
+    },
+    startAnswers(reply: () => Response) {
+      startReply = reply;
     },
     statusIs(value: Record<string, unknown>) {
       status = value;

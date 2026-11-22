@@ -160,14 +160,28 @@ export class HomeAccountAcquisitions {
         // The owner check knows this route before the exchange can open its tunnel.
         if (route) await acquisitionStep("state", () => this.routes!.beginSignIn(session, route));
         const proxy = route ? `&proxy_url=${encodeURIComponent(routeProxyUrl(route.routeId))}` : "";
-        const started = await acquisitionStep("oauth_start", async () => {
-          const started = await this.home.data(
-            `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`,
-            { signal: request.signal },
+        const path = `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`;
+        const start = route
+          ? await this.routedStart(path, request.signal)
+          : {
+              kind: "started" as const,
+              started: await acquisitionStep("oauth_start", () =>
+                this.home.data(path, { signal: request.signal }),
+              ),
+            };
+        if (start.kind === "refused") {
+          // Home created no session: settle the attempt and release its route now.
+          await acquisitionStep("state", () => this.routes!.settleSignIn(session, []));
+          attempt.result = { state: "failed", message: start.refused };
+          await this.finish(attempt, attempts, request.signal);
+          if (start.status === 500) console.error("POOL_ROUTE_SIGN_IN_INVALID_PROXY");
+          return Response.json(
+            { error: start.status === 500 ? "internal" : start.refused },
+            { status: start.status },
           );
-          if (!text(started.state) || !text(started.url)) return unavailable();
-          return started;
-        });
+        }
+        const started = start.started;
+        if (!text(started.state) || !text(started.url)) return unavailable();
         attempt.state = String(started.state);
         const expiresIn = started.expires_in;
         if (typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0)
@@ -294,6 +308,32 @@ export class HomeAccountAcquisitions {
     return acquisitionStep("oauth_status", () => this.advance(attempt, attempts, signal));
   }
 
+  /**
+   * A routed start, read once. Home 0758 refuses one it can't route before creating any session:
+   * an unreachable route, a provider whose sign-in can't use one, or a proxy URL it rejects (a
+   * pool bug). Any other failure is the ordinary uncertain start.
+   */
+  private async routedStart(path: string, signal: AbortSignal) {
+    const response = await acquisitionStep("oauth_start", () =>
+      this.home.response(path, { signal }),
+    );
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      body = undefined;
+    }
+    if (response.ok && object(body)) return { kind: "started" as const, started: body };
+    const error = object(body) ? body.error : undefined;
+    if (response.status === 502 && error === "proxy_unavailable")
+      return { kind: "refused", refused: "route_unavailable", status: 409 } as const;
+    if (response.status === 400 && error === "proxy_unsupported")
+      return { kind: "refused", refused: "route_unsupported", status: 409 } as const;
+    if (response.status === 400 && error === "invalid_proxy_url")
+      return { kind: "refused", refused: "route_unavailable", status: 500 } as const;
+    return unavailable();
+  }
+
   private async advance(
     attempt: Attempt,
     attempts: Record<string, Attempt>,
@@ -316,8 +356,7 @@ export class HomeAccountAcquisitions {
       if (status.status === "error") {
         // Home's routed session failed closed on its route: nothing was sent directly.
         attempt.result =
-          attempt.route &&
-          (status.error === "proxy_unavailable" || status.reason === "proxy_unavailable")
+          attempt.route && status.error === "proxy_unavailable"
             ? { state: "failed", message: "route_unavailable" }
             : { state: "failed", message: signInFailure(attempt.provider, status) };
       } else if (status.status === "ok") {

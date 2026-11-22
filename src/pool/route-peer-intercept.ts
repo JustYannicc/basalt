@@ -1,5 +1,5 @@
 interface RoutePeerHost {
-  readonly exports: object;
+  readonly exports?: object;
   readonly container?: { interceptOutboundHttp(host: string, target: never): Promise<void> };
 }
 type RoutePeerExport = (options: { props: { pool: string } }) => never;
@@ -11,7 +11,9 @@ type RoutePeerExport = (options: { props: { pool: string } }) => never;
  * a routed credential's tunnel cannot open and route_peer.py refuses it: blocked, never direct.
  */
 export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
-  const peer: unknown = Reflect.get(ctx.exports, "PoolRoutePeer");
+  const exports: unknown = ctx.exports;
+  const peer: unknown =
+    exports && typeof exports === "object" ? Reflect.get(exports, "PoolRoutePeer") : undefined;
   if (typeof peer !== "function" || !ctx.container) return;
   try {
     await ctx.container.interceptOutboundHttp(

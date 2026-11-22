@@ -159,7 +159,7 @@ function routeRecorder() {
 
 test("a routed owner's sign-in sends Home's code exchange through the route, and the saved credential keeps it", async () => {
   const recorder = routeRecorder();
-  const f = fixture([], "gemini-cli", {}, recorder.routes);
+  const f = fixture([], "claude", {}, recorder.routes);
   const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
   const start = f.calls.find((call) => call.path.includes("/oauth/auth-url"))!;
   assert.equal(
@@ -178,7 +178,7 @@ test("a routed owner's sign-in sends Home's code exchange through the route, and
 
 test("a routed sign-in whose route is down fails as route_unavailable and is never retried directly", async () => {
   const recorder = routeRecorder();
-  const f = fixture([], "gemini-cli", {}, recorder.routes);
+  const f = fixture([], "claude", {}, recorder.routes);
   const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
   f.statusIs({ status: "error", error: "proxy_unavailable" });
   assert.deepEqual(await body(await f.send("status", { session: started.session })), {
@@ -199,7 +199,7 @@ test("a sign-in its owner's rules route but no route applies to is refused with 
     // A controller without routing wired can't route anything.
     [{ hasRules: true, route: signInRoute }, undefined],
   ] as const) {
-    const f = fixture([], "gemini-cli", {}, routes);
+    const f = fixture([], "claude", {}, routes);
     const refused = await f.send("start", routing);
     assert.equal(refused.status, 409);
     assert.deepEqual(await refused.json(), { error: "route_unavailable" });
@@ -210,7 +210,7 @@ test("a sign-in its owner's rules route but no route applies to is refused with 
 test("a sign-in without route rules, or one the host decided is direct, starts exactly as on main", async () => {
   for (const routing of [{}, { hasRules: false }, { hasRules: true, route: null }]) {
     const recorder = routeRecorder();
-    const f = fixture([], "gemini-cli", {}, recorder.routes);
+    const f = fixture([], "claude", {}, recorder.routes);
     const started = await body(await f.send("start", routing));
     assert.equal(typeof started.session, "string");
     const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
@@ -218,4 +218,43 @@ test("a sign-in without route rules, or one the host decided is direct, starts e
     assert.ok(!starts[0]!.path.includes("proxy_url"));
     assert.deepEqual(recorder.events, []);
   }
+});
+
+test("a routed start Home can't route is refused before any session: plugin providers and an unreachable route", async () => {
+  for (const [provider, reply, expected] of [
+    // A plugin provider's sign-in can't use a route (change 30).
+    [
+      "gemini-cli",
+      () => Response.json({ error: "proxy_unsupported" }, { status: 400 }),
+      "route_unsupported",
+    ],
+    // A device-flow start that can't reach its route.
+    [
+      "kimi",
+      () => Response.json({ error: "proxy_unavailable" }, { status: 502 }),
+      "route_unavailable",
+    ],
+  ] as const) {
+    const recorder = routeRecorder();
+    const f = fixture([], provider, {}, recorder.routes);
+    f.startAnswers(reply);
+    const refused = await f.send("start", { hasRules: true, route: signInRoute });
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { error: expected });
+    // One start, carrying the route; nothing else reaches Home's sign-in endpoints.
+    const signIn = f.calls.filter((call) => call.path.includes("/oauth/"));
+    assert.equal(signIn.length, 1);
+    assert.ok(signIn[0]!.path.includes("proxy_url="));
+    assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+  }
+});
+
+test("a proxy URL Home rejects is a pool bug: 500 with a reason code, no session", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  f.startAnswers(() => Response.json({ error: "invalid_proxy_url" }, { status: 400 }));
+  const failed = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "internal" });
+  assert.equal(f.calls.filter((call) => call.path.includes("/oauth/")).length, 1);
 });
