@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { relayHomePeer } from "../pool/home-peer-relay.ts";
-import { RouteGatewayCore, RouteRefused, type GatewayContainer } from "./gateway.ts";
+import { RouteRefused, type GatewayContainer } from "./control.ts";
+import { RouteGatewayCore } from "./gateway.ts";
 import { emitRouteReadingChanged, type ReasonCode } from "./reading.ts";
 import { handleRouteAcquisition, type RouteGatewayRpc } from "./acquisitions.ts";
 

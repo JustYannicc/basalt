@@ -7,7 +7,7 @@ model {
         code "src/route"
         jurisdiction "eu"
         endpointHosts "route-peer.internal|route-gateway.internal"
-        bindings "container.getTcpPort(controlPort)=basalt.routeGatewayImage"
+        bindings "controlPlane=basalt.routeGatewayImage"
       }
     }
     routePeer = adapter "Pool route peer" {

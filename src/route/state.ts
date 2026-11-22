@@ -60,3 +60,65 @@ export async function openRouteState(
     return { state: (await openRouteState(previous, routeId, sealed)).state, reseal: true };
   }
 }
+
+export const routeStateKey = "route-v1:state";
+interface StoredState {
+  sealed: SealedRouteState;
+  bootId: string;
+  revision: number;
+}
+
+/** The node identity at rest in the DO: one sealed copy, tagged with the boot and revision it came from. */
+export class RouteIdentityStore {
+  private storage: {
+    get<T>(key: string): Promise<T | undefined>;
+    put(key: string, value: unknown): Promise<void>;
+  };
+  private secret: string;
+  private previous: string | undefined;
+  constructor(
+    storage: RouteIdentityStore["storage"],
+    secret: string,
+    previous: string | undefined,
+  ) {
+    this.storage = storage;
+    this.secret = secret;
+    this.previous = previous;
+  }
+
+  async exists() {
+    return (await this.storage.get(routeStateKey)) !== undefined;
+  }
+
+  /** The stored state, resealed under the current key after a rotation; null when none opens. */
+  async open(routeId: string): Promise<string | null> {
+    const stored = await this.storage.get<StoredState>(routeStateKey);
+    if (!stored) return null;
+    try {
+      const opened = await openRouteState(this.secret, routeId, stored.sealed, this.previous);
+      if (opened.reseal)
+        await this.storage.put(routeStateKey, {
+          ...stored,
+          sealed: await sealRouteState(this.secret, routeId, opened.state),
+        } satisfies StoredState);
+      return opened.state;
+    } catch {
+      // Both keys are gone: the node starts logged out and the reading asks for a new sign-in.
+      console.log(JSON.stringify({ route_state: "unreadable" }));
+      return null;
+    }
+  }
+
+  async holds(bootId: string, revision: number) {
+    const stored = await this.storage.get<StoredState>(routeStateKey);
+    return stored?.bootId === bootId && stored.revision === revision;
+  }
+
+  async save(routeId: string, state: string, bootId: string, revision: number) {
+    await this.storage.put(routeStateKey, {
+      sealed: await sealRouteState(this.secret, routeId, state),
+      bootId,
+      revision,
+    } satisfies StoredState);
+  }
+}

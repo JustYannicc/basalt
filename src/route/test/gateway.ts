@@ -1,4 +1,5 @@
-import type { GatewayContainer, GatewayDependencies, GatewayStorage } from "../gateway.ts";
+import type { GatewayContainer } from "../control.ts";
+import type { GatewayDependencies, GatewayStorage } from "../gateway.ts";
 import type { RouteReadingChanged } from "../reading.ts";
 
 /** An in-memory I1 gateway: the stand-in the interface describes, with knobs for failure. */
