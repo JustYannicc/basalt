@@ -13,7 +13,7 @@ import { fetchStream } from "./fetch-stream.ts";
 import { createFetchStaging } from "./fetch-staging.ts";
 import { backend, git, pkt, responsePack, token } from "./test/backend.ts";
 import { repository } from "./test/vault.ts";
-import { deltaKinds, largeHistory, sampleBytes } from "./test/large-history.ts";
+import { deltaKinds, largeHistory, largeHistoryTestMs, sampleBytes } from "./test/large-history.ts";
 
 const main = "refs/heads/main";
 const author = {
@@ -37,7 +37,7 @@ const bandedReply = (pack: Uint8Array) =>
 // HTTP fixture's server-side copy. A slow sink also proves reading follows persistence.
 test(
   "a cold vault streams a >32 MiB delta history, then reads sampled versions byte-identically",
-  { timeout: 60000 },
+  { timeout: largeHistoryTestMs },
   async (t) => {
     const server = await backend();
     t.after(() => server.close());

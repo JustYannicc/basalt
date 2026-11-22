@@ -6,8 +6,8 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
-import { largeHistory } from "./test/large-history.ts";
-import { backend, git, token } from "./test/backend.ts";
+import { largeGitMs, largeHistory, largeHistoryTestMs } from "./test/large-history.ts";
+import { backend, boundedGit, git, token } from "./test/backend.ts";
 
 async function vaultRuntime(t: { after: (cleanup: () => Promise<void>) => void }) {
   const bundle = await build({
@@ -102,7 +102,7 @@ test("the vault object lands checkpoints from inside a Durable Object", async (t
 
 test(
   "a fresh Durable Object opens a >32 MiB repository and reads every note version",
-  { timeout: 60000 },
+  { timeout: largeHistoryTestMs },
   async (t) => {
     const server = await backend();
     t.after(() => server.close());
@@ -135,7 +135,7 @@ test(
       assert.equal(note.content, git(server.bare, "show", `${at}:note.md`).toString());
     }
     assert.ok(server.control.uploadReplies.at(-1)!.length > 32 * 1024 * 1024);
-    git(server.bare, "fsck", "--full", "--strict");
+    boundedGit(largeGitMs, server.bare, "fsck", "--full", "--strict");
     t.diagnostic(`workerd recovered ${commits.length} commits from ${packBytes} packed bytes`);
   },
 );

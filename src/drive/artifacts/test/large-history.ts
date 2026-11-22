@@ -3,7 +3,12 @@ import { readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { readEntryHeader } from "../../shared/.generated/strata/git/pack-entries.js";
-import { git } from "./backend.ts";
+import { boundedGit, git } from "./backend.ts";
+
+// Packing, pushing and checking 48 MiB of incompressible history takes seconds on an idle core and
+// several times that on a loaded runner: these bounds stop only a hung git or test, never slow work.
+export const largeGitMs = 5 * 60_000;
+export const largeHistoryTestMs = 10 * 60_000;
 
 export const sampleBytes = (version: number, file: number) =>
   createHash("shake256", { outputLength: 1024 * 1024 })
@@ -27,9 +32,9 @@ export function largeHistory(root: string, bare: string) {
     git(clone, "commit", "-m", `version ${version}`);
     commits.push(git(clone, "rev-parse", "HEAD").toString().trim());
   }
-  git(clone, "push", "origin", "main");
-  git(bare, "-c", "pack.threads=1", "gc", "--aggressive", "--prune=now");
-  git(bare, "fsck", "--full", "--strict");
+  boundedGit(largeGitMs, clone, "push", "origin", "main");
+  boundedGit(largeGitMs, bare, "-c", "pack.threads=1", "gc", "--aggressive", "--prune=now");
+  boundedGit(largeGitMs, bare, "fsck", "--full", "--strict");
   const packs = join(bare, "objects", "pack"),
     packBytes = readdirSync(packs)
       .filter((name) => name.endsWith(".pack"))
