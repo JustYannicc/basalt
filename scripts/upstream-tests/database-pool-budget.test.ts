@@ -10,10 +10,14 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import {
   configureDatabasePoolBudget,
   ownPoolBudgetTarget,
+  recoverDatabaseParameters,
 } from "../../.upstream/apps/hosted/cloud/scripts/database-pool-budget.ts";
 import { previewPoolDatabaseBranch } from "../../src/pool/database-settings.ts";
 import { previewIdentity } from "../environment.ts";
-import { databasePoolParameters } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts";
+import {
+  databaseMaxConnections,
+  databasePoolParameters,
+} from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts";
 
 function run(
   options: {
@@ -25,6 +29,9 @@ function run(
     nullBudgetReadback?: boolean;
     /** Production's own target unless a test names another. */
     target?: { stage?: string; database: string; branch: string };
+    maxConnections?: string;
+    readbackMaxConnections?: string;
+    recover?: boolean;
   } = {},
 ) {
   const target = options.target ?? { stage: "production", database: "fixture", branch: "main" };
@@ -48,8 +55,18 @@ function run(
         name: "pool_mode",
         value: options.mode ?? "transaction",
       });
-      let data: unknown = path.endsWith("parameters")
-        ? (++reads === 1 && !options.existing) || (reads > 1 && options.readback === false)
+      const isParameters = path.endsWith("parameters");
+      if (isParameters) reads++;
+      parameters.push({
+        namespace: "pgconf",
+        name: "max_connections",
+        value:
+          reads > 1
+            ? (options.readbackMaxConnections ?? databaseMaxConnections)
+            : (options.maxConnections ?? databaseMaxConnections),
+      });
+      let data: unknown = isParameters
+        ? (reads === 1 && !options.existing) || (reads > 1 && options.readback === false)
           ? parameters.filter((row) => row.name !== "max_db_connections")
           : parameters
         : request.method === "PATCH"
@@ -90,7 +107,7 @@ function run(
   return {
     requests,
     result: Effect.runPromise(
-      configureDatabasePoolBudget.pipe(
+      (options.recover ? recoverDatabaseParameters : configureDatabasePoolBudget).pipe(
         Effect.provideService(HttpClient.HttpClient, http),
         Effect.provideService(
           ConfigProvider.ConfigProvider,
@@ -261,4 +278,67 @@ test("the real script exits non-zero with a closed error and sends nothing", () 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("a release refuses main's wrong Postgres connection slots before any write", async () => {
+  for (const maxConnections of ["25", ""]) {
+    const proof = run({ maxConnections });
+    await assert.rejects(proof.result, /max_connections on main is not 50/);
+    assert.deepEqual(
+      proof.requests.map((request) => request.method),
+      ["GET"],
+      "a release never changes main's Postgres connection slots",
+    );
+  }
+});
+
+test("a release leaves a test stage's own connection slots alone", async () => {
+  const proof = run({ target: own, maxConnections: "25", readbackMaxConnections: "25" });
+  await proof.result;
+  assert.deepEqual(proof.requests[1]!.body, { parameters: { pgbouncer: databasePoolParameters } });
+});
+
+const restored = { stage: "production", database: "fixture", branch: "restored-fixture" };
+
+test("recovery applies the pooler budget and connection slots to a restored branch and reads both back", async () => {
+  const proof = run({ recover: true, target: restored, maxConnections: "25" });
+  await proof.result;
+  assert.deepEqual(
+    proof.requests.map((request) => request.method),
+    ["GET", "PATCH", "GET", "GET"],
+  );
+  assert.deepEqual(proof.requests[1]!.body, {
+    parameters: {
+      pgbouncer: databasePoolParameters,
+      pgconf: { max_connections: databaseMaxConnections },
+    },
+  });
+  const slotsOnly = run({ recover: true, target: restored, existing: true, maxConnections: "25" });
+  await slotsOnly.result;
+  assert.deepEqual(slotsOnly.requests[1]!.body, {
+    parameters: { pgconf: { max_connections: databaseMaxConnections } },
+  });
+  const settled = run({ recover: true, target: restored, existing: true });
+  await settled.result;
+  assert.deepEqual(
+    settled.requests.map((request) => request.method),
+    ["GET"],
+  );
+});
+
+test("recovery refuses main, test stages and a branch whose connection slots do not read back", async () => {
+  for (const target of [{ stage: "production", database: "fixture", branch: "main" }, own]) {
+    const serving = run({ recover: true, target, maxConnections: "25" });
+    await assert.rejects(serving.result, /never main or a test stage's/);
+    assert.deepEqual(serving.requests, [], `recovery sends nothing for ${target.branch}`);
+  }
+  await assert.rejects(
+    run({
+      recover: true,
+      target: restored,
+      maxConnections: "25",
+      readbackMaxConnections: "25",
+    }).result,
+    /max_connections readback did not match/,
+  );
 });
