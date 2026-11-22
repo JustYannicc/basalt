@@ -49,8 +49,12 @@ assert.equal(
 // The upload's own binding still counts.
 const rebound = await hash([binding("hyperdrive-2", "db.internal", "first")]);
 assert.notEqual(rebound, reconciled, "a different wire binding changes the metadata hash");
-// A binding without the channel hashes as before.
-const plain = await hash([
-  { sid: "Api", data: { bindings: [{ type: "service", name: "Api", service: "api" }] } },
-]);
-assert.equal(typeof plain, "string");
+// A binding without the channel still hashes its whole data.
+const service = (name) => [
+  { sid: "Api", data: { bindings: [{ type: "service", name: "Api", service: name }] } },
+];
+assert.notEqual(
+  await hash(service("api")),
+  await hash(service("api-next")),
+  "a wire difference in a binding without the channel changes the metadata hash",
+);

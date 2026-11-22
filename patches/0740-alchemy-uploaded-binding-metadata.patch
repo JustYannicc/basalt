@@ -1,33 +1,32 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -8559,3 +8559,83 @@
+@@ -8559,3 +8559,105 @@
           },
       };
   }).pipe(Effect.withSpan("drift.plan", {
 +diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
 +--- a/src/Cloudflare/Workers/WorkerProvider.ts
 ++++ b/src/Cloudflare/Workers/WorkerProvider.ts
-+@@ -1150,6 +1150,18 @@
-+     return configWithoutHash;
-+   }
-+   return config;
-++};
-++
-++/**
-++ * A binding's data as the upload carries it. `hyperdrives` is a dev-only channel beside the wire
-++ * binding, read only by the local Worker provider. Its origins come from the Hyperdrive's
-++ * attributes, which a plan materialises from the live read and an apply from what it reconciled,
-++ * so hashing them planned every Worker bound to a Hyperdrive as an update on every deploy.
++@@ -1153,12 +1153,25 @@
++ };
++ 
++ /**
+++ * A binding's data without the dev-only `hyperdrives` channel a Hyperdrive binding contributes
+++ * beside the wire binding. Only the local Worker provider reads it, and the upload never carries it.
+++ * Its origins come from the Hyperdrive's attributes, which an apply takes from what it reconciled
+++ * and a later plan from the live read, so hashing them planned every Worker bound to a Hyperdrive
+++ * as an update on every deploy.
 ++ */
 ++const uploadedBindingData = <Data>(data: Data): Data => {
 ++  if (data === null || typeof data !== "object" || !("hyperdrives" in data)) return data;
 ++  const { hyperdrives: _hyperdrives, ...wire } = data as Data & { hyperdrives?: unknown };
 ++  return wire as Data;
-+ };
-+ 
-+ /**
-+@@ -1158,7 +1170,7 @@
+++};
+++
+++/**
++  * Hash a Worker's deploy-time metadata surface so metadata-only edits are
++  * detected by the diff (#745). Previously the update decision compared only
 +  * the bundle/vite/asset-content hashes, so a change to e.g. a compatibility
 +  * flag or observability config planned as a noop and silently never deployed.
 +  */
@@ -36,7 +35,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +   props,
 +   bindings,
 +   accountId,
-+@@ -1178,7 +1190,7 @@
++@@ -1178,7 +1191,7 @@
 +     // differences into perpetual updates.
 +     bindings: bindings.map((binding) => ({
 +       sid: binding.sid,
@@ -48,26 +47,25 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
 +--- a/lib/Cloudflare/Workers/WorkerProvider.js
 ++++ b/lib/Cloudflare/Workers/WorkerProvider.js
-+@@ -791,6 +791,18 @@
-+         return configWithoutHash;
-+     }
++@@ -793,12 +793,25 @@
 +     return config;
-++};
-++/**
-++ * A binding's data as the upload carries it. `hyperdrives` is a dev-only channel beside the wire
-++ * binding, read only by the local Worker provider. Its origins come from the Hyperdrive's
-++ * attributes, which a plan materialises from the live read and an apply from what it reconciled,
-++ * so hashing them planned every Worker bound to a Hyperdrive as an update on every deploy.
++ };
++ /**
+++ * A binding's data without the dev-only `hyperdrives` channel a Hyperdrive binding contributes
+++ * beside the wire binding. Only the local Worker provider reads it, and the upload never carries it.
+++ * Its origins come from the Hyperdrive's attributes, which an apply takes from what it reconciled
+++ * and a later plan from the live read, so hashing them planned every Worker bound to a Hyperdrive
+++ * as an update on every deploy.
 ++ */
 ++const uploadedBindingData = (data) => {
 ++    if (data === null || typeof data !== "object" || !("hyperdrives" in data))
 ++        return data;
 ++    const { hyperdrives: _hyperdrives, ...wire } = data;
 ++    return wire;
-+ };
-+ /**
+++};
+++/**
 +  * Hash a Worker's deploy-time metadata surface so metadata-only edits are
-+@@ -798,7 +810,7 @@
++  * detected by the diff (#745). Previously the update decision compared only
 +  * the bundle/vite/asset-content hashes, so a change to e.g. a compatibility
 +  * flag or observability config planned as a noop and silently never deployed.
 +  */
@@ -76,7 +74,7 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +     accountId,
 +     selfUrl,
 +     stack: { name: stack.name, stage: stack.stage },
-+@@ -811,7 +823,7 @@
++@@ -811,7 +824,7 @@
 +     // differences into perpetual updates.
 +     bindings: bindings.map((binding) => ({
 +         sid: binding.sid,
@@ -85,3 +83,27 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 +     })),
 +     assets: workerAssetConfigForHash(props.assets),
 +     cache: props.cache,
++diff --git a/lib/Cloudflare/Workers/WorkerProvider.d.ts b/lib/Cloudflare/Workers/WorkerProvider.d.ts
++--- a/lib/Cloudflare/Workers/WorkerProvider.d.ts
+++++ b/lib/Cloudflare/Workers/WorkerProvider.d.ts
++@@ -90,6 +90,20 @@
++ export declare const resolveTailConsumers: (tailConsumers: WorkerProps["tailConsumers" | "streamingTailConsumers"]) => {
++     service: string;
++ }[] | undefined;
+++/**
+++ * Hash a Worker's deploy-time metadata surface so metadata-only edits are
+++ * detected by the diff (#745).
+++ */
+++export declare const resolveWorkerMetadataHash: ({ props, bindings, accountId, stack, selfUrl, }: {
+++    readonly props: WorkerProps;
+++    readonly bindings: readonly ResourceBinding<Worker["Binding"]>[];
+++    readonly accountId: string;
+++    readonly stack: {
+++        readonly name: string;
+++        readonly stage: string;
+++    };
+++    readonly selfUrl?: string;
+++}) => Effect.Effect<string>;
++ declare const WorkerVersionConfigError_base: new <A extends Record<string, any> = {}>(args: import("effect/Types").VoidIfEmpty<{ readonly [P in keyof A as P extends "_tag" ? never : P]: A[P]; }>) => import("effect/Cause").YieldableError & {
++     readonly _tag: "WorkerVersionConfigError";
++ } & Readonly<A>;
