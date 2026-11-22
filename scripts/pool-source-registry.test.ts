@@ -530,6 +530,17 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-node-liveness-floor") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0736-home-node-liveness-floor.patch");
+        assert.match(
+          patch.retirement.requires,
+          /node liveness timeout of at least its configured floor/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /stored-floor, short-stall, past-the-floor and lifecycle-rule regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-database-distance") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0741-home-database-distance.patch");
