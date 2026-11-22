@@ -30,6 +30,8 @@ After tailscaled answers the CONNECT, and before the client sees that reply, ste
 
 `state_revision` goes up whenever tailscaled rewrites its state file. That happens on login, key rotation and logout, and also on a preference change such as `/select`. A logout also discards the state file and starts tailscaled again from nothing, so the next `/state` carries no identity of the old device.
 
+**Known limit:** a client that resets while its upload is stalled behind an upstream that has stopped reading isn't noticed until that upstream reads or closes. Until then the connection keeps its slot (at most 512 in all). Nothing is sent because of it.
+
 DOMAIN targets are passed on unresolved, so with an exit node the name is resolved on the exit side.
 
 ## Privacy
