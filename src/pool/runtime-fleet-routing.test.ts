@@ -16,7 +16,11 @@ const { nativeResponse } = (await import(responseModule)) as {
 function fixture(
   maximum = 4,
   targetActive = 1,
-  primary: { primary?: PrimaryRoute; primaryAvailable?(): boolean } = {},
+  primary: {
+    primary?: PrimaryRoute;
+    primaryAvailable?(): boolean;
+    recoverPrimary?(): Promise<void>;
+  } = {},
 ) {
   const state = new RuntimeFleetState(new SlotMemory(), maximum, () => 100);
   const pending: Promise<unknown>[] = [];
@@ -386,4 +390,39 @@ test("with production routing, a fenced root never fails a call a ready cell can
   await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
   assert.equal(f.calls.dispatches, 3);
   await f.settle();
+});
+
+test("with production routing, a recovered root's calls are counted reservations again", async () => {
+  let recovered = false;
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    recoverPrimary: async () => {
+      if (!recovered) throw new Error("synthetic failed recovery");
+    },
+  });
+  // A failed root call marks the root failed, and a failed recovery leaves it so.
+  await assert.rejects(
+    f.fleet.forward(
+      request(),
+      "pool",
+      async () => {
+        throw new Error("synthetic root failure");
+      },
+      () => {},
+    ),
+  );
+  await f.settle();
+  const fallback = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await f.state.primaryActive(), 0, "a failed root serves only through the fallback");
+  await fallback.text();
+  await f.settle();
+  // A recovery that succeeds clears the failure: growth sees the root's calls again.
+  recovered = true;
+  await f.fleet.recoverPrimary();
+  const counted = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await f.state.primaryActive(), 1);
+  await counted.text();
+  await f.settle();
+  assert.equal(await f.state.primaryActive(), 0);
 });

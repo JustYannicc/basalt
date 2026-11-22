@@ -20,9 +20,10 @@ test(
     const [sibling] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     assert.ok(sibling);
     let calls = 0;
+    let rootCalls = 0;
     // A ready sibling takes the call, never the root.
     f.onModel(async (instance) => {
-      assert.notEqual(instance, f.old);
+      if (instance === f.old) rootCalls++;
       calls++;
       instance.crash();
       throw new Error("private-transport-exception");
@@ -48,6 +49,7 @@ test(
     assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
     assert.equal((await response.json()).error.type, "server_error");
     assert.equal(calls, 1);
+    assert.equal(rootCalls, 0);
     assert.doesNotMatch(
       JSON.stringify(errors.mock.calls.map((call) => call.arguments)),
       /private-/,
