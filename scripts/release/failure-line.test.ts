@@ -94,14 +94,28 @@ test("Cloudflare's 1601 refusal prints its message, and its code wherever the er
   for (const line of [listed, raw]) assertPublic(line);
 });
 
-test("a message that names the image keeps neither the account nor the host", () => {
-  const line = publicMessage(
-    `IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE: ${image} at https://registry.example/v2`,
+test("a message prints only in a shape that cannot carry a host, an address, an id or a page", () => {
+  assert.equal(
+    publicMessage("IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE"),
+    "IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE",
   );
   assert.equal(
-    line,
-    "IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE: {host}/{id}/pool-runtime-blue@{redacted} at {url}",
+    publicMessage("Container application not found."),
+    "Container application not found",
   );
+  for (const text of [
+    `IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE: ${image}`,
+    `HTTP 400 from https://api.example.invalid/client/v4/accounts/${account}`,
+    "user someone@example.invalid is not allowed",
+    "connect refused at 10.0.0.5:8443",
+    "no route to fd7a:115c::1",
+    "no such host pool.example.internal",
+    "<!DOCTYPE html><title>Blocked</title> Your IP: 203.0.113.7",
+    "failed reading /var/lib/runner/work",
+    `token ${"A".repeat(20)}1 rejected`,
+    "x".repeat(1024 * 1024),
+  ])
+    assert.equal(publicMessage(text), undefined, text.slice(0, 80));
 });
 
 test("nothing it is given makes it throw, and any trouble prints the class-only line", () => {
@@ -125,6 +139,16 @@ test("nothing it is given makes it throw, and any trouble prints the class-only 
   circular.cause = circular;
   circular.errors = [circular, circular];
   const huge = "x1".repeat(512 * 1024);
+  // An array subclass whose iterator never ends: copying it by iteration would run out of memory.
+  class Endless extends Array<unknown> {}
+  Object.defineProperty(Endless.prototype, Symbol.iterator, {
+    value: function* () {
+      for (;;) yield {};
+    },
+  });
+  const endless = { _tag: "Endless", errors: Endless.of({}), cause: Endless.of({}) };
+  // Every link a fresh object: without a node budget the walk branches at every level.
+  const fresh = (): object => new Proxy({}, { get: () => fresh() });
   const getters = Object.defineProperties(new Error("outer"), {
     code: {
       get() {
@@ -146,7 +170,23 @@ test("nothing it is given makes it throw, and any trouble prints the class-only 
     ["a revoked proxy", revoked.proxy, "object (failed)"],
     ["throwing getters on an error", getters, "Error (failed)"],
     ["a circular chain", circular, "BadRequest (failed): loop"],
-    ["a 1 MB message", { _tag: "BadRequest", message: huge }, `BadRequest (failed): {redacted}`],
+    ["a 1 MB message", { _tag: "BadRequest", message: huge }, "BadRequest (failed)"],
+    ["an endless iterator", endless, "Endless (failed)"],
+    ["a fresh object behind every link", fresh(), "object (failed)"],
+    [
+      "a page for a message",
+      { _tag: "Forbidden", message: "<!DOCTYPE html><p>Your IP: 203.0.113.7</p>" },
+      "Forbidden (failed)",
+    ],
+    [
+      "a code with a message the log must not print",
+      {
+        _tag: "UnknownCloudflareError",
+        code: 10000,
+        message: "Authentication error for someone@example.invalid",
+      },
+      "UnknownCloudflareError (failed): code 10000",
+    ],
     [
       "a 1 MB body",
       { _tag: "CloudflareHttpError", status: 400, message: "m", body: huge },
@@ -155,18 +195,11 @@ test("nothing it is given makes it throw, and any trouble prints the class-only 
   ];
   for (const [name, error, expected] of cases) {
     let line: string | undefined;
+    const started = performance.now();
     assert.doesNotThrow(() => (line = failureLine(error)), name);
     assert.equal(line, expected, name);
-  }
-});
-
-test("long or adversarial text is cut before any pattern runs", () => {
-  for (const text of ["a.".repeat(512 * 1024), "a".repeat(1024 * 1024), "-".repeat(1024 * 1024)]) {
-    const started = performance.now();
-    const line = publicMessage(text);
-    assert.ok(line.length <= 201, `${line.length} characters`);
-    // Generous: the cut keeps each pattern on 2,000 characters, so this is milliseconds.
-    assert.ok(performance.now() - started < 1_000, "redaction stays bounded");
+    // Generous: every walk is bounded to a few hundred nodes, so this is milliseconds.
+    assert.ok(performance.now() - started < 1_000, `${name} stays bounded`);
   }
 });
 

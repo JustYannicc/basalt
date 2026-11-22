@@ -111,10 +111,19 @@ export const readSafely = (value: object, key: string): unknown => {
   }
 };
 
-/** A chain link's values to visit: an array's items, at most `limit` of them, or the value. */
+/**
+ * A chain link's values to visit: an array's first `limit` items, or the value. The items are
+ * copied by index into a plain array: an array subclass's own iterator or `slice` could run forever.
+ */
 export const linksOf = (value: unknown, limit = 50): readonly unknown[] => {
   try {
-    return Array.isArray(value) ? value.slice(0, limit) : [value];
+    if (!Array.isArray(value)) return [value];
+    const length = (value as { length?: unknown }).length;
+    const items: unknown[] = [];
+    if (typeof length === "number")
+      for (let index = 0; index < Math.min(length, limit); index++)
+        items.push((value as unknown[])[index]);
+    return items;
   } catch {
     return [];
   }
@@ -190,8 +199,11 @@ export function errorKind(error: unknown) {
   const names: string[] = [];
   let status: number | undefined;
   const seen = new Set<unknown>();
+  // A budget as well as a depth: a chain whose every link is a fresh object would otherwise branch
+  // seven ways at each of ten levels.
   const visit = (value: unknown, depth: number) => {
-    if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
+    if (!value || typeof value !== "object" || seen.has(value) || depth > 10 || seen.size >= 200)
+      return;
     seen.add(value);
     const tag = readSafely(value, "_tag");
     const name = typeof tag === "string" || !isError(value) ? undefined : readSafely(value, "name");
