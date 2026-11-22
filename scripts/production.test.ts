@@ -5,6 +5,7 @@ import {
   classesDeclared,
   classChanges,
   databaseSteps,
+  errorLine,
   forwardVersion,
   rootChange,
   removals,
@@ -12,6 +13,7 @@ import {
   smoke,
   workersToRepoint,
 } from "./production.ts";
+import { errorKind } from "./release/public-report.ts";
 import { makePlan, productionRows } from "./release/test/plan-fixture.ts";
 
 test("the class switch only turns the fleet's classes on, and each state has one env shape", () => {
@@ -174,6 +176,17 @@ test("a backup is taken only for a plan that runs a database command", () => {
     ["Migrations"],
   );
   assert.deepEqual(databaseSteps([row("PoolDatabase", "noop"), row("Router", "update")]), []);
+});
+
+test("an error prints as its class and kind, never as an object", () => {
+  assert.equal(
+    errorLine(errorKind(new HttpStatusFailure(403, "/v1/chat/completions returned HTTP 403"))),
+    "Error (refused, HTTP 403)",
+  );
+  assert.equal(
+    errorLine({ errorClass: "ContainerBuildFailed", kind: "failed" }),
+    "ContainerBuildFailed (failed)",
+  );
 });
 
 test("the smoke passes on a served turn and names a failure by class and status only", async () => {
