@@ -11,7 +11,7 @@ import {
   samePublication,
 } from "./deploy-safety/framework-registry.ts";
 
-/** Offline source checks bind generated data; the release controller owns enrollment authority. */
+/** Offline source checks bind generated data to the candidate and its published bytes. */
 export function preparedFrameworkRegistrySource(root: string, candidate: string) {
   const receipt = parseFrameworkBuildReceipt(
     JSON.parse(readFileSync(frameworkReceiptPath(root), "utf8")),

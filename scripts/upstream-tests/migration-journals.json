@@ -34,6 +34,12 @@
     "7_v1_import_orgs",
     "8_production_ops_receipts",
     "9_production_ops_database_identity",
-    "10_tool_policies"
+    "10_tool_policies",
+    "14_v1_session_handoffs",
+    "15_v1_import_allowed",
+    "16_setup_skip_assignments",
+    "17_v1_import_billing",
+    "18_v1_import_displacement",
+    "19_v1_import_into"
   ]
 }

@@ -8,7 +8,10 @@ import {
   freeMembers,
 } from "../../.upstream/apps/hosted/cloud/src/contracts/billing-catalog.ts";
 import type { MemberAllowanceUnavailable } from "../../.upstream/apps/hosted/cloud/src/contracts/billing-meter.ts";
-import { memberAllowance } from "../../.upstream/apps/hosted/cloud/src/implementation/member-allowance.ts";
+import {
+  allowanceUnlessHeld,
+  memberAllowance,
+} from "../../.upstream/apps/hosted/cloud/src/implementation/member-allowance.ts";
 
 const { catalog } = billingCatalogDeclaration("ci", "sandbox");
 const customerId = `${catalog.namespace}:organization:org_fixture`;
@@ -267,4 +270,29 @@ test("only a customer Autumn has never seen is created, and creation is sent onc
   assert.deepEqual([timedOut.operation, timedOut.reason], ["getOrCreateCustomer", "timeout"]);
   assert.ok(late.elapsed <= 10_000, `settled after ${late.elapsed} ms`);
   assert.deepEqual(late.routes, ["customers.get", "customers.get", "customers.get_or_create"]);
+});
+
+test("a held or returned v1 organization's member limit fails closed before Autumn is read", async () => {
+  for (const state of ["held", "returned"]) {
+    let reads = 0;
+    const exit = await Effect.runPromiseExit(
+      allowanceUnlessHeld(
+        Effect.succeed(state),
+        Effect.sync(() => ++reads),
+      ),
+    );
+    assert.ok(Exit.isFailure(exit), state);
+    assert.equal(Cause.squash(exit.cause)._tag, "BillingUnavailable", state);
+    assert.equal(reads, 0, `${state}: no allowance read`);
+  }
+  // A failed hold read is not an unheld organization.
+  const unreadable = await Effect.runPromiseExit(
+    allowanceUnlessHeld(Effect.fail("database"), Effect.succeed(freeMembers)),
+  );
+  assert.ok(Exit.isFailure(unreadable));
+  assert.equal(Cause.squash(unreadable.cause)._tag, "BillingUnavailable");
+  assert.equal(
+    await Effect.runPromise(allowanceUnlessHeld(Effect.succeed(null), Effect.succeed(freeMembers))),
+    freeMembers,
+  );
 });

@@ -1,7 +1,7 @@
 model {
   extend basalt.deployment {
     metadata {
-      constraint "The Api Worker imports its application on the first event instead of at isolate startup, so its global scope stays far below the runtime adapter's startup CPU limit. The generated entry keeps every export; all of its bridges share one lazy build per isolate. A module that throws while evaluating therefore fails the isolate's requests rather than the upload, so check:startup evaluates Api's application module as well as its entry. Only the Worker builds that share the default build input get the lazy entry; the compiler's own build is unchanged."
+      constraint "The Api Worker imports its application on the first event instead of at isolate startup, so its global scope stays far below the runtime adapter's startup CPU limit. The generated entry keeps every export; all of its bridges share one lazy build per isolate. A module that throws while evaluating therefore fails the isolate's requests rather than the upload, so check:startup evaluates Api's application module as well as its entry. Only the Api Worker gets the lazy entry; every other Worker, the compiler included, keeps its eager one."
     }
   }
 }

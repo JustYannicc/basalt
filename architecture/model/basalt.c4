@@ -21,7 +21,7 @@ model {
 
 
     frameworkRelease = part "Served framework release" {
-      description "One framework version shared by deployment settings, app-source producers and the connector catalog. Builds resolve qualified producer history; release gates authorize new framework identities."
+      description "One framework version shared by deployment settings, app-source producers and the connector catalog. Builds embed the canonical framework identities and their own checked producer; a new identity becomes canonical from a source-bound rebuild."
       metadata { code "framework-release.ts"; configuration "true" }
     }
 

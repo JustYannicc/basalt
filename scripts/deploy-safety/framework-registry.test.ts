@@ -5,16 +5,11 @@ import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { sha, digest } from "../releases/fixtures.test-helpers.ts";
-import { SafetyGateError } from "./contracts.ts";
-import type {
-  FrameworkQualification,
-  FrameworkReleaseProvenance,
-} from "./framework-qualification.ts";
+import type { FrameworkReleaseProvenance } from "./framework-qualification.ts";
 import {
   frameworkRegistryDigest,
   qualifiedFrameworkRegistry,
   renderQualifiedFrameworkRegistry,
-  validateFrameworkBuildReceipt,
 } from "./framework-registry.ts";
 
 const release = (digit: string): FrameworkReleaseProvenance => ({
@@ -110,18 +105,6 @@ test("byte-identical publication reuses its original source binding after a sour
   assert.deepEqual(receipt.qualification.provenance, first);
   assert.deepEqual(receipt.releases, [canonical, first]);
   assert.equal(receipt.qualification.registrySha256, firstReceipt.qualification.registrySha256);
-  assert.deepEqual(
-    validateFrameworkBuildReceipt(
-      receipt,
-      sha("4"),
-      produced,
-      [canonical],
-      [firstReceipt.qualification],
-      renderQualifiedFrameworkRegistry(receipt.releases),
-      artifacts,
-    ),
-    receipt.qualification,
-  );
 });
 
 test("one version and server identity cannot acquire different browser, protocol or package bytes", () => {
@@ -157,93 +140,5 @@ test("one version and server identity cannot acquire different browser, protocol
   assert.deepEqual(
     qualifiedFrameworkRegistry([first], [], anotherServer, sha("2"), artifacts).releases,
     [first, anotherServer],
-  );
-});
-
-test("activation validates the checked candidate, producer, complete history and generated source", () => {
-  const history = [firstReceipt.qualification];
-  const generated = renderQualifiedFrameworkRegistry(secondReceipt.releases);
-  const validate = (
-    value: unknown = secondReceipt,
-    candidate = sha("2"),
-    produced = second,
-    qualifications: FrameworkQualification[] = history,
-    source = generated,
-  ) =>
-    validateFrameworkBuildReceipt(
-      value,
-      candidate,
-      produced,
-      [canonical],
-      qualifications,
-      source,
-      artifacts,
-    );
-  assert.deepEqual(validate(), secondReceipt.qualification);
-  const attempts: [string, () => unknown][] = [
-    ["candidate changed", () => validate(secondReceipt, sha("3"))],
-    [
-      "producer bytes changed",
-      () => validate(secondReceipt, sha("2"), { ...second, sha256: digest("3") }),
-    ],
-    [
-      "producer source changed",
-      () =>
-        validate(secondReceipt, sha("2"), {
-          ...second,
-          source: { ...second.source, revision: "changed producer" },
-        }),
-    ],
-    [
-      "receipt producer changed",
-      () =>
-        validate({
-          ...secondReceipt,
-          qualification: { ...secondReceipt.qualification, producerGitCommit: sha("3") },
-        }),
-    ],
-    ["history lost an earlier qualification", () => validate(secondReceipt, sha("2"), second, [])],
-    [
-      "history gained a qualification",
-      () =>
-        validate(secondReceipt, sha("2"), second, [
-          ...history,
-          { ...firstReceipt.qualification, provenance: release("3") },
-        ]),
-    ],
-    [
-      "digest changed",
-      () =>
-        validate({
-          ...secondReceipt,
-          qualification: { ...secondReceipt.qualification, registrySha256: digest("f") },
-        }),
-    ],
-    [
-      "generated source changed",
-      () => validate(secondReceipt, sha("2"), second, history, generated + "\n"),
-    ],
-    ["receipt absent", () => validate(null)],
-  ];
-  for (const [reason, attempt] of attempts) assert.throws(attempt, SafetyGateError, reason);
-  const removed = [canonical, second];
-  assert.throws(
-    () =>
-      validate(
-        {
-          ...secondReceipt,
-          releases: removed,
-          qualification: {
-            ...secondReceipt.qualification,
-            registrySha256: frameworkRegistryDigest(removed),
-          },
-        },
-        sha("2"),
-        second,
-        history,
-        renderQualifiedFrameworkRegistry(removed),
-      ),
-    SafetyGateError,
-    "A consistent replacement digest and generated file cannot hide lost qualified history",
   );
 });

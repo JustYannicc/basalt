@@ -215,7 +215,7 @@ test(
       await host.dispose();
       host = undefined;
 
-      // Ledger tests cover keeping C's qualification after failure; D must execute what C retained.
+      // An exported snapshot keeps C's qualification after failure; D must execute what C retained.
       const releaseD = qualifiedFrameworkRegistry(
         canonicalFrameworkReleases,
         [releaseA.qualification, releaseB.qualification, releaseC.qualification],

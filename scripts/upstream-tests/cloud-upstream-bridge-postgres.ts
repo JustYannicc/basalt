@@ -70,7 +70,10 @@ export const proveIndependentAuthCommit = (options: BetterAuthOptions) =>
     assert.deepEqual(yield* objects, first);
     assert.deepEqual(
       yield* sql`select migration_id from private_hosted_migrations order by migration_id`,
-      Array.from({ length: 21 }, (_, index) => ({ migration_id: index + 1 })),
+      // Step 22 is the change journal's explicit activation, which a plain migration never runs.
+      [...Array.from({ length: 21 }, (_, index) => index + 1), 23].map((migration_id) => ({
+        migration_id,
+      })),
     );
   });
 

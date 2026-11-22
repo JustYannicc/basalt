@@ -1054,7 +1054,7 @@ index 000000000..b2cfdc61c
 +  );
 +});
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
-index 21974fde3..fbcb148d6 100644
+index 21974fde3..e0d706e97 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,4 @@
@@ -1062,24 +1062,31 @@ index 21974fde3..fbcb148d6 100644
  import { AccountSourceFailure } from "../contracts/account-check-failure.ts";
  import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
  import {
-@@ -297,6 +298,7 @@ export const makeAccountHealth = (
+@@ -297,26 +298,36 @@ export const makeAccountHealth = (
      ids: readonly AppId[],
    ) =>
      Effect.gen(function* () {
+-      const [stored, [apps, rows]] = yield* inOrder(
 +      const facts = yield* SelectionReadFacts;
-       const [stored, [apps, rows]] = yield* inOrder(
++      const [stored, [apps, [rows, report]]] = yield* inOrder(
          account,
          inOrder(
-@@ -306,17 +308,23 @@ export const makeAccountHealth = (
-           query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+           // The product names the apps; their owner can differ from the account's, as in local,
+           // where apps belong to the host and accounts to its user.
+           ids.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids }),
+-          query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
++          inOrder(
++            query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
++            query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", id) })),
++          ),
          ),
        );
 -      const report = yield* query(() =>
 -        db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) }),
-+      // Inside a statement group these reads share one round trip; otherwise they stay sequential.
-+      const [report, acquired, driverHealth] = yield* Effect.all(
++      // These need the stored account. Inside a statement group they share one round trip;
++      // otherwise they stay sequential.
++      const [acquired, driverHealth] = yield* Effect.all(
 +        [
-+          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) })),
 +          interactiveBinding(db, { account: stored.id, owner: stored.owner }),
 +          driver.report(stored),
 +        ],

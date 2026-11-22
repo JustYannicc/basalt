@@ -117,6 +117,19 @@ const storageVersion = async (client: pg.Client) =>
     )
   ).rows[0]?.value;
 
+/** Seed the released prelude, not the current initializer: the transition starts at 4.0.29. */
+const seedPrelude = (url: string) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+      const migrator = yield* preludeDatabase.client(sqlAdapter({ provider: "postgresql" }))
+        .createMigrator;
+      yield* (yield* migrator.migrateTo("4.0.28")).execute;
+      yield* (yield* migrator.up()).execute;
+      assert.equal(yield* storage.version, "4.0.29");
+    }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 1 }))),
+  );
+
 for (const { name, values } of [
   { name: "storage older than the prelude", values: ["4.0.28"] },
   { name: "a duplicated storage marker", values: ["4.0.29", "4.0.29"] },
@@ -172,17 +185,7 @@ test(
   async () => {
     const f = await database();
     try {
-      await Effect.runPromise(
-        Effect.gen(function* () {
-          const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-          // Seed the released prelude, not the current initializer: the transition starts at 4.0.29.
-          const migrator = yield* preludeDatabase.client(sqlAdapter({ provider: "postgresql" }))
-            .createMigrator;
-          yield* (yield* migrator.migrateTo("4.0.28")).execute;
-          yield* (yield* migrator.up()).execute;
-          assert.equal(yield* storage.version, "4.0.29");
-        }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(f.url), maxConnections: 1 }))),
-      );
+      await seedPrelude(f.url);
       const first = await migrate(f.url);
       assert.equal(first.status, 0, first.output);
       assert.equal(await storageVersion(f.client), "4.0.30");
@@ -193,6 +196,45 @@ test(
       const retry = await migrate(f.url);
       assert.equal(retry.status, 0, retry.output);
       assert.equal(await publicCatalogFingerprint(f.client), before);
+    } finally {
+      await f.close();
+    }
+  },
+);
+
+test(
+  "a release stopped at a bridged Cloud step commits no product step, and its retry completes",
+  { skip: !local },
+  async () => {
+    const f = await database();
+    try {
+      await seedPrelude(f.url);
+      // The first bridged Cloud step fails, as if the earlier attempt stopped there.
+      await f.client.query(`create function fail_bridge_fixture() returns event_trigger
+        language plpgsql as $$ begin
+          if exists (select 1 from pg_event_trigger_ddl_commands()
+            where object_identity like '%private_v1_session_handoff%') then
+            raise exception 'BRIDGE_FIXTURE_STOP';
+          end if;
+        end $$`);
+      await f.client.query(`create event trigger bridge_fixture_stop
+        on ddl_command_end execute function fail_bridge_fixture()`);
+      const stopped = await migrate(f.url);
+      assert.equal(stopped.status, 1, stopped.output);
+      assert.match(stopped.output, /run the cloud product steps/);
+      // Product steps share one transaction: the stop leaves the prelude's storage, and the
+      // bridged step's table does not exist half-made.
+      assert.equal(await storageVersion(f.client), "4.0.29");
+      const handoffs = await f.client.query<{ present: boolean }>(
+        "select to_regclass('public.private_v1_session_handoff') is not null as present",
+      );
+      assert.equal(handoffs.rows[0]?.present, false);
+      await f.client.query("drop event trigger bridge_fixture_stop");
+      const retry = await migrate(f.url);
+      assert.equal(retry.status, 0, retry.output);
+      assert.equal(await storageVersion(f.client), "4.0.30");
+      assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
+      assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
     } finally {
       await f.close();
     }
