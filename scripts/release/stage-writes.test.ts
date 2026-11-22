@@ -261,3 +261,37 @@ test("a teardown deletes a container application only once Cloudflare names it f
     "refuse",
   );
 });
+
+test("a Workers custom domain delete the State never recorded goes to a live proof; nothing else does", () => {
+  const withAccount = { ...scope, accountId: "acct" };
+  const at = (method: string, url: string) =>
+    stageWriteVerdict(withAccount, owned, method, new URL(url), undefined);
+  // An id the State never recorded: only Cloudflare can place it, so the guard reads it first.
+  assert.deepEqual(at("DELETE", `${CF}/workers/domains/unrecorded`), {
+    kind: "prove",
+    family: "Worker domain",
+    name: "unrecorded",
+  });
+  // One the State records is the stage's by its id, as before.
+  assert.deepEqual(at("DELETE", `${CF}/workers/domains/dns-stage-1`), { kind: "allow" });
+  // Any other write to an unrecorded domain is refused, and so is a delete the proof could not
+  // trust: another account's path, another host, or a scope that names no account.
+  assert.equal(at("PUT", `${CF}/workers/domains/unrecorded`).kind, "refuse");
+  assert.deepEqual(
+    at("DELETE", "https://api.cloudflare.com/client/v4/accounts/other/workers/domains/unrecorded"),
+    {
+      kind: "refuse",
+      resource: "Worker domain unrecorded",
+      field: "account",
+    },
+  );
+  assert.deepEqual(
+    at("DELETE", "https://other.example/client/v4/accounts/acct/workers/domains/unrecorded"),
+    {
+      kind: "refuse",
+      resource: "Worker domain unrecorded",
+      field: "host",
+    },
+  );
+  assert.equal(verdict("DELETE", `${CF}/workers/domains/unrecorded`), "refuse");
+});
