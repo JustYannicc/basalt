@@ -1,0 +1,46 @@
+package home
+
+import (
+	"context"
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+type quietCollector struct{ triggered []map[string]struct{} }
+
+func (c *quietCollector) TriggerCollection(_ context.Context, ids map[string]struct{}, _ map[string]struct{}) (int, error) {
+	c.triggered = append(c.triggered, ids)
+	return len(ids), nil
+}
+
+// A refused call queues a funding re-read for its accounts; a later refusal re-queues the
+// same account only once 30 s have passed, with nothing else going on in between.
+func TestBasaltQuietUsageCreditRefreshRequeuesAfterThirtySeconds(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		collector := &quietCollector{}
+		runtime := &Runtime{}
+		runtime.SetUsageCreditCollector(collector)
+		ctx := context.Background()
+		if errRefresh := runtime.requestUsageCreditRefresh(ctx, []string{"idle-account"}); errRefresh != nil {
+			t.Fatalf("first refresh: %v", errRefresh)
+		}
+		time.Sleep(30*time.Second - time.Nanosecond)
+		if errRefresh := runtime.requestUsageCreditRefresh(ctx, []string{"idle-account"}); errRefresh != nil {
+			t.Fatalf("deduplicated refresh: %v", errRefresh)
+		}
+		if len(collector.triggered) != 1 {
+			t.Fatalf("a refusal inside 30 s queued %d collections, want 1", len(collector.triggered))
+		}
+		time.Sleep(time.Nanosecond)
+		if errRefresh := runtime.requestUsageCreditRefresh(ctx, []string{"idle-account"}); errRefresh != nil {
+			t.Fatalf("refresh after 30 s: %v", errRefresh)
+		}
+		if len(collector.triggered) != 2 {
+			t.Fatalf("a refusal 30 s later queued %d collections in total, want 2", len(collector.triggered))
+		}
+		if _, queued := collector.triggered[1]["idle-account"]; !queued {
+			t.Fatalf("the second collection does not name the account: %v", collector.triggered[1])
+		}
+	})
+}
