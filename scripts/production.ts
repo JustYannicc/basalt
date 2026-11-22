@@ -63,28 +63,27 @@ export const workersToRepoint = (plan: Plan) =>
     .map(([fqn]) => fqn)
     .sort();
 
-/** The classes a binding list hosts on its own Worker: Durable Object bindings to no other script. */
-const localClasses = (bindings: readonly Binding[] = []) =>
-  bindings.flatMap(({ data }) => {
-    const wires = (data as { bindings?: unknown } | undefined)?.bindings;
-    return (Array.isArray(wires) ? (wires as Wire[]) : [])
-      .filter((wire) => wire.type === "durable_object_namespace" && wire.scriptName === undefined)
-      .map((wire) => String(wire.className));
-  });
+/** The classes a binding hosts on its own Worker: Durable Object bindings to no other script. */
+const localClasses = ({ data }: Binding) => {
+  const wires = (data as { bindings?: unknown } | undefined)?.bindings;
+  return (Array.isArray(wires) ? (wires as Wire[]) : [])
+    .filter((wire) => wire.type === "durable_object_namespace" && wire.scriptName === undefined)
+    .map((wire) => String(wire.className));
+};
 
 /**
- * Durable Object classes a Worker hosts now and the plan stops binding. Alchemy would send them as
- * `deleted_classes`, which deletes every object of the class and its storage: never applied.
+ * Durable Object classes a Worker's last finished apply bound on itself whose binding the plan
+ * deletes or no longer has. Alchemy would send them as `deleted_classes`, which deletes every
+ * object of the class and its storage: never applied. An interrupted apply's row is read from the
+ * generation it started from, as Alchemy compares it.
  */
 export const droppedClasses = (plan: Plan) =>
   workers(plan).flatMap(([fqn, node]) => {
     const state = node.state?.status === "updating" && node.state.old ? node.state.old : node.state;
-    const hosted = new Set([
-      ...Object.keys(state?.attr?.durableObjectNamespaces ?? {}),
-      ...localClasses(state?.bindings),
-    ]);
-    const kept = new Set(localClasses(node.bindings?.filter((b) => b.action !== "delete")));
-    return [...hosted].filter((name) => !kept.has(name)).map((name) => `${fqn}: ${name}`);
+    const planned = new Map(node.bindings?.map((binding) => [binding.sid, binding.action]));
+    return (state?.bindings ?? [])
+      .filter((binding) => [undefined, "delete"].includes(planned.get(binding.sid)))
+      .flatMap((binding) => localClasses(binding).map((name) => `${fqn}: ${name}`));
   });
 
 /** One streamed turn through the public pool. Says why it failed by error class and status only. */
@@ -177,9 +176,11 @@ async function main() {
       const version = yield* store.getVersion();
       if (version !== 8)
         return yield* Effect.die(new Error(`State store version ${version}, not 8`));
-      const { stackName } = (yield* Session.importStack(target.entrypoint) as never) as {
-        stackName: string;
-      };
+      const { stackName } = yield* Session.importStack(target.entrypoint) as unknown as Fx.Effect<
+        { stackName: string },
+        unknown,
+        never
+      >;
       const pool = yield* store.get({ stack: stackName, stage: "production", fqn: "PoolWorker" });
       const hosted = Object.keys(pool?.attr?.durableObjectNamespaces ?? {});
       const declared = classesDeclared(values["fleet-classes"] === true, hosted);
