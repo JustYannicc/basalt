@@ -52,8 +52,8 @@ def fields(body, allowed, required=()):
 
 
 class Gateway:
-    def __init__(self, adapter, forwarder):
-        self.adapter, self.forwarder = adapter, forwarder
+    def __init__(self, adapter, forwarder, exit=os._exit):
+        self.adapter, self.forwarder, self.exit = adapter, forwarder, exit
         self.boot_id = None
         self.revision = 0
         self.state_hash = None
@@ -103,6 +103,8 @@ class Gateway:
                 "logged_in": bool(snapshot and snapshot.logged_in),
                 "key_expiry": snapshot.key_expiry if snapshot else None,
                 "tailnet": snapshot.tailnet if snapshot and snapshot.logged_in else None,
+                "name": snapshot.name if snapshot and snapshot.logged_in else None,
+                "id": snapshot.node_id if snapshot and snapshot.logged_in else None,
             },
             "state_revision": self.observe_state(),
         }
@@ -163,7 +165,12 @@ class Gateway:
     async def exits(self, body):
         fields(body, ())
         snapshot = await self.adapter.snapshot()
-        return {"exits": [{"id": item.id, "name": item.name, "online": item.online} for item in snapshot.exits]}
+        return {
+            "exits": [
+                {"id": item.id, "name": item.name, "online": item.online, "last_seen": item.last_seen}
+                for item in snapshot.exits
+            ]
+        }
 
     async def select(self, body):
         value = fields(body, ("exit_id", "when_down"), ("exit_id", "when_down"))
@@ -178,7 +185,15 @@ class Gateway:
 
     async def logout(self, body):
         fields(body, ())
-        await self.adapter.logout()
+        try:
+            await self.adapter.logout()
+        except BaseException:
+            if self.adapter.process is None:
+                # The old tailscaled is stopped and its replacement never came up: exit, so
+                # the DO restarts the container instead of it answering 503 forever.
+                forwarder_module.log({"route_gateway_exit": "tailscaled"})
+                self.exit(1)
+            raise
         self.forwarder.alive = (None, None)
         return {}
 
@@ -237,6 +252,21 @@ async def read_http(reader):
     return method, target.split("?", 1)[0], await reader.readexactly(length)
 
 
+async def watch_daemon(adapter, exit, idle_s=0.5):
+    """tailscaled gone means the route is gone: exit so the DO restarts the container.
+    A stop the adapter intended (logout) replaces or clears `adapter.process` first."""
+    while True:
+        process = adapter.process
+        if process is None:
+            await asyncio.sleep(idle_s)
+            continue
+        await process.wait()
+        if adapter.process is process:
+            forwarder_module.log({"route_gateway_exit": "tailscaled"})
+            exit(1)
+            return
+
+
 async def main():
     adapter = adapter_module.TailscaleAdapter()
     forwarder = forwarder_module.Forwarder(adapter)
@@ -251,20 +281,7 @@ async def main():
                 gateway.observe_state()
             await asyncio.sleep(REVISION_EVERY_S)
 
-    async def daemon_exit():
-        # tailscaled gone means the route is gone: exit so the DO restarts the container.
-        # A stop the adapter intended (logout) replaces or clears `adapter.process` first.
-        while True:
-            process = adapter.process
-            if process is None:
-                await asyncio.sleep(0.5)
-                continue
-            await process.wait()
-            if adapter.process is process:
-                forwarder_module.log({"route_gateway_exit": "tailscaled"})
-                os._exit(1)
-
-    tasks += [asyncio.create_task(revisions()), asyncio.create_task(daemon_exit())]
+    tasks += [asyncio.create_task(revisions()), asyncio.create_task(watch_daemon(adapter, os._exit))]
     async with control, socks:
         await asyncio.gather(*tasks)
 

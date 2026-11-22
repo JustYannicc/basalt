@@ -24,9 +24,9 @@ If tailscaled's status call itself fails, the check stops at once with `route_st
 
 On a failure, `when_down=stop` replies `0x02` and dials nothing. `when_down=direct` dials from the gateway's own address, and `/status` then reports `direct_fallback`.
 
-After tailscaled answers the CONNECT, and before the client sees that reply, steps 3–5 run again. The client can't send anything before the reply, so a netmap change that lands between the check and tailscaled's own dial can leak at most a bare TCP handshake from the gateway's address, never request bytes.
+After tailscaled answers the CONNECT, and before the client sees that reply, steps 3–5 run again. A client can't send anything before the reply, so a re-check that fails closes the connection with no request sent.
 
-**Known gap:** that handshake isn't covered. Closing it needs packet filtering, which this unprivileged userspace gateway doesn't have.
+**Known gap:** if the exit node is deleted or loses its exit route in the microseconds between the check and tailscaled's own dial, a bare TCP handshake (SYN, then the connection setup) can leave from the gateway's own address to the destination. No request, no account and no content can follow, because the re-check refuses before the client may send. The gateway can't stop the handshake itself: that would need packet filtering, which requires privileges an unprivileged userspace container doesn't have. The rig's deletion and route-revocation runs under load recorded 0 requests and 0 handshakes from the gateway's address.
 
 `state_revision` goes up whenever tailscaled rewrites its state file. That happens on login, key rotation and logout, and also on a preference change such as `/select`. A logout also discards the state file and starts tailscaled again from nothing, so the next `/state` carries no identity of the old device.
 

@@ -15,6 +15,7 @@ FRESH_S = 6.0
 PING_EVERY_S = 2.0
 CONNECT_TIMEOUT_S = 10.0
 HANDSHAKE_TIMEOUT_S = 10.0
+ABORT_AFTER_S = 10.0
 MAX_CONNECTIONS = 512
 
 GRANTED, FAILURE, NOT_ALLOWED, COMMAND_UNSUPPORTED, ADDRESS_UNSUPPORTED = 0x00, 0x01, 0x02, 0x07, 0x08
@@ -106,8 +107,11 @@ async def splice(client, upstream):
             if writer.can_write_eof():
                 writer.write_eof()
         except (ConnectionError, OSError):
-            client_writer.transport.abort()
-            upstream_writer.transport.abort()
+            # close() still flushes what the other side already sent; abort only if a peer
+            # never reads it.
+            for side in (client_writer, upstream_writer):
+                side.close()
+                asyncio.get_running_loop().call_later(ABORT_AFTER_S, side.transport.abort)
 
     await asyncio.gather(pump(client_reader, upstream_writer), pump(upstream_reader, client_writer))
     upstream_writer.close()

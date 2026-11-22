@@ -13,7 +13,7 @@ import forwarder
 from adapter_tailscale import AdapterError, Exit, Snapshot, parse_snapshot
 
 EXIT = Exit(id="nEXIT", name="home-exit", online=True, ip="100.64.0.3", path="direct")
-READY = Snapshot(logged_in=True, key_expiry=None, key_expired=False, selected="nEXIT", active=EXIT, exits=(EXIT,), tailnet="example-tailnet")
+READY = Snapshot(logged_in=True, key_expiry=None, key_expired=False, selected="nEXIT", active=EXIT, exits=(EXIT,), tailnet="example-tailnet", name="signalbox-route", node_id="nSELF")
 SELECTED = {"exit_id": "nEXIT", "when_down": "stop"}
 
 
@@ -67,16 +67,24 @@ class SnapshotTests(unittest.TestCase):
         peer = {"ID": "nEXIT", "HostName": "localhost", "DNSName": "home-exit.example-tailnet.ts.net.",
                 "TailscaleIPs": ["100.64.0.3/32", "fd7a::3/128"], "Online": True, "ExitNodeOption": True,
                 "CurAddr": "198.51.100.7:41641", "Relay": "fra"}
-        return {"BackendState": "Running", "Self": {"KeyExpiry": "2999-01-01T00:00:00Z"},
+        return {"BackendState": "Running", "Self": {"ID": "nSELF", "KeyExpiry": "2999-01-01T00:00:00Z", "HostName": "signalbox-route"},
                 "Peer": {"key": peer} if peers else None, "CurrentTailnet": {"Name": "example-tailnet"},
                 "ExitNodeStatus": {"ID": "nEXIT", "Online": True, "TailscaleIPs": ["100.64.0.3/32"]}, **extra}
 
     def test_reads_exit_path_and_tailnet(self):
         snapshot = parse_snapshot(self.status(), {"ExitNodeID": "nEXIT"}, time.time())
-        self.assertEqual(snapshot.active, Exit("nEXIT", "home-exit", True, "100.64.0.3", "direct", None))
+        self.assertEqual(snapshot.active, Exit("nEXIT", "home-exit", True, "100.64.0.3", "direct", None, None))
+        self.assertEqual((snapshot.name, snapshot.node_id), ("signalbox-route", "nSELF"))
         self.assertEqual(snapshot.tailnet, "example-tailnet")
         self.assertEqual(snapshot.exits[0].name, "home-exit")
         self.assertFalse(snapshot.key_expired)
+
+    def test_an_offline_exit_reports_when_it_was_last_seen(self):
+        status = self.status()
+        status["Peer"]["key"].update(Online=False, LastSeen="2026-11-20T08:00:00Z")
+        self.assertEqual(parse_snapshot(status, {}, time.time()).exits[0].last_seen, "2026-11-20T08:00:00Z")
+        status["Peer"]["key"].update(Online=True)
+        self.assertIsNone(parse_snapshot(status, {}, time.time()).exits[0].last_seen)
 
     def test_relay_only_reports_its_region(self):
         status = self.status()
@@ -306,6 +314,29 @@ class ForwarderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.upstream.requests, [])
 
 
+class FakeProcess:
+    def __init__(self):
+        self.ended = asyncio.Event()
+
+    async def wait(self):
+        await self.ended.wait()
+
+
+class WatcherTests(unittest.IsolatedAsyncioTestCase):
+    async def test_an_intended_restart_is_quiet_and_a_later_crash_exits(self):
+        adapter, exits = FakeAdapter(), []
+        adapter.process = first = FakeProcess()
+        watcher = asyncio.create_task(control.watch_daemon(adapter, exits.append, idle_s=0.01))
+        with contextlib.redirect_stdout(io.StringIO()):
+            adapter.process = second = FakeProcess()  # logout replaces tailscaled
+            first.ended.set()
+            await asyncio.sleep(0.05)
+            self.assertEqual(exits, [])
+            second.ended.set()
+            await asyncio.wait_for(watcher, 1)
+        self.assertEqual(exits, [1])
+
+
 class ControlTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.adapter = FakeAdapter()
@@ -362,15 +393,16 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         status = (await self.call("GET", "/status"))[1]
         self.assertEqual((status["state"], status["reason"]), ("ready", None))
         self.assertEqual(status["exit"], {"id": "nEXIT", "name": "home-exit", "online": True, "path": "direct", "relay_region": None})
-        self.assertEqual(status["node"], {"logged_in": True, "key_expiry": None, "tailnet": "example-tailnet"})
+        self.assertEqual(status["node"], {"logged_in": True, "key_expiry": None, "tailnet": "example-tailnet", "name": "signalbox-route", "id": "nSELF"})
         self.forwarder.alive = (None, None)
         self.assertEqual((await self.call("GET", "/status"))[1]["state"], "down")
         await self.call("POST", "/select", {"exit_id": "nEXIT", "when_down": "direct"})
         self.assertEqual((await self.call("GET", "/status"))[1]["state"], "direct_fallback")
-        self.adapter.snapshot_value = changed(logged_in=False, tailnet=None)
+        self.adapter.snapshot_value = changed(logged_in=False)
         await self.call("POST", "/select", {"exit_id": "nEXIT", "when_down": "stop"})
         status = (await self.call("GET", "/status"))[1]
-        self.assertEqual((status["state"], status["reason"], status["node"]["tailnet"]), ("needs_login", "route_needs_login", None))
+        self.assertEqual((status["state"], status["reason"]), ("needs_login", "route_needs_login"))
+        self.assertEqual((status["node"]["tailnet"], status["node"]["name"], status["node"]["id"]), (None, None, None))
         await self.call("POST", "/select", {"exit_id": None, "when_down": "stop"})
         self.assertEqual((await self.call("GET", "/status"))[1]["reason"], "route_off")
         self.assertEqual(self.adapter.selected, ["nEXIT", "nEXIT", "nEXIT", None])
@@ -389,6 +421,20 @@ class ControlTests(unittest.IsolatedAsyncioTestCase):
         status = (await self.call("GET", "/status"))[1]
         self.assertEqual((status["state"], status["reason"], status["state_revision"]), ("needs_login", "route_needs_login", 2))
         self.assertEqual((await self.call("GET", "/state"))[1]["state"], "")
+
+    async def test_a_logout_whose_restart_fails_exits_the_container(self):
+        exits = []
+        self.gateway.exit = exits.append
+        await self.start()
+
+        async def broken_logout():
+            self.adapter.process = None
+            raise AdapterError("tailscaled_not_ready")
+
+        self.adapter.logout = broken_logout
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual((await self.call("POST", "/logout"))[0], 503)
+        self.assertEqual(exits, [1])
 
     async def test_adapter_failure_is_a_reason_code(self):
         await self.start()

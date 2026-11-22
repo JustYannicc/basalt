@@ -32,6 +32,7 @@ class Exit:
     ip: str | None = None
     path: str = "unknown"
     relay_region: str | None = None
+    last_seen: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,6 +44,8 @@ class Snapshot:
     active: Exit | None
     exits: tuple[Exit, ...] = ()
     tailnet: str | None = None
+    name: str | None = None
+    node_id: str | None = None
 
 
 def _expiry(value, now):
@@ -55,11 +58,19 @@ def _expiry(value, now):
     return value, moment.timestamp() <= now
 
 
+def _moment(value):
+    return None if not value or value.startswith("0001-") else value
+
+
+def _node_name(node):
+    return (node.get("DNSName") or "").split(".")[0] or node.get("HostName") or None
+
+
 def _peer_exit(peer):
     ips = [ip.split("/")[0] for ip in peer.get("TailscaleIPs") or [] if "." in ip]
     relay = peer.get("Relay") or None
     path = "direct" if peer.get("CurAddr") else "relay" if relay else "unknown"
-    name = (peer.get("DNSName") or "").split(".")[0] or peer.get("HostName") or ""
+    name = _node_name(peer) or ""
     return Exit(
         id=peer.get("ID") or "",
         name=name,
@@ -67,6 +78,7 @@ def _peer_exit(peer):
         ip=ips[0] if ips else None,
         path=path,
         relay_region=relay if path == "relay" else None,
+        last_seen=None if peer.get("Online") else _moment(peer.get("LastSeen")),
     )
 
 
@@ -99,6 +111,9 @@ def parse_snapshot(status, prefs, now):
         active=active,
         exits=exits,
         tailnet=tailnet,
+        name=_node_name(self_status),
+        # The stable node ID is the device id the Tailscale API takes for removal.
+        node_id=self_status.get("ID") or None,
     )
 
 
@@ -167,7 +182,11 @@ class TailscaleAdapter:
         process, self.process = self.process, None
         if process is not None and process.returncode is None:
             process.terminate()
-            await process.wait()
+            try:
+                await asyncio.wait_for(process.wait(), 10)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.wait()
 
     async def snapshot(self):
         status = await _local_api("GET", "/localapi/v0/status")

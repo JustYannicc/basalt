@@ -8,6 +8,7 @@ the rig's containers as `echo` (the stand-in service) and `socks`/`watch` (the S
 client standing in for the Durable Object).
 """
 
+import base64
 import json
 import os
 import socket
@@ -26,6 +27,7 @@ ECHO_IP, EXIT_IP, GATEWAY_IP = "203.0.113.10", "203.0.113.20", "203.0.113.30"
 # The exit node resolves names through its DNS server, not /etc/hosts, so the name is a
 # Docker alias on a network only the exit shares with echo; the gateway cannot resolve it.
 ECHO_NAME, FAR_ECHO_IP, FAR_EXIT_IP = "echo.route-test.example", "198.51.100.10", "198.51.100.20"
+CHECKS = 9  # the seven I1 alone-checks, the revoked exit route and logout
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONTEXT = os.path.dirname(HERE)
 
@@ -337,6 +339,25 @@ class Rig:
         self.docker("unpause", self.names["exit"])
         self.wait_ready()
 
+        # (3a) the exit's approved routes revoked while it stays online and pingable.
+        accepts_before = self.echo_lines(accepts=True)
+        requests_before = len(self.echo_lines())
+        load = subprocess.Popen(["docker", "exec", self.names["probe"], "python3", "/e2e/rig_test.py", "storm", "revoke", "15"],
+                                stdout=subprocess.PIPE, text=True)
+        time.sleep(3)
+        self.headscale("nodes", "approve-routes", "--identifier", self.exit_node_id, "--routes", "")
+        under_load = json.loads(load.communicate(timeout=60)[0])
+        revoked = self.wait_for(lambda: (r := self.through("revoke-after")).get("reply") == 2 and r, 30, "routes revoked")
+        new_requests = self.echo_lines()[requests_before:]
+        direct_requests = [line for line in new_requests if line["from"] == GATEWAY_IP]
+        bare_handshakes = sum(1 for line in self.echo_lines(accepts=True)[len(accepts_before):] if line["accept"] == GATEWAY_IP)
+        self.record("3a_exit_route_revoked", not direct_requests, client=revoked, gateway_log=self.refusals()[-1],
+                    under_load=under_load, direct_requests_from_gateway=len(direct_requests),
+                    bare_handshakes_from_gateway=bare_handshakes,
+                    routed_requests_during_load=sum(1 for line in new_requests if line["from"] == EXIT_IP))
+        self.headscale("nodes", "approve-routes", "--identifier", self.exit_node_id, "--routes", "0.0.0.0/0,::/0,203.0.113.0/24,198.51.100.0/24")
+        self.wait_ready()
+
         # (3) exit removed from control: refused with route_exit_missing, echo gets nothing,
         # while tailscaled's raw proxy already sends the same call direct.
         accepts_before = self.echo_lines(accepts=True)
@@ -365,8 +386,12 @@ class Rig:
         logged_out = self.gateway_call("POST", "/logout")
         after_status = self.status()
         after = self.gateway_call("GET", "/state")[1]["state"]
-        self.evidence["logout"] = {"response": logged_out, "status": after_status, "state_changed": before != after,
-                                   "still_registered": self.headscale("nodes", "list", "-o", "json").count("signalbox-route")}
+        keys = lambda blob: {value for value in json.loads(base64.b64decode(blob) or b"{}").values()}
+        node = next((n for n in json.loads(self.headscale("nodes", "list", "-o", "json")) or [] if "signalbox-route" in (n.get("name"), n.get("given_name"))), {})
+        self.record("8_logout", logged_out == [200, {}] and after_status["state"] == "needs_login"
+                    and not after_status["node"]["logged_in"] and not keys(before) & keys(after),
+                    status=after_status, old_identity_values_left=len(keys(before) & keys(after)),
+                    control_keeps_expired_record=bool(node), record_expiry=node.get("expiry"))
 
     def teardown(self):
         removed = {"containers": 0, "networks": 0, "images": 0}
@@ -431,8 +456,8 @@ def main(argv):
             with open(evidence_path, "w") as handle:
                 handle.write(text + "\n")
         passed = rig.evidence["checks"]
-        print(json.dumps({"passed": sum(c["passed"] for c in passed.values()), "of": 7, "teardown": rig.evidence["teardown"]}))
-    return 0 if len(passed) == 7 and all(c["passed"] for c in passed.values()) else 1
+        print(json.dumps({"passed": sum(c["passed"] for c in passed.values()), "of": CHECKS, "teardown": rig.evidence["teardown"]}))
+    return 0 if len(passed) == CHECKS and all(c["passed"] for c in passed.values()) else 1
 
 
 if __name__ == "__main__":
