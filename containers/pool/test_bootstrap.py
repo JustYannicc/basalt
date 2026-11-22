@@ -417,7 +417,9 @@ class BootstrapContractTests(unittest.TestCase):
         readiness = Readiness("fixture-management-key")
         ready, payload = readiness.snapshot()
         self.assertFalse(ready)
-        self.assertEqual(set(payload), {"boot_id", "started_at"})
+        # Besides boot identity, only the closed distance fields controllers route on.
+        self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
+        self.assertEqual(payload["db_rtt_state"], "pending")
         self.assertTrue(readiness.authorized("Bearer fixture-management-key"))
         self.assertFalse(readiness.authorized("Bearer wrong"))
         readiness.set_ready(True)

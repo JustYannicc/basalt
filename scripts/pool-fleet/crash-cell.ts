@@ -134,6 +134,10 @@ export const crashReadyCell = (input: CrashInput) =>
     return {
       status: "proven" as const,
       nonce,
+      // The killed cell and when its kill was answered (this runner's clock), so a reader can tell a call
+      // cut on that cell from one cut anywhere else. Ids only: no host, account or key.
+      target: { slotId: target.slotId, instanceId: target.instanceId, bootId: target.bootId },
+      killedAt: measured.killedAt,
       detectedMs: measured.detectedMs,
       restartedMs: measured.restartedMs,
       bounds: { detectMs: detectBound, restartMs: restartBound },

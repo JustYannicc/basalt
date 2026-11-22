@@ -519,6 +519,51 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           /saturated-main-pool heartbeat, node-lookup and node-listing regressions/,
         );
         assert.match(patch.retirement.requires, /management node listing/);
+      } else if (patch.identity === "cliproxy-home-live-owner-members") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0732-home-live-owner-members.patch");
+        assert.match(
+          patch.retirement.requires,
+          /only after the Home that holds it has stopped heartbeating/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-node-liveness-floor") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0736-home-node-liveness-floor.patch");
+        assert.match(
+          patch.retirement.requires,
+          /node liveness timeout of at least its configured floor/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /stored-floor, short-stall, past-the-floor and lifecycle-rule regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-database-distance") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0741-home-database-distance.patch");
+        assert.match(
+          patch.retirement.requires,
+          /shortest database round trip over its coordination pool/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /measured-distance and unavailable-database regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-heartbeat-fresh-lease") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0735-home-heartbeat-fresh-lease.patch");
+        assert.match(patch.retirement.requires, /without the election gate's row lock/);
+        assert.match(
+          patch.retirement.requires,
+          /keeps the master flag no longer than the lease it read/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&

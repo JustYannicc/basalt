@@ -21,7 +21,9 @@ export class FleetFailures {
     if (
       diagnostic.runtimeReason === "aborted" ||
       diagnostic.runtimeReason === "slot_policy" ||
-      diagnostic.runtimeStep === "slot_authorize"
+      diagnostic.runtimeStep === "slot_authorize" ||
+      // The front layer failed, not the runtime: only resumability is lost.
+      diagnostic.runtimeStep === "resume_layer"
     )
       return;
     const key = executionKey(identity);

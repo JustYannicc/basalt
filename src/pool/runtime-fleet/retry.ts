@@ -9,6 +9,7 @@ import { awaitProbe } from "../availability.ts";
 import { FleetRefused } from "./state.ts";
 import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
 import { nativeRuntimeUnavailable, nativeRuntimeStream } from "../runtime-unavailable.ts";
+import { reachedNoContainer, unsentRefusal } from "../controller-unsent.ts";
 import {
   modelCallReplayable,
   upstreamOutcomeUnknown,
@@ -16,6 +17,11 @@ import {
 import { retainEndpointRequestId } from "./endpoint-trace.ts";
 
 const safeReads = new Set(["/v1/models", "/typesafe/v1/models"]);
+/** The model catalog: the only read the fleet sends again after any failure, never a socket. */
+export const fleetSafeRead = (request: Request) =>
+  request.method === "GET" &&
+  safeReads.has(new URL(request.url).pathname) &&
+  !request.headers.has("upgrade");
 // Readiness or the policy lease is not current yet: the container's readiness said unhealthy or
 // answered too late, a lease ran out, or the container is stopped and recovery will restart it.
 // These wait. Fenced, deselected and policy refusals throw at once; a replaced boot or an endpoint
@@ -70,8 +76,10 @@ function recoverable(error: unknown) {
     error instanceof RemoteRuntimeDefect
   )
     return false;
-  const { runtimeReason } = runtimeFailureDiagnostic(error, "fleet_forward");
+  const { runtimeReason, runtimeStep } = runtimeFailureDiagnostic(error, "fleet_forward");
   return (
+    // A failed front layer never starts a runtime recovery; the call gets the retryable answer.
+    runtimeStep !== "resume_layer" &&
     runtimeReason !== "aborted" &&
     runtimeReason !== "slot_policy" &&
     runtimeReason !== "slot_selection"
@@ -110,10 +118,7 @@ export async function forwardRecoverably(
     runtimeRecoveryBudgetMs,
   );
   const signal = AbortSignal.any([request.signal, deadline.signal]);
-  const safe =
-    request.method === "GET" &&
-    safeReads.has(new URL(request.url).pathname) &&
-    !request.headers.has("upgrade");
+  const safe = fleetSafeRead(request);
   let retained = new Request(request, { signal });
   let recovered = false;
   let retainedOwned = true;
@@ -167,6 +172,9 @@ export async function forwardRecoverably(
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
         }
+        // The runtime's endpoint refused before its container send: nothing ran, so the entry may
+        // send the call it holds once more.
+        if (dispatched && !safe && reachedNoContainer(error)) return unsentRefusal(request, error);
         if (dispatched && !safe) return acceptedCrash(request, error);
         retained = backup ?? new Request(request, { signal });
         retainedOwned = true;
