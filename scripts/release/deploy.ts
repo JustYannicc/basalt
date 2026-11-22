@@ -949,6 +949,18 @@ try {
               .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
               .map((change) => change.fqn)
         : [];
+    // The secrets the release policy (the job's POLICY) says differ on every release by design. A
+    // policy that cannot be read forces nothing; every Worker is still rolled back where it can be.
+    let forceSecrets: ReadonlySet<string> = new Set();
+    if (command === "rollback" && process.env.POLICY)
+      try {
+        const named = decodeReleasePolicy(
+          JSON.parse(await readFile(resolve(root, process.env.POLICY), "utf8")),
+        );
+        forceSecrets = new Set(named.rollback?.forceSecrets ?? []);
+      } catch {
+        console.error("::warning::The release policy could not be read; the rollback forces nothing.");
+      }
     const result = await run(
       Effect.gen(function* () {
         const at = (script: string) => ({
@@ -982,6 +994,7 @@ try {
                 at(yield* scriptName(target.fqn)),
                 target.version,
                 `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+                forceSecrets,
               );
             }),
           );

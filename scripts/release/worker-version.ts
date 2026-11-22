@@ -70,17 +70,6 @@ export const servingVersion = (target: Target) =>
 /** Cloudflare's refusal to deploy a version while a secret differs from the value it ran with. */
 const SECRET_CHANGED = 10220;
 
-/**
- * Secrets that differ on every release by design. A refusal that names only these says nothing
- * about the version rolled back to, so the rollback is sent again with `force`. Cloudflare keeps a
- * secret's value per version (changing one creates a new version), so the earlier version comes
- * back with the value it ran with:
- * - EXECUTOR_TELEMETRY: the telemetry settings and, beside them, the release's build version (its
- *   commit). In a code release only the build version differs, so the rolled-back code reports its
- *   own. A release that also changed the telemetry credential brings the earlier one back with it.
- */
-export const rollbackForceSecrets: ReadonlySet<string> = new Set(["EXECUTOR_TELEMETRY"]);
-
 /** The secrets a changed-secret refusal names, or undefined when its message names none. */
 export const changedSecrets = (message: string): readonly string[] | undefined => {
   const listed = /The following secrets have changed: ([^.]+)\.?$/u.exec(message.trim())?.[1];
@@ -100,10 +89,18 @@ const errorsOf = (body: unknown) => {
 
 /**
  * Deploys an earlier version at 100%, as `wrangler rollback` does. Cloudflare refuses it across a
- * class change, and while a secret differs from the value the version ran with: that refusal is
- * forced only when every secret it names is in `rollbackForceSecrets`.
+ * class change, and while a secret differs from the value the version ran with. That refusal is
+ * sent again with `force` only when every secret it names is in `forceSecrets`, the release
+ * policy's list of secrets that differ on every release by design. Cloudflare keeps a secret's
+ * value per version (changing one creates a new version), so the earlier version comes back with
+ * the value it ran with.
  */
-export const rollbackTo = (target: Target, versionId: string, message: string) =>
+export const rollbackTo = (
+  target: Target,
+  versionId: string,
+  message: string,
+  forceSecrets: ReadonlySet<string> = new Set(),
+) =>
   Effect.gen(function* () {
     const client = yield* HttpClient.HttpClient;
     // Cloudflare's own answers are kept: each HTTP status and error code and message go into the
@@ -153,7 +150,7 @@ export const rollbackTo = (target: Target, versionId: string, message: string) =
         answers[0]?.status === 400 && only?.code === SECRET_CHANGED && !more.length
           ? changedSecrets(only.message)
           : undefined;
-      if (!named?.every((name) => rollbackForceSecrets.has(name)))
+      if (!named?.every((name) => forceSecrets.has(name)))
         return yield* refused(new Error(`HTTP ${answers[0]?.status}`));
       forcedSecrets = named;
       reply = yield* deploy(true);

@@ -146,6 +146,8 @@ const secretChanged = (names: string) => ({
   message: `A secret has changed since this version was active. If you are sure this is ok, add a ?force=true query parameter to allow the rollback. The following secrets have changed: ${names}`,
 });
 const deployments = "/client/v4/accounts/acct/workers/scripts/pool/deployments";
+// The production release policies' list (scripts/release/policies, `rollback.forceSecrets`).
+const telemetry = new Set(["EXECUTOR_TELEMETRY"]);
 
 test("a rollback refused only for a per-release secret is sent again with force, and says so", async () => {
   const server = await api([deployment("v241"), deployment("v240")], {
@@ -153,7 +155,7 @@ test("a rollback refused only for a per-release secret is sent again with force,
     yieldsToForce: true,
   });
   try {
-    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback")));
+    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)));
     assert.deepEqual(exit, Exit.succeed({ id: "dep-new", forcedSecrets: ["EXECUTOR_TELEMETRY"] }));
     assert.deepEqual(server.seen, [
       `POST ${deployments}`,
@@ -170,7 +172,7 @@ test("a changed secret outside the reviewed list keeps the refusal, and nothing 
   for (const names of ["TEST_STAGE_EXPIRES_AT", "EXECUTOR_TELEMETRY, TEST_STAGE_EXPIRES_AT"]) {
     const server = await api([deployment("v241")], { ...secretChanged(names), yieldsToForce: true });
     try {
-      const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback")));
+      const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)));
       assert.ok(Exit.isFailure(exit), names);
       assert.deepEqual(server.seen, [`POST ${deployments}`], names);
       const report = failureReport(Cause.squash(exit.cause));
@@ -188,7 +190,7 @@ test("a forced rollback Cloudflare still refuses keeps both answers, privately",
     yieldsToForce: false,
   });
   try {
-    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback")));
+    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback", telemetry)));
     assert.ok(Exit.isFailure(exit));
     assert.equal(server.seen.length, 2);
     const report = failureReport(Cause.squash(exit.cause));
@@ -211,4 +213,19 @@ test("only a message that names its secrets in Cloudflare's form yields names", 
     secretChanged("EXECUTOR_TELEMETRY, ").message,
   ])
     assert.equal(changedSecrets(message), undefined, message);
+});
+
+test("a rollback given no list of per-release secrets forces nothing", async () => {
+  // A policy without `rollback.forceSecrets`: the refusal stands, even for the telemetry secret.
+  const server = await api([deployment("v241")], {
+    ...secretChanged("EXECUTOR_TELEMETRY"),
+    yieldsToForce: true,
+  });
+  try {
+    const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback")));
+    assert.ok(Exit.isFailure(exit));
+    assert.deepEqual(server.seen, [`POST ${deployments}`]);
+  } finally {
+    server.close();
+  }
 });
