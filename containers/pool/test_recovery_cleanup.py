@@ -69,7 +69,8 @@ class CleanupTests(unittest.TestCase):
 class OrdinaryStopTests(unittest.TestCase):
     """A stop outside any recovery episode, as a deploy's SIGTERM arrives on a quiet pool."""
 
-    def test_children_that_ignore_sigterm_are_killed_at_fifteen_seconds(self):
+    def test_children_that_ignore_sigterm_are_killed_at_the_stop_grace(self):
+        grace = float(supervisor.CHILD_STOP_GRACE_SECONDS)
         clock = Clock()
         waits = []
         killed = []
@@ -92,21 +93,25 @@ class OrdinaryStopTests(unittest.TestCase):
 
             children.append(
                 SimpleNamespace(
+                    name=name,
                     process=SimpleNamespace(
                         poll=lambda state=state: -9 if state["killed"] else None,
                         terminate=lambda name=name: terminated.append((name, clock.now)),
                         kill=kill,
                         wait=wait,
-                    )
+                    ),
                 )
             )
-        with patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)):
+        with (
+            patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)),
+            redirect_stderr(io.StringIO()),
+        ):
             supervisor.terminate_children(children)
         self.assertIsNone(current_deadline())
         self.assertEqual(terminated, [("home", 0.0), ("node", 0.0)], "both children get SIGTERM first")
-        self.assertEqual(waits[:2], [("home", 0.0, 15.0), ("node", 15.0, 0)])
-        self.assertEqual(killed, [("home", 15.0), ("node", 15.0)])
+        self.assertEqual(waits[:2], [("home", 0.0, grace), ("node", grace, 0)])
+        self.assertEqual(killed, [("home", grace), ("node", grace)])
         self.assertEqual([timeout for _, _, timeout in waits[2:]], [1, 1])
-        # One second for each killed child, one after the other: 17 s for two, inside the
-        # controller's 30 s forced stop.
-        self.assertEqual(clock.now, 17.0)
+        # One second for each killed child, one after the other: the grace plus 2 s for two, which
+        # the controller's forced stop outlasts (runtime-forced-stop.test.ts keeps the two in step).
+        self.assertEqual(clock.now, grace + 2)
