@@ -12,19 +12,17 @@ interface Dependencies {
 }
 
 /**
- * A computer set up with a link whose person revoked it, while its tools key may still work. That
- * key is an ordinary tools-service key nothing here can end, so the tools host's every-minute pass
- * deletes it. A row access removal finished, or one restored without history, was never revoked
- * by its person and keeps its key.
+ * A computer set up with a link whose person revoked it, by the same rule as a native device,
+ * while its tools key may still work. That key is an ordinary tools-service key nothing here can
+ * end, so the tools host's every-minute pass deletes it. A row removed before the pool recorded
+ * why counts as revoked: a revoked computer keeping its key is the worse error, and a swept link
+ * setup is made again from Connect. A row access removal finished, or one restored without
+ * history, keeps its key.
  */
 export function toolsLeftBehind(row: StoredComputer) {
   if (row.native || row.toolsKeyDeletedAt !== undefined || !revokedByPerson(row)) return false;
   // Only rows the host can read: one it can't would hold back every other row's answer.
-  if (!text(row.toolsKeyId) || !text(row.user)) return false;
-  // A `removed` row that doesn't say why may be an access removal: it keeps its key until its
-  // person revokes it again.
-  if (row.state === "removed") return row.removedFor === "revoke";
-  return row.state === "revoking" || row.state === "revoked";
+  return text(row.toolsKeyId) !== null && text(row.user) !== null;
 }
 
 /**
@@ -73,14 +71,19 @@ export function toolsLeftoverControl(value: Record<string, unknown>, deps: Depen
   return deps.run(async (registry) => {
     const at = new Date(deps.now()).toISOString();
     let finished = 0;
+    let legacyRemoved = 0;
     for (const entry of deleted as { computer: string; toolsKeyId: string }[]) {
       const row = Object.hasOwn(registry, entry.computer) ? registry[entry.computer] : undefined;
       // A row whose key changed or that stopped being left behind is not this report's to finish.
       if (!row || row.toolsKeyId !== entry.toolsKeyId || !toolsLeftBehind(row)) continue;
+      if (row.state === "removed" && row.removedFor === undefined) legacyRemoved++;
       toolsKeyDeleted(row, at);
       finished++;
     }
-    if (finished) await deps.save(registry);
+    if (finished) {
+      await deps.save(registry);
+      console.info("POOL_LINK_SETUP_TOOLS_KEYS_FINISHED", { finished, legacyRemoved });
+    }
     return json({ finished });
   });
 }
