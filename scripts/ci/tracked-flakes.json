@@ -21,5 +21,36 @@
       "Cloud production operations encrypt named read-only inventories and backups and refuse unreviewed writes"
     ],
     "signature": "remove-400-after-passed-body"
+  },
+  {
+    "id": "cpa-websocket-429-test",
+    "scope": "job",
+    "job": "pool-runtime",
+    "match": [
+      "--- FAIL: TestResponsesWebsocketSameSessionLaterCreate429DoesNotReplayAfterDownstreamCommit"
+    ],
+    "issue": 1656,
+    "expires": "2026-12-22"
+  },
+  {
+    "id": "zoho-mcp-browser-assertions",
+    "scope": "job",
+    "job": "catalog-compat",
+    "match": [
+      "CONNECTORS_PROOF_FAILURE phase=zoho-mcp-browser-assertions kind=assertion at=zoho-people-mcp.mjs:38"
+    ],
+    "issue": 1625,
+    "expires": "2026-12-22"
+  },
+  {
+    "id": "production-ops-cleanup-502",
+    "scope": "job",
+    "job": "production-ops-identity",
+    "match": [
+      "e2e/tests/production-ops-database.spec.ts",
+      "AssertionError: expected 502 to be 200"
+    ],
+    "issue": 1657,
+    "expires": "2026-12-22"
   }
 ]

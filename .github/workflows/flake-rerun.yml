@@ -1,0 +1,71 @@
+name: Flake re-run
+# flake-note.ts finds this run by its name, so the Check's re-run attempt can say why it ran.
+run-name: Flake re-run for Check run ${{ github.event.workflow_run.id }}
+
+# After a Check fails, re-runs a failed job once when its log carries the signature of a flake a
+# person classified and listed in scripts/ci/tracked-flakes.json (scripts/ci/flake-rerun.ts).
+# workflow_run always runs this file from the default branch, so no pull request's code runs here.
+on:
+  workflow_run:
+    workflows: [Check]
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  decide:
+    # Only a failed first attempt of this repository's own run: a re-run, being a later attempt,
+    # is never re-run again.
+    if: >-
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      action: ${{ steps.decide.outputs.action }}
+      jobs: ${{ steps.decide.outputs.jobs }}
+      note: ${{ steps.decide.outputs.note }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Match each failed job's log against the listed flakes
+        id: decide
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: node scripts/ci/flake-rerun.ts
+
+  rerun:
+    # Named after the flakes it re-runs: the Check's re-run attempt reads this name back.
+    name: ${{ needs.decide.outputs.note }}
+    needs: decide
+    if: needs.decide.outputs.action == 'rerun'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Re-run only the jobs the listed flakes failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          JOBS: ${{ needs.decide.outputs.jobs }}
+        run: |
+          # One job re-runs alone with its dependents. Several re-run as the run's failed jobs, which
+          # flake-rerun.ts allows only when no other job failed or was cancelled.
+          count=$(jq 'length' <<<"$JOBS")
+          if [ "$count" = 1 ]; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/jobs/$(jq '.[0]' <<<"$JOBS")/rerun"
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs"
+          fi
