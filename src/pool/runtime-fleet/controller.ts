@@ -1,6 +1,7 @@
 import {
   refuseRuntime,
   rememberRuntimeFailure,
+  runtimeFailureCause,
   runtimeFailureDiagnostic,
 } from "../runtime-route-diagnostic.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
@@ -441,15 +442,39 @@ export class RuntimeFleet {
     if (!sameIdentity(await cell.selected(), identity)) return resumeGone();
     return cell.forward(request, 8317, undefined, () => {});
   }
+  /**
+   * Every runtime that could take a new call must hold the policy before membership acknowledges it.
+   * Each row settles on its own, so one runtime's refusal never stops the others or the root.
+   */
   async install(policy: NativeMembershipPolicy) {
     const rows = await this.deps.state.inspect();
-    await Promise.all(
+    const settled = await Promise.allSettled(
       rows.map(async (row) => {
-        if (row.phase === "quarantined") return;
+        // A retiring or quarantined runtime takes no new call, so it never needs a policy.
+        if (row.phase === "quarantined" || row.phase === "retiring") return;
         const cell = this.cell(row.target);
-        if (await cell.selected()) await cell.install(policy);
+        if (!(await cell.selected())) return;
+        try {
+          await cell.install(policy);
+        } catch (error) {
+          // A draining runtime that can't return to ready takes no new call, so its refusal settles.
+          if (row.phase === "draining" && row.redrawn !== true) return;
+          // A starting runtime could still be admitted under its old policy, and a refusal from the
+          // runtime's policy layer (cause "control"), such as an older revision racing a newer one,
+          // is what the root answers too: both hold acknowledgement.
+          if (
+            !row.identity ||
+            (row.phase !== "ready" && row.phase !== "draining") ||
+            runtimeFailureCause(error) === "control"
+          )
+            throw error;
+          // A serving runtime that failed leaves the selection: it takes no call under the old policy.
+          await this.failures.refused(row.identity);
+        }
       }),
     );
+    const failure = settled.find((result) => result.status === "rejected");
+    if (failure) throw failure.reason;
   }
   abortPool(pool: string) {
     for (const { cell } of this.cells.values()) cell.abortPool(pool);
