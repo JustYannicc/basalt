@@ -194,9 +194,7 @@ const secrets = [
 const removalCause = () =>
   Cause.fromReasons([
     Cause.makeFailReason(storageFailure()),
-    Cause.makeFailReason(
-      recordAs(storageFailure(), "The removal step could not save its record"),
-    ),
+    Cause.makeFailReason(recordAs(storageFailure(), "The removal step could not save its record")),
     Cause.makeDieReason(
       new Error(
         "fetch failed for https://api.example.com/v1/users?session=fixture0123456789abcdef with person@example.com",
