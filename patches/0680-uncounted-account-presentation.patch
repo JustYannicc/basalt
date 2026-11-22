@@ -1,0 +1,60 @@
+diff --git a/apps/hosted/server/src/implementation/resource-lifecycle.ts b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+--- a/apps/hosted/server/src/implementation/resource-lifecycle.ts
++++ b/apps/hosted/server/src/implementation/resource-lifecycle.ts
+@@ -30,6 +30,7 @@
+   AccessDependencyUnavailable,
+   StorageError,
+   StorageHost,
++  UncountedAccountWork,
+   type Account,
+   type AppId,
+   type Executor,
+@@ -348,7 +349,9 @@
+               yield* requireAppAccess(input.target, "use").pipe(
+                 Effect.mapError(() => new StorageError()),
+               );
+-              return yield* work;
++              // Presenting a selected account to its viewer is not work the account served. Every
++              // hop states its own value, so work nested in a presentation call is still counted.
++              return yield* work.pipe(Effect.provideService(UncountedAccountWork, accountView));
+             }).pipe(Effect.provideService(CurrentUserId, input.authorizer));
+           }),
+         ).pipe(Effect.provideService(CurrentUserId, input.caller ?? input.authorizer)),
+diff --git a/packages/sdk/src/contracts/account-traffic.ts b/packages/sdk/src/contracts/account-traffic.ts
+--- a/packages/sdk/src/contracts/account-traffic.ts
++++ b/packages/sdk/src/contracts/account-traffic.ts
+@@ -1,6 +1,14 @@
+-import type { Effect } from "effect";
++import { Context, type Effect } from "effect";
+ import type { AccountId, StorageError } from "./shared.ts";
+ 
++/**
++ * Set by a host for a call it makes to present accounts to their viewer, such as a selected
++ * account's view. That read is not work the account served, so it is left out of its traffic.
++ */
++export const UncountedAccountWork = Context.Reference<boolean>("executor/UncountedAccountWork", {
++  defaultValue: () => false,
++});
++
+ /** Host-only reads of the tool calls each account served, for account lists. */
+ export const AccountTrafficHost = Symbol("executor.AccountTrafficHost");
+ 
+diff --git a/packages/sdk/src/implementation/account-tool-traffic.ts b/packages/sdk/src/implementation/account-tool-traffic.ts
+--- a/packages/sdk/src/implementation/account-tool-traffic.ts
++++ b/packages/sdk/src/implementation/account-tool-traffic.ts
+@@ -3,6 +3,7 @@
+ import { currentTraceContext, ownedBy, traceLinks } from "@executor-js/telemetry";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+ import { StorageError, type AccountId } from "../contracts/shared.ts";
++import { UncountedAccountWork } from "../contracts/account-traffic.ts";
+ import { accountTrafficNotCounted, type makeAccountTrafficStore } from "./account-traffic-store.ts";
+ 
+ const accountFailures = [
+@@ -54,6 +55,7 @@
+               : undefined;
+           if (ok === undefined) return Effect.void;
+           return Effect.gen(function* () {
++            if (yield* UncountedAccountWork) return;
+             const at = yield* Clock.currentTimeMillis;
+             const trace = yield* currentTraceContext;
+             const record = (accepted: boolean) =>

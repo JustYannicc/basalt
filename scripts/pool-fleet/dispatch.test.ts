@@ -5,6 +5,7 @@ import { decodeProviderApplication } from "../../src/pool/runtime-provider/appli
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
+import { refuse } from "./errors.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import { accountId, colours, harness } from "./test/harness.ts";
 
@@ -198,6 +199,16 @@ test("crash-cell kills one ready non-primary cell, sees it restart, and keeps re
     const again = await runPoolFleet(crash, lane.deps());
     assert.match(JSON.stringify("result" in again && again.result), /"already-submitted"/u);
     assert.equal(lane.crashes.length, 1);
+    // The ready wait, the fleet acceptance and the proof's load each signed for the acceptance
+    // device, never with a bearer.
+    assert.deepEqual(
+      new Set(lane.modelCalls.map(({ call }) => call)),
+      new Set(["GET /v1/models", "POST /v1/chat/completions"]),
+    );
+    for (const { call, authorization, assertion } of lane.modelCalls) {
+      assert.equal(authorization, null, call);
+      assert.equal(assertion, `assertion ${call}`, call);
+    }
   } finally {
     await lane.close();
   }
@@ -217,6 +228,32 @@ test("bookmark reads the controller storage's current bookmark under a GO and re
     assert.match(taken.at, /^\d{4}-\d{2}-\d{2}T/u);
     assert.ok(lane.actions.includes("storage-bookmark"));
     assert.match(stepSummary(result), /Controller storage bookmark taken at /u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("without an acceptance device the lane refuses the modes that send model calls, and only those", async () => {
+  const lane = await harness();
+  try {
+    const refused = refuse(
+      "acceptance-credentials-missing",
+      "POOL_ACCEPTANCE_DEVICE: unset.",
+      "set the POOL_ACCEPTANCE_DEVICE secret.",
+    );
+    const deps = { ...lane.deps(), acceptance: refused };
+    for (const mode of ["configure-and-accept", "accept", "crash-cell"]) {
+      const result = await runPoolFleet(dispatch(mode), deps);
+      assert.equal(result.ok, false, mode);
+      assert.match(
+        String("cause" in result && result.cause),
+        /acceptance-credentials-missing: POOL_ACCEPTANCE_DEVICE: unset\. Fix: set the POOL_ACCEPTANCE_DEVICE secret/u,
+        mode,
+      );
+    }
+    assert.equal(lane.modelCalls.length, 0, "nothing was sent");
+    assert.ok(!lane.actions.includes("fleet-configure"), "nothing was configured");
+    assert.equal((await runPoolFleet(dispatch("inspect"), deps)).ok, true);
   } finally {
     await lane.close();
   }
