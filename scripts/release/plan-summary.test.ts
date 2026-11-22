@@ -193,13 +193,65 @@ test("a destroy plan's targets are the kinds, names and ids its deleted rows rec
       Odd: deleted("Cloudflare.SomethingNew", { name: "unknown-kind" }),
     },
     deletions: {
-      Bucket: deleted("Cloudflare.R2.Bucket", { name: "vault-test-pr-7", jurisdiction: "eu" }),
+      Bucket: deleted("Cloudflare.R2.Bucket", {
+        bucketName: "vault-test-pr-7",
+        jurisdiction: "eu",
+      }),
     },
   };
   // Ids a row only refers to (a binding's target) are not targets, and an unknown type yields none.
   assert.deepEqual(destroyTargets(plan as never), [
     { kind: "Worker", id: "basalt-test-pr-7-poolworker" },
     { kind: "R2 bucket", id: "vault-test-pr-7" },
+  ]);
+});
+
+test("each kind's target is the attribute its delete path carries, as Alchemy records it", () => {
+  const deleted = (resourceType: string, attr: Record<string, unknown>) => ({
+    action: "delete",
+    state: { resourceType, attr },
+  });
+  const plan = {
+    resources: {
+      // A Workflow records its host Worker too; only its own name is the Workflow's target.
+      Flow: deleted("Cloudflare.Workflow", {
+        workflowId: "wf-uuid",
+        workflowName: "basalt-rehearsal-usage-test-rehearsal-1",
+        className: "UsageWorkflow",
+        scriptName: "basalt-rehearsal-api-test-rehearsal-1",
+        accountId: "acct",
+      }),
+      Pool: deleted("Cloudflare.Hyperdrive", { hyperdriveId: "hd-1", accountId: "acct" }),
+      Token: deleted("Cloudflare.ApiToken.AccountApiToken", {
+        tokenId: "tok-1",
+        accountId: "acct",
+      }),
+      Role: deleted("Planetscale.PostgresRole", {
+        id: "role-1",
+        name: "pscale_api_x",
+        database: "basalt-preview-rehearsal-1",
+        branch: "test-rehearsal-1",
+        databaseName: "postgres",
+      }),
+      Branch: deleted("Planetscale.PostgresBranch", {
+        name: "test-rehearsal-1",
+        database: "basalt-preview-rehearsal-1",
+        organization: "org",
+      }),
+      // The account's one Secrets Store is shared with production: never a target.
+      Store: deleted("Cloudflare.SecretsStore", { storeId: "store-1", storeName: "default" }),
+    },
+    deletions: {},
+  };
+  assert.deepEqual(destroyTargets(plan as never), [
+    { kind: "Workflow", id: "basalt-rehearsal-usage-test-rehearsal-1" },
+    { kind: "Hyperdrive config", id: "hd-1" },
+    { kind: "API token", id: "tok-1" },
+    {
+      kind: "PlanetScale role",
+      id: "basalt-preview-rehearsal-1/branches/test-rehearsal-1/roles/role-1",
+    },
+    { kind: "PlanetScale branch", id: "basalt-preview-rehearsal-1/branches/test-rehearsal-1" },
   ]);
 });
 
