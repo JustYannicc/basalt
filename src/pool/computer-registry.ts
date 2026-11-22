@@ -31,8 +31,10 @@ export interface StoredComputer {
   switchingTo?: string;
   link?: SealedLink;
   beforeRemoval?: { state: StoredComputer["state"]; link?: SealedLink };
-  /** Upkeep revoked its Home keys; a web setup's tools token still waits for the person's revoke. */
+  /** Upkeep revoked its Home keys; a web setup's tools token still waits for its deletion. */
   homeKeysRevokedAt?: string;
+  /** Its person revoked it and its web setup's tools key is gone, deleted or found missing. */
+  toolsKeyDeletedAt?: string;
   /** Why access removal finished it `removed`: during its person's revoke, or for lost access. */
   removedFor?: "revoke" | "access";
   /** Access was restored to a row that kept no record of its state before removal. */
