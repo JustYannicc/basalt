@@ -1,3 +1,6 @@
+import { Schema } from "effect";
+import { SlotSelection } from "./runtime-slots/contract.ts";
+
 interface RoutePeerHost {
   readonly exports?: object;
   readonly container?: { interceptOutboundHttp(host: string, target: never): Promise<void> };
@@ -24,4 +27,21 @@ export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
     // Never fails the home-peer install beside it: without the intercept, tunnels are refused.
     console.error("POOL_ROUTE_PEER_INTERCEPT_PENDING");
   }
+}
+
+/**
+ * Whether the root container and every runtime the slot selection names (active, candidate,
+ * draining) run one image input: any of them can take a sign-in's management calls.
+ */
+export function servesOneImage(rootImage: string, selection: unknown) {
+  if (selection === undefined) return true;
+  let decoded: SlotSelection;
+  try {
+    decoded = Schema.decodeUnknownSync(SlotSelection)(selection);
+  } catch {
+    return false;
+  }
+  return [decoded.active, decoded.candidate, decoded.draining].every(
+    (record) => record === undefined || record.target.imageInput === rootImage,
+  );
 }

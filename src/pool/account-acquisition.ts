@@ -39,6 +39,11 @@ interface Attempt {
 export interface SignInRoutes {
   beginSignIn(session: string, route: { routeId: string; owner: string }): Promise<void>;
   settleSignIn(session: string, references: readonly string[]): Promise<void>;
+  /**
+   * Whether every runtime that can take a sign-in call runs one image. Any of them may receive
+   * the callback, so one Home's word for the session proxy speaks for all only then.
+   */
+  homogeneous(): Promise<boolean>;
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -128,7 +133,10 @@ export class HomeAccountAcquisitions {
           return Response.json({ error: "route_unavailable" }, { status: 409 });
         // A Home without the session proxy (carry 0758) would ignore proxy_url and exchange the
         // code directly, so a routed start needs Home's own word that it routes the session.
-        if (route && !(await this.routesSessions(request.signal)))
+        if (
+          route &&
+          (!(await this.routes!.homogeneous()) || !(await this.routesSessions(request.signal)))
+        )
           return Response.json({ error: "route_unsupported" }, { status: 409 });
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
@@ -264,6 +272,12 @@ export class HomeAccountAcquisitions {
       }
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
+        // The callback runs the code exchange on whichever runtime takes it.
+        if (attempt.route && !attempt.result && !(await this.routes!.homogeneous())) {
+          attempt.result = { state: "failed", message: "route_unavailable" };
+          await this.finish(attempt, attempts, request.signal);
+          return this.reply(attempt.result);
+        }
         const failed = await submitAccountCallback(this.home, {
           provider: attempt.provider,
           state,
@@ -366,6 +380,9 @@ export class HomeAccountAcquisitions {
         state: "failed",
         message: "Sign-in expired before its account could be confirmed. Start again.",
       };
+    } else if (attempt.route && !(await this.routes!.homogeneous())) {
+      // A device flow's poll can complete the exchange too; nothing more is sent.
+      attempt.result = { state: "failed", message: "route_unavailable" };
     } else if (state) {
       const status = await acquisitionStep("oauth_status", () =>
         this.home.data(`/oauth/status?state=${encodeURIComponent(state)}`, { signal }),

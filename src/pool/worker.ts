@@ -45,7 +45,7 @@ import { RouteAssignments } from "./route-assignments.ts";
 import { routeResolver } from "./route-resolver.ts";
 import { routeDownAnswer } from "./route-refusal.ts";
 import { RouteReadings, gatewayReader } from "./route-reading.ts";
-import { installRoutePeer } from "./route-peer-intercept.ts";
+import { installRoutePeer, servesOneImage } from "./route-peer-intercept.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
 import type { ProductEventCallback } from "../setup/product-events.ts";
@@ -449,6 +449,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       signInRoutes: {
         beginSignIn: (session, route) => this.routes.beginSignIn(session, route),
         settleSignIn: (session, references) => this.routes.settleSignIn(session, references),
+        homogeneous: async () =>
+          servesOneImage(env.POOL_IMAGE_HASH, await ctx.storage.get(slotSelectionKey)),
       },
       // Without a gateway binding there is no reading at all, so the pool view omits `route`.
       ...(gateway && {
