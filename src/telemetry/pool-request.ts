@@ -50,6 +50,8 @@ const outcomes = [
   "runtime_refused",
   "refused",
   "outcome_unknown",
+  // Its runtime refused it before the container send; the Worker sends it again under this ID.
+  "unsent",
   "controller_unavailable",
   "controller_failed",
   "controller_reset",

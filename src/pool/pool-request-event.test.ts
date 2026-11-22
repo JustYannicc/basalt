@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { setTimeout as wait } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
 import { poolArrival, stampPoolReceive } from "./pool-arrival.ts";
+import { unsentRefusal } from "./controller-unsent.ts";
+import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 
 const workerModule = "./forward.worker.ts";
 const {
@@ -203,6 +205,37 @@ test("a refusal routing builds after dispatch is unanswered and names its step",
   assert.equal(event!.requestId, response.headers.get("X-Request-Id"));
   assert.equal(event!.responseRequestId, undefined);
 });
+
+for (const how of ["thrown", "routed"] as const)
+  test(`a call its runtime refused before the container send (${how}) ends unsent, under the ID its re-send keeps`, async (context) => {
+    const error = new Error("private-endpoint-refusal");
+    rememberRuntimeFailure("endpoint_health", error);
+    const h = harness(context, how === "thrown" ? { fail: error } : {});
+    const route = async (
+      request: Request,
+      _port: number,
+      _pool: string | undefined,
+      _legacy: unknown,
+      beforeDispatch: () => void,
+    ) => {
+      beforeDispatch();
+      return unsentRefusal(request, error);
+    };
+    const response = await h.forward(modelRequest(), how === "routed" ? { route } : {});
+    await response.text();
+    await h.drain();
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get("X-Signalbox-Controller-Unsent"), "1");
+    assert.equal(h.events.length, 1);
+    const [event] = h.events;
+    assert.equal(event!.outcome, "unsent");
+    assert.equal(event!.runtimeStep, "endpoint_health");
+    assert.equal(event!.requestId, response.headers.get("X-Request-Id"));
+    assert.equal(typeof event!.unansweredMs, "number");
+    assert.equal(event!.firstByteMs, undefined);
+    assert.doesNotMatch(JSON.stringify(event), /private-/);
+  });
 
 test("a request that cannot be observed is still forwarded", async (context) => {
   const h = harness(context);

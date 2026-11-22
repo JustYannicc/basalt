@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isResolved, stripUnresolved } from "alchemy/Diff";
 import * as Output from "alchemy/Output";
@@ -7,6 +8,7 @@ import type * as Plan from "alchemy/Plan";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Cause, Effect, Exit } from "effect";
 import { checkPlan, decodePlanPolicy, planDigest, PlanRefused, propChanges } from "./plan-check.ts";
+import { decodeReleasePolicy } from "./policy.ts";
 import {
   accountId,
   buildContext,
@@ -2432,4 +2434,117 @@ test("a named removed binding is exactly one plain setting of that name, in ever
     await removed({ ...withRow([plain]), status: "updating", old: withRow([secret]) }),
     ["worker-binding-removed PoolWorker"],
   );
+});
+
+// Plan B, the read-only plan of main a3368da9's parent on production (run 44965064800): every row
+// kind it recorded, by type and action. Its 25 rows were 18 Worker updates, the root's attachment
+// row, PoolWorker and five commands (Migrations, PoolDatabase, the two budgets and the readiness).
+const planBKinds = [
+  ["Cloudflare.Container", "update"],
+  ["Cloudflare.Worker", "update"],
+  ["Command.Build", "update"],
+  ["Command.Exec", "update"],
+];
+
+test("the code release admits a whole-stack plan of main and still refuses what it refused before", async (context) => {
+  // The reviewed file itself, with the pin the release supplies at run time.
+  const file = async (change: (check: Record<string, unknown>) => Record<string, unknown>) => {
+    const { check } = decodeReleasePolicy(
+      JSON.parse(await readFile(new URL("./policies/code.json", import.meta.url), "utf8")),
+    );
+    return Effect.runPromise(
+      decodePlanPolicy(
+        change({ ...check, poolContainer: { ...check.poolContainer, image: pinnedImage } }),
+      ),
+    );
+  };
+  const code = await file((check) => check);
+  // The same file without its two admissions: the code policy as it was before.
+  const before = await file((check) => ({
+    ...check,
+    allow: [],
+    poolContainer: { fqn: "PoolContainer", image: pinnedImage },
+  }));
+  const rules = async (plan: Plan.Plan, against: typeof code) => {
+    const exit = await Effect.runPromiseExit(checkPlan(plan, against));
+    return Exit.isFailure(exit)
+      ? (Cause.squash(exit.cause) as PlanRefused).violations.map((v) => `${v.rule} ${v.fqn}`).sort()
+      : [];
+  };
+  const { sha256Object } = await import("alchemy/Util/sha256");
+  const reference = (
+    await Effect.runPromise(sha256Object({ image: pinnedImage, imageName: undefined }))
+  ).slice(0, 16);
+  // Production after the healing release: the root's recorded hash names the reference.
+  const rows = () => {
+    const recorded = productionRows();
+    (recorded.PoolContainer as unknown as { attr: { hash: { image: string } } }).attr.hash.image =
+      reference;
+    return recorded;
+  };
+  const notNoop = "pool-container-not-noop PoolContainer";
+  const storeOutside = "outside-code-only ArtifactsCredentials";
+
+  // 1. A whole-stack release of main: every changed Worker, the bulk-import store's code, the
+  // commands, and the root's attachment that waits on the pool database command. All admitted.
+  const whole = (
+    await planned(context, {
+      rows: recordsReadiness(rows()),
+      declared: { poolWorkerWaitsOnCommand: true },
+    })
+  ).plan;
+  assert.equal(whole.resources.ArtifactsCredentials?.action, "update");
+  assert.equal(whole.resources.PoolContainer?.action, "update");
+  assert.deepEqual(await rules(whole, code), [], "the code release admits the whole plan");
+  const then = await rules(whole, before);
+  assert.ok(then.includes(notNoop) && then.includes(storeOutside), then.join(", "));
+  // Every row kind plan B recorded is a kind this admitted plan carries.
+  const kinds = new Set(
+    Object.values(whole.resources)
+      .filter((node) => node.action !== "noop")
+      .map((node) => `${node.resource.Type} ${node.action}`),
+  );
+  for (const [type, action] of planBKinds)
+    if (type !== "Command.Build")
+      assert.ok(kinds.has(`${type} ${action}`), `plan B's ${type} ${action} is covered`);
+  // The fixture stack declares no site build; the code-only rule admits every Command update alike.
+  assert.ok(planBKinds.some(([type]) => type === "Command.Build"));
+
+  // 2. Everything else it refused before, it still refuses, by the same rules, apart from the
+  // attachment row a plan that updates the pool Worker can also carry.
+  for (const [deviation, input] of [
+    ["a class change on the pool Worker", { declared: { newClass: true } }],
+    ["the fleet classes declared", { declared: { fleetClasses: true } }],
+    ["a changed setting on the root", { declared: { containerInstanceType: "standard" } }],
+    ["the root's old recorded hash", { rows: productionRows() }],
+    [
+      "a class moved to another Worker",
+      {
+        declared: { ledger: { className: "PoolLedger", transferredFrom: "ArtifactsCredentials" } },
+      },
+    ],
+    ["a replace of the vault bucket", { declared: { bucketJurisdiction: "default" } }],
+    ["a delete of the retained Secrets Store", { declared: { observationStore: false } }],
+  ] as const) {
+    const plan = (
+      await planned(context, { rows: rows(), settle: onlyStore, ...input } as PlanInput)
+    ).plan;
+    const now = await rules(plan, code);
+    const was = await rules(plan, before);
+    assert.ok(now.length > 0, `${deviation}: refused`);
+    assert.deepEqual(
+      was.filter((rule) => !now.includes(rule) && rule !== notNoop),
+      [],
+      `${deviation}: only the attachment row is newly admitted`,
+    );
+    assert.deepEqual(
+      now.filter((rule) => !was.includes(rule)),
+      [],
+      `${deviation}: nothing new refuses`,
+    );
+  }
+  // A write to the root's application is the wire guard's, under every policy: deploy.ts holds the
+  // root's recorded application from the policy's root fqn, and "the root application is never
+  // patched, rolled out or deleted" (wire-guard.test.ts) refuses every such write.
+  assert.equal(code.poolContainer.fqn, "PoolContainer");
 });

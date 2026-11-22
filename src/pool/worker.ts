@@ -115,6 +115,8 @@ import { pageTemplate } from "../telemetry/privacy.ts";
 import { endpointMetadata } from "./model-history/record.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
+import { containerAnswer } from "./controller-unsent.ts";
+import { readinessReadMs } from "./runtime-slots/forced-restart-timing.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import { brand } from "../../brand.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
@@ -142,6 +144,15 @@ import {
   HandoverCount,
   handoverRefusal,
 } from "./code-handover.ts";
+import {
+  decodeResumeInput,
+  resumeGone,
+  resumeRequest,
+  resumeRoute,
+  toLayer,
+} from "./stream-resume.ts";
+import { resumedAnswer } from "./stream-resume.worker.ts";
+import { resumedTerminal } from "./terminal-recording.worker.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -862,6 +873,45 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
   }
 
+  /** The rest of an answer an earlier instance of this object was streaming when it ended (#1642). */
+  async resume(input: unknown): Promise<Response> {
+    const parsed = decodeResumeInput(input);
+    // While this object hands over, a resume answers gone, so the stream ends with today's terminal.
+    if (!parsed || this.handover.draining) return resumeGone();
+    const request = resumeRequest(parsed);
+    return this.handoverCount.track(request, async () => {
+      const container = this.ctx.container;
+      const answer =
+        parsed.target.kind === "runtime"
+          ? await this.fleet.resume(parsed.target.identity, request)
+          : await this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
+              // A stopped container's answers went with it; never start one to look.
+              if (!container?.running) return resumeGone();
+              // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
+              // out a restart.
+              const status = await readRuntimeHealth(
+                container.getTcpPort(8318),
+                this.env.POOL_MANAGEMENT_KEY,
+                AbortSignal.timeout(readinessReadMs),
+              ).catch(() => undefined);
+              const routed = resumeRoute(forwarded, 8317, status);
+              if (routed === "gone") return resumeGone();
+              prepared();
+              return toLayer(
+                routed.request,
+                (request, port) => container.getTcpPort(port).fetch(request),
+                () => container.running,
+              );
+            });
+      if (answer.status !== 200) return answer;
+      return resumedAnswer(answer, {
+        from: parsed.from,
+        lease: this.modelStreams.acquire(crypto.randomUUID(), "", request.signal),
+        finish: resumedTerminal(this.env, parsed.requestId, (work) => this.ctx.waitUntil(work)),
+      });
+    });
+  }
+
   /** Arms the upkeep alarm if nothing has, without holding the caller. */
   private ensureAlarm() {
     // A running alarm handler or Home pass re-arms its own deadline when it ends; the platform
@@ -1119,10 +1169,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           : primary();
       },
       warm: (legacy) => this.handoff.warm(legacy),
-      fetch: (forwarded, target) => {
+      fetch: async (forwarded, target) => {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
-        return this.ctx.container.getTcpPort(target).fetch(forwarded);
+        return containerAnswer(await this.ctx.container.getTcpPort(target).fetch(forwarded));
       },
+      running: () => this.ctx.container?.running === true,
       defer: (work) => this.ctx.waitUntil(work),
     });
   }

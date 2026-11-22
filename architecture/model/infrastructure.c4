@@ -313,4 +313,5 @@ model {
   }
   basalt.modelGateway -[sync]-> providerSource "verify official vendor plan identities"
   basalt.modelGateway -[sync]-> publicPlanAllowances "refresh expiring plan facts with provenance"
+  basalt.releaseUpdates -[sync]-> publicPlanAllowances "renew the dated allowance seed weekly"
 }
