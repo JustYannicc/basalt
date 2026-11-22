@@ -80,6 +80,35 @@ import Testing
     #expect(presentation.title == title)
     #expect(presentation.status == status)
   }
+
+  @Test("a tools-only device names no pool and offers none", arguments: [
+    (ConnectionView.State.connected, ["tools"]), (.disconnected, []),
+  ])
+  func toolsOnlyNamesNoPool(state: ConnectionView.State, capabilities: [String]) {
+    // Its access answer names no pool. Disconnecting keeps that answer but drops the capabilities.
+    var display = Fixture.display
+    display.pool = .init(id: "pool-1", name: "")
+    display.pools = []
+    let view = ConnectionView(
+      state: state, mode: .device, capabilities: capabilities, display: display,
+      origin: "https://signalbox.example")
+    let presentation = Presentation(
+      DesktopSnapshot(
+        connection: view, phase: .ready, configured: .none, canReconnect: true, canSignOut: true))
+    #expect(presentation.modelsFrom == "Not included in this connection")
+    #expect(!presentation.choosesPool)
+    #expect(presentation.poolName == nil)
+  }
+
+  @Test("a device with models names its pool and offers choosing another")
+  func modelsNamePool() {
+    for fixture in [Fixture.connected, .disconnected] {
+      let presentation = Presentation(fixture.snapshot)
+      #expect(presentation.modelsFrom == "Alex's pool")
+      #expect(presentation.choosesPool)
+      #expect(presentation.poolName == "Alex's pool")
+    }
+  }
 }
 
 @MainActor
