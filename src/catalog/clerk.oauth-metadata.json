@@ -33,6 +33,7 @@
     "applications:manage",
     "applications:read",
     "organizations:read",
+    "support_tickets:manage",
     "users:manage",
     "users:read"
   ],

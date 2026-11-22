@@ -33,40 +33,41 @@ import { stackConfig } from "./stack-config.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
 
+// Every option that names a file is declared here, so none can be added without being resolved
+// below. `--config` is not one of them: stackConfig resolves it, with its own fallback to the repo
+// root.
+const pathOptions = {
+  policy: { type: "string" },
+  out: { type: "string" },
+  before: { type: "string" },
+  after: { type: "string" },
+  from: { type: "string" },
+  "root-boot": { type: "string" },
+  admitted: { type: "string" },
+  serving: { type: "string" },
+} as const;
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
+    ...pathOptions,
     stage: { type: "string" },
     config: { type: "string" },
-    policy: { type: "string" },
     include: { type: "string", multiple: true },
     "plan-digest": { type: "string" },
     attempt: { type: "string" },
     name: { type: "string" },
-    out: { type: "string" },
-    before: { type: "string" },
-    after: { type: "string" },
     fqn: { type: "string" },
-    from: { type: "string" },
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
-    "root-boot": { type: "string" },
-    admitted: { type: "string" },
     apply: { type: "string" },
-    serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
     "verify-only": { type: "boolean" },
   },
 });
 // Before the entry moves into the cloud app (below): a relative path names a file in the directory
-// the command was started in, not one inside the cloud app. `--config` is not here: stackConfig
-// resolves it, with its own fallback to the repo root.
-resolvePathFlags(
-  values,
-  ["policy", "out", "before", "after", "from", "root-boot", "admitted", "serving"],
-  process.cwd(),
-);
+// the command was started in, not one inside the cloud app.
+resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[], process.cwd());
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
@@ -400,7 +401,7 @@ if (command === "db-load") {
   }
 }
 
-// The PoolDatabase command re-runs per attempt, so plan and apply share one attempt id.
+// Plan and apply share one attempt id, which both records and the summary name.
 const attempt = values.attempt ?? (command === "apply" ? "" : randomUUID());
 if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
   throw new Error("--attempt <id printed by the plan run> is required");
@@ -414,7 +415,6 @@ Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: sta
 // Alchemy captures the working directory once, when its first module loads (alchemy/Util/Node.ts
 // `initialCwd`), and resolves every command's relative cwd from it. The stack's commands are
 // declared relative to the cloud app, so the entry moves there before anything loads Alchemy.
-const policyPath = values.policy;
 process.chdir(cloud);
 const { decodeReleasePolicy } = await import("./policy.ts");
 const { initialCwd } = await import("alchemy/Util/Node");
@@ -422,8 +422,8 @@ if (initialCwd !== process.cwd())
   throw new Error(
     "Alchemy loaded before the entry moved into the cloud app, so the stack's command directories would resolve elsewhere",
   );
-const policy = policyPath
-  ? decodeReleasePolicy(JSON.parse(await readFile(policyPath, "utf8")))
+const policy = values.policy
+  ? decodeReleasePolicy(JSON.parse(await readFile(values.policy, "utf8")))
   : undefined;
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;

@@ -133,6 +133,12 @@ import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
+import {
+  CodeHandover,
+  decodeControllerCode,
+  HandoverCount,
+  handoverRefusal,
+} from "./code-handover.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
 export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnvironment {
@@ -189,6 +195,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private managementWarming?: Promise<void>;
   private memberships: NativeMemberships;
   private modelStreams = new NativeStreams();
+  private handover: CodeHandover;
+  private handoverCount = new HandoverCount();
+  private handoffsInFlight = 0;
   private protection: RuntimeProtection;
   private importRemoval: ImportRemoval;
   private recovery: RuntimeRecovery;
@@ -218,6 +227,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       afterReply: (work) => {
         setTimeout(work, 250);
       },
+    });
+    this.handover = new CodeHandover({
+      own: { candidate: productionOpsRelease, workerInput: poolWorkerRevision },
+      storage: ctx.storage,
+      inFlight: () => this.handoverCount.active,
+      busy: () =>
+        this.alarmInFlight || this.homeUpkeepTask !== undefined || this.handoffsInFlight > 0,
+      abort: (reason) => ctx.abort(reason),
+      defer: (work) => ctx.waitUntil(work.catch(() => console.error("POOL_CODE_HANDOVER_PENDING"))),
     });
     this.usageAccountLabels = new UsageAccountLabels(ctx.storage);
     this.changes = new PoolChanges(
@@ -783,7 +801,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await reportPoolStorage(this.ctx.storage);
   }
 
-  deploymentIdentity() {
+  /** `caller`: the deployed entrypoint's own code, passed only by its signed adoption read. */
+  deploymentIdentity(caller?: unknown) {
+    const code = caller === undefined ? undefined : decodeControllerCode(caller);
+    if (code) this.handover.offer(code);
     return {
       candidate: productionOpsRelease,
       workerInput: poolWorkerRevision,
@@ -819,18 +840,23 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   async runtimeHandoff(request: Request) {
     this.ensureAlarm();
-    return handleRuntimeHandoff(
-      request,
-      this.handoff,
-      {
-        candidate: productionOpsRelease,
-        workerInput: poolWorkerRevision,
-      },
-      this.env.POOL_DEPLOYMENT_KEY ?? "",
-      this.fleet,
-      this.candidateProbe,
-      this.bookmarks,
-    );
+    this.handoffsInFlight++;
+    try {
+      return await handleRuntimeHandoff(
+        request,
+        this.handoff,
+        {
+          candidate: productionOpsRelease,
+          workerInput: poolWorkerRevision,
+        },
+        this.env.POOL_DEPLOYMENT_KEY ?? "",
+        this.fleet,
+        this.candidateProbe,
+        this.bookmarks,
+      );
+    } finally {
+      this.handoffsInFlight--;
+    }
   }
 
   /** Arms the upkeep alarm if nothing has, without holding the caller. */
@@ -928,7 +954,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         return Response.json({ error: "membership_unavailable" }, { status: 503 });
       }
     }
-    if (pathname === appModelPath) return this.appModels.handle(request);
+    // Refused and counted here, before the call records its single-use nonce or mints a key.
+    if (pathname === appModelPath)
+      return this.handover.draining
+        ? handoverRefusal(request)
+        : this.handoverCount.track(request, () => this.appModels.handle(request));
     if (pathname === accountMirrorPath)
       return handleAccountKeyMirror(request, {
         home: this.mirrorHome,
@@ -985,6 +1015,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         connectionString: this.env.POOL_AUTH_DATABASE?.connectionString,
         accountLabels: (pool) => this.usageAccountLabels.read(pool),
         currentPrices: (targets) => this.overviewPrices.readTable(targets),
+        failed: () =>
+          this.ctx.waitUntil(captureError(this.env, "pool_usage_read_failed", pathname)),
       });
     if (
       pathname === managedUsagePath ||
@@ -1042,6 +1074,18 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
     const port = poolPort(new URL(request.url).pathname);
+    // An app model call was already refused or counted where it entered the object.
+    if (port !== 8317 || appModel !== undefined) return this.forwardPool(request, port, appModel);
+    // Refused or counted in the same synchronous step, so no call slips past the handover's count.
+    if (this.handover.draining) return Promise.resolve(handoverRefusal(request));
+    return this.handoverCount.track(request, () => this.forwardPool(request, port));
+  }
+
+  private forwardPool(
+    request: Request,
+    port: ReturnType<typeof poolPort>,
+    appModel?: ModelIdentity,
+  ): Promise<Response> {
     return forwardPoolRequest(request, port, {
       ...(appModel === undefined ? {} : { appModel }),
       env: this.env,
@@ -1175,8 +1219,12 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         },
         this.env.POOL_DEPLOYMENT_KEY ?? "",
         (phase) =>
+          // The envelope named exactly this code, so only a signed adoption read starts a handover.
           phase === "adoption"
-            ? singleton(this.env).deploymentIdentity()
+            ? singleton(this.env).deploymentIdentity({
+                candidate: productionOpsRelease,
+                workerInput: poolWorkerRevision,
+              })
             : singleton(this.env).deploymentReady(),
       );
     if (path === runtimeRecoveryPath) return singleton(this.env).fetch(request);
