@@ -11,11 +11,14 @@ const { nativeResponse } = (await import(responseModule)) as {
   nativeResponse(response: Response, lease: NativeStreamLease): Response;
 };
 
+/** A cell that runs nothing: its own count is zero and has not moved for as long as the test runs. */
+const idleCount = { active: 0, known: true, stillMs: Number.MAX_SAFE_INTEGER };
+
 /** What one cell does; each field replaces the healthy default for that call. */
 export interface QuietCell {
   start?(target: SlotTarget): Promise<SlotIdentity>;
   observe?(target: SlotTarget): Promise<SlotIdentity | undefined>;
-  drain?(): Promise<{ active: number; known: boolean }>;
+  drain?(): Promise<{ active: number; known: boolean; stillMs?: number }>;
   retired?(): Promise<boolean>;
   /** Whether the provider proves a start that never served gone; by default it does. */
   abandon?(): Promise<boolean>;
@@ -87,7 +90,7 @@ export function quietFleet(options: Options = {}) {
       abortPool: () => {},
       drain: async () => (own().drain ? own().drain!() : { active: 0, known: true }),
       // The cell's own count, the same one its drain reports.
-      activity: async () => (own().drain ? own().drain!() : { active: 0, known: true }),
+      activity: async () => (own().drain ? own().drain!() : idleCount),
       retire: async (_identity, begin) => {
         await begin();
         calls.retires++;

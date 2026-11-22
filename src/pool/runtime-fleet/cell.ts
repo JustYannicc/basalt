@@ -13,6 +13,7 @@ import type { RuntimeProviderReader, RuntimeProviderTarget } from "../runtime-pr
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import type { FleetCell } from "./controller.ts";
 import type { FleetAdmission } from "./admission.ts";
+import { startingBoundMs } from "./phase-bounds.ts";
 
 interface Dependencies {
   handoff: RuntimeHandoff;
@@ -27,6 +28,7 @@ export class FleetHandoffCell implements FleetCell {
   private deps: Dependencies;
   private retirementAttempts = 0;
   private starting?: { target: SlotTarget; work: Promise<SlotIdentity> };
+  private absentSince?: number;
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
@@ -107,13 +109,23 @@ export class FleetHandoffCell implements FleetCell {
   }
   async abandon(target: SlotTarget) {
     // A start still returning here owns the instance.
-    if (this.starting) return false;
+    if (this.starting) return this.present();
     const initial = await this.deps.handoff.slots.firstStart.inspect();
     // The durable first-start intent commits before the compute start is sent, and the endpoint
     // starts a container only on that send, so its absence proves nothing was ever sent.
     if (!initial) return true;
     if (!sameTarget(initial.target, target)) return false;
-    return this.deps.provider.absent(this.deps.application, target.instanceId);
+    if (!(await this.deps.provider.absent(this.deps.application, target.instanceId)))
+      return this.present();
+    // A listing can lag a start that was just sent, from this isolate or a replaced one, so an
+    // absence counts only once every read for a whole start bound agreed.
+    const now = Date.now();
+    this.absentSince ??= now;
+    return now - this.absentSince >= startingBoundMs;
+  }
+  private present() {
+    this.absentSince = undefined;
+    return false;
   }
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);

@@ -141,8 +141,11 @@ test("a ready cell carrying one stream of the longest allowed length stays ready
 test("a draining cell's live stream is never counted away, and a lost release is once it ends", async (context) => {
   quiet(context);
   let live = 1;
+  let endedAt = 0;
   const f = quietFleet();
-  const cell = await f.add({ drain: async () => ({ active: live, known: true }) });
+  const cell = await f.add({
+    drain: async () => ({ active: live, known: true, stillMs: live ? 0 : f.now() - endedAt }),
+  });
   await f.call();
   f.restart();
   await f.fleet.drain(cell);
@@ -152,6 +155,7 @@ test("a draining cell's live stream is never counted away, and a lost release is
     [["draining", 1]],
   );
   live = 0;
+  endedAt = f.now();
   rows = await f.quiet(10 * 60_000);
   assert.deepEqual(rows, []);
 });
@@ -284,4 +288,26 @@ test("a failed runtime whose absence never arrives holds its place, says so hour
     })
     .map(({ arguments: [, fields] }) => (fields as { event: string }).event);
   assert.deepEqual(lines, ["entered", "held", "held"]);
+});
+
+test("a stream whose cell side just ended is never reconciled before its own release arrives", async (context) => {
+  quiet(context);
+  const f = quietFleet();
+  // The cell finished the stream a second ago; the ledger's release is still on its way.
+  const cell = await f.add({ drain: async () => ({ active: 0, known: true, stillMs: 1_000 }) });
+  const stream = await f.call();
+  let rows = await f.quiet(10 * 60_000);
+  assert.deepEqual(
+    rows.map((row) => [row.target.slotId, row.phase, row.active]),
+    [[cell.slotId, "ready", 1]],
+    "the count stays until the release itself lands",
+  );
+  await stream.body!.cancel();
+  await f.settle();
+  rows = await f.state.inspect();
+  assert.equal(
+    rows[0]?.active,
+    0,
+    "the late release lowers the count once, with nothing to undercount",
+  );
 });

@@ -62,6 +62,12 @@ function logPlacement(
   });
 }
 
+/** A cell's own stream count, and how long it stood still where the cell keeps it. */
+export interface CellCount {
+  active: number;
+  known: boolean;
+  stillMs?: number;
+}
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
   observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
@@ -77,7 +83,7 @@ export interface FleetCell {
   abortPool(pool: string): void;
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   /** The cell's own stream count, read without draining it; without it a ready count stays as is. */
-  activity?(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
+  activity?(identity: SlotIdentity): Promise<CellCount>;
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<void>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
   failed(identity: SlotIdentity, active: number): Promise<boolean>;
@@ -641,10 +647,7 @@ export class RuntimeFleet {
     this.atCapacity = false;
     this.nextGrowthCheck = 0;
   }
-  /**
-   * A ready count that stood still may hold a lost release. Only the cell's own count lowers it, so
-   * a live stream of any length stays counted, and reading it never drains the cell.
-   */
+  /** A ready count is read without draining the cell, so a cell is never drained to be read. */
   private async reconcileReady(
     cell: FleetCell,
     row: FleetRow,
@@ -653,20 +656,35 @@ export class RuntimeFleet {
   ) {
     if (row.active === 0 || now - row.lastUsedAt < countStillMs || !cell.activity)
       return row.active;
-    const counted = await cell.activity(identity).catch(() => undefined);
-    return counted?.known ? this.reconcile(row, identity, counted.active) : row.active;
+    return this.reconcile(row, identity, await cell.activity(identity).catch(() => undefined), now);
   }
-  private async reconcile(row: FleetRow, identity: SlotIdentity, counted: number) {
-    if (counted >= row.active || !(await this.deps.state.reconcileActive(identity, row, counted)))
+  /**
+   * A ledger count may hold a lost release. Only the cell's own count lowers it, never below, so a
+   * live stream of any length stays counted, and only once both counts stood still: a release whose
+   * cell side just ended may still be on its way to the ledger.
+   */
+  private async reconcile(
+    row: FleetRow,
+    identity: SlotIdentity,
+    counted: CellCount | undefined,
+    now: number,
+  ) {
+    if (
+      !counted?.known ||
+      counted.active >= row.active ||
+      now - row.lastUsedAt < countStillMs ||
+      (counted.stillMs ?? 0) < countStillMs ||
+      !(await this.deps.state.reconcileActive(identity, row, counted.active))
+    )
       return row.active;
     console.warn("POOL_FLEET_COUNT_RECONCILED", {
       slot: identity.slotId,
       ordinal: identity.homePeerOrdinal ?? null,
       phase: row.phase,
       ledger: row.active,
-      cell: counted,
+      cell: counted.active,
     });
-    return counted;
+    return counted.active;
   }
   private async idle(
     row: FleetRow,
@@ -692,9 +710,15 @@ export class RuntimeFleet {
     }
     if (!actual.known) return this.unprovenDrain(row, now);
     this.unproven.delete(row.target.slotId);
+    // The drain's count says nothing of how long it stood, so a lower one is read again alone.
     const active =
-      row.active > actual.active && now - row.lastUsedAt >= countStillMs
-        ? await this.reconcile(row, identity, actual.active)
+      row.active > actual.active && cell.activity
+        ? await this.reconcile(
+            row,
+            identity,
+            await cell.activity(identity).catch(() => undefined),
+            now,
+          )
         : row.active;
     if (active !== 0 || actual.active !== 0) return;
     await cell.retire(identity, () => this.deps.state.beginRetirement(identity));

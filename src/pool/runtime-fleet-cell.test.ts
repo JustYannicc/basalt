@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { fleetCellFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
+import { startingBoundMs } from "./runtime-fleet/phase-bounds.ts";
 
 test("a fleet cell joins provider reads to the retained actual start witness before it can forward", async (context) => {
   const f = await fixture();
@@ -273,4 +274,29 @@ test("a plain control mutation error is never resent", async (context) => {
   assert.equal(fields.path, "/drain");
   assert.equal(fields.reconnectEligible, false);
   assert.equal(fields.reconnectOutcome, "not_run");
+});
+
+test("a never-served start is abandoned only once its instance stayed absent through a whole start bound", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  assert.equal(await f.cell.abandon(f.target), true, "with no first-start intent nothing was sent");
+  await f.cell.start(f.target);
+  assert.equal(await f.cell.abandon(f.target), false, "a listed instance is running");
+  f.crash();
+  assert.equal(
+    await f.cell.abandon(f.target),
+    false,
+    "one absent read just after a start proves nothing: the listing may lag",
+  );
+  context.mock.timers.tick(startingBoundMs - 1_000);
+  assert.equal(await f.cell.abandon(f.target), false);
+  f.revive();
+  assert.equal(await f.cell.abandon(f.target), false, "listed again, so the wait starts over");
+  f.crash();
+  assert.equal(await f.cell.abandon(f.target), false);
+  context.mock.timers.tick(startingBoundMs - 1_000);
+  assert.equal(await f.cell.abandon(f.target), false);
+  context.mock.timers.tick(1_000);
+  assert.equal(await f.cell.abandon(f.target), true);
 });

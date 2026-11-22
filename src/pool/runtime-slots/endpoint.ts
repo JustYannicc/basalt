@@ -41,7 +41,7 @@ import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
-import { RuntimeActivity } from "./activity.ts";
+import { RuntimeActivity, stillFor } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
@@ -521,7 +521,9 @@ export class RuntimeEndpoint {
   async streamCount(identity: SlotIdentity) {
     this.bound(identity);
     const row = await this.activity.inspect(identity);
-    return row ? { active: row.active, known: row.known } : { active: 0, known: false };
+    return row
+      ? { active: row.active, known: row.known, ...stillFor(row) }
+      : { active: 0, known: false };
   }
   drain(identity: SlotIdentity, signal: AbortSignal) {
     const trace = new PoolUpkeepTrace("endpoint");

@@ -25,6 +25,11 @@ function reconciled(row: typeof Activity.Type) {
   };
 }
 
+/** How long the count stood still, as a duration, so no caller compares this clock with its own. */
+export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
+  return row.changedAt === undefined ? {} : { stillMs: Math.max(0, Date.now() - row.changedAt) };
+}
+
 /** Lost request receipts remain counted. Reconstruction cannot invent an empty runtime. */
 export class RuntimeActivity {
   private storage: TransactionStorage;

@@ -44,6 +44,7 @@ const distance = (value: unknown) => {
 const ActivityCount = Schema.Struct({
   active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   known: Schema.Boolean,
+  stillMs: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
