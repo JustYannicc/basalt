@@ -56,6 +56,7 @@ jobs:
       box_jobs: ${{ steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
       box_floor: ${{ steps.jobs.outputs.box_floor }}
+      box_plan: ${{ steps.jobs.outputs.box_plan }}
       matrices: ${{ steps.jobs.outputs.matrices }}
     steps:
       - uses: actions/checkout@v4
@@ -139,6 +140,7 @@ jobs:
           BOX_LABEL: ${{ needs.select.outputs.box_label }}
           BOX_HEARTBEAT_LABEL: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL }}
           BOX_FLOOR: ${{ needs.select.outputs.box_floor }}
+          BOX_PLAN: ${{ needs.select.outputs.box_plan }}
           BOX_WATCH_VERDICT: ${{ runner.temp }}/box-watch-verdict/verdict.json
         run: node scripts/ci/box-watch.ts
       # The verdict is uploaded before the cancel, so box-rerun.yml can prove the cancel was this one.

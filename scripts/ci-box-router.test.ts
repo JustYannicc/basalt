@@ -441,20 +441,39 @@ test("declared shard rows and benched named jobs route, and free slots and timeo
   const floor = checkFloor(plan.shards);
   for (const slots of [1, 2, 3, 5])
     for (const busy of [0, 1, 2]) {
+      const routing = {
+        slots: String(slots),
+        selected: everyJob,
+        matrices: real,
+        durations: undefined,
+      };
+      const busyBox = () =>
+        observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box;
       const routed = await routeBox(
-        input({ slots: String(slots), selected: everyJob, matrices: real, durations: undefined }),
-        observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box,
+        input({ ...routing, heartbeatLabel: "basalt-box-heartbeat" }),
+        busyBox(),
         () => now,
         noWait,
       );
       const free = Math.max(0, Math.min(slots, 3) - busy);
       // The free slots take the longest at once; a second wave waits behind them by the floor.
+      const planned = planBox(plan.shards, free, floor);
       assert.deepEqual(
         routed.jobs,
-        planBox(plan.shards, free, floor).map((job) => job.id),
+        planned.map((job) => job.id),
         `${slots}/${busy}`,
       );
+      assert.deepEqual(
+        routed.plan,
+        Object.fromEntries(planned.map(({ id, minutes, wave }) => [id, { minutes, wave }])),
+      );
+      assert.equal(routed.floor, routed.jobs.length ? floor : 0);
       assert.ok(routed.jobs.length <= free * boxWaves, `${slots}/${busy}`);
+      // Without the heartbeat's own runner, a holding box's heartbeat could go stale behind its CI
+      // jobs and box-watch would take it for down: no job waits, only the free slots fill.
+      const unwatched = await routeBox(input(routing), busyBox(), () => now, noWait);
+      assert.deepEqual(unwatched.jobs, fillBox(plan.shards, free), `${slots}/${busy}`);
+      assert.ok(Object.values(unwatched.plan).every((job) => job.wave === 1));
     }
   assert.equal(boxSlowdown, 2);
   assert.deepEqual(fillBox([{ id: "a", minutes: 31, timeout: 61 }], 5), []);

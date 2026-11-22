@@ -85,6 +85,11 @@ export type BoxInput = {
   matrices: Matrices;
   /** Measured seconds per declared file; defaults to scripts/ci/declared-durations.json. */
   durations?: Record<string, number>;
+  /**
+   * The box's own heartbeat runner's label. Without one a full or holding box's heartbeat waits
+   * behind its jobs, so box-watch could not tell holding from down: no second wave is planned.
+   */
+  heartbeatLabel?: string;
 };
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -155,7 +160,7 @@ export const boxWaves = 2;
  */
 export function planBox(shards: readonly BoxShard[], free: number, floor: number) {
   const slots: number[] = Array.from({ length: Math.max(0, free) }, () => 0);
-  const planned: { id: string; wave: 1 | 2 }[] = [];
+  const planned: { id: string; minutes: number; wave: 1 | 2 }[] = [];
   const fitting = shards
     .filter(fitsTimeout)
     .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1));
@@ -167,7 +172,7 @@ export function planBox(shards: readonly BoxShard[], free: number, floor: number
     // A waiting job is taken only on a known plan: no planned minutes or no floor runs it hosted.
     if (start > 0 && !(shard.minutes > 0 && end <= floor)) continue;
     slots[slot] = end;
-    planned.push({ id: shard.id, wave: start > 0 ? 2 : 1 });
+    planned.push({ id: shard.id, minutes: shard.minutes, wave: start > 0 ? 2 : 1 });
   }
   return planned;
 }
@@ -263,6 +268,7 @@ export async function routeBox(
 ) {
   const none = (why: string) => ({
     jobs: [] as string[],
+    plan: {} as Record<string, { minutes: number; wave: 1 | 2 }>,
     label: "",
     floor: 0,
     summary: `Box routing: every job runs hosted, because ${why}.`,
@@ -287,7 +293,7 @@ export async function routeBox(
     if (!free)
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
     const floor = checkFloor(plan.shards);
-    const planned = planBox(plan.shards, free, floor);
+    const planned = planBox(plan.shards, free, input.heartbeatLabel ? floor : 0);
     if (!planned.length)
       return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
     const jobs = planned.map((job) => job.id);
@@ -298,6 +304,9 @@ export async function routeBox(
       : "";
     return {
       jobs,
+      plan: Object.fromEntries(
+        planned.map((job) => [job.id, { minutes: job.minutes, wave: job.wave }]),
+      ),
       label: settings.label,
       floor,
       summary:

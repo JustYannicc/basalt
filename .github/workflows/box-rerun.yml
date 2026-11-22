@@ -14,7 +14,12 @@ permissions: {}
 
 jobs:
   rerun:
-    if: github.event.workflow_run.conclusion == 'cancelled'
+    # Only a cancelled first attempt of this repository's own run: a fork's or a later attempt's
+    # cancel is never box-watch's, and a re-run, being a later attempt, can't start another.
+    if: >-
+      github.event.workflow_run.conclusion == 'cancelled' &&
+      github.event.workflow_run.run_attempt == 1 &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -39,5 +44,6 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
           RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
           BOX_WATCH_VERDICT: ${{ runner.temp }}/box-watch-verdict/verdict.json
         run: node scripts/ci/box-rerun.ts
