@@ -152,7 +152,7 @@ test("every job that starts with the Check must have resolved select's lane and 
     `fast-units leg 2: resolved ${JSON.stringify(moved.leg_2)}, select ${JSON.stringify(expected)}`,
   ]);
   // A leg that reported nothing never proves it ran select's lane.
-  const { leg_3: _missing, ...partial } = legs(expected);
+  const { [`leg_${unitLegs}`]: _missing, ...partial } = legs(expected);
   assert.equal(startJobErrors("affected", "a".repeat(40), expected, partial).length, 1);
   assert.equal(startJobErrors("affected", "a".repeat(40), expected, null).length, unitLegs);
   assert.equal(startJobErrors("affected", "a".repeat(40), "", legs(expected)).length, 1);

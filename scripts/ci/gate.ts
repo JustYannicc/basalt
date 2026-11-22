@@ -18,7 +18,7 @@ export const startJobs = ["fast", "fast-units"];
 /** A job's lane and comparison commit, as the aggregate compares them (scripts/ci/lane.ts). */
 export const laneBase = (lane: string, base: string) => `${lane} ${base}`;
 /** fast-units' matrix legs, each reporting its lane and base as output `leg_<n>`. */
-export const unitLegs = 3;
+export const unitLegs = 2;
 
 /**
  * The start jobs that resolved another lane or comparison commit than select: main moving the

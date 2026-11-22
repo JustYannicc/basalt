@@ -18,7 +18,7 @@ const job = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8")).
 const shards = (job.strategy.matrix.leg as number[]).map((leg, _, legs) => `${leg}/${legs.length}`);
 
 test("the unit legs' shards are 1..n of n, and both unit steps take one", () => {
-  assert.deepEqual(shards, ["1/3", "2/3", "3/3"]);
+  assert.deepEqual(shards, ["1/2", "2/2"]);
   for (const name of ["Run focused owned unit tests", "Run the complete owned unit suite"]) {
     const step = job.steps.find((step: { name?: string }) => step.name === name);
     assert.equal(step.env.UNIT_SHARD, "${{ matrix.leg }}/${{ strategy.job-total }}", name);

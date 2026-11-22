@@ -2504,11 +2504,10 @@ jobs:
     outputs:
       leg_1: ${{ matrix.leg == 1 && steps.lane.outputs.lane_base || '' }}
       leg_2: ${{ matrix.leg == 2 && steps.lane.outputs.lane_base || '' }}
-      leg_3: ${{ matrix.leg == 3 && steps.lane.outputs.lane_base || '' }}
     strategy:
       fail-fast: false
       matrix:
-        leg: [1, 2, 3]
+        leg: [1, 2]
     steps:
       - uses: actions/checkout@v4
         with:
