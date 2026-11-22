@@ -1,0 +1,42 @@
+package auth
+
+import (
+	"context"
+	"testing"
+	"testing/synctest"
+	"time"
+)
+
+// quotaCooldownAfterFailure documents a future provider reset as authoritative. An account whose
+// earlier windows raised its backoff must still be selectable once the provider says it resets.
+func TestBasaltQuietCodexCooldownEndsAtTheProviderReset(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx := context.Background()
+		manager := NewManager(nil, nil, nil)
+		account := &Auth{
+			ID:       "quiet-codex",
+			Provider: "codex",
+			ModelStates: map[string]*ModelState{
+				"gpt-5": {Quota: QuotaState{BackoffLevel: 11}},
+			},
+		}
+		if _, errRegister := manager.Register(ctx, account); errRegister != nil {
+			t.Fatalf("Register: %v", errRegister)
+		}
+		reset := time.Now().Add(time.Minute)
+		result := quotaResult(account.ID, "gpt-5")
+		result.ResetAt = &reset
+		manager.MarkResult(ctx, result)
+		time.Sleep(time.Minute - time.Nanosecond)
+		current, _ := manager.GetByID(account.ID)
+		if blocked, _, _ := isAuthBlockedForModel(current, "gpt-5", time.Now()); !blocked {
+			t.Fatalf("the account is selectable before the provider's reset")
+		}
+		time.Sleep(time.Nanosecond)
+		current, _ = manager.GetByID(account.ID)
+		blocked, _, next := isAuthBlockedForModel(current, "gpt-5", time.Now())
+		if blocked {
+			t.Fatalf("at the provider's reset the account is still cooling for another %s", next.Sub(time.Now()))
+		}
+	})
+}
