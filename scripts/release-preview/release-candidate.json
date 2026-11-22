@@ -1,5 +1,5 @@
 {
   "branch": "rehearse/candidate-5a172c9d",
-  "policy": "code",
-  "note": "Lane 6 release B (again, after the replayed healing release) and A: the release-fixes candidate 5a172c9d with its stage-only overlay, under #1665's code policy. Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
+  "policy": "code-stage",
+  "note": "Lane 6 release B and A on the replayed stage: the release-fixes candidate under code-stage, the stage-only file that is code.json plus exactly code-restart's DatabaseConnection admission (on a stage that connection waits on the pool database command). Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
 }
