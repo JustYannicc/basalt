@@ -284,11 +284,11 @@ export function rollupHourlyText(selection: Selection, maxHeatmapCells: number) 
 }
 
 /**
- * The summary's first statement. A pool whose rollup is ready reads its targets from the rollup;
- * any other pool keeps the raw read behind its bounded window count. One row says which ran.
+ * The most rollup groups one summary window may read; past it the summary refuses instead. The
+ * worst-case fixture's daily statement took 1.6 s locally at 317k groups; half of that leaves room
+ * for a slower production instance inside the 5 s limit.
  */
-/** The most rollup groups one summary window may read; past it the summary refuses instead. */
-export const maxSummaryRollupGroups = 400_000;
+export const maxSummaryRollupGroups = 200_000;
 
 /**
  * The summary's first statement. A pool whose rollup is ready reads its targets from the rollup,
@@ -373,7 +373,7 @@ export function rollupSupportedPrices(table: {
         return {
           provider,
           model,
-          reason: `A ${model} price tier is not one the usage rollup separates; its estimate is unavailable.`,
+          reason: `${model} has a price tier that summarized usage cannot apply yet; its estimate is unavailable.`,
         };
       }),
     ],

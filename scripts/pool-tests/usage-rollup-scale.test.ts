@@ -94,6 +94,9 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       groups = 0;
     try {
       await writer.query(`SET search_path TO ${f.schema}`);
+      // The writers' own lock timeout: a backfill that held the pool longer fails this writer.
+      await writer.query("SET lock_timeout = '500ms'");
+      let slowestWrite = 0;
       let extra = rows;
       // POOL_TEST_ROLLUP_RACE=0 measures the backfill's own write-ahead log, with no writer.
       let racing = process.env.POOL_TEST_ROLLUP_RACE !== "0";
@@ -101,7 +104,9 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
         while (racing) {
           const query = generated(poolId, sources, accounts, extra, 50);
           extra += 50;
+          const started = performance.now();
           await writer.query(query.text, query.values);
+          slowestWrite = Math.max(slowestWrite, performance.now() - started);
         }
       })();
       const backfillStarted = performance.now();
@@ -131,6 +136,7 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       );
       racing = false;
       await race;
+      console.info("ROLLUP_WRITER", JSON.stringify({ slowestWriteMs: Math.round(slowestWrite) }));
     } finally {
       await writer.end();
     }

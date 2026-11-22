@@ -4,9 +4,14 @@ import type { HistoryDatabase } from "./schema.ts";
 import { historyUsageRollupVersion } from "./usage-rollup-schema.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
-export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v1";
+export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
 /** The most write-ahead log one backfill call may add before it stops at an hour boundary. */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
+/**
+ * How long one hour's recompute may hold the pool. Writers wait at most this plus the 200 ms lock
+ * wait, inside their own 500 ms. A slower hour stops the run so a person can schedule it.
+ */
+export const usageRollupHourLimitMs = 250;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -92,6 +97,7 @@ export async function runUsageRollup(
   budgetMs = 12_000,
   now: () => number = () => performance.now(),
   walBudgetBytes = usageRollupWalPerCall,
+  hourLimitMs = usageRollupHourLimitMs,
 ) {
   const started = now();
   // The write-ahead log this call adds, measured on the server before every hour it starts.
@@ -106,7 +112,8 @@ export async function runUsageRollup(
         ])
       ).rows[0]?.bytes ?? 0,
     );
-  let stop: "budget" | "wal" | "lock" | undefined;
+  let stop: "budget" | "wal" | "lock" | "slow_hour" | undefined;
+  let slowHour: string | undefined;
   const pools: { pool: string; recomputedHours: number; groups: number; remainingHours: number }[] =
     [];
   let complete = true;
@@ -127,7 +134,8 @@ export async function runUsageRollup(
         stop = "budget";
         break;
       }
-      if ((await walWritten()) >= walBudgetBytes) {
+      // Every call gets one hour through; the hour that crosses the budget is its last.
+      if (recomputedHours > 0 && (await walWritten()) >= walBudgetBytes) {
         stop = "wal";
         break;
       }
@@ -135,7 +143,8 @@ export async function runUsageRollup(
       try {
         // The lock timeout is below the writers' 500 ms, so a busy pool's writers win.
         await db.query(
-          "SELECT set_config('statement_timeout','5s',true),set_config('lock_timeout','200ms',true),set_config('TimeZone','UTC',true)",
+          "SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout','200ms',true),set_config('TimeZone','UTC',true)",
+          [`${hourLimitMs}ms`],
         );
         const written = await db.query(
           "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour') AS groups",
@@ -156,6 +165,16 @@ export async function runUsageRollup(
           stop = "lock";
           break;
         }
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "57014"
+        ) {
+          stop = "slow_hour";
+          slowHour = at;
+          break;
+        }
         throw error;
       }
     }
@@ -173,6 +192,7 @@ export async function runUsageRollup(
   return {
     status: complete ? ("complete" as const) : ("progress" as const),
     ...(complete ? {} : { stopped: stop ?? "budget" }),
+    ...(slowHour ? { slowHour } : {}),
     walBytes: await walWritten(),
     pools,
   };
@@ -209,7 +229,16 @@ export async function handleUsageRollupOperation(request: Request, db: HistoryDa
     walBudget > usageRollupWalPerCall
   )
     return new Response(null, { status: 400 });
-  const result = await runUsageRollup(db, plan, 12_000, undefined, walBudget);
+  // A person may approve a longer hour for a quiet window; never past the read's own 5 s.
+  const hourLimit = approval.hourLimitMs ?? usageRollupHourLimitMs;
+  if (
+    typeof hourLimit !== "number" ||
+    !Number.isSafeInteger(hourLimit) ||
+    hourLimit < usageRollupHourLimitMs ||
+    hourLimit > 5_000
+  )
+    return new Response(null, { status: 400 });
+  const result = await runUsageRollup(db, plan, 12_000, undefined, walBudget, hourLimit);
   return Response.json(
     { ...result, version: historyUsageRollupBackfillVersion, digest: approval.digest },
     { headers },

@@ -375,17 +375,32 @@ export async function runHistoryOperator(
       for (let run = 1; report.status === "progress"; run++) {
         if (run > 10_000 || !("digest" in approval) || report.digest !== approval.digest)
           throw new Error("Invalid usage rollup progress");
-        const pools = Array.isArray(report.pools) ? report.pools : [];
-        wal += Number(report.walBytes ?? 0);
+        // A response without a numeric WAL figure or a known stop fails closed: the caps depend on it.
+        const pools = report.pools;
+        const callWal = report.walBytes;
+        if (
+          !Array.isArray(pools) ||
+          typeof callWal !== "number" ||
+          !Number.isSafeInteger(callWal) ||
+          callWal < 0 ||
+          !["budget", "wal", "lock", "slow_hour"].includes(String(report.stopped))
+        )
+          throw new Error("Invalid usage rollup progress");
+        wal += callWal;
         const recomputed = pools.reduce(
           (n: number, item: unknown) => n + Number(historyObject(item).recomputedHours ?? 0),
           0,
         );
-        lost = report.stopped === "lock" && recomputed === 0 ? lost + 1 : 0;
+        // A call that gets no hour through counts toward the stop, whatever held it up.
+        lost = recomputed === 0 ? lost + 1 : 0;
         console.error(JSON.stringify({ run, stopped: report.stopped, walBytes: wal, pools }));
+        if (report.stopped === "slow_hour")
+          throw new Error(
+            `Usage rollup stopped: hour ${String(report.slowHour)} needs longer than the writers allow; schedule it for a quiet window`,
+          );
         if (wal >= usageRollupWalTotal)
           throw new Error(
-            `Usage rollup stopped at its ${usageRollupWalTotal} byte WAL cap; resume with a fresh dry run`,
+            `Usage rollup stopped at its ${usageRollupWalTotal} byte WAL cap; resume with a fresh dry run, a new --plan path and a new GO`,
           );
         if (lost >= 100)
           throw new Error(

@@ -225,6 +225,10 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
       await writer.query("ROLLBACK").catch(() => {});
       await writer.end();
     }
+    // An hour slower than its limit stops the run, naming the hour, and leaves it pending.
+    const slow = await runUsageRollup(f.db, plan, 60_000, undefined, undefined, 1);
+    assert.equal(slow.stopped, "slow_hour");
+    assert.ok(typeof slow.slowHour === "string");
     const resumed = await runUsageRollup(f.db, plan, 60_000);
     assert.equal(resumed.status, "complete");
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);

@@ -146,7 +146,7 @@ test("the usage rollup backfill resumes with the same approval until the endpoin
     const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
     const plan = {
       status: "dry-run",
-      version: "usage_rollup_backfill_v1",
+      version: "usage_rollup_backfill_v2",
       digest: "e".repeat(64),
       plan: { pools: [] },
       writes: false,
@@ -160,11 +160,17 @@ test("the usage rollup backfill resumes with the same approval until the endpoin
             calls.push(request.clone());
             if (request.method === "GET") return Response.json(plan);
             posts++;
-            return Response.json({
-              status: posts < 3 ? "progress" : "complete",
-              digest: plan.digest,
-              pools: [],
-            });
+            return Response.json(
+              posts < 3
+                ? {
+                    status: "progress",
+                    stopped: "budget",
+                    walBytes: 1_000,
+                    digest: plan.digest,
+                    pools: [{ recomputedHours: 3 }],
+                  }
+                : { status: "complete", walBytes: 1_000, digest: plan.digest, pools: [] },
+            );
           },
         },
       },
@@ -200,7 +206,7 @@ async function rollupOperator(responses: (post: number) => Record<string, unknow
   const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
   const plan = {
     status: "dry-run",
-    version: "usage_rollup_backfill_v1",
+    version: "usage_rollup_backfill_v2",
     digest: "f".repeat(64),
     plan: { pools: [] },
     writes: false,
@@ -230,19 +236,56 @@ async function rollupOperator(responses: (post: number) => Record<string, unknow
 test("the usage rollup backfill stops at its total write-ahead-log cap and passes the remaining budget down", async (t) => {
   t.mock.method(console, "error", () => {});
   process.env.USAGE_ROLLUP_PAUSE_MS = "0";
-  const { apply, bodies, cleanup } = await rollupOperator(() => ({
+  const MiB = 1024 * 1024;
+  const { apply, bodies, cleanup } = await rollupOperator((post) => ({
     status: "progress",
     stopped: "wal",
-    walBytes: 400 * 1024 * 1024,
+    walBytes: post === 1 ? 1_000 * MiB : 30 * MiB,
     pools: [{ recomputedHours: 5 }],
   }));
   try {
     await assert.rejects(apply, /WAL cap/);
-    assert.equal(bodies.length, 3, "400 MiB a call reaches the 1 GiB cap after the third call");
+    // 1000 MiB leaves 24 MiB of the 1 GiB total: the second call may write only that.
     assert.deepEqual(
       bodies.map((body) => body.walBudgetBytes),
-      [undefined, 32 * 1024 * 1024, 32 * 1024 * 1024],
+      [undefined, 24 * MiB],
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a usage rollup response without a numeric WAL figure stops the backfill instead of uncapping it", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  for (const walBytes of [undefined, "12", Number.NaN, -1]) {
+    const { apply, bodies, cleanup } = await rollupOperator(() => ({
+      status: "progress",
+      stopped: "wal",
+      ...(walBytes === undefined ? {} : { walBytes }),
+      pools: [{ recomputedHours: 1 }],
+    }));
+    try {
+      await assert.rejects(apply, /Invalid usage rollup progress/);
+      assert.equal(bodies.length, 1, "no further call after an unreadable response");
+    } finally {
+      await cleanup();
+    }
+  }
+});
+
+test("an hour slower than the writers allow stops the backfill for a scheduled quiet window", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const { apply, cleanup } = await rollupOperator(() => ({
+    status: "progress",
+    stopped: "slow_hour",
+    slowHour: "2026-01-01T05:00:00.000Z",
+    walBytes: 0,
+    pools: [{ recomputedHours: 0 }],
+  }));
+  try {
+    await assert.rejects(apply, /2026-01-01T05:00:00.000Z needs longer than the writers allow/);
   } finally {
     await cleanup();
   }

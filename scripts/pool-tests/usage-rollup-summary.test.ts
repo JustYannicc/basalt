@@ -5,6 +5,8 @@ import { digest } from "../../src/pool/backend-users.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
+import { summarySelection } from "../../src/pool/model-history/summary-query.ts";
+import { summaryModeTargets } from "../../src/pool/model-history/summary-rollup-query.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -191,5 +193,26 @@ test("an unseparated price tier on a ready pool keeps the rollup read and marks 
     assert.ok(statements[3]!.includes("basalt_model_usage_hourly"), "the read stays on the rollup");
     assert.ok(statements.length <= 15);
     assert.ok(result.daily.length > 0);
+    // The pair with the unseparated tier is unpriced, and the reason says so.
+    assert.ok(
+      JSON.stringify(result).includes("has a price tier that summarized usage cannot apply yet"),
+    );
+    // Over the group bound, a ready pool's first statement refuses before any rolled scan.
+    const selection = await summarySelection(
+      pool,
+      timestamp("2025-10-01T00:00:00Z"),
+      timestamp(to),
+      fixture.authority,
+    );
+    const bounded = summaryModeTargets(
+      selection,
+      100_000,
+      [selection.values[1] as string, selection.values[2] as string],
+      true,
+      1,
+    );
+    const first = (await f.db.query(bounded.text, bounded.values)).rows;
+    assert.ok(first.some((row) => row.kind === "over" && Number(row.window_rows) === 2));
+    assert.equal(first.filter((row) => row.kind === "target").length, 0);
   });
 });
