@@ -6,7 +6,11 @@ import { historyUsageRollupVersion, usageRollupLockClass } from "./usage-rollup-
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
 export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
-/** The most write-ahead log one backfill call may add before it stops at an hour boundary. */
+/**
+ * The most write-ahead log the database may write during one backfill call before it stops at the
+ * next hour boundary. It counts every writer's WAL, not only the backfill's, so concurrent writes
+ * slow the backfill; a call can pass it by its last hour's WAL and whatever else wrote meanwhile.
+ */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
  * How long one hour's recompute may hold the pool once the backfill has it. A writer that arrives

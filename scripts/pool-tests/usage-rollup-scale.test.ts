@@ -127,6 +127,7 @@ async function scaleCase(shape: Shape) {
       let extra = rows;
       // Without a race the write-ahead log measured is the backfill's own.
       let racing = shape.race;
+      let raceError: unknown;
       const race = (async () => {
         while (racing) {
           const query = generated(shape, poolId, sources, accounts, extra, 50);
@@ -135,18 +136,25 @@ async function scaleCase(shape: Shape) {
           await writer.query(query.text, query.values);
           slowestWrite = Math.max(slowestWrite, performance.now() - started);
         }
-      })();
+      })().catch((error: unknown) => {
+        // The writer's own failure is the finding; record it before cleanup closes its connection.
+        raceError = error;
+        racing = false;
+      });
       const backfillStarted = performance.now();
       let hours = 0,
         backfillWal = 0;
       for (;;) {
+        if (raceError) throw raceError;
         runs++;
         const result = await runUsageRollup(f.db, planned.plan, 1_500);
         groups += result.pools.reduce((n, item) => n + item.groups, 0);
         hours += result.pools.reduce((n, item) => n + item.recomputedHours, 0);
         backfillWal = Math.max(backfillWal, result.walBytes);
+        // The cap counts all WAL the database writes during the call, the racing writer's too, and
+        // stops before the hour after it is crossed: one hour's WAL, plus anyone else's, past 32 MiB.
         assert.ok(
-          result.walBytes <= 40 * 1024 * 1024,
+          result.walBytes <= (shape.race ? 64 : 40) * 1024 * 1024,
           `one call wrote ${result.walBytes} WAL bytes`,
         );
         if (result.status === "complete") break;
@@ -163,6 +171,7 @@ async function scaleCase(shape: Shape) {
       );
       racing = false;
       await race;
+      if (raceError) throw raceError;
       console.info("ROLLUP_WRITER", JSON.stringify({ slowestWriteMs: Math.round(slowestWrite) }));
     } finally {
       await writer.end();
