@@ -183,12 +183,21 @@ test("the operator endpoint dry-runs without writes, refuses a changed plan, and
       })),
     };
     assert.equal((await post({ go: true, plan: tampered, digest: dry.digest })).status, 409);
+    for (const hourLimitMs of [249, 451, 5_000, "300"])
+      assert.equal(
+        (await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs })).status,
+        400,
+      );
     const applied = (await (
-      await post({ go: true, plan: dry.plan, digest: dry.digest })
+      await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs: 450 })
     ).json()) as {
       status: string;
+      pools: { groupsInWindow?: number; groupBound?: number }[];
     };
     assert.equal(applied.status, "complete");
+    // The finished pool says how many groups its summary window holds against the bound.
+    assert.equal(typeof applied.pools[0]!.groupsInWindow, "number");
+    assert.equal(applied.pools[0]!.groupBound, 200_000);
     assert.equal(
       (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_ready")).rows[0]!.n,
       1,
@@ -217,7 +226,8 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
       await writer.query("BEGIN");
       const row = await f.row({ timestamp: timestamp("2026-01-01T03:30:00Z") });
       await insertRequests(writer, [row]);
-      const yielded = await runUsageRollup(f.db, plan, 60_000);
+      // Even with a 1 ms hour limit, waiting for the writer's lock reads as a lock loss, not a slow hour.
+      const yielded = await runUsageRollup(f.db, plan, 60_000, undefined, undefined, 1);
       assert.equal(yielded.stopped, "lock");
       assert.equal(yielded.pools[0]!.recomputedHours, 0);
       await writer.query("COMMIT");

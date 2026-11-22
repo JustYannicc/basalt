@@ -9,10 +9,10 @@ import {
   planUsageRollup,
   runUsageRollup,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
+import { maxSummaryRollupGroups } from "../../src/pool/model-history/summary-rollup-query.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
-const rows = Number(process.env.POOL_TEST_ROLLUP_ROWS ?? 3_000_000);
 const prices: readonly OverviewApiPrice[] = [
   ...summaryPrices,
   { ...summaryPrices[1]!, minInput: "200001", input: "20", output: "60", cacheRead: "4" },
@@ -20,30 +20,32 @@ const prices: readonly OverviewApiPrice[] = [
 const to = "2026-03-31T13:37:12.000000123Z";
 const window = Date.parse("2026-03-31T13:37:12Z") - Date.parse("2026-01-01T00:00:00Z");
 
-/** `count` requests spread over the window from `offset`, in every shape the summary separates. */
 /**
- * Context input per request. The default is production's shape: mostly short requests, one in
- * fifty long-context. POOL_TEST_ROLLUP_SHAPE=worst varies every key, and every price band, per
- * request: the grouping worst case, which the summary must refuse over its group bound.
+ * Two shapes. Production's: requests come from a few accounts, apps and models whose keys travel
+ * together (eight profiles), mostly short, one in fifty long-context. The worst case varies every
+ * key and every price band independently per request.
  */
-const worst = process.env.POOL_TEST_ROLLUP_SHAPE === "worst";
-const input = worst
-  ? "1000+n%250000"
-  : "(CASE WHEN n%50=0 THEN 200001+n%60000 ELSE 1000+n%30000 END)";
-/**
- * Which caller a request comes from. Production's requests come from a few accounts, apps and
- * models whose shape travels together; the worst case varies every key independently.
- */
-const profile = worst ? "n" : "n%8";
+interface Shape {
+  rows: number;
+  worst: boolean;
+  race: boolean;
+}
 
+/** `count` requests spread over the window from `offset`, in every shape the summary separates. */
 const generated = (
+  shape: Shape,
   poolId: string,
   sources: { home: string; gateway: string; imported: string },
   accounts: { visible: string; hidden: string },
   offset: number,
   count: number,
-) => ({
-  text: `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,
+) => {
+  const input = shape.worst
+    ? "1000+n%250000"
+    : "(CASE WHEN n%50=0 THEN 200001+n%60000 ELSE 1000+n%30000 END)";
+  const profile = shape.worst ? "n" : "n%8";
+  return {
+    text: `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,
       account,attribution,provider,model,api_type,input_tokens,output_tokens,cache_read_tokens,
       cache_write_tokens,reasoning_tokens,total_tokens,token_quality,failed,status_code,cost,currency,
       cost_basis)
@@ -65,21 +67,23 @@ const generated = (
     CROSS JOIN LATERAL (SELECT ${profile} AS k) p
     CROSS JOIN LATERAL (SELECT CASE k%10 WHEN 0 THEN $3 WHEN 1 THEN $4 ELSE $2 END AS src,
       '2026-01-01T00:00:00Z'::timestamptz + ((n % $9)::double precision/$9 * $10) * interval '1 millisecond' AS at) g`,
-  values: [
-    poolId,
-    sources.home,
-    sources.gateway,
-    sources.imported,
-    accounts.visible,
-    accounts.hidden,
-    offset + 1,
-    offset + count,
-    rows,
-    window,
-  ],
-});
+    values: [
+      poolId,
+      sources.home,
+      sources.gateway,
+      sources.imported,
+      accounts.visible,
+      accounts.hidden,
+      offset + 1,
+      offset + count,
+      shape.rows,
+      window,
+    ],
+  };
+};
 
-test(`a pool with ${rows} history rows backfilled in interrupted runs, with writers racing it, reads the same summary from the rollup as from raw rows`, async () => {
+async function scaleCase(shape: Shape) {
+  const { rows } = shape;
   await seriesFixture(async (f) => {
     const fixture = await summaryFixture(f);
     const poolId = (await digest(pool)).slice(0, 16);
@@ -92,7 +96,14 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
     // History written before the rollup's trigger existed, as production's is.
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     for (let offset = 0; offset < rows; offset += 500_000) {
-      const query = generated(poolId, sources, accounts, offset, Math.min(500_000, rows - offset));
+      const query = generated(
+        shape,
+        poolId,
+        sources,
+        accounts,
+        offset,
+        Math.min(500_000, rows - offset),
+      );
       await f.db.query(query.text, query.values);
     }
     await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
@@ -114,11 +125,11 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       await writer.query("SET lock_timeout = '500ms'");
       let slowestWrite = 0;
       let extra = rows;
-      // POOL_TEST_ROLLUP_RACE=0 measures the backfill's own write-ahead log, with no writer.
-      let racing = process.env.POOL_TEST_ROLLUP_RACE !== "0";
+      // Without a race the write-ahead log measured is the backfill's own.
+      let racing = shape.race;
       const race = (async () => {
         while (racing) {
-          const query = generated(poolId, sources, accounts, extra, 50);
+          const query = generated(shape, poolId, sources, accounts, extra, 50);
           extra += 50;
           const started = performance.now();
           await writer.query(query.text, query.values);
@@ -147,7 +158,7 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
           runs,
           ms: Math.round(performance.now() - backfillStarted),
           largestCallWal: backfillWal,
-          race: process.env.POOL_TEST_ROLLUP_RACE !== "0",
+          race: shape.race,
         }),
       );
       racing = false;
@@ -170,9 +181,20 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
     // The racing writer's own inserts are in this WAL too; the backfill's share is below it.
     console.info("ROLLUP_BYTES", JSON.stringify(measured));
     // Bounded by the data's shape, not its size: groups, their bytes and the backfill's WAL.
-    assert.ok(groups <= rows / 5, `${groups} groups for ${rows} rows`);
-    assert.ok(Number(measured.rollup) <= groups * 1_500, `${measured.rollup} rollup bytes`);
-    assert.ok(Number(measured.wal) <= Number(measured.history), `${measured.wal} WAL bytes`);
+    if (!shape.worst) assert.ok(groups <= rows / 5, `${groups} groups for ${rows} rows`);
+    const stored = (
+      await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hourly WHERE pool=$1", [
+        poolId,
+      ])
+    ).rows[0]!.n as number;
+    // The racing writer's rows add groups too: bytes per stored group, not per recomputed one.
+    assert.ok(
+      Number(measured.rollup) <= stored * 1_500,
+      `${measured.rollup} rollup bytes for ${stored} groups`,
+    );
+    // With no writer racing it, the backfill's whole write-ahead log stays below the history's size.
+    if (!shape.race)
+      assert.ok(Number(measured.wal) <= Number(measured.history), `${measured.wal} WAL bytes`);
 
     const input = {
       pool,
@@ -198,12 +220,21 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       ])
     ).rows[0]!.n as number;
     console.info("ROLLUP_GROUPS", JSON.stringify({ rows, runs, groups, groupRows }));
-    if (process.env.POOL_TEST_ROLLUP_SHAPE === "worst") {
+    const inWindow = (
+      await f.db.query(
+        "SELECT count(*)::int AS n FROM basalt_model_usage_hourly WHERE pool=$1 AND hour >= '2025-12-29T00:00:00Z'",
+        [poolId],
+      )
+    ).rows[0]!.n as number;
+    if (inWindow > maxSummaryRollupGroups) {
       // Past the group bound the summary refuses fast instead of reading every group.
       await assert.rejects(
         poolUsageSummary(timed, input, async () => ({ prices, issues: [] }), Date.parse(to)),
         /too large to summarize/,
       );
+      // The refusal comes from the first statement's capped count, before any rolled scan.
+      assert.ok(statements.length <= 4, `${statements.length} statements before the refusal`);
+      assert.ok(statements[2]!.ms < 1_000, `the refusing statement took ${statements[2]!.ms} ms`);
       return;
     }
     const rolled = await poolUsageSummary(
@@ -282,4 +313,15 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       JSON.stringify({ rows, runs, groups, rollupRows, rollupMs: Math.round(rollupMs) }),
     );
   });
+}
+
+const rows = Number(process.env.POOL_TEST_ROLLUP_ROWS ?? 3_000_000);
+const worst = process.env.POOL_TEST_ROLLUP_SHAPE === "worst";
+
+test(`a pool with ${rows} history rows backfilled in interrupted runs, with writers racing it, reads the same summary from the rollup as from raw rows`, async () => {
+  await scaleCase({ rows, worst, race: process.env.POOL_TEST_ROLLUP_RACE !== "0" });
+});
+
+test("history whose keys all vary independently, under the group bound, reads identically from the rollup", async () => {
+  await scaleCase({ rows: 150_000, worst: true, race: true });
 });

@@ -1,17 +1,20 @@
 import { digest } from "../backend-users.ts";
 import { HistoryInputError, historyObject, invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
-import { historyUsageRollupVersion } from "./usage-rollup-schema.ts";
+import { maxSummaryRollupGroups } from "./summary-rollup-query.ts";
+import { historyUsageRollupVersion, usageRollupLockClass } from "./usage-rollup-schema.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
 export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
 /** The most write-ahead log one backfill call may add before it stops at an hour boundary. */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
- * How long one hour's recompute may hold the pool. Writers wait at most this plus the 200 ms lock
- * wait, inside their own 500 ms. A slower hour stops the run so a person can schedule it.
+ * How long one hour's recompute may hold the pool once it has the lock. A writer that arrives then
+ * waits at most this, inside its own 500 ms; an approval may raise it to 450 ms, never past it.
+ * An hour slower three times in a row stops the run, naming it.
  */
 export const usageRollupHourLimitMs = 250;
+export const usageRollupHourLimitMaxMs = 450;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -114,8 +117,14 @@ export async function runUsageRollup(
     );
   let stop: "budget" | "wal" | "lock" | "slow_hour" | undefined;
   let slowHour: string | undefined;
-  const pools: { pool: string; recomputedHours: number; groups: number; remainingHours: number }[] =
-    [];
+  const pools: {
+    pool: string;
+    recomputedHours: number;
+    groups: number;
+    remainingHours: number;
+    groupsInWindow?: number;
+    groupBound?: number;
+  }[] = [];
   let complete = true;
   for (const item of plan.pools) {
     const pending = (
@@ -129,7 +138,7 @@ export async function runUsageRollup(
     ).rows.map((row) => new Date(row.at as string | Date).toISOString());
     let recomputedHours = 0,
       groups = 0;
-    for (const at of pending) {
+    hours: for (const at of pending) {
       if (now() - started >= budgetMs) {
         stop = "budget";
         break;
@@ -139,54 +148,74 @@ export async function runUsageRollup(
         stop = "wal";
         break;
       }
-      await db.query("BEGIN");
-      try {
-        // The lock timeout is below the writers' 500 ms, so a busy pool's writers win.
-        await db.query(
-          "SELECT set_config('statement_timeout',$1,true),set_config('lock_timeout','200ms',true),set_config('TimeZone','UTC',true)",
-          [`${hourLimitMs}ms`],
-        );
-        const written = await db.query(
-          "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour') AS groups",
-          [item.pool, at],
-        );
-        await db.query("COMMIT");
-        groups += Number(written.rows[0]?.groups ?? 0);
-        recomputedHours++;
-      } catch (error) {
-        await db.query("ROLLBACK").catch(() => {});
-        // A writer held the pool's lock; leave this hour for the next call.
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          "code" in error &&
-          error.code === "55P03"
-        ) {
-          stop = "lock";
+      // A cold cache can make one attempt slow; three in a row mean the hour itself is too dense.
+      for (let attempt = 1; ; attempt++) {
+        await db.query("BEGIN");
+        try {
+          // The pool's lock first, under a wait below the writers' 500 ms, so a busy pool's writers
+          // win; then the hour's own limit applies to the recompute alone.
+          await db.query(
+            "SELECT set_config('lock_timeout','200ms',true),set_config('statement_timeout','5s',true),set_config('TimeZone','UTC',true)",
+          );
+          await db.query(`SELECT pg_advisory_xact_lock(${usageRollupLockClass},hashtext($1))`, [
+            item.pool,
+          ]);
+          await db.query("SELECT set_config('statement_timeout',$1,true)", [`${hourLimitMs}ms`]);
+          const written = await db.query(
+            "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour') AS groups",
+            [item.pool, at],
+          );
+          await db.query("COMMIT");
+          groups += Number(written.rows[0]?.groups ?? 0);
+          recomputedHours++;
           break;
+        } catch (error) {
+          await db.query("ROLLBACK").catch(() => {});
+          const code =
+            typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+          // A writer held the pool's lock; leave this hour for the next call.
+          if (code === "55P03") {
+            stop = "lock";
+            break hours;
+          }
+          if (code === "57014" && attempt < 3) continue;
+          if (code === "57014") {
+            stop = "slow_hour";
+            slowHour = at;
+            break hours;
+          }
+          throw error;
         }
-        if (
-          typeof error === "object" &&
-          error !== null &&
-          "code" in error &&
-          error.code === "57014"
-        ) {
-          stop = "slow_hour";
-          slowHour = at;
-          break;
-        }
-        throw error;
       }
     }
     const remainingHours = pending.length - recomputedHours;
-    if (remainingHours === 0)
+    let groupsInWindow: number | undefined;
+    if (remainingHours === 0) {
       await db.query(
         `INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2::timestamptz)
         ON CONFLICT (pool) DO NOTHING`,
         [item.pool, item.to],
       );
-    else complete = false;
-    pools.push({ pool: item.pool, recomputedHours, groups, remainingHours });
+      // The summary refuses a window holding more groups than its bound; say so at the end.
+      groupsInWindow = Number(
+        (
+          await db.query(
+            `SELECT count(*)::int AS n FROM (SELECT 1 FROM basalt_model_usage_hourly
+              WHERE pool=$1 AND hour >= now() - interval '14 weeks' LIMIT $2) g`,
+            [item.pool, maxSummaryRollupGroups + 1],
+          )
+        ).rows[0]?.n ?? 0,
+      );
+    } else complete = false;
+    pools.push({
+      pool: item.pool,
+      recomputedHours,
+      groups,
+      remainingHours,
+      ...(groupsInWindow === undefined
+        ? {}
+        : { groupsInWindow, groupBound: maxSummaryRollupGroups }),
+    });
     if (!complete) break;
   }
   return {
@@ -229,13 +258,13 @@ export async function handleUsageRollupOperation(request: Request, db: HistoryDa
     walBudget > usageRollupWalPerCall
   )
     return new Response(null, { status: 400 });
-  // A person may approve a longer hour for a quiet window; never past the read's own 5 s.
+  // A person may approve a longer hour, never past what writers wait for.
   const hourLimit = approval.hourLimitMs ?? usageRollupHourLimitMs;
   if (
     typeof hourLimit !== "number" ||
     !Number.isSafeInteger(hourLimit) ||
     hourLimit < usageRollupHourLimitMs ||
-    hourLimit > 5_000
+    hourLimit > usageRollupHourLimitMaxMs
   )
     return new Response(null, { status: 400 });
   const result = await runUsageRollup(db, plan, 12_000, undefined, walBudget, hourLimit);

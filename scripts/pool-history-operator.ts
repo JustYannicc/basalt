@@ -23,6 +23,8 @@ import {
 import {
   historyUsageRollupBackfillVersion,
   historyUsageRollupPath,
+  usageRollupHourLimitMaxMs,
+  usageRollupHourLimitMs,
   usageRollupWalPerCall,
 } from "../src/pool/model-history/usage-rollup-backfill.ts";
 
@@ -71,6 +73,7 @@ export function historyOperatorOptions(args: string[]) {
       apply: { type: "boolean" },
       go: { type: "boolean" },
       "readers-ready": { type: "string" },
+      "hour-limit-ms": { type: "string" },
     },
   });
   const operation = values.operation ?? "schema";
@@ -88,7 +91,12 @@ export function historyOperatorOptions(args: string[]) {
     (operation === "journal-activation" &&
       values.apply === true &&
       values["readers-ready"] !== historyJournalReaderVersion) ||
-    Boolean(values.apply) !== Boolean(values.go)
+    Boolean(values.apply) !== Boolean(values.go) ||
+    (values["hour-limit-ms"] !== undefined &&
+      (operation !== "usage-rollup" ||
+        !/^\d+$/.test(values["hour-limit-ms"]) ||
+        Number(values["hour-limit-ms"]) < usageRollupHourLimitMs ||
+        Number(values["hour-limit-ms"]) > usageRollupHourLimitMaxMs))
   )
     throw new Error(
       "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation|usage-rollup] [--apply --go] [--readers-ready checkpoint-count-v1]",
@@ -99,12 +107,16 @@ export function historyOperatorOptions(args: string[]) {
     operation,
     apply: values.apply === true,
     readersReady: values["readers-ready"],
+    ...(values["hour-limit-ms"] === undefined
+      ? {}
+      : { hourLimitMs: Number(values["hour-limit-ms"]) }),
   } satisfies {
     worker: string;
     plan: string;
     operation: "schema" | "backfill" | "journal-activation" | "usage-rollup";
     apply: boolean;
     readersReady?: string;
+    hourLimitMs?: number;
   };
 }
 
@@ -356,7 +368,13 @@ export async function runHistoryOperator(
             ? {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ ...approval, go: true }),
+                body: JSON.stringify({
+                  ...approval,
+                  go: true,
+                  ...(options.hourLimitMs === undefined
+                    ? {}
+                    : { hourLimitMs: options.hourLimitMs }),
+                }),
               }
             : {},
         ),
@@ -387,16 +405,18 @@ export async function runHistoryOperator(
         )
           throw new Error("Invalid usage rollup progress");
         wal += callWal;
-        const recomputed = pools.reduce(
-          (n: number, item: unknown) => n + Number(historyObject(item).recomputedHours ?? 0),
-          0,
-        );
+        const recomputed = pools.reduce((n: number, item: unknown) => {
+          const hours = historyObject(item).recomputedHours;
+          if (typeof hours !== "number" || !Number.isSafeInteger(hours) || hours < 0)
+            throw new Error("Invalid usage rollup progress");
+          return n + hours;
+        }, 0);
         // A call that gets no hour through counts toward the stop, whatever held it up.
         lost = recomputed === 0 ? lost + 1 : 0;
         console.error(JSON.stringify({ run, stopped: report.stopped, walBytes: wal, pools }));
         if (report.stopped === "slow_hour")
           throw new Error(
-            `Usage rollup stopped: hour ${String(report.slowHour)} needs longer than the writers allow; schedule it for a quiet window`,
+            `Usage rollup stopped: hour ${String(report.slowHour)} took longer than its ${options.hourLimitMs ?? usageRollupHourLimitMs} ms limit three times; rerun with --hour-limit-ms up to ${usageRollupHourLimitMaxMs}, or decide how to recompute it`,
           );
         if (wal >= usageRollupWalTotal)
           throw new Error(
@@ -404,7 +424,7 @@ export async function runHistoryOperator(
           );
         if (lost >= 100)
           throw new Error(
-            "Usage rollup stopped: writers held the pool for 100 calls in a row; resume later",
+            "Usage rollup stopped: 100 calls in a row got no hour through (writers held the pool, or the time budget ran out); resume later",
           );
         await new Promise((resolve) => setTimeout(resolve, usageRollupPauseMs()));
         const next = await historyOperatorStep("operator.request", () =>
@@ -416,6 +436,7 @@ export async function runHistoryOperator(
                 ...approval,
                 go: true,
                 walBudgetBytes: Math.min(usageRollupWalPerCall, usageRollupWalTotal - wal),
+                ...(options.hourLimitMs === undefined ? {} : { hourLimitMs: options.hourLimitMs }),
               }),
             }),
           ),

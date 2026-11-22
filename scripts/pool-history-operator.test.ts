@@ -274,7 +274,7 @@ test("a usage rollup response without a numeric WAL figure stops the backfill in
   }
 });
 
-test("an hour slower than the writers allow stops the backfill for a scheduled quiet window", async (t) => {
+test("an hour slower than its limit three times stops the backfill and says how to rerun it", async (t) => {
   t.mock.method(console, "error", () => {});
   process.env.USAGE_ROLLUP_PAUSE_MS = "0";
   const { apply, cleanup } = await rollupOperator(() => ({
@@ -285,7 +285,10 @@ test("an hour slower than the writers allow stops the backfill for a scheduled q
     pools: [{ recomputedHours: 0 }],
   }));
   try {
-    await assert.rejects(apply, /2026-01-01T05:00:00.000Z needs longer than the writers allow/);
+    await assert.rejects(
+      apply,
+      /2026-01-01T05:00:00.000Z took longer than its 250 ms limit three times; rerun with --hour-limit-ms up to 450/,
+    );
   } finally {
     await cleanup();
   }
@@ -659,6 +662,66 @@ test("a v4 schema hash cannot approve a v7 migration", async () => {
         error instanceof HistoryOperatorFailure && error.field === "report.pendingMigrations",
     );
     await assert.rejects(readFile(path), { code: "ENOENT" });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("the hour limit is accepted only for the usage rollup and only between 250 and 450 ms, and reaches every call", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const base = ["--worker", "fixture-pool", "--plan", "/nonexistent", "--operation"];
+  for (const bad of ["249", "451", "abc"])
+    assert.throws(() => historyOperatorOptions([...base, "usage-rollup", "--hour-limit-ms", bad]));
+  assert.throws(() => historyOperatorOptions([...base, "backfill", "--hour-limit-ms", "300"]));
+  assert.equal(
+    historyOperatorOptions([...base, "usage-rollup", "--hour-limit-ms", "450"]).hourLimitMs,
+    450,
+  );
+  const directory = await mkdtemp(join(tmpdir(), "history-rollup-limit-"));
+  try {
+    const path = join(directory, "rollup.json");
+    const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
+    const plan = {
+      status: "dry-run",
+      version: "usage_rollup_backfill_v2",
+      digest: "a".repeat(64),
+      plan: { pools: [] },
+      writes: false,
+    };
+    const bodies: Record<string, unknown>[] = [];
+    const connect = async (_path: string) => ({
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            if (request.method === "GET") return Response.json(plan);
+            bodies.push(await request.json());
+            return Response.json(
+              bodies.length < 2
+                ? {
+                    status: "progress",
+                    stopped: "budget",
+                    walBytes: 0,
+                    digest: plan.digest,
+                    pools: [{ recomputedHours: 1 }],
+                  }
+                : { status: "complete", walBytes: 0, digest: plan.digest, pools: [] },
+            );
+          },
+        },
+      },
+      dispose: async () => {},
+    });
+    await runHistoryOperator(historyOperatorOptions(args), account, connect);
+    await runHistoryOperator(
+      historyOperatorOptions([...args, "--apply", "--go", "--hour-limit-ms", "400"]),
+      account,
+      connect,
+    );
+    assert.deepEqual(
+      bodies.map((body) => body.hourLimitMs),
+      [400, 400],
+    );
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
