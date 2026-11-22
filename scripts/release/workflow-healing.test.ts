@@ -115,6 +115,63 @@ test("a healing release's acceptance runs the app smoke whatever the pool found;
   }
 });
 
+test("acceptance that could not test says so to the steps after it, and still ends the step red", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-untested-"));
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\nexit "$ACCEPT_RC"\n');
+  writeFileSync(join(bin, "node"), '#!/bin/sh\necho ran >> "$SMOKE_LOG"\nexit 0\n');
+  chmodSync(join(bin, "bun"), 0o755);
+  chmodSync(join(bin, "node"), 0o755);
+  const healing = join(dir, "healing.json");
+  writeFileSync(
+    healing,
+    JSON.stringify({ acceptance: { rootRestart: { bound: "healingAcceptanceWithinMs" } } }),
+  );
+  const plain = join(dir, "plain.json");
+  writeFileSync(plain, "{}");
+  for (const [policy, accept, output] of [
+    [plain, "4", "acceptance=could-not-test\n"],
+    [healing, "4", "acceptance=could-not-test\nsmoke=0\n"],
+    [plain, "1", ""],
+    [healing, "1", "smoke=0\n"],
+  ] as const) {
+    const label = `${policy === plain ? "plain" : "healing"}-${accept}`;
+    const file = join(dir, `output-${label}`);
+    writeFileSync(file, "");
+    const result = runStep(
+      script("Accept the release through the live pool"),
+      {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+        POLICY: policy,
+        GITHUB_OUTPUT: file,
+        ACCEPT_RC: accept,
+        SMOKE_LOG: join(dir, `smoke-${label}`),
+      },
+      dir,
+    );
+    assert.equal(result.status, Number(accept), `${label}: ${result.stderr}`);
+    assert.equal(readFileSync(file, "utf8"), output, label);
+  }
+  // After a rollback, the read of the version rolled back to says which of the two it was.
+  writeFileSync(join(bin, "bun"), '#!/bin/sh\n[ "$2" = accept ] && exit "$ACCEPT_RC"\nexit 0\n');
+  for (const [accept, said] of [
+    ["4", /could not test the rolled-back version: the release's acceptance device was refused/u],
+    ["1", /The rolled-back version also fails acceptance/u],
+  ] as const) {
+    const rolled = runStep(
+      script("Roll back a failed release"),
+      { PATH: `${bin}:${process.env.PATH ?? ""}`, ACCEPT_RC: accept },
+      dir,
+    );
+    assert.equal(rolled.status, 1, "a rollback ends red");
+    assert.match(rolled.stdout, said, accept);
+  }
+  const stop = runStep(script("Stop on an acceptance that could not test"), {}, dir);
+  assert.equal(stop.status, 1, "the run is never green");
+  assert.match(stop.stdout, /^::error::ACCEPTANCE COULD NOT TEST/mu);
+});
+
 test("a declared root restart's boot read lets the pool not answer; others need its boot", () => {
   const dir = mkdtempSync(join(tmpdir(), "release-boot-"));
   const bin = join(dir, "bin");
@@ -171,6 +228,13 @@ test("a failed healing release names its outcome, the apply and the app smoke", 
   assert.match(person, /^::error::SERVING, NEEDS A PERSON/mu);
   assert.match(person, /needs a person \(restart_failed\)/u);
   assert.match(run({ outcome: "not-serving" }, "failure", "1"), /^::error::NOT SERVING/mu);
+  const untested = run({ outcome: "could-not-test" }, "success", "0");
+  assert.match(untested, /^::error::COULD NOT TEST/mu);
+  assert.match(
+    untested,
+    /the release's acceptance device was refused: check that it is still registered and allowed/u,
+  );
+  assert.doesNotMatch(untested, /NOT SERVING/u);
   // No record, or one without an outcome, means nobody read the pool: it never says not serving.
   for (const record of [undefined, {}]) {
     const unread = run(record, "failure", "");

@@ -26,6 +26,12 @@ async function createClient(connectionString: string): Promise<HistoryDatabaseCl
   });
 }
 
+function serverCancelled(error: unknown): boolean {
+  const code =
+    typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+  return code === "57014" || code === "55P03";
+}
+
 /** One bounded session, never a driver error or SQL parameter in the log. */
 export async function withHistoryDatabase<T>(
   connectionString: string | undefined,
@@ -45,9 +51,14 @@ export async function withHistoryDatabase<T>(
     } catch (error) {
       const reason = historyTimeoutReason(error);
       if (!reason) throw error;
+      // The driver's error stays the cause, so a failed read can still name its Postgres code.
       const timeout =
-        error instanceof HistoryTimeoutFailure ? error : new HistoryTimeoutFailure(reason);
-      deadline.stop(timeout);
+        error instanceof HistoryTimeoutFailure
+          ? error
+          : Object.assign(new HistoryTimeoutFailure(reason), { cause: error });
+      // Postgres answered a cancelled statement, so the session still works: a caller's savepoint
+      // can recover it. Only a timeout on this side leaves the socket in an unknown state.
+      if (!serverCancelled(error)) deadline.stop(timeout);
       throw timeout;
     }
   };
@@ -83,7 +94,7 @@ export async function withHistoryDatabase<T>(
   } catch (error) {
     // Only signed series reads opt into the History-specific public timeout response.
     if (error instanceof HistoryTimeoutFailure && options.timeoutFailure !== "history")
-      throw new Error("Model history database deadline exceeded");
+      throw new Error("Model history database deadline exceeded", { cause: error });
     throw error;
   } finally {
     deadline.dispose();
