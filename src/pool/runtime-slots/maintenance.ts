@@ -35,7 +35,11 @@ export class RuntimeMaintenance {
       this.deps.checked(record, health);
       await channel.keepAlive();
     } finally {
-      if (ctx.container.running) await ctx.storage.setAlarm(Date.now() + poolLifecycle.refreshMs);
+      if (ctx.container.running) {
+        await ctx.storage.setAlarm(Date.now() + poolLifecycle.refreshMs);
+        // An abort or a recovered retirement isn't queued behind this alarm and may end the slot.
+        await store.dropIfEnded(target);
+      }
     }
   }
   async failed(identity: SlotIdentity, signal: AbortSignal) {

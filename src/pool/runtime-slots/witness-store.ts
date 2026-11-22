@@ -64,8 +64,12 @@ export class RuntimeWitnessStore {
     return async (at: number) => {
       const scheduled = await this.storage.getAlarm();
       if (scheduled === null || scheduled > at) await this.storage.setAlarm(at);
-      if (await this.over(target)) await Promise.all(this.dropAlarm());
+      await this.dropIfEnded(target);
     };
+  }
+  /** Drops the alarm and target of a slot that ended; a live slot or a shared alarm keeps both. */
+  async dropIfEnded(target: SlotTarget) {
+    if (this.owned && (await this.over(target))) await Promise.all(this.dropAlarm());
   }
   /** What `read` refuses on, short of a wrong target: no start or alarm may use this slot again. */
   private async over(target: SlotTarget) {
