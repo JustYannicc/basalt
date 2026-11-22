@@ -1,22 +1,24 @@
 /**
  * What a filtered plan's `UnsafeSelectionBoundary` refused, for the public report. Alchemy's planner
  * (alchemy/src/Plan.ts) raises it with a fixed sentence per check that embeds resource FQNs. A
- * message matching exactly one of those sentences, with every name in it a plain resource name,
- * prints the check and those names under the roles the sentence gives them; nothing else from the
- * message prints. Any other message (another Alchemy release's wording, a name that is not plain)
- * gives `undefined`, and the caller keeps its generic line.
+ * message matching exactly one of those sentences prints the check and its names under the roles
+ * the sentence gives them, each name that is not a plain resource name as `[withheld]`; nothing
+ * else from the message prints. Any other message (another Alchemy release's wording) gives
+ * `undefined`, and the caller keeps its generic line.
  */
 
 /**
  * A resource name from our own source: the stack's logical ids are letters and digits, with a
- * lowercase letter (PoolWorker, OAuthWire). Dots, dashes, underscores and an all-capitals run are
- * refused, so a host, a UUID or a key-shaped string never prints even if one became an FQN.
+ * lowercase letter (PoolWorker, OAuthWire). Dots, dashes, underscores and a name with no lowercase
+ * letter are withheld, so a host, a UUID or a key-shaped string never prints even if one became an
+ * FQN.
  */
 const NAME = /^[A-Za-z][A-Za-z0-9]{0,120}$/u;
 const LOWERCASE = /[a-z]/u;
 /** Account, zone and namespace ids are hex runs, which a name never holds. */
 const HEX_ID = /[A-Fa-f0-9]{16,}/u;
 const NAMES_PER_LIST = 8;
+const WITHHELD = "[withheld]";
 const SELECT_OR_FULL = "Select them or run a full deployment\\.";
 
 /**
@@ -87,8 +89,11 @@ export function selectionBoundary(message: string): string | undefined {
   for (const [role, value] of Object.entries(groups)) {
     // The other branch of an alternative.
     if (value === undefined) continue;
-    const names = lists.has(role) ? value.split(", ") : [value];
-    if (!names.every(plain)) return undefined;
+    // A name that is not plain hides only itself, so the check and the other names still print:
+    // production declares route ids with dots and dashes that a check listing unselected rows names.
+    const names = (lists.has(role) ? value.split(", ") : [value]).map((name) =>
+      plain(name) ? name : WITHHELD,
+    );
     const more = names.length - NAMES_PER_LIST;
     fields.push(
       `${role}=${names.slice(0, NAMES_PER_LIST).join(",")}${more > 0 ? `,+${more} more` : ""}`,

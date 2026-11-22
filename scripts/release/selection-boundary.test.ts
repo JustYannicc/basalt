@@ -182,12 +182,11 @@ test("a message no template matches keeps the generic line", () => {
   );
 });
 
-test("a name that is not a plain resource name keeps the generic line", () => {
+test("a name that is not a plain resource name prints as withheld, and the check still prints", () => {
   const dependency = (name: string) =>
     `Output evaluation discovered unselected dependency '${name}'. Declare the dependency explicitly or run a full deployment.`;
   for (const name of [
     "Pool Worker",
-    "Pool'Worker",
     'Pool"Worker',
     "Pool/Worker",
     "pool.example.org/x",
@@ -203,13 +202,21 @@ test("a name that is not a plain resource name keeps the generic line", () => {
     "1PoolWorker",
     `P${"o".repeat(121)}`,
   ])
-    assert.equal(raised(dependency(name)).publicText, generic, name);
-  // One bad name in a list withholds the whole line.
+    assert.equal(
+      raised(dependency(name)).publicText,
+      named("check=unselected-dependency dependency=[withheld]"),
+      name,
+    );
+  // A quote ends the template's quoted name, so the message matches no sentence at all.
+  assert.equal(raised(dependency("Pool'Worker")).publicText, generic);
+  // One name that is not plain hides only itself: production's routes carry a dotted, dashed id.
   assert.equal(
     raised(
-      "Cannot replace or collect old generations of 'PoolWorker' while dependents are unselected: PoolDatabase, host name. Select them or run a full deployment.",
+      "Cannot replace or collect old generations of 'PoolWorker' while dependents are unselected: PoolDatabase, host name, AppHostBypass-app.example.org. Select them or run a full deployment.",
     ).publicText,
-    generic,
+    named(
+      "check=replace-with-unselected-dependents resource=PoolWorker unselected=PoolDatabase,[withheld],[withheld]",
+    ),
   );
 });
 
