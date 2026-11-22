@@ -26,25 +26,27 @@ const missing = (why: string, fix: string) => refuse("acceptance-credentials-mis
 
 /**
  * The lane's model calls sign for the release's registered acceptance device, as release acceptance
- * does, and its usage is read in that device's own pool, so the records those calls leave are the
- * ones checked.
+ * does. Only in a dedicated acceptance pool does it also hold an owner token, to read that pool's
+ * accounts and usage, so the records its calls leave are the ones checked. A device in a pool that
+ * holds people's work gets no owner token at all: the acceptance runs on the device alone.
  */
-async function acceptanceFromEnvironment(
+export async function acceptanceFromEnvironment(
   env: NodeJS.ProcessEnv,
+  mint: typeof signPoolToken = signPoolToken,
 ): Promise<FleetAcceptance | FleetLaneRefused> {
   try {
     const { pool } = acceptanceDevice(env);
-    if (!isAcceptancePool(pool))
-      return missing(
-        "POOL_ACCEPTANCE_DEVICE: its pool is not a dedicated acceptance-<run> pool.",
-        "Register the acceptance device in the dedicated acceptance pool and set its JSON again.",
-      );
-    return {
+    const device = {
       client: new PoolAcceptanceClient(),
       credential: acceptanceCredential(env),
       model: env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
+    };
+    // Never minted for a pool that is not acceptance-named (pool-acceptance/types.ts).
+    if (!isAcceptancePool(pool)) return device;
+    return {
+      ...device,
       access: {
-        token: await signPoolToken(acceptanceSigningKey(env), {
+        token: await mint(acceptanceSigningKey(env), {
           pool,
           owner: "acceptance",
           organization: "acceptance",

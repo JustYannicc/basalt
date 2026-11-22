@@ -75,6 +75,10 @@ export interface HarnessOptions {
   startCell?: boolean;
   /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
   providerSecret?: string | null;
+  /** The acceptance device is outside a dedicated acceptance pool: the lane holds no owner access. */
+  deviceOnly?: boolean;
+  /** The account the pool's usage records name; a foreign one must fail the usage check. */
+  usageAccount?: string;
 }
 
 export async function harness(options: HarnessOptions = {}) {
@@ -296,8 +300,12 @@ export async function harness(options: HarnessOptions = {}) {
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
   const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
+  /** Every owner-token read of the pool, with the authorization it carried. */
+  const poolReads: { path: string; authorization: string | null }[] = [];
   const pool = await listen(async (request) => {
     const path = new URL(request.url!, "http://local").pathname;
+    if (path.startsWith("/pool/v1/"))
+      poolReads.push({ path, authorization: request.headers.authorization ?? null });
     if (path === "/v1/models" || path === "/v1/chat/completions")
       modelCalls.push({
         call: `${request.method} ${path}`,
@@ -316,7 +324,7 @@ export async function harness(options: HarnessOptions = {}) {
         records: [
           {
             id: crypto.randomUUID(),
-            account: "test-1",
+            account: options.usageAccount ?? "test-1",
             status: "success",
             at: new Date().toISOString(),
           },
@@ -348,7 +356,7 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
-      access: { token: "pool-token", owner: "acceptance" },
+      ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
     },
     sleep: async () => {},
     now: Date.now,
@@ -357,6 +365,7 @@ export async function harness(options: HarnessOptions = {}) {
   return {
     deps,
     modelCalls,
+    poolReads,
     actions,
     crashes,
     providerRequests,
