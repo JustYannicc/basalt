@@ -49,7 +49,11 @@ export default { async fetch(request, env, ctx) {
 
 async function start() {
   const bundle = await build({
-    stdin: { contents: fixture, resolveDir: fileURLToPath(new URL("../../", import.meta.url)), loader: "ts" },
+    stdin: {
+      contents: fixture,
+      resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
+      loader: "ts",
+    },
     bundle: true,
     write: false,
     format: "esm",
@@ -99,7 +103,9 @@ async function host(mf: Miniflare, action: string, input: object) {
 }
 
 async function open(mf: Miniflare, path: string) {
-  const response = await mf.dispatchFetch(`http://fixture${path}`, { headers: { Upgrade: "websocket" } });
+  const response = await mf.dispatchFetch(`http://fixture${path}`, {
+    headers: { Upgrade: "websocket" },
+  });
   assert.equal(response.status, 101);
   const socket = response.webSocket!;
   const messages: unknown[] = [];
@@ -122,62 +128,83 @@ async function open(mf: Miniflare, path: string) {
   return { socket, read, closed };
 }
 
-test("real workerd: signed acquisitions drive the gateway and the pool peer tunnels bytes", { timeout: 60_000 }, async () => {
-  const mf = await start();
-  try {
-    const started = await host(mf, "start", { app: "tailscale" });
-    assert.equal(started.url, "https://login.example.invalid/a/test");
-    assert.deepEqual(await host(mf, "start", { app: "tailscale", owner: "org/org-1/user/person-2" }), {
-      error: "route_not_permitted",
-    });
-    assert.deepEqual(await host(mf, "status", {}), { state: "waiting" });
-    await mf.dispatchFetch("http://fixture/approve");
-    assert.deepEqual(await host(mf, "status", {}), { state: "connected", tailnet: "example-tailnet" });
-    const { reading } = (await host(mf, "select", { exitId: "n1", whenDown: "stop" })) as {
-      reading: Record<string, unknown>;
-    };
-    assert.equal(reading.state, "active");
-    assert.equal(reading.exitName, "home-exit");
-    assert.equal(reading.tailnet, "example-tailnet");
-    assert.deepEqual(await host(mf, "reading", { account: "acct-2" }), { error: "route_not_permitted" });
-    assert.deepEqual((await host(mf, "exits", {})).exits, [{ id: "n1", name: "home-exit", online: true }]);
+test(
+  "real workerd: signed acquisitions drive the gateway and the pool peer tunnels bytes",
+  { timeout: 60_000 },
+  async () => {
+    const mf = await start();
+    try {
+      const started = await host(mf, "start", { app: "tailscale" });
+      assert.equal(started.url, "https://login.example.invalid/a/test");
+      assert.deepEqual(
+        await host(mf, "start", { app: "tailscale", owner: "org/org-1/user/person-2" }),
+        {
+          error: "route_not_permitted",
+        },
+      );
+      assert.deepEqual(await host(mf, "status", {}), { state: "waiting" });
+      await mf.dispatchFetch("http://fixture/approve");
+      assert.deepEqual(await host(mf, "status", {}), {
+        state: "connected",
+        tailnet: "example-tailnet",
+      });
+      const { reading } = (await host(mf, "select", { exitId: "n1", whenDown: "stop" })) as {
+        reading: Record<string, unknown>;
+      };
+      assert.equal(reading.state, "active");
+      assert.equal(reading.exitName, "home-exit");
+      assert.equal(reading.tailnet, "example-tailnet");
+      assert.deepEqual(await host(mf, "reading", { account: "acct-2" }), {
+        error: "route_not_permitted",
+      });
+      assert.deepEqual((await host(mf, "exits", {})).exits, [
+        { id: "n1", name: "home-exit", online: true },
+      ]);
 
-    // The relay wire is the Home peer's, end to end, over the gateway's SOCKS port (an echo here).
-    const tunnel = await open(mf, `/peer/${routeId}`);
-    assert.deepEqual(JSON.parse(String(await tunnel.read())), { credit: 65_536 });
-    tunnel.socket.send(JSON.stringify({ credit: 65_536 }));
-    const bytes = new Uint8Array([5, 1, 0, 255, 42]);
-    tunnel.socket.send(bytes);
-    let reply: unknown;
-    do reply = await tunnel.read();
-    while (typeof reply === "string");
-    assert.deepEqual(new Uint8Array(reply as ArrayBuffer), bytes);
-    tunnel.socket.send(JSON.stringify({ fin: true }));
-    assert.equal((await tunnel.closed).code, 1000);
+      // The relay wire is the Home peer's, end to end, over the gateway's SOCKS port (an echo here).
+      const tunnel = await open(mf, `/peer/${routeId}`);
+      assert.deepEqual(JSON.parse(String(await tunnel.read())), { credit: 65_536 });
+      tunnel.socket.send(JSON.stringify({ credit: 65_536 }));
+      const bytes = new Uint8Array([5, 1, 0, 255, 42]);
+      tunnel.socket.send(bytes);
+      let reply: unknown;
+      do reply = await tunnel.read();
+      while (typeof reply === "string");
+      assert.deepEqual(new Uint8Array(reply as ArrayBuffer), bytes);
+      tunnel.socket.send(JSON.stringify({ fin: true }));
+      assert.equal((await tunnel.closed).code, 1000);
 
-    // A route this pool never assigned, and a pool without the class, are refused by close code.
-    const stranger = await open(mf, `/peer/${strangerRoute}`);
-    const refusal = await stranger.closed;
-    assert.deepEqual([refusal.code, refusal.reason], [1008, "route_not_permitted"]);
-    const bare = await open(mf, `/bare/${routeId}`);
-    assert.equal((await bare.closed).code, 1013);
-    assert.equal(
-      (await mf.dispatchFetch("http://fixture/peer/not-a-route", { headers: { Upgrade: "websocket" } })).status,
-      403,
-    );
-    // Everything but the private tunnel waits for slice 2.
-    assert.equal((await mf.dispatchFetch("http://fixture/direct")).status, 501);
+      // A route this pool never assigned, and a pool without the class, are refused by close code.
+      const stranger = await open(mf, `/peer/${strangerRoute}`);
+      const refusal = await stranger.closed;
+      assert.deepEqual([refusal.code, refusal.reason], [1008, "route_not_permitted"]);
+      const bare = await open(mf, `/bare/${routeId}`);
+      assert.equal((await bare.closed).code, 1013);
+      assert.equal(
+        (
+          await mf.dispatchFetch("http://fixture/peer/not-a-route", {
+            headers: { Upgrade: "websocket" },
+          })
+        ).status,
+        403,
+      );
+      // Everything but the private tunnel waits for slice 2.
+      assert.equal((await mf.dispatchFetch("http://fixture/direct")).status, 501);
 
-    // A restarted container gets the sealed identity back without a new approval.
-    await mf.dispatchFetch("http://fixture/crash");
-    assert.equal(((await host(mf, "reading", {})).reading as { state: string }).state, "active");
-    assert.deepEqual(await (await mf.dispatchFetch("http://fixture/starts")).json(), [
-      null,
-      "node-state-after-login",
-    ]);
-    assert.deepEqual(await host(mf, "remove", {}), {});
-    assert.equal(((await host(mf, "reading", {})).reading as { state: string }).state, "needs_login");
-  } finally {
-    await mf.dispose();
-  }
-});
+      // A restarted container gets the sealed identity back without a new approval.
+      await mf.dispatchFetch("http://fixture/crash");
+      assert.equal(((await host(mf, "reading", {})).reading as { state: string }).state, "active");
+      assert.deepEqual(await (await mf.dispatchFetch("http://fixture/starts")).json(), [
+        null,
+        "node-state-after-login",
+      ]);
+      assert.deepEqual(await host(mf, "remove", {}), {});
+      assert.equal(
+        ((await host(mf, "reading", {})).reading as { state: string }).state,
+        "needs_login",
+      );
+    } finally {
+      await mf.dispose();
+    }
+  },
+);

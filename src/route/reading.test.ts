@@ -20,7 +20,11 @@ test("gateway states map onto the reading the owner sees", () => {
     [{ state: "needs_login", reason: "route_key_expired" }, "needs_login", "route_key_expired"],
     [{ state: "down", reason: "route_exit_unreachable" }, "down", "route_exit_unreachable"],
     [{ state: "down", reason: "route_off" }, "off", "route_off"],
-    [{ state: "direct_fallback", reason: "route_exit_offline" }, "direct_fallback", "route_exit_offline"],
+    [
+      { state: "direct_fallback", reason: "route_exit_offline" },
+      "direct_fallback",
+      "route_exit_offline",
+    ],
     [{ state: "down", reason: null }, "down", "route_status_unavailable"],
   ];
   for (const [change, state, reason] of cases) {

@@ -102,7 +102,9 @@ export class RouteGateway extends DurableObject<RouteEnvironment> {
     try {
       socket = await this.core.openTunnel({ owner });
     } catch (error) {
-      return refusedTunnel(error instanceof RouteRefused ? error.reason : "route_gateway_unavailable");
+      return refusedTunnel(
+        error instanceof RouteRefused ? error.reason : "route_gateway_unavailable",
+      );
     }
     const pair = new WebSocketPair();
     pair[1].accept();

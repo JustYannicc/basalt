@@ -13,7 +13,11 @@ import { captureProduct } from "./telemetry/product.ts";
 import { traceRequest, type TraceEnv } from "./telemetry/traces.ts";
 import { validSentryDsn } from "./telemetry/sentry.ts";
 import type { $ElementId } from "../scripts/architecture/gen/model.ts";
-import { nativeAuthenticationHeader, nativeModelRequest, forwardModelRequest } from "./native-model.ts";
+import {
+  nativeAuthenticationHeader,
+  nativeModelRequest,
+  forwardModelRequest,
+} from "./native-model.ts";
 import { nativeControlPath } from "./pool/native-contract.ts";
 import { nativeSessionPath } from "./pool/native-contract.ts";
 import { tunnelPath } from "../clients/contracts/tunnel.ts";
@@ -27,7 +31,10 @@ export const serviceArchitecture = {
   APP_UI_SERVICE: "basalt.toolsGateway",
   ASSETS: "basalt.clientAssets",
   POOL_SERVICE: "basalt.modelGateway",
-} satisfies Record<"TOOLS_SERVICE" | "POOL_SERVICE" | "CATALOG_SERVICE" | "APP_UI_SERVICE" | "ASSETS", $ElementId>;
+} satisfies Record<
+  "TOOLS_SERVICE" | "POOL_SERVICE" | "CATALOG_SERVICE" | "APP_UI_SERVICE" | "ASSETS",
+  $ElementId
+>;
 
 interface Service {
   fetch(request: Request): Promise<Response>;
@@ -44,7 +51,13 @@ export interface RouterEnv extends RelayEnv, TraceEnv {
 }
 
 function isPoolPath(pathname: string, rawPathname: string): boolean {
-  return pathname === accountAcquisitionPath || pathname === routeAcquisitionPath || rawPathname === appModelPath || isPublicModelPath(pathname) || isControlPath(pathname);
+  return (
+    pathname === accountAcquisitionPath ||
+    pathname === routeAcquisitionPath ||
+    rawPathname === appModelPath ||
+    isPublicModelPath(pathname) ||
+    isControlPath(pathname)
+  );
 }
 
 function isPoolManagementPath(pathname: string): boolean {
@@ -89,7 +102,9 @@ export const toolsServiceSiteFiles = [
 
 const sitePaths = [...toolsServiceSitePages, ...toolsServiceSiteFiles];
 const exactPages = new Set<string>(sitePaths.filter((page) => !page.endsWith("/*")));
-const pagePrefixes = sitePaths.filter((page) => page.endsWith("/*")).map((page) => page.slice(0, -2));
+const pagePrefixes = sitePaths
+  .filter((page) => page.endsWith("/*"))
+  .map((page) => page.slice(0, -2));
 
 /** A trailing slash names the same page, as it does for the tools service. */
 function isToolsServiceSitePage(pathname: string): boolean {
@@ -105,23 +120,28 @@ function isToolsServiceSitePage(pathname: string): boolean {
 
 /** The tools service's Better Auth cookie prefix; its sign-in still checks the session. */
 export const sessionCookiePrefix = "__Host-executor-hosted";
-const sessionCookie = new RegExp(
-  `(?:^|;\\s*)${sessionCookiePrefix}\\.session_token=[^;\\s]`,
-);
+const sessionCookie = new RegExp(`(?:^|;\\s*)${sessionCookiePrefix}\\.session_token=[^;\\s]`);
 
 function hasSessionCookie(request: Request): boolean {
   return sessionCookie.test(request.headers.get("cookie") ?? "");
 }
 
 const escapeHtml = (value: string) =>
-  value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+  value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 
 /** The brand's own not-found page, in place of the tools service's marketing one. */
 export function notFoundPage(product: { name: string; logo: string } = brand): Response {
   const name = escapeHtml(product.name);
   return new Response(
     `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Page not found · ${name}</title><link rel="icon" href="${escapeHtml(product.logo)}"><body style="font-family:system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh"><main style="text-align:center"><img src="${escapeHtml(product.logo)}" alt="" width="40" height="40"><h1 style="font-size:20px">Page not found</h1><p><a href="/">Open ${name}</a></p></main></body></html>`,
-    { status: 404, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } },
+    {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    },
   );
 }
 
@@ -138,12 +158,21 @@ async function withBrandNotFound(response: Response): Promise<Response> {
 
 /** Router-owned HTML is never embeddable, including assets and local error pages. */
 function denyFraming(response: Response): Response {
-  if (!/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(response.headers.get("content-type") ?? ""))
+  if (
+    !/^(?:text\/html|application\/xhtml\+xml)(?:;|$)/i.test(
+      response.headers.get("content-type") ?? "",
+    )
+  )
     return response;
   const protectedResponse = new Response(response.body, response);
   const policy = (response.headers.get("content-security-policy") ?? "")
-    .split(";").map((directive) => directive.trim()).filter((directive) => directive && !/^frame-ancestors\b/i.test(directive));
-  protectedResponse.headers.set("Content-Security-Policy", [...policy, "frame-ancestors 'none'"].join("; "));
+    .split(";")
+    .map((directive) => directive.trim())
+    .filter((directive) => directive && !/^frame-ancestors\b/i.test(directive));
+  protectedResponse.headers.set(
+    "Content-Security-Policy",
+    [...policy, "frame-ancestors 'none'"].join("; "),
+  );
   protectedResponse.headers.set("X-Frame-Options", "DENY");
   return protectedResponse;
 }
@@ -172,13 +201,22 @@ function servicePath(pathname: string): string {
   return decoded.toLowerCase() || "/";
 }
 
-async function routeRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
+async function routeRequest(
+  request: Request,
+  env: RouterEnv,
+  context?: { waitUntil(work: Promise<unknown>): void },
+): Promise<Response> {
   const url = new URL(request.url);
   // Reserve only a-<UUID> app labels. Product hosts never enter the app-origin handler.
   if (url.hostname !== (env.DASHBOARD_HOST ?? brand.host)) {
     const label = url.hostname.slice(0, -(appHosting.zone.length + 1));
-    if (url.hostname.endsWith(`.${appHosting.zone}`) && /^a-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(label))
-      return env.APP_UI_SERVICE?.fetch(request) ?? Promise.resolve(new Response(null, { status: 404 }));
+    if (
+      url.hostname.endsWith(`.${appHosting.zone}`) &&
+      /^a-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(label)
+    )
+      return (
+        env.APP_UI_SERVICE?.fetch(request) ?? Promise.resolve(new Response(null, { status: 404 }))
+      );
     return Promise.resolve(new Response(null, { status: 404 }));
   }
   // Run before static assets on all hosts, then serve assets only on this router's dashboard host.
@@ -190,8 +228,13 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   const pathname = servicePath(url.pathname);
   if (pathname === "/native/device" || pathname === "/native/device/") {
     if (request.method !== "GET" && request.method !== "HEAD")
-      return new Response(null, { status: 405, headers: { Allow: "GET, HEAD", "Cache-Control": "no-store" } });
-    const asset = await env.ASSETS?.fetch(new Request(new URL("/native-device/index.html", url), { method: request.method }));
+      return new Response(null, {
+        status: 405,
+        headers: { Allow: "GET, HEAD", "Cache-Control": "no-store" },
+      });
+    const asset = await env.ASSETS?.fetch(
+      new Request(new URL("/native-device/index.html", url), { method: request.method }),
+    );
     if (!asset || asset.status === 404) return notFoundPage();
     const page = new Response(asset.body, asset);
     page.headers.set("Cache-Control", "no-store");
@@ -204,25 +247,31 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
   if (pathname.startsWith("/feedback/v1/")) return handleFeedback(request, env);
   if (pathname.startsWith("/__telemetry/")) return handleRelay(request, env);
   if (pathname === "/setup" || pathname === "/setup/") return handleSetupPage(request, env);
-  if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/")) return handleSetup(request, {
-    ...env,
-    onProductEvent: (event, accountId) => {
-      const work = captureProduct(env, event, accountId);
-      context?.waitUntil(work);
-    },
-  });
+  if (pathname.startsWith("/setup/v1/") || pathname.startsWith("/setup/claim/"))
+    return handleSetup(request, {
+      ...env,
+      onProductEvent: (event, accountId) => {
+        const work = captureProduct(env, event, accountId);
+        context?.waitUntil(work);
+      },
+    });
   if (pathname.startsWith("/share/v1/")) return handleShare(request, env);
   // Internal setup assertions are sent only through the private binding by the setup host.
   if (pathname.startsWith("/__setup/")) return Promise.resolve(notFoundPage());
-  if (pathname === nativeControlPath || pathname === importRemovalPath) return env.POOL_SERVICE.fetch(request);
+  if (pathname === nativeControlPath || pathname === importRemovalPath)
+    return env.POOL_SERVICE.fetch(request);
   if (isPoolManagementPath(pathname)) {
-    return Promise.resolve(new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }));
+    return Promise.resolve(
+      new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } }),
+    );
   }
   if (isPoolPath(pathname, url.pathname)) {
     if (isPublicModelPath(pathname) && request.headers.get(nativeAuthenticationHeader) === "1")
       return nativeModelRequest(request, env);
     // Tracing may rewrite trace headers; the app-model signature covers the envelope, not those headers.
-    return isPublicModelPath(pathname) ? forwardModelRequest(request, env) : env.POOL_SERVICE.fetch(request);
+    return isPublicModelPath(pathname)
+      ? forwardModelRequest(request, env)
+      : env.POOL_SERVICE.fetch(request);
   }
   // Signed out, the tools service's homepage is its marketing page; sign-in sends people on.
   if (
@@ -242,27 +291,48 @@ async function routeRequest(request: Request, env: RouterEnv, context?: { waitUn
     return Promise.resolve(
       page === null
         ? notFoundPage()
-        : new Response(null, { status: 302, headers: { "Cache-Control": "no-store", Location: page } }),
+        : new Response(null, {
+            status: 302,
+            headers: { "Cache-Control": "no-store", Location: page },
+          }),
     );
   }
 
-  const observed = pathname === "/mcp" && request.method === "POST" && request.headers.has("authorization") ? request.clone() : undefined;
-  return env.TOOLS_SERVICE.fetch(request).then(withBrandNotFound).then((response) => {
-    if (observed && context) context.waitUntil(observeToolCall(observed, response.clone(), env));
-    return response;
-  });
+  const observed =
+    pathname === "/mcp" && request.method === "POST" && request.headers.has("authorization")
+      ? request.clone()
+      : undefined;
+  return env.TOOLS_SERVICE.fetch(request)
+    .then(withBrandNotFound)
+    .then((response) => {
+      if (observed && context) context.waitUntil(observeToolCall(observed, response.clone(), env));
+      return response;
+    });
 }
 
-export async function handleRequest(request: Request, env: RouterEnv, context?: { waitUntil(work: Promise<unknown>): void }): Promise<Response> {
+export async function handleRequest(
+  request: Request,
+  env: RouterEnv,
+  context?: { waitUntil(work: Promise<unknown>): void },
+): Promise<Response> {
   // Relays contain explicit feedback and must not recursively instrument their own exports.
   const tracing = validSentryDsn(env.SENTRY_DSN);
   const response = tracing
-    ? await traceRequest(env, request, (forwarded) => routeRequest(forwarded, env, context), context)
+    ? await traceRequest(
+        env,
+        request,
+        (forwarded) => routeRequest(forwarded, env, context),
+        context,
+      )
     : await routeRequest(request, env, context);
   const url = new URL(request.url);
   if (url.hostname !== (env.DASHBOARD_HOST ?? brand.host)) return response;
   // Only the tools service's auth route may retain its explicit same-origin exception.
-  if (url.pathname === "/app-auth" && response.headers.get("content-security-policy") === "frame-ancestors 'self'" && response.headers.get("x-frame-options") === "SAMEORIGIN")
+  if (
+    url.pathname === "/app-auth" &&
+    response.headers.get("content-security-policy") === "frame-ancestors 'self'" &&
+    response.headers.get("x-frame-options") === "SAMEORIGIN"
+  )
     return response;
   return denyFraming(response);
 }

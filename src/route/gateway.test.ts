@@ -23,7 +23,10 @@ async function refusedWith(work: Promise<unknown>, reason: string) {
 test("create is idempotent for its owner and refuses anyone else", async () => {
   const { gateway } = await created();
   assert.deepEqual(await gateway.create({ routeId, owner, app: "tailscale" }), {});
-  await refusedWith(gateway.create({ routeId, owner: other, app: "tailscale" }), "route_not_permitted");
+  await refusedWith(
+    gateway.create({ routeId, owner: other, app: "tailscale" }),
+    "route_not_permitted",
+  );
   await refusedWith(gateway.create({ routeId, owner, app: "other" }), "route_not_permitted");
   await refusedWith(
     gateway.create({ routeId: "rt_" + "b".repeat(26), owner, app: "tailscale" }),
@@ -100,7 +103,10 @@ test("login polls every 2 s and persists the sealed identity once the person app
   );
   // No selection yet, and the login finished: nothing keeps polling.
   assert.equal(storage.alarm, null);
-  assert.deepEqual(await gateway.joinStatus(caller), { state: "connected", tailnet: "example-tailnet" });
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "connected",
+    tailnet: "example-tailnet",
+  });
   assert.deepEqual(await gateway.login(caller), { state: "ready" });
 });
 
@@ -110,7 +116,10 @@ test("a login nobody approves stops polling after 10 minutes", async () => {
   advance(10 * 60_000);
   await gateway.alarm();
   assert.equal(storage.alarm, null);
-  assert.deepEqual(await gateway.joinStatus(caller), { state: "failed", reason: "route_needs_login" });
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "failed",
+    reason: "route_needs_login",
+  });
 });
 
 test("select returns the reading, keeps the route warm and polls every 30 s", async () => {
@@ -201,7 +210,12 @@ test("only crossing into or out of down emits, with reason codes and no names", 
   container.reachable = true;
   advance(30_000);
   await gateway.alarm();
-  assert.deepEqual(events.at(-1), { event: "route.reading.changed", routeId, state: "active", reason: null });
+  assert.deepEqual(events.at(-1), {
+    event: "route.reading.changed",
+    routeId,
+    state: "active",
+    reason: null,
+  });
   assert.equal(events.length, 2);
   assert.equal(JSON.stringify(events).includes("home-exit"), false);
   assert.equal(JSON.stringify(events).includes("example-tailnet"), false);

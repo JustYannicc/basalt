@@ -40,7 +40,9 @@ const LoginReply = Schema.Union([
   Schema.Struct({ state: Schema.Literal("ready") }),
 ]);
 const ExitsReply = Schema.Struct({
-  exits: Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String, online: Schema.Boolean })),
+  exits: Schema.Array(
+    Schema.Struct({ id: Schema.String, name: Schema.String, online: Schema.Boolean }),
+  ),
 });
 const StateReply = Schema.Struct({ state: Schema.String, state_revision: Schema.Number });
 const strict = { onExcessProperty: "error" } as const;
@@ -128,7 +130,11 @@ export class RouteGatewayCore {
       throw new RouteRefused("route_not_permitted");
     const current = await this.deps.storage.get<RouteMeta>(keys.meta);
     if (current) {
-      if (current.routeId !== next.routeId || current.owner !== next.owner || current.app !== next.app)
+      if (
+        current.routeId !== next.routeId ||
+        current.owner !== next.owner ||
+        current.app !== next.app
+      )
         throw new RouteRefused("route_not_permitted");
       return {};
     }
@@ -150,10 +156,15 @@ export class RouteGatewayCore {
   /** Whether the person has approved the device: a sealed identity exists and is still signed in. */
   async joinStatus(
     input: unknown,
-  ): Promise<{ state: "waiting" } | { state: "connected"; tailnet: string | null } | { state: "failed"; reason: ReasonCode }> {
+  ): Promise<
+    | { state: "waiting" }
+    | { state: "connected"; tailnet: string | null }
+    | { state: "failed"; reason: ReasonCode }
+  > {
     await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
     const { reading } = await this.refresh();
-    const signedOut = reading.reason === "route_needs_login" || reading.reason === "route_key_expired";
+    const signedOut =
+      reading.reason === "route_needs_login" || reading.reason === "route_key_expired";
     if ((await this.deps.storage.get(keys.state)) !== undefined && !signedOut)
       return { state: "connected", tailnet: reading.tailnet };
     const loginUntil = await this.deps.storage.get<number>(keys.loginUntil);
@@ -224,8 +235,7 @@ export class RouteGatewayCore {
   /** The socket to the gateway's SOCKS port for one tunnel; the DO never parses what it carries. */
   async openTunnel(caller: { owner: string }): Promise<GatewaySocket> {
     const meta = await this.deps.storage.get<RouteMeta>(keys.meta);
-    if (!meta || caller.owner !== meta.owner)
-      throw new RouteRefused("route_not_permitted");
+    if (!meta || caller.owner !== meta.owner) throw new RouteRefused("route_not_permitted");
     try {
       await this.ensureStarted();
       const socket = this.deps.container!.getTcpPort(socksPort).connect(`127.0.0.1:${socksPort}`, {
@@ -267,9 +277,13 @@ export class RouteGatewayCore {
       if (meta.owner !== caller.owner) throw new RouteRefused("route_not_permitted");
       return meta;
     }
-    if (meta.owner.split("/")[1] !== caller.organization) throw new RouteRefused("route_not_permitted");
+    if (meta.owner.split("/")[1] !== caller.organization)
+      throw new RouteRefused("route_not_permitted");
     if (meta.account === null)
-      await this.deps.storage.put(keys.meta, { ...meta, account: caller.account } satisfies RouteMeta);
+      await this.deps.storage.put(keys.meta, {
+        ...meta,
+        account: caller.account,
+      } satisfies RouteMeta);
     else if (meta.account !== caller.account) throw new RouteRefused("route_not_permitted");
     return meta;
   }
@@ -432,9 +446,9 @@ export class RouteGatewayCore {
     const value: unknown = await response.json().catch(() => undefined);
     if (response.ok) return value;
     const reason =
-      value && typeof value === "object" && "error" in value ? (value as { error: unknown }).error : undefined;
-    throw new RouteRefused(
-      Schema.is(ReasonCode)(reason) ? reason : "route_gateway_unavailable",
-    );
+      value && typeof value === "object" && "error" in value
+        ? (value as { error: unknown }).error
+        : undefined;
+    throw new RouteRefused(Schema.is(ReasonCode)(reason) ? reason : "route_gateway_unavailable");
   }
 }

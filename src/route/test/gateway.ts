@@ -11,7 +11,14 @@ export class FakeGateway implements GatewayContainer {
   reachable = true;
   inactivity: number[] = [];
   private bootCount = 0;
-  private boot: { id: string; state: string | null; revision: number; selection?: { exit_id: string | null; when_down: string } } | undefined;
+  private boot:
+    | {
+        id: string;
+        state: string | null;
+        revision: number;
+        selection?: { exit_id: string | null; when_down: string };
+      }
+    | undefined;
   /** What a login turns into; the "state file" the gateway would hand back. */
   loginState = "node-state-after-login";
   pendingLogin = false;
@@ -58,7 +65,13 @@ export class FakeGateway implements GatewayContainer {
       when_down: selection?.when_down ?? "stop",
       exit:
         selection?.exit_id && loggedIn
-          ? { id: selection.exit_id, name: "home-exit", online: true, path: "relay", relay_region: "fra" }
+          ? {
+              id: selection.exit_id,
+              name: "home-exit",
+              online: true,
+              path: "relay",
+              relay_region: "fra",
+            }
           : null,
       node: { logged_in: loggedIn, key_expiry: null, tailnet: loggedIn ? "example-tailnet" : null },
       state_revision: boot.revision,
@@ -114,10 +127,20 @@ export class FakeGateway implements GatewayContainer {
           const refused = Promise.reject(new TypeError("connection refused"));
           refused.catch(() => {});
           const pipe = new TransformStream<Uint8Array, Uint8Array>();
-          return { opened: refused, readable: pipe.readable, writable: pipe.writable, close: async () => {} };
+          return {
+            opened: refused,
+            readable: pipe.readable,
+            writable: pipe.writable,
+            close: async () => {},
+          };
         }
         const echo = new TransformStream<Uint8Array, Uint8Array>();
-        return { opened: Promise.resolve(), readable: echo.readable, writable: echo.writable, close: async () => {} };
+        return {
+          opened: Promise.resolve(),
+          readable: echo.readable,
+          writable: echo.writable,
+          close: async () => {},
+        };
       },
     };
   }

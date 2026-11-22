@@ -75,7 +75,11 @@ export type RouteAccountClaims = Signed & {
   readonly account: string;
 } & (
     | { readonly action: "check" | "reading" | "exits" | "remove" }
-    | { readonly action: "select"; readonly exitId: string | null; readonly whenDown: RouteWhenDown }
+    | {
+        readonly action: "select";
+        readonly exitId: string | null;
+        readonly whenDown: RouteWhenDown;
+      }
   );
 
 export type RouteAcquisitionClaims = RouteSessionClaims | RouteAccountClaims;
@@ -96,7 +100,11 @@ export interface RouteAcquisitionReplies {
   readonly reading: { readonly reading: RouteReading };
   /** I2 `exits`, plus the route's current selection so a picker shows what is chosen. */
   readonly exits: {
-    readonly exits: readonly { readonly id: string; readonly name: string; readonly online: boolean }[];
+    readonly exits: readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly online: boolean;
+    }[];
     readonly selected: { readonly exitId: string | null; readonly whenDown: RouteWhenDown };
   };
   /** I2 `select`; `exitId: null` switches routing off for this route. */

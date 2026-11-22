@@ -15,9 +15,10 @@ export const routeGatewayImageContext = fileURLToPath(
  * never go back to "absent". The plan would carry `deleted_classes` and destroy every route's
  * identity, and the plan check refuses it.
  */
-export const routeGatewayClass = Config.Literals(["declared", "absent"], "ROUTE_GATEWAY_CLASS").pipe(
-  Config.withDefault("absent"),
-);
+export const routeGatewayClass = Config.Literals(
+  ["declared", "absent"],
+  "ROUTE_GATEWAY_CLASS",
+).pipe(Config.withDefault("absent"));
 
 const declareRouteGateway = (stage: string) =>
   Cloudflare.Container("RouteGateway", {
@@ -35,6 +36,7 @@ const declareRouteGateway = (stage: string) =>
 export const routeGatewayBinding = Effect.gen(function* () {
   // Annotated so the absent case stays an absent key, which is what a Worker binding map accepts.
   const binding: { RouteGateway?: ReturnType<typeof declareRouteGateway> } = {};
-  if ((yield* routeGatewayClass) === "declared") binding.RouteGateway = declareRouteGateway(yield* Stage);
+  if ((yield* routeGatewayClass) === "declared")
+    binding.RouteGateway = declareRouteGateway(yield* Stage);
   return binding;
 });

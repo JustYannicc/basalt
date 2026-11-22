@@ -15,7 +15,12 @@ async function key(secret: string, usage: "encrypt" | "decrypt") {
     "deriveKey",
   ]);
   return crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(), info: encoder.encode("route-state-v1") },
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: new Uint8Array(),
+      info: encoder.encode("route-state-v1"),
+    },
     base,
     { name: "AES-GCM", length: 256 },
     false,

@@ -11,10 +11,15 @@ import { RouteId, RouteOwner, type RouteGatewayCore } from "./gateway.ts";
 import { WhenDown } from "./reading.ts";
 
 type Rpc<T> = {
-  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R
+    ? (...args: A) => Promise<Awaited<R>>
+    : never;
 };
 export type RouteGatewayRpc = Rpc<
-  Pick<RouteGatewayCore, "create" | "login" | "joinStatus" | "exits" | "select" | "reading" | "disconnect">
+  Pick<
+    RouteGatewayCore,
+    "create" | "login" | "joinStatus" | "exits" | "select" | "reading" | "disconnect"
+  >
 >;
 
 export interface RouteAcquisitionDependencies {
@@ -52,7 +57,9 @@ async function claims(request: Request, deps: RouteAcquisitionDependencies) {
   const bytes = await readBody(request, 16_384);
   let body: unknown;
   try {
-    body = bytes && JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
+    body =
+      bytes &&
+      JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes));
   } catch {
     return "bad_request" as const;
   }
@@ -61,7 +68,12 @@ async function claims(request: Request, deps: RouteAcquisitionDependencies) {
       ? body.envelope
       : undefined;
   if (!envelope) return "bad_request" as const;
-  const opened = await openEnvelope(deps.signingKey, routeAcquisitionPrefix, envelope, deps.previousSigningKey);
+  const opened = await openEnvelope(
+    deps.signingKey,
+    routeAcquisitionPrefix,
+    envelope,
+    deps.previousSigningKey,
+  );
   if (opened === undefined) return "route_not_permitted" as const;
   const decoded = Schema.decodeUnknownOption(Claims, { onExcessProperty: "error" })(opened);
   if (Option.isNone(decoded)) return "bad_request" as const;

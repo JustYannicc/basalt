@@ -37,7 +37,12 @@ function setup() {
     owner: person,
     ...extra,
   });
-  const saved = (action: string, extra: object = {}, account = "acct-1", organization = "org-1") => ({
+  const saved = (
+    action: string,
+    extra: object = {},
+    account = "acct-1",
+    organization = "org-1",
+  ) => ({
     ...window,
     action,
     organization,
@@ -77,15 +82,24 @@ test("saved-account steps bind the first account and act on the route", async ()
   assert.equal((await storage.get<{ account: string }>("route-v1:meta"))?.account, "acct-1");
   const selected = (await send(saved("select", { exitId: "n1", whenDown: "direct" }))).body;
   assert.equal((selected.reading as { state: string }).state, "active");
-  assert.deepEqual((await send(saved("exits"))).body.selected, { exitId: "n1", whenDown: "direct" });
-  assert.equal(((await send(saved("reading"))).body.reading as { exitName: string }).exitName, "home-exit");
+  assert.deepEqual((await send(saved("exits"))).body.selected, {
+    exitId: "n1",
+    whenDown: "direct",
+  });
+  assert.equal(
+    ((await send(saved("reading"))).body.reading as { exitName: string }).exitName,
+    "home-exit",
+  );
   assert.equal(((await send(saved("check"))).body.reading as { state: string }).state, "active");
   assert.deepEqual(await send(saved("reading", {}, "acct-2")), refused);
   assert.deepEqual(await send(saved("reading", {}, "acct-1", "org-2")), refused);
   assert.deepEqual((await send(saved("remove"))).body, {});
   assert.deepEqual((await send(saved("remove"))).body, {});
   assert.equal(container.logouts, 1);
-  assert.equal(((await send(saved("reading"))).body.reading as { state: string }).state, "needs_login");
+  assert.equal(
+    ((await send(saved("reading"))).body.reading as { state: string }).state,
+    "needs_login",
+  );
 });
 
 test("another person is refused at every sign-in step", async () => {
