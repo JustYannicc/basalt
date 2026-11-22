@@ -4,7 +4,7 @@ import { chmod, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { collectE2eEvidence } from "./collect-e2e-evidence.mjs";
+import { collectE2eEvidence, collectNewE2eEvidence, runNames } from "./collect-e2e-evidence.mjs";
 import { copyE2eEvidence } from "../e2e-evidence.ts";
 import { finalizeE2e } from "../e2e-finalize.ts";
 
@@ -293,4 +293,38 @@ test("retains nested development server stderr without its runtime state", async
     "development-b",
     "server.log",
   ]);
+});
+
+test("one file's collection takes only the runs that appeared during it and clears them", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "ci-evidence-new-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const exported = join(root, "exported"),
+    original = join(root, "original");
+  const write = async (path, content) => {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), content);
+  };
+  await write("exported/earlier/cloud/report/diagnostics/results.json", "earlier-export");
+  await write("original/developer/cloud/server.log", "a developer's own run");
+  const before = await runNames([exported, original]);
+  await write("exported/finished/cloud/report/diagnostics/results.json", "finished-export");
+  await write("original/finished/cloud/report/diagnostics/results.json", "finished-original");
+  await write("original/finished/cloud/cloud.log", "finished-cloud-log");
+  await write("original/killed/cloud/report/diagnostics/results.json", "killed-original");
+  const destination = join(root, "file");
+  const summary = await collectNewE2eEvidence([exported, original], before, destination);
+  assert.equal(summary.files, 3);
+  assert.deepEqual((await readdir(destination)).sort(), ["finished", "killed"]);
+  const read = (path) => readFile(join(destination, path), "utf8");
+  assert.equal(await read("finished/cloud/report/diagnostics/results.json"), "finished-export");
+  assert.equal(await read("finished/cloud/cloud.log"), "finished-cloud-log");
+  assert.equal(await read("killed/cloud/report/diagnostics/results.json"), "killed-original");
+  assert.deepEqual(await readdir(exported), ["earlier"]);
+  assert.deepEqual(await readdir(original), ["developer"]);
+  const next = await collectNewE2eEvidence(
+    [exported, original],
+    await runNames([exported, original]),
+    join(root, "next"),
+  );
+  assert.deepEqual(next, { files: 0, bytes: 0 });
 });

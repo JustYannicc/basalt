@@ -98,7 +98,7 @@ test("a changed source revokes its previous value instead of renewing a seed", a
   assert.equal(value.allowance?.checkedAt, Date.parse("2026-11-12T00:00:00Z"));
 });
 
-test("network failure does not renew source age and expiry needs no refresh job", async () => {
+test("network failure does not renew source age and an expired value is kept, read as expired", async () => {
   let clock = now,
     failed = false;
   const registry = new PlanAllowances(new Memory(), {
@@ -123,8 +123,10 @@ test("network failure does not renew source age and expiry needs no refresh job"
     catalog: await registry.read(),
     now: clock,
   });
-  assert.equal(expired.known, false);
-  assert.equal(expired.multiplier, 1);
+  assert.equal(expired.known, true);
+  assert.equal(expired.multiplier, 37);
+  assert.equal(expired.allowance?.expiresAt, Date.parse("2026-11-12T00:00:00Z") + 14 * 86_400_000);
+  assert.ok(expired.allowance!.expiresAt! <= clock);
 });
 
 test("an expired vendor statement cannot contradict a freshly checked dataset", async () => {

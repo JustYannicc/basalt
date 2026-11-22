@@ -6,6 +6,7 @@ import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/i
 import { backendUserName } from "../../src/pool/backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
+import { historyBatchSize, historyForwardPages } from "../../src/pool/model-history/store.ts";
 import {
   deliverPoolHistoryChanges,
   readPoolHistoryChanges,
@@ -125,6 +126,22 @@ function recorded(db: HistoryDatabase, before?: (sql: string) => void) {
   };
   return { wrapper, statements };
 }
+
+test("one capture run takes exactly the forward bound the reliability objective allows", () =>
+  fixture(async (db) => {
+    const run = historyForwardPages * historyBatchSize;
+    await addUsage(db, 1);
+    await activateHomeBackfill(db, await planHomeBackfill(db));
+    await db.query(
+      `INSERT INTO usage(id,timestamp,request_id,api_key)
+      SELECT n,'2026-01-01T00:00:00Z','attempt-' || n,$1 FROM generate_series(2,$2::int) n`,
+      [fingerprint, run + 2],
+    );
+    await captureHomeRequests(db);
+    assert.equal((await durable(db)).cursor[0]?.forward_id, String(1 + run));
+    await captureHomeRequests(db);
+    assert.equal((await durable(db)).cursor[0]?.forward_id, String(run + 2));
+  }));
 
 test("activated journal leaves unchanged inactive capture at five statements", () =>
   fixture(async (db) => {

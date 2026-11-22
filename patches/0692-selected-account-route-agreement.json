@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-selected-account-route-agreement",
+  "file": "0692-selected-account-route-agreement.patch",
+  "content_sha256": "b12d50ad2a2cc0072911925d26d03163966af00dc3a0f06421ff2cdf4637ef04",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

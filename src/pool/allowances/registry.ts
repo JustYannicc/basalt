@@ -1,7 +1,14 @@
 import type { PlanAllowanceCatalog } from "apps";
 import type { ComputerStorage } from "../computer-registry.ts";
 import { digest } from "../backend-users.ts";
-import { allowanceKey, datasetUrl, dayMs, seedCatalog, type PlanAllowance } from "./data.ts";
+import {
+  allowanceKey,
+  datasetUrl,
+  dayMs,
+  markContradictions,
+  seedCatalog,
+  type PlanAllowance,
+} from "./data.ts";
 import { datasetAllowances } from "./dataset.ts";
 import { vendorAllowances, vendorSources, type VendorSourceId } from "./vendors.ts";
 
@@ -185,31 +192,7 @@ export class PlanAllowances {
       }),
       ...Object.values(state?.sources ?? {}).flatMap((source) => source.entries),
     ];
-    const now = this.now();
-    const active = entries.filter(
-      (entry) =>
-        entry.verification !== "unknown" &&
-        entry.checkedAt !== null &&
-        entry.checkedAt <= now &&
-        entry.expiresAt !== null &&
-        entry.expiresAt > now,
-    );
-    const conflicts = new Set<string>();
-    for (const entry of active.filter((value) => value.kind === "dataset")) {
-      const vendor = active.find(
-        (value) => value.kind === "vendor" && allowanceKey(value) === allowanceKey(entry),
-      );
-      if (
-        vendor &&
-        (vendor.full !== entry.full || Boolean(vendor.unlimited) !== Boolean(entry.unlimited))
-      )
-        conflicts.add(allowanceKey(entry));
-    }
-    return {
-      entries: entries.map((entry) =>
-        conflicts.has(allowanceKey(entry)) ? { ...entry, contradicted: true } : entry,
-      ),
-    };
+    return { entries: markContradictions(entries, this.now()) };
   }
   /**
    * Reports plans whose last usable row expires within the lead, at most once per UTC day, so a

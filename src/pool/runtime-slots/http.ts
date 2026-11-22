@@ -7,7 +7,8 @@ import {
 import { runtimeInput } from "./input.ts";
 import { Schema } from "effect";
 import { runtimeErrorResponse } from "./request-error.ts";
-import { runtimeResponseDiagnostic } from "../runtime-route-diagnostic.ts";
+import { runtimeResponseCause, runtimeResponseDiagnostic } from "../runtime-route-diagnostic.ts";
+import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 import { openEnvelope } from "../token.ts";
 import {
   sameControllerCode,
@@ -23,6 +24,7 @@ import type {
 } from "../runtime-fleet/configuration.ts";
 import type { ImageUpdateIntent, RuntimeImageUpdate } from "../runtime-fleet/image-update.ts";
 import type { RuntimeCandidateProbe } from "./candidate-probe.ts";
+import type { StorageBookmarks } from "../storage-bookmark.ts";
 
 export interface HandoffFleet {
   crash?(command: RuntimeCrashCommand): Promise<unknown>;
@@ -56,6 +58,7 @@ export async function handleRuntimeHandoff(
   secret: string,
   fleet?: HandoffFleet,
   probe?: RuntimeCandidateProbe,
+  bookmarks?: Pick<StorageBookmarks, "read" | "restore">,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
@@ -104,6 +107,14 @@ export async function handleRuntimeHandoff(
       case "runtime-crash-inspect":
         if (!fleet?.inspectCrash) throw new SlotRefused("selection");
         result = await fleet.inspectCrash(value.identity, value.nonce);
+        break;
+      case "storage-bookmark":
+        if (!bookmarks) throw new SlotRefused("selection");
+        result = await bookmarks.read(value.time);
+        break;
+      case "storage-restore-bookmark":
+        if (!bookmarks) throw new SlotRefused("selection");
+        result = await bookmarks.restore(value);
         break;
       case "provider-observe":
         if (!fleet?.observeProvider) throw new Error("Provider observation unavailable");
@@ -154,7 +165,10 @@ export async function handleRuntimeHandoff(
         result = await fleet.replace(value.operationId, value.identity);
         break;
       case "inspect":
-        result = await handoff.slots.inspect();
+        result = { ...(await handoff.slots.inspect()), recovery: await handoff.recoveryState() };
+        break;
+      case "recovery-reset":
+        result = await handoff.resetRecovery();
         break;
       case "active-health":
         result = await handoff.activeHealth();
@@ -198,9 +212,15 @@ export async function handleRuntimeHandoff(
       case "fence":
         await handoff.slots.fence(value.identity);
         break;
-      case "unfence":
-        await handoff.slots.unfence(value.identity);
+      case "unfence": {
+        const unfenced = await handoff.unfence(value.identity);
+        // A slot handed back to recovery may meet a clock that already needs a person.
+        result =
+          unfenced.by === "recovery"
+            ? { ...unfenced, recovery: await handoff.recoveryState() }
+            : unfenced;
         break;
+      }
       case "peer-bootstrap":
         result = await handoff.bootstrapPeer(value, request.signal);
         break;
@@ -208,7 +228,8 @@ export async function handleRuntimeHandoff(
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
     const response = runtimeErrorResponse(error, "handoff");
-    if (response.status === 409) logRuntimeCommandRefusal(response, command);
+    if (response.status === 409)
+      logRuntimeCommandRefusal(response, command, handoff.databasePool());
     return response;
   }
 }
@@ -220,8 +241,13 @@ interface RefusedCommand {
 }
 
 /** One closed-vocabulary line per refused command, so a refusal is diagnosable from Workers logs. */
-export function logRuntimeCommandRefusal(response: Response, command: RefusedCommand | undefined) {
+export function logRuntimeCommandRefusal(
+  response: Response,
+  command: RefusedCommand | undefined,
+  homeDatabasePool?: HomeDatabasePoolObservation | null,
+) {
   const diagnostic = runtimeResponseDiagnostic(response);
+  const runtimeCause = runtimeResponseCause(response);
   const cause = response.headers.get(providerObservationFailureHeader);
   console.warn(
     "POOL_RUNTIME_COMMAND_REFUSED " +
@@ -231,6 +257,8 @@ export function logRuntimeCommandRefusal(response: Response, command: RefusedCom
         operationId: command?.operationId ?? null,
         step: diagnostic?.runtimeStep ?? null,
         reason: diagnostic?.runtimeReason ?? null,
+        ...(runtimeCause ? { runtimeCause } : {}),
+        ...(homeDatabasePool ? { homeDatabasePool } : {}),
         ...(cause === "provider_observation_refused" || cause === "provider_fetch_failed"
           ? { cause }
           : {}),

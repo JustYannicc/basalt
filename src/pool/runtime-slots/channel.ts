@@ -1,14 +1,18 @@
 import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
+import { containerAnswer } from "../controller-unsent.ts";
+import { resumeLayerPort } from "../stream-resume.ts";
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
-import { poolLifecycle } from "../lifecycle.ts";
+import { PoolRuntimeUnhealthy, poolLifecycle } from "../lifecycle.ts";
 import { SlotRefused } from "./contract.ts";
 import { runtimePolicyAssertion } from "./policy-assertion.ts";
 import type { RuntimeConfiguration, RuntimeEnvironment } from "./configuration.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 import { installNativePolicy } from "../native-policy-install.ts";
+import { reportPoolFailure } from "../json.ts";
 import { readRuntimeHealth } from "../runtime-health.ts";
 import { policyUsePrefix, type NativeMembershipPolicy } from "../membership-contract.ts";
 import { signEnvelope } from "../token.ts";
+import { ReadinessReadFailure } from "../runtime-health.ts";
 
 /** Authenticated ports use the selected boot's preserved settings, not new controller bindings. */
 export class RuntimeChannel {
@@ -26,8 +30,12 @@ export class RuntimeChannel {
     }
   }
   async keepAlive() {
-    if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
-    await this.ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs);
+    // Before any send: a stopped container's refusal proves the call reached no container.
+    if (!this.ctx.container?.running)
+      refuseRuntime("endpoint_health", new SlotRefused("unhealthy"));
+    await this.ctx.container
+      .setInactivityTimeout(poolLifecycle.idleTimeoutMs)
+      .catch((error: unknown) => refuseRuntime("endpoint_health", error));
   }
   async health(configuration: RuntimeConfiguration, signal: AbortSignal, trace?: RuntimeReadTrace) {
     if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
@@ -37,18 +45,32 @@ export class RuntimeChannel {
       signal,
       undefined,
       trace,
-    ).catch((error: unknown) => refuseRuntime("endpoint_health", error));
+    ).catch((error: unknown) => {
+      if (!(error instanceof ReadinessReadFailure)) refuseRuntime("endpoint_health", error);
+      // A readiness read that failed in transport or returned an unparsable body is degraded
+      // readiness: it refuses like a 503 so the caller can wait. Its refusal looks like any other
+      // 503, so this line is what tells a broken readiness port apart.
+      console.error("POOL_RUNTIME_READINESS_READ_FAILED " + JSON.stringify({ kind: error.kind }));
+      refuseRuntime("endpoint_health", new PoolRuntimeUnhealthy());
+    });
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new SlotRefused("unhealthy");
     return status;
   }
-  install(configuration: RuntimeConfiguration, policy: NativeMembershipPolicy) {
+  async install(configuration: RuntimeConfiguration, policy: NativeMembershipPolicy) {
     if (!this.ctx.container) throw new SlotRefused("unhealthy");
-    return installNativePolicy(
-      this.ctx.container,
-      { signingKey: configuration.signingKey, managementKey: configuration.managementKey },
-      policy,
-    );
+    try {
+      return await installNativePolicy(
+        this.ctx.container,
+        { signingKey: configuration.signingKey, managementKey: configuration.managementKey },
+        policy,
+      );
+    } catch (error) {
+      // The refusal reaches the controller as a plain 409, which drops the plugin's closed reason
+      // (for example a projection outside its lease window). Record it here, where it is known.
+      reportPoolFailure(error);
+      throw error;
+    }
   }
   async native(
     configuration: RuntimeConfiguration,
@@ -82,7 +104,7 @@ export class RuntimeChannel {
   async fetch(
     configuration: RuntimeConfiguration,
     request: Request,
-    port: 8317 | 8327 | 8318,
+    port: 8317 | 8327 | 8318 | typeof resumeLayerPort,
     trace?: RuntimeReadTrace,
   ) {
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "endpoint_request";
@@ -100,16 +122,21 @@ export class RuntimeChannel {
       const target = port === 8327 && configuration.homePeerOrdinal !== undefined ? 8329 : port;
       step = "port_lookup";
       const destination = this.port(target);
-      step = "port_dispatch";
+      step = target === resumeLayerPort ? "resume_layer" : "port_dispatch";
       return await runtimeReadStep(
         trace,
         "port_headers",
-        () => destination.fetch(new Request(request, { headers })),
-        target === 8317 ? undefined : target,
+        async () => containerAnswer(await destination.fetch(new Request(request, { headers }))),
+        // Only the readiness and management ports are traced reads; model calls never are.
+        target === 8318 || target === 8327 || target === 8329 ? target : undefined,
       );
     } catch (error) {
-      if (port === 8317 && this.ctx.container?.running === false)
-        refuseRuntime(step, new SlotRefused("unhealthy"));
+      // A stopped container is the runtime's failure on either port, never the front layer's.
+      if ((port === 8317 || port === resumeLayerPort) && this.ctx.container?.running === false)
+        refuseRuntime(
+          step === "resume_layer" ? "port_dispatch" : step,
+          new SlotRefused("unhealthy"),
+        );
       refuseRuntime(step, error);
     }
   }

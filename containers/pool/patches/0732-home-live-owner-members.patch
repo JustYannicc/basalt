@@ -1,0 +1,430 @@
+diff --git a/internal/cluster/coordination_pool_pooler_postgres_test.go b/internal/cluster/coordination_pool_pooler_postgres_test.go
+new file mode 100644
+index 0000000..0816897
+--- /dev/null
++++ b/internal/cluster/coordination_pool_pooler_postgres_test.go
+@@ -0,0 +1,167 @@
++package cluster
++
++import (
++	"context"
++	"fmt"
++	"math/rand/v2"
++	"net/url"
++	"os"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"gorm.io/gorm"
++)
++
++// pooledPlacementDSN returns the isolated transaction pooler with production's limits: five server
++// connections for the whole database, shared by every Home login.
++func pooledPlacementDSN(t *testing.T) string {
++	t.Helper()
++	dsn := os.Getenv("HOME_TEST_POOLED_DSN")
++	if dsn == "" {
++		t.Skip("isolated transaction pooler required")
++	}
++	parsed, errParse := url.Parse(dsn)
++	if errParse != nil {
++		t.Fatal(errParse)
++	}
++	if parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" {
++		t.Fatal("local fixture required")
++	}
++	return dsn
++}
++
++type latencyMax struct {
++	mu  sync.Mutex
++	max time.Duration
++	n   int
++}
++
++func (l *latencyMax) observe(started time.Time) {
++	elapsed := time.Since(started)
++	l.mu.Lock()
++	defer l.mu.Unlock()
++	l.n++
++	if elapsed > l.max {
++		l.max = elapsed
++	}
++}
++
++// Behind the pooler, request transactions waiting on locks pin server connections while the
++// coordination pool serves the readiness listing's config write and a burst of node reconnects.
++// Heartbeats and liveness refreshes must stay far inside their 20 s and 3 s limits.
++func TestHomeDBPoolCoordinationKeepsLivenessBehindAPinnedPooler(t *testing.T) {
++	dsn := pooledPlacementDSN(t)
++	ctx := t.Context()
++	mainConns := 6
++	cfg := PGSQLConfig{PostgresURI: dsn, SchemaOwner: "basalt_pool_owner", MaxOpenConns: &mainConns, CoordinationMaxOpenConns: 2}
++	mainDB, errMain := Open(ctx, cfg)
++	if errMain != nil {
++		t.Fatal(errMain)
++	}
++	coordinationDB, errCoordination := OpenCoordination(ctx, cfg)
++	if errCoordination != nil {
++		t.Fatal(errCoordination)
++	}
++	t.Cleanup(func() {
++		for _, db := range []*gorm.DB{mainDB, coordinationDB} {
++			if sqlDB, errDB := db.DB(); errDB == nil {
++				_ = sqlDB.Close()
++			}
++		}
++	})
++	if errMigrate := AutoMigrate(mainDB); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	repo, coordination := NewRepository(mainDB), NewRepository(coordinationDB)
++	home, errHome := repo.RegisterHomeIncarnation(ctx, "127.0.0.1", 20000+rand.IntN(20000), []string{"credential_concurrency_foundation_v1"})
++	if errHome != nil {
++		t.Fatal(errHome)
++	}
++	revision, errConfig := repo.UpdateLifecycleConfig(ctx, 20*time.Second, config.DefaultCredentialConcurrencyConfig())
++	if errConfig != nil {
++		t.Fatal(errConfig)
++	}
++	run := fmt.Sprintf("pooler-%d", time.Now().UnixNano())
++	member, errMember := coordination.SubscribeMembership(ctx, SubscribeMembershipRequest{
++		Fingerprint: run + "-watched", NodeID: "cpa-watched", Home: home, ProtocolVersion: 1, LifecycleConfigRevision: revision,
++	})
++	if errMember != nil {
++		t.Fatal(errMember)
++	}
++	lifetime := ConnectionLifetime{Fingerprint: member.CertificateFingerprint, ConnectedAt: member.ConnectedAt, Home: home}
++
++	// Three request transactions hold pooler server connections: one holds a lock, two wait on it.
++	lockKey := rand.Int64()
++	holder := mainDB.Begin()
++	if errLock := holder.Exec("SELECT pg_advisory_xact_lock(?)", lockKey).Error; errLock != nil {
++		t.Fatal(errLock)
++	}
++	var waiters sync.WaitGroup
++	for range 2 {
++		waiters.Add(1)
++		go func() {
++			defer waiters.Done()
++			_ = mainDB.WithContext(context.WithoutCancel(ctx)).Transaction(func(tx *gorm.DB) error {
++				return tx.Exec("SELECT pg_advisory_xact_lock(?)", lockKey).Error
++			})
++		}()
++	}
++	defer func() {
++		_ = holder.Commit().Error
++		waiters.Wait()
++	}()
++	time.Sleep(200 * time.Millisecond)
++
++	stress, stop := context.WithCancel(ctx)
++	defer stop()
++	var load sync.WaitGroup
++	load.Add(2)
++	go func() { // The readiness listing's config read runs a locking write; here every 100 ms instead of 60 s.
++		defer load.Done()
++		for stress.Err() == nil {
++			_, _ = coordination.EnsureLifecycleConfig(stress, 20*time.Second)
++			time.Sleep(100 * time.Millisecond)
++		}
++	}()
++	go func() { // A reconnect burst: 30 nodes subscribing at once, twice.
++		defer load.Done()
++		for round := range 2 {
++			var burst sync.WaitGroup
++			for i := range 30 {
++				burst.Add(1)
++				go func() {
++					defer burst.Done()
++					_, _ = coordination.SubscribeMembership(stress, SubscribeMembershipRequest{
++						Fingerprint: fmt.Sprintf("%s-burst-%d-%d", run, round, i), NodeID: fmt.Sprintf("cpa-%d-%d", round, i),
++						Home: home, ProtocolVersion: 1, LifecycleConfigRevision: revision,
++					})
++				}()
++			}
++			burst.Wait()
++		}
++	}()
++	var heartbeat, liveness latencyMax
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		started := time.Now()
++		if errBeat := coordination.HeartbeatHomeIncarnation(ctx, home); errBeat != nil {
++			t.Fatal(errBeat)
++		}
++		heartbeat.observe(started)
++		started = time.Now()
++		if errRefresh := coordination.RefreshCPALiveness(ctx, lifetime); errRefresh != nil {
++			t.Fatal(errRefresh)
++		}
++		liveness.observe(started)
++		time.Sleep(50 * time.Millisecond)
++	}
++	stop()
++	load.Wait()
++	t.Logf("behind the pooler with 3 of 5 server connections pinned: heartbeat max %s over %d, liveness refresh max %s over %d",
++		heartbeat.max, heartbeat.n, liveness.max, liveness.n)
++	if heartbeat.max > time.Second || liveness.max > time.Second {
++		t.Fatalf("coordination slowed behind the pooler: heartbeat max %s, liveness refresh max %s", heartbeat.max, liveness.max)
++	}
++}
+diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
+index 22a1c6c..d7ca86d 100644
+--- a/internal/cluster/coordinator.go
++++ b/internal/cluster/coordinator.go
+@@ -156,13 +156,13 @@ func (c *Coordinator) runStartupRecovery(ctx context.Context, incarnation HomeIn
+ }
+ 
+ func (c *Coordinator) runLifecycleCleanup(ctx context.Context) error {
+-	if errCleanup := c.repo.CleanupStaleMemberships(ctx); errCleanup != nil {
+-		return errCleanup
+-	}
+ 	home, initialized := c.HomeIncarnation()
+ 	if !initialized {
+ 		return fmt.Errorf("cluster coordinator is not initialized")
+ 	}
++	if errCleanup := c.repo.CleanupStaleMemberships(ctx, home); errCleanup != nil {
++		return errCleanup
++	}
+ 	if errRecovery := c.runStartupRecovery(ctx, home); errRecovery != nil {
+ 		return errRecovery
+ 	}
+diff --git a/internal/cluster/lifecycle_cleanup_test.go b/internal/cluster/lifecycle_cleanup_test.go
+index 7846bcb..9a64578 100644
+--- a/internal/cluster/lifecycle_cleanup_test.go
++++ b/internal/cluster/lifecycle_cleanup_test.go
+@@ -327,7 +327,7 @@ func TestCleanupStaleMembershipBeginsCancellationAndRecoveryHonorsReclaimGrace(t
+ 		t.Fatal(errUpdate)
+ 	}
+ 
+-	if errCleanup := repo.CleanupStaleMemberships(ctx); errCleanup != nil {
++	if errCleanup := repo.CleanupStaleMemberships(ctx, owner); errCleanup != nil {
+ 		t.Fatal(errCleanup)
+ 	}
+ 	var canceling CPANodeMembershipRecord
+diff --git a/internal/cluster/lifecycle_timestamp_sqlite_test.go b/internal/cluster/lifecycle_timestamp_sqlite_test.go
+index 025d303..81b4b4a 100644
+--- a/internal/cluster/lifecycle_timestamp_sqlite_test.go
++++ b/internal/cluster/lifecycle_timestamp_sqlite_test.go
+@@ -122,7 +122,7 @@ func TestSQLiteCPAHeartbeatExactTimeoutBoundary(t *testing.T) {
+ 	}
+ 	now := lastSeen.Add(heartbeatTimeout)
+ 	setSQLiteLifecycleTestClock(t, repo, &now)
+-	if errCleanup := repo.cleanupStaleMembership(ctx, lifetime.Fingerprint, heartbeatTimeout); errCleanup != nil {
++	if errCleanup := repo.cleanupStaleMembership(ctx, lifetime.Fingerprint, heartbeatTimeout, lifetime.Home); errCleanup != nil {
+ 		t.Fatal(errCleanup)
+ 	}
+ 	if errFind := repo.db.First(&member, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errFind != nil {
+@@ -132,7 +132,7 @@ func TestSQLiteCPAHeartbeatExactTimeoutBoundary(t *testing.T) {
+ 		t.Fatalf("CPA state at the exact timeout boundary = %q, want active", member.State)
+ 	}
+ 	now = now.Add(databaseTimestampStep(repo.db))
+-	if errCleanup := repo.cleanupStaleMembership(ctx, lifetime.Fingerprint, heartbeatTimeout); errCleanup != nil {
++	if errCleanup := repo.cleanupStaleMembership(ctx, lifetime.Fingerprint, heartbeatTimeout, lifetime.Home); errCleanup != nil {
+ 		t.Fatal(errCleanup)
+ 	}
+ 	if errFind := repo.db.First(&member, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errFind != nil {
+diff --git a/internal/cluster/membership_ownership_test.go b/internal/cluster/membership_ownership_test.go
+new file mode 100644
+index 0000000..bb5c2de
+--- /dev/null
++++ b/internal/cluster/membership_ownership_test.go
+@@ -0,0 +1,101 @@
++package cluster
++
++import (
++	"context"
++	"testing"
++	"time"
++)
++
++// staleNodeOfPeer seeds two live Homes and a node of the peer whose liveness has expired, as when
++// the peer's own database pool is too busy to refresh it.
++func staleNodeOfPeer(t *testing.T, ctx context.Context) (*Repository, HomeIncarnationID, HomeIncarnationID, CPANodeMembershipRecord) {
++	t.Helper()
++	repo, peer, member := newQuiescenceMembership(t, ctx, "fp-peer-owned")
++	self, errSelf := repo.RegisterHomeIncarnation(ctx, "10.0.0.2", 8317, []string{"credential_concurrency_foundation_v1"})
++	if errSelf != nil {
++		t.Fatal(errSelf)
++	}
++	if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", member.CertificateFingerprint).
++		Update("last_seen_at", time.Now().UTC().Add(-peerFenceBackstop/2)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	return repo, self, peer, member
++}
++
++func membershipState(t *testing.T, repo *Repository, fingerprint string) string {
++	t.Helper()
++	var record CPANodeMembershipRecord
++	if errFind := repo.db.First(&record, "certificate_fingerprint = ?", fingerprint).Error; errFind != nil {
++		t.Fatal(errFind)
++	}
++	return record.State
++}
++
++func TestLiveHomeOwnsMembersPeerLeavesItsStaleNode(t *testing.T) {
++	ctx := context.Background()
++	repo, self, _, member := staleNodeOfPeer(t, ctx)
++	if errCleanup := repo.CleanupStaleMemberships(ctx, self); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateActive {
++		t.Fatalf("a peer cancelled the node of a Home that still heartbeats: state %q", state)
++	}
++}
++
++func TestLiveHomeOwnsMembersPeerFencesASilentHomesNode(t *testing.T) {
++	ctx := context.Background()
++	repo, self, peer, member := staleNodeOfPeer(t, ctx)
++	if errUpdate := repo.db.Model(&HomeProcessIncarnationRecord{}).
++		Where("home_ip = ? AND home_port = ? AND started_at = ?", peer.IP, peer.Port, peer.StartedAt).
++		Update("last_seen_at", time.Now().UTC().Add(-time.Hour)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if errCleanup := repo.CleanupStaleMemberships(ctx, self); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
++		t.Fatalf("the node of a dead Home was left active: state %q", state)
++	}
++}
++
++func TestLiveHomeOwnsMembersHomeFencesItsOwnStaleNode(t *testing.T) {
++	ctx := context.Background()
++	repo, _, peer, member := staleNodeOfPeer(t, ctx)
++	if errCleanup := repo.CleanupStaleMemberships(ctx, peer); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
++		t.Fatalf("a Home left its own stale node active: state %q", state)
++	}
++}
++
++func TestLiveHomeOwnsMembersPeerFencesAnExpiredHomesNode(t *testing.T) {
++	ctx := context.Background()
++	repo, self, peer, member := staleNodeOfPeer(t, ctx)
++	if errUpdate := repo.db.Model(&HomeProcessIncarnationRecord{}).
++		Where("home_ip = ? AND home_port = ? AND started_at = ?", peer.IP, peer.Port, peer.StartedAt).
++		Update("state", HomeIncarnationExpired).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if errCleanup := repo.CleanupStaleMemberships(ctx, self); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
++		t.Fatalf("the node of an expired Home was left active: state %q", state)
++	}
++}
++
++func TestLiveHomeOwnsMembersPeerFencesPastTheBackstop(t *testing.T) {
++	ctx := context.Background()
++	repo, self, _, member := staleNodeOfPeer(t, ctx)
++	if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", member.CertificateFingerprint).
++		Update("last_seen_at", time.Now().UTC().Add(-peerFenceBackstop-time.Minute)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if errCleanup := repo.CleanupStaleMemberships(ctx, self); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
++		t.Fatalf("a node stale past the backstop stayed active because its Home still heartbeats: state %q", state)
++	}
++}
+diff --git a/internal/cluster/quiescence.go b/internal/cluster/quiescence.go
+index cf1977d..6c2a3cb 100644
+--- a/internal/cluster/quiescence.go
++++ b/internal/cluster/quiescence.go
+@@ -143,8 +143,11 @@ func beginFingerprintCancellationForMembershipTx(ctx context.Context, tx *gorm.D
+ 	return revision, nil
+ }
+ 
+-// CleanupStaleMemberships begins cancellation for active memberships whose database liveness has expired.
+-func (r *Repository) CleanupStaleMemberships(ctx context.Context) error {
++// CleanupStaleMemberships begins cancellation for active memberships whose database liveness has
++// expired. A Home that still heartbeats owns its nodes: a peer cancels a stale membership only
++// when the Home that holds it has stopped heartbeating, so a Home whose own database work is slow
++// for a few seconds is never fenced by a healthy peer.
++func (r *Repository) CleanupStaleMemberships(ctx context.Context, self HomeIncarnationID) error {
+ 	db, errDB := r.database()
+ 	if errDB != nil {
+ 		return errDB
+@@ -161,14 +164,14 @@ func (r *Repository) CleanupStaleMemberships(ctx context.Context) error {
+ 		if membership.CPAHeartbeatTimeout <= 0 || !membership.LastSeenAt.Before(now.Add(-membership.CPAHeartbeatTimeout)) {
+ 			continue
+ 		}
+-		if errCleanup := r.cleanupStaleMembership(ctx, membership.CertificateFingerprint, membership.CPAHeartbeatTimeout); errCleanup != nil {
++		if errCleanup := r.cleanupStaleMembership(ctx, membership.CertificateFingerprint, membership.CPAHeartbeatTimeout, self); errCleanup != nil {
+ 			return errCleanup
+ 		}
+ 	}
+ 	return nil
+ }
+ 
+-func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint string, heartbeatTimeout time.Duration) error {
++func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint string, heartbeatTimeout time.Duration, self HomeIncarnationID) error {
+ 	db, errDB := r.database()
+ 	if errDB != nil {
+ 		return errDB
+@@ -189,11 +192,45 @@ func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint str
+ 		if !membership.LastSeenAt.Before(now.Add(-membership.CPAHeartbeatTimeout)) {
+ 			return nil
+ 		}
++		// A peer leaves a live Home's stale node to that Home, up to the backstop: a Home whose own
++		// cleanup cannot run would otherwise keep a dead node active forever.
++		if !membershipOwnedByHome(membership, self) && !membership.LastSeenAt.Before(now.Add(-peerFenceBackstop)) {
++			ownerLive, errOwner := homeIncarnationLiveTx(tx, membership.HomeIP, membership.HomePort, membership.HomeStartedAt, now)
++			if errOwner != nil {
++				return errOwner
++			}
++			if ownerLive {
++				return nil
++			}
++		}
+ 		_, errBegin := beginFingerprintCancellationForMembershipTx(ctx, tx, &membership, now)
+ 		return errBegin
+ 	})
+ }
+ 
++// peerFenceBackstop is how long a peer leaves a live Home's stale node alone. It is far above any
++// liveness stall measured on a serving node, so it only catches a Home whose own cleanup is stuck.
++const peerFenceBackstop = 60 * time.Second
++
++// homeIncarnationLiveTx reports whether a Home is active and heartbeated within the node heartbeat
++// timeout. It reads the lifecycle row without locking it.
++func homeIncarnationLiveTx(tx *gorm.DB, ip string, port int, startedAt time.Time, now time.Time) (bool, error) {
++	timeout := DefaultHeartbeatTimeout()
++	lifecycle := LifecycleConfigRecord{}
++	errLifecycle := tx.First(&lifecycle, "id = ?", 1).Error
++	if errLifecycle != nil && !errors.Is(errLifecycle, gorm.ErrRecordNotFound) {
++		return false, errLifecycle
++	}
++	if errLifecycle == nil && lifecycle.NodeHeartbeatTimeout > 0 {
++		timeout = lifecycle.NodeHeartbeatTimeout
++	}
++	var live int64
++	errCount := tx.Model(&HomeProcessIncarnationRecord{}).
++		Where("home_ip = ? AND home_port = ? AND started_at = ? AND state = ? AND last_seen_at >= ?", strings.TrimSpace(ip), port, startedAt, HomeIncarnationActive, now.Add(-timeout)).
++		Count(&live).Error
++	return live > 0, errCount
++}
++
+ // AcknowledgeQuiescence records one active Home's successful local fence for the current lifetime.
+ func (r *Repository) AcknowledgeQuiescence(ctx context.Context, fingerprint string, connectedAt time.Time, revision int64, home HomeIncarnationID) error {
+ 	db, errDB := r.database()
+diff --git a/internal/cluster/rebalance_test.go b/internal/cluster/rebalance_test.go
+index f90dff3..84b4f2d 100644
+--- a/internal/cluster/rebalance_test.go
++++ b/internal/cluster/rebalance_test.go
+@@ -258,7 +258,7 @@ func TestRebalanceSuccessCooldownAndLostFeedbackRecovery(t *testing.T) {
+ 		}
+ 		if index == 1 {
+ 			// Lifecycle cleanup can start cancellation while the CPA settles pending dispatches.
+-			if errCleanup := f.repo.CleanupStaleMemberships(context.Background()); errCleanup != nil {
++			if errCleanup := f.repo.CleanupStaleMemberships(context.Background(), rebalanceSource(plan)); errCleanup != nil {
+ 				t.Fatal(errCleanup)
+ 			}
+ 		}

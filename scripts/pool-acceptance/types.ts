@@ -11,6 +11,13 @@ export class HttpStatusFailure extends AcceptanceFailure {
   }
 }
 
+/** A model call's 429 carrying the pool's cap code: its user's cap, not a failure to serve. */
+export class UserCapReached extends HttpStatusFailure {
+  constructor(message: string) {
+    super(429, message);
+  }
+}
+
 export type JsonObject = Record<string, unknown>;
 
 export type Conversation = {
@@ -24,6 +31,12 @@ export type PoolAccess = {
   readonly token: string;
   readonly owner: string;
 };
+
+/**
+ * A pool made only for acceptance. Usage is read there with an owner token minted from the app
+ * signing key, which is never minted for a pool that holds people's work.
+ */
+export const isAcceptancePool = (pool: string) => /^acceptance-[a-zA-Z0-9-]+$/u.test(pool);
 
 export type ModelCatalog = {
   readonly boot: string;

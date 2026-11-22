@@ -1,11 +1,11 @@
 import { brand } from "../../../brand.ts";
 import { poolGroupPrefix } from "../pool-group.ts";
 
-const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+export const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
 const appPattern = "^app_.{1,252}$";
-const groupPattern = literal(`^${poolGroupPrefix}app_.{1,252}$`);
-const poolStart = poolGroupPrefix.length + 1;
-const userPattern = literal(
+export const groupPattern = literal(`^${poolGroupPrefix}app_.{1,252}$`);
+export const poolStart = poolGroupPrefix.length + 1;
+export const userPattern = literal(
   `^${brand.setup.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}-[a-f0-9]{64}-([a-f0-9]{16})$`,
 );
 

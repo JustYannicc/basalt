@@ -36,6 +36,8 @@ import { NativeComputers } from "./native-computers.ts";
 
 interface Dependencies {
   retirePool?(pool: string, at: number): Promise<void>;
+  /** A person's deletion drops their contributed accounts without a membership reservation. */
+  personDeleted?(): void;
   storage: ComputerStorage;
   home: ComputerHome;
   signingKey: string;
@@ -44,6 +46,8 @@ interface Dependencies {
   now?: () => number;
   onProductEvent?: ProductEventCallback;
   usage?: Pick<PoolUsage, "summary" | "setCap">;
+  /** Counts only: what upkeep removed. */
+  reportRemoved?: (removed: { abandonedApprovals: number }) => void;
 }
 const storageKey = "computer-registry-v1";
 /** One of the pools this person can use, or a refusal. */
@@ -114,7 +118,13 @@ export class Computers {
           changed = true;
         }
       }
-      if (changed) await this.save(registry);
+      const abandonedApprovals = this.native.removeAbandoned(registry);
+      if (changed || abandonedApprovals) await this.save(registry);
+      if (abandonedApprovals) {
+        const removed = { abandonedApprovals };
+        if (this.deps.reportRemoved) this.deps.reportRemoved(removed);
+        else console.info("POOL_ABANDONED_APPROVALS_REMOVED", removed);
+      }
       const directory = await PoolDirectory.load(this.deps.storage, this.now());
       await directory.prune(this.now());
       await directory.provisionPending(this.deps.home);
@@ -217,6 +227,7 @@ export class Computers {
       );
       return await this.run(async (registry) => {
         if (change.action === "pool-deleted") await this.deps.retirePool?.(change.pool, change.at);
+        if (change.action === "person-deleted") this.deps.personDeleted?.();
         const directory = await PoolDirectory.load(this.deps.storage, this.now());
         return json(
           await directory.apply(change, registry, this.deps.home, this.now(), () =>
