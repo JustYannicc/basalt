@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-sweep-requeue",
   "file": "0734-catalog-sweep-requeue.patch",
-  "content_sha256": "cf9105bed02dc08379c146d996f2fead45b93a7c3b7b412e1903d74a9c66c80e",
+  "content_sha256": "7efad1ad1b0af53c98ca40e45455794e1a7e16f5926b6a84445863dd70439245",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
