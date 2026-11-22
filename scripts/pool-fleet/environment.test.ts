@@ -37,7 +37,9 @@ test("the fleet lane signs each model call for the release's acceptance device, 
     },
     { ...device, method: "POST", path: "/v1/chat/completions", expiresAt: 0 },
   );
-  // Usage is read in the device's own pool, so the records its calls leave are the ones checked.
+  // In a dedicated acceptance pool, usage is read in the device's own pool, so the records its
+  // calls leave are the ones checked.
+  assert.ok(deps.acceptance.access, "a dedicated acceptance pool keeps its owner access");
   assert.equal(
     (await verifyPoolToken(signingKey, deps.acceptance.access.token))?.pool,
     device.pool,
