@@ -71,16 +71,18 @@ test("an issuing row of an approval still in progress stays through upkeep", asy
   assert.deepEqual(f.removals, []);
 });
 
-test("upkeep keeps active devices, issuing rows that hold a key, and web setups", async () => {
+test("the removal keeps active devices, issuing rows holding a key, and web setups", async () => {
   const f = fixture();
   // Approved while the container was stopped: active with no model key yet.
   f.server.stopped = true;
   const keyless = await approve(f, "native:approved-before-key");
   f.server.stopped = false;
   await leftIssuing(f, "minted", { keyId: 71, userId: 1 });
-  // A web setup whose link lapsed holds its key. One with no key and no link is an interrupted
-  // setup, which the leftover upkeep removes (computer-leftovers.test.ts), not this removal.
+  // A web setup whose link lapsed holds its key and stays. One with no key and no link is an
+  // interrupted setup: the leftover upkeep removes it (computer-leftovers.test.ts), and this
+  // removal never counts it.
   await leftIssuing(f, "web-setup", { native: undefined, keyId: 72, userId: 1 });
+  await leftIssuing(f, "interrupted-web", { native: undefined });
   f.advance(2 * 60 * minute);
   await f.expire();
   const registry = await f.registry();

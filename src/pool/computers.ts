@@ -47,7 +47,7 @@ interface Dependencies {
   now?: () => number;
   onProductEvent?: ProductEventCallback;
   usage?: Pick<PoolUsage, "summary" | "setCap">;
-  /** Counts only: what upkeep removed. */
+  /** Counts only: the abandoned native approvals upkeep removed. */
   reportRemoved?: (removed: { abandonedApprovals: number }) => void;
 }
 const storageKey = "computer-registry-v1";
