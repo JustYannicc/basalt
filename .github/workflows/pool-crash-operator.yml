@@ -5,17 +5,17 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Observe the fleet, inspect a crash nonce, or apply one reviewed crash
+        description: Observe the fleet, inspect a crash nonce, apply one reviewed crash, or clear the forced-restart limit
         required: true
         default: observe
         type: choice
-        options: [observe, inspect, apply]
+        options: [observe, inspect, apply, recovery-reset]
       request_id:
         description: Fresh UUID for this dispatch; inspect and apply require it to equal packet.nonce
         required: true
         type: string
       packet:
-        description: "Observe: {controllerCode}. Inspect or apply: {controllerCode, identity, nonce, operator}"
+        description: "Observe or recovery-reset: {controllerCode}. Inspect or apply: {controllerCode, identity, nonce, operator}"
         required: true
         type: string
       coordinator_go:

@@ -17,7 +17,11 @@ test("a plan right after an apply leaves the root container alone", { timeout: 4
     proof.recorded.some((name) => !proof.hosted.includes(name)),
     "the pool Worker records a class it does not host",
   );
-  assert.ok(proof.readable.length > 0, "the installed Worker provider was asked");
+  // The planner asks with the other Worker's name resolved and, while it follows the cycle with
+  // the container, with that name unresolved. Both answers have to be there.
+  assert.ok(proof.unresolved.includes(false), "the provider was asked with every name resolved");
+  assert.ok(proof.unresolved.includes(true), "the provider was asked inside the cycle");
+  assert.equal(proof.unresolved.length, proof.readable.length);
   assert.deepEqual(
     proof.readable.filter((answer) => !answer),
     [],

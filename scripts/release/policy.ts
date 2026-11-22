@@ -16,6 +16,8 @@ export const ReleasePolicy = Schema.Struct({
       fqn: poolContainer.fields.fqn,
       image: Schema.Literal(""),
       imageRelease: poolContainer.fields.imageRelease,
+      recordedHashOnly: poolContainer.fields.recordedHashOnly,
+      workerAttachment: poolContainer.fields.workerAttachment,
     }),
   }),
   include: Schema.optional(Schema.Array(Schema.String)),
@@ -32,7 +34,10 @@ export const ReleasePolicy = Schema.Struct({
    */
   acceptance: Schema.optional(
     Schema.Struct({
-      rootRestart: Schema.Struct({ withinSeconds: Schema.Number, why: Schema.String }),
+      rootRestart: Schema.Struct({
+        bound: Schema.Literal("healingAcceptanceWithinMs"),
+        why: Schema.String,
+      }),
     }),
   ),
   // Only the cutover's declaration switches; a policy never supplies other configuration.

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The tools service serves the pool app's source for its own browser origin, the one its own pool calls use: derived from the stage on a test stage and configured elsewhere. Whatever host the bundle was built for, the served deployment file and font links name that origin, so a pool installed from the served source declares this stack's host and sends its token to no other stack. The served version stays the bundle's own hash: the host the bundle was built for serves it byte for byte and rolls nothing out, and pools a stack installed earlier from a bundle built for another host keep their source until the bundle next changes. A local e2e host keeps its own local origin, an already-local recipe peer and its own version. A seed without exactly one pool origin declaration fails as retryable storage unavailability with a logged reason."
+    }
+  }
+}
