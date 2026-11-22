@@ -90,6 +90,31 @@
       "packages": ["alchemy"],
       "upstream": null,
       "owner": null
+    },
+    "0696-alchemy-unchanged-container": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0707-alchemy-location-free-source-maps": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0726-alchemy-same-cycle-rendezvous": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0740-alchemy-uploaded-binding-metadata": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/pull/3641",
+      "owner": "restart-proof owner"
+    },
+    "0745-astro-dependency-scoped-ids": {
+      "packages": ["astro"],
+      "upstream": null,
+      "owner": null
     }
   }
 }
