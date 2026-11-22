@@ -27,7 +27,9 @@
     ".upstream/apps/hosted/cloud/src/main.ts",
     ".upstream/apps/hosted/server/src/implementation/pool-organization.ts",
     ".upstream/apps/hosted/server/src/implementation/organization.ts",
-    ".upstream/apps/hosted/cloud/src/implementation/organization-removal.ts"
+    ".upstream/apps/hosted/cloud/src/implementation/organization-removal.ts",
+    ".upstream/e2e/support/pool-history-database.ts",
+    "scripts/pool-tests/history-schema-fixture.ts"
   ],
   "fixture": "pool-setup"
 }
