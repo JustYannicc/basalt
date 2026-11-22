@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The end-to-end proofs read the product's log as records whichever shape a host printed: one JSON record on a line, as self-host and the Workers' own JSON writers write them, or a hosted Effect line as the local runtime prints its structured object, a JavaScript literal on one line or in a block from an opening to a closing brace, collected per Worker name because Workers interleave. A record keeps its message, its parts, its annotations and its timestamp; a printed record that is not plain data, or one still being written, stays as its lines. Data step summaries, a request's native log barrier and refused production operations are read through this one reader, so a hosted logging change can't hide them from the proofs."
+    }
+  }
+}
