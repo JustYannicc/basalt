@@ -1,5 +1,5 @@
 {
-  "branch": "rehearse/red-1601-00fce24c",
-  "policy": "code-restart",
-  "note": "Lane 6 replays production's history before B: the healing code-restart release at 00fce24c, what production runs now. Then B under code at the candidate. Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
+  "branch": "rehearse/candidate-5a172c9d",
+  "policy": "code",
+  "note": "Lane 6 release B (again, after the replayed healing release) and A: the release-fixes candidate 5a172c9d with its stage-only overlay, under #1665's code policy. Set branch and policy in the commit that labels stage-release-<lane>; an empty branch refuses."
 }
