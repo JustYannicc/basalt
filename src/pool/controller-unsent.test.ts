@@ -89,7 +89,8 @@ test("a container's own answer can't carry the pool's refusal or resend marks", 
       [mark]: "1",
       "X-Signalbox-Pool-Handover": "draining",
       "X-Signalbox-Runtime-Failure-Step": "endpoint_health",
-      "X-Signalbox-Runtime-Failure-Reason": "unhealthy",
+      "X-Signalbox-Runtime-Failure-Reason": "not-a-known-reason",
+      "X-Signalbox-Runtime-Defect": "1",
       "content-type": "application/json",
     },
   });
@@ -100,6 +101,7 @@ test("a container's own answer can't carry the pool's refusal or resend marks", 
     "X-Signalbox-Pool-Handover",
     "X-Signalbox-Runtime-Failure-Step",
     "X-Signalbox-Runtime-Failure-Reason",
+    "X-Signalbox-Runtime-Defect",
   ])
     assert.equal(cleaned.headers.get(name), null, name);
   assert.equal(cleaned.headers.get("content-type"), "application/json");

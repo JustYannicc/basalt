@@ -1,10 +1,5 @@
 import { codeHandoverHeader } from "./code-handover.ts";
-import {
-  runtimeResponseCause,
-  runtimeResponseDiagnostic,
-  runtimeRouteDiagnostic,
-  stripRuntimeFailureHeaders,
-} from "./runtime-route-diagnostic.ts";
+import { runtimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import { nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
 
 /**
@@ -57,19 +52,20 @@ export function withoutUnsentMark(response: Response) {
  * A container's own answer can't speak for the pool. Its refusal steps, handover mark and unsent
  * mark are removed where it enters the pool, so only the endpoint itself can prove a call unsent.
  */
+const poolOnly = [
+  controllerUnsentHeader,
+  codeHandoverHeader,
+  "X-Signalbox-Runtime-Failure-Step",
+  "X-Signalbox-Runtime-Failure-Reason",
+  "X-Signalbox-Runtime-Failure-Cause",
+  "X-Signalbox-Runtime-Defect",
+];
+
 export function containerAnswer(response: Response) {
-  if (
-    response.status === 101 ||
-    (!response.headers.has(controllerUnsentHeader) &&
-      !response.headers.has(codeHandoverHeader) &&
-      runtimeResponseDiagnostic(response) === undefined &&
-      runtimeResponseCause(response) === undefined)
-  )
+  if (response.status === 101 || !poolOnly.some((name) => response.headers.has(name)))
     return response;
   const headers = new Headers(response.headers);
-  stripRuntimeFailureHeaders(headers);
-  headers.delete(controllerUnsentHeader);
-  headers.delete(codeHandoverHeader);
+  for (const name of poolOnly) headers.delete(name);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

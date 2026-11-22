@@ -111,6 +111,7 @@ import { createPoolLifecycle } from "./runtime.worker.ts";
 import { forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
+import { containerAnswer } from "./controller-unsent.ts";
 import { captureError } from "../telemetry/sentry.ts";
 import { brand } from "../../brand.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
@@ -1103,9 +1104,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           : primary();
       },
       warm: (legacy) => this.handoff.warm(legacy),
-      fetch: (forwarded, target) => {
+      fetch: async (forwarded, target) => {
         if (!this.ctx.container) throw new Error("Pool container unavailable");
-        return this.ctx.container.getTcpPort(target).fetch(forwarded);
+        return containerAnswer(await this.ctx.container.getTcpPort(target).fetch(forwarded));
       },
       defer: (work) => this.ctx.waitUntil(work),
     });

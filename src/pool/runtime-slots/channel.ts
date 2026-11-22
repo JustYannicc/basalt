@@ -32,7 +32,9 @@ export class RuntimeChannel {
     // Before any send: a stopped container's refusal proves the call reached no container.
     if (!this.ctx.container?.running)
       refuseRuntime("endpoint_health", new SlotRefused("unhealthy"));
-    await this.ctx.container.setInactivityTimeout(poolLifecycle.idleTimeoutMs);
+    await this.ctx.container
+      .setInactivityTimeout(poolLifecycle.idleTimeoutMs)
+      .catch((error: unknown) => refuseRuntime("endpoint_health", error));
   }
   async health(configuration: RuntimeConfiguration, signal: AbortSignal, trace?: RuntimeReadTrace) {
     if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
