@@ -130,7 +130,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
         )
         child: supervisor.Child | None = None
         child_reader: threading.Thread | None = None
-        print_patcher = None
+        emit_patcher = None
         captured_stdout: list[str] = []
         capture_lock = threading.Lock()
 
@@ -156,14 +156,13 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
             startup_audit_revision = ready.service_audit_revision()
             ready.set_ready(True, audit_revision=startup_audit_revision)
 
-            def capture_print(*args: object, **_kwargs: object) -> None:
+            # Supervisor lines leave through output.emit, which the reader calls by its module name.
+            def capture_emit(line: str, err: bool = False) -> None:
                 with capture_lock:
-                    captured_stdout.append(" ".join(str(value) for value in args))
+                    captured_stdout.append(line)
 
-            print_patcher = patch.object(
-                supervisor, "print", side_effect=capture_print, create=True
-            )
-            print_patcher.start()
+            emit_patcher = patch.object(supervisor, "emit", side_effect=capture_emit)
+            emit_patcher.start()
             child = object.__new__(supervisor.Child)
             child.name = "home"
             child.diagnostics = supervisor.HomeCrashTail()
@@ -319,8 +318,8 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 child_reader.join(timeout=1)
             if process.stdout is not None:
                 process.stdout.close()
-            if print_patcher is not None:
-                print_patcher.stop()
+            if emit_patcher is not None:
+                emit_patcher.stop()
             ready_server.shutdown()
             ready_server.server_close()
             ready_thread.join(timeout=1)
