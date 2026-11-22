@@ -1,14 +1,9 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SafetyGateError } from "./contracts.ts";
 import { refuseFramework } from "./framework-refusal.ts";
 import { parseFrameworkProvenance } from "./framework-qualification.ts";
 import { readFrameworkArtifacts } from "../framework-artifacts.ts";
-import { validateFrameworkBuildReceipt } from "./framework-registry.ts";
-import { readQualifiedFrameworkHistory } from "./github-ledger.ts";
-import type { Fetcher } from "./http.ts";
 
 export const frameworkReceiptPath = (root: string) =>
   join(root, ".generated/framework-qualification.json");
@@ -101,68 +96,4 @@ export function candidateFrameworkEvidence(sourceRoot: string, candidate: string
     ),
     artifacts: readFrameworkArtifacts(root),
   };
-}
-
-function checkedFile(path: string, candidate: string) {
-  try {
-    return readFileSync(path, "utf8");
-  } catch {
-    return refuseFramework(
-      `Framework qualification for candidate ${candidate} cannot read its checked artifact`,
-      [
-        {
-          resource: path,
-          property: "file",
-          expected: "readable UTF-8 artifact",
-          observed: "unavailable",
-        },
-      ],
-    );
-  }
-}
-
-/** Fresh production history is trusted by the controller; no build-time snapshot can enroll. */
-export async function releaseFrameworkQualification(
-  sourceRoot: string,
-  candidate: string,
-  repository: string,
-  token: string,
-  fetcher: Fetcher = fetch,
-) {
-  const root = resolve(sourceRoot);
-  const evidence = candidateFrameworkEvidence(root, candidate);
-  const history = await readQualifiedFrameworkHistory({ repository, token }, fetcher);
-  const receiptPath = frameworkReceiptPath(root);
-  const receiptText = checkedFile(receiptPath, candidate);
-  let receipt: unknown;
-  try {
-    receipt = JSON.parse(receiptText);
-  } catch {
-    refuseFramework(
-      `Framework qualification for candidate ${candidate} requires its checked receipt`,
-      [
-        {
-          resource: receiptPath,
-          property: "receipt.format",
-          expected: "JSON build receipt",
-          observed: "malformed",
-        },
-      ],
-    );
-  }
-  const generated = checkedFile(generatedRegistryPath(root), candidate);
-  try {
-    return validateFrameworkBuildReceipt(
-      receipt,
-      candidate,
-      evidence.actual,
-      evidence.canonical,
-      history,
-      generated,
-      evidence.artifacts,
-    );
-  } catch (error) {
-    if (!(error instanceof SafetyGateError)) throw error;
-    throw new SafetyGateError(`Framework candidate ${candidate} at ${root}: ${error.message}`);
-  }
 }

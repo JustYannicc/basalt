@@ -4,8 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { pins, sha, digest } from "../releases/fixtures.test-helpers.ts";
-import type { ClassificationReport } from "../releases/types.ts";
+import { sha, digest } from "../releases/fixtures.test-helpers.ts";
 import { SafetyGateError } from "./contracts.ts";
 import type {
   FrameworkQualification,
@@ -17,8 +16,6 @@ import {
   renderQualifiedFrameworkRegistry,
   validateFrameworkBuildReceipt,
 } from "./framework-registry.ts";
-import { deploymentPayloadFor, readQualifiedFrameworkHistory } from "./github-ledger.ts";
-import type { Fetcher } from "./http.ts";
 
 const release = (digit: string): FrameworkReleaseProvenance => ({
   version: `release-${digit}`,
@@ -249,65 +246,4 @@ test("activation validates the checked candidate, producer, complete history and
     SafetyGateError,
     "A consistent replacement digest and generated file cannot hide lost qualified history",
   );
-});
-
-test("next release registry retains failed and status-less qualifications read from the ledger", async () => {
-  const releasePins = pins();
-  const report = (candidate: string): ClassificationReport => ({
-    schemaVersion: 1,
-    base: { gitCommit: sha("0"), pins: releasePins },
-    candidate: { gitCommit: candidate, pins: releasePins },
-    databaseChanged: false,
-    workflowChanged: false,
-    evidence: {
-      database: { state: "unchanged", sources: [] },
-      workflow: { state: "unchanged", sources: [] },
-    },
-  });
-  const rows = [firstReceipt.qualification, secondReceipt.qualification].map(
-    (qualification, index) => ({
-      id: index + 1,
-      sha: qualification.producerGitCommit,
-      environment: "production",
-      payload: deploymentPayloadFor(
-        report(qualification.producerGitCommit),
-        "release",
-        undefined,
-        qualification,
-      ),
-      created_at: `2026-11-14T00:0${index}:00Z`,
-    }),
-  );
-  const statuses = new Map<number, string[]>([
-    [1, ["failure"]],
-    [2, []],
-  ]);
-  let statusReads = 0;
-  const fetcher: Fetcher = async (input, init) => {
-    assert.equal(init?.method, "GET");
-    const url = new URL(String(input));
-    if (url.pathname.endsWith("/deployments")) return Response.json(rows);
-    statusReads++;
-    const match = /\/deployments\/(\d+)\/statuses$/.exec(url.pathname);
-    assert.ok(match);
-    return Response.json((statuses.get(Number(match[1])) ?? []).map((state) => ({ id: 1, state })));
-  };
-  const environment = { repository: "owner/repo" };
-  const history = await readQualifiedFrameworkHistory(environment, fetcher);
-  const next = qualifiedFrameworkRegistry([canonical], history, release("3"), sha("3"), artifacts);
-  assert.deepEqual(next.releases, [canonical, first, second, release("3")]);
-  rows.push({
-    id: 3,
-    sha: sha("3"),
-    environment: "production",
-    payload: deploymentPayloadFor(report(sha("3")), "release", undefined, next.qualification),
-    created_at: "2026-11-14T00:03:00Z",
-  });
-  statuses.set(3, ["success"]);
-  const freshHistory = await readQualifiedFrameworkHistory(environment, fetcher);
-  assert.deepEqual(
-    qualifiedFrameworkRegistry([canonical], freshHistory, release("3"), sha("3"), artifacts),
-    next,
-  );
-  assert.equal(statusReads, 0);
 });
