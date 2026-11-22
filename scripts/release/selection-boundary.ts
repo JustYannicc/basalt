@@ -1,10 +1,11 @@
 /**
  * What a filtered plan's `UnsafeSelectionBoundary` refused, for the public report. Alchemy's planner
  * (alchemy/src/Plan.ts) raises it with a fixed sentence per check that embeds resource FQNs. A
- * message matching exactly one of those sentences prints the check and its names under the roles
- * the sentence gives them, each name that is not a plain resource name as `[withheld]`; nothing
- * else from the message prints. Any other message (another Alchemy release's wording) gives
- * `undefined`, and the caller keeps its generic line.
+ * message matching exactly one of those sentences prints the check and, under the roles the
+ * sentence gives them, each single name (as `[withheld]` when it is not a plain resource name) and
+ * for each list only how many names it holds; nothing else from the message prints. Any other
+ * message (another Alchemy release's wording) gives `undefined`, and the caller keeps its generic
+ * line.
  */
 
 /**
@@ -17,7 +18,6 @@ const NAME = /^[A-Za-z][A-Za-z0-9]{0,120}$/u;
 const LOWERCASE = /[a-z]/u;
 /** Account, zone and namespace ids are hex runs, which a name never holds. */
 const HEX_ID = /[A-Fa-f0-9]{16,}/u;
-const NAMES_PER_LIST = 8;
 const WITHHELD = "[withheld]";
 const SELECT_OR_FULL = "Select them or run a full deployment\\.";
 
@@ -89,15 +89,15 @@ export function selectionBoundary(message: string): string | undefined {
   for (const [role, value] of Object.entries(groups)) {
     // The other branch of an alternative.
     if (value === undefined) continue;
-    // A name that is not plain hides only itself, so the check and the other names still print:
-    // production declares route ids with dots and dashes that a check listing unselected rows names.
-    const names = (lists.has(role) ? value.split(", ") : [value]).map((name) =>
-      plain(name) ? name : WITHHELD,
-    );
-    const more = names.length - NAMES_PER_LIST;
-    fields.push(
-      `${role}=${names.slice(0, NAMES_PER_LIST).join(",")}${more > 0 ? `,+${more} more` : ""}`,
-    );
+    if (lists.has(role)) {
+      // Alchemy joins a list with ", " and escapes nothing, so a name holding the separator would
+      // read as several plain names. A list prints only how many names it holds.
+      const count = value.split(", ").length;
+      fields.push(`${role}=[${count} ${count === 1 ? "name" : "names"}]`);
+      continue;
+    }
+    // A single name that is not plain hides only itself, so the check still prints.
+    fields.push(`${role}=${plain(value) ? value : WITHHELD}`);
   }
   return `UnsafeSelectionBoundary: ${fields.join(" ")}`;
 }

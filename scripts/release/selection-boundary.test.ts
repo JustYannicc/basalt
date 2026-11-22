@@ -61,7 +61,7 @@ test("a filtered recovery from deleting in another mode names its resource, not 
   assert.equal(report.publicText, named("check=mode-switch-while-deleting resource=PoolWorker"));
 });
 
-test("detaching a selected consumer with unselected consumers names all three", async (context) => {
+test("detaching a selected consumer with unselected consumers names both and counts the rest", async (context) => {
   const report = await planned(context, {
     declared: { vaultBinding: false },
     rows: rows({
@@ -73,7 +73,7 @@ test("detaching a selected consumer with unselected consumers names all three", 
   assert.equal(
     report.publicText,
     named(
-      "check=detach-with-unselected-consumers source=VaultAttachments consumer=PoolWorker unselected=PoolDatabase",
+      "check=detach-with-unselected-consumers source=VaultAttachments consumer=PoolWorker unselected=[1 name]",
     ),
   );
 });
@@ -91,7 +91,7 @@ test("a filtered replacement beside recorded bindings names the evidence", async
   );
 });
 
-test("a filtered replacement with unselected dependents names them", async (context) => {
+test("a filtered replacement with unselected dependents names it and counts them", async (context) => {
   const all = productionRows();
   const report = await planned(context, {
     rows: { VaultAttachments: { ...all.VaultAttachments, status: "replacing" } as ResourceState },
@@ -100,21 +100,19 @@ test("a filtered replacement with unselected dependents names them", async (cont
   assert.equal(
     report.publicText,
     named(
-      "check=replace-with-unselected-dependents resource=VaultAttachments unselected=PoolContainer,PoolWorker",
+      "check=replace-with-unselected-dependents resource=VaultAttachments unselected=[2 names]",
     ),
   );
 });
 
-test("a selected row without downstream history names the unselected rows", async (context) => {
+test("a selected row without downstream history counts the unselected rows", async (context) => {
   const report = await planned(context, {
     rows: rows({ VaultAttachments: { downstream: undefined } }),
     include: ["VaultAttachments"],
   });
   assert.equal(
     report.publicText,
-    named(
-      "check=incomplete-downstream-history resource=VaultAttachments unselected=ArtifactsCredentials,PoolContainer,PoolDatabase,PoolObservationSecrets,PoolWorker,PublicSiteWaitlist",
-    ),
+    named("check=incomplete-downstream-history resource=VaultAttachments unselected=[6 names]"),
   );
 });
 
@@ -140,13 +138,13 @@ test("an unselected dependency found while evaluating outputs names it", () => {
   );
 });
 
-test("discarding the last binding evidence names the unselected rows, at most eight", () => {
+test("discarding the last binding evidence counts the unselected rows", () => {
   const unselected = Array.from({ length: 10 }, (_, index) => `Resource${index}`);
   assert.equal(
     raised(
       `Cannot discard the last historical binding evidence while persisted nodes are unselected: ${unselected.join(", ")}. Select them or run a full deployment.`,
     ).publicText,
-    named(`check=last-binding-evidence unselected=${unselected.slice(0, 8).join(",")},+2 more`),
+    named("check=last-binding-evidence unselected=[10 names]"),
   );
 });
 
@@ -214,10 +212,21 @@ test("a name that is not a plain resource name prints as withheld, and the check
     raised(
       "Cannot replace or collect old generations of 'PoolWorker' while dependents are unselected: PoolDatabase, host name, AppHostBypass-app.example.org. Select them or run a full deployment.",
     ).publicText,
-    named(
-      "check=replace-with-unselected-dependents resource=PoolWorker unselected=PoolDatabase,[withheld],[withheld]",
-    ),
+    named("check=replace-with-unselected-dependents resource=PoolWorker unselected=[3 names]"),
   );
+});
+
+test("a list role prints only its count, so a name holding the separator cannot split into names", () => {
+  // Alchemy joins a list with ", " and escapes nothing, so "secret, TokenValue" as one name would
+  // read as two plain names. A list role therefore prints how many names it holds, never them.
+  const report = raised(
+    "Cannot replace or collect old generations of 'PoolWorker' while dependents are unselected: secret, TokenValue. Select them or run a full deployment.",
+  );
+  assert.equal(
+    report.publicText,
+    named("check=replace-with-unselected-dependents resource=PoolWorker unselected=[2 names]"),
+  );
+  assert.doesNotMatch(report.publicText, /secret|TokenValue/u);
 });
 
 test("the sealed detail keeps the planner's whole message", () => {
