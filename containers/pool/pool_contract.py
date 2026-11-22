@@ -360,7 +360,7 @@ DATABASE_DISTANCE_MAX_MS = 3500
 
 
 def home_database_distance(management_key: str) -> int | None:
-    """Home's median round trip to the database over its own pool, or None when unmeasured."""
+    """Home's shortest round trip to the database over its own pool, or None when unmeasured."""
     try:
         status, payload = request_json(
             f"{HOME_URL}/v8/management/database/distance", "GET", management_key, timeout=5

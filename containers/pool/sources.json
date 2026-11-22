@@ -279,28 +279,28 @@
         {
           "identity": "cliproxy-home-heartbeat-fresh-lease",
           "file": "0735-home-heartbeat-fresh-lease.patch",
-          "sha256": "3a842c38acc3049b1539b1ea17f17b25a0fda77b6bed8e8326b062e11639bd8e",
+          "sha256": "921477ab7ee1521cfe4af1ee648f165331df76d2a0e00dae726ccf6f3c834110",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0735 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home records a heartbeat without the election gate's row lock while the gate names the oldest live node, that node holds the master flag and its lease is fresh, renews the master's lease with one conditional update that never waits on a held gate, and passes the follower-never-waits, steady-lease, lease-expiry and blocked-renewal election regressions."
+            "requires": "Carry 0735 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home records a heartbeat without the election gate's row lock while the gate names the oldest live node, that node holds the master flag and its lease is fresh, renews the master's lease with one conditional update that never waits on a held gate, keeps the master flag no longer than the lease it read, and passes the follower-never-waits, steady-lease, lease-expiry, blocked-renewal and stalled-master election regressions."
           }
         },
         {
           "identity": "cliproxy-home-database-distance",
           "file": "0741-home-database-distance.patch",
-          "sha256": "03cb2bce9a81773c40544cecb42ed16eb2431400eea2d41a8e8a624af4e1a98b",
+          "sha256": "76954703d9c0d54c6e4a5fc2671b40e89bc4c3559deabd8e7ba89eec2489d932",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0741 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home serves a management read of its median database round trip over its coordination pool, measured after one unmeasured warm-up with per-sample and total budgets, answering unavailable below three samples, and passes the measured-distance and unavailable-database regressions."
+            "requires": "Carry 0741 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home serves a management read of its shortest database round trip over its coordination pool, with the median and slowest samples beside it, measured after one unmeasured warm-up with per-sample and total budgets, answering unavailable below three samples, and passes the measured-distance and unavailable-database regressions."
           }
         },
         {
           "identity": "cliproxy-home-node-liveness-floor",
           "file": "0736-home-node-liveness-floor.patch",
-          "sha256": "6511034003e95eaad99b936604697e1613e066fa53fd6abddcaa3200e3117e56",
+          "sha256": "0f237ef4e9a9b3c25671ec9cf6fae375f8223e68bd24cca2ab13318c1c5b61c3",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0736 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home stores a node liveness timeout of at least its configured floor on every membership it creates, every Home in the cluster runs that code or a cluster-wide timeout of at least the floor, and it passes the stored-floor, short-stall and past-the-floor regressions."
+            "requires": "Carry 0736 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home stores a node liveness timeout of at least its configured floor on every membership it creates, clamped inside its lifecycle safety rule, every Home in the cluster runs that code or a cluster-wide timeout of at least the floor, and it passes the stored-floor, short-stall, past-the-floor and lifecycle-rule regressions."
           }
         }
       ]

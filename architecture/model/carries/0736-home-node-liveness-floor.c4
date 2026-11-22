@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "A fleet Home stores a node liveness timeout of at least fifteen seconds on every membership it creates, above the cluster's three-second default. Every Home's cleanup, including the root's older Home, fences a node by the timeout stored on its membership, so a few seconds of database stall on a fleet Home never lets any Home fence a node that still serves. The cluster-wide setting is left alone, because Home refuses to change it while any node is connected. A node that really died is fenced after the floor instead of three seconds."
+      constraint "A fleet Home stores a node liveness timeout of at least fifteen seconds on every membership it creates, above the cluster's three-second default, but always at least a second inside Home's lifecycle rule that its own heartbeat timeout plus the reclaim grace outlast the stored timeout plus the cancel bound; at Home's twenty-second heartbeat timeout the full floor applies. Every Home's cleanup, including the root's older Home, fences a node by the timeout stored on its membership, so a few seconds of database stall on a fleet Home never lets any Home fence a node that still serves. The cluster-wide setting is left alone, because Home refuses to change it while any node is connected. A node that really died is fenced after the floor instead of three seconds."
     }
   }
 }

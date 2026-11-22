@@ -1,5 +1,5 @@
 diff --git a/internal/cluster/membership.go b/internal/cluster/membership.go
-index df547c5..176dec2 100644
+index df547c5..dfe094e 100644
 --- a/internal/cluster/membership.go
 +++ b/internal/cluster/membership.go
 @@ -182,7 +182,7 @@ func (r *Repository) SubscribeMembership(ctx context.Context, request SubscribeM
@@ -7,19 +7,23 @@ index df547c5..176dec2 100644
  			ConnectedAt:             connectedAt,
  			LifecycleConfigRevision: lifecycle.Revision,
 -			CPAHeartbeatTimeout:     cfg.CPAHeartbeatTimeout,
-+			CPAHeartbeatTimeout:     max(cfg.CPAHeartbeatTimeout, nodeLivenessFloor),
++			CPAHeartbeatTimeout:     nodeLivenessTimeout(cfg, lifecycle.NodeHeartbeatTimeout),
  			CPACancelBound:          cfg.CPACancelBound,
  			ReclaimGrace:            cfg.ReclaimGrace,
  			LastSeenAt:              dbNow,
 diff --git a/internal/cluster/node_liveness_floor.go b/internal/cluster/node_liveness_floor.go
 new file mode 100644
-index 0000000..82644a2
+index 0000000..3ca8a84
 --- /dev/null
 +++ b/internal/cluster/node_liveness_floor.go
-@@ -0,0 +1,10 @@
+@@ -0,0 +1,22 @@
 +package cluster
 +
-+import "time"
++import (
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++)
 +
 +// nodeLivenessFloor is the shortest liveness timeout this Home stores on its own nodes'
 +// memberships. Every Home's cleanup, including older Homes in the same cluster, fences a node by
@@ -27,18 +31,28 @@ index 0000000..82644a2
 +// stall on this Home let any Home fence a node that is still serving. The cluster-wide setting
 +// cannot change while nodes are connected, so this Home raises only its own memberships.
 +const nodeLivenessFloor = 15 * time.Second
++
++// nodeLivenessTimeout is the timeout stored on a new membership: the cluster's own, raised toward
++// nodeLivenessFloor but kept one second inside Home's lifecycle rule, which requires the Home
++// heartbeat timeout plus reclaim grace to outlast the stored timeout plus the cancel bound.
++func nodeLivenessTimeout(cfg config.CredentialConcurrencyConfig, nodeHeartbeatTimeout time.Duration) time.Duration {
++	ceiling := nodeHeartbeatTimeout + cfg.ReclaimGrace - cfg.CPACancelBound - time.Second
++	return max(cfg.CPAHeartbeatTimeout, min(nodeLivenessFloor, ceiling))
++}
 diff --git a/internal/cluster/node_liveness_floor_test.go b/internal/cluster/node_liveness_floor_test.go
 new file mode 100644
-index 0000000..ac101ee
+index 0000000..904a33b
 --- /dev/null
 +++ b/internal/cluster/node_liveness_floor_test.go
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,69 @@
 +package cluster
 +
 +import (
 +	"context"
 +	"testing"
 +	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
 +)
 +
 +// staleOwnNode subscribes a node with the cluster's default 3 s liveness and backdates its last
@@ -78,5 +92,25 @@ index 0000000..ac101ee
 +	}
 +	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
 +		t.Fatalf("a node stale past the floor was left active: state %q", state)
++	}
++}
++
++func TestNodeLivenessFloorStaysInsideTheLifecycleRule(t *testing.T) {
++	cfg := config.DefaultCredentialConcurrencyConfig()
++	for _, homeTimeout := range []time.Duration{20 * time.Second, 15 * time.Second, 10 * time.Second, 5 * time.Second} {
++		stored := nodeLivenessTimeout(cfg, homeTimeout)
++		if stored < cfg.CPAHeartbeatTimeout || stored > nodeLivenessFloor {
++			t.Fatalf("Home timeout %s: stored %s outside [%s, %s]", homeTimeout, stored, cfg.CPAHeartbeatTimeout, nodeLivenessFloor)
++		}
++		applied := cfg
++		applied.CPAHeartbeatTimeout = stored
++		if stored > cfg.CPAHeartbeatTimeout {
++			if errRule := ValidateCredentialConcurrencyLifecycle(homeTimeout, applied); errRule != nil {
++				t.Fatalf("Home timeout %s: stored %s breaks the lifecycle rule: %v", homeTimeout, stored, errRule)
++			}
++		}
++	}
++	if stored := nodeLivenessTimeout(cfg, 20*time.Second); stored != nodeLivenessFloor {
++		t.Fatalf("at the default Home timeout the full floor must apply, got %s", stored)
 +	}
 +}
