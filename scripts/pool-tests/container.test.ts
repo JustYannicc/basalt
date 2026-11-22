@@ -223,11 +223,16 @@ test(
             db_rtt_state: string;
             db_rtt_ms?: number;
             resume?: string;
+            refresh_in_flight?: number;
           };
           // The resume layer starts with the runtime and is advertised once its own probe passes.
           if (status.resume !== "v1") return;
+          // Home's refresh count rides /ready only while the liveness check's reading is fresh.
+          const { refresh_in_flight: refreshInFlight, ...stable } = status;
+          if (refreshInFlight !== undefined)
+            assert.ok(Number.isInteger(refreshInFlight) && refreshInFlight >= 0);
           // Home measures its distance over its own database pool before the node starts.
-          assert.deepEqual(Object.keys(status).sort(), [
+          assert.deepEqual(Object.keys(stable).sort(), [
             "boot_id",
             "db_rtt_ms",
             "db_rtt_state",

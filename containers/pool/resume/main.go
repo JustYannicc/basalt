@@ -20,7 +20,8 @@ const (
 	upstreamAddress = "http://127.0.0.1:8317"
 	// Soft runtime ceiling for the whole process. Buffers get their own hard, counted budget.
 	memoryLimitBytes = 192 << 20
-	// One second inside the supervisor's child stop grace, so the layer exits before it is killed.
+	// Well inside the supervisor's child stop grace (CHILD_STOP_GRACE_SECONDS in supervisor.py), so
+	// the layer finishes draining and exits before it is killed.
 	drainGrace = 14 * time.Second
 )
 

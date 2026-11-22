@@ -603,9 +603,12 @@ def main(stop: threading.Event | None = None) -> int:
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
                         readiness.set_ready(False)
+                        readiness.set_resume_available(False)
                         stop.set()
                         try:
-                            terminate_children(children)
+                            # One stop wait for Home, the node and the resume layer.
+                            layer = [resume.child] if resume.child is not None else []
+                            terminate_children([*children, *layer])
                         finally:
                             recovery_cleanup_done = True
                             if policy_monitor_thread is not None:
@@ -658,6 +661,8 @@ def main(stop: threading.Event | None = None) -> int:
     finally:
         if readiness is not None:
             readiness.set_ready(False)
+            # /ready keeps answering through the stop grace; a stopping layer is not resumable.
+            readiness.set_resume_available(False)
         stop.set()
         if home_peers is not None:
             home_peers.close()
@@ -665,8 +670,9 @@ def main(stop: threading.Event | None = None) -> int:
             policy_monitor_thread.join(timeout=1)
         try:
             # One shared stop grace: the controller's supervisor stop bound covers a single wait.
+            # The legacy recovery cleanup already stopped all of them in its own single wait.
             owned = [] if recovery_cleanup_done else list(children)
-            if resume is not None and resume.child is not None:
+            if not recovery_cleanup_done and resume is not None and resume.child is not None:
                 owned.append(resume.child)
             if owned:
                 terminate_children(owned)

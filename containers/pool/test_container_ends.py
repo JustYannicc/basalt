@@ -124,6 +124,7 @@ class SelectedSupervisorTests(unittest.TestCase):
                 self.at_stop["diagnostics"] = readiness[0].diagnostics(0)
                 self.at_stop["server_shut"] = servers[-1].shutdown.called
                 self.at_stop["terminated"] = [child.name for child in _children]
+                self.at_stop["resume"] = readiness[0].snapshot()[1].get("resume")
 
         stop.on_wait = on_wait
         health = SimpleNamespace(check=lambda: True, invalidate=lambda: None)
@@ -266,6 +267,29 @@ class SelectedSupervisorTests(unittest.TestCase):
         self.assertIn("resume", self.at_stop["terminated"])
         self.assertIn("home", self.at_stop["terminated"])
         self.assertFalse(self.at_stop["server_shut"], "/diagnostics closed before the children stopped")
+        self.assertIsNone(self.at_stop["resume"], "a stopping layer was still advertised as resumable")
+
+    def test_a_resume_layer_exit_ends_neither_a_selected_container_nor_its_home(self) -> None:
+        # The layer sits outside `children`: a selected runtime ends on a child exit, never on its.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        binary = pathlib.Path(directory.name) / "pool-resume"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+
+        def crash_layer(tick, launched, _ready, _clock) -> None:
+            if tick == 2:
+                layer = next(child for child in launched if child.name == "resume")
+                layer.exit_code = -9
+                layer.reader_alive = False
+
+        with patch.object(supervisor, "RESUME_BINARY", str(binary)), patch.object(
+            supervisor, "resume_layer_healthy", Mock(return_value=True)
+        ):
+            result, launched, _ready, stderr, ticks = self.run_selected(crash_layer)
+        self.assertEqual((result, ticks), (0, TICKS))
+        self.assertEqual([child.name for child in launched].count("home"), 1)
+        self.assertNotIn("POOL_SUPERVISOR_STOP", stderr)
 
     def test_a_home_exit_during_boot_ends_the_container(self) -> None:
         boot = Mock(side_effect=supervisor.HomeExited(1))
