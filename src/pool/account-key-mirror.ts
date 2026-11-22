@@ -1,7 +1,8 @@
 import { mirrorHomeConfig } from "./account-config-mirror.ts";
 import type { HomeClient } from "./control.ts";
 import { enableNewCodexWebSockets } from "./codex-websockets.ts";
-import { failureResponse, json, object, readBody, unavailable } from "./json.ts";
+import { failureResponse, json, object, readBody, unavailable, type Json } from "./json.ts";
+import type { MirrorRouteHint, RouteAssignments } from "./route-assignments.ts";
 import { openEnvelope } from "./token.ts";
 
 export const accountMirrorPath = "/pool/v1/account-mirrors";
@@ -9,6 +10,19 @@ export const accountMirrorPrefix = "sbam1";
 // Covers 2,000 model IDs of 256 UTF-16 units, duplicated as name/alias and base64 encoded.
 export const accountMirrorMaxBytes = 8_388_608;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** The host's pool-free routing answer; malformed fields are ignored, never trusted. */
+function routeHint(value: Json): MirrorRouteHint {
+  const route = value.route;
+  return {
+    ...(typeof value.hasRules === "boolean" ? { hasRules: value.hasRules } : {}),
+    ...(route === null
+      ? { route: null }
+      : object(route) && typeof route.routeId === "string" && typeof route.owner === "string"
+        ? { route: { routeId: route.routeId, owner: route.owner } }
+        : {}),
+  };
+}
 
 /** Only a fresh assertion from the trusted host can copy account fields into Home. */
 export async function handleAccountKeyMirror(
@@ -18,6 +32,8 @@ export async function handleAccountKeyMirror(
     readonly signingKey: string;
     readonly previousSigningKey?: string;
     readonly now?: () => number;
+    /** Resolves each upsert's route before Home sees the credential. */
+    readonly routes?: RouteAssignments;
   },
 ): Promise<Response> {
   try {
@@ -49,6 +65,10 @@ export async function handleAccountKeyMirror(
       !["upsert", "remove"].includes(String(value.action))
     )
       return new Response(null, { status: 401 });
+    const proxy =
+      value.action === "upsert"
+        ? await input.routes?.proxyFor(value.reference, routeHint(value), request.signal)
+        : undefined;
     if (object(value.credential) && value.credential.type === "config") {
       await mirrorHomeConfig(
         input.home,
@@ -56,6 +76,7 @@ export async function handleAccountKeyMirror(
         String(value.action),
         value.credential,
         request.signal,
+        proxy,
       );
     } else if (value.action === "remove") {
       const response = await input.home.response(
@@ -76,11 +97,16 @@ export async function handleAccountKeyMirror(
         method: "POST",
         signal: request.signal,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...value.credential, uuid: value.reference }),
+        body: JSON.stringify({
+          ...value.credential,
+          uuid: value.reference,
+          ...(proxy === undefined ? {} : { proxy_url: proxy }),
+        }),
       });
       if (saved.name !== `${value.reference}.json`) return unavailable();
       await enableNewCodexWebSockets(input.home, [value.reference], value.credential.type);
     }
+    if (value.action === "remove") await input.routes?.forget(value.reference);
     return json(null);
   } catch (error) {
     return failureResponse(error);

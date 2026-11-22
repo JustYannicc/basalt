@@ -9,6 +9,7 @@ import {
 import type { PoolEnvironment } from "./worker.ts";
 import { relayHomePeer } from "./home-peer-relay.ts";
 import { homePeerUpgrade } from "./home-peer-transport.ts";
+import { installRoutePeer } from "./route-peer-intercept.ts";
 
 declare global {
   namespace Cloudflare {
@@ -58,6 +59,7 @@ export class RuntimeHomePeerTransport {
       "home-peer.internal",
       this.ctx.exports.PoolHomePeer({ props: { source } }),
     );
+    await installRoutePeer(this.ctx, peerTarget(source).controllerId);
   }
   async configure(source: HomePeerSource) {
     await this.gate.retain(source);

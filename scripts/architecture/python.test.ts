@@ -178,6 +178,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "home_identity.py",
       "home_peer.py",
       "home_peer_wire.py",
+      "route_peer.py",
       "billing_policy.py",
       "readiness.py",
       "service_health.py",
@@ -208,7 +209,7 @@ test("the actual build downloader and pool wrapper require a release service", (
     [module("pool", "containers/pool", ["socket", "http.client"])],
     [
       { id: "releases", hosts: ["github.com"], sdks: [] },
-      { id: "gateway", hosts: ["home-peer.internal"], sdks: [] },
+      { id: "gateway", hosts: ["home-peer.internal", "route-peer.internal"], sdks: [] },
     ],
   );
   expect(result.errors).toEqual([]);

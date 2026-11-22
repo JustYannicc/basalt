@@ -15,6 +15,7 @@ from typing import Any
 
 from .home_identity import HomeIdentity
 from .home_peer import HomePeers
+from .route_peer import RoutePeers
 from .child_signals import (
     NativePolicyFuseParser,
     NativePolicyProbeParser,
@@ -235,6 +236,7 @@ def main(stop: threading.Event | None = None) -> int:
     readiness = None
     policy_monitor_thread = None
     home_peers = None
+    route_peers = None
     stop = threading.Event() if stop is None else stop
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
@@ -274,6 +276,9 @@ def main(stop: threading.Event | None = None) -> int:
         if home_identity.ordinal is not None:
             home_peers = HomePeers(home_identity.ordinal)
             home_peers.start()
+        # Routed credentials reach their route only through this loopback listener.
+        route_peers = RoutePeers()
+        route_peers.start()
 
         def launch_generation(recovering: bool = False) -> tuple[str, int]:
             """Reuse boot, child capture and health gates; import only on first boot."""
@@ -466,6 +471,8 @@ def main(stop: threading.Event | None = None) -> int:
         stop.set()
         if home_peers is not None:
             home_peers.close()
+        if route_peers is not None:
+            route_peers.close()
         if not recovery_cleanup_done and policy_monitor_thread is not None:
             policy_monitor_thread.join(timeout=1)
         if not recovery_cleanup_done and ready_server is not None:
