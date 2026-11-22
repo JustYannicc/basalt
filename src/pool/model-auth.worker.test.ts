@@ -47,6 +47,10 @@ const {
     defer?: (work: Promise<unknown>) => void,
   ): Promise<Response>;
 } = await import(workerModule);
+const handoverModule = "./code-handover.ts";
+const { handoverRefusal }: { handoverRefusal(request: Request): Response } = await import(
+  handoverModule
+);
 hooks.deregister();
 
 /** Everything a caller sent arrives as sent; the Worker adds only its own receive times. */
@@ -435,6 +439,38 @@ test("a controller reset at the Worker entry is survived by one send to a new in
     [["replayed", true]],
   );
   // The new instance answered, so it reports the request, with the first call to time the replay.
+  assert.deepEqual(events, []);
+  const [first, second] = calls.forwarded.map((forwarded) =>
+    forwarded.headers.get(poolReceiveHeader)!.split(","),
+  );
+  assert.equal(first!.length, 2);
+  assert.deepEqual([second![0], second![2]], first);
+});
+
+test("a call refused during a code handover is timed from its first call by the instance that answers it", async (context) => {
+  context.mock.method(console, "info", () => {});
+  const events = workerEvents(context);
+  let sends = 0;
+  const { env, calls } = poolStub(undefined, async (request) =>
+    ++sends === 1 ? handoverRefusal(request) : new Response(await request.text(), { status: 200 }),
+  );
+  const deferred: Promise<unknown>[] = [];
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      headers: { "X-Api-Key": "valid-home-key" },
+      body: '{"model":"claude-opus-5-5"}',
+    }),
+    env,
+    async () => true,
+    (work) => deferred.push(work),
+  );
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '{"model":"claude-opus-5-5"}');
+  assert.equal(calls.forwarded.length, 2);
+  await Promise.all(deferred);
+  // Both calls reached the object, so the Worker reports neither; the one that answered carries
+  // the refused call's time, which its event reports as the replay.
   assert.deepEqual(events, []);
   const [first, second] = calls.forwarded.map((forwarded) =>
     forwarded.headers.get(poolReceiveHeader)!.split(","),
