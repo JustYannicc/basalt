@@ -182,7 +182,7 @@ model {
       metadata {
         code "src/setup"
         libraries "react|react-dom"
-        bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway"
+        bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway|transport=basalt.router"
       }
     }
 
@@ -401,6 +401,7 @@ model {
   basalt.modelGateway -[sync]-> basalt.telemetry "record model request telemetry"
   basalt.setupHost -[sync]-> basalt.telemetry "record setup and computer observation telemetry"
   basalt.setupHost -[sync]-> basalt.router "setup response and public computer metadata"
+  basalt.setupHost -[sync]-> basalt.router "transport: the device approval page's same-origin /api/auth/* and /setup/v1/* requests, which the router routes"
   basalt.setupHost -[sync]-> basalt.pool "reuse pool UI components"
   basalt.setupHost -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
   basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: native cookie get-session; create and delete personal PAT; list organizations and tools-only native devices"
