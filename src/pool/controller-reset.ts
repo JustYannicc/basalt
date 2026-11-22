@@ -263,7 +263,6 @@ const resendable = (response: Response) => handingOver(response) || sentNowhere(
  * replay window, and once an answer comes the caller sees nothing. Past the window, or without a
  * held body, the refusal itself goes back: the retryable 503 clients already follow.
  */
-
 async function awaitHandover(
   request: Request,
   hop: ControllerHop,

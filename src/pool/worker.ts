@@ -901,7 +901,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
               prepared();
               return toLayer(
                 routed.request,
-                (request, port) => container.getTcpPort(port).fetch(request),
+                async (request, port) =>
+                  containerAnswer(await container.getTcpPort(port).fetch(request)),
                 () => container.running,
               );
             });
