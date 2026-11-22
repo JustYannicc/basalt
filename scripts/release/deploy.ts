@@ -62,6 +62,8 @@ const { positionals, values } = parseArgs({
     to: { type: "string" },
     apply: { type: "string" },
     "allow-not-serving": { type: "boolean" },
+    // The crash operator's {"controllerCode": ...} packet of the pool Worker deployed now.
+    "serving-controller": { type: "string" },
     "verify-only": { type: "boolean" },
   },
 });
@@ -174,6 +176,16 @@ if (command === "boot" || command === "accept") {
     const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } =
       await import("./acceptance-device.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
+    const { controllerRootReads, retryingReads, servedBootStandsIn, servingControllerCode } =
+      await import("./root-boot.ts");
+    const { controllerAdoptionMs } =
+      await import("../../src/pool/runtime-slots/forced-restart-timing.ts");
+    // The live controller's code before the apply; after it, the platform may keep that code a while.
+    const servingCode = values["serving-controller"]
+      ? servingControllerCode(values["serving-controller"])
+      : undefined;
+    const readsFor = (code: Parameters<typeof controllerRootReads>[0]["code"]) =>
+      controllerRootReads({ code, stage, env: process.env });
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
       : new PoolAcceptanceClient();
@@ -182,22 +194,37 @@ if (command === "boot" || command === "accept") {
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
       // Only a release that declares a root restart may start on a pool that does not answer.
-      const boot = await bootBeforeApply(credential, client, values["allow-not-serving"] === true);
-      await output(resolve(values.out ?? ""), { boot });
+      // With the serving controller's code the root's boot is the controller's, whichever runtime
+      // answers; without it, the served boot, which accept trusts only while no fleet cell can serve.
+      const boot = await bootBeforeApply(
+        credential,
+        client,
+        values["allow-not-serving"] === true,
+        servingCode ? retryingReads([await readsFor(servingCode)], 30_000) : undefined,
+      );
+      const source = servingCode ? "controller" : "served";
+      await output(resolve(values.out ?? ""), { boot, source });
       await summary(
         boot === NOT_SERVING
           ? "The pool does not answer before the apply; this release declares a root restart."
-          : "The root's boot is recorded before the apply.",
+          : source === "controller"
+            ? "The root's boot is recorded before the apply, from the controller's signed inspect."
+            : "The root's boot is recorded before the apply, from the served answer.",
       );
       process.exit(0);
     }
-    const bootRecord = async (path: string | undefined) =>
+    const BootRecord = Schema.Struct({
+      boot: Schema.String,
+      // Records from before the source was written came from the served answer.
+      source: Schema.optional(Schema.Literals(["controller", "served"])),
+    });
+    const readBootRecord = async (path: string | undefined) =>
       path
-        ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
-            JSON.parse(await readFile(resolve(path), "utf8")),
-          ).boot
+        ? Schema.decodeUnknownSync(BootRecord)(JSON.parse(await readFile(resolve(path), "utf8")))
         : undefined;
-    let rootBoot = await bootRecord(values["root-boot"]);
+    const bootRecord = async (path: string | undefined) => (await readBootRecord(path))?.boot;
+    const rootRecord = await readBootRecord(values["root-boot"]);
+    let rootBoot = rootRecord?.boot;
     // The boot read writes its record only when the pool did not refuse the device (a refusal stops
     // the run there): it served the device, or for a declared restart did not answer at all. So
     // after the apply a 401 or 403 is the release's. `--admitted` passes that record without
@@ -295,8 +322,36 @@ if (command === "boot" || command === "accept") {
       }
       rootBoot = verdict.boot;
     }
+    // The root is judged only against a boot read before the apply; a rollback's read has none, and
+    // the code it put back is not this checkout's. Either code may answer while the object adopts.
+    let controller: Awaited<ReturnType<typeof readsFor>> | undefined;
+    if (rootRecord) {
+      const { checkoutControllerCode } = await import("../pool-fleet/controller.ts");
+      const reads = retryingReads(
+        [
+          await readsFor(checkoutControllerCode),
+          ...(servingCode ? [await readsFor(servingCode)] : []),
+        ],
+        controllerAdoptionMs,
+      );
+      if (rootRecord.source === "controller") controller = reads;
+      else {
+        const stops = await servedBootStandsIn(reads);
+        if (stops) {
+          const view = {
+            passed: false,
+            cause: "root boot unknown",
+            ...(restart ? { restart } : {}),
+          };
+          if (values.out) await output(resolve(values.out), view);
+          await summary(`ACCEPTANCE CANNOT TELL THE ROOT'S BOOT: ${stops}. ${safeJson(view)}`);
+          process.exit(1);
+        }
+      }
+    }
     const result = await runAcceptance({
       credential,
+      ...(controller ? { controller } : {}),
       ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
       // After a declared restart, every request must be served by the one new boot.
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",

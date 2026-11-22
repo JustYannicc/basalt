@@ -1,5 +1,6 @@
 import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
 import { deviceRefusal, refusedDevice } from "./acceptance-device.ts";
+import { unreadable, type RootReads } from "./root-boot.ts";
 import {
   healingAcceptanceWithinMs,
   healingReadinessWithinMs,
@@ -19,8 +20,9 @@ export function healingWait(applyOutcome: string | undefined) {
 /**
  * The release's own acceptance through the public pool: one warm-up, a concurrent burst, one final
  * request, all streamed. Any failed request fails the release (an intermittent error is a stop).
- * Each response names the runtime that served it (X-Signalbox-Pool-Boot), so a release can also
- * require that the root kept its boot (code-only) or that a fleet cell served (fleet).
+ * Each response names the runtime that served it (X-Signalbox-Pool-Boot). With the controller's
+ * reads, the root's boot comes from the controller and a fleet cell's from its fleet rows; without
+ * them, the served boots stand in, which holds only while the root serves alone.
  */
 export interface AcceptanceOptions {
   /** The acceptance device's per-request signer; release acceptance never sends a bearer key. */
@@ -36,6 +38,8 @@ export interface AcceptanceOptions {
   readonly admitted?: boolean;
   /** The root's boot read before the apply: no release may restart the root, whatever it serves. */
   readonly rootBoot?: string;
+  /** The controller's signed reads; when given, they alone judge the root and the cells. */
+  readonly controller?: RootReads;
   readonly client?: PoolAcceptanceClient;
 }
 
@@ -55,14 +59,24 @@ export async function bootBeforeApply(
   credential: ModelAuth,
   client: PoolAcceptanceClient,
   allowNotServing: boolean,
+  controller?: RootReads,
 ) {
+  let served: string;
   try {
-    return await servingBoot(credential, client);
+    served = await servingBoot(credential, client);
   } catch (error) {
     const refused = deviceRefusal(error);
     if (refused !== undefined) throw refusedDevice(refused);
-    if (allowNotServing) return NOT_SERVING;
-    throw error;
+    if (!allowNotServing) throw error;
+    served = NOT_SERVING;
+  }
+  // The served read still proves the device is admitted; a cell may have answered it, so the
+  // root's boot is the controller's. An unreadable controller stops the run before the apply.
+  if (!controller) return served;
+  try {
+    return await controller.root();
+  } catch (error) {
+    throw new Error(unreadable(error));
   }
 }
 
@@ -260,6 +274,13 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
       cause,
     };
   }
+  // With a boot from before the apply, the read after the calls alone shows any change: boots never
+  // repeat. Without one, the root is read before the calls too.
+  let rootAtStart: string | Error | undefined;
+  if (options.controller && options.rootBoot === undefined && options.expect === "same-boot")
+    rootAtStart = await options.controller
+      .root()
+      .catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
   const model = options.model ?? catalog.ids[0];
   if (!model || !catalog.ids.includes(model))
     throw new Error("The acceptance model is not in /v1/models");
@@ -287,25 +308,36 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
   await turn();
   const distinct = [...new Set(boots)];
   const refused = [...new Set(refusals)].sort((a, b) => a - b);
+  const judged = options.controller
+    ? await judgeByController(options, options.controller, rootAtStart, distinct)
+    : undefined;
   // What the served requests show decides first: a failed request, or a root that restarted.
   const servingCause = failures.length
     ? `${failures.length} of ${requests} requests failed: ${[...new Set(failures)].join("; ")}`
-    : options.rootBoot !== undefined &&
-        (!distinct.includes(options.rootBoot) ||
-          (options.expect === "same-boot" && distinct.length !== 1))
-      ? `The root restarted: boot ${options.rootBoot} before the apply, ${distinct.join(", ")} after`
-      : options.expect === "same-boot" && distinct.length !== 1
-        ? `The root changed boot during acceptance (${distinct.length} boots)`
-        : undefined;
+    : judged
+      ? judged.root
+      : options.rootBoot !== undefined &&
+          (!distinct.includes(options.rootBoot) ||
+            (options.expect === "same-boot" && distinct.length !== 1))
+        ? `The root restarted: boot ${options.rootBoot} before the apply, ${distinct.join(", ")} after`
+        : options.expect === "same-boot" && distinct.length !== 1
+          ? `The root changed boot during acceptance (${distinct.length} boots)`
+          : undefined;
   const untested = refusals.length
     ? `${refusals.length} of ${requests} requests were ${refusedFor(refused)}`
     : undefined;
   const cause =
     servingCause ??
     untested ??
-    (options.expect === "two-runtimes" && distinct.length < 2
-      ? "Every request was served by one runtime; no fleet cell served"
-      : undefined);
+    (options.expect !== "two-runtimes"
+      ? undefined
+      : judged
+        ? judged.cellServed
+          ? undefined
+          : "No request was served by a boot the controller lists as a fleet cell; no fleet cell served"
+        : distinct.length < 2
+          ? "Every request was served by one runtime; no fleet cell served"
+          : undefined);
   return {
     passed: cause === undefined,
     couldNotTest: servingCause === undefined && untested !== undefined,
@@ -315,5 +347,33 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
     boots: distinct,
     firstByteMs: { p50: percentile(timings, 0.5), p95: percentile(timings, 0.95) },
     ...(cause ? { cause } : {}),
+  };
+}
+
+/** The root's verdict from the controller, read after the calls, and whether a fleet cell served. */
+async function judgeByController(
+  options: AcceptanceOptions,
+  controller: RootReads,
+  rootAtStart: string | Error | undefined,
+  served: readonly string[],
+): Promise<{ root?: string; cellServed: boolean }> {
+  if (rootAtStart instanceof Error) return { root: unreadable(rootAtStart), cellServed: false };
+  let after: string;
+  let cells: ReadonlySet<string> = new Set();
+  try {
+    after = await controller.root();
+    if (options.expect === "two-runtimes") cells = await controller.cells(after);
+  } catch (error) {
+    return { root: unreadable(error), cellServed: false };
+  }
+  const before = options.rootBoot ?? rootAtStart;
+  return {
+    root:
+      options.rootBoot !== undefined && after !== options.rootBoot
+        ? `The root restarted: boot ${options.rootBoot} before the apply, ${after} after (controller inspect)`
+        : before !== undefined && after !== before
+          ? `The root changed boot during acceptance (controller inspect: ${before}, then ${after})`
+          : undefined,
+    cellServed: served.some((boot) => cells.has(boot)),
   };
 }
