@@ -12,6 +12,7 @@ import { endpointMetadata } from "./model-history/record.ts";
 import { shape } from "./runtime-fleet/endpoint-trace.ts";
 import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
 import { handingOver } from "./code-handover.ts";
+import { sentNowhere, withoutUnsentMark } from "./controller-unsent.ts";
 import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
@@ -241,12 +242,16 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
   }
 }
 
+const resendable = (response: Response) => handingOver(response) || sentNowhere(response);
+
 /**
- * A controller handing over to new code refuses new model calls until it resets itself. A call it
- * refused was never sent on, so a safe read or a held model call is sent again each second inside
- * the replay window, and once the new instance answers the caller sees nothing. Past the window,
- * or without a held body, the refusal itself goes back: the retryable 503 clients already follow.
+ * A controller handing over to new code refuses new model calls until it resets itself, and a call
+ * whose runtime refused it before its container send comes back marked unsent. Either way the call
+ * was never sent on, so a safe read or a held model call is sent again each second inside the
+ * replay window, and once an answer comes the caller sees nothing. Past the window, or without a
+ * held body, the refusal itself goes back: the retryable 503 clients already follow.
  */
+
 async function awaitHandover(
   request: Request,
   hop: ControllerHop,
@@ -255,10 +260,11 @@ async function awaitHandover(
   response: Response,
   begun: number,
 ): Promise<Response> {
-  if (!handingOver(response) || (!model && !safeRead(request))) return response;
+  if (!resendable(response) || (!model && !safeRead(request))) return withoutUnsentMark(response);
   const now = hop.now ?? Date.now;
+  const cause = handingOver(response) ? "handover" : "unsent";
   let sends = 0;
-  while (handingOver(response)) {
+  while (resendable(response)) {
     if (now() - begun + controllerReplayDelayMs > controllerReplayWindowMs) break;
     let resend: Request = request;
     if (model) {
@@ -288,11 +294,12 @@ async function awaitHandover(
     }
   }
   console.info("POOL_CODE_HANDOVER_WAITED", {
+    cause,
     sends,
     waitedMs: now() - begun,
-    outcome: handingOver(response) ? "refused" : "answered",
+    outcome: resendable(response) ? "refused" : "answered",
   });
-  return response;
+  return withoutUnsentMark(response);
 }
 
 async function forwardHeld(
