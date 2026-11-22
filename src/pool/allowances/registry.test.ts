@@ -211,3 +211,51 @@ test("rejected source rows do not contradict fresh fallback before their origina
     }
   }
 });
+
+test("plans whose last usable row expires within a week are named once per day", async () => {
+  let clock = Date.parse("2026-11-20T06:00:00Z");
+  const row = (
+    plan: string,
+    expiresAt: number,
+    verification: "verified" | "unknown" = "verified",
+  ) => ({
+    vendor: "anthropic",
+    plan,
+    windowSeconds: 604_800,
+    full: verification === "unknown" ? null : 5,
+    unit: { id: "claude-pro-equivalent", label: "Pro-eq" },
+    kind: "vendor" as const,
+    verification,
+    sources: ["https://example.test/allowances.json"],
+    checkedAt: expiresAt - 14 * 86_400_000,
+    fetchedAt: expiresAt - 14 * 86_400_000,
+    expiresAt,
+    revision: plan,
+  });
+  const registry = new PlanAllowances(new Memory(), {
+    now: () => clock,
+    seed: {
+      entries: [
+        row("max_20x", Date.parse("2026-11-27T00:00:00Z")),
+        row("max_5x", Date.parse("2026-11-27T00:00:00Z")),
+        row("max_5x", Date.parse("2026-12-04T00:00:00Z")),
+        row("ultra", Date.parse("2026-11-22T00:00:00Z"), "unknown"),
+      ],
+    },
+  });
+  const reports: string[][] = [];
+  let delivered = false;
+  const report = async (rows: readonly { plan: string }[]) => {
+    reports.push(rows.map((row) => row.plan));
+    return delivered;
+  };
+  await registry.reportExpiring(report);
+  delivered = true;
+  await registry.reportExpiring(report);
+  clock += 12 * 3_600_000;
+  await registry.reportExpiring(report);
+  clock += 12 * 3_600_000;
+  await registry.reportExpiring(report);
+  // A failed delivery retries the same day; a delivered one waits for the next day.
+  assert.deepEqual(reports, [["max_20x"], ["max_20x"], ["max_20x"]]);
+});

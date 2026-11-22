@@ -1,20 +1,49 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleRuntimeRecovery, RuntimeRecovery, runtimeRecoveryPrefix, type RecoveryApproval, type RecoveryReceipt } from "./runtime-recovery.ts";
+import {
+  handleRuntimeRecovery,
+  RuntimeRecovery,
+  runtimeRecoveryPrefix,
+  type RecoveryApproval,
+  type RecoveryReceipt,
+} from "./runtime-recovery.ts";
 import { signEnvelope } from "./token.ts";
 
 const secret = "ab".repeat(32);
-function fixture() {
+// One clock for the approval, the recovery object and the handler: an approval may live at most a
+// minute, so two reads a tick apart made a valid one sixty seconds and a millisecond long.
+const start = Date.UTC(2026, 10, 22, 2, 0, 0);
+function fixture(now = start) {
   const values = new Map<string, RecoveryReceipt>();
   let restarts = 0;
-  const runtime = { instanceId: "a".repeat(64), imageHash: "synthetic-image", running: () => true,
-    status: async () => { throw new Error("synthetic private health failure"); },
-    restart: async () => { restarts++; return { boot_id: "new-boot", started_at: "2026-11-04T00:00:00Z" }; } };
-  const storage = { get: async <T>(key: string) => structuredClone(values.get(key)) as T | undefined,
-    put: async (key: string, value: RecoveryReceipt) => { values.set(key, structuredClone(value)); } };
-  const recovery = new RuntimeRecovery(runtime, storage);
-  const approval: RecoveryApproval = { version: 1, action: "restart", operationId: crypto.randomUUID(),
-    instanceId: runtime.instanceId, imageHash: runtime.imageHash, at: Date.now(), expiresAt: Date.now() + 60_000 };
+  const runtime = {
+    instanceId: "a".repeat(64),
+    imageHash: "synthetic-image",
+    running: () => true,
+    status: async () => {
+      throw new Error("synthetic private health failure");
+    },
+    restart: async () => {
+      restarts++;
+      return { boot_id: "new-boot", started_at: "2026-11-04T00:00:00Z" };
+    },
+  };
+  const storage = {
+    get: async <T>(key: string) => structuredClone(values.get(key)) as T | undefined,
+    put: async (key: string, value: RecoveryReceipt) => {
+      values.set(key, structuredClone(value));
+    },
+  };
+  const recovery = new RuntimeRecovery(runtime, storage, () => now);
+  const approval: RecoveryApproval = {
+    version: 1,
+    action: "restart",
+    operationId: crypto.randomUUID(),
+    instanceId: runtime.instanceId,
+    imageHash: runtime.imageHash,
+    at: now,
+    expiresAt: now + 60_000,
+  };
   return { values, runtime, storage, recovery, approval, restarts: () => restarts };
 }
 
@@ -22,7 +51,10 @@ test("inspection never warms an unhealthy runtime; exact signed restart retains 
   const f = fixture();
   assert.equal((await f.recovery.inspect()).ready, false);
   assert.equal(f.restarts(), 0);
-  const [first, duplicate] = await Promise.all([f.recovery.run(f.approval), f.recovery.run(f.approval)]);
+  const [first, duplicate] = await Promise.all([
+    f.recovery.run(f.approval),
+    f.recovery.run(f.approval),
+  ]);
   assert.equal(first.status, "ready");
   assert.deepEqual(duplicate, first);
   assert.equal(f.restarts(), 1);
@@ -42,10 +74,11 @@ test("a started receipt is durable before destruction, and an unknown or failed 
       throw new Error("private-response-sentinel");
     };
     const put = f.storage.put;
-    if (fail) f.storage.put = async (key, receipt) => {
-      if (receipt.status !== "started") throw new Error("lost receipt write");
-      await put(key, receipt);
-    };
+    if (fail)
+      f.storage.put = async (key, receipt) => {
+        if (receipt.status !== "started") throw new Error("lost receipt write");
+        await put(key, receipt);
+      };
     const result = f.recovery.run(f.approval);
     if (fail) await assert.rejects(result, /lost receipt write/);
     else assert.equal((await result).status, "failed");
@@ -64,31 +97,50 @@ test("a changed instance, changed image or failed audit refuses before a restart
     assert.equal(f.values.size, 0);
   }
   const f = fixture();
-  f.storage.put = async () => { throw new Error("audit unavailable"); };
+  f.storage.put = async () => {
+    throw new Error("audit unavailable");
+  };
   await assert.rejects(f.recovery.run(f.approval), /audit unavailable/);
   assert.equal(f.restarts(), 0);
 });
 
-test("the private HTTP operation requires a short-lived recovery signature and retains safe failures", async () => {
+test("the private HTTP operation requires a short-lived recovery signature and retains safe failures", async (t) => {
+  // The handler reads the clock itself, so the test fixes Date for its whole run.
+  t.mock.timers.enable({ apis: ["Date"], now: start });
   const f = fixture();
-  const service = { inspectRuntimeRecovery: (id?: string) => f.recovery.inspect(id),
-    recoverRuntime: (approval: RecoveryApproval) => f.recovery.run(approval) };
-  const post = async (value: unknown, prefix = runtimeRecoveryPrefix, key = secret) => handleRuntimeRecovery(
-    new Request("https://operator/runtime-recovery", { method: "POST", body: JSON.stringify({ envelope: await signEnvelope(key, prefix, value) }) }),
-    service, secret);
+  const service = {
+    inspectRuntimeRecovery: (id?: string) => f.recovery.inspect(id),
+    recoverRuntime: (approval: RecoveryApproval) => f.recovery.run(approval),
+  };
+  const post = async (value: unknown, prefix = runtimeRecoveryPrefix, key = secret) =>
+    handleRuntimeRecovery(
+      new Request("https://operator/runtime-recovery", {
+        method: "POST",
+        body: JSON.stringify({ envelope: await signEnvelope(key, prefix, value) }),
+      }),
+      service,
+      secret,
+    );
   for (const [value, prefix, key] of [
     [f.approval, runtimeRecoveryPrefix, "cd".repeat(32)],
     [f.approval, "sbp1", secret],
-    [{ ...f.approval, expiresAt: Date.now() - 1 }, runtimeRecoveryPrefix, secret],
-    [{ ...f.approval, expiresAt: Date.now() + 120_000 }, runtimeRecoveryPrefix, secret],
-  ] as const) assert.equal((await post(value, prefix, key)).status, 401);
+    [{ ...f.approval, expiresAt: start - 1 }, runtimeRecoveryPrefix, secret],
+    // A lifetime past the one-minute limit, even by one millisecond.
+    [{ ...f.approval, expiresAt: start + 60_001 }, runtimeRecoveryPrefix, secret],
+    [{ ...f.approval, expiresAt: start + 120_000 }, runtimeRecoveryPrefix, secret],
+  ] as const)
+    assert.equal((await post(value, prefix, key)).status, 401);
   assert.equal(f.restarts(), 0);
   assert.equal((await post({ ...f.approval, instanceId: "b".repeat(64) })).status, 409);
   const response = await post(f.approval);
   assert.equal(response.status, 200);
   assert.equal((await response.json()).status, "ready");
   assert.equal(f.restarts(), 1);
-  const read = await handleRuntimeRecovery(new Request(`https://operator/runtime-recovery?operationId=${f.approval.operationId}`), service, secret);
+  const read = await handleRuntimeRecovery(
+    new Request(`https://operator/runtime-recovery?operationId=${f.approval.operationId}`),
+    service,
+    secret,
+  );
   assert.equal((await read.json()).receipt.status, "ready");
   assert.equal(f.restarts(), 1);
 });

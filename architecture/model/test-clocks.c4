@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "An owned unit test of a time-bound approval reads one fixed clock for the approval it signs, the object under test and the handler, using node:test's mocked Date where the handler reads the clock itself, so a slow runner never moves a valid approval outside its window."
+    }
+  }
+}

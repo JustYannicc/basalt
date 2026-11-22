@@ -9,9 +9,9 @@ import { isModelLifetimePath, stripModelLifetimeRequest } from "./model-lifetime
 import {
   reachedNoContainer,
   sentNowhere,
+  unsentAnswer,
   unsentAttempt,
   unsentAttemptHeader,
-  unsentRefusal,
 } from "./controller-unsent.ts";
 import { inheritModelLifetime, modelLifetimeFetch } from "./model-lifetime.worker.ts";
 import { modelKeyScope } from "./key-scope.ts";
@@ -272,6 +272,10 @@ export async function forwardPoolRequest(
     if (runtimeRefusal)
       console.error("POOL_RUNTIME_ROUTE_FAILURE", {
         requestId: runtimeRequestId,
+        // An unsent answer reaches its client under this call's own id, not the endpoint's trace.
+        ...(sentNowhere(upstream) && runtimeRequestId !== requestId
+          ? { attemptRequestId: requestId }
+          : {}),
         code: "runtime-refused",
         status: upstream.status,
         ...runtimeRefusal,
@@ -424,19 +428,8 @@ export async function forwardPoolRequest(
       isPublicModelPath(pathname) &&
       !request.signal.aborted &&
       reachedNoContainer(error)
-    ) {
-      console.error(
-        "POOL_CONTROLLER_UNSENT",
-        JSON.stringify({
-          requestId,
-          step: diagnostic.runtimeStep ?? null,
-          reason: diagnostic.runtimeReason ?? null,
-        }),
-      );
-      const refused = unsentRefusal(request);
-      refused.headers.set("X-Request-Id", requestId);
-      return settle(refused, "unsent");
-    }
+    )
+      return settle(unsentAnswer(request, requestId, diagnostic), "unsent");
     if (dispatched && isPublicModelPath(pathname)) {
       terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
       return settle(
@@ -450,20 +443,8 @@ export async function forwardPoolRequest(
     // A re-send of a call never sent that is refused again before its own send ran nowhere either.
     // It stays the one request its first attempt started: no refusal record beside that start, even
     // when its client has left, and the entry keeps sending inside its window.
-    if (resent && isPublicModelPath(pathname)) {
-      console.error(
-        "POOL_CONTROLLER_UNSENT",
-        JSON.stringify({
-          requestId,
-          step: diagnostic.runtimeStep ?? null,
-          reason: diagnostic.runtimeReason ?? null,
-          resent: true,
-        }),
-      );
-      const refused = unsentRefusal(request);
-      refused.headers.set("X-Request-Id", requestId);
-      return settle(refused, "unsent");
-    }
+    if (resent && isPublicModelPath(pathname))
+      return settle(unsentAnswer(request, requestId, diagnostic, true), "unsent");
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))
       return settle(
         gatewayUnavailable(

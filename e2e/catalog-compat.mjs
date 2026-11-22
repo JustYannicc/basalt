@@ -14,6 +14,7 @@ import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accoun
 import { handleCatalog } from "../src/catalog/worker.ts";
 import { catalog } from "../src/catalog/settings.ts";
 import { catalogBuildFailure } from "../scripts/catalog-compat/build-failure.mjs";
+import { minimumRead, parseShard, shardEntries } from "../scripts/catalog-compat/shard.ts";
 
 /**
  * Build every package the catalog serves, as the catalog serves it, on the framework Basalt ships:
@@ -21,7 +22,10 @@ import { catalogBuildFailure } from "../scripts/catalog-compat/build-failure.mjs
  * publisher serves it, so a failure the served framework causes is told apart from a package that
  * does not build anyway. Every failure must be listed, with its reason, in known-failures.json.
  *
- * Usage: bun e2e/catalog-compat.mjs <output directory> [limit] [concurrency]
+ * Usage: bun e2e/catalog-compat.mjs <output directory> [limit] [concurrency] [shard/shards]
+ *
+ * With `2/3`, the run builds the second of three hash-chosen thirds of the index, so three jobs
+ * together build each package exactly once.
  */
 const root = resolve(import.meta.dirname, "..");
 const upstream = join(root, ".upstream");
@@ -31,6 +35,7 @@ const directory = resolve(
 // A positive limit builds only that many packages, for a quick check; anything else builds all.
 const limit = Number(process.argv[3]) > 0 ? Number(process.argv[3]) : Infinity;
 const concurrency = Number(process.argv[4] ?? "4");
+const shard = parseShard(process.argv[5]);
 await mkdir(directory, { recursive: true, mode: 0o700 });
 const known = JSON.parse(
   await readFile(join(root, "scripts/catalog-compat/known-failures.json"), "utf8"),
@@ -109,7 +114,7 @@ const program = Effect.gen(function* () {
     );
 
   const index = yield* Effect.promise(async () => (await served("index.json")).json());
-  const entries = index.apps.slice(0, limit);
+  const entries = shardEntries(index.apps.slice(0, limit), shard);
   yield* Effect.forEach(
     entries,
     (entry) =>
@@ -209,8 +214,8 @@ console.log(
 );
 // The served framework must not break a package that builds as published, and every failure is listed.
 if (regressions.length > 0 || unlisted.length > 0 || fixed.length > 0) process.exitCode = 1;
-// A full run that reads almost nothing proves nothing; the official feed lists well over a thousand.
-if (limit === Infinity && report.total < 1000) {
+// A full run that reads almost nothing proves nothing.
+if (limit === Infinity && report.total < minimumRead(shard)) {
   console.error(`Only ${report.total} catalog packages were read.`);
   process.exitCode = 1;
 }

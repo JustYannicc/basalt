@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An organization whose catalog sweeps for a release all failed gets another sweep for that release, run by a current owner or admin, after a wait that doubles with each failed sweep from one hour, until one succeeds or a later release takes over; the failed job itself is never reopened and a requeue check never fails its data step."
+    }
+  }
+}

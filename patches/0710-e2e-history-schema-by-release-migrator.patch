@@ -1,0 +1,149 @@
+diff --git a/e2e/support/pool-history-database.ts b/e2e/support/pool-history-database.ts
+--- a/e2e/support/pool-history-database.ts
++++ b/e2e/support/pool-history-database.ts
+@@ -1,4 +1,5 @@
+ import { Effect, FileSystem, Redacted, Schema } from "effect";
++import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { Target } from "./platform.ts";
+ import { cloudLocks, cloudLocksFor } from "./cloud-locks.ts";
+ 
+@@ -6,7 +7,8 @@ import { cloudLocks, cloudLocksFor } from "./cloud-locks.ts";
+ export const poolHistoryDatabase = Effect.gen(function* () {
+   const fs = yield* FileSystem.FileSystem,
+     target = yield* Target,
+-    admin = yield* cloudLocks;
++    admin = yield* cloudLocks,
++    processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+   const configuration = yield* fs
+     .readFileString(`${target.directory}/sso-database.json`)
+     .pipe(
+@@ -59,6 +61,28 @@ export const poolHistoryDatabase = Effect.gen(function* () {
+   return {
+     connection,
+     run: home.run,
++    // Only a release's database step applies the history schema; this runs its migrator here.
++    applySchema: processes
++      .exitCode(
++        ChildProcess.make(
++          "node",
++          ["--experimental-transform-types", "../scripts/pool-tests/history-schema-fixture.ts"],
++          {
++            env: {
++              PATH: process.env.PATH ?? "",
++              POOL_HISTORY_FIXTURE_DATABASE: Redacted.value(connection),
++            },
++            extendEnv: false,
++            stdout: "ignore",
++            stderr: "inherit",
++          },
++        ),
++      )
++      .pipe(
++        Effect.flatMap((code) =>
++          Number(code) === 0 ? Effect.void : Effect.die("Pool history schema fixture failed"),
++        ),
++      ),
+     cloudUserTriggers: admin.run({
+       sql: "SELECT tgname FROM pg_trigger WHERE tgrelid='public.\"user\"'::regclass AND tgname LIKE 'basalt_pool_%'",
+     }),
+diff --git a/e2e/tests/deleted-org-pool-token.spec.ts b/e2e/tests/deleted-org-pool-token.spec.ts
+--- a/e2e/tests/deleted-org-pool-token.spec.ts
++++ b/e2e/tests/deleted-org-pool-token.spec.ts
+@@ -119,21 +119,8 @@ layer(RuntimeLive, { excludeTestServices: true })("Deleted organization pool tok
+         const otherCapacity = () =>
+           worker.request("/pool/v1/usage/capacity", { headers: otherHeaders });
+         expect((yield* otherCapacity()).status).toBe(200);
+-        const plan = yield* worker.operations("/model-history/schema/catalog");
+-        expect(plan.status).toBe(200);
+-        const hashes = yield* driver("read history schema plan", () => plan.json()).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
+-            ),
+-          ),
+-        );
+-        const applied = yield* worker.operations("/model-history/schema", {
+-          method: "POST",
+-          headers: { "content-type": "application/json" },
+-          body: JSON.stringify({ go: true, ...hashes }),
+-        });
+-        expect(applied.status).toBe(200);
++        expect((yield* worker.operations("/model-history/schema/catalog")).status).toBe(200);
++        yield* historyDatabase.applySchema;
+         expect(yield* historyDatabase.cloudUserTriggers).toEqual([]);
+         const history = "/pool/v1/usage/history?from=2019-01-01T00:00:00Z&to=2021-01-01T00:00:00Z";
+         const payload = {
+diff --git a/e2e/tests/pool-account-view-latency.spec.ts b/e2e/tests/pool-account-view-latency.spec.ts
+--- a/e2e/tests/pool-account-view-latency.spec.ts
++++ b/e2e/tests/pool-account-view-latency.spec.ts
+@@ -11,7 +11,7 @@ import {
+   installLegacyPoolHandoffSetup,
+   legacyPoolHandoffFixture,
+ } from "../support/legacy-pool-handoff-setup.ts";
+-import { Target, driver } from "../support/platform.ts";
++import { Target } from "../support/platform.ts";
+ import { poolHistoryDatabase } from "../support/pool-history-database.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
+@@ -89,22 +89,8 @@ layer(HostedLive, { excludeTestServices: true })("Pool account view SQL latency"
+             })
+             .pipe(Effect.asVoid, Effect.orDie),
+         );
+-        const plan = yield* worker.operations("/model-history/schema/catalog");
+-        expect(plan.status).toBe(200);
+-        const hashes = yield* driver("Read isolated schema plan", () => plan.json()).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
+-            ),
+-          ),
+-        );
+-        expect(
+-          (yield* worker.operations("/model-history/schema", {
+-            method: "POST",
+-            headers: { "content-type": "application/json" },
+-            body: JSON.stringify({ go: true, ...hashes }),
+-          })).status,
+-        ).toBe(200);
++        expect((yield* worker.operations("/model-history/schema/catalog")).status).toBe(200);
++        yield* history.applySchema;
+         const now = yield* Clock.currentTimeMillis;
+         for (const account of accounts) {
+           const result = poolObservation(account.requirement, now);
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -12,7 +12,7 @@ import {
+ import { Evidence } from "../support/evidence.ts";
+ import { legacyPoolHome } from "../support/legacy-pool-home.ts";
+ import { legacyPoolKey } from "../support/legacy-pool-key.ts";
+-import { driver, Target } from "../support/platform.ts";
++import { Target } from "../support/platform.ts";
+ import { poolHistoryDatabase } from "../support/pool-history-database.ts";
+ import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
+ import { scenarios } from "../test-plan.ts";
+@@ -139,22 +139,8 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+             expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+           }).pipe(Effect.orDie),
+         );
+-        const plan = yield* worker.operations("/model-history/schema/catalog");
+-        expect(plan.status).toBe(200);
+-        const hashes = yield* driver("Read isolated history schema plan", () => plan.json()).pipe(
+-          Effect.flatMap(
+-            Schema.decodeUnknownEffect(
+-              Schema.Struct({ schemaHash: Schema.String, catalogHash: Schema.String }),
+-            ),
+-          ),
+-        );
+-        expect(
+-          (yield* worker.operations("/model-history/schema", {
+-            method: "POST",
+-            headers: { "content-type": "application/json" },
+-            body: JSON.stringify({ go: true, ...hashes }),
+-          })).status,
+-        ).toBe(200);
++        expect((yield* worker.operations("/model-history/schema/catalog")).status).toBe(200);
++        yield* historyDatabase.applySchema;
+         expect(yield* historyDatabase.cloudUserTriggers).toEqual([]);
+         const read = () =>
+           api.request(actors.owner, "POST", `${appPath}/tools/call`, {
