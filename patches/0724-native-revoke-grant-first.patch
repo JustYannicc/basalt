@@ -9,7 +9,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/sr
    authEndpointTemplates,
  } from "@executor-js/hosted-server";
  import { routeTemplates } from "@executor-js/telemetry";
-@@ -396,6 +397,8 @@ export const cloudAuth = (
+@@ -407,6 +408,8 @@ export const cloudAuth = (
        appSessions,
        // Background jobs only: grant expiry runs from the data step and the daily cron.
        agentGrants: grantExpiry((run) => nativeCall((instance) => run(instance.api))),
@@ -172,6 +172,67 @@ diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
  export type { OriginList, ResourceOrigins } from "@executor-js/mcp-auth";
  export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
  export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
+diff --git a/packages/mcp-auth/src/implementation/native-access-memory.ts b/packages/mcp-auth/src/implementation/native-access-memory.ts
+--- a/packages/mcp-auth/src/implementation/native-access-memory.ts
++++ b/packages/mcp-auth/src/implementation/native-access-memory.ts
+@@ -4,8 +4,8 @@ import { authCall } from "./auth-call.ts";
+ /**
+  * Every model request checks its device's bearer. An allowed answer and the database facts read
+  * for it are reused until this long after those rows were read, in one isolate, so a revocation
+- * made anywhere reaches every check within it. The pool's device check and the device budget
+- * still run every time.
++ * made anywhere reaches every check within it. One made in the same isolate forgets the grant's
++ * answers at once. The pool's device check and the device budget still run every time.
+  */
+ const memoryMs = 3_000;
+ const capacity = 1_000;
+@@ -14,9 +14,14 @@ const capacity = 1_000;
+ export const servable = (now: number, deadline: number, readAt: number) =>
+   now < Math.min(deadline, readAt + memoryMs);
+ 
+-/** Allowed answers by bearer digest. An entry never outlives its own deadline. */
+-export const recentAnswers = <V>() => {
++/**
++ * Allowed answers by bearer digest. An entry never outlives its own deadline. `grantOf` names the
++ * grant an answer allows, so a revoke can forget every answer for it.
++ */
++export const recentAnswers = <V>(grantOf: (value: V) => string) => {
+   const entries = new Map<string, { readonly value: V; readonly until: number }>();
++  /** When each grant was forgotten; an answer whose rows were read by then is never kept. */
++  const forgotten = new Map<string, number>();
+   return {
+     get: (key: string) => {
+       const entry = entries.get(key);
+@@ -29,6 +34,8 @@ export const recentAnswers = <V>() => {
+     set: (key: string, value: V, deadline: number, readAt: number) => {
+       entries.delete(key);
+       if (!servable(Date.now(), deadline, readAt)) return;
++      const forgottenAt = forgotten.get(grantOf(value));
++      if (forgottenAt !== undefined && readAt <= forgottenAt) return;
+       entries.set(key, { value, until: Math.min(deadline, readAt + memoryMs) });
+       for (const oldest of entries.keys()) {
+         if (entries.size <= capacity) break;
+@@ -38,6 +45,20 @@ export const recentAnswers = <V>() => {
+     delete: (key: string) => {
+       entries.delete(key);
+     },
++    /**
++     * Forget a grant whose rows say it was revoked by `at`, including answers still being checked
++     * that read its rows before then.
++     */
++    forget: (grant: string, at: number) => {
++      for (const [key, entry] of entries) if (grantOf(entry.value) === grant) entries.delete(key);
++      forgotten.delete(grant);
++      forgotten.set(grant, at);
++      // `servable` already refuses an answer read this long ago.
++      for (const [old, oldAt] of forgotten) {
++        if (Date.now() < oldAt + memoryMs) break;
++        forgotten.delete(old);
++      }
++    },
+   };
+ };
+ 
 diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
 --- a/packages/mcp-auth/src/implementation/native-grants.ts
 +++ b/packages/mcp-auth/src/implementation/native-grants.ts
@@ -230,6 +291,15 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
  const Stored = Schema.Struct({
    id: GrantId,
    userId: Schema.NonEmptyString,
+@@ -88,7 +131,7 @@ interface Answer {
+ 
+ /** Better Auth owns tokens; native authority lives in the existing revocable grant record. */
+ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope[]>) => {
+-  const remembered = recentAnswers<Answer>();
++  const remembered = recentAnswers<Answer>((answer) => answer.access.id);
+   const stored = (ctx: GenericEndpointContext, id: GrantId) =>
+     Effect.gen(function* () {
+       if (!isNativeGrant(id)) return yield* Effect.fail(invalid());
 @@ -204,6 +247,93 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
          ),
      },
@@ -507,6 +577,15 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
      create: (ctx: GenericEndpointContext, userId: string, clientId: string) =>
        Effect.gen(function* () {
          const id = GrantId.make(`native:${crypto.randomUUID()}`);
+@@ -318,6 +620,8 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+           ),
+         );
+       }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid()))),
++    /** A grant revoked here by `at` is refused on its next check, not once the bound has passed. */
++    forgetAnswers: (id: GrantId, at: number) => remembered.forget(id, at),
+     /** Rotation's replay cache can return tokens without invoking claim contributors again. */
+     beforeRefresh: (ctx: GenericEndpointContext) =>
+       Effect.gen(function* () {
 diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
 --- a/packages/mcp-auth/src/implementation/oauth.ts
 +++ b/packages/mcp-auth/src/implementation/oauth.ts
@@ -526,7 +605,13 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        yield* authCall(() =>
          ctx.context.adapter.update({
            model: "mcpGrant",
-@@ -526,6 +531,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -522,10 +527,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+           update: { revoked: true },
+         }),
+       );
++      if (pending !== undefined && native !== undefined)
++        native.forgetAnswers(id, yield* Clock.currentTimeMillis);
+       for (const model of ["oauthAccessToken", "oauthRefreshToken"])
          yield* authCall(() =>
            ctx.context.adapter.deleteMany({ model, where: [{ field: "referenceId", value: id }] }),
          );
@@ -534,7 +619,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
      });
    /** New grants and tokens for a revoked connection fail; its grants lose their tokens now. */
    const revokeConnection = (ctx: GenericEndpointContext, row: typeof ConnectionRecord.Type) =>
-@@ -1204,7 +1210,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1212,7 +1220,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
              ? Promise.reject(new APIError("NOT_FOUND"))
              : runAuth(
                  Effect.gen(function* () {
@@ -544,7 +629,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
                    yield* revoke(ctx, access.id);
                    return { revoked: true };
                  }),
-@@ -1223,6 +1230,24 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1231,6 +1240,24 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                  ),
                ),
        ),
@@ -569,7 +654,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        getMcpGrantAccess: createAuthEndpoint(
          "/mcp/grant-access",
          { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },
-@@ -1618,6 +1643,31 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1626,6 +1653,31 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
              }),
            ),
        ),
@@ -601,7 +686,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        revokeMcpGrant: createAuthEndpoint(
          "/mcp/grants/revoke",
          { method: "POST", requireHeaders: true },
-@@ -1639,8 +1689,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1647,8 +1699,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                    Option.isSome(existing) &&
                    existing.value.userId === userId &&
                    existing.value.revoked
@@ -615,7 +700,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
                }
                const row = yield* get(ctx, id);
                if (row.userId !== userId) return yield* Effect.fail(new APIError("FORBIDDEN"));
-@@ -1813,3 +1867,32 @@ export const grantExpiry = (
+@@ -1821,3 +1877,32 @@ export const grantExpiry = (
      ),
  });
  export type GrantExpiry = ReturnType<typeof grantExpiry>;

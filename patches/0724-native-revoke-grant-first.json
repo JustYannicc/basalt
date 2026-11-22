@@ -1,7 +1,7 @@
 {
   "identity": "basalt-native-revoke-grant-first",
   "file": "0724-native-revoke-grant-first.patch",
-  "content_sha256": "8163ea68d56d29cd6253a7fe555d17ae2c620958a0db8677791117fc96929981",
+  "content_sha256": "68a7b3725f7684aff925d6777ea71f0ac3a88d0537b2b9bc9d56ad6647e23ba2",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
