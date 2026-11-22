@@ -280,10 +280,26 @@ jobs:
           require-hit: ${{ matrix.platform == 'linux' }}
       - run: bun install --cwd clients --frozen-lockfile
       - run: bun install --cwd clients/desktop --frozen-lockfile
+      # The real locked Electron's checksums, which the fast lane can't install.
+      - name: Check the builder config carries the locked Electron's checksums
+        run: node --test scripts/ci/desktop-builder-config.test.ts
       - run: bun run --cwd clients/desktop typecheck
       - run: bun run --cwd clients/desktop build
+      # The generated config is package.json's build plus the locked Electron checksums, so packaging
+      # fetches no SHASUMS256.txt. DEBUG logs every @electron/get download, so a fetch that an
+      # electron-builder bump brings back fails the step instead of passing silently.
       - name: Package the unsigned development client
-        run: bun run --cwd clients/desktop package:${{ matrix.platform }}
+        shell: bash
+        env:
+          DEBUG: "@electron/get*"
+        run: |
+          set -o pipefail
+          node scripts/ci/desktop-release-assets.ts builder-config "$RUNNER_TEMP/electron-builder.json"
+          bun run --cwd clients/desktop package:${{ matrix.platform }} --config "$RUNNER_TEMP/electron-builder.json" 2>&1 | tee "$RUNNER_TEMP/electron-builder.log"
+          if grep -q SHASUMS256 "$RUNNER_TEMP/electron-builder.log"; then
+            echo "::error::electron-builder fetched SHASUMS256.txt instead of using the locked Electron checksums"
+            exit 1
+          fi
       - uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/basalt-desktop-release-assets
@@ -2388,6 +2404,8 @@ jobs:
         run: node scripts/catalog-sources.ts --check --base "$BASE_SHA" --summary "$GITHUB_STEP_SUMMARY"
       - name: Check catalog OAuth decisions against the committed metadata snapshots
         run: node scripts/check-catalog-oauth.ts
+      - name: Check reviewed catalog POST reads still take their reviewed inputs
+        run: node scripts/check-catalog-read-kinds.ts
       - name: Verify social sign-in and admin security boundaries
         run: |
           bun run --cwd .upstream patches:check
