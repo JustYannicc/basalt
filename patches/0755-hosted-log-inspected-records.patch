@@ -1,10 +1,50 @@
+diff --git a/e2e/support/compiler-phase-evidence.ts b/e2e/support/compiler-phase-evidence.ts
+--- a/e2e/support/compiler-phase-evidence.ts
++++ b/e2e/support/compiler-phase-evidence.ts
+@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { FixtureFailed } from "../sdk/fixtures.ts";
+ import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { hostedRecords } from "./hosted-log.ts";
+ import { Target } from "./platform.ts";
+ import { createHash } from "node:crypto";
+ 
+@@ -73,24 +74,11 @@ export const compilerPhaseEvidence = (
+     let revision = yield* logRevision();
+     for (;;) {
+       const text = yield* fs.readFileString(file);
+-      const records = text.split("\n").flatMap((line) => {
+-        const start = line.indexOf('{"type":"executor.compiler.phase"');
+-        if (start < 0) return [];
+-        let value: unknown;
+-        try {
+-          value = JSON.parse(line.slice(start));
+-        } catch {
+-          return [];
+-        }
++      const records = hostedRecords(text).flatMap((value) => {
+         const parsed = Schema.decodeUnknownOption(Phase)(value);
+-        if (
+-          Option.isNone(parsed) ||
+-          parsed.value.traceId !== traceId ||
+-          value === null ||
+-          typeof value !== "object"
+-        )
+-          return [];
+-        return [{ record: parsed.value, keys: Object.keys(value).sort() }];
++        return Option.isNone(parsed) || parsed.value.traceId !== traceId
++          ? []
++          : [{ record: parsed.value, keys: Object.keys(value).sort() }];
+       });
+       const attempts = new Set(
+         records
 diff --git a/e2e/support/data-steps.ts b/e2e/support/data-steps.ts
 --- a/e2e/support/data-steps.ts
 +++ b/e2e/support/data-steps.ts
 @@ -1,5 +1,6 @@
  /** Read the summary line each finished data step pass writes to the product's log. */
  import { Effect, FileSystem, Option, Schedule, Schema } from "effect";
-+import { messageParts, readHostedLog } from "./hosted-log.ts";
++import { entryTexts, noReport, readHostedLog } from "./hosted-log.ts";
  
  const prefix = "Data step pass finished: ";
  
@@ -21,7 +61,7 @@ diff --git a/e2e/support/data-steps.ts b/e2e/support/data-steps.ts
  const Summary = Schema.fromJsonString(DataStepSummary);
  
  /** A finished pass, and when the host logged it when its log records carry a time. */
-@@ -29,53 +24,46 @@ export interface DataStepPass {
+@@ -29,54 +24,44 @@ export interface DataStepPass {
    readonly loggedAt: number | undefined;
  }
  
@@ -34,7 +74,7 @@ diff --git a/e2e/support/data-steps.ts b/e2e/support/data-steps.ts
 +/** Hosts write log records, in either shape `readHostedLog` reads; the message holds the summary. */
 +const logPasses = (text: string) =>
 +  readHostedLog(text).flatMap((entry): DataStepPass[] => {
-+    const messages = entry.kind === "record" ? messageParts(entry.value) : [entry.text];
++    const messages = entryTexts(entry);
 +    const timestamp = entry.kind === "record" ? entry.value.timestamp : undefined;
 +    for (const message of messages) {
 +      const at = message.indexOf(prefix);
@@ -66,11 +106,12 @@ diff --git a/e2e/support/data-steps.ts b/e2e/support/data-steps.ts
 -};
  
 -/** Every message in the host's log: each JSON record's text parts, or a plain line itself. */
-+/** Every message in the host's log: each record's text parts, or a plain line itself. */
- export const logMessages = (log: string) =>
+-export const logMessages = (log: string) =>
++/** The host's log as written so far; empty before its first line. */
++export const logText = (log: string) =>
    Effect.gen(function* () {
      const fs = yield* FileSystem.FileSystem;
-     const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
+-    const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
 -    return text.split("\n").flatMap((line) =>
 -      Option.match(Schema.decodeUnknownOption(LogRecord)(line.slice(line.indexOf("{"))), {
 -        onNone: () => [line],
@@ -79,42 +120,81 @@ diff --git a/e2e/support/data-steps.ts b/e2e/support/data-steps.ts
 -            ? [message]
 -            : message.filter((part): part is string => typeof part === "string"),
 -      }),
-+    return readHostedLog(text).flatMap((entry) =>
-+      entry.kind === "record" ? messageParts(entry.value) : [entry.text],
-     );
+-    );
++    return (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
    });
  
++/** Every message in the host's log: each record's text parts, or its text as written. */
++export const logMessages = (log: string) =>
++  logText(log).pipe(Effect.map((text) => readHostedLog(text).flatMap(entryTexts)));
++
 +/** Every finished pass for one step in a log's text, oldest first. */
 +export const dataStepPassesIn = (text: string, step: string) =>
 +  logPasses(text).filter((pass) => pass.summary.step === step);
 +
  /** Every finished pass in the log for one step, oldest first. */
  export const dataStepPasses = (log: string, step: string) =>
-   Effect.gen(function* () {
-     const fs = yield* FileSystem.FileSystem;
-     const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
+-  Effect.gen(function* () {
+-    const fs = yield* FileSystem.FileSystem;
+-    const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
 -    return text
 -      .split("\n")
 -      .flatMap((line) => Option.toArray(passOf(line)))
 -      .filter((pass) => pass.summary.step === step);
-+    return dataStepPassesIn(text, step);
-   });
+-  });
++  logText(log).pipe(Effect.map((text) => dataStepPassesIn(text, step)));
  
  /** Every summary in the log for one step, oldest first. */
+ export const dataStepSummaries = (log: string, step: string) =>
+@@ -84,16 +69,24 @@ export const dataStepSummaries = (log: string, step: string) =>
+ 
+ class SummaryPending extends Schema.TaggedError<SummaryPending>()("SummaryPending", {
+   step: Schema.String,
++  message: Schema.String,
+ }) {}
+ 
+ /** Wait for the log to hold more than `seen` summaries for the step, and return the newest. */
+ export const nextDataStepSummary = (log: string, step: string, seen: number) =>
+-  dataStepSummaries(log, step).pipe(
+-    Effect.flatMap((summaries) => {
+-      const newest = summaries.at(-1);
++  logText(log).pipe(
++    Effect.flatMap((text) => {
++      const passes = logPasses(text);
++      const summaries = passes.filter((pass) => pass.summary.step === step);
++      const newest = summaries.at(-1)?.summary;
+       return summaries.length > seen && newest !== undefined
+         ? Effect.succeed(newest)
+-        : Effect.fail(new SummaryPending({ step }));
++        : Effect.fail(
++            new SummaryPending({
++              step,
++              message: noReport(`new ${step} summary`, text, prefix, passes.length),
++            }),
++          );
+     }),
+     Effect.retry({
+       while: (error) => Schema.is(SummaryPending)(error),
 diff --git a/e2e/support/hosted-log.ts b/e2e/support/hosted-log.ts
 new file mode 100644
 --- /dev/null
 +++ b/e2e/support/hosted-log.ts
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,196 @@
 +/**
 + * The product's log, entry by entry, in the order written. Self-host and the Workers' own JSON
 + * writers put one JSON record on a line. A hosted Worker writes each Effect log line as one
 + * structured object, which the local runtime prints as a JavaScript literal: one line, or a block
 + * from `{` to `}`. Alchemy prefixes each line with its Worker's name, and Workers interleave, so a
-+ * block is collected per name. Both shapes read as the same record.
++ * block is collected per name. Both shapes read as the same record. A record keeps its text as
++ * written, so a reader of lines still sees a record that carries no message, such as a JSON line a
++ * Worker writes with `console.log`.
 + */
 +export type HostedLogEntry =
-+  | { readonly kind: "record"; readonly value: Readonly<Record<string, unknown>> }
++  | {
++      readonly kind: "record";
++      readonly value: Readonly<Record<string, unknown>>;
++      readonly text: string;
++    }
 +  | { readonly kind: "line"; readonly text: string };
 +
 +const workerName = /^\[[^\]\s]+\] /;
@@ -234,7 +314,7 @@ new file mode 100644
 +        const done: HostedLogEntry[] =
 +          value === undefined
 +            ? block.lines.map((entry) => ({ kind: "line", text: entry }))
-+            : [{ kind: "record", value }];
++            : [{ kind: "record", value, text: block.lines.join("\n") }];
 +        entries.splice(entries.indexOf(block.held), 1, ...done);
 +      }
 +      continue;
@@ -248,10 +328,27 @@ new file mode 100644
 +      continue;
 +    }
 +    const value = line.startsWith("{") ? (json(line) ?? literal(line)) : jsonRecord(line);
-+    entries.push(value === undefined ? { kind: "line", text: raw } : { kind: "record", value });
++    entries.push(
++      value === undefined ? { kind: "line", text: raw } : { kind: "record", value, text: raw },
++    );
 +  }
 +  return entries;
 +};
++
++/** A JSON object a plain line carries after other text, such as a prefix the reader doesn't know. */
++const embedded = (line: string) => {
++  for (let at = line.indexOf('{"'); at >= 0; at = line.indexOf('{"', at + 1)) {
++    const value = json(line.slice(at));
++    if (value !== undefined) return [value];
++  }
++  return [];
++};
++
++/** Every structured record in the log, in order: each record, and each JSON object a line holds. */
++export const hostedRecords = (text: string) =>
++  readHostedLog(text).flatMap((entry) =>
++    entry.kind === "record" ? [entry.value] : embedded(entry.text),
++  );
 +
 +/** The text parts of a record's message: the message itself, or the strings among its parts. */
 +export const messageParts = (value: Readonly<Record<string, unknown>>) => {
@@ -262,6 +359,63 @@ new file mode 100644
 +      ? message.filter((part): part is string => typeof part === "string")
 +      : [];
 +};
++
++/**
++ * Why a reader found no report: how many log lines it read, and how many entries naming its marker
++ * it could not decode. A log shape that changes under a reader fails with this, not a bare timeout.
++ */
++export const noReport = (report: string, text: string, marker: string, decoded: number) => {
++  const marked = readHostedLog(text).filter((entry) => entry.text.includes(marker)).length;
++  const lines = text === "" ? 0 : text.split("\n").length;
++  return `No ${report} in ${lines} hosted log lines; ${Math.max(0, marked - decoded)} of ${marked} lines naming it could not be decoded`;
++};
++
++/** The text a line reader sees in an entry: a record's message parts, or its text as written. */
++export const entryTexts = (entry: HostedLogEntry) => {
++  if (entry.kind === "line") return [entry.text];
++  const parts = messageParts(entry.value);
++  return parts.length > 0 ? parts : [entry.text];
++};
+diff --git a/e2e/support/runner-progress-evidence.ts b/e2e/support/runner-progress-evidence.ts
+--- a/e2e/support/runner-progress-evidence.ts
++++ b/e2e/support/runner-progress-evidence.ts
+@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { FixtureFailed } from "../sdk/fixtures.ts";
+ import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { hostedRecords } from "./hosted-log.ts";
+ import { Target } from "./platform.ts";
+ 
+ const Progress = Schema.Struct({
+@@ -51,24 +52,11 @@ export const runnerProgressEvidence = (app: string) =>
+     let current = yield* revision();
+     for (;;) {
+       const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
+-      const records = text.split("\n").flatMap((line) => {
+-        const start = line.indexOf('{"type":"executor.runner.progress"');
+-        if (start < 0) return [];
+-        let value: unknown;
+-        try {
+-          value = JSON.parse(line.slice(start));
+-        } catch {
+-          return [];
+-        }
++      const records = hostedRecords(text).flatMap((value) => {
+         const decoded = Schema.decodeUnknownOption(Progress)(value);
+-        if (
+-          Option.isNone(decoded) ||
+-          decoded.value.app !== app ||
+-          typeof value !== "object" ||
+-          value === null
+-        )
+-          return [];
+-        return [{ record: decoded.value, keys: Object.keys(value).sort() }];
++        return Option.isNone(decoded) || decoded.value.app !== app
++          ? []
++          : [{ record: decoded.value, keys: Object.keys(value).sort() }];
+       });
+       if (
+         records.some(({ record }) => record.phase === "invocation" && record.status === "completed")
 diff --git a/e2e/support/workflow-status-log-evidence.ts b/e2e/support/workflow-status-log-evidence.ts
 --- a/e2e/support/workflow-status-log-evidence.ts
 +++ b/e2e/support/workflow-status-log-evidence.ts
@@ -296,6 +450,115 @@ diff --git a/e2e/support/workflow-status-log-evidence.ts b/e2e/support/workflow-
        if (
          records.some(
            (record) =>
+diff --git a/e2e/tests/pool-migration-inventory.spec.ts b/e2e/tests/pool-migration-inventory.spec.ts
+--- a/e2e/tests/pool-migration-inventory.spec.ts
++++ b/e2e/tests/pool-migration-inventory.spec.ts
+@@ -11,37 +11,36 @@ import { Evidence } from "../support/evidence.ts";
+ import { Target } from "../support/platform.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { provisionedSource } from "../support/provisioned-source.ts";
+-import { logMessages } from "../support/data-steps.ts";
++import { logText } from "../support/data-steps.ts";
++import { hostedRecords, noReport } from "../support/hosted-log.ts";
+ import { writeRows } from "../support/cloud-rows.ts";
+ 
+ const common = { inventory: Schema.Literal("host-v1"), run: Schema.String };
+-const InventoryRecord = Schema.fromJsonString(
+-  Schema.Union([
+-    Schema.Struct({
+-      ...common,
+-      event: Schema.Literal("part"),
+-      index: Schema.Int,
+-      data: Schema.String,
+-    }),
+-    Schema.Struct({
+-      ...common,
+-      event: Schema.Literal("end"),
+-      complete: Schema.Literal(true),
+-      chunks: Schema.Int,
+-      bytes: Schema.Int,
+-      sha256: Schema.String,
+-      coverage: Schema.Array(Schema.String),
+-      migrationGo: Schema.Literal(false),
+-    }),
+-    Schema.Struct({
+-      ...common,
+-      event: Schema.Literal("end"),
+-      complete: Schema.Literal(false),
+-      reason: Schema.String,
+-      migrationGo: Schema.Literal(false),
+-    }),
+-  ]),
+-);
++const InventoryRecord = Schema.Union([
++  Schema.Struct({
++    ...common,
++    event: Schema.Literal("part"),
++    index: Schema.Int,
++    data: Schema.String,
++  }),
++  Schema.Struct({
++    ...common,
++    event: Schema.Literal("end"),
++    complete: Schema.Literal(true),
++    chunks: Schema.Int,
++    bytes: Schema.Int,
++    sha256: Schema.String,
++    coverage: Schema.Array(Schema.String),
++    migrationGo: Schema.Literal(false),
++  }),
++  Schema.Struct({
++    ...common,
++    event: Schema.Literal("end"),
++    complete: Schema.Literal(false),
++    reason: Schema.String,
++    migrationGo: Schema.Literal(false),
++  }),
++]);
+ const Snapshot = Schema.fromJsonString(
+   Schema.Struct({
+     snapshot: Schema.String,
+@@ -58,25 +57,26 @@ const App = Schema.Struct({
+   }),
+ });
+ 
+-class ReportPending extends Schema.TaggedError<ReportPending>()("ReportPending", {}) {}
++class ReportPending extends Schema.TaggedError<ReportPending>()("ReportPending", {
++  message: Schema.String,
++}) {}
+ 
+-const records = (log: string) =>
+-  logMessages(log).pipe(
+-    Effect.map((messages) =>
+-      messages.flatMap((line) => {
+-        const start = line.indexOf('{"inventory":"host-v1"');
+-        return start < 0
+-          ? []
+-          : Option.toArray(Schema.decodeUnknownOption(InventoryRecord)(line.slice(start)));
+-      }),
+-    ),
++const recordsIn = (text: string) =>
++  hostedRecords(text).flatMap((value) =>
++    Option.toArray(Schema.decodeUnknownOption(InventoryRecord)(value)),
+   );
++const records = (log: string) => logText(log).pipe(Effect.map(recordsIn));
+ const nextReport = (log: string, seen: ReadonlySet<string>) =>
+-  records(log).pipe(
+-    Effect.flatMap((entries) => {
++  logText(log).pipe(
++    Effect.flatMap((text) => {
++      const entries = recordsIn(text);
+       const end = entries.filter((entry) => entry.event === "end" && !seen.has(entry.run)).at(-1);
+       return end === undefined
+-        ? Effect.fail(new ReportPending())
++        ? Effect.fail(
++            new ReportPending({
++              message: noReport("inventory report", text, "host-v1", entries.length),
++            }),
++          )
+         : Effect.succeed({ end, entries });
+     }),
+     Effect.retry({
 diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
 --- a/e2e/tests/production-ops-migrations.spec.ts
 +++ b/e2e/tests/production-ops-migrations.spec.ts

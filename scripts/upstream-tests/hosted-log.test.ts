@@ -5,10 +5,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
-const [{ readHostedLog, messageParts }, { dataStepPassesIn }] = await Promise.all([
-  load("e2e/support/hosted-log.ts"),
-  load("e2e/support/data-steps.ts"),
-]);
+const [{ readHostedLog, messageParts, entryTexts, hostedRecords, noReport }, { dataStepPassesIn }] =
+  await Promise.all([load("e2e/support/hosted-log.ts"), load("e2e/support/data-steps.ts")]);
 
 const summary = (step: string) =>
   JSON.stringify({
@@ -121,6 +119,76 @@ test("a printed record keeps nested message parts, annotations and joined string
     "executor.trace_sampled": true,
   });
   assert.equal(context.note, "first line\nit's the second");
+});
+
+// Real line shapes from a Cloud run's log, with made-up identifiers. Workers write these with
+// `console.log(JSON.stringify(...))`, so they carry no message.
+const inventoryEnd =
+  '[Api] {"inventory":"host-v1","run":"3f6d1c2a-7b4e-4c1d-9a8f-2e5b6c7d8e9f","event":"end","complete":true,"sha256":"' +
+  "ab".repeat(32) +
+  '","chunks":2,"bytes":8651,"coverage":["accounts","accountAccess","accountGroups","appAccess","appGroups","groups","groupMembers","members","links","connections","connectionAccess","connectionGroups","workflowAccounts","webhookAccounts","webhooks","defaults","pools"],"excluded":["home-state","durable-object-state"],"migrationGo":false}';
+const compilerPhase =
+  '[AppCompiler] {"type":"executor.compiler.phase","traceId":"0123456789abcdef0123456789abcdef","attempt":"11111111-2222-4333-8444-555555555555","isolate":"66666666-7777-4888-8999-aaaaaaaaaaaa","sourceDigest":null,"phase":"received","elapsedMs":0}';
+const runnerProgress =
+  '[AppData] {"type":"executor.runner.progress","inspection":false,"traceId":null,"attempt":"bbbbbbbb-cccc-4ddd-8eee-ffffffffffff","isolate":"12121212-3434-4565-8787-909090909090","app":null,"build":null,"sequence":1,"phase":"worker-code","status":"started","elapsedMs":9,"activeInvocations":1,"truncated":false}';
+const requestContext = inspected("Api", [
+  "  message: 'executor.request.context',",
+  "  level: 'INFO',",
+  "  timestamp: '2026-11-22T12:23:58.200Z',",
+  "  annotations: { 'executor.trace_id': '0123456789abcdef0123456789abcdef' }",
+]);
+
+test("a JSON line with no message survives as its text, and reads as its record", () => {
+  const text = [...requestContext, inventoryEnd, "plain Alchemy text"].join("\n");
+  const entries = readHostedLog(text);
+  assert.deepEqual(
+    entries.map((entry: { text: string }) => entry.text),
+    [requestContext.join("\n"), inventoryEnd, "plain Alchemy text"],
+  );
+  // What `logMessages` returns: the inventory line is kept as written, not dropped for having no
+  // message.
+  assert.deepEqual(entries.flatMap(entryTexts), [
+    "executor.request.context",
+    inventoryEnd,
+    "plain Alchemy text",
+  ]);
+  const [, inventory] = hostedRecords(text);
+  assert.equal(inventory.inventory, "host-v1");
+  assert.equal(inventory.event, "end");
+  assert.equal(inventory.run, "3f6d1c2a-7b4e-4c1d-9a8f-2e5b6c7d8e9f");
+});
+
+test("compiler phase and runner progress lines read as their records, every field intact", () => {
+  const records = hostedRecords([compilerPhase, runnerProgress].join("\n"));
+  assert.deepEqual(records, [
+    JSON.parse(compilerPhase.slice(compilerPhase.indexOf("{"))),
+    JSON.parse(runnerProgress.slice(runnerProgress.indexOf("{"))),
+  ]);
+  assert.deepEqual(Object.keys(records[0]), [
+    "type",
+    "traceId",
+    "attempt",
+    "isolate",
+    "sourceDigest",
+    "phase",
+    "elapsedMs",
+  ]);
+});
+
+test("a reader that finds no report says how much of the log it saw and could not decode", () => {
+  const cut = '[Api] {"inventory":"host-v1","run":"3f6d1c2a-7b4e-4c1d-9a8f-2e5b6c7d8e9f","event":';
+  assert.equal(
+    noReport("inventory report", [...requestContext, cut].join("\n"), "host-v1", 0),
+    "No inventory report in 7 hosted log lines; 1 of 1 lines naming it could not be decoded",
+  );
+  assert.equal(
+    noReport("inventory report", inventoryEnd, "host-v1", 1),
+    "No inventory report in 1 hosted log lines; 0 of 1 lines naming it could not be decoded",
+  );
+  assert.equal(
+    noReport("new 10_profile_app_copies summary", "", "Data step pass finished: ", 0),
+    "No new 10_profile_app_copies summary in 0 hosted log lines; 0 of 0 lines naming it could not be decoded",
+  );
 });
 
 test("a record still being written, or one that isn't plain data, stays as its lines", () => {
