@@ -1,0 +1,170 @@
+diff --git a/packages/dashboard-start/src/implementation/hydrate-atoms.ts b/packages/dashboard-start/src/implementation/hydrate-atoms.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/dashboard-start/src/implementation/hydrate-atoms.ts
+@@ -0,0 +1,84 @@
++/** Applying a server-rendered document's values in the browser, without JSX, so tests import it. */
++import { AsyncResult, Atom, type AtomRegistry, Hydration } from "effect/reactivity";
++
++/** A value with this tag, in the encodings `AsyncResult.Schema` and `Schema.Option` write. */
++const tagged = (value: unknown, tag: string): value is Readonly<Record<string, unknown>> =>
++  typeof value === "object" && value !== null && "_tag" in value && value._tag === tag;
++
++/** A sent success with its time moved by `offset`; anything else as it is. */
++const movedSuccess = (value: unknown, offset: number): unknown =>
++  tagged(value, "Success") &&
++  typeof value.waiting === "boolean" &&
++  typeof value.timestamp === "number"
++    ? // The codec accepts whole milliseconds only, and a clock under test control can report
++      // fractions.
++      { ...value, timestamp: Math.round(value.timestamp + offset) }
++    : value;
++
++/**
++ * Move a sent result's time from the server's clock to the browser's: on arrival it is as old as
++ * it was when the server sent it. Its time is then comparable with `Date.now()` here, like the
++ * time of a value the browser read itself, whatever the two clocks say. Without this a browser
++ * whose clock is ahead of the server's finds every value in a new document past its freshness
++ * and reads it again, and one whose clock is behind keeps values past theirs.
++ *
++ * A result carries a time on its success, or on the earlier success a failure still holds. Only
++ * a value that is itself a result is moved: one nested in another value, such as a protected
++ * read's accepted body, keeps the server's time, and nothing judges that one by its time.
++ *
++ * The time the page spent on its way and waiting for this script is not counted: only the
++ * server's clock knows when it left. Documents are never served from a cache, so that is the
++ * time to load one.
++ */
++const onBrowserClock =
++  (receivedAt: number) =>
++  (entry: Hydration.DehydratedAtomValue): Hydration.DehydratedAtomValue => {
++    const offset = receivedAt - entry.dehydratedAt;
++    const { value } = entry;
++    if (!tagged(value, "Failure")) return { ...entry, value: movedSuccess(value, offset) };
++    const previous = value.previousSuccess;
++    return tagged(previous, "Some")
++      ? {
++          ...entry,
++          value: {
++            ...value,
++            previousSuccess: { ...previous, value: movedSuccess(previous.value, offset) },
++          },
++        }
++      : entry;
++  };
++
++/**
++ * New values preload atoms before they are first read. A later value for an atom the page has
++ * already created replaces its state, when that atom is writable state rather than a query. A
++ * query the page started before its value arrived, such as one in a region the browser rendered
++ * itself, takes the server's value while it is still loading; a value the browser already has
++ * is newer than the page's. `receivedAt` is the browser's time as these values arrive.
++ */
++export const applyAtoms = (
++  registry: AtomRegistry.AtomRegistry,
++  values: ReadonlyArray<Hydration.DehydratedAtom>,
++  receivedAt: number,
++) => {
++  const nodes = registry.getNodes();
++  const loading: Array<Atom.Atom<unknown>> = [];
++  const arrived = Hydration.toValues(values).map(onBrowserClock(receivedAt));
++  const fresh = arrived.filter((entry) => {
++    const node = nodes.get(entry.key);
++    if (node === undefined || !Atom.isSerializable(node.atom)) return true;
++    const atom = node.atom;
++    if (Atom.isWritable(atom)) {
++      registry.set(atom, atom[Atom.SerializableTypeId].decode(entry.value));
++      return false;
++    }
++    // A node that has not been read yet takes the preloaded value when it is.
++    if (node.currentState() !== "valid") return true;
++    const current = node.value();
++    if (!AsyncResult.isAsyncResult(current) || !AsyncResult.isInitial(current)) return false;
++    loading.push(atom);
++    return true;
++  });
++  Hydration.hydrate(registry, fresh);
++  // Reading an existing node applies its preloaded value and notifies the components using it.
++  for (const atom of loading) registry.get(atom);
++};
+diff --git a/packages/dashboard-start/src/implementation/registry.tsx b/packages/dashboard-start/src/implementation/registry.tsx
+--- a/packages/dashboard-start/src/implementation/registry.tsx
++++ b/packages/dashboard-start/src/implementation/registry.tsx
+@@ -11,6 +11,7 @@
+ import { Cause, Effect } from "effect";
+ import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
+ import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
++import { applyAtoms } from "./hydrate-atoms.ts";
+ import { nodeKey } from "./loaded-value.ts";
+ 
+ interface DehydratedAtoms {
+@@ -307,51 +308,18 @@
+   };
+ };
+ 
+-/**
+- * New values preload atoms before they are first read. A later value for an atom the page has
+- * already created replaces its state, when that atom is writable state rather than a query. A
+- * query the page started before its value arrived, such as one in a region the browser rendered
+- * itself, takes the server's value while it is still loading; a value the browser already has
+- * is newer than the page's.
+- */
+-const applyAtoms = (
+-  registry: AtomRegistry.AtomRegistry,
+-  values: ReadonlyArray<Hydration.DehydratedAtom>,
+-) => {
+-  const nodes = registry.getNodes();
+-  const loading: Array<Atom.Atom<unknown>> = [];
+-  const fresh = Hydration.toValues(values).filter((entry) => {
+-    const node = nodes.get(entry.key);
+-    if (node === undefined || !Atom.isSerializable(node.atom)) return true;
+-    const atom = node.atom;
+-    if (Atom.isWritable(atom)) {
+-      registry.set(atom, atom[Atom.SerializableTypeId].decode(entry.value));
+-      return false;
+-    }
+-    // A node that has not been read yet takes the preloaded value when it is.
+-    if (node.currentState() !== "valid") return true;
+-    const current = node.value();
+-    if (!AsyncResult.isAsyncResult(current) || !AsyncResult.isInitial(current)) return false;
+-    loading.push(atom);
+-    return true;
+-  });
+-  Hydration.hydrate(registry, fresh);
+-  // Reading an existing node applies its preloaded value and notifies the components using it.
+-  for (const atom of loading) registry.get(atom);
+-};
+-
+ /** Apply the server's values before hydration reaches the components that read them. */
+ const hydrateAtoms = (router: AnyRouter, registry: AtomRegistry.AtomRegistry) => {
+   const original = router.options.hydrate;
+   router.options.hydrate = async (dehydrated: { readonly atoms: DehydratedAtoms }) => {
+     await original?.(dehydrated);
+-    applyAtoms(registry, dehydrated.atoms.initial);
++    applyAtoms(registry, dehydrated.atoms.initial, Date.now());
+     const reader = dehydrated.atoms.stream.getReader();
+     void (async () => {
+       for (;;) {
+         const { done, value } = await reader.read();
+         if (done) return;
+-        applyAtoms(registry, value);
++        applyAtoms(registry, value, Date.now());
+       }
+     })().catch((error: unknown) => console.error("Dashboard data stream failed", error));
+   };
+diff --git a/packages/ui/src/contracts/refresh.ts b/packages/ui/src/contracts/refresh.ts
+--- a/packages/ui/src/contracts/refresh.ts
++++ b/packages/ui/src/contracts/refresh.ts
+@@ -51,9 +51,9 @@
+ /**
+  * Keep a read for a while after its last view closes, so returning to a page shows its data
+  * instead of a skeleton. A page that opens with a value older than `freshness` reads it again in
+- * the background, and a viewed read is read again on every return to a visible tab. Hydrated
+- * values carry the server's timestamp, so the first render after hydration does not repeat the
+- * server's read.
++ * the background, and a viewed read is read again on every return to a visible tab. A hydrated
++ * value arrives as old as it was when the server sent it, on this browser's clock, so the first
++ * render after hydration does not repeat the server's read, whether or not the two clocks agree.
+  *
+  * The focus count and the source are dependencies, not listeners. `Atom.swr` listened to both, so
+  * any retained dependent (an outer idle TTL, or the registry's default one) kept a closed page

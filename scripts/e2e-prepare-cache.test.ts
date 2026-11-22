@@ -73,6 +73,7 @@ function workspace(parent: string, name: string) {
 import { dirname } from 'node:path';
 const [step, output] = process.argv.slice(2);
 if (process.env.FAKE_FAIL === step) process.exit(3);
+if (process.env.BUILD_PIDS) appendFileSync(process.env.BUILD_PIDS, process.pid + ' ' + process.ppid + '\\n');
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Number(process.env.BUILD_MS ?? 0));
 mkdirSync(dirname(output), { recursive: true }); writeFileSync(output, step + ' ' + process.env.BUILD_MARK);
 if (step === 'e2e:runtime') writeFileSync(output + '.map', '{}');
@@ -130,28 +131,69 @@ const base = (parent: string, extra: Environment): NodeJS.ProcessEnv => {
     else env[name] = value;
   return env;
 };
-const prepareSync = (root: string, parent: string, extra: Environment) => {
-  const result = spawnSync(process.execPath, ["scripts/e2e-prepare.ts"], {
+type Prepared = { status: number | null; signal: NodeJS.Signals | null; output: string };
+// A preparation's builds outlive it unless its whole process group is killed, and once the
+// sandbox is gone a leftover build spins at a full core in Node's recursive mkdir until someone
+// kills it. Each preparation leads its own group, and the group goes when the preparation ends,
+// is stopped or times out, or when this file exits first.
+const running = new Set<number>();
+const stopGroup = (group: number) => {
+  try {
+    process.kill(-group, "SIGKILL");
+  } catch {}
+};
+const stopAll = () => {
+  for (const group of running) stopGroup(group);
+};
+process.on("exit", stopAll);
+for (const [signal, code] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+] as const)
+  process.once(signal, () => {
+    stopAll();
+    process.exit(code);
+  });
+const start = (
+  root: string,
+  parent: string,
+  extra: Environment,
+  { timeout = 60_000, stop }: { timeout?: number; stop?: AbortSignal } = {},
+) => {
+  const child = spawn(process.execPath, ["scripts/e2e-prepare.ts"], {
     cwd: root,
     env: base(parent, extra),
-    encoding: "utf8",
-    timeout: 60_000,
+    detached: true,
   });
-  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  return result.stdout;
-};
-const prepare = (root: string, parent: string, extra: Environment) =>
-  new Promise<string>((resolve, reject) => {
-    const child = spawn(process.execPath, ["scripts/e2e-prepare.ts"], {
-      cwd: root,
-      env: base(parent, extra),
-    });
+  let group = child.pid;
+  if (group !== undefined) running.add(group);
+  // Once only: a timeout firing after the run must not signal a group id since reused.
+  const end = () => {
+    if (group === undefined) return;
+    stopGroup(group);
+    running.delete(group);
+    group = undefined;
+  };
+  const done = new Promise<Prepared>((resolve, reject) => {
     let output = "";
     child.stdout.on("data", (data) => (output += data));
     child.stderr.on("data", (data) => (output += data));
+    const ended = AbortSignal.any([AbortSignal.timeout(timeout), ...(stop ? [stop] : [])]);
+    ended.addEventListener("abort", end, { once: true });
     child.once("error", reject);
-    child.once("exit", (code) => (code === 0 ? resolve(output) : reject(new Error(output))));
+    child.once("exit", (status, signal) => {
+      end();
+      // Its pipes close once the rest of its group is gone.
+      child.once("close", () => resolve({ status, signal, output }));
+    });
   });
+  return { child, done };
+};
+const prepared = async (root: string, parent: string, extra: Environment) => {
+  const { status, output } = await start(root, parent, extra).done;
+  assert.equal(status, 0, output);
+  return output;
+};
 const built = (parent: string) =>
   existsSync(join(parent, "built.log"))
     ? readFileSync(join(parent, "built.log"), "utf8").trim().split("\n")
@@ -165,6 +207,7 @@ function sandbox(run: (parent: string) => Promise<void> | void) {
     try {
       await run(parent);
     } finally {
+      stopAll();
       rmSync(parent, { recursive: true, force: true });
     }
   };
@@ -172,38 +215,38 @@ function sandbox(run: (parent: string) => Promise<void> | void) {
 
 test(
   "with EXECUTOR_E2E_CACHE unset or empty, CI builds every step and leaves no cache, as before",
-  sandbox((parent) => {
+  sandbox(async (parent) => {
     const root = workspace(parent, "a");
     for (const cache of [undefined, ""]) {
       rmSync(join(parent, "built.log"), { force: true });
-      const output = prepareSync(root, parent, { CI: "true", EXECUTOR_E2E_CACHE: cache });
+      const output = await prepared(root, parent, { CI: "true", EXECUTOR_E2E_CACHE: cache });
       assert.match(output, /, without the cache\.$/m, String(cache));
       assert.deepEqual(built(parent), Object.keys(steps), String(cache));
       assert.equal(existsSync(join(parent, "home/.cache")), false, String(cache));
     }
     // Outside CI an unset variable still means the default cache under the home directory.
     rmSync(join(parent, "built.log"), { force: true });
-    const local = prepareSync(root, parent, { CI: undefined, EXECUTOR_E2E_CACHE: undefined });
+    const local = await prepared(root, parent, { CI: undefined, EXECUTOR_E2E_CACHE: undefined });
     assert.match(local, new RegExp(`cache ${join(parent, "home/.cache/executor-e2e-prepare")}\\.`));
-    assert.match(prepareSync(root, parent, { CI: undefined }), /apps:build: cached/);
+    assert.match(await prepared(root, parent, { CI: undefined }), /apps:build: cached/);
   }),
 );
 
 test(
   "CI uses a cache it names, and never serves an entry after one of its inputs changed",
-  sandbox((parent) => {
+  sandbox(async (parent) => {
     const root = workspace(parent, "a");
     const cache = { CI: "true", EXECUTOR_E2E_CACHE: join(parent, "shared") };
-    prepareSync(root, parent, cache);
+    await prepared(root, parent, cache);
     assert.deepEqual(built(parent), Object.keys(steps));
     rmSync(join(parent, "built.log"));
     // Nothing changed: every step restores.
-    const again = prepareSync(root, parent, cache);
+    const again = await prepared(root, parent, cache);
     for (const step of Object.keys(steps)) assert.match(again, new RegExp(`${step}: cached`));
     assert.deepEqual(built(parent), []);
     // A change in ui reaches both dashboards and nothing else.
     writeFileSync(join(root, "packages/ui/index.ts"), "export const value = 2;\n");
-    const changed = prepareSync(root, parent, cache);
+    const changed = await prepared(root, parent, cache);
     assert.deepEqual(built(parent).sort(), ["hosted:self-host:web:build", "web:build"]);
     assert.match(changed, /apps:build: cached/);
     assert.match(changed, /web:build: built/);
@@ -221,7 +264,7 @@ test(
       BUILD_MS: "300",
       BUILD_MARK: mark,
     });
-    await Promise.all([prepare(first, parent, cache("a")), prepare(second, parent, cache("b"))]);
+    await Promise.all([prepared(first, parent, cache("a")), prepared(second, parent, cache("b"))]);
     const log = built(parent);
     for (const step of Object.keys(steps))
       assert.equal(log.filter((line) => line === step).length, 1, step);
@@ -235,7 +278,7 @@ test(
     const root = workspace(parent, "a");
     const shared = join(parent, "shared");
     const cache = { CI: "true", EXECUTOR_E2E_CACHE: shared };
-    prepareSync(root, parent, cache);
+    await prepared(root, parent, cache);
     // Turn every entry into a lock with no entry, as a holder that died mid-build leaves it. The
     // self-host web step also stores under its post-build key, which nobody claims, so its entries
     // are only removed.
@@ -251,7 +294,7 @@ test(
     const old = new Date(Date.now() - 60_000);
     for (const lock of locks) utimesSync(lock, old, old);
     rmSync(join(parent, "built.log"));
-    const output = prepareSync(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "30000" });
+    const output = await prepared(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "30000" });
     assert.match(output, /Taking over a lock held for \d+s/);
     assert.deepEqual(built(parent), Object.keys(steps));
     for (const lock of locks) assert.equal(existsSync(lock), false, lock);
@@ -264,7 +307,7 @@ test(
     rmSync(join(shared, step, entry!), { recursive: true });
     holdLock(held);
     rmSync(join(parent, "built.log"));
-    const waiting = prepare(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "600000" });
+    const waiting = prepared(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "600000" });
     await new Promise((resolve) => setTimeout(resolve, 1500));
     assert.deepEqual(built(parent), []);
     cpSync(parked, join(shared, step, entry!), { recursive: true });
@@ -309,48 +352,80 @@ test(
     const root = workspace(parent, "a");
     const shared = join(parent, "shared");
     const cache = { CI: "true", EXECUTOR_E2E_CACHE: shared };
-    const failed = spawnSync(process.execPath, ["scripts/e2e-prepare.ts"], {
-      cwd: root,
-      env: base(parent, { ...cache, FAKE_FAIL: "apps:build" }),
-      encoding: "utf8",
-      timeout: 60_000,
-    });
+    const failed = await start(root, parent, { ...cache, FAKE_FAIL: "apps:build" }).done;
     assert.notEqual(failed.status, 0);
     assert.deepEqual(locksIn(shared), []);
     // With the default five-minute bound, a leftover lock would stall this run past its timeout.
     const started = Date.now();
-    const output = prepareSync(root, parent, cache);
+    const output = await prepared(root, parent, cache);
     assert.doesNotMatch(output, /Waiting for another job/);
     assert.ok(Date.now() - started < 30_000);
     // A holder killed mid-build dies at once, as the signal's default does; the next run takes its
     // lock over once the bound has passed.
     rmSync(shared, { recursive: true });
-    // No pipes: the killed run's own build keeps running for a moment and would hold them open.
-    const child = spawn(process.execPath, ["scripts/e2e-prepare.ts"], {
-      cwd: root,
-      env: base(parent, { ...cache, BUILD_MS: "5000" }),
-      stdio: "ignore",
-    });
-    const exited = new Promise<NodeJS.Signals | null>((resolve) =>
-      child.once("exit", (_code, signal) => resolve(signal)),
-    );
+    const { child, done } = start(root, parent, { ...cache, BUILD_MS: "5000" });
     for (let tries = 0; locksIn(shared).length === 0 && tries < 100; tries++)
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(locksIn(shared).length, 1);
     const killed = Date.now();
     child.kill("SIGTERM");
-    assert.equal(await exited, "SIGTERM");
+    assert.equal((await done).signal, "SIGTERM");
     assert.ok(Date.now() - killed < 2_000);
     await new Promise((resolve) => setTimeout(resolve, 1_100));
-    const after = prepareSync(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "1000" });
+    const after = await prepared(root, parent, { ...cache, EXECUTOR_E2E_LOCK_STALE_MS: "1000" });
     assert.match(after, /Taking over a lock held for \d+s/);
     assert.deepEqual(locksIn(shared), []);
   }),
 );
 
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+test(
+  "a preparation stopped mid-build, or one killed by a signal, leaves none of its builds running",
+  sandbox(async (parent) => {
+    const root = workspace(parent, "a");
+    const pids = join(parent, "build-pids");
+    // Each build records its own pid and its parent's, the step's `bun run`.
+    const recorded = () =>
+      existsSync(pids) ? readFileSync(pids, "utf8").trim().split(/\s+/).map(Number) : [];
+    const building = async () => {
+      for (let tries = 0; recorded().length === 0 && tries < 600; tries++)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.notEqual(recorded().length, 0, "the first build never started");
+    };
+    const survivors = async () => {
+      for (let tries = 0; recorded().some(alive) && tries < 100; tries++)
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      return recorded().filter(alive);
+    };
+    const env = { CI: "true", BUILD_MS: "60000", BUILD_PIDS: pids };
+    // Stopped by its caller, the way its timeout stops it.
+    const stop = new AbortController();
+    const stopped = start(root, parent, env, { stop: stop.signal });
+    await building();
+    stop.abort();
+    assert.equal((await stopped.done).signal, "SIGKILL");
+    assert.deepEqual(await survivors(), []);
+    // Killed on its own, as a cancelled job kills it.
+    rmSync(pids);
+    const killed = start(root, parent, env);
+    await building();
+    killed.child.kill("SIGTERM");
+    assert.equal((await killed.done).signal, "SIGTERM");
+    assert.deepEqual(await survivors(), []);
+  }),
+);
+
 test(
   "two containers whose processes share an id never share a scratch directory",
-  sandbox((parent) => {
+  sandbox(async (parent) => {
     // Box jobs run in separate containers, so their e2e:prepare processes can have one pid.
     const root = workspace(parent, "a");
     const shared = join(parent, "shared");
@@ -360,7 +435,7 @@ test(
       NODE_OPTIONS:
         "--import=data:text/javascript,Object.defineProperty(process,'pid',{value:4242})",
     };
-    prepareSync(root, parent, cache);
+    await prepared(root, parent, cache);
     // Another container's process with the same pid holds what a pid-named scratch path would be.
     const step = join(shared, "apps:build");
     const [key] = readdirSync(step);
@@ -369,7 +444,7 @@ test(
     writeFileSync(join(step, `${key}.lock.4242.pending`), "another container");
     writeFileSync(join(step, `${key}.4242.partial`), "another container");
     rmSync(join(parent, "built.log"));
-    prepareSync(root, parent, cache);
+    await prepared(root, parent, cache);
     assert.deepEqual(built(parent), Object.keys(steps));
     assert.equal(readFileSync(join(step, `${key}.lock.4242.pending`), "utf8"), "another container");
   }),
