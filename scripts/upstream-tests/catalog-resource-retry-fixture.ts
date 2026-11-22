@@ -5,6 +5,7 @@ import { Effect, ErrorReporter, Logger } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
+import type { BuildBusy as Busy } from "../../.upstream/packages/sdk/src/contracts/version.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(new URL(path, new URL(`file://${upstream}/`)).href);
@@ -157,7 +158,7 @@ const fixture = (
       build: ({ app: id }: { app: string }) =>
         Effect.suspend(() => {
           buildCalls++;
-          if (id === "alpha" && options.busy) return Effect.fail(new BuildBusy());
+          if (id === "alpha" && options.busy) return Effect.fail<Busy>(new BuildBusy());
           const request = Effect.tryPromise({
             try: async () => {
               compilerCalls++;
