@@ -533,27 +533,32 @@ test("a 429 on /v1/models never carries a cap: the pool is not serving, before t
   }
 });
 
-// The controller's signed inspect, as the release reads it: the root's boot in turn, and the cells.
-const controller = (roots: string[], cells: string[] = []): RootReads & { reads: () => number } => {
+// The controller's signed reads, as the release takes them: the root's boot in turn, and the cells.
+const controller = (
+  roots: string[],
+  cells: string[] = [],
+  fleetEnabled = cells.length > 0,
+): RootReads & { reads: () => number } => {
   let reads = 0;
   return {
     reads: () => reads,
-    root: async () => roots[Math.min(reads++, roots.length - 1)]!,
-    cells: async (root) => new Set(cells.filter((boot) => boot !== root)),
+    read: async () => {
+      const root = roots[Math.min(reads++, roots.length - 1)]!;
+      return { root, cells: new Set(cells.filter((boot) => boot !== root)), fleetEnabled };
+    },
   };
 };
-const unreadableController: RootReads = {
-  root: async () => {
-    throw Object.assign(new Error("refused"), { reason: "identity" });
+const refusing = (reason: string): RootReads => ({
+  read: async () => {
+    throw Object.assign(new Error("refused"), { reason });
   },
-  cells: async () => new Set(),
-};
+});
 
 test("a cell answering /v1/models never makes a code release that kept the root read as a root restart", async () => {
   const live = await pool({ catalogBoot: "boot-cell-1", boots: ["boot-cell-1", "boot-cell-2"] });
   try {
     const reads = controller(["boot-root"], ["boot-cell-1", "boot-cell-2"]);
-    // The boot read before the apply is the root's, not the cell that answered it.
+    // The boot read before the apply is the root's, not the cell's that answered it.
     const before = await bootBeforeApply(credential, live.client, false, reads);
     assert.equal(before, "boot-root");
     const result = await runAcceptance({
@@ -571,7 +576,7 @@ test("a cell answering /v1/models never makes a code release that kept the root 
 });
 
 test("a root that restarted behind a serving cell fails a code release", async () => {
-  // Every call and the catalog come from one cell, before the apply and after, so the served boots
+  // The catalog and every call come from one cell, before the apply and after, so the served boots
   // never change; only the controller shows the root's new boot.
   const live = await pool({ catalogBoot: "boot-cell-1", boots: ["boot-cell-1"] });
   try {
@@ -595,21 +600,25 @@ test("a root that restarted behind a serving cell fails a code release", async (
   }
 });
 
-test("a healing release judges the stuck root by the controller, never by a cell's served boot", async () => {
+test("a healing release waits against the stuck root's boot, never a cell's, and closes on the root's new boot", async () => {
   const live = await pool({ catalogBoot: "boot-cell-1", boots: ["boot-cell-1"] });
   try {
-    const before = await bootBeforeApply(credential, live.client, true, controller(["boot-stuck"]));
+    const before = await bootBeforeApply(
+      credential,
+      live.client,
+      true,
+      controller(["boot-stuck"], ["boot-cell-1"]),
+    );
     assert.equal(before, "boot-stuck");
-    // The controller still selects the stuck root: that is not a restart.
-    const time = clock();
+    // The controller still selects the stuck root: that is no restart.
     const verdict = await awaitRecoveryReady({
       inspect: async () => inspected("boot-stuck"),
       before,
       withinMs: 20_000,
-      ...time,
+      ...clock(),
     });
     assert.equal(verdict.ready, false);
-    // Its new boot, then every call served by a cell, is healed: the root's boot decides, not the cell's.
+    // On its new boot, every call served by a cell is still the root healed.
     const result = await runAcceptance({
       credential,
       expect: "same-boot",
@@ -624,27 +633,49 @@ test("a healing release judges the stuck root by the controller, never by a cell
   }
 });
 
-test("with the fleet off the controller's root is the served boot, and a restart still fails", async () => {
-  const live = await pool();
+test("with the fleet off the root serves everything: a kept root passes, a restarted one fails", async () => {
+  const kept = await pool();
   try {
-    const kept = await runAcceptance({
+    const result = await runAcceptance({
       credential,
       expect: "same-boot",
-      rootBoot: await bootBeforeApply(credential, live.client, false, controller(["boot-root"])),
+      rootBoot: await bootBeforeApply(credential, kept.client, false, controller(["boot-root"])),
       admitted: true,
-      client: live.client,
+      client: kept.client,
       controller: controller(["boot-root"]),
     });
-    assert.equal(kept.passed, true, kept.cause ?? "");
-    const restarted = await runAcceptance({
+    assert.equal(result.passed, true, result.cause ?? "");
+  } finally {
+    kept.close();
+  }
+  const restarted = await pool({ catalogBoot: "boot-root-new", boots: ["boot-root-new"] });
+  try {
+    const result = await runAcceptance({
       credential,
       expect: "any",
       rootBoot: "boot-root",
       admitted: true,
-      client: live.client,
+      client: restarted.client,
       controller: controller(["boot-root-new"]),
     });
-    assert.match(restarted.cause ?? "", /The root restarted/u);
+    assert.match(result.cause ?? "", /The root restarted/u);
+  } finally {
+    restarted.close();
+  }
+});
+
+test("a call served by a runtime the controller doesn't list fails the release", async () => {
+  const live = await pool({ boots: ["boot-root", "boot-stranger"] });
+  try {
+    const result = await runAcceptance({
+      credential,
+      expect: "same-boot",
+      rootBoot: "boot-root",
+      admitted: true,
+      client: live.client,
+      controller: controller(["boot-root"]),
+    });
+    assert.match(result.cause ?? "", /1 runtime\(s\) served that the controller lists neither/u);
   } finally {
     live.close();
   }
@@ -654,14 +685,17 @@ test("an unreadable controller fails closed, before the apply and after it", asy
   const live = await pool();
   try {
     // Even a release that may start on a pool that doesn't answer stops: its wait needs the root's boot.
-    await assert.rejects(bootBeforeApply(credential, live.client, true, unreadableController));
+    await assert.rejects(
+      bootBeforeApply(credential, live.client, true, refusing("identity")),
+      /could not be read \(identity\)/u,
+    );
     const result = await runAcceptance({
       credential,
       expect: "same-boot",
       rootBoot: "boot-root",
       admitted: true,
       client: live.client,
-      controller: unreadableController,
+      controller: refusing("identity"),
     });
     assert.equal(result.passed, false);
     assert.equal(result.couldNotTest, false);
@@ -674,7 +708,7 @@ test("an unreadable controller fails closed, before the apply and after it", asy
   }
 });
 
-test("the fleet passes when a cell served, judged by the controller's cell boots", async () => {
+test("the fleet passes when a listed cell served, and names the miss otherwise", async () => {
   const live = await pool({ catalogBoot: "boot-cell-1", boots: ["boot-cell-1"] });
   try {
     const served = await runAcceptance({
@@ -684,41 +718,58 @@ test("the fleet passes when a cell served, judged by the controller's cell boots
       controller: controller(["boot-root"], ["boot-cell-1"]),
     });
     assert.equal(served.passed, true, served.cause ?? "");
+  } finally {
+    live.close();
+  }
+  const root = await pool();
+  try {
     const none = await runAcceptance({
       credential,
       expect: "two-runtimes",
-      client: live.client,
+      client: root.client,
       controller: controller(["boot-root"], ["boot-cell-9"]),
     });
     assert.match(none.cause ?? "", /no fleet cell served/u);
   } finally {
-    live.close();
+    root.close();
   }
 });
 
-test("without the serving controller's code the served boot stands in only while no cell can serve", async () => {
-  assert.equal(await servedBootStandsIn(controller(["boot-root"])), undefined);
-  assert.match(
-    (await servedBootStandsIn(controller(["boot-root"], ["boot-cell-1"]))) ?? "",
-    /1 fleet cell\(s\) can serve.*pass --serving-controller/u,
-  );
-  assert.match((await servedBootStandsIn(unreadableController)) ?? "", /could not be read/u);
+test("a served boot from before the apply stands in for the root's only when it provably was the root's", () => {
+  const now = (root: string, cells: string[], fleetEnabled: boolean) => ({
+    root,
+    cells: new Set(cells),
+    fleetEnabled,
+  });
+  // The controller names that boot now: it was the root's, whatever the fleet does.
+  assert.equal(servedBootStandsIn(now("boot-root", ["boot-cell-1"], true), "boot-root"), undefined);
+  // The root served alone: a different boot is a restart, which acceptance then judges.
+  assert.equal(servedBootStandsIn(now("boot-root-new", [], false), "boot-root"), undefined);
+  // A cell may have answered: with cells now, or an enabled fleet whose cells restarted or left.
+  for (const state of [now("boot-root", ["boot-cell-1"], true), now("boot-root", [], true)])
+    assert.match(servedBootStandsIn(state, "boot-cell-1") ?? "", /pass --serving-controller/u);
 });
 
-test("the reads after an upload take either code's answer, again until their bound, then fail closed", async () => {
-  const time = clock();
-  const answers = retryingReads([unreadableController, controller(["boot-root"])], 60_000, time);
-  assert.equal(await answers.root(), "boot-root");
+test("the reads after an upload take either code's answer, stay on it, and fail closed at their bound", async () => {
+  const serving = controller(["boot-root"]);
+  const answers = retryingReads([refusing("identity"), serving], 60_000, clock());
+  assert.equal((await answers.read()).root, "boot-root");
+  assert.equal((await answers.read()).root, "boot-root");
+  // The code that answered is asked first, so the refusing one is not asked again.
+  assert.equal(serving.reads(), 2);
   let refusals = 0;
   const adopting: RootReads = {
-    root: async () => {
+    read: async () => {
       if (refusals++ < 3) throw new Error("identity");
-      return "boot-root";
+      return { root: "boot-root", cells: new Set(), fleetEnabled: false };
     },
-    cells: async () => new Set(),
   };
-  assert.equal(await retryingReads([adopting], 60_000, time).root(), "boot-root");
+  assert.equal((await retryingReads([adopting], 60_000, clock()).read()).root, "boot-root");
+  // At the bound, the checkout code's refusal is the one reported.
   const bounded = clock();
-  await assert.rejects(retryingReads([unreadableController], 20_000, bounded).root());
+  await assert.rejects(
+    retryingReads([refusing("checkout"), refusing("serving")], 20_000, bounded).read(),
+    (error: { reason?: string }) => error.reason === "checkout",
+  );
   assert.ok(bounded.now() >= 20_000);
 });

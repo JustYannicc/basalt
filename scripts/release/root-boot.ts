@@ -1,16 +1,22 @@
 import { Schema } from "effect";
 import { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
 
+/** What the controller's signed read-only inspect and fleet-inspect say now. */
+export interface ControllerRead {
+  readonly root: string;
+  /** Boots of fleet cells, never the root's; a draining cell that just served still counts. */
+  readonly cells: ReadonlySet<string>;
+  readonly fleetEnabled: boolean;
+}
+
 /**
- * The root's boot and the fleet cells' boots, from the controller's signed read-only inspect. A
- * served answer names whichever runtime served it, and once cells serve that is rarely the root,
- * so a release judges the root by these reads only.
+ * The root's boot and the fleet cells' boots, read from the controller. A served answer names
+ * whichever runtime served it, and once cells serve that is rarely the root, so a release judges
+ * the root by this read only.
  */
 export interface RootReads {
   /** Throws when the controller can't be read or names no selected root. */
-  root(): Promise<string>;
-  /** Boots of fleet cells, never the root's. */
-  cells(root: string): Promise<ReadonlySet<string>>;
+  read(): Promise<ControllerRead>;
 }
 
 /** The `--serving-controller` packet: the crash operator's `{"controllerCode": ...}` shape. */
@@ -25,26 +31,21 @@ export const unreadable = (error: unknown) =>
   }), so the root's boot is unknown`;
 
 /**
- * Without the serving controller's code nothing reads the root's boot before the apply, so the
- * served boot stands in for it. That holds only while the root serves alone: any fleet cell with
- * an identity could have answered instead, and the run then stops rather than guess.
+ * Without the serving controller's code, the boot read before the apply is the served one. It is
+ * the root's when the controller names that boot now: boots never repeat. A different boot means
+ * the root restarted only while the root serves alone; with an enabled fleet or any cell it may have
+ * been a cell's, and the run stops rather than guess.
  */
-export async function servedBootStandsIn(reads: RootReads) {
-  let cells: ReadonlySet<string>;
-  try {
-    cells = await reads.cells(await reads.root());
-  } catch (error) {
-    return unreadable(error);
-  }
-  return cells.size
-    ? `${cells.size} fleet cell(s) can serve, so the boot read before the apply may be a cell's; pass --serving-controller to read the root's boot from the controller`
-    : undefined;
-}
+export const servedBootStandsIn = (now: ControllerRead, served: string) =>
+  served === now.root || (!now.fleetEnabled && now.cells.size === 0)
+    ? undefined
+    : "the boot read before the apply was a served one and may be a fleet cell's; pass --serving-controller so it is read from the controller";
 
 /**
  * Reads that answer from any of the given codes, again until `withinMs`. After an upload the
  * controller object keeps the previous code for a while (`controllerAdoptionMs`) and refuses a
- * command signed for the other one; either answer names the same root.
+ * command signed for the other one; either answer names the same root. Each try opens a bridge
+ * connection, so the code that last answered is tried first and tries are 15 s apart.
  */
 export function retryingReads(
   sources: readonly RootReads[],
@@ -55,24 +56,27 @@ export function retryingReads(
   const sleep =
     clock.sleep ??
     ((milliseconds: number) => new Promise((done) => setTimeout(done, milliseconds)));
-  const attempt = async <A>(read: (source: RootReads) => Promise<A>) => {
-    const started = now();
-    for (;;) {
-      let last: unknown;
-      for (const source of sources) {
-        try {
-          return await read(source);
-        } catch (error) {
-          last = error;
-        }
-      }
-      if (now() - started >= withinMs) throw last;
-      await sleep(5_000);
-    }
-  };
+  let answered = 0;
+  const order = () => [answered, ...sources.keys()].filter((v, i, all) => all.indexOf(v) === i);
   return {
-    root: () => attempt((source) => source.root()),
-    cells: (root) => attempt((source) => source.cells(root)),
+    read: async () => {
+      const started = now();
+      for (;;) {
+        // The first source is the checkout's own code, so its refusal is the one reported.
+        const refusals = new Map<number, unknown>();
+        for (const index of order()) {
+          try {
+            const value = await sources[index]!.read();
+            answered = index;
+            return value;
+          } catch (error) {
+            refusals.set(index, error);
+          }
+        }
+        if (now() - started >= withinMs) throw refusals.get(0);
+        await sleep(15_000);
+      }
+    },
   };
 }
 
@@ -107,7 +111,14 @@ export async function controllerRootReads(options: {
     directory: "",
   };
   return {
-    root: async () => fleet.primaryBoot(await controller.inspectController(access)),
-    cells: async (root) => fleet.cellBoots(await controller.inspectFleet(access), root),
+    read: async () => {
+      const root = fleet.primaryBoot(await controller.inspectController(access));
+      const view = await controller.inspectFleet(access);
+      return {
+        root,
+        cells: fleet.cellBoots(view, root),
+        fleetEnabled: view.permission?.enabled === true,
+      };
+    },
   };
 }
