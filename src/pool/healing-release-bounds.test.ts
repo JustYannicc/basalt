@@ -25,3 +25,20 @@ test("a healing release's two bounds follow every part they are made of", () => 
   // The numbers the release notes state.
   assert.deepEqual([acceptance, readiness, readinessCommandSeconds], [658_000, 988_000, 993]);
 });
+
+test("a restart is given up to a person only after its slowest healthy path to ready", () => {
+  // From a forced restart's stop: the stop grace, both exit reads, the provider read, startup, the
+  // steps to ready, one recovery pass, and destroy with the membership pass that renews a policy.
+  const fromStop =
+    timing.forcedStopGraceMs +
+    2 * timing.exitConfirmationMs +
+    timing.providerReadAllowanceMs +
+    timing.runtimeStartupMs +
+    timing.restartTailAllowanceMs +
+    timing.recoveryPassMs +
+    timing.destroyAndMembershipMs;
+  // Recovery's own restart starts at its first admission, without a stop to wait out.
+  const fromAdmission = fromStop - timing.forcedStopGraceMs;
+  assert.ok(timing.forcedRestartBudgetMs >= Math.max(fromStop, fromAdmission));
+  assert.equal(timing.forcedRestartBudgetMs, 351_000);
+});
