@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { request as post, type IncomingHttpHeaders } from "node:http";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
+import { controllerHoldBytes } from "./controller-reset.ts";
 
 // The first send reads part of a streamed body and fails as a replaced instance does; the replay
 // must reach a real object with the whole body, through workerd's own clone and tee.
@@ -62,6 +64,48 @@ function streamed(size: number) {
       },
     }),
   };
+}
+
+/**
+ * Sends a streamed body the way a full-duplex client does: the answer counts once it arrives, and
+ * the upload stops there. Miniflare's dispatchFetch surfaces an answer only after the whole upload,
+ * so a refusal the worker sends before reading the body raced workerd closing the connection and
+ * failed as EPIPE on a busy runner (#1685).
+ */
+function sendEarly(origin: URL, path: string, body: ReadableStream<Uint8Array>) {
+  return new Promise<{ status: number; headers: IncomingHttpHeaders; text: string }>(
+    (resolve, reject) => {
+      let answered = false;
+      const answer = Promise.withResolvers<void>();
+      const request = post(new URL(path, origin), { method: "POST" }, (response) => {
+        answered = true;
+        answer.resolve();
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => (text += chunk));
+        response.on("end", () =>
+          resolve({ status: response.statusCode ?? 0, headers: response.headers, text }),
+        );
+        response.on("error", reject);
+      });
+      // Once answered, the rest of the upload may be refused; before that, a failure is real.
+      request.on("error", (error) => (answered ? undefined : reject(error)));
+      void (async () => {
+        const reader = body.getReader();
+        while (!answered) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!request.write(value))
+            await Promise.race([
+              new Promise((drained) => request.once("drain", drained)),
+              answer.promise,
+            ]);
+        }
+        void reader.cancel().catch(() => {});
+        request.end();
+      })().catch(reject);
+    },
+  );
 }
 
 test(
@@ -127,14 +171,11 @@ test(
     assert.deepEqual(await sent.json(), { size: 5 * 1024 * 1024, digest: whole.digest });
     // Last: this answer leaves part of its upload unread, so workerd closes the connection, and a
     // call sent after it could start on that closing socket and fail with EPIPE.
-    const large = streamed(5 * 1024 * 1024);
-    const advised = await mf.dispatchFetch("http://pool/v1/messages", {
-      method: "POST",
-      body: large.body,
-      duplex: "half",
-    });
-    assert.equal(advised.status, 503);
-    assert.equal(advised.headers.get("Retry-After"), "1");
-    assert.equal((await advised.json()).error.type, "api_error");
+    // Just over the hold bound: the worker refuses before it reads the whole body.
+    const large = streamed(controllerHoldBytes + 256 * 1024);
+    const advised = await sendEarly(await mf.ready, "/v1/messages", large.body);
+    assert.equal(advised.status, 503, advised.text);
+    assert.equal(advised.headers["retry-after"], "1");
+    assert.equal(JSON.parse(advised.text).error.type, "api_error");
   },
 );
