@@ -56,8 +56,12 @@ jobs:
           # The box keeps a private owner-only directory per job for 14 days; hosted keeps runner temp.
           if [ -n "${BASALT_BOX_OUTPUT:-}" ]; then out="$BASALT_BOX_OUTPUT/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$GITHUB_JOB"; else out="$RUNNER_TEMP/stage-output"; fi
           echo "BASALT_STAGE_OUTPUT_DIR=$out" >> "$GITHUB_ENV"
-          # A standing stage outlives one job; the upstream test stage still needs a deadline.
-          echo "TEST_STAGE_EXPIRES_AT=$(( ($(date +%s) + 86400) * 1000 ))" >> "$GITHUB_ENV"
+          # A standing stage outlives one job and keeps one deadline for all of them: the lane's,
+          # recorded once (lane-deadlines.json). A per-job deadline changed a secret every release.
+          expires="$(node scripts/release-preview/lane-deadline.ts "$lane")"
+          # A destroy deploys nothing, so it never blocks on a lane without a recorded deadline.
+          case "$STAGE_LABEL" in stage-destroy*) [ -n "$expires" ] || expires=$(( ($(date +%s) + 86400) * 1000 )) ;; esac
+          if [ -n "$expires" ]; then echo "TEST_STAGE_EXPIRES_AT=$expires" >> "$GITHUB_ENV"; fi
       - name: Plan the stage and save its encrypted cleanup checkpoint
         run: |
           node scripts/preview/lifecycle.ts plan "${{ steps.lane.outputs.subject }}"
