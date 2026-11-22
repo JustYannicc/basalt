@@ -57,7 +57,10 @@ export class BoundSlotDriver implements SlotDriver {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(value),
     });
-    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId);
+    // Control calls to a running boot carry its identity; a slot-only call has no boot yet.
+    const bootId =
+      "bootId" in target && typeof target.bootId === "string" ? target.bootId : undefined;
+    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId, bootId);
     let response: Response;
     try {
       response = await homeResponse(async () => {

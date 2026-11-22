@@ -16,6 +16,9 @@ async function fixture(
     drift?: boolean;
     duplicate?: boolean;
     repeatCursor?: boolean;
+    targetState?: string;
+    siblingState?: string;
+    siblingImage?: string;
   } = {},
 ) {
   const f = await runtimeProofFixture();
@@ -39,17 +42,22 @@ async function fixture(
       assert.equal(url.origin, "https://api.cloudflare.com");
       paths.push(url.pathname);
       if (url.pathname.endsWith("instances-v2")) {
-        const value = (id: string, image = f.raw.configuration.image) => ({
+        const value = (id: string, image = f.raw.configuration.image, state = "running") => ({
           id,
           image,
           application_id: f.raw.id,
-          status: { state: "running" },
+          status: { state },
         });
         const result = [
-          value(options.absent ? "other-instance" : f.manifest.target.instanceId),
+          value(
+            options.absent ? "other-instance" : f.manifest.target.instanceId,
+            undefined,
+            options.targetState,
+          ),
           value(
             options.duplicate ? f.manifest.target.instanceId : "sibling",
-            options.wrongSibling ? "wrong-image" : undefined,
+            options.wrongSibling ? "wrong-image" : options.siblingImage,
+            options.siblingState,
           ),
         ];
         return Response.json({
@@ -157,6 +165,106 @@ test("retirement releases no resource guard until the exact provider instance is
       false,
     );
   }
+});
+
+// The provider keeps listing a destroyed instance under state=active and reports it "inactive"
+// (seen on production, 22 Nov 2026: listed for over an hour after its destroy).
+test("an instance listed only as inactive is absent once the driver reported it stopped, and not before", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const f = await fixture({ targetState: "inactive" });
+  const stopped = { driverStopped: true } as const;
+  assert.equal(
+    await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+    true,
+  );
+  assert.equal(await f.reader.absent(f.expected, f.manifest.target.instanceId), false);
+  assert.deepEqual(
+    lines.mock.calls.map((call) => call.arguments),
+    [["POOL_PROVIDER_ABSENCE", { reason: "listed" }]],
+  );
+  // The driver's report never stands in for a running listing.
+  const running = await fixture();
+  assert.equal(
+    await running.reader.absent(
+      running.expected,
+      running.manifest.target.instanceId,
+      undefined,
+      stopped,
+    ),
+    false,
+  );
+});
+
+test("an inactive sibling, even on an older image, neither refuses observation nor absence", async () => {
+  const present = await fixture({ siblingState: "inactive", siblingImage: "older-image" });
+  const proof = await present.reader.observe(present.expected, present.manifest.target.instanceId);
+  assert.equal(
+    "instanceId" in proof ? proof.instanceId : undefined,
+    present.manifest.target.instanceId,
+  );
+  assert.equal(
+    await present.reader.absent(present.expected, present.manifest.target.instanceId),
+    false,
+  );
+  const gone = await fixture({
+    absent: true,
+    siblingState: "inactive",
+    siblingImage: "older-image",
+  });
+  assert.equal(await gone.reader.absent(gone.expected, gone.manifest.target.instanceId), true);
+});
+
+test("an instance in any other state still counts as present, and only a running one is observed", async () => {
+  const f = await fixture({ targetState: "provisioning" });
+  assert.equal(await f.reader.absent(f.expected, f.manifest.target.instanceId), false);
+  await assert.rejects(
+    f.reader.observe(f.expected, f.manifest.target.instanceId),
+    /^Error: Pool provider observation refused$/,
+  );
+  const stopped = await fixture({ targetState: "inactive" });
+  await assert.rejects(
+    stopped.reader.observe(stopped.expected, stopped.manifest.target.instanceId),
+    /^Error: Pool provider observation refused$/,
+  );
+});
+
+test("a sibling in any state but running or inactive still refuses observation and absence, as before", async () => {
+  const f = await fixture({ absent: true, siblingState: "provisioning" });
+  const stopped = { driverStopped: true } as const;
+  assert.equal(
+    await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
+    false,
+  );
+  const present = await fixture({ siblingState: "provisioning" });
+  await assert.rejects(
+    present.reader.observe(present.expected, present.manifest.target.instanceId),
+    /^Error: Pool provider observation refused$/,
+  );
+});
+
+test("an application counts as empty only with no listed instance at all, a stopped one included", async () => {
+  const f = await fixture({ absent: true, targetState: "inactive", siblingState: "inactive" });
+  assert.equal(await f.reader.empty(f.expected), false);
+});
+
+test("a refused absence logs one closed reason and nothing that identifies the runtime", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const listed = await fixture();
+  assert.equal(
+    await listed.reader.absent(listed.expected, listed.manifest.target.instanceId),
+    false,
+  );
+  const drifted = await fixture({ absent: true, drift: true });
+  assert.equal(
+    await drifted.reader.absent(drifted.expected, drifted.manifest.target.instanceId),
+    false,
+  );
+  const calls = lines.mock.calls.filter((call) => call.arguments[0] === "POOL_PROVIDER_ABSENCE");
+  assert.deepEqual(
+    calls.map((call) => call.arguments[1]),
+    [{ reason: "listed" }, { reason: "proof" }],
+  );
+  assert.equal(JSON.stringify(calls).includes(listed.manifest.target.instanceId), false);
 });
 
 test("missing and unreadable secrets report unknown without a provider call or absence proof", async () => {

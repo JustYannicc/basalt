@@ -227,6 +227,48 @@ test("the shared health driver records primary endpoint failures without a fleet
   assert.doesNotMatch(JSON.stringify(fields), /private-/);
 });
 
+test("a failure names the boot it was sent to: a control call's identity, a forward's header, none for a slot", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");
+  const { slotIdentity } = await import("../../scripts/pool-tests/runtime-slots-fixture.ts");
+  const driver = new BoundSlotDriver(() => ({
+    fetch: async () => new Response(null, { status: 409 }),
+  }));
+  const identity = slotIdentity("killed");
+  const policy = {
+    pool: "pool",
+    organization: "org",
+    revision: 1,
+    dirty: false,
+    accounts: [],
+    expiresAt: 1,
+  };
+  await assert.rejects(driver.install(identity, policy, AbortSignal.timeout(2000)));
+  // A start addresses the logical slot, before any boot exists.
+  const { bootId: _boot, ...slot } = slotIdentity("starting");
+  await assert.rejects(driver.start(slot, AbortSignal.timeout(2000)));
+  const forward = new EndpointTrace(
+    new Request("http://runtime/v1/messages", {
+      method: "POST",
+      headers: { "X-Signalbox-Runtime-Identity": JSON.stringify(identity) },
+    }),
+    "slot",
+    "cell",
+  );
+  forward.finish(new Error("private-forward-error"));
+  const fields = log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_RUNTIME_ENDPOINT_FAILURE")
+    .map((call) => JSON.parse(call.arguments[1]));
+  assert.deepEqual(
+    fields.map((value) => [value.path, value.bootId]),
+    [
+      ["/install", identity.bootId],
+      ["/start", null],
+      ["other", identity.bootId],
+    ],
+  );
+});
+
 test("cancellation retains a disconnected first send and pending reconnect in one boundary record", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");
