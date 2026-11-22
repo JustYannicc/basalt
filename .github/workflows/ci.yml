@@ -2756,6 +2756,10 @@ jobs:
       reused_run_id: ${{ steps.gate.outputs.reused_run_id }}
       reused_head_sha: ${{ steps.gate.outputs.reused_head_sha }}
     runs-on: ubuntu-latest
+    # actions: read lets a re-run attempt find the flake-rerun.yml run that started it.
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2763,6 +2767,16 @@ jobs:
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
+      - name: Say which listed flake this attempt re-ran
+        # Only flake-rerun.yml's own re-run: a person's re-run, or a later attempt, is not one.
+        if: >-
+          always() && github.run_attempt == 2 &&
+          github.triggering_actor == 'github-actions[bot]'
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/flake-note.ts
       - name: Require every selected job or verified batch reuse to pass
         id: gate
         env:
