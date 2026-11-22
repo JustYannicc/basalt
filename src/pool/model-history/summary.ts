@@ -3,6 +3,7 @@ import type { PoolUsageSummaryResult } from "../../../apps/pool/usage-overview-c
 import type { PoolUsageSeriesInput, PoolUsageSeriesResult } from "./series-contract.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { historyObject, timestamp } from "./record.ts";
+import { HistoryTooLarge } from "./series-deadline.ts";
 import { authorizeSeries, seriesAuthority } from "./series-input.ts";
 import { homeAccountMappingProven } from "./series-mapping.ts";
 import { homeCaptureCoverage } from "./capture-coverage.ts";
@@ -14,6 +15,7 @@ import {
   maxSummaryCostRows,
   maxSummaryModelRows,
   maxSummaryProviderRows,
+  maxSummaryWindowRows,
   summaryDailyQuery,
   summaryPriceTargets,
   summarySelection,
@@ -23,6 +25,7 @@ import { summaryGroups, summaryCostRows } from "./summary-values.ts";
 import { summaryHourly } from "./summary-hourly.ts";
 import { summaryIncidents } from "./summary-incidents.ts";
 import { summaryKnownDays } from "./summary-known-days.ts";
+import type { HistoryReadStep } from "./read-failure.ts";
 
 type Prices = (
   targets: readonly { provider: string; model: string }[],
@@ -34,6 +37,9 @@ export async function poolUsageSummary(
   raw: unknown,
   currentPrices?: Prices,
   now = Date.now(),
+  /** Labels the statements that follow, so a failure names its step rather than an ordinal. */
+  mark: (step: HistoryReadStep) => void = () => {},
+  windowRows = maxSummaryWindowRows,
 ): Promise<PoolUsageSummaryResult> {
   const parsed = summaryInput(raw);
   const value = historyObject(raw);
@@ -44,12 +50,15 @@ export async function poolUsageSummary(
   );
   authorizeSeries({}, authority);
   const { input, pool, readFrom, previous, heatmapFrom } = parsed;
+  mark("begin");
   await db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
     let selection = await summarySelection(pool, readFrom, input.to, authority);
-    const targetQuery = summaryPriceTargets(selection);
+    const targetQuery = summaryPriceTargets(selection, windowRows);
+    mark("targets");
     const targets = (await db.query(targetQuery.text, targetQuery.values)).rows;
+    if (targets.some((row) => row.window_rows !== null)) throw new HistoryTooLarge();
     const priceUnavailableReason =
       targets.length > 100
         ? "More than 100 provider/model pairs need prices; money estimates are unavailable."
@@ -64,6 +73,7 @@ export async function poolUsageSummary(
         prices = { prices: [], issues: [] };
       }
     selection = await summarySelection(pool, readFrom, input.to, authority, prices);
+    mark("coverage");
     const observed = await summaryCoverage(db, selection, authority);
     const dailyQuery = summaryDailyQuery(
       selection,
@@ -71,6 +81,7 @@ export async function poolUsageSummary(
       previous.from,
       input.by === "model",
     );
+    mark("daily");
     const rows = (await db.query(dailyQuery.text, dailyQuery.values)).rows;
     const historyRows = rows.filter((row) => row.scope === "history");
     const providerRows = rows.filter((row) => row.scope === "current");
@@ -104,6 +115,7 @@ export async function poolUsageSummary(
     );
     const incidentTo = timestamp(new Date(now).toISOString());
     const captureTo = [input.to, incidentTo].sort().at(-1)!;
+    mark("capture");
     const capture = await homeCaptureCoverage(
       db,
       String(selection.values[0]),
@@ -128,6 +140,7 @@ export async function poolUsageSummary(
       input.to,
       authority,
     );
+    mark("hourly");
     const hourly = await summaryHourly(db, hourlySelection, input.from, heatmapFrom, input.to);
     const missingHours = capture.incompleteHours;
     const nativeComplete =
@@ -146,6 +159,7 @@ export async function poolUsageSummary(
       }
     const complete = new Set(completeHours.map((at) => Date.parse(at)));
     const incidentFrom = now - 3_600_000;
+    mark("incidents");
     const reliability = await summaryIncidents(
       db,
       pool,
@@ -255,10 +269,13 @@ export async function poolUsageSummary(
       };
     if (new TextEncoder().encode(JSON.stringify(result)).byteLength > maxSummaryBytes)
       throw new Error("Usage summary exceeds its bounded response");
+    mark("commit");
     await db.query("COMMIT");
     return result;
   } catch (error) {
-    await db.query("ROLLBACK");
+    mark("rollback");
+    // A broken session cannot let the rollback replace the cause.
+    await db.query("ROLLBACK").catch(() => {});
     throw error;
   }
 }

@@ -74,9 +74,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
-          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          # Each model call signs a fresh assertion for this registered device, as release
+          # acceptance does; usage is read in its pool, which must be a dedicated acceptance pool.
+          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
           POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
-          POOL_ACCEPTANCE_POOL: ${{ vars.POOL_ACCEPTANCE_POOL }}
+          POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
           POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
           POOL_FLEET_MODE: ${{ inputs.mode }}
           POOL_FLEET_GO: ${{ inputs.go }}
