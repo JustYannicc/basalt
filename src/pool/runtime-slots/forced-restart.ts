@@ -6,8 +6,9 @@ import type { BoundSlotDriver } from "./transport.ts";
 import { UnservingClock, unservingDecision, type UnservingState } from "./unserving-clock.ts";
 
 // A running runtime refusing with one of these is not serving. Fence, selection, policy and
-// draining refusals are deliberate states a forced restart must never fight.
-const notServing = new Set([
+// draining refusals are deliberate states a forced restart must never fight. Unfence reads the same
+// set to tell a runtime's refusal from the controller's, so a change here changes both.
+export const notServing = new Set([
   "unhealthy",
   "timeout",
   "transport",
