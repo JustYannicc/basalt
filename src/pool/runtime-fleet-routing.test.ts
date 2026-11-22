@@ -499,6 +499,46 @@ test("a runtime whose front layer fails keeps serving: no quarantine and no reco
   assert.equal(recoveries, 0);
 });
 
+test("with production routing and no ready cell, the root's answers resume on the root and its front layer never fails it", async () => {
+  let recoveries = 0;
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    recoverPrimary: async () => {
+      recoveries++;
+    },
+  });
+  const resumable = await f.fleet.forward(
+    request(),
+    "pool",
+    async () => new Response("legacy", { headers: { "X-Basalt-Resume": "v1" } }),
+    () => {},
+  );
+  assert.equal(resumable.headers.get("X-Basalt-Resume-Target"), "primary");
+  assert.equal(await resumable.text(), "legacy");
+  await f.settle();
+  // The root's front layer fails: the call fails, but the root is neither failed nor recovered.
+  const lost = new Error("Network connection lost.");
+  rememberRuntimeFailure("resume_layer", lost);
+  await assert.rejects(
+    f.fleet.forward(
+      request(),
+      "pool",
+      async () => {
+        throw lost;
+      },
+      () => {},
+    ),
+    lost,
+  );
+  await f.settle();
+  assert.equal(recoveries, 0);
+  const next = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await f.state.primaryActive(), 1, "the root still takes counted calls");
+  assert.equal(await next.text(), "legacy");
+  await f.settle();
+});
+
 test("a marked answer cut mid-body never counts against its runtime, and logs one line", async (context) => {
   const log = context.mock.method(console, "error", () => {});
   const f = fixture(3, 1);
