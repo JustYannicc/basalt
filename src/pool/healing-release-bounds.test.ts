@@ -27,18 +27,14 @@ test("a healing release's two bounds follow every part they are made of", () => 
 });
 
 test("a restart is given up to a person only after its slowest healthy path to ready", () => {
-  // From a forced restart's stop: the stop grace, both exit reads, the provider read, startup, the
-  // steps to ready, one recovery pass, and destroy with the membership pass that renews a policy.
-  const fromStop =
-    timing.forcedStopGraceMs +
-    2 * timing.exitConfirmationMs +
-    timing.providerReadAllowanceMs +
-    timing.runtimeStartupMs +
-    timing.restartTailAllowanceMs +
-    timing.recoveryPassMs +
+  // The serving total counted from the stop pass: the time before it (a recovery pass, the
+  // unserving bound, the warm read) comes off, and destroy with the membership pass goes on.
+  const fromStopPass =
+    timing.forcedRestartServesWithinMs -
+    timing.recoveryPassMs -
+    timing.unservingBoundMs -
+    timing.recoveryWarmMs +
     timing.destroyAndMembershipMs;
-  // Recovery's own restart starts at its first admission, without a stop to wait out.
-  const fromAdmission = fromStop - timing.forcedStopGraceMs;
-  assert.ok(timing.forcedRestartBudgetMs >= Math.max(fromStop, fromAdmission));
-  assert.equal(timing.forcedRestartBudgetMs, 351_000);
+  assert.ok(timing.forcedRestartBudgetMs >= fromStopPass);
+  assert.equal(timing.forcedRestartBudgetMs, 354_000);
 });

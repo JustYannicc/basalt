@@ -72,10 +72,12 @@ export const destroyAndMembershipMs = 120_000;
 /**
  * A restart that hasn't reached ready this long after it began has failed: needs a person. A forced
  * restart begins at its stop; one recovery tries on its own, at its first try since serving. It is
- * the forced restart's worst case from its stop to ready, with `destroy()` and the membership pass,
- * which also covers recovery's own restart, so a slow but healthy restart never pages a person.
+ * the forced restart's worst case from the start of its stop pass to ready, with `destroy()` and the
+ * membership pass, which also covers recovery's own restart, so a slow but healthy restart never
+ * pages a person.
  */
 export const forcedRestartBudgetMs =
+  2 * readinessReadMs +
   forcedStopGraceMs +
   2 * exitConfirmationMs +
   providerReadAllowanceMs +
