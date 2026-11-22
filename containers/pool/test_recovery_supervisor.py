@@ -454,11 +454,12 @@ class FirstBootStartupBoundTests(unittest.TestCase):
     def test_a_home_that_never_answers_gets_exactly_the_startup_budget(self) -> None:
         outcome, clock, stop = self.wait(None)
         self.assertIsInstance(outcome, supervisor.StartupError)
-        self.assertEqual(clock.now, supervisor.STARTUP_TIMEOUT_SECONDS)
+        # 180 s is also the controller's runtimeStartupMs (forced-restart-timing.ts).
+        self.assertEqual(clock.now, 180)
         self.assertEqual(set(stop.waits), {0.5})
 
     def test_a_home_that_answers_inside_the_budget_is_ready_at_its_first_answer(self) -> None:
-        last = supervisor.STARTUP_TIMEOUT_SECONDS - 0.5
+        last = 179.5
         outcome, clock, _ = self.wait(last)
         self.assertEqual(outcome, "ready")
         self.assertEqual(clock.now, last)

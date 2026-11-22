@@ -72,6 +72,7 @@ class OrdinaryStopTests(unittest.TestCase):
         clock = Clock()
         waits = []
         killed = []
+        terminated = []
         children = []
         for name in ("home", "node"):
             state = {"killed": False}
@@ -91,7 +92,7 @@ class OrdinaryStopTests(unittest.TestCase):
                 SimpleNamespace(
                     process=SimpleNamespace(
                         poll=lambda state=state: -9 if state["killed"] else None,
-                        terminate=lambda: None,
+                        terminate=lambda name=name: terminated.append((name, clock.now)),
                         kill=kill,
                         wait=wait,
                     )
@@ -100,6 +101,7 @@ class OrdinaryStopTests(unittest.TestCase):
         with patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)):
             supervisor.terminate_children(children)
         self.assertIsNone(current_deadline())
+        self.assertEqual(terminated, [("home", 0.0), ("node", 0.0)], "both children get SIGTERM first")
         self.assertEqual(waits[:2], [("home", 0.0, 15.0), ("node", 15.0, 0)])
         self.assertEqual(killed, [("home", 15.0), ("node", 15.0)])
         self.assertEqual([timeout for _, _, timeout in waits[2:]], [1, 1])

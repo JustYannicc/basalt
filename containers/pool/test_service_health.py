@@ -78,6 +78,23 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertTrue(self.health.check())
         self.assertEqual(len(self.pending), 1)
 
+    def test_an_audit_gets_four_seconds_and_readiness_ends_four_seconds_after_a_missed_one(self) -> None:
+        self.clock.now = 60
+        self.assertTrue(self.health.check())
+        self.clock.now = 63.5
+        self.finish_audit()
+        self.assertTrue(self.health.check(), "an audit inside its 4 s budget counts")
+        # The next audit starts at 123.5 and never answers.
+        self.clock.now = 123.5
+        self.assertTrue(self.health.check())
+        self.assertEqual(len(self.pending), 1)
+        self.clock.now = 127.25
+        self.assertTrue(self.health.check(), "readiness holds through the running audit's budget")
+        self.clock.now = 127.5
+        self.assertFalse(self.health.check(), "readiness ends when that budget runs out")
+        self.finish_audit()
+        self.assertFalse(self.health.check(), "an audit that answers past its budget fails closed")
+
     def test_failed_audit_cannot_be_overwritten_by_fast_success(self) -> None:
         self.clock.now = 60
         self.health.check()
