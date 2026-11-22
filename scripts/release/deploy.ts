@@ -678,6 +678,8 @@ try {
         return { snapshot, digest, planned };
       }),
     );
+    const images: Record<string, string> | undefined =
+      "images" in result ? result.images : undefined;
     const record = {
       liveModules,
       stage,
@@ -687,16 +689,15 @@ try {
       digest: result.digest,
       summary: result.snapshot.summary,
       changes: result.planned,
-      ...("images" in result ? { containerImages: result.images } : {}),
+      ...(images ? { containerImages: images } : {}),
     };
     await output(resolve(root, `.local/release/${command}.json`), record);
     await summary(
       `${command === "plan" ? "Planned" : "Applied; a fresh plan is all noop"}: digest \`${result.digest}\`, attempt \`${attempt}\``,
     );
     await summary(`\`\`\`json\n${safeJson(record.changes, 2)}\n\`\`\``);
-    if ("containerImages" in record)
-      for (const [fqn, image] of Object.entries(record.containerImages))
-        await summary(`- ${fqn} Cloudflare.Container update (${image})`);
+    for (const [fqn, image] of Object.entries(images ?? {}))
+      await summary(`- ${fqn} Cloudflare.Container update (${image})`);
   } else if (command === "destroy") {
     await run(
       Effect.gen(function* () {
