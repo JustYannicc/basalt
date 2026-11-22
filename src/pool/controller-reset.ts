@@ -252,9 +252,22 @@ async function awaitHandover(
   copy: ReturnType<typeof hold>,
   response: Response,
   begun: number,
+  requestId: string,
 ): Promise<Response> {
-  if (!handingOver(response) || (!model && !safeRead(request))) return response;
+  if (!handingOver(response)) return response;
   const now = hop.now ?? Date.now;
+  // Without a held body or a safe read there is nothing to send again; the line still records it.
+  if (!model && !safeRead(request)) {
+    console.info("POOL_CODE_HANDOVER_WAITED", {
+      requestId,
+      endpoint: endpointOf(request),
+      sends: 0,
+      waitedMs: now() - begun,
+      outcome: "refused",
+      reason: "not_resendable",
+    });
+    return response;
+  }
   let sends = 0;
   while (handingOver(response)) {
     if (now() - begun + controllerReplayDelayMs > controllerReplayWindowMs) break;
@@ -286,6 +299,8 @@ async function awaitHandover(
     }
   }
   console.info("POOL_CODE_HANDOVER_WAITED", {
+    requestId,
+    endpoint: endpointOf(request),
     sends,
     waitedMs: now() - begun,
     outcome: handingOver(response) ? "refused" : "answered",
@@ -380,7 +395,7 @@ async function forwardHeld(
     }
     report(hop, request, requestId, "replayed", error, undefined, response.ok);
   }
-  response = await awaitHandover(request, hop, model, copy, response, begun);
+  response = await awaitHandover(request, hop, model, copy, response, begun, requestId);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
   return nativeRuntimeStream(response, request, (error) =>

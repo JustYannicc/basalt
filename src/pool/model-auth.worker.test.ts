@@ -396,12 +396,20 @@ test("raw ingress strips private lifetime headers and offer while preserving pub
 
 /** Pool request events the Worker itself writes; the object a stub stands in for writes none. */
 function workerEvents(context: TestContext) {
+  return workerRecords(context).events;
+}
+
+/** The Worker's events and its code-handover lines, both written with console.info. */
+function workerRecords(context: TestContext) {
   const events: Record<string, unknown>[] = [];
-  context.mock.method(console, "info", (value: unknown) => {
+  const handover: Record<string, unknown>[] = [];
+  context.mock.method(console, "info", (value: unknown, fields: unknown) => {
     if (typeof value === "object" && value !== null && "outcome" in value)
       events.push({ ...value });
+    if (value === "POOL_CODE_HANDOVER_WAITED" && typeof fields === "object" && fields !== null)
+      handover.push({ ...fields });
   });
-  return events;
+  return { events, handover };
 }
 
 const instanceEnded =
@@ -447,9 +455,8 @@ test("a controller reset at the Worker entry is survived by one send to a new in
   assert.deepEqual([second![0], second![2]], first);
 });
 
-test("a call refused during a code handover is timed from its first call by the instance that answers it", async (context) => {
-  context.mock.method(console, "info", () => {});
-  const events = workerEvents(context);
+test("a call refused during a code handover carries its first call's time to the instance that answers it", async (context) => {
+  const { events, handover } = workerRecords(context);
   let sends = 0;
   const { env, calls } = poolStub(undefined, async (request) =>
     ++sends === 1 ? handoverRefusal(request) : new Response(await request.text(), { status: 200 }),
@@ -477,6 +484,41 @@ test("a call refused during a code handover is timed from its first call by the 
   );
   assert.equal(first!.length, 2);
   assert.deepEqual([second![0], second![2]], first);
+  // The resend is stamped when it is sent, a second after the refused call.
+  assert.ok(Number(second![1]) - Number(first![1]) >= 1_000);
+  const [line, ...rest] = handover;
+  assert.deepEqual(rest, []);
+  assert.equal(line!.sends, 1);
+  assert.equal(line!.outcome, "answered");
+  assert.match(String(line!.requestId), /^[0-9a-f-]{36}$/);
+  assert.equal(typeof line!.endpoint, "string");
+});
+
+test("a handover refusal the Worker cannot send again still leaves its line", async (context) => {
+  const { events, handover } = workerRecords(context);
+  const { env, calls } = poolStub(undefined, async (request) => handoverRefusal(request));
+  const deferred: Promise<unknown>[] = [];
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/videos", {
+      method: "POST",
+      headers: { "X-Api-Key": "valid-home-key" },
+      body: '{"model":"claude-opus-5-5"}',
+    }),
+    env,
+    async () => true,
+    (work) => deferred.push(work),
+  );
+  assert.equal(response.status, 503);
+  assert.equal(calls.forwarded.length, 1);
+  await Promise.all(deferred);
+  assert.deepEqual(events, []);
+  const [line, ...rest] = handover;
+  assert.deepEqual(rest, []);
+  assert.deepEqual(
+    { sends: line!.sends, outcome: line!.outcome, reason: line!.reason },
+    { sends: 0, outcome: "refused", reason: "not_resendable" },
+  );
+  assert.match(String(line!.requestId), /^[0-9a-f-]{36}$/);
 });
 
 test("a reset the Worker answers itself is reported once, by the Worker", async (context) => {
