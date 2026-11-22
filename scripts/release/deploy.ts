@@ -971,21 +971,34 @@ try {
           return yield* Effect.die(
             new Error("rollback needs --from <serving.json> or --fqn and --to"),
           );
-        const rolledBack: { fqn: string; version: string }[] = [];
+        const rolledBack: { fqn: string; version: string; forcedSecrets?: readonly string[] }[] =
+          [];
         // Every Worker is tried: one that fails must not leave the rest on the failed release.
         const failed: { fqn: string; cause: unknown }[] = [];
         for (const target of targets) {
           const exit = yield* Effect.exit(
             Effect.gen(function* () {
-              yield* rollbackTo(
+              return yield* rollbackTo(
                 at(yield* scriptName(target.fqn)),
                 target.version,
                 `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
               );
             }),
           );
-          if (exit._tag === "Success") rolledBack.push(target);
-          else failed.push({ fqn: target.fqn, cause: exit.cause });
+          if (exit._tag === "Failure") {
+            failed.push({ fqn: target.fqn, cause: exit.cause });
+            continue;
+          }
+          const { forcedSecrets } = exit.value;
+          if (!forcedSecrets.length) {
+            rolledBack.push(target);
+            continue;
+          }
+          // Names from our own source, never values: the line is public.
+          console.log(
+            `Rolled back ${target.fqn} with force: only per-release secrets changed (${forcedSecrets.join(", ")})`,
+          );
+          rolledBack.push({ ...target, forcedSecrets });
         }
         if (failed.length)
           return yield* Effect.die(
