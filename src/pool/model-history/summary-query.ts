@@ -11,6 +11,12 @@ export const maxSummaryProviderRows = 5_000;
 export const maxSummaryModelRows = 5_000;
 export const maxSummaryCostRows = 500;
 export const maxSummaryBytes = 2_097_152;
+/**
+ * The most requests one summary window may hold. Production last answered at about 122k window rows,
+ * where its heaviest statement already took about half the 5 s limit; every read since its window held
+ * millions was cancelled at 5 s.
+ */
+export const maxSummaryWindowRows = 100_000;
 
 /** The account policy is the series policy; foreign imports are never native capacity. */
 export async function summarySelection(
@@ -63,11 +69,26 @@ export async function summarySelection(
 
 type Selection = Awaited<ReturnType<typeof summarySelection>>;
 
-export function summaryPriceTargets(selection: Selection) {
+/**
+ * One statement: a count of the window's rows that stops one past the bound, through the pool-time
+ * index, gates the targets scan. Over the bound the scan never runs and one row carries the count.
+ */
+export function summaryPriceTargets(selection: Selection, windowRows = maxSummaryWindowRows) {
+  if (!Number.isSafeInteger(windowRows) || windowRows < 1) throw new Error("Invalid window bound");
   return {
-    text: `${selection.text} SELECT DISTINCT provider,model FROM selected
+    text: `${selection.text}, window_rows AS MATERIALIZED (
+      SELECT count(*) AS n FROM (SELECT 1 FROM basalt_model_requests w
+        WHERE w.pool=$1 AND w.timestamp >= $2::text::timestamptz - interval '1 microsecond'
+          AND w.timestamp < $3::text::timestamptz + interval '1 microsecond'
+        LIMIT ${windowRows + 1}) bounded
+    ), targets AS (
+      SELECT DISTINCT provider,model FROM selected
       WHERE NOT counts_only AND provider IS NOT NULL AND model IS NOT NULL
-      ORDER BY provider,model LIMIT 101`,
+        AND (SELECT n FROM window_rows) <= ${windowRows}
+      ORDER BY provider,model LIMIT 101
+    ) SELECT provider,model,NULL::bigint AS window_rows FROM targets
+      UNION ALL SELECT NULL,NULL,n FROM window_rows WHERE n > ${windowRows}
+      ORDER BY provider NULLS FIRST,model`,
     values: selection.values,
   };
 }

@@ -75,7 +75,6 @@ const description =
   "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json";
 const token = "synthetic-github-token";
 const repository = "https://api.github.com/repos/octocat/Hello-World";
-const application = "https://api.github.com/applications/Iv1.8a61f9b3a7aba766";
 const mcpUrl = "https://api.githubcopilot.com/mcp/";
 const routes = new Map([
   [`GET ${repository}`, recorded["GET /repos/{owner}/{repo}"]],
@@ -93,8 +92,6 @@ const routes = new Map([
     `POST ${repository}/actions/runners/registration-token`,
     recorded["POST /repos/{owner}/{repo}/actions/runners/registration-token"],
   ],
-  [`POST ${application}/token`, recorded["POST /applications/{client_id}/token"]],
-  [`PATCH ${application}/token`, recorded["PATCH /applications/{client_id}/token"]],
 ]);
 // GitHub answers these with 201 Created; every other route with 200.
 const created = new Set([`POST ${repository}/actions/runners/registration-token`]);
@@ -185,7 +182,6 @@ try {
   };
   const accounts = { app: {}, user: { github: [account] } };
   const path = { owner: "octocat", repo: "Hello-World" };
-  const client = { client_id: "Iv1.8a61f9b3a7aba766" };
   const results = {};
   // Mutations run as a person approved them. A label after the tool's name tells calls apart.
   for (const [label, input, approved] of [
@@ -195,12 +191,6 @@ try {
     ["api.repos.getContent", { path: { ...path, path: "README.md" } }],
     ["api.secretScanning.getAlert", { path: { ...path, alert_number: 42 } }],
     ["api.actions.createRegistrationTokenForRepo", { path }, true],
-    [
-      "api.apps.checkToken",
-      { path: client, body: { access_token: "synthetic-checked-user-token" } },
-      true,
-    ],
-    ["api.apps.resetToken", { path: client, body: { access_token: "synthetic-old-token" } }, true],
     [
       "mcp.get_file_contents large-file.bin",
       { ...path, path: "large-file.bin", ref: "refs/heads/main" },
@@ -222,14 +212,14 @@ try {
   const unapproved = await request(
     {
       operation: "call",
-      tool: "api.apps.resetToken",
-      input: { accountId: account.id, input: { path: client, body: { access_token: "x" } } },
+      tool: "api.actions.createRegistrationTokenForRepo",
+      input: { accountId: account.id, input: { path } },
     },
     accounts,
   );
   const catalog = await request({ operation: "inspect" }, accounts);
   assert.equal(catalog.ok, true, JSON.stringify(catalog).slice(0, 2_000));
-  const { mintingTools } = await load(join(directory, "results.ts"));
+  const { mintingTools, restResult } = await load(join(directory, "results.ts"));
   const refused = await request(
     {
       operation: "call",
@@ -246,8 +236,12 @@ try {
       unapproved: {
         ok: unapproved.ok,
         error: unapproved.error?._tag,
-        reached: reached.slice(before).filter((route) => route.startsWith("PATCH")),
+        reached: reached.slice(before).filter((route) => route.startsWith("POST")),
       },
+      // No tool the app serves returns a field another tool mints. This is GitHub's documented
+      // answer to checking a token, an operation the app leaves out, filtered as the result of a
+      // tool the app does not list as minting.
+      unlisted: restResult(recorded["POST /applications/{client_id}/token"], "apps.checkToken"),
       tools: catalog.value.tools.map((tool) => tool.name),
       minting: Object.keys(mintingTools),
     }),

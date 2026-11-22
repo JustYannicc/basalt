@@ -33,39 +33,41 @@ import { stackConfig } from "./stack-config.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
 
+// Every option that names a file is declared here, so none can be added without being resolved
+// below. `--config` is not one of them: stackConfig resolves it, with its own fallback to the repo
+// root.
+const pathOptions = {
+  policy: { type: "string" },
+  out: { type: "string" },
+  before: { type: "string" },
+  after: { type: "string" },
+  from: { type: "string" },
+  "root-boot": { type: "string" },
+  admitted: { type: "string" },
+  serving: { type: "string" },
+} as const;
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
+    ...pathOptions,
     stage: { type: "string" },
     config: { type: "string" },
-    policy: { type: "string" },
     include: { type: "string", multiple: true },
     "plan-digest": { type: "string" },
     attempt: { type: "string" },
     name: { type: "string" },
-    out: { type: "string" },
-    before: { type: "string" },
-    after: { type: "string" },
     fqn: { type: "string" },
-    from: { type: "string" },
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
-    "root-boot": { type: "string" },
     apply: { type: "string" },
-    serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
     "verify-only": { type: "boolean" },
   },
 });
 // Before the entry moves into the cloud app (below): a relative path names a file in the directory
-// the command was started in, not one inside the cloud app. `--config` is not here: stackConfig
-// resolves it, with its own fallback to the repo root.
-resolvePathFlags(
-  values,
-  ["policy", "out", "before", "after", "from", "root-boot", "serving"],
-  process.cwd(),
-);
+// the command was started in, not one inside the cloud app.
+resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[], process.cwd());
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
@@ -163,25 +165,24 @@ if (command === "boot" || command === "accept") {
     const { Schema } = await import("effect");
     const {
       awaitRecoveryReady,
+      bootBeforeApply,
       healingOutcome,
       healingWait,
       NOT_SERVING,
       runAcceptance,
-      servingBoot,
     } = await import("./acceptance.ts");
+    const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } =
+      await import("./acceptance-device.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
     const client = process.env.POOL_ACCEPTANCE_ORIGIN
       ? new PoolAcceptanceClient({ origin: process.env.POOL_ACCEPTANCE_ORIGIN })
       : new PoolAcceptanceClient();
+    // Every model call signs its own short assertion for the registered acceptance device.
+    const credential = acceptanceCredential(process.env);
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
       // Only a release that declares a root restart may start on a pool that does not answer.
-      const boot = await servingBoot(process.env.POOL_ACCEPTANCE_KEY ?? "", client).catch(
-        (error: unknown) => {
-          if (values["allow-not-serving"]) return NOT_SERVING;
-          throw error;
-        },
-      );
+      const boot = await bootBeforeApply(credential, client, values["allow-not-serving"] === true);
       await output(resolve(values.out ?? ""), { boot });
       await summary(
         boot === NOT_SERVING
@@ -190,11 +191,18 @@ if (command === "boot" || command === "accept") {
       );
       process.exit(0);
     }
-    let rootBoot = values["root-boot"]
-      ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
-          JSON.parse(await readFile(resolve(values["root-boot"]), "utf8")),
-        ).boot
-      : undefined;
+    const bootRecord = async (path: string | undefined) =>
+      path
+        ? Schema.decodeUnknownSync(Schema.Struct({ boot: Schema.String }))(
+            JSON.parse(await readFile(resolve(path), "utf8")),
+          ).boot
+        : undefined;
+    let rootBoot = await bootRecord(values["root-boot"]);
+    // The boot read writes its record only when the pool did not refuse the device (a refusal stops
+    // the run there): it served the device, or for a declared restart did not answer at all. So
+    // after the apply a 401 or 403 is the release's. `--admitted` passes that record without
+    // requiring its boot, for the rollback's read of the version it put back.
+    const admitted = rootBoot !== undefined || (await bootRecord(values.admitted)) !== undefined;
     const expect = values.expect ?? "same-boot";
     if (!["same-boot", "two-runtimes", "any", "restart"].includes(expect))
       throw new Error(`Unknown --expect ${expect}`);
@@ -288,11 +296,12 @@ if (command === "boot" || command === "accept") {
       rootBoot = verdict.boot;
     }
     const result = await runAcceptance({
-      apiKey: process.env.POOL_ACCEPTANCE_KEY ?? "",
+      credential,
       ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
       // After a declared restart, every request must be served by the one new boot.
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
       ...(rootBoot ? { rootBoot } : {}),
+      admitted,
       client,
     }).catch(async (error: unknown) => {
       if (!verdict) throw error;
@@ -309,13 +318,18 @@ if (command === "boot" || command === "accept") {
       await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
       process.exit(1);
     });
-    // A healing release ends healed, serving but needing a person, or not serving.
-    const outcome = verdict ? healingOutcome(verdict, result) : undefined;
+    // A healing release ends healed, serving but needing a person, could not test, or not serving.
+    const outcome = verdict
+      ? healingOutcome(verdict, result)
+      : result.couldNotTest
+        ? "could-not-test"
+        : undefined;
     // Failure messages can name hosts; the public record keeps counts and timings only.
     const view = {
       passed: result.passed,
       requests: result.requests,
       failed: result.failures.length,
+      ...(result.refused.length ? { refused: result.refused } : {}),
       runtimes: result.boots.length,
       firstByteMs: result.firstByteMs,
       ...(outcome ? { outcome } : {}),
@@ -327,16 +341,28 @@ if (command === "boot" || command === "accept") {
     await summary(
       (outcome === "serving-needs-person"
         ? `SERVING, NEEDS A PERSON: every model call served on the new boot, but the controller's recovery ${String(restart?.reason)}. Nothing was undone; a person looks at it with the pool serving. ${safeJson(view)}`
-        : outcome === "not-serving"
-          ? `NOT SERVING after the healing release: ${safeJson(view)}`
-          : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
+        : outcome === "could-not-test"
+          ? `ACCEPTANCE COULD NOT TEST: ${refusalFix(result.refused)}. Nothing was undone. ${safeJson(view)}`
+          : outcome === "not-serving"
+            ? `NOT SERVING after the healing release: ${safeJson(view)}`
+            : `Acceptance ${result.passed ? "passed" : "FAILED"}: ${safeJson(view)}`) + waited,
     );
     if (!result.passed) await keepPrivate("acceptance", safeJson(result, 2));
-    // Exit 3 is its own result: not green, and not a failure to undo.
-    process.exit(outcome === "serving-needs-person" ? 3 : result.passed ? 0 : 1);
+    // Exits 3 and 4 are their own results: not green, and not a failure to undo.
+    process.exit(
+      outcome === "serving-needs-person"
+        ? 3
+        : outcome === "could-not-test"
+          ? COULD_NOT_TEST_EXIT
+          : result.passed
+            ? 0
+            : 1,
+    );
   } catch (error) {
     await stop(error);
-    process.exit(1);
+    // A refused or misnamed acceptance device tested nothing, so it is never a failure to undo.
+    const { AcceptanceDeviceRefused, COULD_NOT_TEST_EXIT } = await import("./acceptance-device.ts");
+    process.exit(error instanceof AcceptanceDeviceRefused ? COULD_NOT_TEST_EXIT : 1);
   }
 }
 
@@ -375,7 +401,7 @@ if (command === "db-load") {
   }
 }
 
-// The PoolDatabase command re-runs per attempt, so plan and apply share one attempt id.
+// Plan and apply share one attempt id, which both records and the summary name.
 const attempt = values.attempt ?? (command === "apply" ? "" : randomUUID());
 if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
   throw new Error("--attempt <id printed by the plan run> is required");
@@ -389,7 +415,6 @@ Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: sta
 // Alchemy captures the working directory once, when its first module loads (alchemy/Util/Node.ts
 // `initialCwd`), and resolves every command's relative cwd from it. The stack's commands are
 // declared relative to the cloud app, so the entry moves there before anything loads Alchemy.
-const policyPath = values.policy;
 process.chdir(cloud);
 const { decodeReleasePolicy } = await import("./policy.ts");
 const { initialCwd } = await import("alchemy/Util/Node");
@@ -397,8 +422,8 @@ if (initialCwd !== process.cwd())
   throw new Error(
     "Alchemy loaded before the entry moved into the cloud app, so the stack's command directories would resolve elsewhere",
   );
-const policy = policyPath
-  ? decodeReleasePolicy(JSON.parse(await readFile(policyPath, "utf8")))
+const policy = values.policy
+  ? decodeReleasePolicy(JSON.parse(await readFile(values.policy, "utf8")))
   : undefined;
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;

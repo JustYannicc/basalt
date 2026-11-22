@@ -1,0 +1,896 @@
+diff --git a/cmd/home/main.go b/cmd/home/main.go
+index c2b36ee..07e85a2 100644
+--- a/cmd/home/main.go
++++ b/cmd/home/main.go
+@@ -252,10 +252,6 @@ func run() int {
+ 	repo := cluster.NewRepository(clusterDB)
+ 	clusterRepo = repo
+ 	nodeCfg := resolveDatabaseNodeConfig(clusterCfg, clusterExists)
+-	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(runCtx, nodeCfg.HeartbeatTimeout); errEnsureLifecycle != nil {
+-		log.Errorf("failed to initialize lifecycle configuration: %v", errEnsureLifecycle)
+-		return 1
+-	}
+ 	if importState {
+ 		stats, errImport := cluster.ImportLocalState(runCtx, cluster.ImportOptions{
+ 			ConfigPath:           configPath,
+@@ -328,7 +324,32 @@ func run() int {
+ 		log.Errorf("failed to resolve database node ip: %v", errClusterClientAddr)
+ 		return 1
+ 	}
+-	tlsConfig, errCertificates := repo.EnsureClusterCertificates(runCtx, clusterClientAddr)
++	coordinationRepo := repo
++	if dbBackend == cluster.DatabaseBackendPostgres && clusterCfg != nil {
++		coordinationDB, errCoordinationOpen := cluster.OpenCoordination(runCtx, clusterCfg.PGSQL)
++		if errCoordinationOpen != nil {
++			log.Errorf("failed to open coordination database pool: %v", errCoordinationOpen)
++			return 1
++		}
++		if coordinationDB != nil {
++			coordinationSQLDB, errCoordinationSQLDB := coordinationDB.DB()
++			if errCoordinationSQLDB != nil {
++				log.Errorf("failed to get coordination sql db: %v", errCoordinationSQLDB)
++				return 1
++			}
++			defer func() {
++				if errCloseSQL := coordinationSQLDB.Close(); errCloseSQL != nil {
++					log.Warnf("failed to close coordination sql db: %v", errCloseSQL)
++				}
++			}()
++			coordinationRepo = cluster.NewRepository(coordinationDB)
++		}
++	}
++	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(runCtx, nodeCfg.HeartbeatTimeout); errEnsureLifecycle != nil {
++		log.Errorf("failed to initialize lifecycle configuration: %v", errEnsureLifecycle)
++		return 1
++	}
++	tlsConfig, errCertificates := coordinationRepo.EnsureClusterCertificates(runCtx, clusterClientAddr)
+ 	if errCertificates != nil {
+ 		log.Errorf("failed to init runtime certificates: %v", errCertificates)
+ 		return 1
+@@ -411,6 +432,7 @@ func run() int {
+ 			StartupRecovery: func(recoveryCtx context.Context, incarnation cluster.HomeIncarnationID) error {
+ 				return recoverCPAFences(recoveryCtx, clusterRepo, incarnation, respSrv)
+ 			},
++			CoordinationRepository: coordinationRepo,
+ 		})
+ 		refreshController := cluster.NewRefreshController(coordinator, rt, clusterRepo, clusterTLSConfig)
+ 		coordinator.SetOnMasterChanged(refreshController.OnMasterChanged)
+@@ -460,14 +482,15 @@ func run() int {
+ 	mgmtOpts := make([]managementhttp.RouteOption, 0, 1)
+ 	if clusterRepo != nil {
+ 		mgmtOpts = append(mgmtOpts, managementhttp.WithDatabaseManagement(managementhttp.DatabaseManagementOption{
+-			Enabled:          true,
+-			Repository:       clusterRepo,
+-			Runtime:          rt,
+-			NodeIP:           clusterClientAddr,
+-			NodePort:         clusterAdvertisedPort,
+-			HeartbeatTimeout: nodeCfg.HeartbeatTimeout,
+-			ForwardTLSConfig: clusterTLSConfig,
+-			QuotaRecollect:   quotaCollector,
++			Enabled:            true,
++			Repository:         clusterRepo,
++			LivenessRepository: coordinationRepo,
++			Runtime:            rt,
++			NodeIP:             clusterClientAddr,
++			NodePort:           clusterAdvertisedPort,
++			HeartbeatTimeout:   nodeCfg.HeartbeatTimeout,
++			ForwardTLSConfig:   clusterTLSConfig,
++			QuotaRecollect:     quotaCollector,
+ 		}))
+ 	}
+ 	mgmtBuild, errMgmt := managementhttp.Build(cfgPath, mgmtOpts...)
+diff --git a/internal/cluster/config.go b/internal/cluster/config.go
+index ee3494d..36c4405 100644
+--- a/internal/cluster/config.go
++++ b/internal/cluster/config.go
+@@ -36,6 +36,9 @@ type PGSQLConfig struct {
+ 	Database           string        `yaml:"database"`
+ 	SSLMode            string        `yaml:"sslmode"`
+ 	SlowQueryThreshold time.Duration `yaml:"slow-query-threshold"`
++
++	// CoordinationMaxOpenConns gives heartbeats, election and node liveness their own pool.
++	CoordinationMaxOpenConns int `yaml:"coordination-max-open-conns"`
+ }
+ 
+ type SQLiteConfig struct {
+@@ -235,6 +238,9 @@ func (c PGSQLConfig) Validate() error {
+ 	if _, errPool := c.poolSettings(); errPool != nil {
+ 		return errPool
+ 	}
++	if c.CoordinationMaxOpenConns < 0 {
++		return fmt.Errorf("pgsql.coordination-max-open-conns must not be negative")
++	}
+ 	if strings.TrimSpace(c.PostgresURI) != "" {
+ 		if strings.TrimSpace(c.Host) != "" ||
+ 			c.Port != 0 ||
+diff --git a/internal/cluster/coordination_pool_nodes_postgres_test.go b/internal/cluster/coordination_pool_nodes_postgres_test.go
+new file mode 100644
+index 0000000..0053cc9
+--- /dev/null
++++ b/internal/cluster/coordination_pool_nodes_postgres_test.go
+@@ -0,0 +1,233 @@
++package cluster_test
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"net/url"
++	"os"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster/management"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/config"
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
++	"gorm.io/gorm/logger"
++)
++
++// readinessAuditTimeout is the pool supervisor's client timeout for GET /v8/management/nodes.
++const readinessAuditTimeout = 2 * time.Second
++
++const readinessAuditNodeID = "cpa-readiness"
++
++// newNodeListingFixture serves Home's node listing over a main pool of two connections, wired as
++// cmd/home does: through the coordination pool when coordinationConns is positive, else the main
++// pool. One live Home and one healthy CPA node are seeded on a fresh schema.
++func newNodeListingFixture(t *testing.T, coordinationConns int) (*gorm.DB, *httptest.Server) {
++	t.Helper()
++	dsn := strings.TrimSpace(os.Getenv("HOME_TEST_POSTGRES_DSN"))
++	if dsn == "" {
++		dsn = strings.TrimSpace(os.Getenv("CLIPROXY_HOME_TEST_POSTGRES_DSN"))
++	}
++	if dsn == "" {
++		t.Skip("HOME_TEST_POSTGRES_DSN is not configured")
++	}
++	adminDB, errAdmin := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
++	if errAdmin != nil {
++		t.Fatalf("open postgres admin database: %v", errAdmin)
++	}
++	adminSQLDB, errAdminSQL := adminDB.DB()
++	if errAdminSQL != nil {
++		t.Fatal(errAdminSQL)
++	}
++	schema := "coordination_nodes_" + strconv.FormatInt(time.Now().UnixNano(), 10)
++	if errCreate := adminDB.Exec("CREATE SCHEMA " + schema).Error; errCreate != nil {
++		t.Fatalf("create postgres schema: %v", errCreate)
++	}
++	mainConns := 2
++	cfg := cluster.PGSQLConfig{
++		PostgresURI:              dsnWithSearchPath(dsn, schema),
++		MaxOpenConns:             &mainConns,
++		CoordinationMaxOpenConns: coordinationConns,
++	}
++	mainDB, errOpen := cluster.Open(context.Background(), cfg)
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	coordinationDB, errCoordination := cluster.OpenCoordination(context.Background(), cfg)
++	if errCoordination != nil {
++		t.Fatal(errCoordination)
++	}
++	t.Cleanup(func() {
++		for _, db := range []*gorm.DB{mainDB, coordinationDB} {
++			if db == nil {
++				continue
++			}
++			if sqlDB, errDB := db.DB(); errDB == nil {
++				if errClose := sqlDB.Close(); errClose != nil {
++					t.Errorf("close postgres database: %v", errClose)
++				}
++			}
++		}
++		if errDrop := adminDB.Exec("DROP SCHEMA " + schema + " CASCADE").Error; errDrop != nil {
++			t.Errorf("drop postgres schema: %v", errDrop)
++		}
++		if errClose := adminSQLDB.Close(); errClose != nil {
++			t.Errorf("close postgres admin database: %v", errClose)
++		}
++	})
++	if errMigrate := cluster.AutoMigrate(mainDB); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	seedReadinessAuditNode(t, mainDB)
++
++	repo := cluster.NewRepository(mainDB)
++	coordinationRepo := repo
++	if coordinationDB != nil {
++		coordinationRepo = cluster.NewRepository(coordinationDB)
++	}
++	handler := management.NewHandler(repo, nil, "127.0.0.1", 18317)
++	handler.SetLivenessRepository(coordinationRepo)
++	gin.SetMode(gin.TestMode)
++	engine := gin.New()
++	engine.GET("/v8/management/nodes", handler.ListNodes)
++	server := httptest.NewServer(engine)
++	t.Cleanup(server.Close)
++	return mainDB, server
++}
++
++func seedReadinessAuditNode(t *testing.T, db *gorm.DB) {
++	t.Helper()
++	now := time.Now().UTC()
++	home := cluster.ClusterNodeRecord{IP: "127.0.0.1", Port: 18317, StartedAt: now.Add(-time.Hour), LastSeenAt: now}
++	membership := cluster.CPANodeMembershipRecord{
++		CertificateFingerprint: "fp-readiness",
++		NodeID:                 readinessAuditNodeID,
++		HomeIP:                 home.IP,
++		HomePort:               home.Port,
++		HomeStartedAt:          home.StartedAt,
++		ProtocolVersion:        1,
++		State:                  cluster.MembershipStateActive,
++		CPAHeartbeatTimeout:    config.DefaultCPAHeartbeatTimeout,
++		ConnectedAt:            now.Add(-time.Minute),
++		LastSeenAt:             now,
++		UpdatedAt:              now,
++	}
++	snapshot := cluster.CPANodeRecord{
++		HomeIP:                 home.IP,
++		HomePort:               home.Port,
++		HomeStartedAt:          home.StartedAt,
++		NodeKey:                "fingerprint:fp-readiness",
++		NodeID:                 readinessAuditNodeID,
++		ClientIP:               "10.0.9.1",
++		ClientCount:            1,
++		CertificateFingerprint: "fp-readiness",
++		ConnectedAt:            now.Add(-time.Minute),
++		LastSeenAt:             now,
++	}
++	for _, record := range []any{&home, &membership, &snapshot} {
++		if errCreate := db.Create(record).Error; errCreate != nil {
++			t.Fatalf("seed readiness audit node: %v", errCreate)
++		}
++	}
++}
++
++// holdAllConnections keeps every connection of db busy until the returned release is called.
++func holdAllConnections(t *testing.T, db *gorm.DB, conns int) func() {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	var wg sync.WaitGroup
++	started := make(chan struct{}, conns)
++	for range conns {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			_ = db.WithContext(ctx).Connection(func(*gorm.DB) error {
++				started <- struct{}{}
++				<-ctx.Done()
++				return nil
++			})
++		}()
++	}
++	for range conns {
++		<-started
++	}
++	return func() {
++		cancel()
++		wg.Wait()
++	}
++}
++
++// readinessAudit asks for the node listing the way the pool supervisor's check_services does.
++func readinessAudit(server *httptest.Server) (bool, error) {
++	client := &http.Client{Timeout: readinessAuditTimeout}
++	resp, errGet := client.Get(server.URL + "/v8/management/nodes")
++	if errGet != nil {
++		return false, errGet
++	}
++	defer func() { _ = resp.Body.Close() }()
++	if resp.StatusCode != http.StatusOK {
++		return false, errors.New("node listing status " + resp.Status)
++	}
++	var body struct {
++		Nodes []struct {
++			NodeID  string `json:"node_id"`
++			Healthy bool   `json:"healthy"`
++		} `json:"nodes"`
++	}
++	if errDecode := json.NewDecoder(resp.Body).Decode(&body); errDecode != nil {
++		return false, errDecode
++	}
++	for _, item := range body.Nodes {
++		if item.NodeID == readinessAuditNodeID && item.Healthy {
++			return true, nil
++		}
++	}
++	return false, nil
++}
++
++func TestHomeDBPoolCoordinationServesTheReadinessAuditOffASaturatedMainPool(t *testing.T) {
++	mainDB, server := newNodeListingFixture(t, 2)
++	release := holdAllConnections(t, mainDB, 2)
++	defer release()
++	healthy, errAudit := readinessAudit(server)
++	if errAudit != nil {
++		t.Fatalf("readiness audit with a coordination pool: %v", errAudit)
++	}
++	if !healthy {
++		t.Fatalf("readiness audit did not see %s healthy", readinessAuditNodeID)
++	}
++}
++
++func TestHomeDBPoolCoordinationSharedPoolFailsTheReadinessAudit(t *testing.T) {
++	mainDB, server := newNodeListingFixture(t, 0)
++	if healthy, errAudit := readinessAudit(server); errAudit != nil || !healthy {
++		t.Fatalf("readiness audit on an idle shared pool = %v, %v; want the node healthy", healthy, errAudit)
++	}
++	release := holdAllConnections(t, mainDB, 2)
++	defer release()
++	_, errAudit := readinessAudit(server)
++	var urlErr *url.Error
++	if !errors.As(errAudit, &urlErr) || !urlErr.Timeout() {
++		t.Fatalf("readiness audit on the shared saturated pool = %v, want the client timeout", errAudit)
++	}
++}
++
++func dsnWithSearchPath(dsn string, schema string) string {
++	parsed, errParse := url.Parse(dsn)
++	if errParse == nil && parsed.Scheme != "" {
++		query := parsed.Query()
++		query.Set("search_path", schema)
++		parsed.RawQuery = query.Encode()
++		return parsed.String()
++	}
++	return dsn + " search_path=" + schema
++}
+diff --git a/internal/cluster/coordination_pool_postgres_test.go b/internal/cluster/coordination_pool_postgres_test.go
+new file mode 100644
+index 0000000..131b299
+--- /dev/null
++++ b/internal/cluster/coordination_pool_postgres_test.go
+@@ -0,0 +1,187 @@
++package cluster
++
++import (
++	"context"
++	"errors"
++	"os"
++	"strconv"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"gorm.io/driver/postgres"
++	"gorm.io/gorm"
++)
++
++// newCoordinationPoolFixture opens a capped main pool and, when coordinationConns is positive, a
++// separate coordination pool on one fresh schema.
++func newCoordinationPoolFixture(t testing.TB, mainConns int, coordinationConns int) (*gorm.DB, *Coordinator) {
++	t.Helper()
++	dsn := strings.TrimSpace(os.Getenv("HOME_TEST_POSTGRES_DSN"))
++	if dsn == "" {
++		dsn = strings.TrimSpace(os.Getenv("CLIPROXY_HOME_TEST_POSTGRES_DSN"))
++	}
++	if dsn == "" {
++		t.Skip("HOME_TEST_POSTGRES_DSN is not configured")
++	}
++	adminDB, errAdmin := gorm.Open(postgres.Open(dsn), databaseGORMConfig(defaultDatabaseSlowQueryThreshold))
++	if errAdmin != nil {
++		t.Fatalf("open postgres admin database: %v", errAdmin)
++	}
++	adminSQLDB, errAdminSQL := adminDB.DB()
++	if errAdminSQL != nil {
++		t.Fatal(errAdminSQL)
++	}
++	schema := "coordination_pool_" + strconv.FormatInt(time.Now().UnixNano(), 10)
++	if errCreate := adminDB.Exec("CREATE SCHEMA " + schema).Error; errCreate != nil {
++		t.Fatalf("create postgres schema: %v", errCreate)
++	}
++	cfg := PGSQLConfig{
++		PostgresURI:              postgresDSNWithSearchPath(dsn, schema),
++		MaxOpenConns:             &mainConns,
++		CoordinationMaxOpenConns: coordinationConns,
++	}
++	mainDB, errOpen := Open(context.Background(), cfg)
++	if errOpen != nil {
++		t.Fatal(errOpen)
++	}
++	coordinationDB, errCoordination := OpenCoordination(context.Background(), cfg)
++	if errCoordination != nil {
++		t.Fatal(errCoordination)
++	}
++	t.Cleanup(func() {
++		for _, db := range []*gorm.DB{mainDB, coordinationDB} {
++			if db == nil {
++				continue
++			}
++			if sqlDB, errDB := db.DB(); errDB == nil {
++				if errClose := sqlDB.Close(); errClose != nil {
++					t.Errorf("close postgres database: %v", errClose)
++				}
++			}
++		}
++		if errDrop := adminDB.Exec("DROP SCHEMA " + schema + " CASCADE").Error; errDrop != nil {
++			t.Errorf("drop postgres schema: %v", errDrop)
++		}
++		if errClose := adminSQLDB.Close(); errClose != nil {
++			t.Errorf("close postgres admin database: %v", errClose)
++		}
++	})
++	if errMigrate := AutoMigrate(mainDB); errMigrate != nil {
++		t.Fatal(errMigrate)
++	}
++	options := CoordinatorOptions{HeartbeatInterval: time.Second, HeartbeatTimeout: 20 * time.Second}
++	if coordinationDB != nil {
++		options.CoordinationRepository = NewRepository(coordinationDB)
++	}
++	coordinator := NewCoordinator(NewRepository(mainDB), NodeIdentity{IP: "127.0.0.1", Port: 18317, StartedAt: time.Now()}, options)
++	if errInitialize := coordinator.Initialize(context.Background()); errInitialize != nil {
++		t.Fatal(errInitialize)
++	}
++	return mainDB, coordinator
++}
++
++// holdMainPool keeps every main-pool connection busy until the returned release is called.
++func holdMainPool(t testing.TB, db *gorm.DB, conns int) func() {
++	t.Helper()
++	ctx, cancel := context.WithCancel(context.Background())
++	var wg sync.WaitGroup
++	started := make(chan struct{}, conns)
++	for range conns {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			_ = db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
++				started <- struct{}{}
++				<-ctx.Done()
++				return nil
++			})
++		}()
++	}
++	for range conns {
++		<-started
++	}
++	return func() {
++		cancel()
++		wg.Wait()
++	}
++}
++
++func heartbeatOnce(ctx context.Context, coordinator *Coordinator) error {
++	home, errHome := coordinator.heartbeatHomeIncarnation(ctx)
++	if errHome != nil {
++		return errHome
++	}
++	return coordinator.heartbeatAndElect(ctx, home)
++}
++
++func TestHomeDBPoolCoordinationKeepsHeartbeatsOffASaturatedMainPool(t *testing.T) {
++	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 1)
++	release := holdMainPool(t, mainDB, 2)
++	defer release()
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	if errHeartbeat := heartbeatOnce(ctx, coordinator); errHeartbeat != nil {
++		t.Fatalf("heartbeat with a separate coordination pool: %v", errHeartbeat)
++	}
++	if !coordinator.IsMaster() {
++		t.Fatal("the only live Home was not elected")
++	}
++	if _, errMaster := coordinator.CurrentMaster(ctx); errMaster != nil {
++		t.Fatalf("master lookup with a separate coordination pool: %v", errMaster)
++	}
++}
++
++func TestHomeDBPoolCoordinationServesNodeLookupsOffASaturatedMainPool(t *testing.T) {
++	for _, coordinationConns := range []int{1, 0} {
++		mainDB, coordinator := newCoordinationPoolFixture(t, 2, coordinationConns)
++		if errHeartbeat := heartbeatOnce(context.Background(), coordinator); errHeartbeat != nil {
++			t.Fatal(errHeartbeat)
++		}
++		handler := NewRESPHandler(coordinator, nil, NewRepository(mainDB))
++		release := holdMainPool(t, mainDB, 2)
++		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
++		_, errNodes := handler.nodesPayload(ctx)
++		cancel()
++		release()
++		if coordinationConns > 0 && errNodes != nil {
++			t.Fatalf("node lookup with a coordination pool: %v", errNodes)
++		}
++		if coordinationConns == 0 && !errors.Is(errNodes, context.DeadlineExceeded) {
++			t.Fatalf("node lookup on the shared saturated pool = %v, want the caller deadline", errNodes)
++		}
++	}
++}
++
++func TestHomeDBPoolCoordinationSharedPoolWaitsBehindSaturation(t *testing.T) {
++	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 0)
++	release := holdMainPool(t, mainDB, 2)
++	defer release()
++	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
++	defer cancel()
++	if errHeartbeat := heartbeatOnce(ctx, coordinator); !errors.Is(errHeartbeat, context.DeadlineExceeded) {
++		t.Fatalf("heartbeat on the shared saturated pool = %v, want the caller deadline", errHeartbeat)
++	}
++}
++
++func TestHomeDBPoolCoordinationIsOptionalAndSeparatelyCapped(t *testing.T) {
++	if db, errOpen := OpenCoordination(context.Background(), PGSQLConfig{PostgresURI: "postgres://unused.invalid/db"}); db != nil || errOpen != nil {
++		t.Fatalf("OpenCoordination without a limit = %v, %v; want no pool", db, errOpen)
++	}
++	if errValidate := (PGSQLConfig{PostgresURI: "postgres://unused.invalid/db", CoordinationMaxOpenConns: -1}).Validate(); errValidate == nil {
++		t.Fatal("a negative coordination-max-open-conns was accepted")
++	}
++	mainDB, coordinator := newCoordinationPoolFixture(t, 2, 1)
++	coordinationSQLDB, errSQL := coordinator.coordination.db.DB()
++	if errSQL != nil {
++		t.Fatal(errSQL)
++	}
++	mainSQLDB, errMainSQL := mainDB.DB()
++	if errMainSQL != nil {
++		t.Fatal(errMainSQL)
++	}
++	if coordinationSQLDB == mainSQLDB || coordinationSQLDB.Stats().MaxOpenConnections != 1 {
++		t.Fatalf("coordination pool max open = %d, want a separate pool of 1", coordinationSQLDB.Stats().MaxOpenConnections)
++	}
++}
+diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
+index a5e724d..22a1c6c 100644
+--- a/internal/cluster/coordinator.go
++++ b/internal/cluster/coordinator.go
+@@ -36,10 +36,13 @@ type CoordinatorOptions struct {
+ 	HeartbeatTimeout  time.Duration
+ 	OnMasterChanged   func(bool)
+ 	StartupRecovery   StartupRecovery
++	// CoordinationRepository serves heartbeats, election and master lookup when set.
++	CoordinationRepository *Repository
+ }
+ 
+ type Coordinator struct {
+ 	repo              *Repository
++	coordination      *Repository
+ 	node              NodeIdentity
+ 	heartbeatInterval time.Duration
+ 	heartbeatTimeout  time.Duration
+@@ -84,8 +87,13 @@ func NewCoordinator(repo *Repository, node NodeIdentity, opts CoordinatorOptions
+ 		node.Secret = generateNodeSecret()
+ 	}
+ 
++	coordination := opts.CoordinationRepository
++	if coordination == nil {
++		coordination = repo
++	}
+ 	return &Coordinator{
+ 		repo:              repo,
++		coordination:      coordination,
+ 		node:              node,
+ 		heartbeatInterval: interval,
+ 		heartbeatTimeout:  timeout,
+@@ -117,7 +125,7 @@ func (c *Coordinator) Initialize(ctx context.Context) error {
+ 	if errRegister != nil {
+ 		return errRegister
+ 	}
+-	if errHeartbeat := c.repo.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
++	if errHeartbeat := c.coordination.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
+ 		return c.retireFailedInitialization(ctx, incarnation, errHeartbeat)
+ 	}
+ 	if errRecovery := c.runStartupRecovery(ctx, incarnation); errRecovery != nil {
+@@ -195,7 +203,7 @@ func (c *Coordinator) RetireHomeIncarnation(ctx context.Context) error {
+ 	if !initialized {
+ 		return nil
+ 	}
+-	return c.repo.RetireHomeIncarnation(ctx, incarnation)
++	return c.coordination.RetireHomeIncarnation(ctx, incarnation)
+ }
+ 
+ // Start starts subsequent coordinator heartbeats after initialization.
+@@ -331,7 +339,7 @@ func (c *Coordinator) UpdateClientCount(ctx context.Context, clientCount int) er
+ 	if clientCount < 0 {
+ 		clientCount = 0
+ 	}
+-	db, errDB := c.repo.database()
++	db, errDB := c.coordination.database()
+ 	if errDB != nil {
+ 		return errDB
+ 	}
+@@ -367,7 +375,7 @@ func (c *Coordinator) CurrentMaster(ctx context.Context) (*ClusterNodeRecord, er
+ 	if c.repo == nil {
+ 		return nil, fmt.Errorf("cluster coordinator repository is nil")
+ 	}
+-	db, errDB := c.repo.database()
++	db, errDB := c.coordination.database()
+ 	if errDB != nil {
+ 		return nil, errDB
+ 	}
+@@ -393,7 +401,7 @@ func (c *Coordinator) CurrentMaster(ctx context.Context) (*ClusterNodeRecord, er
+ // heartbeatAndElect handles a heartbeat and elect.
+ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnationID) error {
+ 	// Keep validation before state changes so failures leave existing data intact.
+-	db, errDB := c.repo.database()
++	db, errDB := c.coordination.database()
+ 	if errDB != nil {
+ 		return errDB
+ 	}
+@@ -473,7 +481,7 @@ func (c *Coordinator) heartbeatHomeIncarnation(ctx context.Context) (HomeIncarna
+ 	if !initialized {
+ 		return HomeIncarnationID{}, fmt.Errorf("cluster coordinator is not initialized")
+ 	}
+-	if errHeartbeat := c.repo.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
++	if errHeartbeat := c.coordination.HeartbeatHomeIncarnation(ctx, incarnation); errHeartbeat != nil {
+ 		return HomeIncarnationID{}, errHeartbeat
+ 	}
+ 	return incarnation, nil
+diff --git a/internal/cluster/db.go b/internal/cluster/db.go
+index 85a8252..b82ed6e 100644
+--- a/internal/cluster/db.go
++++ b/internal/cluster/db.go
+@@ -66,6 +66,21 @@ func Open(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
+ 	return db, nil
+ }
+ 
++// OpenCoordination opens the pool used only by cluster coordination: heartbeats, election,
++// master lookup and node liveness. It returns nil when pgsql.coordination-max-open-conns is 0,
++// and coordination then shares the main pool. With a capped main pool, request work can hold
++// every connection for seconds; a separate pool keeps heartbeats inside their timeout.
++func OpenCoordination(ctx context.Context, cfg PGSQLConfig) (*gorm.DB, error) {
++	if cfg.CoordinationMaxOpenConns <= 0 {
++		return nil, nil
++	}
++	coordination := cfg
++	conns := cfg.CoordinationMaxOpenConns
++	coordination.MaxOpenConns = &conns
++	coordination.MaxIdleConns = &conns
++	return Open(ctx, coordination)
++}
++
+ // OpenSQLite opens a SQLite database.
+ func OpenSQLite(ctx context.Context, path string, configuredSlowQueryThreshold ...time.Duration) (*gorm.DB, error) {
+ 	if ctx == nil {
+diff --git a/internal/cluster/management/config.go b/internal/cluster/management/config.go
+index eef1460..4a0b0d5 100644
+--- a/internal/cluster/management/config.go
++++ b/internal/cluster/management/config.go
+@@ -271,10 +271,17 @@ func (h *Handler) DeleteConfigRoot(route string) gin.HandlerFunc {
+ 
+ // configRoot handles a config root.
+ func (h *Handler) configRoot(ctx context.Context) (map[string]any, error) {
+-	if h == nil || h.repo == nil {
++	if h == nil {
++		return nil, fmt.Errorf("cluster management repository is nil")
++	}
++	return h.configRootFrom(ctx, h.repo)
++}
++
++func (h *Handler) configRootFrom(ctx context.Context, repo *cluster.Repository) (map[string]any, error) {
++	if h == nil || repo == nil {
+ 		return nil, fmt.Errorf("cluster management repository is nil")
+ 	}
+-	snapshot, errSnapshot := h.repo.LoadConfigSnapshot(ctx)
++	snapshot, errSnapshot := repo.LoadConfigSnapshot(ctx)
+ 	if errSnapshot != nil {
+ 		return nil, errSnapshot
+ 	}
+@@ -282,10 +289,10 @@ func (h *Handler) configRoot(ctx context.Context) (map[string]any, error) {
+ 	if errRoot != nil {
+ 		return nil, errRoot
+ 	}
+-	if _, errEnsureLifecycle := h.repo.EnsureLifecycleConfig(ctx, h.heartbeatTimeout); errEnsureLifecycle != nil {
++	if _, errEnsureLifecycle := repo.EnsureLifecycleConfig(ctx, h.heartbeatTimeout); errEnsureLifecycle != nil {
+ 		return nil, errEnsureLifecycle
+ 	}
+-	lifecycleConfig, errLifecycle := h.repo.LifecycleConfig(ctx)
++	lifecycleConfig, errLifecycle := repo.LifecycleConfig(ctx)
+ 	if errLifecycle != nil {
+ 		return nil, errLifecycle
+ 	}
+diff --git a/internal/cluster/management/nodes.go b/internal/cluster/management/nodes.go
+index 482da57..39f3689 100644
+--- a/internal/cluster/management/nodes.go
++++ b/internal/cluster/management/nodes.go
+@@ -84,7 +84,8 @@ func (h *Handler) ListNodes(c *gin.Context) {
+ func (h *Handler) activeCPANodes(ctx context.Context) ([]activeCPANode, error) {
+ 	nodesByKey := make(map[string]activeCPANode)
+ 	if h != nil && h.repo != nil {
+-		now, errNow := h.repo.CurrentDatabaseTime(ctx)
++		repo := h.livenessRepository()
++		now, errNow := repo.CurrentDatabaseTime(ctx)
+ 		if errNow != nil {
+ 			return nil, errNow
+ 		}
+@@ -92,7 +93,7 @@ func (h *Handler) activeCPANodes(ctx context.Context) ([]activeCPANode, error) {
+ 		if h.heartbeatTimeout > 0 {
+ 			cutoff = now.Add(-topologySnapshotRetention(h.heartbeatTimeout))
+ 		}
+-		records, errRecords := h.repo.ListCPANodeSnapshots(ctx, cutoff)
++		records, errRecords := repo.ListCPANodeSnapshots(ctx, cutoff)
+ 		if errRecords != nil {
+ 			return nil, errRecords
+ 		}
+@@ -100,11 +101,11 @@ func (h *Handler) activeCPANodes(ctx context.Context) ([]activeCPANode, error) {
+ 		for _, record := range records {
+ 			nodeIDs = append(nodeIDs, record.NodeID)
+ 		}
+-		nodeNames, errNodeNames := h.repo.ListCPANodeNames(ctx, nodeIDs)
++		nodeNames, errNodeNames := repo.ListCPANodeNames(ctx, nodeIDs)
+ 		if errNodeNames != nil {
+ 			return nil, errNodeNames
+ 		}
+-		memberships, errMemberships := h.repo.ListActiveCPAMemberships(ctx)
++		memberships, errMemberships := repo.ListActiveCPAMemberships(ctx)
+ 		if errMemberships != nil {
+ 			return nil, errMemberships
+ 		}
+@@ -112,7 +113,7 @@ func (h *Handler) activeCPANodes(ctx context.Context) ([]activeCPANode, error) {
+ 		for _, membership := range memberships {
+ 			membershipsByFingerprint[strings.TrimSpace(membership.CertificateFingerprint)] = membership
+ 		}
+-		homeRecords, errHomes := h.repo.ListClusterNodes(ctx, cutoff)
++		homeRecords, errHomes := repo.ListClusterNodes(ctx, cutoff)
+ 		if errHomes != nil {
+ 			return nil, errHomes
+ 		}
+@@ -173,11 +174,11 @@ func (h *Handler) pluginTaskStatuses(ctx context.Context) ([]node.PluginTaskStat
+ 	if h == nil || h.repo == nil {
+ 		return nil, nil
+ 	}
+-	return h.repo.ListPluginStatuses(ctx, node.PluginStatusNodeTypeCPA)
++	return h.livenessRepository().ListPluginStatuses(ctx, node.PluginStatusNodeTypeCPA)
+ }
+ 
+ func (h *Handler) pluginTaskRequiredIDs(ctx context.Context) []string {
+-	cfg, _, errConfig := h.currentConfig(ctx)
++	cfg, _, errConfig := h.currentConfigFrom(ctx, h.livenessRepository())
+ 	if errConfig != nil || cfg == nil || !cfg.Plugins.Enabled {
+ 		return nil
+ 	}
+diff --git a/internal/cluster/management/server.go b/internal/cluster/management/server.go
+index 10525bb..0a7447c 100644
+--- a/internal/cluster/management/server.go
++++ b/internal/cluster/management/server.go
+@@ -17,6 +17,7 @@ import (
+ 
+ type Handler struct {
+ 	repo                  *cluster.Repository
++	liveness              *cluster.Repository
+ 	runtime               *home.Runtime
+ 	pluginOAuthStatus     pluginOAuthStatusRuntime
+ 	nodeIP                string
+@@ -60,6 +61,23 @@ func (h *Handler) SetHeartbeatTimeout(timeout time.Duration) {
+ 	h.heartbeatTimeout = timeout
+ }
+ 
++// SetLivenessRepository routes the node listing's reads through Home's coordination pool, so the
++// supervisor's readiness audit does not queue behind request work on a saturated main pool.
++func (h *Handler) SetLivenessRepository(repo *cluster.Repository) {
++	if h == nil {
++		return
++	}
++	h.liveness = repo
++}
++
++// livenessRepository returns the coordination repository when one is set, otherwise the main one.
++func (h *Handler) livenessRepository() *cluster.Repository {
++	if h.liveness != nil {
++		return h.liveness
++	}
++	return h.repo
++}
++
+ func (h *Handler) SetPluginStoreHTTPClient(client pluginstore.HTTPDoer) {
+ 	if h == nil {
+ 		return
+@@ -112,7 +130,11 @@ func (h *Handler) acquireHeavyStatisticsSlot(ctx context.Context, c *gin.Context
+ 
+ // currentConfig handles a current config.
+ func (h *Handler) currentConfig(ctx context.Context) (*config.Config, map[string]any, error) {
+-	root, errSnapshot := h.configRoot(ctx)
++	return h.currentConfigFrom(ctx, h.repo)
++}
++
++func (h *Handler) currentConfigFrom(ctx context.Context, repo *cluster.Repository) (*config.Config, map[string]any, error) {
++	root, errSnapshot := h.configRootFrom(ctx, repo)
+ 	if errSnapshot != nil {
+ 		return nil, nil, errSnapshot
+ 	}
+diff --git a/internal/cluster/resp.go b/internal/cluster/resp.go
+index 3d97499..26f5e9e 100644
+--- a/internal/cluster/resp.go
++++ b/internal/cluster/resp.go
+@@ -74,7 +74,7 @@ func (h *RESPHandler) ClassifyConnection(ctx context.Context, fingerprint string
+ 	if !initialized {
+ 		return ConnectionLifetime{}, fmt.Errorf("cluster resp: Home incarnation is not initialized")
+ 	}
+-	return h.repo.ClassifyConnection(ctx, fingerprint, home)
++	return h.liveness().ClassifyConnection(ctx, fingerprint, home)
+ }
+ 
+ // SubscribeMembership creates a membership owned by this Home incarnation.
+@@ -90,7 +90,7 @@ func (h *RESPHandler) RefreshCPALiveness(ctx context.Context, lifetime Connectio
+ 	if lifetime.Home != home {
+ 		return ErrHomeIncarnationFenced
+ 	}
+-	return h.repo.RefreshCPALiveness(ctx, lifetime)
++	return h.liveness().RefreshCPALiveness(ctx, lifetime)
+ }
+ 
+ // SubscribeMembership creates a membership owned by this Home incarnation.
+@@ -102,7 +102,7 @@ func (h *RESPHandler) SubscribeMembership(ctx context.Context, fingerprint strin
+ 	if !initialized {
+ 		return ConnectionLifetime{}, fmt.Errorf("cluster resp: Home incarnation is not initialized")
+ 	}
+-	member, errSubscribe := h.repo.SubscribeMembership(ctx, SubscribeMembershipRequest{
++	member, errSubscribe := h.liveness().SubscribeMembership(ctx, SubscribeMembershipRequest{
+ 		Fingerprint:             fingerprint,
+ 		NodeID:                  nodeID,
+ 		Home:                    home,
+@@ -202,7 +202,7 @@ func (h *RESPHandler) nodesPayload(ctx context.Context) ([]byte, error) {
+ 		return nil, errNow
+ 	}
+ 	cutoff := now.Add(-timeout)
+-	nodes, errNodes := h.repo.ListLiveClusterNodes(ctx, cutoff)
++	nodes, errNodes := h.liveness().ListLiveClusterNodes(ctx, cutoff)
+ 	if errNodes != nil {
+ 		return nil, errNodes
+ 	}
+@@ -275,7 +275,7 @@ func (h *RESPHandler) authorizeNode(ctx context.Context, remoteIP string, secret
+ 		return nil, errNow
+ 	}
+ 	cutoff := now.Add(-timeout)
+-	node, errNode := h.repo.LiveClusterNodeByIPAndSecret(ctx, remoteIP, secret, cutoff)
++	node, errNode := h.liveness().LiveClusterNodeByIPAndSecret(ctx, remoteIP, secret, cutoff)
+ 	if errNode != nil {
+ 		return nil, errNode
+ 	}
+@@ -289,7 +289,7 @@ func (h *RESPHandler) databaseNow(ctx context.Context) (time.Time, error) {
+ 	if h == nil || h.repo == nil {
+ 		return time.Time{}, fmt.Errorf("cluster resp: repository is nil")
+ 	}
+-	db, errDB := h.repo.database()
++	db, errDB := h.liveness().database()
+ 	if errDB != nil {
+ 		return time.Time{}, errDB
+ 	}
+@@ -549,3 +549,13 @@ func parseClusterRESPError(line string) error {
+ 		HTTPStatus: statusCode,
+ 	}
+ }
++
++// liveness returns the repository for CPA liveness, membership and node lookups: the
++// coordinator's coordination pool when one is configured, otherwise the handler's own.
++// Rebalance commands, fingerprint cancellation and certificate signing stay on h.repo.
++func (h *RESPHandler) liveness() *Repository {
++	if h.coordinator != nil && h.coordinator.coordination != nil {
++		return h.coordinator.coordination
++	}
++	return h.repo
++}
+diff --git a/internal/managementhttp/server.go b/internal/managementhttp/server.go
+index b19f995..5e4a019 100644
+--- a/internal/managementhttp/server.go
++++ b/internal/managementhttp/server.go
+@@ -112,6 +112,8 @@ type ClusterManagementOption struct {
+ 	HeartbeatTimeout time.Duration
+ 	ForwardTLSConfig *tls.Config
+ 	QuotaRecollect   clustermanagement.QuotaRecollectTrigger
++	// LivenessRepository serves the node listing's reads; Repository serves them when nil.
++	LivenessRepository *cluster.Repository
+ }
+ 
+ type DatabaseManagementOption = ClusterManagementOption
+@@ -141,6 +143,7 @@ func WithDatabaseManagement(opt DatabaseManagementOption) RouteOption {
+ 		r.clusterManagement = &optCopy
+ 		handler := clustermanagement.NewHandler(opt.Repository, opt.Runtime, opt.NodeIP, opt.NodePort)
+ 		handler.SetHeartbeatTimeout(opt.HeartbeatTimeout)
++		handler.SetLivenessRepository(opt.LivenessRepository)
+ 		handler.SetForwardTLSConfig(opt.ForwardTLSConfig)
+ 		handler.SetQuotaRecollectTrigger(opt.QuotaRecollect)
+ 		registerClusterManagementRoutes(r, handler)
+@@ -654,6 +657,7 @@ func Build(configFilePath string, opts ...RouteOption) (*BuildResult, error) {
+ 	if clusterEnabled {
+ 		clusterHandler = clustermanagement.NewHandler(clusterOpt.Repository, clusterOpt.Runtime, clusterOpt.NodeIP, clusterOpt.NodePort)
+ 		clusterHandler.SetHeartbeatTimeout(clusterOpt.HeartbeatTimeout)
++		clusterHandler.SetLivenessRepository(clusterOpt.LivenessRepository)
+ 		clusterHandler.SetForwardTLSConfig(clusterOpt.ForwardTLSConfig)
+ 		clusterHandler.SetQuotaRecollectTrigger(clusterOpt.QuotaRecollect)
+ 		clusterGroup := engine.Group("/v0/cluster")
