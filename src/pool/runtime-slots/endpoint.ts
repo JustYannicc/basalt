@@ -1,4 +1,5 @@
 import { crashOwnedRuntime } from "../runtime-crash-owner.ts";
+import { resumeGone, resumeLayerPort, resumeRoute, toLayer } from "../stream-resume.ts";
 import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runtime-crash-cell.ts";
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
@@ -345,6 +346,8 @@ export class RuntimeEndpoint {
     this.bound(target);
     return this.serialize(() => this.complete(target, signal));
   }
+  /** The front layer's advert from this container's latest readiness read (#1642). */
+  private resumeAdvert: PoolStatus["resume"];
   async health(identity: SlotIdentity, signal: AbortSignal, trace?: RuntimeReadTrace) {
     let record: WitnessRecord | undefined;
     let status: PoolStatus | undefined;
@@ -355,6 +358,7 @@ export class RuntimeEndpoint {
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       const observed = await this.channel.health(read.configuration, signal, trace);
       status = observed;
+      this.resumeAdvert = observed.resume;
       const owned = read.record;
       return trace
         ? await trace.run("health_identity", async () => this.checked(owned, observed))
@@ -487,7 +491,20 @@ export class RuntimeEndpoint {
       await this.channel.keepAlive();
       await this.health(identity, request.signal);
       request.signal.throwIfAborted();
-      const response = await this.channel.fetch(configuration, request, port);
+      // The front layer keeps a call's answer only while this container advertises the layer.
+      const routed = resumeRoute(request, port, { resume: this.resumeAdvert });
+      if (routed === "gone") {
+        release();
+        return resumeGone();
+      }
+      const response =
+        routed.port === resumeLayerPort
+          ? await toLayer(
+              routed.request,
+              (request, target) => this.channel.fetch(configuration, request, target),
+              () => this.ctx.container?.running === true,
+            )
+          : await this.channel.fetch(configuration, routed.request, routed.port);
       if (isModelLifetimePath(new URL(request.url).pathname))
         return this.modelLifetimes.control(identity, request, response, release);
       return this.wrap(response, {

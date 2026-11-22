@@ -8,11 +8,7 @@ test(
   async (context) => {
     const errors = context.mock.method(console, "error", () => {});
     const f = await fleetWorkerFixture();
-    let held: Response | undefined;
-    context.after(async () => {
-      await held?.body?.cancel();
-      await f.cleanup();
-    });
+    context.after(f.cleanup);
     await f.bootstrap();
     await f.send("fleet-configure", {
       operationId: "native-trace",
@@ -24,20 +20,14 @@ test(
     const [sibling] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     assert.ok(sibling);
     let calls = 0;
+    let rootCalls = 0;
+    // A ready sibling takes the call, never the root.
     f.onModel(async (instance) => {
-      if (instance === f.old)
-        return new Response(
-          new ReadableStream({
-            start(controller) {
-              controller.enqueue(new TextEncoder().encode("held"));
-            },
-          }),
-        );
+      if (instance === f.old) rootCalls++;
       calls++;
       instance.crash();
       throw new Error("private-transport-exception");
     });
-    held = await f.model();
     const response = await f.model(
       new Request("http://pool/v1/responses", { method: "POST", body: "private-request-body" }),
     );
@@ -59,6 +49,7 @@ test(
     assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
     assert.equal((await response.json()).error.type, "server_error");
     assert.equal(calls, 1);
+    assert.equal(rootCalls, 0);
     assert.doesNotMatch(
       JSON.stringify(errors.mock.calls.map((call) => call.arguments)),
       /private-/,
