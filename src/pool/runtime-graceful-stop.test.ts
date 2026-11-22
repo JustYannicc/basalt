@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { Schema } from "effect";
 import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { fleetCellFixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
 import { runtimeGrant } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
 import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
 import { RuntimeActivity } from "./runtime-slots/activity.ts";
+import { RuntimeRetirementObservation } from "./runtime-slots/contract.ts";
 import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import { forcedStopGraceMs } from "./runtime-slots/forced-restart-timing.ts";
 import { pastBound, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
@@ -149,10 +151,11 @@ test("a stop still running past its grace is reported stuck, not stopping", asyn
   drainingHome(f);
   const graceOver = heldGrace(context);
   await f.endpoint.retire(target, identity, AbortSignal.timeout(200));
-  assert.equal((await f.endpoint.retirement(identity)).stopping, true);
+  const observed = Schema.decodeUnknownSync(RuntimeRetirementObservation);
+  assert.equal(observed(await f.endpoint.retirement(identity)).stopping, true);
   const now = Date.now();
   context.mock.method(Date, "now", () => now + forcedStopGraceMs + 31_000);
-  assert.equal((await f.endpoint.retirement(identity)).stopping, undefined);
+  assert.equal(observed(await f.endpoint.retirement(identity)).stopping, undefined);
   context.mock.restoreAll();
   graceOver();
   await f.settle();
