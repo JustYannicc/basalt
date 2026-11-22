@@ -266,6 +266,15 @@
             "mode": "manual",
             "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup, node liveness, the cluster TLS fingerprint check and the management node listing (GET /v8/management/nodes) while the main pool is saturated, and passes the saturated-main-pool heartbeat, node-lookup and node-listing regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-live-owner-members",
+          "file": "0732-home-live-owner-members.patch",
+          "sha256": "ce7ee2b825584b67e5aeb82cb1a36f66b2bf6f457d1dd2e39bac52d69e85dc43",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0732 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home's lifecycle cleanup lets a peer cancel a stale node membership only after the Home that holds it has stopped heartbeating, keeps a Home fencing its own stale nodes, and passes the live-owner, silent-owner, expired-owner and own-node regressions."
+          }
         }
       ]
     },
