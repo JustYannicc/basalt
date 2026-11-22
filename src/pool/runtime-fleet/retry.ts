@@ -71,8 +71,10 @@ function recoverable(error: unknown) {
     error instanceof RemoteRuntimeDefect
   )
     return false;
-  const { runtimeReason } = runtimeFailureDiagnostic(error, "fleet_forward");
+  const { runtimeReason, runtimeStep } = runtimeFailureDiagnostic(error, "fleet_forward");
   return (
+    // A failed front layer never starts a runtime recovery; the call gets the retryable answer.
+    runtimeStep !== "resume_layer" &&
     runtimeReason !== "aborted" &&
     runtimeReason !== "slot_policy" &&
     runtimeReason !== "slot_selection"
