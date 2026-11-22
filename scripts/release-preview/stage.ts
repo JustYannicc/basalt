@@ -56,6 +56,7 @@ export const stageModes = [
   "fault",
   "heal",
   "release",
+  "classplan",
   "adopt",
   "diagnose",
   "secrets",
@@ -500,11 +501,15 @@ async function stageRelease(
   source: NodeJS.ProcessEnv,
   outputs: string,
   hooks: ReturnType<typeof nativeHooks>,
+  kind: "release" | "classplan" = "release",
 ) {
-  const { branch, policy } = releaseCandidate(
+  const named = releaseCandidate(
     await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
   );
-  const result: Record<string, unknown> = { branch, policy };
+  // The class change plans the same candidate under its own policy and fleet declaration.
+  const policy = kind === "classplan" ? "cutover-classes" : named.policy;
+  const { branch } = named;
+  const result: Record<string, unknown> = { branch, policy, kind };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
   await rm(candidate, { recursive: true, force: true });
   execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
@@ -524,7 +529,34 @@ async function stageRelease(
       (error: unknown) => ({ unreadable: error instanceof Error ? error.message : String(error) }),
     );
   result.bootBefore = await bootOf("release-before");
-  const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
+  const env = {
+    ...(kind === "classplan" ? declaration.cutover : declaration.baseline),
+    POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
+  };
+  if (kind === "classplan") {
+    // Plan only, as production's read-only plan runs: a refusal is the result, kept in plain text
+    // (redacted of secrets) because it names the blocking resource.
+    await withStageBuild(candidate, subject, source, async () => {
+      try {
+        const planned = await runEntry("plan", subject, source, env, outputs, {
+          policy,
+          tree: candidate,
+        });
+        const rows =
+          (planned.record as { changes?: { fqn: string; action: string }[] } | undefined)
+            ?.changes ?? [];
+        result.planPassed = true;
+        result.planRows = rows.map((row) => `${row.fqn} ${row.action}`).slice(0, 200);
+      } catch (error) {
+        result.planPassed = false;
+        result.planRefused = redactor(source)(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 4_000);
+      }
+    });
+    result.bootAfter = await bootOf("release-after");
+    return result;
+  }
   const { stage, stack } = stageNames(subject);
   const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
   const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
@@ -1542,6 +1574,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       Object.assign(result, await faultAndConfirm(lane, subject, source, outputs));
     } else if (mode === "release") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks));
+    } else if (mode === "classplan") {
+      Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks, "classplan"));
     } else if (mode === "heal") {
       result.reproduces = healReproduces;
       Object.assign(result, await healRelease(lane, subject, source, outputs, hooks));
