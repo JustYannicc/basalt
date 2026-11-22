@@ -67,13 +67,13 @@ export function fleetWakeUp(
 ) {
   const cadence = now + upkeepCadenceMs;
   const deadlines = rows.map((row) => {
-    if (row.phase === "ready")
-      return policy.enabled && row.active
+    if (row.phase === "ready") {
+      const idleAt = row.lastUsedAt + (policy.enabled ? policy.idleMilliseconds : 0);
+      // A cell kept past its idle bound, as the last one serving, waits for the cadence again.
+      return (policy.enabled && row.active) || idleAt <= now
         ? cadence
-        : Math.min(
-            cadence,
-            Math.max(now + 100, row.lastUsedAt + (policy.enabled ? policy.idleMilliseconds : 0)),
-          );
+        : Math.min(cadence, Math.max(now + 100, idleAt));
+    }
     // A held stream's release wakes the fleet itself; a lost one is read again once it stood still.
     if (row.phase === "draining" && row.active && row.drainAcknowledged)
       return Math.max(

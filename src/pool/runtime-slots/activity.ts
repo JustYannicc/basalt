@@ -25,9 +25,17 @@ function reconciled(row: typeof Activity.Type) {
   };
 }
 
-/** How long the count stood still, as a duration, so no caller compares this clock with its own. */
+/**
+ * How long the count stood still, as a duration, so no caller compares this clock with its own. Every
+ * acquire and release stamps `changedAt`, so a row without one never moved since it was set up.
+ */
 export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
-  return row.changedAt === undefined ? {} : { stillMs: Math.max(0, Date.now() - row.changedAt) };
+  return {
+    stillMs:
+      row.changedAt === undefined
+        ? Number.MAX_SAFE_INTEGER
+        : Math.max(0, Date.now() - row.changedAt),
+  };
 }
 
 /** Lost request receipts remain counted. Reconstruction cannot invent an empty runtime. */

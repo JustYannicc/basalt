@@ -311,3 +311,25 @@ test("a stream whose cell side just ended is never reconciled before its own rel
     "the late release lowers the count once, with nothing to undercount",
   );
 });
+
+test("a ready cell kept past its idle bound wakes the fleet on the cadence, never in a tight loop", () => {
+  const now = 50_000_000;
+  for (const enabled of [true, false])
+    assert.equal(
+      fleetWakeUp(
+        [{ phase: "ready", active: 0, lastUsedAt: now - 10 * 60_000, phaseAt: now - 20 * 60_000 }],
+        { enabled, idleMilliseconds: 60_000 },
+        now,
+      ),
+      now + upkeepCadenceMs,
+    );
+  assert.equal(
+    fleetWakeUp(
+      [{ phase: "ready", active: 0, lastUsedAt: now - 59_950, phaseAt: now - 20 * 60_000 }],
+      { enabled: true, idleMilliseconds: 60_000 },
+      now,
+    ),
+    now + 100,
+    "an idle bound just ahead is still met closely",
+  );
+});
