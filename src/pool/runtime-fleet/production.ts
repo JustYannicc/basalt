@@ -43,6 +43,8 @@ import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
 import { pendingFields } from "../pending-failure.ts";
 import { recoveryPassMs } from "../runtime-slots/forced-restart-timing.ts";
 
+export const fleetRouting = { balancePrimary: true } as const;
+
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
   endpoint(target: SlotTarget): RuntimeStub & HomePeerEndpoint;
@@ -267,7 +269,7 @@ export class PoolRuntimeFleet {
       enabled: () => this.enabled,
       changed: () => this.deps.ctx.waitUntil(this.schedule()),
       keepReady: (identity) => this.replacement.keepReady(identity),
-      balancePrimary: true,
+      balancePrimary: fleetRouting.balancePrimary,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
       primaryDistance: async () => (await this.deps.handoff.status())?.database,

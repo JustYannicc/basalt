@@ -5,6 +5,7 @@ import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
+import { fleetRouting } from "./runtime-fleet/production.ts";
 
 const responseModule = "./native-response.worker.ts";
 const { nativeResponse } = (await import(responseModule)) as {
@@ -331,5 +332,54 @@ test("with no sibling, a primary that just failed admission is asked again, not 
   lapsed = false;
   const response = await f.fleet.forward(request(), "pool", primary, () => {});
   assert.equal(await response.text(), "legacy");
+  await f.settle();
+});
+
+const served = async (response: Response, body?: ReadableStreamDefaultController<Uint8Array>) => {
+  const text = response.text();
+  body?.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+  body?.close();
+  return text;
+};
+
+test("with production routing, a ready cell takes the call and the root serves none", async () => {
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await f.add();
+  const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(f.calls.dispatches, 1);
+  assert.equal(f.calls.legacy, 0);
+  assert.equal(await f.state.primaryActive(), 0);
+  await f.settle();
+});
+
+test("with production routing and no ready cell, the root serves the call", async () => {
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  assert.equal(await response.text(), "legacy");
+  assert.equal(f.calls.legacy, 1);
+  assert.equal(f.calls.dispatches, 0);
+  await f.settle();
+});
+
+test("with production routing, a fenced root never fails a call a ready cell can serve", async () => {
+  const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
+  await f.add();
+  let rootCalls = 0;
+  // A Home cancelled the root's node: every call the root takes is refused.
+  const fenced = async () => {
+    rootCalls++;
+    return Response.json({ type: "error", error: { type: "overloaded_error" } }, { status: 503 });
+  };
+  const responses = await Promise.all(
+    Array.from({ length: 3 }, () => f.fleet.forward(request(), "pool", fenced, () => {})),
+  );
+  assert.equal(rootCalls, 0);
+  assert.deepEqual(
+    responses.map((response) => response.status),
+    [200, 200, 200],
+  );
+  await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
+  assert.equal(f.calls.dispatches, 3);
   await f.settle();
 });
