@@ -222,12 +222,16 @@ test(
             started_at: string;
             db_rtt_state: string;
             db_rtt_ms?: number;
+            resume?: string;
           };
+          // The resume layer starts with the runtime and is advertised once its own probe passes.
+          if (status.resume !== "v1") return;
           // Home measures its distance over its own database pool before the node starts.
           assert.deepEqual(Object.keys(status).sort(), [
             "boot_id",
             "db_rtt_ms",
             "db_rtt_state",
+            "resume",
             "started_at",
           ]);
           assert.equal(status.db_rtt_state, "measured");

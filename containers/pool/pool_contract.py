@@ -21,6 +21,7 @@ from .home_identity import HomeIdentity
 
 HOME_URL = f"http://127.0.0.1:{8329 if os.environ.get('POOL_HOME_PEER_ORDINAL') is not None else 8327}"
 NODE_URL = "http://127.0.0.1:8317"
+RESUME_URL = "http://127.0.0.1:8316"
 READY_BIND = ("0.0.0.0", 8318)
 ROOT = pathlib.Path("/dev/shm/cliproxy-pool")
 PATH_VALUE = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -273,8 +274,11 @@ def child_environment(
             value = os.environ.get(name, "").strip()
             if value:
                 env[name] = value
-    else:
+    elif kind == "node":
         env["HOME_JWT"] = home_jwt
+    elif kind == "resume":
+        # A resume naming any other boot is gone; the layer gets no credentials.
+        env["POOL_BOOT_ID"] = node_boot_id
     return env
 
 
@@ -366,6 +370,16 @@ def _node_healthy(management_key: str) -> bool:
         timeout=2,
     )
     return node_status == 200 and node_payload.get("status") == "ok"
+
+
+def resume_layer_healthy() -> bool:
+    """Never raises: a probe failure only withdraws resume, it must not end the supervisor."""
+    try:
+        # Loopback answers in microseconds; a short limit keeps a hung layer from delaying the 2 s tick.
+        status, payload = request_json(f"{RESUME_URL}/__basalt/resume/healthz", "GET", "", timeout=0.25)
+    except Exception:
+        return False
+    return status == 200 and payload.get("status") == "ok"
 
 
 DATABASE_DISTANCE_MAX_MS = 3500

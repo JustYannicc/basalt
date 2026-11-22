@@ -123,6 +123,7 @@ class SelectedSupervisorTests(unittest.TestCase):
                 self.at_stop["ready"] = readiness[0].snapshot()[0]
                 self.at_stop["diagnostics"] = readiness[0].diagnostics(0)
                 self.at_stop["server_shut"] = servers[-1].shutdown.called
+                self.at_stop["terminated"] = [child.name for child in _children]
 
         stop.on_wait = on_wait
         health = SimpleNamespace(check=lambda: True, invalidate=lambda: None)
@@ -238,6 +239,33 @@ class SelectedSupervisorTests(unittest.TestCase):
         self.assertNotIn("POOL_SUPERVISOR_STOP", stderr)
         # The liveness check is what puts Home's refresh count on /ready.
         self.assertEqual(self.service_health.call_args.kwargs.get("observe"), ready.note_refresh_in_flight)
+
+    def test_the_resume_layer_and_the_refresh_count_reach_ready_and_stop_in_one_grace(self) -> None:
+        # The resume layer runs beside the liveness check that reports Home's refresh count; the
+        # one stop grace covers the layer while /diagnostics still answers.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        binary = pathlib.Path(directory.name) / "pool-resume"
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+        seen: dict[str, object] = {}
+
+        def on_tick(tick, _launched, ready, _clock) -> None:
+            if tick == 3:
+                ready.note_refresh_in_flight(1)
+                seen["payload"] = ready.snapshot()[1]
+
+        with patch.object(supervisor, "RESUME_BINARY", str(binary)), patch.object(
+            supervisor, "resume_layer_healthy", Mock(return_value=True)
+        ):
+            result, _launched, ready, _stderr, ticks = self.run_selected(on_tick)
+        self.assertEqual((result, ticks), (0, TICKS))
+        self.assertEqual(self.service_health.call_args.kwargs.get("observe"), ready.note_refresh_in_flight)
+        self.assertEqual(seen["payload"]["resume"], "v1")
+        self.assertEqual(seen["payload"]["refresh_in_flight"], 1)
+        self.assertIn("resume", self.at_stop["terminated"])
+        self.assertIn("home", self.at_stop["terminated"])
+        self.assertFalse(self.at_stop["server_shut"], "/diagnostics closed before the children stopped")
 
     def test_a_home_exit_during_boot_ends_the_container(self) -> None:
         boot = Mock(side_effect=supervisor.HomeExited(1))

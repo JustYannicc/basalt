@@ -42,6 +42,10 @@ COPY plugin_probe.go /build/plugin_probe.go
 COPY native_policy_home_test.go.tmpl /build/native_policy_home_test.go.tmpl
 COPY native_policy_home_host_helper.go.tmpl /build/native_policy_home_host_helper.go
 COPY native_policy /build/native_policy
+COPY resume /build/resume
+RUN mkdir -p /out && cd /build/resume && \
+    CGO_ENABLED=1 go test -race -p=2 -mod=readonly -count=1 ./... && \
+    CGO_ENABLED=0 go build -p=2 -mod=readonly -trimpath -ldflags="-s -w" -o /out/pool-resume .
 RUN mkdir -p /out/plugins && \
     cd /build/native_policy && \
     CGO_ENABLED=1 go test -race -p=2 -mod=readonly -count=1 ./... && \
@@ -101,11 +105,12 @@ COPY output.py /opt/pool/
 COPY policy_monitor.py /opt/pool/policy_monitor.py
 COPY policy_check.py /opt/pool/policy_check.py
 COPY healthcheck.py /opt/pool/healthcheck.py
+COPY resume_layer.py /opt/pool/resume_layer.py
 ENV HOME=/dev/shm/cliproxy-pool \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/opt \
     TZ=Etc/UTC
-EXPOSE 8317 8318 8327 8329
+EXPOSE 8316 8317 8318 8327 8329
 HEALTHCHECK --interval=10s --timeout=4s --start-period=180s --retries=3 \
   CMD ["python3", "-m", "pool.healthcheck"]
 USER pool
@@ -120,6 +125,7 @@ FROM runtime-base AS runtime
 LABEL io.signalbox.pool.oauth-completion-receipts="1"
 COPY --from=source-build /out/home/cli-proxy-api /usr/local/bin/cliproxy-home
 COPY --from=source-build /out/node/cli-proxy-api /usr/local/bin/cliproxy-node
+COPY --from=source-build /out/pool-resume /usr/local/bin/pool-resume
 COPY --from=source-build /out/home/LICENSE /usr/share/licenses/cliproxy-home/LICENSE
 COPY --from=source-build /out/node/LICENSE /usr/share/licenses/cliproxy-node/LICENSE
 

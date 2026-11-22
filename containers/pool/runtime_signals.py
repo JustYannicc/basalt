@@ -45,7 +45,7 @@ def report_child_exit(
 ) -> None:
     if (
         type(name) is not str
-        or name not in ("home", "node", "home_import")
+        or name not in ("home", "node", "home_import", "resume")
         or type(exit_code) is not int
         or not -255 <= exit_code <= 255
         or type(category) is not FailureCategory

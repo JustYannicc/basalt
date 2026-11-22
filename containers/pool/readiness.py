@@ -64,6 +64,7 @@ class Readiness:
         self._key = management_key.encode("utf-8")
         self._monotonic_ns = monotonic_ns
         self._services_ready = False
+        self._resume_available = False
         self._database_distance: dict[str, object] = {"db_rtt_state": "pending"}
         location = os.environ.get("CLOUDFLARE_LOCATION", "").strip().lower()
         self._location = location if re.fullmatch(r"[a-z]{3}[0-9]{2}", location) else None
@@ -86,6 +87,10 @@ class Readiness:
             self._services_ready = value and (
                 audit_revision is None or audit_revision == self._service_audit_revision
             )
+
+    def set_resume_available(self, value: bool) -> None:
+        with self._lock:
+            self._resume_available = value
 
     def set_database_distance(self, rtt_ms: int | None) -> None:
         """Home's measured distance to the database; None records a failed measurement."""
@@ -278,6 +283,8 @@ class Readiness:
             if self._location is not None:
                 payload["location"] = self._location
             payload.update(self._refresh_diagnostics())
+            if self._resume_available:
+                payload["resume"] = "v1"
             if not ready:
                 # Closed and ordered: a fused or unproven policy outranks unhealthy services.
                 fused = self._fused_instance_pending or self._fused_instance_id is not None
