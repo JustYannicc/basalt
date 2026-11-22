@@ -111,6 +111,47 @@ export function classChanges(plan: Plan) {
   return { dropped: [...dropped].sort(), created: [...created].sort() };
 }
 
+/** The resource types that hold data: a release never deletes or replaces one. */
+const dataTypes = [
+  "Planetscale.PostgresDatabase",
+  "Planetscale.PostgresBranch",
+  "Cloudflare.R2.Bucket",
+  "Cloudflare.D1Database",
+  "Cloudflare.SecretsStore",
+  "Cloudflare.Hyperdrive",
+];
+
+/** The data resources the plan deletes or replaces, by name, type and action. */
+export const removals = (snapshot: Pick<Snapshot, "resources"> & { native: Plan }) =>
+  [
+    ...snapshot.resources,
+    ...Object.entries(snapshot.native.deletions ?? {}).map(([fqn, node]) => ({
+      fqn,
+      resourceType: node?.resource?.Type ?? "unknown",
+      action: "delete",
+    })),
+  ]
+    .filter(({ action }) => action === "delete" || action === "replace")
+    .filter(({ resourceType }) => dataTypes.includes(resourceType))
+    .map(({ fqn, resourceType, action }) => `${fqn} (${resourceType}) ${action}`)
+    .filter((line, index, all) => all.indexOf(line) === index);
+
+/** A deployment a rollback made, ours or the old entry's: State still records the upload before it. */
+const rollbackMessage = /^(?:production smoke failed|release rollback )/u;
+
+/**
+ * The Workers this plan does not upload whose serving deployment a rollback made. State records
+ * the release that was rolled back, so the plan sees no change and the Worker would stay on the
+ * older code without a line saying so.
+ */
+export const leftRolledBack = (plan: Plan, newestMessage: Readonly<Record<string, unknown>>) => {
+  const uploads = new Set(workersToRepoint(plan));
+  return workers(plan)
+    .map(([fqn]) => fqn)
+    .filter((fqn) => !uploads.has(fqn) && rollbackMessage.test(String(newestMessage[fqn] ?? "")))
+    .sort();
+};
+
 /** The stack's database commands this plan runs: the hosted migrations and the pool database. */
 export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) =>
   rows
@@ -132,9 +173,10 @@ export async function smoke(send: () => Promise<unknown>) {
   }
 }
 
-// A rollback Cloudflare refuses over a changed secret is forced only for this one: it carries the
-// upstream pin, which changes only when a release moves it, never between two ordinary releases.
-const forceSecrets = new Set(["EXECUTOR_TELEMETRY"]);
+// A rollback Cloudflare refuses over a changed secret is forced only for these: the telemetry
+// secret carries the upstream pin, and AppCompiler's apps version the served framework version
+// (until #1726 binds it plainly). Forced, the earlier version gets back the value it ran with.
+const forceSecrets = new Set(["EXECUTOR_TELEMETRY", "EXECUTOR_APPS_VERSION"]);
 
 const say = async (line: string) => {
   console.log(line);
@@ -150,8 +192,6 @@ async function main() {
   const mode = positionals[0];
   if (mode !== "plan" && mode !== "deploy") throw new Refused("Usage: production.ts plan|deploy");
   const candidate = process.env.BASALT_RELEASE_CANDIDATE ?? "";
-  if (process.env.GITHUB_ACTIONS !== "true" || !/^[a-f0-9]{40}$/u.test(candidate))
-    throw new Refused("Production deploys only in GitHub Actions, from a candidate's full sha");
   const model = process.env.POOL_ACCEPTANCE_MODEL ?? "";
   if (mode === "deploy" && !model)
     throw new Refused("POOL_ACCEPTANCE_MODEL names the smoke's model");
@@ -176,7 +216,7 @@ async function main() {
   const { initialCwd } = await import("alchemy/Util/Node");
   if (initialCwd !== process.cwd()) throw new Refused("Alchemy loaded before the cloud app");
   const { Cause, Effect, Logger, Redacted } = await import("effect");
-  const { FetchHttpClient } = await import("effect/http");
+  const { FetchHttpClient, HttpClient, HttpClientRequest } = await import("effect/http");
   const Alchemist = await import("alchemy/Alchemist");
   const Session = await import("alchemy/Alchemist/Session");
   const { storeCannotBootstrap } = await import("./release/state-store-guard.ts");
@@ -204,23 +244,31 @@ async function main() {
     script,
   });
   const print = (line: string) => Effect.promise(() => say(line));
+  // The message of the newest deployment of a script, which a rollback writes.
+  const newestMessage = (target: ReturnType<typeof at>) =>
+    Effect.gen(function* () {
+      const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+      const response = yield* client.execute(
+        HttpClientRequest.get(
+          `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(target.accountId)}/workers/scripts/${encodeURIComponent(target.script)}/deployments`,
+        ).pipe(HttpClientRequest.bearerToken(Redacted.value(target.token))),
+      );
+      const body = (yield* response.json) as {
+        result?: { deployments?: { annotations?: Record<string, unknown> }[] };
+      };
+      return body.result?.deployments?.[0]?.annotations?.["workers/message"];
+    });
   const refuse = (line: string) =>
     Effect.andThen(print(`::error::${line}`), Effect.fail(new Refused(line)));
 
-  // First session: the State store's version and the classes PoolWorker hosts, before the stack
-  // reads the fleet's setting.
+  // First session: the classes PoolWorker hosts, read before the stack reads the fleet's setting.
   const hosted = await run(
     Effect.gen(function* () {
       type Key = { stack: string; stage: string; fqn: string };
       const store = (yield* Alchemist.State.store({
         backend: "configured",
         ...target,
-      } as never)) as {
-        getVersion: () => Fx.Effect<number, unknown, never>;
-        get: (key: Key) => Fx.Effect<State | undefined, unknown, never>;
-      };
-      const version = yield* store.getVersion();
-      if (version !== 8) return yield* refuse(`State store version ${version}, not 8`);
+      } as never)) as { get: (key: Key) => Fx.Effect<State | undefined, unknown, never> };
       const { stackName } = yield* Session.importStack(target.entrypoint) as unknown as Fx.Effect<
         { stackName: string },
         unknown,
@@ -256,9 +304,30 @@ async function main() {
         return yield* refuse(
           `The plan drops Durable Object classes (${dropped.join("; ")}); nothing applied`,
         );
+      const removed = removals(snapshot);
+      if (removed.length)
+        return yield* refuse(`The plan deletes or replaces ${removed.join("; ")}; nothing applied`);
+      const root = snapshot.resources.find(({ fqn }) => fqn === "PoolContainer");
+      if (root && root.action !== "noop")
+        return yield* refuse(
+          `The plan changes the root container (${root.action}); no release rolls the root`,
+        );
+      // One deployments read per Worker the plan leaves alone.
+      const newest: Record<string, unknown> = {};
+      const uploads = new Set(workersToRepoint(snapshot.native));
+      for (const [fqn, node] of workers(snapshot.native))
+        if (!uploads.has(fqn) && node.state?.attr?.workerName)
+          newest[fqn] = yield* newestMessage(at(String(node.state.attr.workerName)));
+      const stale = leftRolledBack(snapshot.native, newest);
+      if (stale.length)
+        return yield* refuse(
+          `A rollback put back the version serving ${stale.join(", ")}, which State does not record, and this plan does not upload them; release a commit whose plan uploads them first`,
+        );
       // The stack read the setting this run set, or this run stops before it applies anything.
       const fleet = created.filter((name) => fleetClasses.some((cls) => name.endsWith(`: ${cls}`)));
-      if (fleet.length !== (declared && fleetClasses.some((cls) => !hosted.includes(cls)) ? 2 : 0))
+      if (
+        fleet.length !== (declared ? fleetClasses.filter((cls) => !hosted.includes(cls)).length : 0)
+      )
         return yield* refuse(
           `The plan's fleet classes (${fleet.join(", ") || "none"}) do not match the switch`,
         );

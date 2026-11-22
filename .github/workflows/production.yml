@@ -66,7 +66,6 @@ jobs:
       - name: ${{ inputs.mode == 'deploy' && 'Plan, apply and smoke' || 'Plan' }}
         run: bun scripts/production.ts "${{ inputs.mode }}" ${{ inputs.fleet_classes && '--fleet-classes' || '' }}
         env:
-          GITHUB_TOKEN: ${{ github.token }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}

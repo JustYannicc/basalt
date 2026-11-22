@@ -5,6 +5,8 @@ import {
   classesDeclared,
   classChanges,
   databaseSteps,
+  leftRolledBack,
+  removals,
   fleetEnvironment,
   smoke,
   workersToRepoint,
@@ -85,6 +87,57 @@ test("deleting or replacing a Worker drops every class it hosts", () => {
       deletions: { Gone: worker("delete") },
     }).dropped,
     ["Gone: Ledger", "New: Ledger"],
+  );
+});
+
+test("a plan that deletes or replaces a data resource is refused, and code is not", () => {
+  const row = (fqn: string, resourceType: string, action: string) => ({
+    fqn,
+    resourceType,
+    action,
+  });
+  assert.deepEqual(
+    removals({
+      resources: [
+        row("Api", "Cloudflare.Worker", "replace"),
+        row("PoolBackendBudget", "Command.Exec", "delete"),
+        row("Vault", "Cloudflare.R2.Bucket", "replace"),
+        row("Router", "Cloudflare.Worker", "update"),
+      ],
+      native: {
+        resources: {},
+        deletions: { PoolDatabaseBranch: { resource: { Type: "Planetscale.PostgresBranch" } } },
+      },
+    }),
+    [
+      "Vault (Cloudflare.R2.Bucket) replace",
+      "PoolDatabaseBranch (Planetscale.PostgresBranch) delete",
+    ],
+  );
+});
+
+test("a Worker the plan leaves alone while a rollback's version serves it is named", () => {
+  const worker = (action: string) => ({
+    resource: { Type: "Cloudflare.Worker" },
+    action,
+    bindings: [],
+  });
+  const plan = {
+    resources: {
+      Api: worker("update"),
+      Dashboard: worker("noop"),
+      Router: worker("noop"),
+      Sso: worker("noop"),
+    },
+  };
+  assert.deepEqual(
+    leftRolledBack(plan, {
+      Api: "production smoke failed",
+      Dashboard: "release rollback 44992011040",
+      Router: "Automatic deployment",
+      Sso: "production smoke failed",
+    }),
+    ["Dashboard", "Sso"],
   );
 });
 
