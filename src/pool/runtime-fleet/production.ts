@@ -1,4 +1,5 @@
 import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { resumeGone, stampResumeTarget } from "../stream-resume.ts";
 import { RuntimeCrash } from "../runtime-crash.ts";
 import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
@@ -396,7 +397,17 @@ export class PoolRuntimeFleet {
         () => fleet.recoverPrimary(),
       );
     }
-    return forwardRecoverably(request, legacy, beforeDispatch, () => this.deps.handoff.supervise());
+    return stampResumeTarget(
+      await forwardRecoverably(request, legacy, beforeDispatch, () =>
+        this.deps.handoff.supervise(),
+      ),
+      { kind: "primary" },
+    );
+  }
+  /** A resume of a fleet runtime's answer; without a fleet there is none to resume. */
+  async resume(identity: SlotIdentity, request: Request) {
+    const fleet = await this.fleet();
+    return fleet ? fleet.resume(identity, request) : resumeGone();
   }
   async recoverAdmission(signal: AbortSignal) {
     if (!(await this.deps.handoff.selected())) return false;
