@@ -150,6 +150,7 @@ import {
   resumeRequest,
   resumeRoute,
   toLayer,
+  type StreamResumeInput,
 } from "./stream-resume.ts";
 import { resumedAnswer } from "./stream-resume.worker.ts";
 import { resumedTerminal } from "./terminal-recording.worker.ts";
@@ -1266,6 +1267,8 @@ async function callController(
               throw error;
             }
           },
+          // A resume comes after the answer started, so it is no call this event times.
+          resume: (input: StreamResumeInput) => stub.resume(input),
         };
       },
       env,

@@ -66,8 +66,9 @@ function assertForwarded(forwarded: Request, sent: Request) {
 function poolStub(
   connectionString = "postgres://fixture:fixture@hyperdrive.invalid/basalt_pool",
   respond = async (_request: Request) => new Response("forwarded", { status: 202 }),
+  resume?: (input: { requestId: string; from: number }) => Promise<Response>,
 ) {
-  const calls = { lookups: 0, forwarded: [] as Request[] };
+  const calls = { lookups: 0, forwarded: [] as Request[], resumes: [] as unknown[] };
   const env = {
     POOL_DATABASE_URL: "postgres://fixture:fixture@database.invalid/basalt_pool",
     POOL_AUTH_DATABASE: { connectionString },
@@ -83,6 +84,14 @@ function poolStub(
                 calls.forwarded.push(request);
                 return respond(request);
               },
+              ...(resume
+                ? {
+                    resume: async (input: { requestId: string; from: number }) => {
+                      calls.resumes.push(input);
+                      return resume(input);
+                    },
+                  }
+                : {}),
             };
           },
         };
@@ -519,6 +528,64 @@ test("a handover refusal the Worker cannot send again still leaves its line", as
     { sends: 0, outcome: "refused", reason: "not_resendable" },
   );
   assert.match(String(line!.requestId), /^[0-9a-f-]{36}$/);
+});
+
+test("a model stream cut at the Worker entry resumes through the object's own resume", async (context) => {
+  context.mock.method(console, "error", () => {});
+  workerRecords(context);
+  const requestId = "0b5c3a4e-8f1d-4c2b-9a7e-3d6f1e2a4b5c";
+  const first = 'event: message_start\ndata: {"type":"message_start"}\n\n';
+  const rest = 'event: message_stop\ndata: {"type":"message_stop"}\n\n';
+  let sent = false;
+  const { env, calls } = poolStub(
+    undefined,
+    async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull(stream) {
+            if (sent) return stream.error(new Error(instanceEnded));
+            sent = true;
+            stream.enqueue(new TextEncoder().encode(first));
+          },
+        }),
+        {
+          headers: {
+            "content-type": "text/event-stream",
+            "X-Request-Id": requestId,
+            "X-Basalt-Resume": "v1",
+            "X-Basalt-Resume-Target": "primary",
+            "X-Signalbox-Pool-Boot": "boot-1",
+          },
+        },
+      ),
+    async (input) =>
+      new Response(rest, {
+        headers: {
+          "X-Basalt-Resume": "v1",
+          "X-Basalt-Resume-From": String(input.from),
+          "X-Basalt-Resume-State": "live",
+        },
+      }),
+  );
+  const response = await handlePoolWorkerRequest(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      headers: { "X-Api-Key": "valid-home-key", "content-type": "application/json" },
+      body: '{"model":"claude-opus-5-5"}',
+    }),
+    env,
+    async () => true,
+    () => {},
+  );
+  assert.equal(await response.text(), first + rest);
+  assert.deepEqual(calls.resumes, [
+    {
+      requestId,
+      from: new TextEncoder().encode(first).byteLength,
+      target: "primary",
+      boot: "boot-1",
+    },
+  ]);
 });
 
 test("a reset the Worker answers itself is reported once, by the Worker", async (context) => {
