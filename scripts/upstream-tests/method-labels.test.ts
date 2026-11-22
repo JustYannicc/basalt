@@ -34,7 +34,7 @@ test("a connect form never shows two sign-in methods with the same label", () =>
 
 test("the connect form labels methods through the shared rule", () => {
   const form = readFileSync(new URL("account-form.tsx", dashboard), "utf8");
-  assert.match(form, /const labels = methodLabels\(provider\.definition\.name, methods\)/);
+  assert.match(form, /const labels = methodLabels\(\s*provider\.definition\.name,\s*methods,/);
   assert.match(form, /\{labels\.get\(name\)\}/);
   assert.doesNotMatch(form, /`Sign in with \$\{provider\.definition\.name\}`/);
 });
