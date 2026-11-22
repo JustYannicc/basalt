@@ -44,6 +44,14 @@ const ExitsReply = Schema.Struct({
   ),
 });
 const StateReply = Schema.Struct({ state: Schema.String, state_revision: Schema.Number });
+/** A reply the gateway should never send is refused by reason code; its text never travels on. */
+function parse<T, E>(schema: Schema.Codec<T, E>, value: unknown): T {
+  try {
+    return Schema.decodeUnknownSync(schema)(value);
+  } catch {
+    throw new RouteRefused("route_gateway_unavailable");
+  }
+}
 const controlPort = 8080;
 const socksPort = 1080;
 const timeoutMs = 5_000;
@@ -92,10 +100,11 @@ export class GatewayControl {
       throw new RouteRefused("route_gateway_unavailable");
   }
   async status() {
-    return Schema.decodeUnknownSync(GatewayStatus)(await this.call("GET", "/status"));
+    return parse(GatewayStatus, await this.call("GET", "/status"));
   }
   async select(selection: Selection) {
-    return Schema.decodeUnknownSync(GatewayStatus)(
+    return parse(
+      GatewayStatus,
       await this.call("POST", "/select", {
         exit_id: selection.exitId,
         when_down: selection.whenDown,
@@ -103,10 +112,10 @@ export class GatewayControl {
     );
   }
   async login() {
-    return Schema.decodeUnknownSync(LoginReply)(await this.call("POST", "/login", {}));
+    return parse(LoginReply, await this.call("POST", "/login", {}));
   }
   async exits() {
-    const reply = Schema.decodeUnknownSync(ExitsReply)(await this.call("GET", "/exits"));
+    const reply = parse(ExitsReply, await this.call("GET", "/exits"));
     return reply.exits.map(({ id, name, online, last_seen }) => ({
       id,
       name,
@@ -118,7 +127,7 @@ export class GatewayControl {
     await this.call("POST", "/logout", {});
   }
   async state() {
-    return Schema.decodeUnknownSync(StateReply)(await this.call("GET", "/state"));
+    return parse(StateReply, await this.call("GET", "/state"));
   }
   async connect() {
     try {

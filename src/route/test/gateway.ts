@@ -31,6 +31,8 @@ export class FakeGateway implements GatewayContainer {
   forgetState = false;
   /** The next /state read fails once. */
   failStates = 0;
+  /** The next reply to this path is not the I1 shape. */
+  garbleNext: string | undefined;
   private gates = new Map<
     string,
     { opened: Promise<void>; arrived: () => void; reply: "before" | "after" }
@@ -124,6 +126,10 @@ export class FakeGateway implements GatewayContainer {
     if (gate?.reply === "before") {
       gate.arrived();
       await gate.opened;
+    }
+    if (this.garbleNext === path) {
+      this.garbleNext = undefined;
+      return Response.json({ exits: "https://login.example.invalid/a/leak" });
     }
     const response = await this.answer(method, path, body);
     if (gate?.reply === "after") {

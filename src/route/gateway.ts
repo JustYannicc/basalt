@@ -85,6 +85,8 @@ const startDeadlineMs = 30_000;
 export class RouteGatewayCore {
   private starting: Promise<void> | undefined;
   private refreshing: Promise<Reading> | undefined;
+  /** Bumped by stop, so a start it abandoned gives up instead of probing a gone container. */
+  private launch = 0;
   private selecting: Promise<unknown> = Promise.resolve();
   /** Bumped by disconnect, so a call it overtook writes nothing after it. */
   private generation = 0;
@@ -179,18 +181,21 @@ export class RouteGatewayCore {
     if (selection.exitId === null) {
       const reading = await this.exclusive(async () => {
         await this.deps.storage.put(keys.selection, selection);
-        if (this.starting) await this.gateway.destroy();
+        if (this.starting) await this.stop();
         else if (this.gateway.running)
           try {
             return await this.applied(await this.gateway.select(selection));
           } catch {
-            await this.gateway.destroy();
+            await this.stop();
           }
         return this.record(await this.idle(selection), true);
       });
       await this.schedule();
       return reading;
     }
+    // A route with no identity has nothing to route through, and choosing must not start a node.
+    if (!this.gateway.running && !(await this.identity.exists()))
+      throw new RouteRefused("route_needs_login");
     try {
       await this.ensureStarted();
     } catch {
@@ -207,7 +212,7 @@ export class RouteGatewayCore {
         if (previous) await this.deps.storage.put(keys.selection, previous);
         else await this.deps.storage.delete([keys.selection]);
         // The gateway may have applied it anyway; a route that was off must not keep routing.
-        if ((previous?.exitId ?? null) === null) await this.gateway.destroy();
+        if ((previous?.exitId ?? null) === null) await this.stop();
         throw new RouteRefused("route_gateway_unavailable");
       }
       return this.applied(status);
@@ -239,7 +244,7 @@ export class RouteGatewayCore {
       }
       await this.deps.storage.delete([keys.state, keys.selection, keys.loginUntil]);
       await this.deps.storage.deleteAlarm();
-      await this.gateway.destroy();
+      await this.stop();
       await this.record(
         localReading("needs_login", "route_needs_login", undefined, this.deps.now()),
       );
@@ -339,7 +344,12 @@ export class RouteGatewayCore {
     );
     return this.exclusive(async () => {
       const selection = await this.deps.storage.get<Selection>(keys.selection);
-      if (generation !== this.generation || (selection?.exitId === null && !this.gateway.running))
+      // A call queued behind a disconnect or a switch-off reads what they left, not the gateway.
+      const live =
+        this.gateway.running ||
+        (selection?.exitId ?? null) !== null ||
+        (await this.deps.storage.get(keys.loginUntil)) !== undefined;
+      if (generation !== this.generation || !live)
         return this.record(await this.idle(selection), true);
       try {
         if (started) throw started;
@@ -417,30 +427,47 @@ export class RouteGatewayCore {
   }
 
   private ensureStarted() {
-    this.starting ??= this.start().finally(() => {
-      this.starting = undefined;
-    });
+    if (!this.starting) {
+      const run: Promise<void> = this.start(this.launch).finally(() => {
+        if (this.starting === run) this.starting = undefined;
+      });
+      this.starting = run;
+    }
     return this.starting;
   }
 
+  /** Stops the gateway and abandons any start in flight, so the next caller starts afresh. */
+  private async stop() {
+    this.launch += 1;
+    this.starting = undefined;
+    await this.gateway.destroy();
+  }
+
   /** Every container start gets the stored identity and selection before anything else reaches it. */
-  private async start() {
+  private async start(launch: number) {
+    const live = () => {
+      if (launch !== this.launch) throw new RouteRefused("route_gateway_unavailable");
+    };
     this.gateway.launch();
     const deadline = this.deps.now() + startDeadlineMs;
     for (;;) {
       const probe = await this.gateway.probe();
+      live();
       if (probe === "started") return;
-      if (probe === "unstarted") return this.boot();
+      if (probe === "unstarted") return this.boot(live);
       if (this.deps.now() >= deadline) throw new RouteRefused("route_gateway_unavailable");
       await this.deps.sleep(250);
+      live();
     }
   }
 
-  private async boot() {
+  private async boot(live: () => void) {
     const { routeId } = await this.meta();
     await this.gateway.start(await this.identity.open(routeId));
+    live();
     const selection = await this.deps.storage.get<Selection>(keys.selection);
     if (selection) await this.gateway.select(selection);
+    live();
   }
 
   /** The node state is read only after a login or key change, and only while signed in. */
@@ -448,7 +475,13 @@ export class RouteGatewayCore {
     if (!status.node.logged_in) return;
     if (!(await this.identity.holds(status.boot_id, status.state_revision))) {
       const { routeId } = await this.meta();
-      const reply = await this.gateway.state();
+      let reply;
+      try {
+        reply = await this.gateway.state();
+      } catch {
+        // The gateway's answer still stands; the identity is read again on the next refresh.
+        return;
+      }
       await this.identity.save(routeId, reply.state, status.boot_id, reply.state_revision);
     }
     // Only a saved identity ends the sign-in, so a failed state read keeps the poll going.

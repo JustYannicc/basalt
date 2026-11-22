@@ -233,6 +233,14 @@ test("an unreachable gateway reads down, and a never-joined route reads without 
   const idle = await gateway.reading(caller);
   assert.equal(idle.state, "needs_login");
   assert.equal(container.running, false);
+  // Choosing an exit before any sign-in is refused without starting a node.
+  await refusedWith(
+    gateway.select(caller, { exitId: "n1", whenDown: "stop" }),
+    "route_needs_login",
+  );
+  assert.equal(container.running, false);
+  await gateway.login(caller);
+  container.approve();
   await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   container.reachable = false;
   const reading = await gateway.reading(caller);
@@ -286,10 +294,12 @@ test("the node state and login link never reach a log line", async () => {
 /** Lets every other call in flight run as far as it can before a held request is released. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
+/** Signed in as the driver sees it: approved, then one status poll seals the identity. */
 async function joined() {
   const fixture = await created();
   await fixture.gateway.login(caller);
   fixture.container.approve();
+  await fixture.gateway.joinStatus(caller);
   return fixture;
 }
 
@@ -602,4 +612,61 @@ test("listing exits on a route with no identity starts no node", async () => {
   await refusedWith(gateway.exits(caller), "route_needs_login");
   assert.equal(container.running, false);
   assert.deepEqual(container.starts, []);
+});
+
+test("a refresh queued behind a disconnect reads what the disconnect left, with no down event", async () => {
+  const { gateway, container, events } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  const held = container.hold("/logout", "after");
+  const leaving = gateway.disconnect(caller);
+  await held.reached;
+  const reading = gateway.reading(caller);
+  await settle();
+  held.release();
+  await leaving;
+  assert.equal((await reading).state, "needs_login");
+  assert.equal(events.filter((event) => event.state === "down").length, 0);
+});
+
+test("a start abandoned by a switch-off never holds up switching back on or disconnecting", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  const held = container.hold("/status");
+  const tunnel = gateway.openTunnel({ owner }).catch(() => {});
+  await held.reached;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  const on = gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await settle();
+  held.release();
+  assert.equal((await on).state, "active");
+  await tunnel;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  const again = container.hold("/status");
+  const second = gateway.openTunnel({ owner }).catch(() => {});
+  await again.reached;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  const leaving = gateway.disconnect(caller);
+  await settle();
+  again.release();
+  await leaving;
+  await second;
+  assert.equal(container.logouts, 1);
+});
+
+test("a select the gateway applied stands even if the identity read after it fails", async () => {
+  const { gateway, container, storage, events } = await joined();
+  container.crash();
+  container.failStates = 1;
+  const reading = await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  assert.equal(reading.state, "active");
+  assert.deepEqual(await storage.get("route-v1:selection"), { exitId: "n1", whenDown: "stop" });
+  assert.notEqual(storage.alarm, null);
+  assert.equal(events.length, 0);
+});
+
+test("a gateway reply that breaks the wire is refused by reason code, never its text", async () => {
+  const { gateway, container } = await joined();
+  container.garbleNext = "/exits";
+  await refusedWith(gateway.exits(caller), "route_gateway_unavailable");
 });
