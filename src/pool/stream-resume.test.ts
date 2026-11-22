@@ -625,3 +625,36 @@ test("an answer whose resumed part fails before any byte is not resumed again", 
   assert.match(text, /The model runtime restarted/);
   assert.equal(resumes, 1);
 });
+
+test("a re-sent copy arrives whole when the node answers before reading it, and each call gives its share of the copy budget back", async () => {
+  const marked = (size: number) =>
+    new Request("http://pool/v1/responses", {
+      method: "POST",
+      headers: { "X-Basalt-Resumable": "1", "Content-Length": String(size) },
+      body: '{"model":"m"}',
+    });
+  const refused = () =>
+    new Error("The container is not listening in the TCP address 10.0.0.1:8316");
+  // The node answers before it has read the body, as a node may: the upload must still arrive whole.
+  let upload: Promise<string> | undefined;
+  const answer = await toLayer(marked(13), async (request, port) => {
+    if (port === resumeLayerPort) throw refused();
+    upload = request.text();
+    return new Response("node");
+  });
+  assert.equal(await answer.text(), "node");
+  assert.equal(await upload, '{"model":"m"}');
+
+  // Ten calls at the 4 MiB bound in turn all keep a copy: each gives its share of the budget back.
+  let resent = 0;
+  for (let call = 0; call < 10; call++) {
+    const response = await toLayer(marked(4 * 1024 * 1024), async (request, port) => {
+      if (port === resumeLayerPort) throw refused();
+      resent++;
+      await request.text();
+      return new Response("node");
+    });
+    await response.text();
+  }
+  assert.equal(resent, 10);
+});
