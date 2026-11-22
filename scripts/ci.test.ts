@@ -45,6 +45,7 @@ test("an undeclared client change retains every product and platform job", () =>
     "host-managed-accounts",
     "host-managed-accounts-adopted",
     "host-managed-accounts-pool",
+    "host-managed-accounts-pool-actions",
     "host-managed-accounts-local",
     "host-managed-accounts-cloud",
     "host-managed-accounts-cloud-actions",

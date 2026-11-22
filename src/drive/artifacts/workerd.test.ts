@@ -6,8 +6,12 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
-import { largeHistory } from "./test/large-history.ts";
-import { backend, git, token } from "./test/backend.ts";
+import { largeGitMs, largeHistoryOnce, useLargeHistory } from "./test/large-history.ts";
+import { backend, boundedGit, git, token } from "./test/backend.ts";
+
+// The 48 MiB history takes seconds to build on an idle core and over a minute beside another
+// suite, so it is built once here, while the file loads, and each test copies it.
+const large = largeHistoryOnce();
 
 async function vaultRuntime(t: { after: (cleanup: () => Promise<void>) => void }) {
   const bundle = await build({
@@ -106,7 +110,7 @@ test(
   async (t) => {
     const server = await backend();
     t.after(() => server.close());
-    const { commits, packBytes } = largeHistory(server.root, server.bare);
+    const { commits, packBytes } = useLargeHistory(large, server.bare);
     assert.ok(packBytes > 45 * 1024 * 1024);
     const runtime = await vaultRuntime(t);
     const call = async (method: string, input: unknown) => {
@@ -135,7 +139,7 @@ test(
       assert.equal(note.content, git(server.bare, "show", `${at}:note.md`).toString());
     }
     assert.ok(server.control.uploadReplies.at(-1)!.length > 32 * 1024 * 1024);
-    git(server.bare, "fsck", "--full", "--strict");
+    boundedGit(largeGitMs, server.bare, "fsck", "--full", "--strict");
     t.diagnostic(`workerd recovered ${commits.length} commits from ${packBytes} packed bytes`);
   },
 );
