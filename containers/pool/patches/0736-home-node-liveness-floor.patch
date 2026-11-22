@@ -1,0 +1,82 @@
+diff --git a/internal/cluster/membership.go b/internal/cluster/membership.go
+index df547c5..176dec2 100644
+--- a/internal/cluster/membership.go
++++ b/internal/cluster/membership.go
+@@ -182,7 +182,7 @@ func (r *Repository) SubscribeMembership(ctx context.Context, request SubscribeM
+ 			State:                   MembershipStateActive,
+ 			ConnectedAt:             connectedAt,
+ 			LifecycleConfigRevision: lifecycle.Revision,
+-			CPAHeartbeatTimeout:     cfg.CPAHeartbeatTimeout,
++			CPAHeartbeatTimeout:     max(cfg.CPAHeartbeatTimeout, nodeLivenessFloor),
+ 			CPACancelBound:          cfg.CPACancelBound,
+ 			ReclaimGrace:            cfg.ReclaimGrace,
+ 			LastSeenAt:              dbNow,
+diff --git a/internal/cluster/node_liveness_floor.go b/internal/cluster/node_liveness_floor.go
+new file mode 100644
+index 0000000..82644a2
+--- /dev/null
++++ b/internal/cluster/node_liveness_floor.go
+@@ -0,0 +1,10 @@
++package cluster
++
++import "time"
++
++// nodeLivenessFloor is the shortest liveness timeout this Home stores on its own nodes'
++// memberships. Every Home's cleanup, including older Homes in the same cluster, fences a node by
++// the timeout stored on its membership. With the cluster default of 3 s, a few seconds of database
++// stall on this Home let any Home fence a node that is still serving. The cluster-wide setting
++// cannot change while nodes are connected, so this Home raises only its own memberships.
++const nodeLivenessFloor = 15 * time.Second
+diff --git a/internal/cluster/node_liveness_floor_test.go b/internal/cluster/node_liveness_floor_test.go
+new file mode 100644
+index 0000000..ac101ee
+--- /dev/null
++++ b/internal/cluster/node_liveness_floor_test.go
+@@ -0,0 +1,47 @@
++package cluster
++
++import (
++	"context"
++	"testing"
++	"time"
++)
++
++// staleOwnNode subscribes a node with the cluster's default 3 s liveness and backdates its last
++// liveness refresh by age.
++func staleOwnNode(t *testing.T, age time.Duration) (*Repository, HomeIncarnationID, CPANodeMembershipRecord) {
++	t.Helper()
++	ctx := context.Background()
++	repo, home, member := newQuiescenceMembership(t, ctx, "fp-liveness-floor")
++	if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", member.CertificateFingerprint).
++		Update("last_seen_at", time.Now().UTC().Add(-age)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	return repo, home, member
++}
++
++func TestNodeLivenessFloorIsStoredOnEveryNewMembership(t *testing.T) {
++	_, _, member := staleOwnNode(t, 0)
++	if member.CPAHeartbeatTimeout != nodeLivenessFloor {
++		t.Fatalf("membership stored %s, want the %s floor over the cluster's 3 s", member.CPAHeartbeatTimeout, nodeLivenessFloor)
++	}
++}
++
++func TestNodeLivenessFloorKeepsAShortStallFromFencingTheNode(t *testing.T) {
++	repo, home, member := staleOwnNode(t, nodeLivenessFloor/2)
++	if errCleanup := repo.CleanupStaleMemberships(context.Background(), home); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateActive {
++		t.Fatalf("a node stale for half the floor was fenced: state %q", state)
++	}
++}
++
++func TestNodeLivenessFloorStillFencesANodeStalePastIt(t *testing.T) {
++	repo, home, member := staleOwnNode(t, nodeLivenessFloor+5*time.Second)
++	if errCleanup := repo.CleanupStaleMemberships(context.Background(), home); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
++		t.Fatalf("a node stale past the floor was left active: state %q", state)
++	}
++}
