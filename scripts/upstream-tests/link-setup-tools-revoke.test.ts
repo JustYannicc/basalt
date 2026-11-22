@@ -142,6 +142,30 @@ test("an answer the host can't read, or a key that isn't the person's, deletes n
   assert.ok(await works(h, left.key));
 });
 
+test("a grant cleanup that keeps failing doesn't hold back a stuck revoke's key", async (t) => {
+  const h = await host(t);
+  const left = await linked(h, "Lost laptop");
+  await stuck(h, left);
+  // A live native grant the pass can't read fails its grant step on every pass.
+  const at = new Date();
+  await h.f.adapter.create({
+    model: "mcpGrant",
+    forceAllowId: true,
+    data: {
+      id: "native:unreadable",
+      userId: h.f.userId,
+      clientId: "",
+      resource: `${origin}/native`,
+      policy: "{}",
+      revoked: false,
+      createdAt: at,
+      updatedAt: at,
+    },
+  });
+  await assert.rejects(pass(h), "the grant step still reports its failure");
+  assert.equal(await works(h, left.key), false, "the tools key was deleted all the same");
+});
+
 test("a pass makes the same few pool calls however many healthy keys exist", async (t) => {
   const h = await host(t);
   const registry = await h.p.registry();

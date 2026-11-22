@@ -86,6 +86,7 @@ test("the host reads only link-setup computers whose person's revoke left a tool
   const restored = await linked(p, "key-restored");
   const pending = await linked(p, "key-pending");
   const revokedInRemoval = await linked(p, "key-revoked-in-removal");
+  const restoredThenRemoved = await linked(p, "key-restored-then-removed");
   const registry = await p.registry();
   // Access removal, not its person, ended this one; its tools are still the person's own.
   Object.assign(registry[removed.id]!, { state: "removed", removedFor: "access" });
@@ -99,6 +100,12 @@ test("the host reads only link-setup computers whose person's revoke left a tool
   });
   // Its person revoked it while access removal was pending, and removal then finished the row.
   Object.assign(registry[revokedInRemoval.id]!, { state: "removed", removedFor: "revoke" });
+  // Restored without history, then removed again: removal read its `revoking` as a revoke.
+  Object.assign(registry[restoredThenRemoved.id]!, {
+    state: "removed",
+    removedFor: "revoke",
+    restoredWithoutHistory: true,
+  });
   await p.storage.put("computer-registry-v1", registry);
 
   const listed = await leftovers(p);
@@ -201,6 +208,34 @@ test("one read returns at most a batch, however many computers the pool holds", 
   const second = await leftovers(p);
   assert.equal(second.length, 40 - toolsLeftoverBatch, "the next read takes the rest");
   assert.ok(second.every((left) => !first.some((done) => done.computer === left.computer)));
+});
+
+test("a revoke that stopped part-way is read before revokes Connect already finished", async () => {
+  const p = fixture();
+  const at = new Date(p.now()).toISOString();
+  const registry = await p.registry();
+  const row = (id: string, state: "revoking" | "revoked") => ({
+    id,
+    name: "Laptop",
+    user: member,
+    pool: pool.pool,
+    createdAt: at,
+    boundAt: at,
+    state,
+    keyId: 1,
+    toolsKeyId: `key-${id}`,
+    toolsHash: "hash",
+    firstModelRequestAt: null,
+    firstToolCallAt: null,
+    revokedAt: state === "revoked" ? at : null,
+  });
+  // Revokes an earlier release finished, which never recorded their key gone; their ids come first.
+  for (let index = 0; index < 60; index++) registry[`a-${index}`] = row(`a-${index}`, "revoked");
+  registry["z-stuck"] = row("z-stuck", "revoking");
+  await p.storage.put("computer-registry-v1", registry);
+  const first = await leftovers(p);
+  assert.equal(first.length, toolsLeftoverBatch);
+  assert.equal(first[0]?.computer, "z-stuck", "the stuck revoke doesn't wait behind the backlog");
 });
 
 test("only the tools host's own control assertion reads anything, and others learn nothing", async () => {
