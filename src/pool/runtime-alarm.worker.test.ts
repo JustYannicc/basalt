@@ -295,7 +295,7 @@ for (const color of ["blue", "green"] as const) {
     assert.equal(await store.alarmTarget(), undefined);
   });
 
-  test(`a ${color} abort whose destroy never answers leaves no alarm or alarm target`, async (context) => {
+  test(`a ${color} abort whose destroy reply is lost leaves no alarm or alarm target`, async (context) => {
     const started = await startedRuntime(color);
     context.after(started.cleanup);
     const { f, store, post } = started;
