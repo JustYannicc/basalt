@@ -31,7 +31,9 @@ test("the retained primary and two runtimes share load while primary reservation
     state = new RuntimeFleetState(memory, 4);
   await ready(state, 1);
   await ready(state, 2);
-  const reservations = await Promise.all(Array.from({ length: 6 }, () => state.acquire(100, true)));
+  const reservations = await Promise.all(
+    Array.from({ length: 6 }, () => state.acquire(100, "balanced")),
+  );
   assert.equal(reservations.filter((value) => value.kind === "primary").length, 2);
   assert.deepEqual(
     (await state.inspect()).map((row) => row.active),

@@ -44,6 +44,14 @@ import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
 import { pendingFields } from "../pending-failure.ts";
 import { recoveryPassMs } from "../runtime-slots/forced-restart-timing.ts";
 
+/**
+ * Once cells exist, ready cells take every model call and the root serves only when no cell can.
+ * The root's image is pinned, so it never gets Home's fixes, and any Home fences a peer node whose
+ * liveness is 3 s old: a burst holding the root's connections that long would refuse calls a
+ * cell could have served.
+ */
+export const fleetRouting = { primary: "last" } as const;
+
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
   endpoint(target: SlotTarget): RuntimeStub & HomePeerEndpoint;
@@ -268,7 +276,7 @@ export class PoolRuntimeFleet {
       enabled: () => this.enabled,
       changed: () => this.deps.ctx.waitUntil(this.schedule()),
       keepReady: (identity) => this.replacement.keepReady(identity),
-      balancePrimary: true,
+      primary: fleetRouting.primary,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
       primaryDistance: async () => (await this.deps.handoff.status())?.database,
