@@ -787,7 +787,23 @@ try {
           yield* Effect.promise(() => summary(report.summary));
           if (report.annotation) console.log(report.annotation);
         }
-        if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
+        if (command === "plan") {
+          // Names and types only, never a value: which bindings each updated Worker changes, and
+          // whether its rollback could force every changed secret. Read after the digest, from the
+          // plan alone; nothing the apply compares depends on it.
+          const changes = yield* Effect.promise(() => import("./binding-changes.ts"));
+          // A line that cannot be built must not change the plan's outcome, and its error can
+          // carry a value, so it is replaced by a fixed sentence.
+          const line = (() => {
+            try {
+              return changes.bindingChangesReport(snapshot.native, changes.forceListOf(policy));
+            } catch {
+              return "Binding changes per updated Worker: could not be listed for this plan.";
+            }
+          })();
+          yield* Effect.promise(() => summary(line));
+          return { snapshot, digest, planned: changedRows(snapshot) };
+        }
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
             new Error(
