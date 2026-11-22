@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The dashboard's web build writes no module location comments into its output. By default the bundler marks each bundled module with a `//#region <path>` comment, and a dependency's path runs through the store directory a fresh install creates, so the server build's chunks and their names, and the Dashboard Worker that bundles them, changed on every fresh install."
+    }
+  }
+}

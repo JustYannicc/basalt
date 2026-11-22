@@ -1,0 +1,11 @@
+{
+  "identity": "astro-dependency-scoped-ids",
+  "file": "0745-astro-dependency-scoped-ids.patch",
+  "content_sha256": "d1844e94198ffab256a9232840ddc0a5459e121a20760754e02c7d952ca7d183",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "astro-dependency-upgrade",
+  "requires": "A pinned Astro release names a component outside the project root independently of where the dependency store sits; remove after the store-location build proof passes without it."
+}
