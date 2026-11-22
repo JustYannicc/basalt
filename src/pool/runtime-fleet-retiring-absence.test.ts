@@ -9,5 +9,9 @@ test("a retiring cell whose provider absence never arrives leaves retiring withi
   const rows = await f.quiet(60 * 60_000);
   const row = rows.find((value) => value.target.slotId === cell.slotId);
   assert.equal(f.calls.retires, 1, "retirement began once");
-  assert.notEqual(row?.phase, "retiring", "still retiring after an hour with no bound and no reason");
+  assert.notEqual(
+    row?.phase,
+    "retiring",
+    "still retiring after an hour with no bound and no reason",
+  );
 });
