@@ -356,6 +356,23 @@ def _node_healthy(management_key: str) -> bool:
     return node_status == 200 and node_payload.get("status") == "ok"
 
 
+DATABASE_DISTANCE_MAX_MS = 3500
+
+
+def home_database_distance(management_key: str) -> int | None:
+    """Home's median round trip to the database over its own pool, or None when unmeasured."""
+    try:
+        status, payload = request_json(
+            f"{HOME_URL}/v8/management/database/distance", "GET", management_key, timeout=5
+        )
+    except Exception:
+        return None
+    rtt = payload.get("rtt_ms") if status == 200 else None
+    if type(rtt) is not int or not 1 <= rtt <= DATABASE_DISTANCE_MAX_MS:
+        return None
+    return rtt
+
+
 def check_liveness(management_key: str) -> bool:
     if not _node_healthy(management_key):
         return False
