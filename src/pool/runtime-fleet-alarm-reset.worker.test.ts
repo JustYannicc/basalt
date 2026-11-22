@@ -87,11 +87,9 @@ test(
     now += 1_000;
     await f.alarm();
     await f.settle();
-    assert.notEqual(
-      (await alarms.inspect()).homeDeadline,
-      null,
-      "Home has a deadline again while a membership pool is live",
-    );
+    const restored = (await alarms.inspect()).homeDeadline;
+    assert.notEqual(restored, null, "Home has a deadline again while a membership pool is live");
+    assert.ok(restored! <= now, "due at once: the cut pass already lost one renewal");
   },
 );
 

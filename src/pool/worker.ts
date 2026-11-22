@@ -928,13 +928,15 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const { homeDeadline, fleetDeadline } = await this.alarms.inspect();
     if (fleetDeadline === null) await this.fleet.reschedule();
     // With nothing selected, Home stays unarmed, as in `ensure()`: a pass inside the call that built
-    // the object would move the change revisions a view reads around its query.
+    // the object would move the change revisions a view reads around its query. A cut pass already
+    // lost one renewal against a 12 s lease, so a live pool's Home is due at once.
     if (
       homeDeadline === null &&
       !this.homeUpkeepTask &&
-      (await this.ctx.storage.get(slotSelectionKey)) !== undefined
+      (await this.ctx.storage.get(slotSelectionKey)) !== undefined &&
+      (await this.memberships.live())
     )
-      await this.memberships.reschedule();
+      await this.alarms.schedule("home", Date.now());
     await this.alarms.rearm();
   }
 
