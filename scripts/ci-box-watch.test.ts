@@ -118,13 +118,21 @@ test("a healthy box may hold each job until its own latest start that still ends
   assert.deepEqual(late.verdict.stuck, [1, 2]);
 });
 
-test("a job waiting behind this Check's own running box jobs is never cut off for holding", () => {
+test("a second-wave job behind this Check's own running box jobs is never cut off for holding", () => {
   // The box is working on this Check: the second wave waits behind it by design, however slow.
   const jobs = [job({ id: 1, status: "in_progress" }), job({ id: 2 })];
   const planned = { "job-1": first, "job-2": { minutes: 4, wave: 2 } as Planned };
   assert.deepEqual(watch(jobs, 60, 0, planned), { action: "wait" });
   // A box that is down still is: the down rule doesn't wait on the running jobs.
   assert.equal(watch(jobs, 60, 5, planned).action, "cancel");
+  // A first-wave job should have started at once: another Check or the box's budget holding it
+  // past its deadline is a stall, whatever else of this Check runs.
+  const held = [job({ id: 1, status: "in_progress" }), job({ id: 3 })];
+  const firstWave = { "job-1": first, "job-3": first };
+  assert.deepEqual(watch(held, 4.9, 0, firstWave), { action: "wait" });
+  const stalled = watch(held, 5, 0, firstWave);
+  assert.ok(stalled.action === "cancel");
+  assert.deepEqual(stalled.verdict.stuck, [3]);
 });
 
 test("each job's deadline counts from when GitHub queued it, not from select", () => {

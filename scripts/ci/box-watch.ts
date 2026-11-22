@@ -79,16 +79,16 @@ export function watchDecision(
     .filter((job): job is WatchedJob => !!job && job.onBox && notStarted.has(job.status));
   if (!missing.length && !stuck.length) return { action: "done" };
   // Each job's deadline counts from when it was queued: a busy GitHub queue for the jobs it needs
-  // delays it, the floor and the Check alike. While the box runs any of this Check's own jobs, a
-  // waiting one is held behind them by design, which is no stall.
+  // delays it, the floor and the Check alike. A second-wave job held behind this Check's own running
+  // box jobs waits by design; a first-wave one should have started at once, so its deadline holds.
   const working = input.jobs.some((job) => job.onBox && job.status === "in_progress");
-  const late = working
-    ? []
-    : stuck.filter((job) => {
-        const queued = job.createdAt ?? input.selectedAt;
-        const waited = (input.now - queued) / minute;
-        return !(waited < latestStart(input.planned[job.name]!, input.floorMinutes));
-      });
+  const late = stuck.filter((job) => {
+    const planned = input.planned[job.name]!;
+    if (working && planned.wave === 2) return false;
+    const queued = job.createdAt ?? input.selectedAt;
+    const waited = (input.now - queued) / minute;
+    return !(waited < latestStart(planned, input.floorMinutes));
+  });
   const down = stuck.length > 0 && input.downFor >= downMinutes;
   if (!down && !late.length) return { action: "wait" };
   return {
