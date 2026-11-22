@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-uncounted-account-presentation",
+  "file": "0680-uncounted-account-presentation.patch",
+  "content_sha256": "8b68e8cb8689a771301c9dda773634bea7332782c955dffe212361d943876e42",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

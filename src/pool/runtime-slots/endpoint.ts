@@ -1,4 +1,5 @@
 import { crashOwnedRuntime } from "../runtime-crash-owner.ts";
+import { resumeGone, resumeLayerPort, resumeRoute, toLayer } from "../stream-resume.ts";
 import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runtime-crash-cell.ts";
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
@@ -8,7 +9,8 @@ import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
 import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
-import { refuseRuntime } from "../runtime-route-diagnostic.ts";
+import { refuseRuntime, rememberRuntimeFailure } from "../runtime-route-diagnostic.ts";
+import { RuntimeHealthRefusalLog } from "./health-refusal-log.ts";
 import {
   SlotIdentity,
   SlotRefused,
@@ -44,7 +46,8 @@ import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
-import { admitRuntimeRestart } from "./restart-admission.ts";
+import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
+import { RuntimeForcedStop } from "./forced-stop.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -81,6 +84,8 @@ export class RuntimeEndpoint {
   private retirementAttempts = 0;
   private retirementMonitor: RuntimeRetirementMonitor;
   private options: EndpointOptions;
+  private forcedStop: RuntimeForcedStop;
+  private refusals = new RuntimeHealthRefusalLog();
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
   private modelLifetimes: RuntimeModelLifetimes;
@@ -113,6 +118,13 @@ export class RuntimeEndpoint {
     });
     this.wrap = wrap;
     this.options = options;
+    this.forcedStop = new RuntimeForcedStop({
+      ctx,
+      store: this.store,
+      activity: this.activity,
+      health: (identity, signal) => this.health(identity, signal),
+      readiness: (configuration, signal) => this.channel.health(configuration, signal),
+    });
   }
   private serialize<T>(work: () => Promise<T>): Promise<T> {
     const pending = this.queue.then(work);
@@ -263,6 +275,9 @@ export class RuntimeEndpoint {
         if (!record.witness) throw new SlotRefused("uncertain");
         return this.complete(target, signal);
       }
+      // A restart's launch witness replaces the record's; write it only over a confirmed exit.
+      if (record.authorization.kind === "restart" && !(await confirmedStopped(this.ctx)))
+        throw new SlotRefused("uncertain");
       await startRuntime(
         this.ctx,
         this.code,
@@ -276,6 +291,11 @@ export class RuntimeEndpoint {
       signal.throwIfAborted();
       return this.complete(target, signal);
     });
+  }
+  /** Stops this runtime's container when it is running but refusing; see `RuntimeForcedStop`. */
+  stopRefusing(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
+    this.bound(identity);
+    return this.serialize(() => this.forcedStop.stop(identity, refusingSince, signal));
   }
   abortStartup(intent: StartupStopIntent, signal: AbortSignal) {
     this.bound(intent.target);
@@ -326,19 +346,28 @@ export class RuntimeEndpoint {
     this.bound(target);
     return this.serialize(() => this.complete(target, signal));
   }
+  /** The front layer's advert from this container's latest readiness read (#1642). */
+  private resumeAdvert: PoolStatus["resume"];
   async health(identity: SlotIdentity, signal: AbortSignal, trace?: RuntimeReadTrace) {
+    let record: WitnessRecord | undefined;
+    let status: PoolStatus | undefined;
     try {
       this.bound(identity);
-      const { record, configuration } = await runtimeReadStep(trace, "identity", () =>
-        this.store.read(identity),
-      );
+      const read = await runtimeReadStep(trace, "identity", () => this.store.read(identity));
+      record = read.record;
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
-      const status = await this.channel.health(configuration, signal, trace);
+      const observed = await this.channel.health(read.configuration, signal, trace);
+      status = observed;
+      this.resumeAdvert = observed.resume;
+      const owned = read.record;
       return trace
-        ? await trace.run("health_identity", async () => this.checked(record, status))
-        : this.checked(record, status);
+        ? await trace.run("health_identity", async () => this.checked(owned, observed))
+        : this.checked(owned, observed);
     } catch (error) {
-      refuseRuntime("endpoint_identity", error);
+      rememberRuntimeFailure("endpoint_identity", error);
+      if (!signal.aborted)
+        this.refusals.report(identity, error, this.ctx.container?.running, record, status);
+      throw error;
     }
   }
   async warm(identity: SlotIdentity, signal: AbortSignal) {
@@ -462,7 +491,20 @@ export class RuntimeEndpoint {
       await this.channel.keepAlive();
       await this.health(identity, request.signal);
       request.signal.throwIfAborted();
-      const response = await this.channel.fetch(configuration, request, port);
+      // The front layer keeps a call's answer only while this container advertises the layer.
+      const routed = resumeRoute(request, port, { resume: this.resumeAdvert });
+      if (routed === "gone") {
+        release();
+        return resumeGone();
+      }
+      const response =
+        routed.port === resumeLayerPort
+          ? await toLayer(
+              routed.request,
+              (request, target) => this.channel.fetch(configuration, request, target),
+              () => this.ctx.container?.running === true,
+            )
+          : await this.channel.fetch(configuration, routed.request, routed.port);
       if (isModelLifetimePath(new URL(request.url).pathname))
         return this.modelLifetimes.control(identity, request, response, release);
       return this.wrap(response, {

@@ -165,7 +165,10 @@ export async function handleRuntimeHandoff(
         result = await fleet.replace(value.operationId, value.identity);
         break;
       case "inspect":
-        result = await handoff.slots.inspect();
+        result = { ...(await handoff.slots.inspect()), recovery: await handoff.recoveryState() };
+        break;
+      case "recovery-reset":
+        result = await handoff.resetRecovery();
         break;
       case "active-health":
         result = await handoff.activeHealth();
@@ -209,9 +212,15 @@ export async function handleRuntimeHandoff(
       case "fence":
         await handoff.slots.fence(value.identity);
         break;
-      case "unfence":
-        await handoff.slots.unfence(value.identity);
+      case "unfence": {
+        const unfenced = await handoff.unfence(value.identity);
+        // A slot handed back to recovery may meet a clock that already needs a person.
+        result =
+          unfenced.by === "recovery"
+            ? { ...unfenced, recovery: await handoff.recoveryState() }
+            : unfenced;
         break;
+      }
       case "peer-bootstrap":
         result = await handoff.bootstrapPeer(value, request.signal);
         break;

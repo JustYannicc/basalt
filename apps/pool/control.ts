@@ -11,7 +11,13 @@ import { poolOrigin } from "./deployment.ts";
 
 export type Result<T> =
   | { readonly ok: true; readonly value: T }
-  | { readonly ok: false; readonly error: ControlErrorCode; readonly message: string };
+  | {
+      readonly ok: false;
+      readonly error: ControlErrorCode;
+      readonly message: string;
+      /** The HTTP status of an answer that named no error itself: it tells which layer answered. */
+      readonly status?: number;
+    };
 
 export async function control<T>(
   ctx: Caller,
@@ -46,5 +52,6 @@ export async function control<T>(
     ok: false,
     error: "backend_unavailable",
     message: "The pool didn't answer. Try again in a moment.",
+    status: response.status,
   };
 }

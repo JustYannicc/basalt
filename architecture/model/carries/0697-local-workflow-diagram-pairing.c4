@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The local workflow diagram scenario waits until the paired browser shows the Apps heading before navigating to the app's workflows, so the pairing exchange has set the session cookie first."
+    }
+  }
+}

@@ -16,6 +16,17 @@ import {
 // A refusal body is a fixed code; anything larger or unknown is never copied into evidence.
 const refusalBodyLimit = 2048;
 const providerCodes = new Set(["provider_observation_refused", "provider_fetch_failed"]);
+const providerRefusal = "runtime-provider-observation-";
+
+/** The Worker's closed cause when a provider-observe was refused with its failure header. */
+export function providerObservationCause(error: unknown) {
+  if (!(error instanceof BarrierRefusal) || !error.reason.startsWith(providerRefusal))
+    return undefined;
+  const cause = error.reason.slice(providerRefusal.length);
+  return cause === "provider_observation_refused" || cause === "provider_fetch_failed"
+    ? cause
+    : undefined;
+}
 
 type Action<T> = T extends unknown ? Omit<T, "controllerCode" | "at" | "expiresAt"> : never;
 export type RuntimeCommandAction = Action<RuntimeHandoffCommand>;
@@ -42,21 +53,29 @@ export async function sendRuntimeCommand(
   signal?: AbortSignal,
   dispatched?: (requestedAt: number) => void,
   received?: (receivedAt: number) => void,
+  // A mutating command keeps 15 s. A read may wait longer: the Worker caps its own provider read at
+  // 15 s, so a shorter client limit can give up before the Worker's named answer arrives.
+  limitMs = 15_000,
 ) {
   const bridge = await openPoolOperations(target);
+  // A timer rather than AbortSignal.timeout, so the limit is exactly the caller's.
+  const limit = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const frozen = typeof command === "function" ? await command() : command;
     const envelope = await signEnvelope(signingKey, runtimeHandoffCommandPrefix, frozen);
     assertCurrent(frozen);
     dispatched?.(performance.now());
+    timer = setTimeout(
+      () => limit.abort(new DOMException("The command's time limit passed", "TimeoutError")),
+      limitMs,
+    );
     const response = await bridge.service.fetch(
       new Request(`http://pool-operations${runtimeHandoffPath}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ envelope }),
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(15_000)])
-          : AbortSignal.timeout(15_000),
+        signal: signal ? AbortSignal.any([signal, limit.signal]) : limit.signal,
       }),
     );
     if (response.status !== 200) {
@@ -68,7 +87,7 @@ export async function sendRuntimeCommand(
       const reason =
         providerCause === "provider_observation_refused" ||
         providerCause === "provider_fetch_failed"
-          ? `runtime-provider-observation-${providerCause}`
+          ? `${providerRefusal}${providerCause}`
           : "runtime-handoff-response-refused";
       const refusal = provisioningRefusal(reason, "handoff.response.status", 200, response.status);
       // Keep the server's closed refusal vocabulary, so a refused command says why in failure.json.
@@ -82,6 +101,8 @@ export async function sendRuntimeCommand(
         changed: [
           ...delta.changed,
           { path: "handoff.command.action", old: null, new: frozen.action },
+          // The status as a number, so a public line can say which answer it was.
+          { path: "handoff.response.http", old: null, new: response.status },
           { path: "handoff.response.step", old: null, new: detail.step },
           { path: "handoff.response.reason", old: null, new: detail.reason },
           { path: "handoff.response.code", old: null, new: detail.code },
@@ -92,6 +113,7 @@ export async function sendRuntimeCommand(
     received?.(performance.now());
     return body;
   } finally {
+    clearTimeout(timer);
     await bridge.close();
   }
 }

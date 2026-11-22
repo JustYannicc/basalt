@@ -1,4 +1,5 @@
 import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { resumeGone, stampResumeTarget } from "../stream-resume.ts";
 import { RuntimeCrash } from "../runtime-crash.ts";
 import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
@@ -40,6 +41,16 @@ import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
 import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
+import { pendingFields } from "../pending-failure.ts";
+import { recoveryPassMs } from "../runtime-slots/forced-restart-timing.ts";
+
+/**
+ * Once cells exist, ready cells take every model call and the root serves only when no cell can.
+ * The root's image is pinned, so it never gets Home's fixes, and any Home fences a peer node whose
+ * liveness is 3 s old: a burst holding the root's connections that long would refuse calls a
+ * cell could have served.
+ */
+export const fleetRouting = { primary: "last" } as const;
 
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
@@ -265,7 +276,7 @@ export class PoolRuntimeFleet {
       enabled: () => this.enabled,
       changed: () => this.deps.ctx.waitUntil(this.schedule()),
       keepReady: (identity) => this.replacement.keepReady(identity),
-      balancePrimary: true,
+      primary: fleetRouting.primary,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
       primaryDistance: async () => (await this.deps.handoff.status())?.database,
@@ -394,7 +405,17 @@ export class PoolRuntimeFleet {
         () => fleet.recoverPrimary(),
       );
     }
-    return forwardRecoverably(request, legacy, beforeDispatch, () => this.deps.handoff.supervise());
+    return stampResumeTarget(
+      await forwardRecoverably(request, legacy, beforeDispatch, () =>
+        this.deps.handoff.supervise(),
+      ),
+      { kind: "primary" },
+    );
+  }
+  /** A resume of a fleet runtime's answer; without a fleet there is none to resume. */
+  async resume(identity: SlotIdentity, request: Request) {
+    const fleet = await this.fleet();
+    return fleet ? fleet.resume(identity, request) : resumeGone();
   }
   async recoverAdmission(signal: AbortSignal) {
     if (!(await this.deps.handoff.selected())) return false;
@@ -421,7 +442,7 @@ export class PoolRuntimeFleet {
     if (!this.deps.schedule) return;
     const permission = await this.configuration.inspect();
     const now = Date.now();
-    if (await this.deps.handoff.selected()) await this.deps.schedule(now + 2_000);
+    if (await this.deps.handoff.selected()) await this.deps.schedule(now + recoveryPassMs);
     if (!permission) return;
     const deadlines = (await this.state.inspect())
       .map((row) => {
@@ -461,8 +482,9 @@ export class PoolRuntimeFleet {
   async upkeep() {
     try {
       this.deps.ctx.waitUntil(
-        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(() =>
-          console.error("POOL_SELECTED_RECOVERY_PENDING"),
+        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(
+          (error: unknown) =>
+            console.error("POOL_SELECTED_RECOVERY_PENDING", JSON.stringify(pendingFields(error))),
         ),
       );
       await this.primaryHeadroom();

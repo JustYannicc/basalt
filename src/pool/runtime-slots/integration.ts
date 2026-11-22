@@ -1,4 +1,5 @@
 import { RuntimeSlotRecovery } from "./recovery.ts";
+import { UnservingClock } from "./unserving-clock.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
 import { observeUnattestedAdoption } from "./adoption-observation.ts";
@@ -17,6 +18,7 @@ import { BoundSlotDriver, runtimeRequest, type RuntimeStub } from "./transport.t
 import { RuntimeEndpoint, type EndpointEnvironment, type EndpointOptions } from "./endpoint.ts";
 import {
   SlotRefused,
+  awaitsProof,
   type ControllerCode,
   type SlotIdentity,
   type SlotTarget,
@@ -154,6 +156,13 @@ export class RuntimeHandoff {
   available() {
     return this.recovery?.available() ?? true;
   }
+  /** The forced-restart clock, readable while the runtime refuses: "needs a person" shows here. */
+  recoveryState() {
+    return new UnservingClock(this.storage).inspect();
+  }
+  resetRecovery() {
+    return new UnservingClock(this.storage).reset();
+  }
   supervise() {
     if (!this.options.recovery) return Promise.resolve();
     this.recovery ??= new RuntimeSlotRecovery({
@@ -188,6 +197,7 @@ export class RuntimeHandoff {
   async status(signal = AbortSignal.timeout(2_000)) {
     const identity = await this.selected();
     if (!identity) return undefined;
+    await this.assertProven();
     const health = await this.driver.health(identity, signal);
     return {
       boot_id: identity.bootId,
@@ -199,9 +209,15 @@ export class RuntimeHandoff {
   databasePool() {
     return this.options.databasePool?.() ?? null;
   }
+  /** Nothing reports a slot an unfence handed back as serving until it is proven. */
+  private async assertProven() {
+    if (awaitsProof((await this.storage.inspect()).selection?.active))
+      throw new SlotRefused("selection");
+  }
   async activeHealth() {
     const identity = await this.selected();
     if (!identity) throw new SlotRefused("selection");
+    await this.assertProven();
     const health = await this.driver.health(identity, AbortSignal.timeout(2_000));
     return {
       identity,
@@ -319,6 +335,17 @@ export class RuntimeHandoff {
       throw new SlotRefused("selection");
     return this.legacyEndpoint.bootstrapPeer(input, signal);
   }
+  /**
+   * A fence stopped the fleet alarm that runs recovery, so an unfence arms it again. Armed before
+   * the unfence commits too, so an object reset between the two still runs recovery; a pass under
+   * a fence that holds refuses and arms nothing further.
+   */
+  async unfence(identity: SlotIdentity) {
+    await this.options.selectedChanged?.();
+    const unfenced = await this.slots.unfence(identity);
+    await this.options.selectedChanged?.();
+    return unfenced;
+  }
   async promote(intent: PromotionIntent, envelope: string) {
     const proof = await this.authority.promotion(intent, envelope);
     await this.driver.attest(proof.target, envelope);
@@ -346,6 +373,7 @@ export class RuntimeHandoff {
     return this.choose(
       () => legacy(),
       async (identity) => {
+        await this.assertProven();
         const health = await this.driver.warm(identity, AbortSignal.timeout(2_000));
         return {
           boot_id: identity.bootId,
@@ -377,6 +405,7 @@ export class RuntimeHandoff {
     return this.choose(
       () => legacy(),
       async (identity) => {
+        await this.assertProven();
         const observed = Schema.decodeUnknownSync(Schema.Struct({ kind: Schema.String }))(
           await this.driver.witness(identity),
         );
@@ -460,11 +489,13 @@ export class RuntimeHandoff {
   ) {
     const selected = await this.selected();
     if (!selected) throw new SlotRefused("selection");
+    await this.assertProven();
     await this.driver.native(selected, policy, signal);
   }
   async probeFetch(request: Request, port: 8318 | 8327) {
     const selected = await this.selected();
     if (!selected) throw new SlotRefused("selection");
+    await this.assertProven();
     return this.driver.probeFetch(selected, request, port);
   }
 }

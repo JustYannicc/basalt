@@ -2,6 +2,7 @@ import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import * as Planetscale from "alchemy/Planetscale";
 import { adopt } from "alchemy/AdoptPolicy";
+import type { Input } from "alchemy/Input";
 import { retain } from "alchemy/RemovalPolicy";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
@@ -10,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import { poolDatabase, poolDatabaseUrl, previewPoolDatabaseBranch } from "./database-settings.ts";
 import { poolDatabaseInputs } from "./model-history/sources.ts";
 import { databasePoolBudget } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts";
-import { productionDatabaseMigration } from "../../.upstream/apps/hosted/cloud/src/infrastructure/database.ts";
 import { postgresUrl } from "../../.upstream/apps/hosted/cloud/src/infrastructure/preview-database.ts";
 
 /** A logical database inside the tools service's existing PlanetScale cluster. */
@@ -92,37 +92,12 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
         ),
         isPreview ? previewPoolDatabaseBranch(stageName!) : "main",
       );
-  const migration =
-    isPreview || globalThis.__ALCHEMY_RUNTIME__
-      ? undefined
-      : (yield* productionDatabaseMigration).migrations;
-  const script = fileURLToPath(new URL("../../scripts/ensure-pool-database.ts", import.meta.url));
-  const ready = yield* Command.Exec("PoolDatabase", {
-    // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.
-    command: `node ${basename(script)}`,
-    cwd: dirname(script),
-    env: {
-      ...(migration
-        ? { DATABASE_MIGRATIONS_READY: migration.hash.pipe(Output.map(() => "ready")) }
-        : {}),
-      ...(budget
-        ? { DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")) }
-        : {}),
-      POOL_DATABASE_ADMIN_URL: admin.connectionUrl,
-      // `name` is PlanetScale's display name; the Postgres role that logs in is `username`.
-      POOL_DATABASE_RUNTIME_ROLE: runtime.username,
-    },
-    // The pool Worker and, on test stages, its database connection read this command's outcome.
-    // A plan cannot know the outcome of a command that runs on every plan, so they would plan as
-    // updates forever. Keyed on what the command reads, it runs when that changes, on every stage.
-    memo: poolDatabaseInputs,
-    // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
-    // exits with the step it failed at. This outer limit only catches a script that cannot exit.
-    timeout: "3 minutes",
+  const readyHash = yield* poolDatabaseReadiness({
+    adminUrl: admin.connectionUrl,
+    // `name` is PlanetScale's display name; the Postgres role that logs in is `username`.
+    runtimeRole: runtime.username,
+    budget,
   });
-  const readyHash = Output.all(ready.hash, budget?.hash ?? ready.hash).pipe(
-    Output.map(() => "ready"),
-  );
   return {
     adminUrl: admin.connectionUrl,
     runtimeRole: runtime.username,
@@ -138,3 +113,43 @@ export const poolDatabaseInfrastructure = Effect.gen(function* () {
     ).pipe(Output.map((origin) => ({ ...origin, database: poolDatabase.name }))),
   };
 });
+
+/**
+ * The pool database command, and the readiness value the pool Worker and, on test stages, its
+ * database connection read from it. It waits on the pool size command, which sets the connection
+ * budget it provisions within, and on nothing else that runs at deploy time: the tools migration
+ * re-runs whenever a hosted source changes, and waiting on it would leave this command's outcome,
+ * and so the pool Worker, unknown at plan time on nearly every release. The command writes only the
+ * cluster's role and database catalogs and the pool's own database, never the tools schema, under
+ * an advisory lock the migration never takes; the pool Worker reaches tools data only through the
+ * tools Worker, which waits on that migration itself.
+ */
+export const poolDatabaseReadiness = (inputs: {
+  adminUrl: Input<Redacted.Redacted<string>>;
+  runtimeRole: Input<string>;
+  budget: { readonly hash: Output.Output<unknown, never> } | undefined;
+}) =>
+  Effect.gen(function* () {
+    const { budget } = inputs;
+    const script = fileURLToPath(new URL("../../scripts/ensure-pool-database.ts", import.meta.url));
+    const ready = yield* Command.Exec("PoolDatabase", {
+      // Alchemy splits the command on whitespace without a shell, so quotes would reach node literally.
+      command: `node ${basename(script)}`,
+      cwd: dirname(script),
+      env: {
+        ...(budget
+          ? { DATABASE_POOL_BUDGET_READY: budget.hash.pipe(Output.map(() => "ready")) }
+          : {}),
+        POOL_DATABASE_ADMIN_URL: inputs.adminUrl,
+        POOL_DATABASE_RUNTIME_ROLE: inputs.runtimeRole,
+      },
+      // The pool Worker and, on test stages, its database connection read this command's outcome.
+      // A plan cannot know the outcome of a command that runs on every plan, so they would plan as
+      // updates forever. Keyed on what the command reads, it runs when that changes, on every stage.
+      memo: poolDatabaseInputs,
+      // The script bounds itself at 132s (worstCaseMs in scripts/pool-database-provisioning.ts) and
+      // exits with the step it failed at. This outer limit only catches a script that cannot exit.
+      timeout: "3 minutes",
+    });
+    return Output.all(ready.hash, budget?.hash ?? ready.hash).pipe(Output.map(() => "ready"));
+  });
