@@ -63,3 +63,44 @@ class CleanupTests(unittest.TestCase):
         self.assertLessEqual(clock.now, 180)
         self.assertTrue(all(until == 180 for _, _, until in observed))
         self.assertIsNone(current_deadline())
+
+
+class OrdinaryStopTests(unittest.TestCase):
+    """A stop outside any recovery episode, as a deploy's SIGTERM arrives on a quiet pool."""
+
+    def test_children_that_ignore_sigterm_are_killed_at_fifteen_seconds(self):
+        clock = Clock()
+        waits = []
+        killed = []
+        children = []
+        for name in ("home", "node"):
+            state = {"killed": False}
+
+            def wait(timeout, state=state, name=name):
+                waits.append((name, clock.now, timeout))
+                if not state["killed"]:
+                    clock.now += timeout
+                    raise subprocess.TimeoutExpired(name, timeout)
+                return -9
+
+            def kill(state=state, name=name):
+                state["killed"] = True
+                killed.append((name, clock.now))
+
+            children.append(
+                SimpleNamespace(
+                    process=SimpleNamespace(
+                        poll=lambda state=state: -9 if state["killed"] else None,
+                        terminate=lambda: None,
+                        kill=kill,
+                        wait=wait,
+                    )
+                )
+            )
+        with patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)):
+            supervisor.terminate_children(children)
+        self.assertIsNone(current_deadline())
+        self.assertEqual(waits[:2], [("home", 0.0, 15.0), ("node", 15.0, 0)])
+        self.assertEqual(killed, [("home", 15.0), ("node", 15.0)])
+        self.assertEqual([timeout for _, _, timeout in waits[2:]], [1, 1])
+        self.assertLessEqual(clock.now, 16.0)
