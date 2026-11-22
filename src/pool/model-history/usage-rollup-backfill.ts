@@ -9,13 +9,11 @@ export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v2";
 /** The most write-ahead log one backfill call may add before it stops at an hour boundary. */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
- * How long one hour's recompute may hold the pool once it has the lock. A writer that arrives then
- * waits this plus the commit, which no timeout bounds; at least 200 ms of the writers' 500 ms stay
- * for it. An approval may raise it to 300 ms, never past it. An hour slower three times in a row
- * stops the run, naming it.
+ * How long one hour's recompute may hold the pool once the backfill has it. A writer that arrives
+ * then waits this, one round trip and the commit, which no timeout bounds, inside its own 500 ms.
+ * There is no raise: a hour slower three times in a row stops the run, naming it, for a person.
  */
 export const usageRollupHourLimitMs = 150;
-export const usageRollupHourLimitMaxMs = 300;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -150,18 +148,28 @@ export async function runUsageRollup(
         break;
       }
       // A cold cache can make one attempt slow; three in a row mean the hour itself is too dense.
-      for (let attempt = 1; ; attempt++) {
+      // A writer holding the pool makes the backfill step aside; five refusals in a row stop it.
+      let slowAttempts = 0,
+        refused = 0;
+      for (;;) {
         await db.query("BEGIN");
         try {
-          // The pool's lock first, under a wait below the writers' 500 ms, so a busy pool's writers
-          // win; then the hour's own limit applies to the recompute alone.
-          await db.query(
-            "SELECT set_config('lock_timeout','200ms',true),set_config('statement_timeout','5s',true),set_config('TimeZone','UTC',true)",
+          // A try-lock never queues, so no writer ever waits behind a backfill that is itself waiting.
+          // Once held, the pool is held for the recompute and the commit only.
+          const locked = await db.query(
+            `SELECT set_config('statement_timeout',$2,true),set_config('TimeZone','UTC',true),
+              pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1)) AS locked`,
+            [item.pool, `${hourLimitMs}ms`],
           );
-          await db.query(`SELECT pg_advisory_xact_lock(${usageRollupLockClass},hashtext($1))`, [
-            item.pool,
-          ]);
-          await db.query("SELECT set_config('statement_timeout',$1,true)", [`${hourLimitMs}ms`]);
+          if (locked.rows[0]?.locked !== true) {
+            await db.query("ROLLBACK");
+            if (++refused >= 5) {
+              stop = "lock";
+              break hours;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            continue;
+          }
           const written = await db.query(
             "SELECT basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour') AS groups",
             [item.pool, at],
@@ -174,12 +182,7 @@ export async function runUsageRollup(
           await db.query("ROLLBACK").catch(() => {});
           const code =
             typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-          // A writer held the pool's lock; leave this hour for the next call.
-          if (code === "55P03") {
-            stop = "lock";
-            break hours;
-          }
-          if (code === "57014" && attempt < 3) continue;
+          if (code === "57014" && ++slowAttempts < 3) continue;
           if (code === "57014") {
             stop = "slow_hour";
             slowHour = at;
@@ -259,16 +262,8 @@ export async function handleUsageRollupOperation(request: Request, db: HistoryDa
     walBudget > usageRollupWalPerCall
   )
     return new Response(null, { status: 400 });
-  // A person may approve a longer hour, never past what writers wait for.
-  const hourLimit = approval.hourLimitMs ?? usageRollupHourLimitMs;
-  if (
-    typeof hourLimit !== "number" ||
-    !Number.isSafeInteger(hourLimit) ||
-    hourLimit < usageRollupHourLimitMs ||
-    hourLimit > usageRollupHourLimitMaxMs
-  )
-    return new Response(null, { status: 400 });
-  const result = await runUsageRollup(db, plan, 12_000, undefined, walBudget, hourLimit);
+  if (approval.hourLimitMs !== undefined) return new Response(null, { status: 400 });
+  const result = await runUsageRollup(db, plan, 12_000, undefined, walBudget);
   return Response.json(
     { ...result, version: historyUsageRollupBackfillVersion, digest: approval.digest },
     { headers },

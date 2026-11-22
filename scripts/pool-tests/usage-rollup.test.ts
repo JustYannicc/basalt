@@ -183,13 +183,13 @@ test("the operator endpoint dry-runs without writes, refuses a changed plan, and
       })),
     };
     assert.equal((await post({ go: true, plan: tampered, digest: dry.digest })).status, 409);
-    for (const hourLimitMs of [149, 301, 5_000, "200"])
+    for (const hourLimitMs of [149, 150, 300, "200"])
       assert.equal(
         (await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs })).status,
         400,
       );
     const applied = (await (
-      await post({ go: true, plan: dry.plan, digest: dry.digest, hourLimitMs: 300 })
+      await post({ go: true, plan: dry.plan, digest: dry.digest })
     ).json()) as {
       status: string;
       pools: { groupsInWindow?: number; groupBound?: number }[];
@@ -241,6 +241,75 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
     assert.ok(typeof slow.slowHour === "string");
     const resumed = await runUsageRollup(f.db, plan, 60_000);
     assert.equal(resumed.status, "complete");
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("writers on the 500 ms lock timeout never fail while the backfill runs between them", async () => {
+  await seriesFixture(async (f) => {
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    for (let hour = 0; hour < 48; hour += 8)
+      await f.insert(...rows(8, 20, new Date(Date.UTC(2026, 0, 1, hour)).toISOString()));
+    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    const { plan } = await planUsageRollup(f.db);
+    const client = async () => {
+      const c = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
+      await c.connect();
+      await c.query(`SET search_path TO ${f.schema}`);
+      await c.query("SET lock_timeout = '500ms'");
+      return c;
+    };
+    const holder = await client();
+    const quick = await client();
+    let running = true,
+      slowest = 0,
+      written = 0;
+    try {
+      let n = 0;
+      // One writer keeps its transaction, and the pool's shared lock, open 150 ms at a time.
+      const holding = (async () => {
+        while (running) {
+          await holder.query("BEGIN");
+          await insertRequests(holder, [
+            await f.row({
+              timestamp: timestamp(new Date(Date.UTC(2026, 0, 1, n++ % 48, 30)).toISOString()),
+            }),
+          ]);
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          await holder.query("COMMIT");
+          written++;
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        }
+      })();
+      // Another inserts as fast as it can; any wait past 500 ms fails it.
+      const racing = (async () => {
+        while (running) {
+          const started = performance.now();
+          await insertRequests(quick, [
+            await f.row({
+              timestamp: timestamp(new Date(Date.UTC(2026, 0, 1, n++ % 48, 40)).toISOString()),
+            }),
+          ]);
+          slowest = Math.max(slowest, performance.now() - started);
+          written++;
+        }
+      })();
+      let calls = 0;
+      for (;;) {
+        const result = await runUsageRollup(f.db, plan, 2_000);
+        if (result.status === "complete" || ++calls > 500) break;
+      }
+      running = false;
+      await Promise.all([holding, racing]);
+      assert.ok(calls <= 500, "the backfill finished between the writers");
+      assert.ok(slowest < 500, `the quick writer waited ${Math.round(slowest)} ms`);
+      assert.ok(written > 0);
+    } finally {
+      running = false;
+      await holder.query("ROLLBACK").catch(() => {});
+      await holder.end();
+      await quick.end();
+    }
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });
 });

@@ -23,7 +23,6 @@ import {
 import {
   historyUsageRollupBackfillVersion,
   historyUsageRollupPath,
-  usageRollupHourLimitMaxMs,
   usageRollupHourLimitMs,
   usageRollupWalPerCall,
 } from "../src/pool/model-history/usage-rollup-backfill.ts";
@@ -73,7 +72,6 @@ export function historyOperatorOptions(args: string[]) {
       apply: { type: "boolean" },
       go: { type: "boolean" },
       "readers-ready": { type: "string" },
-      "hour-limit-ms": { type: "string" },
     },
   });
   const operation = values.operation ?? "schema";
@@ -91,12 +89,7 @@ export function historyOperatorOptions(args: string[]) {
     (operation === "journal-activation" &&
       values.apply === true &&
       values["readers-ready"] !== historyJournalReaderVersion) ||
-    Boolean(values.apply) !== Boolean(values.go) ||
-    (values["hour-limit-ms"] !== undefined &&
-      (operation !== "usage-rollup" ||
-        !/^\d+$/.test(values["hour-limit-ms"]) ||
-        Number(values["hour-limit-ms"]) < usageRollupHourLimitMs ||
-        Number(values["hour-limit-ms"]) > usageRollupHourLimitMaxMs))
+    Boolean(values.apply) !== Boolean(values.go)
   )
     throw new Error(
       "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation|usage-rollup] [--apply --go] [--readers-ready checkpoint-count-v1]",
@@ -107,16 +100,12 @@ export function historyOperatorOptions(args: string[]) {
     operation,
     apply: values.apply === true,
     readersReady: values["readers-ready"],
-    ...(values["hour-limit-ms"] === undefined
-      ? {}
-      : { hourLimitMs: Number(values["hour-limit-ms"]) }),
   } satisfies {
     worker: string;
     plan: string;
     operation: "schema" | "backfill" | "journal-activation" | "usage-rollup";
     apply: boolean;
     readersReady?: string;
-    hourLimitMs?: number;
   };
 }
 
@@ -368,13 +357,7 @@ export async function runHistoryOperator(
             ? {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  ...approval,
-                  go: true,
-                  ...(options.hourLimitMs === undefined
-                    ? {}
-                    : { hourLimitMs: options.hourLimitMs }),
-                }),
+                body: JSON.stringify({ ...approval, go: true }),
               }
             : {},
         ),
@@ -416,7 +399,7 @@ export async function runHistoryOperator(
         console.error(JSON.stringify({ run, stopped: report.stopped, walBytes: wal, pools }));
         if (report.stopped === "slow_hour")
           throw new Error(
-            `Usage rollup stopped: hour ${String(report.slowHour)} took longer than its ${options.hourLimitMs ?? usageRollupHourLimitMs} ms limit three times; rerun with --hour-limit-ms up to ${usageRollupHourLimitMaxMs}, or decide how to recompute it`,
+            `Usage rollup stopped: hour ${String(report.slowHour)} took longer than its ${usageRollupHourLimitMs} ms limit three times; a person decides how to recompute it`,
           );
         if (wal >= usageRollupWalTotal)
           throw new Error(
@@ -436,7 +419,6 @@ export async function runHistoryOperator(
                 ...approval,
                 go: true,
                 walBudgetBytes: Math.min(usageRollupWalPerCall, usageRollupWalTotal - wal),
-                ...(options.hourLimitMs === undefined ? {} : { hourLimitMs: options.hourLimitMs }),
               }),
             }),
           ),
