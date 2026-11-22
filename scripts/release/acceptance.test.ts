@@ -565,7 +565,7 @@ test("acceptance takes the first reviewed model the catalog lists, never the cat
   const live = await pool({ models: catalog22Nov, refuse: ["claude-3-5-haiku-20241022"] });
   try {
     const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
-    assert.equal(result.passed, true, result.cause);
+    assert.equal(result.passed, true, String(result.cause));
     assert.deepEqual([...new Set(live.asked())], ["claude-opus-5-5"]);
   } finally {
     live.close();
