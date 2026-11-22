@@ -1,6 +1,10 @@
 import { Schema } from "effect";
 import { SlotIdentity } from "./runtime-slots/contract.ts";
-import { rememberRuntimeFailure, retainEndpointRequestId } from "./runtime-route-diagnostic.ts";
+import {
+  refuseRuntime,
+  rememberRuntimeFailure,
+  retainEndpointRequestId,
+} from "./runtime-route-diagnostic.ts";
 
 /**
  * Resumable model streams, contract v1 (issue #1642): the container's front layer keeps a call's
@@ -168,10 +172,18 @@ export async function toLayer(
     rememberRuntimeFailure("resume_layer", error);
     throw error;
   }
+  const upstream = answer.status === 502 ? answer.headers.get(streamResumeUpstreamHeader) : null;
   // The layer couldn't reach the node, so the node saw nothing: the node's port answers as today.
-  if (answer.status === 502 && answer.headers.get(streamResumeUpstreamHeader) === "unreachable") {
+  if (upstream === "unreachable") {
     void answer.body?.cancel().catch(() => {});
     return toNode();
+  }
+  // The node took the call and failed before answering: its own failure, as on its port, and
+  // never sent again, since it may have started the call.
+  if (upstream === "failed") {
+    void answer.body?.cancel().catch(() => {});
+    void spare.body?.cancel().catch(() => {});
+    refuseRuntime("port_dispatch", new Error("Pool node failed before answering"));
   }
   void spare.body?.cancel().catch(() => {});
   return answer;
