@@ -24,5 +24,5 @@ test("every release job with a capture key also receives its configured region",
         expect(scope!.POSTHOG_HOST, `${name}:${job}`).toBe("${{ secrets.POSTHOG_HOST }}");
     }
   }
-  expect(releases.sort()).toEqual(["release.yml:release"]);
+  expect(releases.sort()).toEqual(["production.yml:production", "release.yml:release"]);
 });
