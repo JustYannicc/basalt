@@ -164,8 +164,8 @@ jobs:
           python3 scripts/cpa-pipeline-guard.py "${args[@]}"
   client-connection:
     needs: [select, long-started]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'client-connection') && needs.select.outputs.box_label || 'ubuntu-latest' }}
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -1285,7 +1285,7 @@ jobs:
   production-ops-identity:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'production-ops-identity')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), format('production-ops-identity:{0}', matrix.scope)) && needs.select.outputs.box_label || 'ubuntu-latest' }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -2181,7 +2181,7 @@ jobs:
           if-no-files-found: warn
   browser-install:
     needs: [select, long-started]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && contains(fromJSON(needs.select.outputs.box_jobs), 'browser-install') && needs.select.outputs.box_label || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -2567,6 +2567,9 @@ jobs:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'upstream-contracts')
     runs-on: ubuntu-latest
+    # About 2x its slowest measured hosted run (11.3 minutes), so a hung run never holds a runner
+    # for GitHub's default six hours.
+    timeout-minutes: 25
     services:
       postgres:
         image: postgres:17.7-alpine
