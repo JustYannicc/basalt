@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
-import { leakedStreamsMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import {
+  auditDeferralMs,
+  leakedStreamsMs,
+  unservingBoundMs,
+} from "./runtime-slots/forced-restart-timing.ts";
+import { auditDeadlineMs } from "./runtime-slots/audit-probe.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 
@@ -387,6 +392,55 @@ test(
     advance(10_000);
     await pass(f);
     assert.deepEqual(stopPaths(), ["graceful_exit"]);
+    await pass(f);
+    assert.equal(await serves(f), true);
+  },
+);
+
+/**
+ * The pinned root's shape when only its node-list audit misses 2 s on a slow database: readiness
+ * refuses this boot with a prompt 503, the node and Home answer their database-free health, and
+ * Home's node listing answers, slowly.
+ */
+function slowAuditOnly(f: Fixture) {
+  const boot = f.old.identity().bootId;
+  f.old.hooks.health = async () =>
+    f.old.identity().bootId === boot
+      ? Response.json({ boot_id: boot, started_at: "fixture-started" }, { status: 503 })
+      : undefined;
+  const model = f.old.hooks.model;
+  f.old.hooks.model = async (request) =>
+    new URL(request.url).pathname === "/healthz" ? Response.json({ status: "ok" }) : model(request);
+  f.old.home.override = async (path) => {
+    if (path === "/healthz") return Response.json({ status: "ok" });
+    if (path !== "/v8/management/nodes") return undefined;
+    await new Promise((resolve) => setTimeout(resolve, auditDeadlineMs + 300));
+    return Response.json({ nodes: [] });
+  };
+  return boot;
+}
+
+test(
+  "a root refusing only for a slow audit is deferred visibly, then stopped once the deferral runs out",
+  { timeout: 60_000 },
+  async (context) => {
+    const { f, advance, phases, forcedStops } = await root(context);
+    const boot = slowAuditOnly(f);
+    await pass(f);
+    advance(unservingBoundMs);
+    // Past the bound: each pass now finds only the slow audit, so the stop waits and says why.
+    for (const step of [0, 60_000, 60_000, auditDeferralMs - 120_000 - 2_000]) {
+      advance(step);
+      await pass(f);
+    }
+    assert.deepEqual(f.old.calls.signals, [], "never stopped within the deferral");
+    assert.equal(phases().filter((phase) => phase === "stop_deferred").length, 4);
+    // The clock kept running through every deferral, so the stop follows the deferral's end at once.
+    advance(2_000);
+    await pass(f);
+    assert.deepEqual(f.old.calls.signals, [15]);
+    assert.equal(forcedStops(), 1);
+    assert.notEqual(f.old.identity().bootId, boot);
     await pass(f);
     assert.equal(await serves(f), true);
   },

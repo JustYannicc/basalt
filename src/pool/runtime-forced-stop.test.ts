@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test, type TestContext } from "node:test";
 import { RuntimeForcedStop, runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import {
+  auditDeferralMs,
   forcedRestartServesWithinHeldStreamsMs,
   forcedRestartServesWithinMs,
   forcedStopGraceMs,
@@ -11,6 +12,7 @@ import {
   restartStartBoundMs,
   runtimeStartupMs,
   supervisorStopGraceMs,
+  unservingBoundMs,
 } from "./runtime-slots/forced-restart-timing.ts";
 import { poolLifecycle } from "./lifecycle.ts";
 import { policyHealthLeaseMs } from "./runtime-health.ts";
@@ -70,6 +72,7 @@ function stopper(
   record: Record<string, unknown>,
   readiness: () => Promise<unknown>,
   streams?: { active: number; changedAt?: number },
+  audit: () => Promise<{ listingMs: number } | undefined> = async () => undefined,
 ) {
   context.mock.method(runtimeStopTiming, "stopGrace", async () => {});
   context.mock.method(console, "error", () => {});
@@ -100,8 +103,9 @@ function stopper(
       throw new SlotRefused("identity");
     },
     readiness,
+    audit,
   } as unknown as ConstructorParameters<typeof RuntimeForcedStop>[0]);
-  return { stop, signals };
+  return { stop, signals, stored };
 }
 const restartOver = (witness?: unknown, at = Date.now()) => ({
   authorization: { kind: "restart", previous: selected, at },
@@ -202,4 +206,84 @@ test("every stream acquire and release stamps when the count last changed", asyn
   const row = await activity.inspect(selected);
   assert.equal(row?.active, 0);
   assert.equal(row?.changedAt, 5_000);
+});
+
+const refusing = { identity: selected, authorization: { kind: "start" } };
+const slowAudit = async () => ({ listingMs: 2_440 });
+const pastBound = (extraMs: number) => Date.now() - unservingBoundMs - extraMs;
+
+test("a refusal explained only by a slow readiness audit defers the stop, uncounted and told apart in the log", async (context) => {
+  const lines: unknown[][] = [];
+  context.mock.method(console, "info", (...line: unknown[]) => void lines.push(line));
+  const { stop, signals, stored } = stopper(
+    context,
+    refusing,
+    async () => ({}),
+    undefined,
+    slowAudit,
+  );
+  await assert.rejects(
+    stop.stop(selected, pastBound(30_000), AbortSignal.timeout(5_000)),
+    (error) => error instanceof SlotRefused && error.reason === "selection",
+  );
+  assert.deepEqual(signals, []);
+  assert.equal(stored.size, 0, "a deferred stop is not counted against the hourly limit");
+  assert.deepEqual(lines, [
+    [
+      "POOL_SELECTED_RECOVERY",
+      {
+        phase: "stop_deferred",
+        cause: "audit_slow",
+        slot: "legacy",
+        deferredSeconds: 30,
+        listingMs: 2_440,
+      },
+    ],
+  ]);
+});
+
+test("the deferral ends auditDeferralMs past the bound, even while a slow audit still explains the refusal", async (context) => {
+  let asked = 0;
+  const { stop, signals } = stopper(
+    context,
+    refusing,
+    async () => ({}),
+    undefined,
+    async () => {
+      asked++;
+      return { listingMs: 2_440 };
+    },
+  );
+  const result = await stop.stop(selected, pastBound(auditDeferralMs), AbortSignal.timeout(5_000));
+  assert.deepEqual(result, { stopped: true, hard: false });
+  assert.deepEqual(signals, [15]);
+  assert.equal(asked, 0);
+});
+
+test("another cause, or the probe's own failure, stops exactly as before", async (context) => {
+  const cases: [string, () => Promise<{ listingMs: number } | undefined>][] = [
+    ["no evidence: another cause", async () => undefined],
+    ["the probe rejects", async () => Promise.reject(new Error("probe failed"))],
+    [
+      "the probe throws before it starts",
+      () => {
+        throw new Error("no container port");
+      },
+    ],
+  ];
+  for (const [name, audit] of cases) {
+    const { stop, signals } = stopper(context, refusing, async () => ({}), undefined, audit);
+    const result = await stop.stop(selected, pastBound(1_000), AbortSignal.timeout(5_000));
+    assert.deepEqual(result, { stopped: true, hard: false }, name);
+    assert.deepEqual(signals, [15], name);
+  }
+});
+
+test("the audit deferral fits inside the bounds release tooling already waits out", () => {
+  assert.equal(auditDeferralMs, 180_000);
+  // The stop it defers still serves within the held-streams worst case the heal's wait is built on.
+  assert.ok(
+    forcedRestartServesWithinMs + auditDeferralMs <= forcedRestartServesWithinHeldStreamsMs,
+  );
+  assert.ok(unservingBoundMs + auditDeferralMs <= leakedStreamsMs);
 });
