@@ -84,6 +84,10 @@ export class NativeMemberships {
   private save(state: Record<string, State>) {
     return poolDependency("storage", this.deps.storage.put(storageKey, state));
   }
+  /** Arms the next renewal while a pool is live, for a Home pass a reset cut before it re-armed. */
+  reschedule() {
+    return this.schedule();
+  }
   private schedule() {
     return this.run(async (state) => {
       if (Object.values(state).some((pool) => !pool.retired))

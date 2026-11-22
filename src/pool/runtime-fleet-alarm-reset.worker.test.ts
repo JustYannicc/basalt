@@ -90,7 +90,61 @@ test(
     assert.notEqual(
       (await alarms.inspect()).homeDeadline,
       null,
-      "Home has a deadline again while a runtime is selected",
+      "Home has a deadline again while a membership pool is live",
     );
+  },
+);
+
+// Restoring Home must follow Home's own condition: with every membership retired Home sleeps, and
+// fleet alarms must not drag it to fleet cadence.
+test(
+  "a Home with no live membership stays asleep through fleet alarms",
+  { timeout: 20_000 },
+  async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    context.mock.method(console, "info", () => {});
+    context.mock.method(console, "warn", () => {});
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    f.onModel(async () => new Response("done"));
+    await f.bootstrap();
+    await f.send("fleet-configure", {
+      operationId: "home-asleep",
+      configuration: { ...f.configuration, maximum: 2, targetActive: 1 },
+    });
+    await (await f.model()).text();
+    now += 101;
+    await f.upkeep();
+    await f.resourcesWhen((rows) => rows.length === 1 && rows[0]!.phase === "ready");
+    await f.settle();
+    const memberships =
+      (await f.old.storage.get<Record<string, Record<string, unknown>>>(
+        "native-pool-memberships-v1",
+      )) ?? {};
+    await f.old.storage.put(
+      "native-pool-memberships-v1",
+      Object.fromEntries(
+        Object.entries(memberships).map(([pool, state]) => [
+          pool,
+          { ...state, retired: { resumeAfter: now + 3_600_000 } },
+        ]),
+      ),
+    );
+    const alarms = new PoolAlarms(f.old.storage, () => now);
+    await alarms.schedule("home", now);
+    now += 1;
+    await alarms.take();
+    for (let pass = 0; pass < 3; pass++) {
+      await alarms.schedule("fleet", now);
+      await f.alarm();
+      await f.settle();
+      assert.equal(
+        (await alarms.inspect()).homeDeadline,
+        null,
+        "a fleet alarm never re-arms a Home with nothing to renew",
+      );
+      now += 2_000;
+    }
   },
 );
