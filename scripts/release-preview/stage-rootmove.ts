@@ -64,11 +64,16 @@ export function rootMoveVerdict(input: {
   };
 }
 
-/** The root application's version and its instances, by the application's name. Reads only. */
-export async function readRootApplication(
-  input: { accountId: string; token: string; name: string },
+export interface ApplicationRead extends RootRead {
+  readonly name: string;
+}
+
+/** Each listed container application `keep` selects, with its version and its instances. Reads only. */
+export async function readApplications(
+  input: { accountId: string; token: string },
+  keep: (application: { id: string; name: string }) => boolean,
   send: typeof fetch = fetch,
-): Promise<RootRead> {
+): Promise<ApplicationRead[]> {
   const base = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(input.accountId)}/containers/applications`;
   const headers = { Authorization: `Bearer ${input.token}` };
   const get = async (url: string) => {
@@ -79,26 +84,40 @@ export async function readRootApplication(
     return body;
   };
   const listed = await get(base);
-  const application = (Array.isArray(listed.result) ? listed.result : [])
-    .map(record)
-    .find((value) => value.name === input.name);
-  if (!application || typeof application.id !== "string")
-    throw new Error("The root application is not in the account's list");
-  const instances: RootInstance[] = [];
-  let page: string | undefined;
-  for (let count = 0; ; count++) {
-    if (count >= 100) throw new Error("Cloudflare's instance list did not end");
-    const query = new URLSearchParams({ per_page: "100", ...(page ? { page_token: page } : {}) });
-    const body = await get(`${base}/${encodeURIComponent(application.id)}/instances-v2?${query}`);
-    for (const instance of Array.isArray(body.result) ? body.result : [])
-      instances.push(instanceFacts(instance));
-    const next = record(body.result_info).next_page_token;
-    if (typeof next !== "string" || !next) break;
-    page = next;
+  const reads: ApplicationRead[] = [];
+  for (const application of (Array.isArray(listed.result) ? listed.result : []).map(record)) {
+    const { id, name, version } = application;
+    if (typeof id !== "string" || typeof name !== "string" || !keep({ id, name })) continue;
+    const instances: RootInstance[] = [];
+    let page: string | undefined;
+    for (let count = 0; ; count++) {
+      if (count >= 100) throw new Error("Cloudflare's instance list did not end");
+      const query = new URLSearchParams({ per_page: "100", ...(page ? { page_token: page } : {}) });
+      const body = await get(`${base}/${encodeURIComponent(id)}/instances-v2?${query}`);
+      for (const instance of Array.isArray(body.result) ? body.result : [])
+        instances.push(instanceFacts(instance));
+      const next = record(body.result_info).next_page_token;
+      if (typeof next !== "string" || !next) break;
+      page = next;
+    }
+    reads.push({
+      name,
+      version: typeof version === "string" || typeof version === "number" ? version : null,
+      instances,
+    });
   }
-  const version = application.version;
-  return {
-    version: typeof version === "string" || typeof version === "number" ? version : null,
-    instances,
-  };
+  return reads;
 }
+
+/** The root application's version and its instances, by the application's name. Reads only. */
+export async function readRootApplication(
+  input: { accountId: string; token: string; name: string },
+  send: typeof fetch = fetch,
+): Promise<RootRead> {
+  const [root] = await readApplications(input, ({ name }) => name === input.name, send);
+  if (!root) throw new Error("The root application is not in the account's list");
+  return { version: root.version, instances: root.instances };
+}
+
+/** A container application name that carries this stage's token as whole hyphen-separated words. */
+export const carriesStage = (name: string, stage: string) => `-${name}-`.includes(`-${stage}-`);

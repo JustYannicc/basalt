@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fingerprint } from "./stage-probe.ts";
 import {
+  carriesStage,
   instanceFacts,
+  readApplications,
   readRootApplication,
   rootMoveVerdict,
   type RootRead,
@@ -93,5 +95,39 @@ test("the read finds the root by name, pages its instances and never names an id
   await assert.rejects(
     readRootApplication({ accountId: "a".repeat(32), token: "t", name: "absent" }, send),
     /not in the account's list/u,
+  );
+});
+
+test("a stage's applications are its State's root or names carrying its whole token, never a neighbour's", async () => {
+  assert.ok(
+    carriesStage("basalt-rehearsal-poolcontainer-test-rehearsal-1-abcdefgh", "test-rehearsal-1"),
+  );
+  assert.ok(carriesStage("basalt-test-rehearsal-1-pool-runtime-blue", "test-rehearsal-1"));
+  assert.ok(!carriesStage("basalt-test-rehearsal-10-pool-runtime-blue", "test-rehearsal-1"));
+  assert.ok(!carriesStage("basalt-production-pool-runtime-blue", "test-rehearsal-1"));
+  const send: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/containers/applications"))
+      return Response.json({
+        success: true,
+        result: [
+          { id: "by-state", name: "renamed-root", version: 16 },
+          { id: "by-name", name: "basalt-test-rehearsal-1-pool-runtime-blue", version: 1 },
+          { id: "production", name: "basalt-production-pool-runtime-blue", version: 1 },
+        ],
+      });
+    return Response.json({ success: true, result: [{ id: "x", status: { state: "running" } }] });
+  };
+  const read = await readApplications(
+    { accountId: "a".repeat(32), token: "t" },
+    ({ id, name }) => id === "by-state" || carriesStage(name, "test-rehearsal-1"),
+    send,
+  );
+  assert.deepEqual(
+    read.map(({ name, version }) => [name, version]),
+    [
+      ["renamed-root", 16],
+      ["basalt-test-rehearsal-1-pool-runtime-blue", 1],
+    ],
   );
 });

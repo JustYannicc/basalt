@@ -37,7 +37,13 @@ import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
 import { composeRootPin } from "./stage-pin.ts";
-import { readRootApplication, rootMoveVerdict, type RootRead } from "./stage-rootmove.ts";
+import {
+  carriesStage,
+  readApplications,
+  readRootApplication,
+  rootMoveVerdict,
+  type RootRead,
+} from "./stage-rootmove.ts";
 import { adoptWithoutSeed, seedAndAdopt } from "./stage-seed.ts";
 import { diagnoseStagePool, stageWorker, workerScripts } from "./stage-diagnose.ts";
 import { poolWorkerVersionsBetween } from "./stage-versions.ts";
@@ -1773,6 +1779,28 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         Object.entries(stacks).map(([stack, rows]) => [stack, rows.length]),
       );
       result.free = Object.values(stacks).every((rows) => rows.length === 0);
+      // The container applications the stage holds, by its State's root row or its own token in a
+      // name, and how many instances of each run: what costs while the lane stands.
+      const rootId = (
+        (stacks[stageNames(subject).stack] ?? []).find((entry) =>
+          entry.path.endsWith("/PoolContainer"),
+        )?.value as { attr?: { applicationId?: unknown } } | undefined
+      )?.attr?.applicationId;
+      result.rootRow = typeof rootId === "string";
+      result.applications = (
+        await readApplications(
+          {
+            accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
+            token: source.CLOUDFLARE_API_TOKEN ?? "",
+          },
+          ({ id, name }) => id === rootId || carriesStage(name, stage),
+        )
+      ).map(({ name, version, instances }) => ({
+        name,
+        version,
+        instances: instances.length,
+        running: instances.filter((instance) => instance.state === "running").length,
+      }));
     } else if (mode === "baseline") {
       await budgetProbe(subject, source, outputs);
       // #1491's acceptance: the root application's version must not move across an apply that changes
