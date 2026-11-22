@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "When a reconnect verifies a different identity than an account had, a label equal to the replaced identity's address or name, or a default label, follows the new identity, and a description naming the replaced address is cleared; a label the person typed is kept. The change applies only if the label and description are still what the reconnect read, so a concurrent rename survives."
+    }
+  }
+}
