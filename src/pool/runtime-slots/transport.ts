@@ -210,6 +210,12 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(identity, "drain", { identity }, signal);
     return Schema.decodeUnknownSync(ActivityCount)(await response.json());
   }
+  async abandonStart(target: SlotTarget, signal: AbortSignal) {
+    const response = await this.call(target, "abandon-start", { target }, signal);
+    return Schema.decodeUnknownSync(Schema.Struct({ stopped: Schema.Boolean }))(
+      await response.json(),
+    );
+  }
   async activity(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "activity", { identity }, signal);
     return Schema.decodeUnknownSync(ActivityCount)(await response.json());
@@ -378,6 +384,11 @@ export async function runtimeRequest(
       return Response.json(
         await endpoint[action === "/failed" ? "failed" : "retirement"](identity, request.signal),
       );
+    } else if (action === "/abandon-start") {
+      const { target } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value),
+      );
+      return Response.json(await endpoint.abandonStart(target));
     } else if (action === "/retire") {
       const { target, identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget, identity: SlotIdentity }))(

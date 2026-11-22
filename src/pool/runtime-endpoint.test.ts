@@ -437,3 +437,12 @@ test("a retired record is never admitted again, so its slot can't start a second
   await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)));
   assert.equal(f.calls.start, 1);
 });
+
+test("a fenced fleet start is never admitted or started again", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  await f.endpoint.abandonStart(f.target);
+  await assert.rejects(f.endpoint.admit(f.grant.envelope), /identity/);
+  await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)), /selection/);
+  assert.equal(f.calls.start, 0);
+});

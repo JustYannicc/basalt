@@ -114,15 +114,18 @@ export class FleetHandoffCell implements FleetCell {
     this.abandoned = true;
     // A start still returning here owns the instance.
     if (this.starting) return this.present();
+    // The endpoint is fenced first, so it refuses every later admission and start for this slot and
+    // the wait below covers every start that could ever run, a replaced isolate's included.
+    const fenced = await this.fence(target);
+    if (!fenced) return this.present();
     const initial = await this.deps.handoff.slots.firstStart.inspect();
     // The durable first-start intent commits before the compute start is sent, and the endpoint
     // starts a container only on that send, so its absence proves nothing was ever sent.
     if (!initial) return true;
     if (!sameTarget(initial.target, target)) return false;
-    // A destroyed instance stays listed as inactive, which counts as absent only for a boot the
-    // driver reported stopped; a start that never named its boot needs the instance unlisted.
-    const stopped = initial.identity ? await this.bootStopped(initial.identity) : false;
-    const proven = stopped ? { driverStopped: true as const } : undefined;
+    // A destroyed instance stays listed as inactive. That counts as absent only once the fenced
+    // endpoint, which can start nothing more, reports its container stopped.
+    const proven = fenced.stopped ? { driverStopped: true as const } : undefined;
     if (
       !(await this.deps.provider.absent(
         this.deps.application,
@@ -138,17 +141,16 @@ export class FleetHandoffCell implements FleetCell {
     this.absentSince ??= now;
     return now - this.absentSince >= startingBoundMs;
   }
+  private async fence(target: SlotTarget) {
+    try {
+      return await this.deps.driver.abandonStart(target, AbortSignal.timeout(2_000));
+    } catch {
+      return undefined;
+    }
+  }
   private present() {
     this.absentSince = undefined;
     return false;
-  }
-  private async bootStopped(identity: SlotIdentity) {
-    try {
-      const actual = await this.deps.driver.failed(identity, AbortSignal.timeout(2_000));
-      return actual.stopped && sameIdentity(actual.identity, identity);
-    } catch {
-      return false;
-    }
   }
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);

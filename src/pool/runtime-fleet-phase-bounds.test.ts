@@ -123,6 +123,7 @@ test("a retiring row whose absence is never proven keeps its place in quarantine
     [["quarantined", "absence_unproven"]],
   );
   assert.equal(await f.state.physicalCount(), 1);
+  assert.equal(await f.state.replacements(), 0, "a scale-in moved to quarantine launches no cell");
 });
 
 test("a ready cell carrying one stream of the longest allowed length stays ready and counted", async (context) => {
