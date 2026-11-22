@@ -78,7 +78,9 @@ test("upkeep keeps active devices, issuing rows that hold a key, and web setups"
   const keyless = await approve(f, "native:approved-before-key");
   f.server.stopped = false;
   await leftIssuing(f, "minted", { keyId: 71, userId: 1 });
-  await leftIssuing(f, "web-setup", { native: undefined });
+  // A web setup whose link lapsed holds its key. One with no key and no link is an interrupted
+  // setup, which the leftover upkeep removes (computer-leftovers.test.ts), not this removal.
+  await leftIssuing(f, "web-setup", { native: undefined, keyId: 72, userId: 1 });
   f.advance(2 * 60 * minute);
   await f.expire();
   const registry = await f.registry();
