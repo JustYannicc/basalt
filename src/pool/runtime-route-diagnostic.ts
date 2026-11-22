@@ -80,6 +80,10 @@ export function retainEndpointRequestId(source: object, destination: object) {
   const id = correlations.get(source);
   if (id) correlations.set(destination, id);
 }
+/** The failed dependency or deadline behind a refusal, when one is known. */
+export function runtimeFailureCause(error: unknown) {
+  return cause(error);
+}
 function cause(error: unknown): (typeof causes)[number] | undefined {
   if (error instanceof PoolStartupDeadline) return "startup_deadline";
   if (error instanceof ControlFailure) return "control";
