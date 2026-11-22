@@ -10,7 +10,7 @@ model {
 
     nativeTunnel = module "Native tunnel" {
       #basalt #deep
-      description "An outbound WebSocket multiplexes fixed model and MCP operations. Model operations may carry a separate search of at most 2048 characters; the server validates, parses and re-serializes it onto the literal allowed path. MCP operations accept no search. Existing calls without search keep their behavior. The verified native bearer expiry and pool registry lease bound its lifetime. A model operation opened within 3 seconds of when the session's answer was read reuses it, so a tunneled request asks the tools gateway once; a later one checks again. The pool still checks the device on every model request. Tunnel lease and native model assertions use the shared 25-second host TTL below the pool verifier's unchanged 30-second ceiling. Receiver credit bounds buffering; interrupted operations are never replayed. Client socket diagnostics retain phase, HTTP status and close code, and HTTP forwarding catches retain closed exception identifiers without peer text or headers. The handshake admits only native callers: no Origin, or this server's own Origin, which React Native always sends; any other Origin is refused before the bearer is read."
+      description "An outbound WebSocket multiplexes fixed model and MCP operations. Model operations may carry a separate search of at most 2048 characters; the server validates, parses and re-serializes it onto the literal allowed path. MCP operations accept no search. Existing calls without search keep their behavior. The verified native bearer expiry bounds its lifetime, and for a grant with models so does the pool registry lease; a tools-only grant takes no pool lease, and the tools gateway checks its bearer when the tunnel opens and on every tool call. A model operation opened within 3 seconds of when the session's answer was read reuses it, so a tunneled request asks the tools gateway once; a later one checks again. The pool still checks the device on every model request. Tunnel lease and native model assertions use the shared 25-second host TTL below the pool verifier's unchanged 30-second ceiling. Receiver credit bounds buffering; interrupted operations are never replayed. Client socket diagnostics retain phase, HTTP status and close code, and HTTP forwarding catches retain closed exception identifiers without peer text or headers. The handshake admits only native callers: no Origin, or this server's own Origin, which React Native always sends; any other Origin is refused before the bearer is read."
       metadata { code "src/tunnel"; libraries "effect"; bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway" }
     }
 
@@ -182,7 +182,7 @@ model {
       metadata {
         code "src/setup"
         libraries "react|react-dom"
-        bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway"
+        bindings "TOOLS_SERVICE=basalt.toolsGateway|POOL_SERVICE=basalt.modelGateway|transport=basalt.router"
       }
     }
 
@@ -401,9 +401,10 @@ model {
   basalt.modelGateway -[sync]-> basalt.telemetry "record model request telemetry"
   basalt.setupHost -[sync]-> basalt.telemetry "record setup and computer observation telemetry"
   basalt.setupHost -[sync]-> basalt.router "setup response and public computer metadata"
+  basalt.setupHost -[sync]-> basalt.router "transport: the device approval page's same-origin /api/auth/* and /setup/v1/* requests, which the router routes"
   basalt.setupHost -[sync]-> basalt.pool "reuse pool UI components"
   basalt.setupHost -[sync]-> basalt.brandConfig "read setup brand and public endpoint"
-  basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: native cookie get-session; create and delete personal PAT; list organizations"
+  basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: native cookie get-session; create and delete personal PAT; list organizations and tools-only native devices"
   basalt.setupHost -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: share a pool; invite as member, cancel and remove; app access" {
     description "Removal commits only after the tools service's access hook revoked the member's computer keys on the pool."
   }
@@ -470,7 +471,7 @@ model {
   basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
 
   basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: validate native device grant before model ingress"
-  basalt.toolsGateway -[sync]-> basalt.router "signed native registration, access check or revocation"
+  basalt.toolsGateway -[sync]-> basalt.router "signed native registration, tools-only device report, access check or revocation; read and report link-setup computers whose revoke left a tools key"
   basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: native control and short-lived model assertions"
   basalt.modelGateway -[sync]-> basalt.router "native computer identity; model key remains server-side"
 

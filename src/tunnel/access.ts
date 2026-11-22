@@ -49,7 +49,13 @@ export async function tunnelAccess(request: Request, env: TunnelEnvironment) {
     return new Response(null, { status: 403 });
   return { ...access, checkedAt: Math.min(checkedAt, access.checkedAt ?? checkedAt) };
 }
+/**
+ * A device with models holds its pool's session lease, which ends the tunnel when the pool stops
+ * admitting it. A tools-only device holds nothing at the pool: the tools gateway checks its
+ * bearer when the tunnel opens and on every tool call, so it takes no lease.
+ */
 export async function tunnelLease(request: Request, env: TunnelEnvironment, access: TunnelAccess) {
+  if (!access.policy.models) return undefined;
   const envelope = await signEnvelope(env.POOL_APP_SIGNING_KEY, nativeControlPrefix, {
     action: "session",
     user: access.userId,
