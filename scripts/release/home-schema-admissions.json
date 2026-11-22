@@ -409,7 +409,7 @@
     },
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
-      "candidateInputHash": "eac5951c2f8487f6",
+      "candidateInputHash": "2d86d00a10658ac0",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
@@ -423,7 +423,7 @@
     },
     {
       "baselineInputHash": "b669a1335e786091",
-      "candidateInputHash": "eac5951c2f8487f6",
+      "candidateInputHash": "2d86d00a10658ac0",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
