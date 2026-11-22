@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { Effect, Exit, Redacted } from "effect";
+import { Cause, Effect, Exit, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
+import { failureReport } from "./public-report.ts";
 import { rollbackTo, servingVersion } from "./worker-version.ts";
 
 // The deployments list as production returns it: extra keys, newest first.
@@ -31,7 +32,12 @@ async function api(initial: ReturnType<typeof deployment>[], acceptPost = true) 
       if (request.method === "POST") {
         if (!acceptPost) {
           response.writeHead(400, { "content-type": "application/json" });
-          response.end(JSON.stringify({ success: false, errors: [{ code: 10211 }] }));
+          response.end(
+            JSON.stringify({
+              success: false,
+              errors: [{ code: 10211, message: "fixture: the version cannot be deployed" }],
+            }),
+          );
           return;
         }
         const posted = JSON.parse(body);
@@ -116,6 +122,13 @@ test("a rollback Cloudflare refuses (for example across a class change) fails lo
   try {
     const exit = await run(withHttp(rollbackTo(target(server.origin), "v240", "rollback")));
     assert.match(JSON.stringify(exit), /did not accept the rollback/u);
+    // Cloudflare's own answer is kept in the private detail, never in the public text.
+    assert.ok(Exit.isFailure(exit));
+    const report = failureReport(Cause.squash(exit.cause));
+    for (const kept of ['"status":400', '"code":10211', "the version cannot be deployed"]) {
+      assert.ok(report.detail.includes(kept), kept);
+      assert.equal(report.publicText.includes(kept), false, kept);
+    }
   } finally {
     server.close();
   }
