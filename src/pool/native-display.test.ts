@@ -91,7 +91,7 @@ test("native display lists current usable pool names without changing authority 
     assert.equal((await p.control("check", { ...identity, display: true, ...wrong })).status, 401);
   }
   assert.equal((await p.control("revoke", identity)).status, 200);
-  assert.equal((await p.control("check", { ...identity, display: true })).status, 401);
+  assert.equal((await p.control("check", { ...identity, display: true })).status, 410);
 });
 
 test("tools-only native display names its bound pool without listing model choices", async () => {

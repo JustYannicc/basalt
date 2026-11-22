@@ -13,6 +13,7 @@ import {
 } from "./computer-registry.ts";
 export type { ComputerStorage } from "./computer-registry.ts";
 import { PoolDirectory } from "./directory.ts";
+import { ComputerLeftovers } from "./computer-leftovers.ts";
 import { readAccess } from "./access.ts";
 import { fail, failureResponse, json, object, text } from "./json.ts";
 import { openEnvelope, verifyPoolToken } from "./token.ts";
@@ -32,7 +33,8 @@ import {
   observePendingUsage,
   type UsageObservationEvent,
 } from "./usage-observation.ts";
-import { NativeComputers } from "./native-computers.ts";
+import { NativeComputers, revocableKeys } from "./native-computers.ts";
+import { toolsKeyDeleted, toolsLeftoverControl } from "./tools-leftovers.ts";
 
 interface Dependencies {
   retirePool?(pool: string, at: number): Promise<void>;
@@ -46,7 +48,7 @@ interface Dependencies {
   now?: () => number;
   onProductEvent?: ProductEventCallback;
   usage?: Pick<PoolUsage, "summary" | "setCap">;
-  /** Counts only: what upkeep removed. */
+  /** Counts only: the abandoned native approvals upkeep removed. */
   reportRemoved?: (removed: { abandonedApprovals: number }) => void;
 }
 const storageKey = "computer-registry-v1";
@@ -61,10 +63,25 @@ export class Computers {
   private deps: Dependencies;
   private native: NativeComputers;
   private queue: Promise<unknown> = Promise.resolve();
+  private leftovers: ComputerLeftovers;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.native = new NativeComputers({
       ...deps,
+      now: () => this.now(),
+      run: (work) => this.run(work),
+      save: (registry) => this.save(registry),
+      revokeKeys: (computer) => this.leftovers.revokeKeys(computer),
+      toolsLeftovers: (value) =>
+        toolsLeftoverControl(value, {
+          now: () => this.now(),
+          run: (work) => this.run(work),
+          save: (registry) => this.save(registry),
+        }),
+    });
+    this.leftovers = new ComputerLeftovers({
+      home: deps.home,
+      keys: (computer) => revocableKeys(computer, deps.home),
       now: () => this.now(),
       run: (work) => this.run(work),
       save: (registry) => this.save(registry),
@@ -129,6 +146,8 @@ export class Computers {
       await directory.prune(this.now());
       await directory.provisionPending(this.deps.home);
     });
+    // Outside the registry queue: it asks Home, and a stopped container must hold up no device.
+    await this.leftovers.finish();
   }
   private own(registry: Registry, user: string, id: unknown): StoredComputer {
     const computer =
@@ -344,6 +363,11 @@ export class Computers {
               name: directory.entry(intent.pool)?.name ?? "",
             });
           case "computers":
+            // The tools service approves and revokes a tools-only device without this pool; what
+            // it reports of the person's own devices reaches the list here, and listing saves it.
+            if (Array.isArray(payload.native) && payload.native.length <= 200)
+              for (const device of payload.native)
+                if (object(device)) this.native.learn(registry, user, device);
             return json({ computers: await this.listLocked(registry, user), pools });
           case "links": {
             // A link may name any pool this person can use; it defaults to the intent's own pool.
@@ -379,8 +403,11 @@ export class Computers {
               computer.state !== "removed"
             )
               return fail(409, "busy", "Revoke the model key first.");
+            const at = new Date(this.now()).toISOString();
             computer.state = "revoked";
-            computer.revokedAt ??= new Date(this.now()).toISOString();
+            computer.revokedAt ??= at;
+            // The setup host asks this only once the computer's tools key is deleted.
+            toolsKeyDeleted(computer, at);
             await this.save(registry);
             return json(null);
           }
@@ -552,10 +579,18 @@ export class Computers {
     const computer = this.own(registry, user, id);
     computer.state = computer.state === "revoked" ? "revoked" : "revoking";
     delete computer.link;
+    delete computer.restoredWithoutHistory;
+    // Under access removal, the revoke is recorded for when removal finishes the row.
+    if (computer.beforeRemoval && computer.beforeRemoval.state !== "revoked")
+      computer.beforeRemoval.state = "revoking";
     await this.save(registry);
-    const keys = computer.keyId ? [computer.keyId] : await this.deps.home.find(computer.id);
-    for (const key of keys) await this.deps.home.revoke(key);
-    return json({ toolsKeyId: computer.toolsKeyId ?? null });
+    await this.leftovers.revokeKeys(computer);
+    // A native device signs in with its own grant, which the setup host revokes at the tools
+    // service before asking here: a tools-only device's tools answer to that grant.
+    return json({
+      toolsKeyId: computer.toolsKeyId ?? null,
+      ...(computer.native && { grant: computer.native.grant }),
+    });
   }
   private async switchPool(
     registry: Registry,
