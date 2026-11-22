@@ -602,15 +602,10 @@ export class RuntimeEndpoint {
       signal.throwIfAborted();
       if (!sameTarget(target, identity)) throw new SlotRefused("identity");
       await trace.run("activity_retire", () => this.activity.retire(identity));
-      signal.throwIfAborted();
-      await trace.run(
-        "monitor_attach",
-        async () => this.retirementMonitor.start(identity),
-        undefined,
-        signal,
-      );
-      // From SIGTERM on, the stop no longer follows its caller's 2 s budget: Home's drain of claimed
-      // refreshes may take the whole grace, and the retirement read sees the stop end.
+      // From the retiring latch on, the stop no longer follows its caller's 2 s budget: the latch
+      // refuses every later drain and retire, and Home's drain of claimed refreshes may take the
+      // whole grace. The retirement read sees the stop end.
+      await trace.run("monitor_attach", async () => this.retirementMonitor.start(identity));
       await trace.run(
         "stop",
         () => stopGracefully(this.ctx.container!),

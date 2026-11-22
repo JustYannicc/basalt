@@ -4,6 +4,7 @@ import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture
 import { runtimeGrant } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
 import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
+import { RuntimeActivity } from "./runtime-slots/activity.ts";
 import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import { forcedStopGraceMs } from "./runtime-slots/forced-restart-timing.ts";
 import { pastBound, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
@@ -82,11 +83,18 @@ test("a retirement sends SIGTERM and destroys only once the grace has run out", 
 
 test("a cell that stops on SIGTERM retires at once, without waiting out the grace", async (context) => {
   const { f, target, identity, store } = await startedCell(context);
-  f.hooks.sigtermExits = true;
   context.mock.method(runtimeStopTiming, "stopGrace", () => new Promise<void>(() => {}));
+  const destroy = f.ctx.container.destroy.bind(f.ctx.container);
+  let runningAtDestroy: boolean | undefined;
+  f.ctx.container.destroy = async () => {
+    runningAtDestroy = f.ctx.container.running;
+    await destroy();
+  };
   await f.endpoint.retire(target, identity, AbortSignal.timeout(5_000));
   assert.deepEqual(f.calls.signals, [15]);
-  assert.equal(f.calls.destroy, 0, "a container that exited on its own was destroyed anyway");
+  // Destroyed after the exit all the same: the provider lists only a destroyed instance as inactive.
+  assert.equal(f.calls.destroy, 1);
+  assert.equal(runningAtDestroy, false, "destroyed before Home's drain ended");
   assert.equal((await store.retained(target.slotId))?.retired, true);
 });
 
@@ -105,6 +113,30 @@ test("the stop outlives its caller's budget, and the retirement read sees it fin
   });
   graceOver();
   await f.settle();
+  assert.equal(f.calls.destroy, 1);
+  assert.deepEqual(await f.endpoint.retirement(identity), {
+    identity,
+    retired: true,
+    running: false,
+    provider,
+  });
+});
+
+test("a caller that gives up right after the retiring latch still gets its cell stopped", async (context) => {
+  const { f, target, identity, provider } = await startedCell(context);
+  const caller = new AbortController();
+  const retire = RuntimeActivity.prototype.retire;
+  context.mock.method(
+    RuntimeActivity.prototype,
+    "retire",
+    async function (this: RuntimeActivity, ...args: Parameters<RuntimeActivity["retire"]>) {
+      await retire.apply(this, args);
+      caller.abort();
+    },
+  );
+  await assert.rejects(f.endpoint.retire(target, identity, caller.signal));
+  await f.settle();
+  assert.deepEqual(f.calls.signals, [15], "the latch held a live container that nothing signals");
   assert.equal(f.calls.destroy, 1);
   assert.deepEqual(await f.endpoint.retirement(identity), {
     identity,

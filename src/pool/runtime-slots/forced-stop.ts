@@ -123,9 +123,11 @@ export class RuntimeForcedStop {
     // Without SIGTERM the single root's Home, the elected master, would be killed mid-refresh.
     if (!container.signal) return "no_signal";
     try {
-      return (await stopGracefully(container)) === "exited"
-        ? "graceful_exit"
-        : "destroy_after_grace";
+      await signalStop(container);
+      // The stopped container is restarted in place, so a clean exit is left as it is.
+      if (!container.running) return "graceful_exit";
+      await container.destroy();
+      return "destroy_after_grace";
     } catch {
       return "stop_failed";
     }
@@ -144,17 +146,25 @@ export class RuntimeForcedStop {
 }
 
 /**
- * Every deliberate end of a running container: SIGTERM, then its own exit or the grace, and
- * `destroy()` only if it still runs. Home drains its claimed token refreshes on SIGTERM, and whichever
- * Home holds the master lease holds them all; a bare destroy can lose a token a vendor just rotated.
- * A container without `signal()` can only be destroyed.
+ * SIGTERM, then the container's own exit or the grace. Home drains its claimed token refreshes on
+ * SIGTERM, and whichever Home holds the master lease holds them all; a bare destroy can lose a token
+ * a vendor just rotated.
+ */
+async function signalStop(container: NonNullable<ControllerState["container"]>) {
+  if (!container.running || !container.signal) return;
+  container.signal(15);
+  await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
+}
+
+/**
+ * A deliberate end of a running container that never runs again: the graceful stop, then
+ * `destroy()` even after a clean exit. The provider lists a destroyed instance as inactive, which an
+ * absence proof accepts; one that only exited may stay listed as stopped, which it never does. A
+ * container without `signal()` can only be destroyed.
  */
 export async function stopGracefully(container: NonNullable<ControllerState["container"]>) {
-  if (container.running && container.signal) {
-    container.signal(15);
-    await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
-  }
-  if (!container.running) return "exited" as const;
+  await signalStop(container);
+  const exited = !container.running;
   await container.destroy();
-  return "destroyed" as const;
+  return exited ? ("exited" as const) : ("destroyed" as const);
 }

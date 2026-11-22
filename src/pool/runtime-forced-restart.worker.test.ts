@@ -13,8 +13,6 @@ async function root(context: TestContext) {
   const errors = context.mock.method(console, "error", () => {});
   const f = await fleetWorkerFixture();
   context.after(f.cleanup);
-  // The root's Home exits on SIGTERM well inside the forced-stop grace.
-  f.old.hooks.sigtermExits = true;
   await f.bootstrap();
   return {
     f,

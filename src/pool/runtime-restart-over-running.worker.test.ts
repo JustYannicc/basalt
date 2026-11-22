@@ -90,7 +90,6 @@ for (const stop of ["graceful", "hard"] as const)
     async (context) => {
       const f = await fleetWorkerFixture();
       context.after(f.cleanup);
-      f.old.hooks.sigtermExits = stop === "graceful";
       const logs = context.mock.method(console, "info", () => {});
       context.mock.method(console, "error", () => {});
       const { previous, epoch } = await stuckOverRunningContainer(f);
@@ -138,7 +137,6 @@ test(
     context.mock.method(Date, "now", () => now);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
-    f.old.hooks.sigtermExits = true;
     context.mock.method(console, "info", () => {});
     context.mock.method(console, "error", () => {});
     const { previous, epoch } = await stuckOverRunningContainer(f);
