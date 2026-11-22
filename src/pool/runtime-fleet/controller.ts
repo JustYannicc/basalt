@@ -21,6 +21,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
+import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
 /** A far cell is started again at most this many times before it serves from its last draw. */
@@ -125,6 +126,7 @@ export class RuntimeFleet {
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
   private dispatches = new FleetDispatches();
   private failures: FleetFailures;
+  private rootFallback: RootFallback;
   constructor(deps: Dependencies) {
     if (
       !Number.isSafeInteger(deps.targetActive) ||
@@ -143,6 +145,7 @@ export class RuntimeFleet {
       this.deps.changed?.();
       this.grow();
     });
+    this.rootFallback = new RootFallback(() => deps.now());
   }
   refreshPolicy() {
     this.atCapacity = false;
@@ -279,6 +282,41 @@ export class RuntimeFleet {
     await this.deps.recoverPrimary?.();
     if (failure === this.primaryFailure) this.primaryFailed = false;
   }
+  /**
+   * A root call that the fallback admitted stops waiting at its send. One that failed before its
+   * send gives its token back, since a retry before dispatch is admitted again.
+   */
+  private rootCall(
+    request: Request,
+    legacy: (request: Request, beforeDispatch: () => void) => Promise<Response>,
+    beforeDispatch: () => void,
+    counted: boolean,
+  ) {
+    let waiting = counted;
+    const release = (refund: boolean) => {
+      if (waiting) this.rootFallback.release(refund);
+      waiting = false;
+    };
+    let sending: Promise<Response>;
+    try {
+      sending = legacy(request, () => {
+        release(false);
+        beforeDispatch();
+      });
+    } catch (error) {
+      sending = Promise.reject(error);
+    }
+    return sending.then(
+      (response) => {
+        release(false);
+        return response;
+      },
+      (error: unknown) => {
+        release(true);
+        throw error;
+      },
+    );
+  }
   async forward(
     request: Request,
     pool: string | undefined,
@@ -297,22 +335,42 @@ export class RuntimeFleet {
         refuseRuntime("fleet_acquire", error);
       // With no sibling capacity the primary is the only route. A recent primary failure or a failed
       // recovery warm-up is only a hint: the request's own fresh admission on the primary decides.
+      // Its rate is capped, so a burst can't starve the root's own Home; a refused call still grows.
+      const counted = rootFallbackCounts(request);
+      if (counted && !this.rootFallback.admit()) {
+        this.grow();
+        return rootFallbackRefused(request);
+      }
       // Start legacy admission before reading pressure so the triggering request is counted too.
-      const response = legacy(request, beforeDispatch).then((answer) =>
+      const response = this.rootCall(request, legacy, beforeDispatch, counted).then((answer) =>
         stampResumeTarget(answer, { kind: "primary" }),
       );
       this.grow();
       return response;
     }
     const { reservation, dispatched } = acquired;
+    // The root as the only route takes the same capped rate as the capacity fallback above.
+    const counted =
+      reservation.kind === "primary" && reservation.alone && rootFallbackCounts(request);
+    if (counted && !this.rootFallback.admit()) {
+      this.grow();
+      dispatched();
+      try {
+        await reservation.release();
+      } catch (error) {
+        refuseRuntime("fleet_release", error);
+      }
+      return rootFallbackRefused(request);
+    }
     let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
       reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
     this.grow();
     try {
       if (reservation.kind === "primary") {
-        const response = stampResumeTarget(await legacy(request, beforeDispatch), {
-          kind: "primary",
-        });
+        const response = stampResumeTarget(
+          await this.rootCall(request, legacy, beforeDispatch, counted),
+          { kind: "primary" },
+        );
         return this.deps.wrap(response, {
           signal: request.signal,
           onClose: () => {},

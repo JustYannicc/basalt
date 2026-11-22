@@ -46,6 +46,8 @@ interface RuntimeReservation {
 }
 interface PrimaryReservation {
   kind: "primary";
+  /** No cell was ready: the root takes the call as the fleet's only route. */
+  alone: boolean;
   release(): Promise<void>;
 }
 /**
@@ -327,7 +329,7 @@ export class RuntimeFleetState {
     if (!Number.isSafeInteger(capacity) || capacity < 1)
       throw new Error("Invalid measured runtime capacity");
     const selected = await this.change<
-      { kind: "runtime"; identity: SlotIdentity } | { kind: "primary" }
+      { kind: "runtime"; identity: SlotIdentity } | { kind: "primary"; alone: boolean }
     >(async (rows, transaction) => {
       const rank = (row: Row) => tier(placement, distanceClass(row.database), row.active);
       const available = rows
@@ -349,7 +351,7 @@ export class RuntimeFleetState {
         ) {
           if (!Number.isSafeInteger(active + 1)) throw new FleetRefused("uncertain");
           await transaction.put(primaryKey, active + 1);
-          return { kind: "primary" };
+          return { kind: "primary", alone: !row };
         }
       }
       if (!row?.identity) throw new FleetRefused("capacity");
@@ -376,7 +378,7 @@ export class RuntimeFleetState {
         else await transaction.put(retiredKey(identity.slotId), next);
       }));
     return selected.kind === "primary"
-      ? { kind: "primary", release }
+      ? { kind: "primary", alone: selected.alone, release }
       : { kind: "runtime", identity: selected.identity, release };
   }
   quarantine(identity: SlotIdentity) {
