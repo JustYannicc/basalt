@@ -62,6 +62,7 @@ async function admittedRuntime(color: "blue" | "green") {
   await post("/admit", { envelope: grant.envelope });
   return {
     f,
+    worker,
     target,
     store: new RuntimeWitnessStore(f.storage, f.env.POOL_DEPLOYMENT_KEY!),
     post,
@@ -252,6 +253,63 @@ for (const color of ["blue", "green"] as const) {
     assert.equal(f.calls.start, 1);
     assert.equal(await f.storage.getAlarm(), null, "the stopped start re-armed the refresh alarm");
     assert.equal(await store.alarmTarget(), undefined, "the stopped start left its alarm target");
+  });
+}
+
+/** The abort a stop-startup operation sends for this slot's own start. */
+async function abortIntent({ store, target }: Pick<Started, "store" | "target">) {
+  const record = (await store.retained(target.slotId))!;
+  return {
+    operationId: "alarm-abort",
+    target,
+    startupOperationId: record.authorization.operationId,
+    witness: record.witness ?? null,
+  };
+}
+const StopStatus = Schema.Struct({ status: Schema.String });
+
+for (const color of ["blue", "green"] as const) {
+  test(`a ${color} alarm still running when its slot ends never arms the alarm again`, async (context) => {
+    const started = await startedRuntime(color);
+    context.after(started.cleanup);
+    const { f, worker, store, post } = started;
+    let entered!: () => void, release!: () => void;
+    const inHealth = new Promise<void>((resolve) => (entered = resolve));
+    const released = new Promise<void>((resolve) => (release = resolve));
+    f.hooks.health = async () => {
+      entered();
+      await released;
+    };
+    const alarm = worker.alarm();
+    await inHealth;
+    // The container reads as stopped for a moment, and an abort that reads it then ends the slot.
+    f.crash();
+    const aborted = Schema.decodeUnknownSync(StopStatus)(
+      await post("/startup-abort", { intent: await abortIntent(started) }),
+    );
+    assert.equal(aborted.status, "aborted");
+    f.revive();
+    release();
+    await alarm;
+    assert.equal(await f.storage.getAlarm(), null, "the alarm armed itself again on an ended slot");
+    assert.equal(await store.alarmTarget(), undefined);
+  });
+
+  test(`a ${color} abort whose destroy never answers leaves no alarm or alarm target`, async (context) => {
+    const started = await startedRuntime(color);
+    context.after(started.cleanup);
+    const { f, store, post } = started;
+    f.ctx.container.destroy = async () => {
+      f.calls.destroy++;
+      throw new Error("lost destroy response");
+    };
+    const stop = Schema.decodeUnknownSync(StopStatus)(
+      await post("/startup-abort", { intent: await abortIntent(started) }),
+    );
+    assert.equal(stop.status, "pending");
+    assert.equal(f.calls.destroy, 1);
+    assert.equal(await f.storage.getAlarm(), null, "a pending stop kept the refresh alarm");
+    assert.equal(await store.alarmTarget(), undefined, "a pending stop kept the alarm target");
   });
 }
 
