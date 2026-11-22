@@ -5,7 +5,6 @@ import {
   classesDeclared,
   classChanges,
   databaseSteps,
-  errorLine,
   forwardVersion,
   rootChange,
   removals,
@@ -13,6 +12,7 @@ import {
   smoke,
   workersToRepoint,
 } from "./production.ts";
+import { errorLine } from "./release/failure-line.ts";
 import { errorKind } from "./release/public-report.ts";
 import { makePlan, productionRows } from "./release/test/plan-fixture.ts";
 
