@@ -271,10 +271,12 @@ async function awaitHandover(
   const now = hop.now ?? Date.now;
   const cause = handingOver(response) ? "handover" : "unsent";
   let sends = 0;
+  // The first unsent answer names the attempt for every later re-send, a handover refusal between.
+  let attempt: string | undefined;
   while (resendable(response)) {
     if (now() - begun + controllerReplayDelayMs > controllerReplayWindowMs) break;
     // A re-send of a call never sent names that attempt, so the controller records one request.
-    const attempt = sentNowhere(response)
+    attempt ??= sentNowhere(response)
       ? unsentAttempt(response.headers.get("X-Request-Id"))
       : undefined;
     const headers = new Headers(request.headers);

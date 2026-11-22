@@ -85,7 +85,8 @@ export async function forwardPoolRequest(
   if (isModelLifetimePath(pathname)) return new Response(null, { status: 404 });
   request = stripModelLifetimeRequest(request);
   // A re-send of a call never sent keeps that attempt's id, so both count as one request.
-  const requestId = unsentAttempt(request.headers.get(unsentAttemptHeader)) ?? crypto.randomUUID();
+  const resent = unsentAttempt(request.headers.get(unsentAttemptHeader));
+  const requestId = resent ?? crypto.randomUUID();
   const endpoint = endpointMetadata(pathname);
   const modelCall =
     (request.method === "POST" &&
@@ -279,8 +280,13 @@ export async function forwardPoolRequest(
     headers.delete("X-Basalt-Terminal-Protocol");
     headers.delete(dispatchTimingHeader);
     stripRuntimeFailureHeaders(headers);
+    // An unsent answer names this call's own id, the one its terminal start was written under,
+    // so the entry's re-send can finish that same row.
     if (modelCall || runtimeRefusal)
-      headers.set("X-Request-Id", runtimeRefusal ? runtimeRequestId : requestId);
+      headers.set(
+        "X-Request-Id",
+        runtimeRefusal && !sentNowhere(response) ? runtimeRequestId : requestId,
+      );
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
     const forwarded = new Response(response.body, {
@@ -355,6 +361,14 @@ export async function forwardPoolRequest(
     }
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
     if (error instanceof ControlFailure) return failureResponse(error);
+    // A re-send of a call never sent that is refused again before its own send ran nowhere either.
+    // It stays the one request its first attempt started: no refusal record beside that start, and
+    // the entry keeps sending inside its window.
+    if (resent && isPublicModelPath(pathname) && !request.signal.aborted) {
+      const refused = unsentRefusal(request);
+      refused.headers.set("X-Request-Id", requestId);
+      return refused;
+    }
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))
       return gatewayUnavailable(
         deps.env,

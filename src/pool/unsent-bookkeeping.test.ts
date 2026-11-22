@@ -10,7 +10,8 @@ import {
 } from "./native-contract.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
-import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { correlateEndpointRequest, rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { unsentRefusal } from "./controller-unsent.ts";
 import { fixture, owner, pool, signingKey } from "./test/computers.ts";
 import { signEnvelope } from "./token.ts";
 
@@ -132,13 +133,16 @@ async function forwarding(context: TestContext) {
   };
 }
 
-/** The route as the fleet answers a call its runtime refused before the container send. */
-const unsentAnswer: Route = async (_request, ...rest) => {
+/**
+ * The route as the fleet answers a call its runtime refused before the container send: the retry
+ * path's own unsent refusal, built from the endpoint's error, which carries the endpoint's trace id.
+ */
+const unsentAnswer: Route = async (request, ...rest) => {
   (rest[3] as () => void)();
-  return Response.json(
-    { type: "error", error: { type: "overloaded_error", message: "retry" } },
-    { status: 503, headers: { "Retry-After": "1", [mark]: "1" } },
-  );
+  const error = new Error("endpoint readiness refused");
+  rememberRuntimeFailure("endpoint_health", error);
+  correlateEndpointRequest(error, "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d");
+  return unsentRefusal(request, error);
 };
 
 /** The node's answer, which echoes the call's pool request id. */
@@ -181,5 +185,20 @@ test("a call refused by its runtime's endpoint before the send records no outcom
   assert.equal(refused.headers.get(mark), "1");
   await refused.text();
   await h.settle();
+  assert.deepEqual(h.finishes, []);
+});
+
+test("a re-send refused again before its own send stays the one request, with no second record", async (context) => {
+  const h = await forwarding(context);
+  const attempt = "4f3e2d1c-0b9a-4876-9543-210fedcba987";
+  const refused = await h.send(await h.call({ [attemptHeader]: attempt }), async () => {
+    throw new Error("protection refused before the send");
+  });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.headers.get(mark), "1");
+  assert.equal(refused.headers.get("X-Request-Id"), attempt);
+  await refused.text();
+  await h.settle();
+  assert.deepEqual(h.starts, []);
   assert.deepEqual(h.finishes, []);
 });
