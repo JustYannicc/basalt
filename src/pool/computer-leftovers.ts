@@ -148,9 +148,13 @@ export class ComputerLeftovers {
     if (computer.state === "issuing") {
       delete registry[computer.id];
       outcome = "interruptedRemoved";
-    } else if (computer.toolsKeyId !== undefined || (computer.native && !computer.native.models)) {
-      // Its tools answer to a web setup's tools token or a native device's grant, which only the
-      // person's own revoke ends. Until it has, the row stays `revoking`: it may still work.
+    } else if (
+      (computer.toolsKeyId !== undefined && computer.toolsKeyDeletedAt === undefined) ||
+      (computer.native && !computer.native.models)
+    ) {
+      // Its tools answer to a web setup's tools token, which the tools host's pass deletes, or a
+      // native device's grant, which only the person's own revoke ends. Until then the row stays
+      // `revoking`: it may still work.
       computer.homeKeysRevokedAt = at;
       outcome = "awaitsPerson";
     } else {

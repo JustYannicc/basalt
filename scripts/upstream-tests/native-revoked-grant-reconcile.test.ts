@@ -10,6 +10,8 @@ import { device, origin } from "./native-pool-device-fixture.ts";
 type Device = Awaited<ReturnType<typeof device>>;
 /** Live grants one pass reads at most. */
 const batch = 50;
+/** Each pass also reads the pool's link-setup computers whose revoke left a tools key, once. */
+const toolsRead = 1;
 
 const pass = (d: Device) => d.f.api.retryNativeCleanups({});
 const grantOf = async (d: Device) => {
@@ -120,7 +122,7 @@ test("one pass asks the pool about at most a batch of grants, and a grant once p
     const result = await pass(d);
     passes++;
     assert.ok(
-      d.asked() - asked <= batch,
+      d.asked() - asked <= batch + toolsRead,
       `pass ${passes} asked the pool ${d.asked() - asked} times`,
     );
     assert.ok(result.checked <= batch);
@@ -130,7 +132,7 @@ test("one pass asks the pool about at most a batch of grants, and a grant once p
   assert.equal(checked, others + 1, "every grant was checked once in the cycle");
   const asked = d.asked();
   assert.equal((await pass(d)).checked, 0, "a grant isn't asked about again so soon");
-  assert.equal(d.asked(), asked);
+  assert.equal(d.asked(), asked + toolsRead);
 });
 
 /** Live tools-only grants whose pool rows say `state`, as the stores hold them. */
