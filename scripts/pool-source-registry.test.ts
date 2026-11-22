@@ -530,6 +530,15 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-funding-aged-reading") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0762-home-funding-aged-reading.patch");
+        assert.match(patch.retirement.requires, /aged out from being refused outright/);
+        assert.match(patch.retirement.requires, /decides on the fresh reading before it refuses/);
+        assert.match(
+          patch.retirement.requires,
+          /aged-reading, bounded-refresh and wait-for-in-flight-probe regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-node-liveness-floor") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0736-home-node-liveness-floor.patch");
