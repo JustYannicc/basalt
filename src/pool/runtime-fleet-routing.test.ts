@@ -247,7 +247,8 @@ test("lost retirement acknowledgement is inspected without repeating destruction
   const identity = await f.add();
   await f.state.drain(identity);
   f.loseRetirement();
-  await assert.rejects(f.fleet.upkeep(), /lost retirement/);
+  // The lost acknowledgement settles for its row; the pass itself goes on.
+  await f.fleet.upkeep();
   assert.equal((await f.state.inspect())[0]?.phase, "retiring");
   await f.fleet.upkeep();
   assert.equal(f.calls.retires, 1);
@@ -328,7 +329,8 @@ test("a retiring row is never asked for a policy, so its refusal cannot hold the
   const identity = await f.add();
   await f.state.drain(identity);
   f.loseRetirement();
-  await assert.rejects(f.fleet.upkeep(), /lost retirement/);
+  // The lost acknowledgement settles for its row; the pass itself goes on.
+  await f.fleet.upkeep();
   assert.equal((await f.state.inspect())[0]?.phase, "retiring");
   refusing(f, identity);
   await f.fleet.install(membership());

@@ -702,7 +702,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             .catch(() => console.error("POOL_RUNTIME_FLEET_UPKEEP_PENDING"));
         if (due.home) this.deferHomeUpkeep();
       } finally {
-        await trace.run("rearm", () => this.alarms.rearm());
+        await trace.run("rearm", async () => {
+          await this.restoreDeadlines().catch(() => console.error("POOL_ALARM_RESTORE_PENDING"));
+          await this.alarms.rearm();
+        });
         trace.event("deadlines", await this.alarms.inspect());
       }
     });
@@ -914,6 +917,29 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
+  /**
+   * `take()` clears a due deadline before its pass runs, and only the pass re-arms it, so a reset
+   * that cuts the pass leaves its owner none; the alarm the other owner keeps set hides that from
+   * `ensure()`. A missing deadline comes back from each owner's own durable condition: the fleet's
+   * rows and selection, so an empty fleet stays asleep, and Home's live memberships while a runtime
+   * is selected, so a Home with nothing to renew stays asleep too.
+   */
+  private async restoreDeadlines() {
+    const { homeDeadline, fleetDeadline } = await this.alarms.inspect();
+    if (fleetDeadline === null) await this.fleet.reschedule();
+    // With nothing selected, Home stays unarmed, as in `ensure()`: a pass inside the call that built
+    // the object would move the change revisions a view reads around its query. A cut pass already
+    // lost one renewal against a 12 s lease, so a live pool's Home is due at once.
+    if (
+      homeDeadline === null &&
+      !this.homeUpkeepTask &&
+      (await this.ctx.storage.get(slotSelectionKey)) !== undefined &&
+      (await this.memberships.live())
+    )
+      await this.alarms.schedule("home", Date.now());
+    await this.alarms.rearm();
+  }
+
   /** Arms the upkeep alarm if nothing has, without holding the caller. */
   private ensureAlarm() {
     // A running alarm handler or Home pass re-arms its own deadline when it ends; the platform
@@ -923,7 +949,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const work = this.alarms.ensure(
       async () => (await this.ctx.storage.get(slotSelectionKey)) !== undefined,
     );
-    if (work) this.ctx.waitUntil(work.catch(() => console.error("POOL_ALARM_ENSURE_PENDING")));
+    if (work)
+      this.ctx.waitUntil(
+        work
+          .then(() => this.restoreDeadlines())
+          .catch(() => console.error("POOL_ALARM_ENSURE_PENDING")),
+      );
   }
 
   async fetch(request: Request): Promise<Response> {

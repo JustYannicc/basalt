@@ -79,42 +79,47 @@ export async function fleetCellFixture(
     failHealth: false,
     modelStubs,
   };
-  const cell = boundFleetCell({
-    ctx: root,
-    env,
-    target,
-    code: runtimeFixtureCode,
-    provider,
-    application: { ...application, color: "blue", imageInput: target.imageInput },
-    wrap: runtime.wrap,
-    remote: () => {
-      const stub = ++transport.stubs;
-      const generation = transport.generation;
-      return {
-        fetch: async (request) => {
-          transport.calls++;
-          if (transport.fail) throw new Error("native transport failed");
-          if (
-            generation !== transport.generation ||
-            (transport.failHealth && new URL(request.url).pathname === "/health")
-          ) {
-            transport.disconnected++;
-            await request.text();
-            if (staleFailure === "http") return new Response(null, { status: 409 });
-            if (staleFailure === "non-error") throw "synthetic non-Error failure";
-            const error = new Error("synthetic stale endpoint stub");
-            if (staleFailure === "flagged")
-              Object.assign(error, { disconnected: true, retryable: true });
-            if (staleFailure === "overloaded") Object.assign(error, { overloaded: true });
-            throw error;
-          }
-          if (request.headers.has("X-Signalbox-Runtime-Identity")) transport.modelStubs.push(stub);
-          return runtime.stub.fetch(request);
-        },
-      };
-    },
-  });
+  const makeCell = () =>
+    boundFleetCell({
+      ctx: root,
+      env,
+      target,
+      code: runtimeFixtureCode,
+      provider,
+      application: { ...application, color: "blue", imageInput: target.imageInput },
+      wrap: runtime.wrap,
+      remote: () => {
+        const stub = ++transport.stubs;
+        const generation = transport.generation;
+        return {
+          fetch: async (request) => {
+            transport.calls++;
+            if (transport.fail) throw new Error("native transport failed");
+            if (
+              generation !== transport.generation ||
+              (transport.failHealth && new URL(request.url).pathname === "/health")
+            ) {
+              transport.disconnected++;
+              await request.text();
+              if (staleFailure === "http") return new Response(null, { status: 409 });
+              if (staleFailure === "non-error") throw "synthetic non-Error failure";
+              const error = new Error("synthetic stale endpoint stub");
+              if (staleFailure === "flagged")
+                Object.assign(error, { disconnected: true, retryable: true });
+              if (staleFailure === "overloaded") Object.assign(error, { overloaded: true });
+              throw error;
+            }
+            if (request.headers.has("X-Signalbox-Runtime-Identity"))
+              transport.modelStubs.push(stub);
+            return runtime.stub.fetch(request);
+          },
+        };
+      },
+    });
+  const cell = makeCell();
   return {
+    // The same cell over the same storage, as the controller's replaced isolate builds it.
+    replacedCell: makeCell,
     ...runtime,
     cell,
     storage,
