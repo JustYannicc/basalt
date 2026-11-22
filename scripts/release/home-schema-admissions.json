@@ -493,7 +493,7 @@
     },
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
-      "candidateInputHash": "b34be611519d6db1",
+      "candidateInputHash": "174512999e09862a",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
@@ -507,7 +507,7 @@
     },
     {
       "baselineInputHash": "b669a1335e786091",
-      "candidateInputHash": "b34be611519d6db1",
+      "candidateInputHash": "174512999e09862a",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
@@ -521,7 +521,7 @@
     },
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
-      "candidateInputHash": "b1157ded8e0c980d",
+      "candidateInputHash": "f1ff0ac53a876f15",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
@@ -535,7 +535,7 @@
     },
     {
       "baselineInputHash": "b669a1335e786091",
-      "candidateInputHash": "b1157ded8e0c980d",
+      "candidateInputHash": "f1ff0ac53a876f15",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [

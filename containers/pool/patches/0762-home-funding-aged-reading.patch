@@ -422,7 +422,7 @@ index 0000000..05d14c3
 +	}
 +}
 diff --git a/internal/quota/collector.go b/internal/quota/collector.go
-index ed1c8ed..9e4c6c4 100644
+index ed1c8ed..ba8baf5 100644
 --- a/internal/quota/collector.go
 +++ b/internal/quota/collector.go
 @@ -83,7 +83,7 @@ type Collector struct {
@@ -443,7 +443,7 @@ index ed1c8ed..9e4c6c4 100644
  	}
  	if repo.DialectName() == "sqlite" {
  		collector.globalSem = make(chan struct{}, options.ProviderConcurrency)
-@@ -240,20 +240,74 @@ func (c *Collector) TriggerCollection(ctx context.Context, credentialIDs map[str
+@@ -240,20 +240,104 @@ func (c *Collector) TriggerCollection(ctx context.Context, credentialIDs map[str
  		if _, exists := c.onDemandJobs[credentialID]; exists {
  			continue
  		}
@@ -509,7 +509,37 @@ index ed1c8ed..9e4c6c4 100644
 +			return ctx.Err()
 +		}
 +	}
++	// A probe another owner holds (another Home, or this Home's own periodic round) makes the
++	// forced claim step aside, so its reading is waited for through the snapshot instead.
++	for credentialID := range credentialIDs {
++		if errWait := c.waitForProbeInFlight(ctx, credentialID); errWait != nil {
++			return errWait
++		}
++	}
 +	return nil
++}
++
++// probeInFlightPoll is how often CollectNow rereads a credential another owner is probing. The
++// wait is bounded by the caller's context, and only overlapping probes ever take it.
++const probeInFlightPoll = 25 * time.Millisecond
++
++func (c *Collector) waitForProbeInFlight(ctx context.Context, credentialID string) error {
++	for {
++		snapshot, errSnapshot := c.repo.GetQuotaCredential(ctx, credentialID, c.options.Now().UTC())
++		if errSnapshot != nil {
++			return errSnapshot
++		}
++		if snapshot == nil || snapshot.CollectionStatus != "collecting" {
++			return nil
++		}
++		timer := time.NewTimer(probeInFlightPoll)
++		select {
++		case <-ctx.Done():
++			timer.Stop()
++			return ctx.Err()
++		case <-timer.C:
++		}
++	}
 +}
 +
 +func (c *Collector) startOnDemand(ctx context.Context, accepted []*coreauth.Auth) {
@@ -526,7 +556,7 @@ index ed1c8ed..9e4c6c4 100644
  // Wait waits for asynchronous on-demand collection rounds to finish. It is
  // primarily useful for deterministic tests.
  func (c *Collector) Wait() {
-@@ -311,7 +365,11 @@ func (c *Collector) releaseOnDemandJob(auth *coreauth.Auth) {
+@@ -311,7 +395,11 @@ func (c *Collector) releaseOnDemandJob(auth *coreauth.Auth) {
  		return
  	}
  	c.onDemandMu.Lock()
@@ -539,6 +569,103 @@ index ed1c8ed..9e4c6c4 100644
  	c.onDemandMu.Unlock()
  }
  
+diff --git a/internal/quota/collector_collect_now_backoff_test.go b/internal/quota/collector_collect_now_backoff_test.go
+new file mode 100644
+index 0000000..642f841
+--- /dev/null
++++ b/internal/quota/collector_collect_now_backoff_test.go
+@@ -0,0 +1,91 @@
++package quota
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPIHome/internal/cluster"
++)
++
++const codexUsageAnswer = `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_after_seconds":600,"reset_at":1784160600}}}`
++
++// The funding refusal's bounded refresh must not be swallowed by the collector's own backoff or
++// a stored provider Retry-After: the forced read goes out at once.
++func TestCollectNowGoesOutDuringTheCollectorsBackoff(t *testing.T) {
++	ctx := context.Background()
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "codex-backoff", "codex", map[string]any{"type": "codex", "access_token": "probe-secret"})
++	now := time.Now().UTC()
++	// An earlier probe failed and was told to wait: its next probe is ten minutes away.
++	if claimed, errClaim := repo.ForceClaimEligibleQuotaProbe(ctx, "codex-backoff", "home-earlier", now, time.Minute); errClaim != nil || !claimed {
++		t.Fatalf("setup claim = %v, %v", claimed, errClaim)
++	}
++	if errFail := repo.FailQuotaProbe(ctx, "codex-backoff", "home-earlier", cluster.QuotaCollectionError{Code: "UPSTREAM_RATE_LIMITED", Message: "retry later", Retryable: true, OccurredAt: &now}, now.Add(10*time.Minute)); errFail != nil {
++		t.Fatalf("setup failure: %v", errFail)
++	}
++	var requests atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		requests.Add(1)
++		_, _ = w.Write([]byte(codexUsageAnswer))
++	}))
++	defer server.Close()
++	collector := NewCollector(repo, Options{Owner: "home-a", CodexUsageURL: server.URL, Now: func() time.Time { return time.Now().UTC() }})
++	defer collector.Wait()
++	waitCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
++	defer cancel()
++	if errCollect := collector.CollectNow(waitCtx, map[string]struct{}{"codex-backoff": {}}); errCollect != nil {
++		t.Fatalf("CollectNow() during the backoff = %v", errCollect)
++	}
++	if requests.Load() != 1 {
++		t.Fatalf("the forced read went out %d times during the collector's backoff, want 1", requests.Load())
++	}
++	if snapshot, errSnapshot := repo.GetQuotaCredential(ctx, "codex-backoff", time.Now().UTC()); errSnapshot != nil || snapshot == nil || snapshot.Freshness != "fresh" {
++		t.Fatalf("no fresh reading after the forced read: %+v, %v", snapshot, errSnapshot)
++	}
++}
++
++// Another prober (another Home, or this Home's own periodic round) holding the lease must not
++// swallow the forced read either: CollectNow waits, within its bound, for that probe's reading.
++func TestCollectNowWaitsForAProbeAnotherOwnerHolds(t *testing.T) {
++	ctx := context.Background()
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "codex-held", "codex", map[string]any{"type": "codex", "access_token": "probe-secret"})
++	release := make(chan struct{})
++	var requests atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		requests.Add(1)
++		<-release
++		_, _ = w.Write([]byte(codexUsageAnswer))
++	}))
++	defer server.Close()
++	other := NewCollector(repo, Options{Owner: "home-b", CodexUsageURL: server.URL, Now: func() time.Time { return time.Now().UTC() }})
++	defer other.Wait()
++	if accepted, errTrigger := other.TriggerCollection(ctx, map[string]struct{}{"codex-held": {}}, nil); errTrigger != nil || accepted != 1 {
++		t.Fatalf("other owner's probe = %d, %v", accepted, errTrigger)
++	}
++	waitForProbeRequests(t, &requests, 1)
++
++	collector := NewCollector(repo, Options{Owner: "home-a", CodexUsageURL: server.URL, Now: func() time.Time { return time.Now().UTC() }})
++	defer collector.Wait()
++	go func() {
++		time.Sleep(300 * time.Millisecond)
++		close(release)
++	}()
++	waitCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
++	defer cancel()
++	started := time.Now()
++	errCollect := collector.CollectNow(waitCtx, map[string]struct{}{"codex-held": {}})
++	if errCollect != nil {
++		t.Fatalf("CollectNow() while another owner probes = %v after %s", errCollect, time.Since(started))
++	}
++	if snapshot, errSnapshot := repo.GetQuotaCredential(ctx, "codex-held", time.Now().UTC()); errSnapshot != nil || snapshot == nil || snapshot.Freshness != "fresh" {
++		t.Fatalf("CollectNow returned after %s without the other owner's fresh reading: %+v, %v", time.Since(started), snapshot, errSnapshot)
++	}
++	if got := requests.Load(); got != 1 {
++		t.Fatalf("the provider was asked %d times, want the one probe already in flight", got)
++	}
++}
 diff --git a/internal/quota/collector_collect_now_test.go b/internal/quota/collector_collect_now_test.go
 new file mode 100644
 index 0000000..73c1846
