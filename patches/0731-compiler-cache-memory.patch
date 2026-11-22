@@ -73,7 +73,19 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
  const validBundle = (value: typeof CompiledCloudApp.Type) => {
    const entry = value.bundle.modules[value.bundle.mainModule];
    const safeName = (name: string) =>
-@@ -94,7 +124,7 @@ export const cachedCompilerResult = <E, R>(
+@@ -75,6 +105,11 @@ const validBundle = (value: typeof CompiledCloudApp.Type) => {
+   );
+ };
+ const maximumBytes = 8 * 1024 * 1024;
++/**
++ * Where every cached result lives. Its version changes with the key's shape, and the compiler
++ * cache proof finds entries by this prefix, so the writer and that reader can't disagree.
++ */
++export const compilerCacheEntries = "https://compiler-cache.invalid/v3/";
+ const optional = <A, E, R>(work: Effect.Effect<A, E, R>) =>
+   work.pipe(
+     Effect.option,
+@@ -94,7 +129,7 @@ export const cachedCompilerResult = <E, R>(
      readonly dependencyFiles: ReadonlyArray<{
        readonly path: string;
        readonly content: string | null;
@@ -82,7 +94,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
      }>;
      readonly onHit?: () => void;
    },
-@@ -110,14 +140,12 @@ export const cachedCompilerResult = <E, R>(
+@@ -110,14 +145,12 @@ export const cachedCompilerResult = <E, R>(
      const key = yield* digest(
        JSON.stringify([
          input.release,
@@ -96,11 +108,11 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
        ]),
      );
 -    const url = `https://compiler-cache.invalid/v2/${key}`;
-+    const url = `https://compiler-cache.invalid/v3/${key}`;
++    const url = `${compilerCacheEntries}${key}`;
      const hit = yield* optional(
        attempt(() => cache.value.match(url)).pipe(
          Effect.flatMap((response) =>
-@@ -146,6 +174,9 @@ export const cachedCompilerResult = <E, R>(
+@@ -146,6 +179,9 @@ export const cachedCompilerResult = <E, R>(
        return hit.value;
      }
      const value = yield* compile;
@@ -110,3 +122,27 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
      yield* optional(
        Schema.encodeEffect(CachedOutput)(value).pipe(
          Effect.flatMap((payload) =>
+diff --git a/scripts/compiler-cache-proof/storage.ts b/scripts/compiler-cache-proof/storage.ts
+--- a/scripts/compiler-cache-proof/storage.ts
++++ b/scripts/compiler-cache-proof/storage.ts
+@@ -4,6 +4,7 @@ import { join } from "node:path";
+ import { DatabaseSync } from "node:sqlite";
+ import { Headers, Response, type Miniflare } from "miniflare";
+ import { Schema } from "effect";
++import { compilerCacheEntries } from "../../apps/hosted/cloud/src/implementation/compiler-result-cache.ts";
+ 
+ const Keys = Schema.Array(Schema.Struct({ key: Schema.String }));
+ export const compilerCacheKeys = async (directory: string): Promise<string[]> => {
+@@ -25,10 +26,8 @@ export const compilerCacheKeys = async (directory: string): Promise<string[]> =>
+           continue;
+         const rows = Schema.decodeUnknownSync(Keys)(
+           db
+-            .prepare(
+-              "SELECT key FROM _mf_entries WHERE key LIKE 'https://compiler-cache.invalid/v2/%'",
+-            )
+-            .all(),
++            .prepare("SELECT key FROM _mf_entries WHERE key LIKE ?")
++            .all(`${compilerCacheEntries}%`),
+         );
+         keys.push(...rows.map((row) => row.key));
+       } finally {

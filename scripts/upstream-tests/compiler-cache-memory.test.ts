@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Effect } from "effect";
 
 const upstream = new URL("../../.upstream/", import.meta.url);
 const load = (path: string) => import(new URL(path, upstream).href);
-const { cachedCompilerResult } = await load(
-  "apps/hosted/cloud/src/implementation/compiler-result-cache.ts",
-);
+const [{ cachedCompilerResult }, { compilerCacheKeys }] = await Promise.all([
+  load("apps/hosted/cloud/src/implementation/compiler-result-cache.ts"),
+  load("scripts/compiler-cache-proof/storage.ts"),
+]);
 
 const MB = 1024 * 1024;
 const release = "a".repeat(40);
@@ -61,7 +66,7 @@ const productionCache = () => {
       },
     }),
   } as unknown as CacheStorage;
-  return { puts };
+  return { puts, entries };
 };
 
 /** The largest string and byte array the cache materializes while it runs. */
@@ -177,4 +182,23 @@ test("a storable result is still reused, and any source or dependency change mis
     4,
     "changed dependency bytes, dependency text or source compile again",
   );
+});
+
+test("the compiler cache proof finds the entry the cache writes", async () => {
+  const { entries } = productionCache();
+  await run({ dependencyFiles: vault().slice(0, 4), result: compiled(1024) });
+  const [url] = entries.keys();
+  assert.ok(url, "the compile is stored");
+  // workerd lists a cache namespace's entries in `_mf_entries`; the proof reads the release's
+  // entry from there before it corrupts it.
+  const directory = await mkdtemp(join(tmpdir(), "compiler-cache-proof-"));
+  try {
+    const db = new DatabaseSync(join(directory, "cache.sqlite"));
+    db.exec("CREATE TABLE _mf_entries (key TEXT PRIMARY KEY)");
+    db.prepare("INSERT INTO _mf_entries (key) VALUES (?)").run(url);
+    db.close();
+    assert.deepEqual(await compilerCacheKeys(directory), [url]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
