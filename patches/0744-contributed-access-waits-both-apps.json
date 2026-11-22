@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-contributed-access-waits-both-apps",
+  "file": "0744-contributed-access-waits-both-apps.patch",
+  "content_sha256": "1c21b6bf5ed35a1870b5171d50523b604e683d7642effc6129483aab561f4253",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

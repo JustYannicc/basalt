@@ -1,0 +1,54 @@
+diff --git a/e2e/tests/contributed-app-access.spec.ts b/e2e/tests/contributed-app-access.spec.ts
+--- a/e2e/tests/contributed-app-access.spec.ts
++++ b/e2e/tests/contributed-app-access.spec.ts
+@@ -1,5 +1,5 @@
+ import { expect, layer } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Effect, Schedule, Schema } from "effect";
+ import { body } from "../support/api.ts";
+ import { requirementPath } from "../support/app-accounts.ts";
+ import { ok } from "../support/app-links.ts";
+@@ -9,6 +9,7 @@
+ import { scenarios } from "../test-plan.ts";
+ 
+ const Revision = Schema.Struct({ revision: Schema.String });
++class OtherPending extends Schema.TaggedError<OtherPending>()("OtherPending", {}) {}
+ 
+ layer(RuntimeLive, { excludeTestServices: true })("Contributed account access", (it) => {
+   it.effect(scenarios.contributedAppAccess.title, (context) =>
+@@ -62,6 +63,25 @@
+             input: {},
+           });
+         expect((yield* otherCall()).body).toMatchObject({ shared: [personal] });
++        // A member's departure removes its links one app at a time and retries a failed one two
++        // seconds later, woken by a write. Like waitForLinks for the app under test, each try's
++        // POST drives the queued cleanup on the other app.
++        const waitForOtherLinks = (expected: readonly string[]) =>
++          otherCall().pipe(
++            Effect.tap(ok),
++            Effect.andThen(otherLinks()),
++            Effect.flatMap((links) =>
++              JSON.stringify(links.map((link) => link.account.id).sort()) ===
++              JSON.stringify([...expected].sort())
++                ? Effect.succeed(links)
++                : Effect.fail(new OtherPending()),
++            ),
++            Effect.retry({
++              while: Schema.is(OtherPending),
++              schedule: Schedule.spaced("100 millis"),
++            }),
++            Effect.timeout("15 seconds"),
++          );
+         yield* ok(yield* f.link(actors.member, "shared", personal));
+ 
+         const group = yield* f.group([ids.owner, ids.member]);
+@@ -99,7 +119,9 @@
+         yield* ok(yield* f.link(actors.member, "shared", shared));
+         yield* ok(yield* otherLink(shared));
+         yield* accountGroup.set([ids.owner]);
++        // The saved rows below are decided by both apps' links, so wait for both departures.
+         yield* f.waitForLinks([ordinary, personal]);
++        yield* waitForOtherLinks([personal]);
+         expect((yield* savedRows()).some((row) => row.id === shared)).toBe(false);
+         expect((yield* otherCall()).body).toMatchObject({ shared: [personal] });
+         expect(

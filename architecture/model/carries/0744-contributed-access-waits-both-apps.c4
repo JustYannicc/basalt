@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The contributed account access proof waits for the member's departure on both apps before it reads the member's saved accounts: the departure removes one app's link per transaction and retries a failed removal two seconds later, woken by a write, and a saved account stays listed while any app-scope link on an app the caller can read remains. Each try of the wait for the other app sends that app a query POST, which drives the queued cleanup there as the wait on the app under test does."
+    }
+  }
+}
