@@ -1,0 +1,560 @@
+diff --git a/internal/cluster/usage_credits.go b/internal/cluster/usage_credits.go
+index 9f59521..1c9a79a 100644
+--- a/internal/cluster/usage_credits.go
++++ b/internal/cluster/usage_credits.go
+@@ -70,12 +70,17 @@ func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time
+ 	plan := item.Freshness == "fresh" && item.ObservedAt != nil && !item.ObservedAt.After(now)
+ 	known := false
+ 	exhausted := false
++	// An aged window still shows a plan that was empty when last read and has not reset since.
++	agedEmpty := false
+ 	for _, window := range item.Windows {
+ 		if !usageCreditWindowApplies(window, model) {
+ 			continue
+ 		}
+ 		if window.ExpiresAt != nil && !now.Before(*window.ExpiresAt) || window.ObservedAt.After(now) {
+ 			plan = false
++			if !window.ObservedAt.After(now) && window.RemainingRatio != nil && *window.RemainingRatio <= 0 && (window.ResetAt == nil || now.Before(*window.ResetAt)) {
++				agedEmpty = true
++			}
+ 			continue
+ 		}
+ 		if window.IsUnlimited {
+@@ -102,7 +107,17 @@ func usageCreditFundingTier(item QuotaCredentialSnapshot, model string, now time
+ 		return 1
+ 	}
+ 	if credits != nil && (credits.CreditBlocked || credits.State == "none" || credits.State == "disabled") {
+-		return 3
++		if exhausted || agedEmpty {
++			return 3
++		}
++		// Credits that can't be spent leave only the plan, so an aged plan reading never refuses
++		// the account by itself: an empty plan comes back as the vendor's own 429 and cools it.
++		if freshCredits {
++			return 0
++		}
++		// The credits reading ages with the plan's, so it no longer proves credits are off:
++		// unknown, which the pool refreshes before refusing under a never policy.
++		return 2
+ 	}
+ 	return 2
+ }
+diff --git a/internal/cluster/usage_credits_stale_test.go b/internal/cluster/usage_credits_stale_test.go
+new file mode 100644
+index 0000000..013481b
+--- /dev/null
++++ b/internal/cluster/usage_credits_stale_test.go
+@@ -0,0 +1,48 @@
++package cluster
++
++import (
++	"testing"
++	"time"
++)
++
++// An idle account's readings age out 30 minutes after their last probe. How such an account is
++// classified decides whether the pool serves it or refuses the call outright.
++func TestUsageCreditAgedPlanReadingWithCreditsOff(t *testing.T) {
++	now := time.Unix(100_000, 0).UTC()
++	observed := now.Add(-31 * time.Minute)
++	aged := observed.Add(30 * time.Minute)
++	fresh := now.Add(29 * time.Minute)
++	reset := now.Add(72 * time.Hour)
++	remaining, empty := .72, 0.0
++	reading := func(freshness string, windowExpires time.Time, ratio *float64, creditsExpire time.Time) QuotaCredentialSnapshot {
++		return QuotaCredentialSnapshot{
++			Provider: "claude", CredentialType: "oauth", CredentialStatus: "enabled", Freshness: freshness, ObservedAt: &observed,
++			Windows: []QuotaWindow{{ID: "claude-seven-day", Scope: "account", RemainingRatio: ratio, ObservedAt: observed, ExpiresAt: &windowExpires, ResetAt: &reset}},
++			// Extra usage off at the vendor: the collector reads it as disabled and blocked.
++			UsageCredits: &QuotaUsageCredits{State: "disabled", CreditBlocked: true, ObservedAt: observed, ExpiresAt: creditsExpire},
++		}
++	}
++	cases := []struct {
++		name string
++		item QuotaCredentialSnapshot
++		want int
++	}{
++		{"an aged plan reading that left quota, with credits known off, stays on its plan", reading("stale", aged, &remaining, fresh), 0},
++		{"an aged plan reading with an aged credits reading is unknown, never refused outright", reading("stale", aged, &remaining, aged), 2},
++		{"a plan last seen empty before its reset stays out, credits known off", reading("stale", aged, &empty, fresh), 3},
++		{"a plan last seen empty before its reset stays out, credits aged", reading("stale", aged, &empty, aged), 3},
++		{"a fresh empty plan with credits off stays out", reading("fresh", fresh, &empty, fresh), 3},
++		{"a fresh plan with quota is on its plan", reading("fresh", fresh, &remaining, fresh), 0},
++	}
++	for _, c := range cases {
++		if got := usageCreditFundingTier(c.item, "claude-opus-5-5", now); got != c.want {
++			t.Errorf("%s: tier %d, want %d", c.name, got, c.want)
++		}
++	}
++	past := now.Add(-time.Minute)
++	reopened := reading("stale", aged, &empty, fresh)
++	reopened.Windows[0].ResetAt = &past
++	if got := usageCreditFundingTier(reopened, "claude-opus-5-5", now); got != 0 {
++		t.Errorf("a plan whose empty window has since reset kept the account out: tier %d", got)
++	}
++}
+diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
+index 1953186..0ea03da 100644
+--- a/internal/home/usage_credits.go
++++ b/internal/home/usage_credits.go
+@@ -17,6 +17,16 @@ type usageCreditCollector interface {
+ 	TriggerCollection(context.Context, map[string]struct{}, map[string]struct{}) (int, error)
+ }
+ 
++// usageCreditWaitingCollector runs a forced collection and returns once it has finished.
++type usageCreditWaitingCollector interface {
++	CollectNow(context.Context, map[string]struct{}) error
++}
++
++// usageCreditRefreshWait bounds how long a funding refusal waits for fresh readings before it
++// refuses. The node gives each dispatch call to Home 3 s (homeRedisOperationTimeout), so the wait
++// stays well inside that.
++var usageCreditRefreshWait = 1500 * time.Millisecond
++
+ // SetUsageCreditCollector connects funding refusals to the existing bounded collector.
+ func (r *Runtime) SetUsageCreditCollector(collector usageCreditCollector) {
+ 	r.cfgMu.Lock()
+@@ -24,12 +34,15 @@ func (r *Runtime) SetUsageCreditCollector(collector usageCreditCollector) {
+ 	r.usageCreditCollector = collector
+ }
+ 
+-func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) error {
++// requestUsageCreditRefresh queues one bounded collection for the accounts not refreshed in the
++// last 30 s. With a collector that can be waited on, it waits up to usageCreditRefreshWait and
++// reports whether the collection finished, so the caller can decide on the fresh readings.
++func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) (bool, error) {
+ 	r.cfgMu.RLock()
+ 	collector := r.usageCreditCollector
+ 	r.cfgMu.RUnlock()
+ 	if collector == nil {
+-		return errors.New("quota collector is unavailable")
++		return false, errors.New("quota collector is unavailable")
+ 	}
+ 	now := time.Now()
+ 	selected := make(map[string]struct{})
+@@ -52,11 +65,25 @@ func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) e
+ 		}
+ 	}
+ 	r.usageCreditRefreshMu.Unlock()
+-	if len(selected) > 0 {
++	if len(selected) == 0 {
++		return false, nil
++	}
++	waiting, canWait := collector.(usageCreditWaitingCollector)
++	if !canWait {
+ 		_, errTrigger := collector.TriggerCollection(ctx, selected, nil)
+-		return errTrigger
++		return false, errTrigger
++	}
++	waitCtx, cancel := context.WithTimeout(ctx, usageCreditRefreshWait)
++	defer cancel()
++	errWait := waiting.CollectNow(waitCtx, selected)
++	if errWait == nil {
++		return true, nil
+ 	}
+-	return nil
++	if waitCtx.Err() != nil {
++		// The collection keeps running for the next call; this one decides on what it has.
++		return false, nil
++	}
++	return false, errWait
+ }
+ 
+ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, pinned string, opts *coreauth.Options) bool {
+@@ -75,11 +102,19 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
+ 		if errTiers != nil {
+ 			return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding policy could not be read.", HTTPStatus: 503, Retryable: true}
+ 		}
+-		best := 3
+-		for _, id := range ids {
+-			tier, exists := tiers[id]
+-			if exists && tier < best {
+-				best = tier
++		best := bestUsageCreditTier(ids, tiers)
++		if best >= 3 {
++			// An idle account's readings age out, so refresh them before refusing the call.
++			refreshed, errRefresh := r.requestUsageCreditRefresh(ctx, ids)
++			if errRefresh != nil {
++				return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "A fresh pool funding reading could not be queued.", HTTPStatus: 503, Retryable: true}
++			}
++			if refreshed {
++				tiers, routing, errTiers = store.UsageCreditRoutingForAPIKey(ctx, apiKey, model, models)
++				if errTiers != nil {
++					return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "Pool funding policy could not be read.", HTTPStatus: 503, Retryable: true}
++				}
++				best = bestUsageCreditTier(ids, tiers)
+ 			}
+ 		}
+ 		attempts := selection.Attempts
+@@ -87,11 +122,6 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
+ 		selection.Attempts = attempts
+ 		selection.PlanFunded = best == 0
+ 		selection.Reason = "existing_selector"
+-		if best >= 3 {
+-			if errRefresh := r.requestUsageCreditRefresh(ctx, ids); errRefresh != nil {
+-				return nil, &coreauth.Error{Code: "usage_credit_policy_unavailable", Message: "A fresh pool funding reading could not be queued.", HTTPStatus: 503, Retryable: true}
+-			}
+-		}
+ 		eligible := make([]*coreauth.Auth, 0, len(candidates))
+ 		for _, auth := range candidates {
+ 			if tier, exists := tiers[auth.ID]; exists && tier == best && tier < 3 {
+@@ -111,3 +141,13 @@ func (r *Runtime) installUsageCreditFilter(ctx context.Context, apiKey, model, p
+ 	}
+ 	return true
+ }
++
++func bestUsageCreditTier(ids []string, tiers map[string]int) int {
++	best := 3
++	for _, id := range ids {
++		if tier, exists := tiers[id]; exists && tier < best {
++			best = tier
++		}
++	}
++	return best
++}
+diff --git a/internal/home/usage_credits_stale_test.go b/internal/home/usage_credits_stale_test.go
+new file mode 100644
+index 0000000..b94e41c
+--- /dev/null
++++ b/internal/home/usage_credits_stale_test.go
+@@ -0,0 +1,145 @@
++package home
++
++import (
++	"context"
++	"sync"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPIHome/internal/registry"
++)
++
++// agingTierStore answers the tiers of the reading the collector last wrote.
++type agingTierStore struct {
++	ClusterAdapter
++	mu    sync.Mutex
++	tiers map[string]int
++	reads int
++}
++
++func (s *agingTierStore) UsageCreditRoutingForAPIKey(context.Context, string, string, map[string]string) (map[string]int, coreauth.AccountSelection, error) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.reads++
++	tiers := make(map[string]int, len(s.tiers))
++	for id, tier := range s.tiers {
++		tiers[id] = tier
++	}
++	return tiers, coreauth.AccountSelection{Policy: "reset_aware"}, nil
++}
++
++func (s *agingTierStore) set(id string, tier int) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.tiers[id] = tier
++}
++
++// probingCollector stands for the quota collector: a probe writes a fresh reading.
++type probingCollector struct {
++	store    *agingTierStore
++	fresh    map[string]int
++	block    chan struct{}
++	mu       sync.Mutex
++	waited   int
++	triggers int
++}
++
++func (c *probingCollector) TriggerCollection(context.Context, map[string]struct{}, map[string]struct{}) (int, error) {
++	c.mu.Lock()
++	c.triggers++
++	c.mu.Unlock()
++	return 0, nil
++}
++
++func (c *probingCollector) CollectNow(ctx context.Context, ids map[string]struct{}) error {
++	c.mu.Lock()
++	c.waited++
++	c.mu.Unlock()
++	if c.block != nil {
++		select {
++		case <-c.block:
++		case <-ctx.Done():
++			return ctx.Err()
++		}
++	}
++	for id := range ids {
++		if tier, ok := c.fresh[id]; ok {
++			c.store.set(id, tier)
++		}
++	}
++	return nil
++}
++
++func registerFundingAuth(t *testing.T, manager *coreauth.Manager, id string) {
++	t.Helper()
++	auth := &coreauth.Auth{ID: id, Provider: "claude", Status: coreauth.StatusActive, Attributes: map[string]string{"auth_kind": "oauth"}}
++	registry.GetGlobalRegistry().RegisterClient(id, "claude", []*registry.ModelInfo{{ID: "claude-opus-5-5"}})
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++	if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++		t.Fatal(errRegister)
++	}
++}
++
++// The production refusal: the only usable account's reading had aged out after 30 idle minutes.
++// The call must wait for the bounded collection and be served on the fresh reading.
++func TestUsageCreditAgedReadingIsRefreshedBeforeTheCallIsRefused(t *testing.T) {
++	manager := coreauth.NewManager(nil, &creditStickySelector{}, nil)
++	registerFundingAuth(t, manager, "only")
++	store := &agingTierStore{tiers: map[string]int{"only": 3}}
++	collector := &probingCollector{store: store, fresh: map[string]int{"only": 0}}
++	runtime := &Runtime{coreManager: manager, clusterAdapter: store}
++	runtime.SetUsageCreditCollector(collector)
++	result, errDispatch := runtime.DispatchForAPIKeyWithConcurrency(t.Context(), "claude-opus-5-5", nil, "pool-key", "", nil, "", DispatchConcurrencyContext{})
++	if errDispatch != nil || result == nil || result.AuthID != "only" {
++		t.Fatalf("an account whose fresh reading has quota was refused: %v", errDispatch)
++	}
++	if collector.waited != 1 {
++		t.Fatalf("waited for %d collections, want one", collector.waited)
++	}
++}
++
++// A collection that can't finish within the bound never holds the call past it, and a reading
++// that is still unusable after the refresh is refused as before.
++func TestUsageCreditRefreshIsBoundedAndAStillEmptyReadingIsRefused(t *testing.T) {
++	store := &agingTierStore{tiers: map[string]int{"empty": 3}}
++	collector := &probingCollector{store: store, fresh: map[string]int{"empty": 3}}
++	runtime := &Runtime{clusterAdapter: store}
++	runtime.SetUsageCreditCollector(collector)
++	var opts coreauth.Options
++	if !runtime.installUsageCreditFilter(t.Context(), "pool-key", "claude-opus-5-5", "", &opts) {
++		t.Fatal("filter unavailable")
++	}
++	selected, errFilter := opts.CandidateFilter([]*coreauth.Auth{{ID: "empty"}}, map[string]string{"empty": "claude-opus-5-5"})
++	if errFilter != nil || len(selected) != 0 {
++		t.Fatalf("a reading still empty after the refresh was admitted: %v", errFilter)
++	}
++	if store.reads != 2 {
++		t.Fatalf("read the funding %d times, want once before and once after the refresh", store.reads)
++	}
++
++	slow := &agingTierStore{tiers: map[string]int{"slow": 3}}
++	blocked := &probingCollector{store: slow, fresh: map[string]int{"slow": 0}, block: make(chan struct{})}
++	defer close(blocked.block)
++	slowRuntime := &Runtime{clusterAdapter: slow}
++	slowRuntime.SetUsageCreditCollector(blocked)
++	// The bound alone limits the wait: the caller's context has no deadline.
++	bound := usageCreditRefreshWait
++	usageCreditRefreshWait = 100 * time.Millisecond
++	t.Cleanup(func() { usageCreditRefreshWait = bound })
++	var slowOpts coreauth.Options
++	if !slowRuntime.installUsageCreditFilter(t.Context(), "pool-key", "claude-opus-5-5", "", &slowOpts) {
++		t.Fatal("filter unavailable")
++	}
++	started := time.Now()
++	selected, errFilter = slowOpts.CandidateFilter([]*coreauth.Auth{{ID: "slow"}}, map[string]string{"slow": "claude-opus-5-5"})
++	if elapsed := time.Since(started); elapsed > time.Second {
++		t.Fatalf("the refusal waited %s for a collection that never finished", elapsed)
++	}
++	if errFilter != nil || len(selected) != 0 {
++		t.Fatalf("an unrefreshed reading was admitted: %v", errFilter)
++	}
++	if blocked.waited != 1 {
++		t.Fatalf("waited for %d collections, want one", blocked.waited)
++	}
++}
+diff --git a/internal/quota/collector.go b/internal/quota/collector.go
+index ed1c8ed..9e4c6c4 100644
+--- a/internal/quota/collector.go
++++ b/internal/quota/collector.go
+@@ -83,7 +83,7 @@ type Collector struct {
+ 	providerSemMu sync.Mutex
+ 	providerSem   map[string]chan struct{}
+ 	onDemandMu    sync.Mutex
+-	onDemandJobs  map[string]struct{}
++	onDemandJobs  map[string]chan struct{}
+ 	background    sync.WaitGroup
+ }
+ 
+@@ -155,7 +155,7 @@ func NewCollector(repo *cluster.Repository, options Options) *Collector {
+ 		repo:         repo,
+ 		options:      options,
+ 		providerSem:  make(map[string]chan struct{}),
+-		onDemandJobs: make(map[string]struct{}),
++		onDemandJobs: make(map[string]chan struct{}),
+ 	}
+ 	if repo.DialectName() == "sqlite" {
+ 		collector.globalSem = make(chan struct{}, options.ProviderConcurrency)
+@@ -240,20 +240,74 @@ func (c *Collector) TriggerCollection(ctx context.Context, credentialIDs map[str
+ 		if _, exists := c.onDemandJobs[credentialID]; exists {
+ 			continue
+ 		}
+-		c.onDemandJobs[credentialID] = struct{}{}
++		c.onDemandJobs[credentialID] = make(chan struct{})
+ 		accepted = append(accepted, auth)
+ 	}
+ 	c.onDemandMu.Unlock()
+-	if len(accepted) > 0 {
+-		c.background.Add(1)
+-		go func() {
+-			defer c.background.Done()
+-			c.collectCredentials(context.WithoutCancel(ctx), accepted, true)
+-		}()
+-	}
++	c.startOnDemand(ctx, accepted)
+ 	return len(accepted), nil
+ }
+ 
++// CollectNow runs a forced collection of the given credentials and returns once each has
++// finished, or when ctx ends. A credential another on-demand round is already collecting is
++// waited for, not collected twice. The collection itself outlives ctx.
++func (c *Collector) CollectNow(ctx context.Context, credentialIDs map[string]struct{}) error {
++	if c == nil || c.repo == nil {
++		return fmt.Errorf("quota collector is unavailable")
++	}
++	if len(credentialIDs) == 0 {
++		return nil
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	auths, errAuths := c.repo.ListAuths(ctx)
++	if errAuths != nil {
++		return errAuths
++	}
++	accepted := make([]*coreauth.Auth, 0, len(credentialIDs))
++	waits := make([]chan struct{}, 0, len(credentialIDs))
++	c.onDemandMu.Lock()
++	for _, auth := range auths {
++		if !quotaProbeEligible(auth) {
++			continue
++		}
++		credentialID := strings.TrimSpace(auth.ID)
++		if _, ok := credentialIDs[credentialID]; !ok {
++			continue
++		}
++		if done, exists := c.onDemandJobs[credentialID]; exists {
++			waits = append(waits, done)
++			continue
++		}
++		done := make(chan struct{})
++		c.onDemandJobs[credentialID] = done
++		waits = append(waits, done)
++		accepted = append(accepted, auth)
++	}
++	c.onDemandMu.Unlock()
++	c.startOnDemand(ctx, accepted)
++	for _, done := range waits {
++		select {
++		case <-done:
++		case <-ctx.Done():
++			return ctx.Err()
++		}
++	}
++	return nil
++}
++
++func (c *Collector) startOnDemand(ctx context.Context, accepted []*coreauth.Auth) {
++	if len(accepted) == 0 {
++		return
++	}
++	c.background.Add(1)
++	go func() {
++		defer c.background.Done()
++		c.collectCredentials(context.WithoutCancel(ctx), accepted, true)
++	}()
++}
++
+ // Wait waits for asynchronous on-demand collection rounds to finish. It is
+ // primarily useful for deterministic tests.
+ func (c *Collector) Wait() {
+@@ -311,7 +365,11 @@ func (c *Collector) releaseOnDemandJob(auth *coreauth.Auth) {
+ 		return
+ 	}
+ 	c.onDemandMu.Lock()
+-	delete(c.onDemandJobs, strings.TrimSpace(auth.ID))
++	credentialID := strings.TrimSpace(auth.ID)
++	if done, exists := c.onDemandJobs[credentialID]; exists {
++		close(done)
++		delete(c.onDemandJobs, credentialID)
++	}
+ 	c.onDemandMu.Unlock()
+ }
+ 
+diff --git a/internal/quota/collector_collect_now_test.go b/internal/quota/collector_collect_now_test.go
+new file mode 100644
+index 0000000..73c1846
+--- /dev/null
++++ b/internal/quota/collector_collect_now_test.go
+@@ -0,0 +1,71 @@
++package quota
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// A funding refusal waits on CollectNow: it must return only once the reading is written, and a
++// credential another round is already probing is waited for instead of probed twice.
++func TestCollectNowWaitsForTheProbeAndNeverProbesTwice(t *testing.T) {
++	repo := newCollectorTestRepository(t)
++	seedCollectorProviderAuth(t, repo, "codex-a", "codex", map[string]any{"type": "codex", "access_token": "probe-secret"})
++	var requests atomic.Int32
++	release := make(chan struct{})
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
++		if request.URL.Path != "/codex" {
++			http.NotFound(w, request)
++			return
++		}
++		requests.Add(1)
++		<-release
++		_, _ = w.Write([]byte(`{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_after_seconds":600,"reset_at":1784160600}}}`))
++	}))
++	defer server.Close()
++	collector := NewCollector(repo, Options{Owner: "home-a", CodexUsageURL: server.URL + "/codex", Now: func() time.Time { return time.Now().UTC() }})
++	defer collector.Wait()
++
++	if accepted, errTrigger := collector.TriggerCollection(context.Background(), map[string]struct{}{"codex-a": {}}, nil); errTrigger != nil || accepted != 1 {
++		t.Fatalf("TriggerCollection() = %d, %v", accepted, errTrigger)
++	}
++	waitForProbeRequests(t, &requests, 1)
++
++	done := make(chan error, 1)
++	go func() { done <- collector.CollectNow(context.Background(), map[string]struct{}{"codex-a": {}}) }()
++	select {
++	case errCollect := <-done:
++		t.Fatalf("CollectNow returned before the probe finished: %v", errCollect)
++	case <-time.After(100 * time.Millisecond):
++	}
++	close(release)
++	select {
++	case errCollect := <-done:
++		if errCollect != nil {
++			t.Fatalf("CollectNow() error = %v", errCollect)
++		}
++	case <-time.After(10 * time.Second):
++		t.Fatal("CollectNow never returned")
++	}
++	if got := requests.Load(); got != 1 {
++		t.Fatalf("probed %d times, want the one in-flight probe", got)
++	}
++	snapshot, errSnapshot := repo.GetQuotaCredential(context.Background(), "codex-a", time.Now().UTC())
++	if errSnapshot != nil || snapshot == nil || snapshot.Freshness != "fresh" {
++		t.Fatalf("CollectNow returned without a fresh reading: %+v, %v", snapshot, errSnapshot)
++	}
++
++	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
++	defer cancel()
++	slow := make(chan struct{})
++	slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { <-slow }))
++	defer slowServer.Close()
++	defer close(slow)
++	slowCollector := NewCollector(repo, Options{Owner: "home-b", CodexUsageURL: slowServer.URL, Now: func() time.Time { return time.Now().UTC() }})
++	if errCollect := slowCollector.CollectNow(ctx, map[string]struct{}{"codex-a": {}}); errCollect == nil {
++		t.Fatal("CollectNow outlived its deadline")
++	}
++}
