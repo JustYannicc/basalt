@@ -288,7 +288,7 @@ export async function handoffRuntime(
     options.role ?? "runtime",
     runtimeFixtureCode,
     nativeResponse,
-    { controlPair: nativeControlPair, ...options.endpoint },
+    { controlPair: nativeControlPair, ownStorage: storage, ...options.endpoint },
   );
   return {
     ctx,

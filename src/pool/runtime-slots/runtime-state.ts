@@ -24,6 +24,14 @@ export interface RuntimeState {
   };
   waitUntil(work: Promise<unknown>): void;
 }
+/**
+ * A runtime Durable Object's own storage. A state scoped over another object's storage never has it,
+ * so nothing but the object that owns an alarm can drop it.
+ */
+export interface OwnedRuntimeStorage {
+  delete(key: string): Promise<unknown>;
+  deleteAlarm(): Promise<void>;
+}
 export interface ControllerState extends RuntimeState {
   storage: RuntimeState["storage"] & TransactionStorage;
 }
