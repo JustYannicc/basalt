@@ -54,6 +54,7 @@ export const publicView = (computer: StoredComputer): Computer => ({
   revokedAt: computer.revokedAt,
   removedAt: computer.removedAt ?? null,
   tools: hasTools(computer),
+  ...(usesNoPool(computer) && { models: false }),
   // Unclaimed with its link gone: nobody can ever set it up, so the page may clear it.
   ...(computer.state === "issuing" && !computer.link && { lapsed: true }),
 });
@@ -65,11 +66,24 @@ export const hasTools = (computer: {
 }): boolean =>
   computer.toolsKeyId !== undefined || computer.native?.toolsOrganization !== undefined;
 
-/** Include every destination whose backend write may have succeeded. */
-export const boundPools = (computer: StoredComputer): string[] => [
-  ...new Set([
-    computer.pool,
-    ...(computer.switching ?? []),
-    ...(computer.switchingTo ? [computer.switchingTo] : []),
-  ]),
-];
+/**
+ * A device approved for tools only. Its grant alone authorizes its tools and it holds nothing at
+ * any pool; its row exists for Connect's list and revoke.
+ */
+export const usesNoPool = (computer: Pick<StoredComputer, "native">): boolean =>
+  computer.native?.models === false;
+
+/**
+ * Include every destination whose backend write may have succeeded. A tools-only device has none,
+ * so no pool's access change removes it.
+ */
+export const boundPools = (computer: StoredComputer): string[] =>
+  usesNoPool(computer)
+    ? []
+    : [
+        ...new Set([
+          computer.pool,
+          ...(computer.switching ?? []),
+          ...(computer.switchingTo ? [computer.switchingTo] : []),
+        ]),
+      ];

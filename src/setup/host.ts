@@ -34,6 +34,7 @@ function computerSummary(value: unknown): Record<string, unknown> {
   if (
     !text(input.id, 512) ||
     (input.tools !== undefined && typeof input.tools !== "boolean") ||
+    (input.models !== undefined && typeof input.models !== "boolean") ||
     (input.lapsed !== undefined && input.lapsed !== true)
   )
     throw new SetupError(502, "Setup service returned an invalid computer.");
@@ -42,6 +43,7 @@ function computerSummary(value: unknown): Record<string, unknown> {
   return {
     ...Object.fromEntries(fields.filter((key) => key in input).map((key) => [key, input[key]])),
     ...(input.tools !== undefined && { tools: input.tools }),
+    ...(input.models !== undefined && { models: input.models }),
     ...(input.lapsed && { lapsed: true }),
   };
 }
@@ -139,8 +141,19 @@ async function toolsOnlyDevices(request: Request, env: SetupEnv): Promise<unknow
       return undefined;
     }
     const devices = record(await response.json()).devices;
+    if (!Array.isArray(devices)) return undefined;
+    // A tools-only grant works only while its person belongs to its tools organization. Without
+    // the organization list, membership stays unknown and the pool leaves the row as it is.
+    const organizations = await organizationList(request, env);
+    const members = organizations && new Set(organizations.map(({ id }) => id));
+    const reported = members
+      ? devices.map((device) => {
+          const value = record(device);
+          return { ...value, member: members.has(value.toolsOrganization) };
+        })
+      : devices;
     // The pool refuses setup requests over 64,000 characters; its signed envelope grows by a third.
-    return Array.isArray(devices) && JSON.stringify(devices).length <= 32_000 ? devices : undefined;
+    return JSON.stringify(reported).length <= 32_000 ? reported : undefined;
   } catch {
     return undefined;
   }
