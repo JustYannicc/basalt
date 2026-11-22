@@ -126,6 +126,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     onProductEvent,
   );
   home.observed = async () => null;
+  const removals: { abandonedApprovals: number }[] = [];
   const make = () =>
     new Computers({
       storage,
@@ -136,6 +137,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
       origin: "https://setup.example",
       onProductEvent,
       usage,
+      reportRemoved: (removed) => removals.push(removed),
     });
   let computers = make();
   async function context(user = member, claims: PoolClaims = pool) {
@@ -202,6 +204,7 @@ export function fixture(usage?: Pick<PoolUsage, "summary" | "setCap">) {
     server,
     home,
     events,
+    removals,
     context,
     action,
     access,
