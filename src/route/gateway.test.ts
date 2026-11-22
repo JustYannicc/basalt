@@ -189,17 +189,23 @@ test("a key rotation keeps the device signed in and reseals under the current ke
   assert.equal((await openRouteState(deps.secret, routeId, stored!.sealed)).state, "old-key-state");
 });
 
-test("a state no key opens starts a logged-out node, never a crash", async () => {
+test("a state no key opens is forgotten, never a crash, and asks for a new sign-in", async () => {
   const { gateway, storage, container } = await created();
   await storage.put("route-v1:state", {
     sealed: await sealRouteState("c".repeat(64), routeId, "lost"),
     bootId: "boot-0",
     revision: 1,
   });
-  const reading = await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
-  assert.deepEqual(container.starts, [null]);
-  assert.equal(reading.state, "needs_login");
-  assert.equal(reading.reason, "route_needs_login");
+  await refusedWith(
+    gateway.select(caller, { exitId: "n1", whenDown: "stop" }),
+    "route_needs_login",
+  );
+  assert.deepEqual(container.starts, []);
+  assert.equal(await storage.get("route-v1:state"), undefined);
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "failed",
+    reason: "route_needs_login",
+  });
 });
 
 test("only crossing into or out of down emits, with reason codes and no names", async () => {
@@ -269,6 +275,8 @@ test("disconnect logs the device out, forgets its identity and stops the contain
 
 test("a tunnel opens to the SOCKS port for its owner and refuses when the gateway is gone", async () => {
   const { gateway, container } = await joined();
+  await refusedWith(gateway.openTunnel({ owner }), "route_gateway_unavailable");
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   const socket = await gateway.openTunnel({ owner });
   assert.equal(container.running, true);
   await socket.close();
@@ -648,14 +656,14 @@ test("a start abandoned by a switch-off never holds up switching back on or disc
   await tunnel;
   await gateway.select(caller, { exitId: null, whenDown: "stop" });
   const again = container.hold("/status");
-  const second = gateway.openTunnel({ owner }).catch(() => {});
+  const listing = gateway.exits(caller).catch(() => {});
   await again.reached;
   await gateway.select(caller, { exitId: null, whenDown: "stop" });
   const leaving = gateway.disconnect(caller);
   await settle();
   again.release();
   await leaving;
-  await second;
+  await listing;
   assert.equal(container.logouts, 1);
 });
 
@@ -725,11 +733,26 @@ test("a restart during a sign-in asks for a new sign-in instead of waiting on a 
   await gateway.login(caller);
   assert.deepEqual(await gateway.joinStatus(caller), { state: "waiting" });
   container.crash();
+  const starts = container.starts.length;
   advance(2_000);
   await gateway.alarm();
   assert.deepEqual(await gateway.joinStatus(caller), {
     state: "failed",
     reason: "route_needs_login",
   });
+  // The dead sign-in boots no empty node to look at.
+  assert.equal(container.starts.length, starts);
+  assert.equal(container.running, false);
   assert.equal("url" in (await gateway.login(caller)) ? "new link" : "ready", "new link");
+});
+
+test("stop when down: an offline exit refuses tunnels, and a recovered one opens them at once", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.exitOnline = false;
+  assert.equal((await gateway.reading(caller)).state, "down");
+  await refusedWith(gateway.openTunnel({ owner }), "route_gateway_unavailable");
+  container.exitOnline = true;
+  const socket = await gateway.openTunnel({ owner });
+  await socket.close();
 });

@@ -90,23 +90,31 @@ export class RouteIdentityStore {
     return (await this.storage.get(routeStateKey)) !== undefined;
   }
 
-  /** The stored state, resealed under the current key after a rotation; null when none opens. */
-  async open(routeId: string): Promise<string | null> {
+  /**
+   * The stored state, and whether it opened only through the previous key. Opening never writes:
+   * the caller reseals through `reseal`, under the same check as any other write, so a reseal can
+   * never bring back an identity a disconnect deleted.
+   */
+  async open(
+    routeId: string,
+  ): Promise<{ state: string | null; reseal: boolean; unreadable: boolean }> {
     const stored = await this.storage.get<StoredState>(routeStateKey);
-    if (!stored) return null;
+    if (!stored) return { state: null, reseal: false, unreadable: false };
     try {
-      const opened = await openRouteState(this.secret, routeId, stored.sealed, this.previous);
-      if (opened.reseal)
-        await this.storage.put(routeStateKey, {
-          ...stored,
-          sealed: await sealRouteState(this.secret, routeId, opened.state),
-        } satisfies StoredState);
-      return opened.state;
+      return {
+        ...(await openRouteState(this.secret, routeId, stored.sealed, this.previous)),
+        unreadable: false,
+      };
     } catch {
-      // Both keys are gone: the node starts logged out and the reading asks for a new sign-in.
+      // Both keys are gone: the seal is useless, and the reading asks for a new sign-in.
       console.log(JSON.stringify({ route_state: "unreadable" }));
-      return null;
+      return { state: null, reseal: false, unreadable: true };
     }
+  }
+
+  /** Sealing is crypto work, done before a commit so the commit itself only writes storage. */
+  seal(routeId: string, state: string) {
+    return sealRouteState(this.secret, routeId, state);
   }
 
   async holds(bootId: string, revision: number) {
@@ -114,11 +122,13 @@ export class RouteIdentityStore {
     return stored?.bootId === bootId && stored.revision === revision;
   }
 
-  async save(routeId: string, state: string, bootId: string, revision: number) {
-    await this.storage.put(routeStateKey, {
-      sealed: await sealRouteState(this.secret, routeId, state),
-      bootId,
-      revision,
-    } satisfies StoredState);
+  async save(sealed: SealedRouteState, bootId: string, revision: number) {
+    await this.storage.put(routeStateKey, { sealed, bootId, revision } satisfies StoredState);
+  }
+
+  /** Replaces the seal and keeps the boot and revision it came from. */
+  async reseal(sealed: SealedRouteState) {
+    const stored = await this.storage.get<StoredState>(routeStateKey);
+    if (stored) await this.storage.put(routeStateKey, { ...stored, sealed } satisfies StoredState);
   }
 }

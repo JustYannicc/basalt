@@ -33,6 +33,22 @@ export class FakeGateway implements GatewayContainer {
   failStates = 0;
   /** The next reply to this path is not the I1 shape. */
   garbleNext: string | undefined;
+  /** Whether the chosen exit answers; when it does not, the gateway reports the route down. */
+  exitOnline = true;
+  /**
+   * Manual mode: every control request waits in `waiting` until a scheduler releases it, either
+   * answered ("ok") or failed like a reset connection ("fail").
+   */
+  manual = false;
+  waiting: Array<{ path: string; body: unknown; release(outcome: "ok" | "fail"): void }> = [];
+  /** Which container instance is up; a request in flight when it goes down dies with it. */
+  private instance = 0;
+  /** Called with the identity each node is started from. */
+  onStart: ((state: string | null) => void) | undefined;
+  /** The exit the running node routes through, or null while it routes nothing. */
+  get appliedExit() {
+    return this.running && this.boot?.state ? (this.boot.selection?.exit_id ?? null) : null;
+  }
   private gates = new Map<
     string,
     { opened: Promise<void>; arrived: () => void; reply: "before" | "after" }
@@ -57,12 +73,14 @@ export class FakeGateway implements GatewayContainer {
 
   start(options: { enableInternet: boolean }) {
     if (!options.enableInternet) throw new Error("The gateway needs the internet");
+    if (!this.running) this.instance += 1;
     this.running = true;
     this.boot = undefined;
     this.pendingLogin = false;
   }
   async destroy() {
     this.destroyed += 1;
+    this.instance += 1;
     this.running = false;
     this.boot = undefined;
     this.pendingLogin = false;
@@ -72,6 +90,7 @@ export class FakeGateway implements GatewayContainer {
   }
   /** The container restarted underneath the DO (a deploy, a crash). */
   crash() {
+    this.instance += 1;
     this.running = false;
     this.boot = undefined;
     this.pendingLogin = false;
@@ -96,7 +115,9 @@ export class FakeGateway implements GatewayContainer {
           ? "route_needs_login"
           : off
             ? "route_off"
-            : null;
+            : !this.exitOnline
+              ? "route_exit_offline"
+              : null;
     return {
       boot_id: boot.id,
       state: !loggedIn ? "needs_login" : down ? "down" : "ready",
@@ -107,7 +128,7 @@ export class FakeGateway implements GatewayContainer {
           ? {
               id: selection.exit_id,
               name: "home-exit",
-              online: true,
+              online: this.exitOnline,
               path: "relay",
               relay_region: "fra",
             }
@@ -124,6 +145,15 @@ export class FakeGateway implements GatewayContainer {
   }
 
   private async handle(method: string, path: string, body: unknown): Promise<Response> {
+    const instance = this.instance;
+    if (this.manual) {
+      const outcome = await new Promise<"ok" | "fail">((resolve) =>
+        this.waiting.push({ path, body, release: resolve }),
+      );
+      if (outcome === "fail") throw new TypeError("connection reset");
+    }
+    // A connection to a container that has since stopped is gone, whatever starts after it.
+    if (instance !== this.instance) throw new TypeError("connection reset");
     const gate = this.gates.get(path);
     if (gate) this.gates.delete(path);
     if (gate?.reply === "before") {
@@ -148,6 +178,7 @@ export class FakeGateway implements GatewayContainer {
       if (this.boot) return Response.json({ error: "route_gateway_unavailable" }, { status: 409 });
       const state = this.forgetState ? null : (body as { state: string | null }).state;
       this.starts.push(state);
+      this.onStart?.(state);
       this.bootCount += 1;
       this.boot = { id: `boot-${this.bootCount}`, state, revision: 0 };
       return Response.json({ boot_id: this.boot.id });

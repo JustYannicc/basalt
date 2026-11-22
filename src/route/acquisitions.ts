@@ -7,7 +7,8 @@ import {
   type RouteAcquisitionFailure,
   type RouteAcquisitionReplies,
 } from "./acquisition-contract.ts";
-import { RouteId, RouteOwner, type RouteGatewayCore } from "./gateway.ts";
+import { RouteId, RouteOwner } from "./access.ts";
+import type { RouteGatewayCore } from "./gateway.ts";
 import { WhenDown } from "./reading.ts";
 
 type Rpc<T> = {

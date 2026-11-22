@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { routeIdPattern } from "./gateway.ts";
+import { routeIdPattern } from "./access.ts";
 import { refusedTunnel, routeTunnelUpgrade, type RouteEnvironment } from "./gateway.worker.ts";
 
 /** The pool controller owns which routes its credentials use, and on whose behalf. */
