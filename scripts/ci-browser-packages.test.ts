@@ -330,6 +330,10 @@ test("the action reaches the archive only after the offline paths fail", () => {
   assert.doesNotMatch(JSON.stringify(step("packages")), /apt-get|refresh-index/);
 });
 
+// A routable job's runs-on is the box router's expression; its hosted fallback is the image it
+// runs on whenever the box doesn't take it.
+const hostedImage = (runsOn: string) => /\|\| '([^']+)' \}\}$/.exec(runsOn)?.[1] ?? runsOn;
+
 test("the fast lane requires an actual browser installation", () => {
   const { jobs } = parse(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -337,7 +341,7 @@ test("the fast lane requires an actual browser installation", () => {
   const job = jobs["browser-install"];
   assert.ok(job, "the browser installer needs its own fast-lane job");
   assert.equal(job.if, undefined, "the browser check also runs in the PR fast lane");
-  assert.equal(job["runs-on"], "ubuntu-latest");
+  assert.equal(hostedImage(job["runs-on"]), "ubuntu-latest");
   assert.equal(job["timeout-minutes"], 10);
   assert.ok(
     job.steps.some(
@@ -379,7 +383,7 @@ test("main warms the browser package cache that Check restores", () => {
   ])
     assert.ok(warm.on.push.paths.includes(path), path);
   // The same image and pinned runtime as Check's browser jobs, so the key matches.
-  assert.equal(job["runs-on"], ci.jobs["browser-install"]["runs-on"]);
+  assert.equal(job["runs-on"], hostedImage(ci.jobs["browser-install"]["runs-on"]));
   const uses = (steps: { uses?: string; with?: Record<string, string> }[], action: string) =>
     steps.find((step) => step.uses === action)?.with;
   assert.deepEqual(uses(job.steps, "./.github/actions/setup-browser"), {

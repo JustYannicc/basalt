@@ -105,6 +105,10 @@ export class OwnTraffic {
     this.credential = credential;
     this.turns = turns;
   }
+  /** The lane's turns that streamed to their end, each with exactly one success row to find. */
+  get servedSessions() {
+    return this.sessions.filter(({ served }) => served).map(({ id }) => id);
+  }
   get turnsLeft() {
     return this.capped ? 0 : Math.max(0, this.turns - this.sessions.length);
   }

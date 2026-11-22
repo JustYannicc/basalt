@@ -1,0 +1,136 @@
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -137,6 +137,32 @@ export const checkAppAccountAtom = (key: {
+   app: AppId;
+   account: AccountId;
+ }) => checkAppAccount(new AppAccountKey(key));
++const revalidateAppAccount = Atom.family((key: AppAccountKey) =>
++  HostedClient.runtime.fn((_: void, get) => {
++    const account = new AccountKey({ organization: key.organization, account: key.account });
++    // A new account's naming prompt starts its check as it opens, before the links listing the new
++    // row arrive. A check the page holds, running or done, serves instead of a second request.
++    const held = get.registry.get(checkAccount(account));
++    return (
++      AsyncResult.isInitial(held) && !held.waiting
++        ? runCheck(get, account)
++        : get.result(checkAccount(account), { suspendOnWaiting: true })
++    ).pipe(
++      Effect.tap(() =>
++        Effect.sync(() => refreshAppLinks(get, { organization: key.organization, app: key.app })),
++      ),
++    );
++  }),
++);
++/**
++ * Check an account again in the background for one app's accounts, whose links then show the
++ * result. An account check the page already holds serves instead of a second request.
++ */
++export const revalidateAppAccountAtom = (key: {
++  organization: OrganizationReference;
++  app: AppId;
++  account: AccountId;
++}) => revalidateAppAccount(new AppAccountKey(key));
+ /**
+  * A new account waiting to be named. The organization layout shows the prompt, so page refreshes
+  * after saving, and the OAuth return navigation, cannot dismiss it.
+diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx
+@@ -76,8 +76,8 @@ import {
+ } from "../../contracts/app-accounts.ts";
+ import {
+   accountUsageAtom,
+-  checkAppAccountAtom,
+   disconnectAccountAtom,
++  revalidateAppAccountAtom,
+ } from "../../contracts/accounts.ts";
+ import type { HostedError } from "../../contracts/errors.ts";
+ import { HostedAccountDialog } from "./account-actions.tsx";
+@@ -197,7 +197,7 @@ export function AppAccounts({
+   const catalogUnavailable = copiedPackage !== undefined && catalogEntries === undefined;
+   const registry = useContext(RegistryContext);
+   const revalidate = (account: AccountSummary["id"]) => {
+-    const check = checkAppAccountAtom({ organization, app: app.id, account });
++    const check = revalidateAppAccountAtom({ organization, app: app.id, account });
+     registry.set(check, undefined);
+     return Effect.runPromiseExit(
+       AtomRegistry.getResult(registry, check, { suspendOnWaiting: true }),
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -9012,7 +9012,7 @@ export const scenarios = plan({
+     fixtures: "actors",
+     file: "app-account-sections.spec.ts",
+     title:
+-      "Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
++      "Continue anyway saves a rejected key and checks it once, closes the Connect dialog and the next click opens the new row's menu",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("The hosted Connect dialog is the same on cloud; self-host proves it."),
+diff --git a/e2e/tests/app-account-sections.spec.ts b/e2e/tests/app-account-sections.spec.ts
+--- a/e2e/tests/app-account-sections.spec.ts
++++ b/e2e/tests/app-account-sections.spec.ts
+@@ -6,7 +6,7 @@
+ import { expect, layer } from "@effect/vitest";
+ import { Effect } from "effect";
+ import { randomUUID } from "node:crypto";
+-import type { Page } from "playwright";
++import type { Page, Request } from "playwright";
+ import { Actors } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { connectionsPath } from "../support/app-accounts.ts";
+@@ -261,6 +261,25 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+             ),
+         );
+         yield* browser.checkpoint("The check rejected the key");
++        // Every check of a saved account from here on: the naming prompt checks the new account
++        // as it opens, and the new row behind it shows that result instead of checking again.
++        const checks: string[] = [];
++        const watch = (request: Request) => {
++          const path = new URL(request.url()).pathname;
++          if (request.method() === "POST" && /\/accounts\/[^/]+\/health$/.test(path))
++            checks.push(path);
++        };
++        yield* Effect.acquireRelease(
++          browser.use("Watch the account checks", (page) =>
++            Promise.resolve(void page.on("request", watch)),
++          ),
++          () =>
++            browser
++              .use("Stop watching the account checks", (page) =>
++                Promise.resolve(void page.off("request", watch)),
++              )
++              .pipe(Effect.orDie),
++        );
+         yield* browser.use("Continue anyway", () =>
+           connect.getByRole("button", { name: "Continue anyway", exact: true }).click(),
+         );
+@@ -289,6 +308,18 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+         );
+         yield* browser.checkpoint("The name prompt replaces the Connect dialog");
+         expect(behindPrompt).toEqual(["open"]);
++        // The new row renders behind the open prompt and shows its check's current result.
++        const rowCheck = yield* browser.use("The new row shows the prompt's check", (page) => {
++          const checked = page
++            .locator(
++              'section[aria-label="Your accounts"] [data-account-health-cell][data-check-current="true"]',
++            )
++            .first();
++          return checked
++            .waitFor({ state: "attached" })
++            .then(() => checked.getAttribute("data-check-status"));
++        });
++        expect(rowCheck).toBe("credentials_rejected");
+         yield* browser.use("Name the saved account", (page) =>
+           nameConnectedAccount(page, "Rejected key"),
+         );
+@@ -314,6 +345,8 @@ layer(HostedLive, { excludeTestServices: true })("App account sections", (it) =>
+           page.setViewportSize({ width: 390, height: 844 }),
+         );
+         yield* browser.checkpoint("The row menu on a phone");
++        // One check per prompt: the row reused the prompt's result rather than sending its own.
++        expect(checks, "account checks after Continue anyway").toHaveLength(1);
+       }),
+     ),
+   );

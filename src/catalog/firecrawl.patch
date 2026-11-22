@@ -1,0 +1,117 @@
+--- a/README.md
++++ b/README.md
+@@ -2,7 +2,7 @@
+ 
+ Web scraping and data extraction for agents: scrape, crawl, map and search the web, batch scrape, extract structured data, run Firecrawl agents and interactive browser sessions, manage monitors, and read team credit and token usage.
+ 
+-**Interface:** OpenAPI. Firecrawl's official v2 API document, https://docs.firecrawl.dev/api-reference/v2-openapi.json, served against https://api.firecrawl.dev/v2. Tools are generated live from it. Every mutation (POST, PUT, DELETE) asks for approval.
++**Interface:** OpenAPI. Firecrawl's official v2 API document, https://docs.firecrawl.dev/api-reference/v2-openapi.json, served against https://api.firecrawl.dev/v2. Tools are generated live from it. Scrape, search, map, the developer and government index searches and the crawl-parameter preview are reads that Firecrawl models as POST; they are queries and run without approval, though scrapes and searches spend credits. A scrape or search still asks when its options can act on a site or persist state: browser actions other than wait, screenshot, scroll, scrape and pdf, change tracking, a browser profile that saves changes, or Alexandria provider tools. Every other POST, PUT, PATCH and DELETE (crawls, batch scrapes, extracts, agents, monitors, interactive browser sessions, file parsing, the support agent, feedback and settings) is a mutation and asks for approval.
+ 
+ **Auth:** API key. Create one in the Firecrawl dashboard at https://www.firecrawl.dev/app/api-keys (linked from the docs' introduction); it is sent as a bearer token. Firecrawl does publish OAuth metadata (https://www.firecrawl.dev/.well-known/oauth-authorization-server and /.well-known/oauth-protected-resource: public client, PKCE S256, dynamic client registration at /api/oauth/register, scopes firecrawl:global and offline_access, resource https://api.firecrawl.dev/), but OAuth is withheld: its auth.md page does not describe a standard OAuth flow, the other sources list only API keys, and it could not be verified here that an issued fco_ token works against api.firecrawl.dev/v2 or that Executor's connect flow can obtain a dynamically registered client. Revisit once that can be tested end to end.
+ 
+--- /dev/null
++++ b/approvals.ts
+@@ -0,0 +1,50 @@
++import { always } from "apps/operations/approval";
++import { options } from "./openapi.js";
++
++// Browser actions that only read the page. Any other action (click, write, press,
++// executeJavascript) can act on the target site, for example as a signed-in user.
++const passiveActions = new Set(["wait", "screenshot", "scroll", "scrape", "pdf"]);
++
++const record = (value: unknown): Record<string, unknown> | undefined =>
++  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : undefined;
++
++/** Scrape options that can act on a site or persist state, so the read is not side-effect free. */
++const actsOrPersists = (value: unknown): boolean => {
++  const options = record(value);
++  if (options === undefined) return false;
++  const actions = Array.isArray(options.actions) ? options.actions : [];
++  if (actions.some((action) => !passiveActions.has(String(record(action)?.type)))) return true;
++  const formats = Array.isArray(options.formats) ? options.formats : [];
++  // Change tracking stores a persistent baseline snapshot for the URL.
++  if (formats.some((format) => (record(format)?.type ?? format) === "changeTracking")) return true;
++  // A profile saves browser state back unless the caller opts out.
++  const profile = record(options.profile);
++  if (profile !== undefined && profile.saveChanges !== false) return true;
++  // Alexandria runs catalogued provider tools instead of reading a page.
++  return options.alexandria !== undefined;
++};
++
++const sideEffectReads = new Set(["scrapeAndExtractFromUrl", "searchAndScrape"]);
++const reads = Object.keys(options.kinds);
++
++/**
++ * Mutations always ask. Scrape and search are reads, but ask when their options can act on a
++ * site or persist state; a dependency call that would ask is refused rather than run.
++ */
++export const approvalFor = (tool: { readonly kind: "query" | "mutation" }, name: string) => {
++  if (tool.kind === "mutation") return always();
++  const leaf = name.slice(name.lastIndexOf(".") + 1);
++  // Kinds are keyed by operationId and the framework lengthens colliding tool names, so a copy of
++  // a reviewed read's operationId under the same tag is a query named like
++  // scrapeAndExtractFromUrlExecute, as is a reviewed read renamed beside a new operation. Neither
++  // was reviewed under that name, so each asks like a mutation. A copy elsewhere can keep the
++  // reviewed name; the read-kinds check refuses any repeated operationId in the fast lane.
++  if (reads.some((read) => leaf !== read && leaf.startsWith(read))) return always();
++  if (!sideEffectReads.has(leaf)) return undefined;
++  return ({ toolInput }: { readonly toolInput: unknown }) => {
++    const body = record(record(toolInput)?.body);
++    return actsOrPersists(body) || actsOrPersists(body?.scrapeOptions)
++      ? ("user-approval" as const)
++      : ("approved" as const);
++  };
++};
+--- a/index.ts
++++ b/index.ts
+@@ -9,8 +9,8 @@ import {
+   string,
+   withApprovals,
+ } from "apps";
+-import { always } from "apps/operations/approval";
+ import { liveOpenapiRouter } from "apps/openapi";
++import { approvalFor } from "./approvals.js";
+ import { icons } from "./icon.js";
+ import { options } from "./openapi.js";
+ 
+@@ -39,9 +39,7 @@ export default defineApp(
+       await accountRouter(
+         user?.accounts.firecrawl ?? [],
+         (account) =>
+-          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), (tool) =>
+-            tool.kind === "mutation" ? always() : undefined,
+-          ),
++          withApprovals(liveOpenapiRouter({ ...options, cache, fetch, signal, account }), approvalFor),
+         { signal },
+       ),
+       {
+--- a/openapi.ts
++++ b/openapi.ts
+@@ -6,4 +6,16 @@ export const options = {
+   securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
+   methods: { apiKey: [{ scheme: "bearerAuth", field: "token", part: "value", prefix: "" }] },
+   oauth: [],
++  // Firecrawl models these reads as POST: each returns pages, links, search results or proposed
++  // crawl settings and starts nothing that runs on (scrapes and searches spend credits). Scrape
++  // and search options that act or persist still ask, in approvals.ts. Jobs that run on (crawls, batch
++  // scrapes, extracts, agents), monitors, browser sessions, uploads and feedback stay mutations.
++  kinds: {
++    scrapeAndExtractFromUrl: "query",
++    searchAndScrape: "query",
++    mapUrls: "query",
++    developerSearchPost: "query",
++    govSearchPost: "query",
++    crawlParamsPreview: "query",
++  },
+ } satisfies OpenapiToolNamesOptions;
+--- a/package.json
++++ b/package.json
+@@ -4,7 +4,7 @@
+   "private": true,
+   "type": "module",
+   "dependencies": {
+-    "apps": "0.0.1-beta.140"
++    "apps": "0.0.1-beta.104-basalt.15"
+   },
+   "executor": {
+     "title": "Firecrawl"

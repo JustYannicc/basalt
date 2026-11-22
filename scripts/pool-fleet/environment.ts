@@ -1,6 +1,13 @@
 import { join } from "node:path";
+import { signPoolToken } from "../../src/pool/token.ts";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { acceptanceCredential, AcceptanceDeviceRefused } from "../release/acceptance-device.ts";
+import { isAcceptancePool } from "../pool-acceptance/types.ts";
+import {
+  acceptanceCredential,
+  acceptanceDevice,
+  AcceptanceDeviceRefused,
+  acceptanceSigningKey,
+} from "../release/acceptance-device.ts";
 import { checkoutControllerCode } from "./controller.ts";
 import type { DispatchDependencies, DispatchInput, FleetAcceptance } from "./dispatch.ts";
 import { FleetLaneRefused, refuse } from "./errors.ts";
@@ -19,15 +26,33 @@ const missing = (why: string, fix: string) => refuse("acceptance-credentials-mis
 
 /**
  * The lane's model calls sign for the release's registered acceptance device, as release acceptance
- * does, and the same assertion reads back that device's own usage. It holds no pool token, so the
- * device may stay in whichever pool holds it.
+ * does. Only in a dedicated acceptance pool does it also hold an owner token, to read that pool's
+ * accounts and usage, so the records its calls leave are the ones checked. A device in a pool that
+ * holds people's work gets no owner token at all: the acceptance runs on the device alone.
  */
-function acceptanceFromEnvironment(env: NodeJS.ProcessEnv): FleetAcceptance | FleetLaneRefused {
+export async function acceptanceFromEnvironment(
+  env: NodeJS.ProcessEnv,
+  mint: typeof signPoolToken = signPoolToken,
+): Promise<FleetAcceptance | FleetLaneRefused> {
   try {
-    return {
+    const { pool } = acceptanceDevice(env);
+    const device = {
       client: new PoolAcceptanceClient(),
       credential: acceptanceCredential(env),
       model: env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
+    };
+    // Never minted for a pool that is not acceptance-named (pool-acceptance/types.ts).
+    if (!isAcceptancePool(pool)) return device;
+    return {
+      ...device,
+      access: {
+        token: await mint(acceptanceSigningKey(env), {
+          pool,
+          owner: "acceptance",
+          organization: "acceptance",
+        }),
+        owner: "acceptance",
+      },
     };
   } catch (error) {
     if (error instanceof AcceptanceDeviceRefused)
@@ -49,7 +74,7 @@ export async function dependenciesFromEnvironment(
       code: checkoutControllerCode,
       directory: join(env.RUNNER_TEMP ?? "", "pool-fleet-operator"),
     }),
-    acceptance: acceptanceFromEnvironment(env),
+    acceptance: await acceptanceFromEnvironment(env),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     now: Date.now,
     log: (line) => process.stdout.write(`${line}\n`),

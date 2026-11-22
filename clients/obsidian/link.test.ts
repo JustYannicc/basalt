@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildConnectLink, parseConnectLink, protocolAction } from "./link.ts";
+import { deviceReportLabel } from "../../.upstream/packages/mcp-auth/src/contracts/device.ts";
+import { buildConnectLink, linkedToOtherVault, parseConnectLink, protocolAction } from "./link.ts";
 
 const connection = "https://basalt.example/mcp?connection=conn_123";
 
@@ -42,4 +43,22 @@ test("links that would widen access or downgrade transport are refused", () => {
   );
   assert.throws(() => parseConnectLink({ ...base, connection, appId: "../x" }), /invalid app/u);
   assert.throws(() => parseConnectLink({ action: protocolAction, connection }), /incomplete/u);
+});
+
+test("a link made for this vault never warns, whatever the stored name dropped", () => {
+  // Signalbox names the vault app after the name this device reported, kept by the server's rule,
+  // and later links carry that name.
+  for (const vault of ["My  Vault", "Personal ", " Personal", "a".repeat(81)]) {
+    const stored = deviceReportLabel(vault)!;
+    assert.notEqual(stored, vault);
+    assert.equal(linkedToOtherVault(stored, vault), false, JSON.stringify(vault));
+  }
+  assert.equal(linkedToOtherVault("Personal", "Personal"), false);
+  assert.equal(linkedToOtherVault(null, "Personal"), false);
+});
+
+test("a link made for another vault still warns", () => {
+  assert.equal(linkedToOtherVault("Work", "Personal"), true);
+  assert.equal(linkedToOtherVault("My Vault", "MyVault"), true);
+  assert.equal(linkedToOtherVault("a".repeat(80), `b${"a".repeat(80)}`), true);
 });

@@ -85,6 +85,10 @@ export interface HarnessOptions {
   usageStatus?: number;
   /** Turns, by call index, the pool refuses with its user-cap 429. */
   capped?: (index: number) => boolean;
+  /** The acceptance device is outside a dedicated acceptance pool: the lane holds no owner access. */
+  deviceOnly?: boolean;
+  /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
+  usageAccount?: string;
 }
 
 /** The acceptance device's own Home key, as the device usage read reports it. */
@@ -322,13 +326,20 @@ export async function harness(options: HarnessOptions = {}) {
   let turns = 0;
   /** How each model call was authorized: the lane's credential, never a bearer. */
   const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
-  /** Each device usage read and the assertion it carried. */
-  const usageReads: { path: string; assertion: string | null; sessions: number }[] = [];
-  /** Reads of the owner-token routes the lane used before; it must never make one. */
-  const ownerReads: string[] = [];
+  /** Each device usage read and how it was authorized. */
+  const usageReads: {
+    path: string;
+    assertion: string | null;
+    authorization: string | null;
+    sessions: number;
+  }[] = [];
   const sessionOrder = new Map<string, number>();
+  /** Every read of the pool's owner routes, with the authorization it carried. */
+  const poolReads: { path: string; authorization: string | null }[] = [];
   const pool = await listen(async (request) => {
     const path = new URL(request.url!, "http://local").pathname;
+    if (path.startsWith("/pool/v1/") && path !== nativeUsagePath)
+      poolReads.push({ path, authorization: request.headers.authorization ?? null });
     if (path === "/v1/models" || path === "/v1/chat/completions")
       modelCalls.push({
         call: `${request.method} ${path}`,
@@ -346,6 +357,7 @@ export async function harness(options: HarnessOptions = {}) {
       usageReads.push({
         path: url.pathname + url.search,
         assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
+        authorization: request.headers.authorization ?? null,
         sessions: ids.length,
       });
       if (options.usageStatus) return new Response(null, { status: options.usageStatus });
@@ -356,11 +368,19 @@ export async function harness(options: HarnessOptions = {}) {
       });
       return Response.json({ key: deviceKey, sessions });
     }
-    // The owner-token routes the lane once read: recorded, and refused so a regression fails loudly.
-    if (path === "/pool/v1/pool" || path === "/pool/v1/usage") {
-      ownerReads.push(path);
-      return new Response(null, { status: 500 });
-    }
+    if (path === "/pool/v1/pool")
+      return Response.json({ isOwner: true, accounts: [{ id: "test-1" }, { id: "test-2" }] });
+    if (path === "/pool/v1/usage")
+      return Response.json({
+        records: [
+          {
+            id: crypto.randomUUID(),
+            account: options.usageAccount ?? "test-1",
+            status: "success",
+            at: new Date().toISOString(),
+          },
+        ],
+      });
     if (path === "/v1/chat/completions") {
       const index = turns++;
       if (options.capped?.(index))
@@ -394,6 +414,7 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
+      ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
     },
     sleep: async () => {},
     now: Date.now,
@@ -404,7 +425,7 @@ export async function harness(options: HarnessOptions = {}) {
     modelCalls,
     turns: () => turns,
     usageReads,
-    ownerReads,
+    poolReads,
     actions,
     crashes,
     providerRequests,

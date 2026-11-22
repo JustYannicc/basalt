@@ -24,7 +24,7 @@ const officialSource = (name: string) =>
   });
 const official: Feed = {
   version: 1,
-  apps: ["gitlab", "miro", "slack", "gmail", "elevenlabs"].map((id) => ({
+  apps: ["gitlab", "miro", "slack", "gmail", "google-calendar", "elevenlabs"].map((id) => ({
     id,
     package: `@executor.sh/${id}`,
     name: id,
@@ -70,7 +70,16 @@ async function offFramework(source: typeof fetch) {
       manifest === undefined ? "no manifest" : JSON.parse(manifest.content).dependencies?.apps;
   }
   // Official, carried and Basalt's own packages alike.
-  for (const id of ["gmail", "elevenlabs", "gitlab", "miro", "slack", "zendesk", "aws"])
+  for (const id of [
+    "google-calendar",
+    "gmail",
+    "elevenlabs",
+    "gitlab",
+    "miro",
+    "slack",
+    "zendesk",
+    "aws",
+  ])
     assert.ok(Object.hasOwn(declared, id), `${id} was served`);
   return Object.entries(declared).filter(([, version]) => version !== catalog.framework);
 }
@@ -85,13 +94,13 @@ test("a served package that declares no framework fails the check", async () => 
     if (url.endsWith("/index.json")) return Response.json(official);
     return new Response(
       JSON.stringify({
-        package: "@executor.sh/gmail",
+        package: "@executor.sh/google-calendar",
         files: [{ path: "package.json", content: "{}" }],
       }),
     );
   };
   const missing = await offFramework(bare);
-  assert.ok(missing.some(([id, version]) => id === "gmail" && version === undefined));
+  assert.ok(missing.some(([id, version]) => id === "google-calendar" && version === undefined));
 });
 
 test("a served official package keeps everything but the framework it declares", () => {

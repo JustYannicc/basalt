@@ -1,0 +1,90 @@
+diff --git a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+--- a/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-upgrades.ts
+@@ -1,4 +1,4 @@
+-import { Effect } from "effect";
++import { Clock, Effect } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { catalogAppJobPrefix } from "../contracts/catalog-app-updates.ts";
+ import { catalogAppRelease } from "./catalog-app-release.ts";
+@@ -13,15 +13,29 @@ export const catalogAppSweepPending = (organization: string) =>
+     return jobs.length !== 0;
+   });
+ 
++/**
++ * A sweep fails only on what a retry can fix (build memory, compiler capacity, storage); its job
++ * then ends failed after its own retries. That organization's untouched copies would stay a
++ * release behind, so another sweep is queued for the same release until one succeeds or a later
++ * release takes over. The wait doubles with each failed sweep: 1 h, 2 h, 4 h, ...
++ */
++const requeueAfter = "1 hour";
++/** Spreads the requeues of one capacity event, so they do not all start at once. */
++const requeueSpread = "10 minutes";
++/** Ticks run often; one isolate looks for failed sweeps at most this often. */
++const requeueCheckMs = 10 * 60 * 1000;
++
+ /**
+  * Once per Basalt release, queue one sweep per organization that holds a copy of the feed's apps,
+  * run as a member who can manage apps. Jobs wait for the replacement server, as pool upgrades do.
++ * Afterwards, an organization whose sweeps for the release all failed gets another, later one.
+  */
+ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRelease) => {
+   let completed = false;
++  let checked = Number.NEGATIVE_INFINITY;
+   const name = `${catalogAppJobPrefix}${release}`;
+   const apps = new URL("apps/", feedUrl).href;
+-  return Effect.gen(function* () {
++  const queue = Effect.gen(function* () {
+     if (completed) return;
+     const sql = yield* SqlClient.SqlClient;
+     const done = yield* sql`select 1 from private_hosted_data_steps
+@@ -54,4 +68,49 @@ export const queueCatalogAppUpdates = (feedUrl: string, release = catalogAppRele
+     // No invocation-owned I/O is retained; failures leave the next tick eligible.
+     completed = true;
+   });
++  // Only an organization whose sweeps all ended failed qualifies, so a job still retrying is never
++  // replaced. Concurrent isolates serialize on the marker row and never queue the same retry. The
++  // member is chosen as at release, so a member who left is not used.
++  const requeue = Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    yield* sql.withTransaction(
++      Effect.gen(function* () {
++        yield* sql`select 1 from private_hosted_data_steps
++          where name = ${name} and run = 'apply' for update`;
++        yield* sql`with failed as (
++            select organization_id, count(*) as sweeps, max(updated_at) as last
++            from hosted_provisioning
++            where kind = 'member' and id like ${`${name}:%`}
++            group by organization_id
++            having bool_and(status = 'failed')
++          )
++          insert into hosted_provisioning (id, kind, organization_id, user_id, available_at)
++          select distinct on (failed.organization_id)
++            ${name} || ':' || gen_random_uuid()::text, 'member', failed.organization_id,
++            member."userId", now() + random() * ${requeueSpread}::interval
++          from failed
++          join member on member."organizationId" = failed.organization_id
++            and member.role in ('owner', 'admin')
++          join "user" on "user".id = member."userId" and "user"."emailVerified" = true
++          where failed.last < now() - ${requeueAfter}::interval * power(2, failed.sweeps - 1)
++          order by failed.organization_id, member.role = 'owner' desc, member."createdAt"`;
++      }),
++    );
++  });
++  return Effect.gen(function* () {
++    yield* queue;
++    const now = yield* Clock.currentTimeMillis;
++    if (!completed || now - checked < requeueCheckMs) return;
++    // A failed check leaves the next tick eligible; it never fails the data step it rides on.
++    yield* requeue.pipe(
++      Effect.tap(() =>
++        Effect.sync(() => {
++          checked = now;
++        }),
++      ),
++      Effect.catch(() =>
++        Effect.logWarning("Catalog sweep requeue check failed; next tick retries"),
++      ),
++    );
++  });
+ };

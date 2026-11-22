@@ -1,5 +1,5 @@
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { AcceptanceFailure } from "../pool-acceptance/types.ts";
+import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
 import { OwnTraffic, turnBudgets } from "./own-traffic.ts";
@@ -16,6 +16,11 @@ export interface AcceptanceInput {
   /** Signs each model call for the release's acceptance device. */
   credential: ModelAuth;
   model?: string;
+  /**
+   * An owner token for a dedicated acceptance pool only. Absent when the device is in a pool that
+   * holds people's work: then the two reads it allows (the pool's accounts, its usage) are skipped.
+   */
+  access?: PoolAccess;
   controller: () => Promise<ControllerView>;
   fleet: () => Promise<FleetView>;
   sleep: (ms: number) => Promise<void>;
@@ -62,13 +67,15 @@ export async function servingBoots(input: Pick<AcceptanceInput, "controller" | "
 
 /**
  * Usage isolation is proven by the lane's own requests on the device's existing pool: each of its
- * turns is read back with the same device assertion, never with a pool owner token.
+ * turns is read back with the same device assertion. Only a dedicated acceptance pool's owner token
+ * adds the pool-wide check on top.
  */
 export async function runFleetAcceptance(input: AcceptanceInput) {
-  const { client, credential, log } = input;
+  const { client, credential, log, access } = input;
   const traffic = new OwnTraffic(client, credential, turnBudgets.accept);
   const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);
+  const accounts = access ? await client.testAccountIds(access) : undefined;
   log(`models status=200 count=${catalog.ids.length}`);
   const burst = input.burst ?? 6;
   const known = new Set<string>();
@@ -107,7 +114,21 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   log(
     `usage_records status=200 sessions=${usage.sessions} matched=${usage.records} accounts=${usage.accounts}`,
   );
-  return { model, servedByCell: served, usageRecords: usage.records };
+  let ownerUsageRecords: number | "skipped" = "skipped";
+  if (access && accounts) {
+    // With an owner token, the pool-wide check stays mandatory: every record in the test pool's accounts.
+    const records = await Promise.all(
+      traffic.servedSessions.map((id) =>
+        client.waitForUsageRecords(access, { id, expectedRecords: 1 }),
+      ),
+    );
+    if (records.flat().some((record) => !accounts.has(record.account)))
+      throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
+    ownerUsageRecords = records.flat().length;
+    log(`owner_usage_records status=200 matched=${ownerUsageRecords}`);
+  } else
+    log("owner_usage_records skipped; the acceptance device is not in a dedicated acceptance pool");
+  return { model, servedByCell: served, usageRecords: usage.records, ownerUsageRecords };
 }
 
 /**
@@ -128,7 +149,7 @@ export async function crashTrafficAccepted(
 }
 
 /** After a disable: one plain streamed turn must come back from the selected primary. */
-export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "sleep">) {
+export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "sleep" | "access">) {
   const traffic = new OwnTraffic(input.client, input.credential, turnBudgets.rootServes);
   const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);

@@ -124,3 +124,39 @@ export async function captureError(
   };
   await sendEnvelope(env, { id, type: "event", payload });
 }
+
+type ExpiringPlan = { vendor: string; plan: string; windowSeconds: number; expiresAt: number };
+
+/**
+ * One error event per plan, so a second plan expiring later still opens its own issue. Names
+ * public plan identities only; they carry no account or person.
+ */
+export function allowanceExpiryEvents(rows: readonly ExpiringPlan[]) {
+  const code = "pool_allowance_expiring";
+  return rows.map((row) => {
+    const plan = `${row.vendor}/${row.plan}/${row.windowSeconds}s`;
+    return {
+      event_id: eventId(),
+      timestamp: new Date().toISOString(),
+      platform: "javascript",
+      level: "error",
+      logger: "pool-allowances",
+      message: `${code} ${plan} expires ${new Date(row.expiresAt).toISOString().slice(0, 10)}`,
+      fingerprint: ["basalt", code, plan],
+      tags: { error_code: code, allowance_plan: plan },
+    };
+  });
+}
+
+/** Send each plan's event; false when any delivery failed, so the caller tries again. */
+export async function captureAllowanceExpiry(
+  env: SentryEnv,
+  rows: readonly ExpiringPlan[],
+): Promise<boolean> {
+  const sent = await Promise.all(
+    allowanceExpiryEvents(rows).map((payload) =>
+      sendEnvelope(env, { id: payload.event_id, type: "event", payload }),
+    ),
+  );
+  return sent.every(Boolean);
+}
