@@ -528,7 +528,7 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         );
         assert.match(
           patch.retirement.requires,
-          /live-owner, silent-owner, expired-owner and own-node regressions/,
+          /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
       } else {
         assert.ok(
