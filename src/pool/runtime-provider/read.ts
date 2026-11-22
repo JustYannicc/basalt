@@ -29,19 +29,43 @@ const Instance = Schema.Struct({
   image: Schema.NonEmptyString,
 });
 /**
- * The provider keeps listing a destroyed instance under state=active, reporting it "inactive":
- * seen on production on 22 Nov 2026, over an hour after the destroy. The provider documents no
- * state list, so this closed list is an observation; any other value counts as possibly running.
+ * Cloudflare's API reference for GET .../containers/applications/{id}/instances-v2 enumerates
+ * `status.state`. The list's own `state=active` filter is another axis: a destroyed instance stays
+ * listed there as "inactive" (seen on production on 22 Nov 2026, over an hour after the destroy).
+ */
+const documentedStates = new Set([
+  "provisioning",
+  "running",
+  "failed",
+  "stopping",
+  "stopped",
+  "unhealthy",
+  "inactive",
+  "unknown",
+]);
+/**
+ * The closed stopped list is exactly "inactive", the state production reported for a destroyed
+ * instance. The reference does not say what inactive means or whether such an instance can start
+ * again; it reports the application's configured image for an instance without a placement, which
+ * suggests inactive means no placement. That is an assumption. "stopped" and "failed" stay out:
+ * their Durable Object can start them again. What keeps a retired instance stopped is the
+ * endpoint's retired record, which its start refuses; an admit over that record is not refused,
+ * and no current path reaches it.
  */
 const stopped = (state: string) => state === "inactive";
-/** Any other state refuses the whole observation, as an unknown answer always has. */
-const known = (state: string) => state === "running" || stopped(state);
 /** Given only by a caller whose driver independently reported this exact boot stopped. */
 export interface DriverStopped {
   readonly driverStopped: true;
 }
 /** Why an absence proof failed, as one closed value. */
-type AbsenceRefusal = "invalid" | "read" | "proof" | "instances" | "slow" | "listed";
+type AbsenceRefusal =
+  | "invalid"
+  | "read"
+  | "proof"
+  | "instances"
+  | "unknown_state"
+  | "slow"
+  | "listed";
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
 export class ProviderObservationRefused extends Error {
   readonly status = "unknown";
@@ -51,6 +75,8 @@ export class ProviderObservationRefused extends Error {
     this.code = code;
   }
 }
+/** A state outside the documented list: never absent, never proof, and named on its own. */
+class UndocumentedInstanceState extends ProviderObservationRefused {}
 
 /** A read-only credential observes actual provider state; desired bindings never stand in for it. */
 export class RuntimeProviderReader {
@@ -252,8 +278,8 @@ export class RuntimeProviderReader {
               (value) => value.id === instanceId && !(driverStopped && stopped(value.state)),
             );
       return present ? "listed" : undefined;
-    } catch {
-      return stage;
+    } catch (error) {
+      return error instanceof UndocumentedInstanceState ? "unknown_state" : stage;
     }
   }
   private async instances(base: string, expected: RuntimeProviderTarget, signal: AbortSignal) {
@@ -265,12 +291,15 @@ export class RuntimeProviderReader {
       if (token) query.set("page_token", token);
       const reply = await this.read(`${base}/instances-v2?${query}`, signal);
       for (const value of Schema.decodeUnknownSync(Schema.Array(Instance))(reply.result)) {
+        const state = value.status.state;
+        if (!documentedStates.has(state)) throw new UndocumentedInstanceState();
         if (
           states.has(value.id) ||
           value.application_id !== expected.applicationId ||
-          !known(value.status.state) ||
-          // A stopped instance keeps the image it ran; it holds no compute on any image.
-          (!stopped(value.status.state) && !value.image.endsWith(`@${expected.imageDigest}`))
+          // Every other documented state may still run, so it refuses, as any answer but running did.
+          (state !== "running" && !stopped(state)) ||
+          // A stopped instance holds no compute on any image.
+          (!stopped(state) && !value.image.endsWith(`@${expected.imageDigest}`))
         )
           throw new ProviderObservationRefused();
         states.set(value.id, value.status.state);
