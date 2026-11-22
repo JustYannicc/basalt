@@ -16,9 +16,10 @@ import { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 // shared publication pushed the image to one application's repository only, both applications ran
 // that repository's reference, and the next update without a rebuild sent the other application
 // its own repository @ the digest, a pair the registry never held, and Cloudflare refused the
-// rollout that carried it (1601, IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE). These pin (a) an application whose recorded digest lives in another repository sends
-// nothing on an update with an unchanged input, and (b) each application builds into, and runs,
-// its own repository.
+// rollout that carried it (1601, IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE). These pin (a) an
+// application whose recorded digest lives in another repository keeps that reference on an update
+// with an unchanged input, through the update and through the attachment recreate, and (b) each
+// application builds into, and runs, its own repository.
 const load = (name) =>
   import(
     new URL(
@@ -46,13 +47,14 @@ globalThis.fetch = () => {
 
 const DIGEST = `sha256:${"d".repeat(64)}`;
 // The registry: which repositories hold which tags, and the digest every build produces.
-let pushed, live, patches, rollouts, builds;
+let pushed, live, patches, rollouts, builds, deletes;
 const reset = () => {
   pushed = new Map();
   live = new Map();
   patches = [];
   rollouts = [];
   builds = [];
+  deletes = 0;
 };
 const repositoryOf = (reference) =>
   /^registry\.cloudflare\.com\/fixture\/([^@:]+)/u.exec(reference)?.[1];
@@ -114,11 +116,24 @@ const http = HttpClient.make((request, url) => {
           result: null,
         });
   if (request.method === "POST") {
+    // Whether Cloudflare's create checks the image as its rollout does is unknown; the stand-in
+    // assumes it does, so a create naming a repository without the digest fails here too.
+    if (!pushed.has(repositoryOf(body.configuration?.image ?? "")))
+      return answer(request, 400, {
+        success: false,
+        errors: [{ code: 1601, message: "IMAGE_REGISTRY_DOESNT_CONTAIN_IMAGE" }],
+        messages: [],
+        result: null,
+      });
     const app = { ...body, id: `app-${next++}`, account_id: "fixture", version: 1 };
     live.set(app.id, app);
     return ok(request, app);
   }
-  if (request.method === "DELETE") throw new Error("Nothing here deletes an application");
+  if (request.method === "DELETE") {
+    deletes++;
+    live.delete(id);
+    return ok(request, null);
+  }
   patches.push(body);
   // A PATCH accepts any configuration and changes no image (scratch trial, 22 Nov).
   const current = live.get(id);
@@ -163,6 +178,8 @@ const colours = ({ rollout } = {}) =>
         context,
         className: colour,
         instanceType: "basic",
+        // As src/pool/fleet-deployment.ts declares the colours.
+        instances: 0,
         maxInstances: 4,
         ...(rollout ? { rollout } : {}),
       });
@@ -208,32 +225,66 @@ const ownRepositories = Effect.gen(function* () {
   );
   assert.ok(pushed.has("fixture-blue") && pushed.has("fixture-green"), "both repositories pushed");
 });
-// (a) Production's state after a shared publication: blue runs green's repository, and blue's
-// own repository never received the digest. An update with an unchanged input sends nothing.
-const unchangedOnAnotherRepository = Effect.gen(function* () {
-  reset();
-  const store = {};
-  assert.ok(Exit.isSuccess(yield* Effect.exit(deploy(colours(), store))), "setup deploy");
-  const blue = [...live.values()].find((app) => app.name === "fixture-blue");
-  live.set(blue.id, {
-    ...blue,
-    configuration: {
-      ...blue.configuration,
-      image: `registry.cloudflare.com/fixture/fixture-green@${DIGEST}`,
-    },
+// Production's state after a shared publication: blue runs green's repository, blue's own
+// repository never received the digest, and Cloudflare reports 4 instances for each colour.
+const sharedPublication = (store, attachment) =>
+  Effect.gen(function* () {
+    reset();
+    assert.ok(Exit.isSuccess(yield* Effect.exit(deploy(colours(), store))), "setup deploy");
+    for (const app of [...live.values()])
+      live.set(app.id, {
+        ...app,
+        instances: 4,
+        ...(app.name === "fixture-blue"
+          ? {
+              configuration: {
+                ...app.configuration,
+                image: `registry.cloudflare.com/fixture/fixture-green@${DIGEST}`,
+              },
+              ...(attachment ? { durable_objects: { namespace_id: attachment } } : {}),
+            }
+          : {}),
+      });
+    pushed.delete("fixture-blue");
+    pushed.set("fixture-green", DIGEST);
+    patches = [];
+    rollouts = [];
+    deletes = 0;
   });
-  pushed.delete("fixture-blue");
-  pushed.set("fixture-green", DIGEST);
-  patches = [];
-  rollouts = [];
+const greenReference = `registry.cloudflare.com/fixture/fixture-green@${DIGEST}`;
+// (a) An update with an unchanged input keeps blue's reference: production's PATCH of the declared
+// count, and no rollout.
+const unchangedOnAnotherRepository = Effect.gen(function* () {
+  const store = {};
+  yield* sharedPublication(store);
   const again = yield* Effect.exit(deploy(colours({ rollout: { strategy: "immediate" } }), store));
   assert.ok(
     Exit.isSuccess(again),
     `the unchanged update converges (rollouts: ${rollouts.join(", ")})`,
   );
-  assert.deepEqual(rollouts, [], "no rollout: the configuration blue runs is unchanged");
-  assert.equal(patches.length, 0, "no PATCH: nothing about blue differs from what it runs");
-  assert.equal(imageOf("fixture-blue"), `registry.cloudflare.com/fixture/fixture-green@${DIGEST}`);
+  assert.deepEqual(rollouts, [], "no rollout: the configuration each colour runs is unchanged");
+  assert.deepEqual(
+    patches.map((body) => [body.instances, body.configuration?.image]).sort(),
+    [
+      [0, greenReference],
+      [0, greenReference],
+    ],
+    "one PATCH per colour, for the declared count, naming the reference each runs",
+  );
+  assert.equal(imageOf("fixture-blue"), greenReference);
+});
+// (a) The attachment recreate keeps blue's reference too: it deletes blue, and the create names
+// the repository that holds the digest.
+const recreatedOnAnotherRepository = Effect.gen(function* () {
+  const store = {};
+  yield* sharedPublication(store, "ns-elsewhere");
+  const again = yield* Effect.exit(deploy(colours(), store));
+  assert.ok(Exit.isSuccess(again), "the recreate converges");
+  assert.equal(deletes, 1, "the moved attachment recreates blue once");
+  assert.deepEqual(rollouts, []);
+  const blue = [...live.values()].find((app) => app.name === "fixture-blue");
+  assert.equal(blue?.durable_objects?.namespace_id, "ns-blue", "blue is attached again");
+  assert.equal(blue?.configuration?.image, greenReference, "blue is created on its reference");
 });
 // Each scenario runs on its own, so a regression in one cannot hide the other.
 const run = Effect.gen(function* () {
@@ -241,12 +292,13 @@ const run = Effect.gen(function* () {
   for (const [name, scenario] of [
     ["own repositories", ownRepositories],
     ["unchanged input on another repository", unchangedOnAnotherRepository],
+    ["attachment recreate on another repository", recreatedOnAnotherRepository],
   ]) {
     const exit = yield* Effect.exit(scenario);
     if (Exit.isFailure(exit)) failed.push(`${name}: ${String(Cause.squash(exit.cause))}`);
   }
   assert.deepEqual(failed, [], failed.join("\n"));
-  console.log(JSON.stringify({ scenarios: 2 }));
+  console.log(JSON.stringify({ scenarios: 3 }));
 }).pipe(
   Effect.provide(NodeServices.layer),
   Effect.provideService(AlchemyContext, { dotAlchemy, dev: false, adopt: false }),
