@@ -22,6 +22,7 @@ export async function runningPool(t: TestContext) {
   let failing = false;
   let asked = 0;
   let failAt = Number.POSITIVE_INFINITY;
+  let answer: (() => Response) | undefined;
   const server = createServer(async (incoming, outgoing) => {
     asked++;
     const chunks: Buffer[] = [];
@@ -32,10 +33,13 @@ export async function runningPool(t: TestContext) {
     const response =
       failing || asked > failAt || url.pathname !== nativeControlPath
         ? failureResponse(new Error("synthetic controller outage"))
-        : await p.nativeControl(
+        : (answer?.() ??
+          (await p.nativeControl(
             new Request(url, { method: incoming.method, body: Buffer.concat(chunks) }),
-          );
-    outgoing.writeHead(response.status, { "content-type": "application/json" });
+          )));
+    outgoing.writeHead(response.status, {
+      "content-type": response.headers.get("content-type") ?? "application/json",
+    });
     outgoing.end(Buffer.from(await response.arrayBuffer()));
   });
   server.listen(0, "127.0.0.1");
@@ -57,6 +61,10 @@ export async function runningPool(t: TestContext) {
       failAt = asked + n;
     },
     failing: () => failing,
+    /** Every control request gets this answer instead of the pool's, until called with none. */
+    answerWith: (response?: () => Response) => {
+      answer = response;
+    },
     asked: () => asked,
   };
 }
