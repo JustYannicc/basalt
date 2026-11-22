@@ -91,19 +91,38 @@ async function sequence(seed: number, trace: string[]) {
   // Every intent event invoked so far; a select that succeeds must have had none after it.
   let intents = 0;
   let signIns = 0;
+  let choices = 0;
+  let listings = 0;
+  /** Requests the scheduler failed or lost, so a check can tell a refused path from a broken one. */
+  let failures = 0;
   /** From a disconnect until the next sign-in: what started, and whether the disconnect is done. */
-  let left: { nullStarts: number; identityStarts: number; done: boolean } | undefined;
+  let left: { nullStarts: number; launches: number; fresh: boolean; done: boolean } | undefined;
+  /** The last intent was a switch-off made with no sign-in open, and nothing since may route. */
+  let stopped = false;
   /** Since the last switch-off or disconnect, until an exit chosen after it is confirmed. */
   let quiet = false;
   const value = <T>(key: string) => storage.values.get(key) as T | undefined;
 
+  // Every launch must be one the table allows: a signed-in route with a reason to run, a sign-in,
+  // or a disconnect's one logout node.
+  container.onLaunch = () => {
+    const identity = value("route-v1:state") !== undefined;
+    const exit = value<Selection>("route-v1:selection")?.exitId ?? null;
+    const allowed =
+      signIns > 0 ||
+      (left !== undefined && !left.done) ||
+      (identity && (exit !== null || choices > 0 || listings > 0));
+    debug("  launch", allowed ? "" : "NOT ALLOWED");
+    assert.ok(allowed, "a container launched that the state does not call for");
+    if (left) left.fresh = true;
+    if (left?.done) left.launches += 1;
+  };
   container.onStart = (state) => {
     debug("  start", state === null ? "null" : "identity", left ? "after disconnect" : "");
     if (state === null) assert.ok(signIns > 0, "a node with no identity started outside a sign-in");
-    if (left) {
-      if (state === null) left.nullStarts += 1;
-      else left.identityStarts += 1;
-    }
+    // A start already sent to the container being torn down may still land; only one on a
+    // container launched since the disconnect counts.
+    if (left?.fresh && state === null) left.nullStarts += 1;
   };
 
   const events: Record<string, () => void> = {
@@ -111,6 +130,7 @@ async function sequence(seed: number, trace: string[]) {
       intents += 1;
       signIns += 1;
       left = undefined;
+      stopped = false;
       track(gateway.login(caller).finally(() => (signIns -= 1)));
     },
     approve() {
@@ -136,53 +156,67 @@ async function sequence(seed: number, trace: string[]) {
       debug("  choose", JSON.stringify(selection));
       // A choice made after a switch-off may legitimately route; only an older one may not.
       quiet = false;
+      stopped = false;
+      choices += 1;
       track(
-        gateway.select(caller, selection).then(
-          () => {
-            assert.equal(intents, mine, "a select succeeded after a later intent event");
-            assert.deepEqual(
-              value("route-v1:selection"),
-              selection,
-              "a confirmed select is not stored",
-            );
-            assert.ok(value("route-v1:state"), "an exit was chosen with no sealed identity");
-            debug("  choice confirmed", JSON.stringify(selection));
-            reached.selected += 1;
-          },
-          (error: unknown) => {
-            debug("  choice refused", JSON.stringify(selection), (error as Error).message);
-            reached.refused += 1;
-            throw error;
-          },
-        ),
+        gateway
+          .select(caller, selection)
+          .finally(() => (choices -= 1))
+          .then(
+            () => {
+              assert.equal(intents, mine, "a select succeeded after a later intent event");
+              assert.deepEqual(
+                value("route-v1:selection"),
+                selection,
+                "a confirmed select is not stored",
+              );
+              assert.ok(value("route-v1:state"), "an exit was chosen with no sealed identity");
+              debug("  choice confirmed", JSON.stringify(selection));
+              reached.selected += 1;
+            },
+            (error: unknown) => {
+              debug("  choice refused", JSON.stringify(selection), (error as Error).message);
+              reached.refused += 1;
+              throw error;
+            },
+          ),
       );
     },
     switchOff() {
       intents += 1;
       let answered = false;
+      // An issued link (an open window) keeps its node; a sign-in still starting loses to it.
+      const signingIn = value("route-v1:login-until") !== undefined;
+      const destroyed = container.destroyed;
       track(
         gateway.select(caller, { exitId: null, whenDown: "stop" }).then(() => (answered = true)),
       );
       quiet = true;
-      const busy = left !== undefined || signIns > 0;
+      stopped = !signingIn && !left && signIns === 0;
       after.push(() => {
         assert.ok(answered, "switch-off did not answer without a container reply");
         assert.equal(value<Selection>("route-v1:selection")?.exitId ?? null, null);
-        assert.equal(container.appliedExit, null, "switch-off left the gateway routing");
-        // Only a disconnect's logout or a sign-in may own the container right after a switch-off.
-        if (!busy && !left && signIns === 0)
-          assert.equal(container.running, false, "switch-off left the gateway running");
+        // An open sign-in keeps its node; the person's link must still work.
+        if (signingIn)
+          assert.equal(container.destroyed, destroyed, "switch-off killed an open sign-in");
       });
     },
     disconnect() {
       intents += 1;
       quiet = true;
-      const window = { nullStarts: 0, identityStarts: 0, done: false };
+      stopped = false;
+      const window = { nullStarts: 0, launches: 0, fresh: false, done: false };
       left = window;
+      // A device the tailnet knows must be logged out, unless the container itself failed it.
+      const known = value("route-v1:state") !== undefined || container.signedIn;
+      const logouts = container.logouts;
+      const failed = failures;
       track(
         gateway.disconnect(caller).then(() => {
           window.done = true;
           reached.disconnected += 1;
+          if (known && failures === failed)
+            assert.ok(container.logouts > logouts, "a disconnect left a known device signed in");
         }),
       );
     },
@@ -191,6 +225,11 @@ async function sequence(seed: number, trace: string[]) {
     },
     alarm() {
       advance(30_000);
+      track(gateway.alarm());
+    },
+    /** Long enough for a sign-in window to end. */
+    wait() {
+      advance(11 * 60_000);
       track(gateway.alarm());
     },
     tunnel() {
@@ -205,7 +244,9 @@ async function sequence(seed: number, trace: string[]) {
       );
     },
     exits() {
-      track(gateway.exits(caller));
+      listings += 1;
+      stopped = false;
+      track(gateway.exits(caller).finally(() => (listings -= 1)));
     },
     crash() {
       container.crash();
@@ -219,7 +260,9 @@ async function sequence(seed: number, trace: string[]) {
       const request = container.waiting.length ? pick(container.waiting) : undefined;
       if (!request) return;
       container.waiting.splice(container.waiting.indexOf(request), 1);
-      const outcome = random() < 0.85 ? "ok" : "fail";
+      const roll = random();
+      const outcome = roll < 0.8 ? "ok" : roll < 0.92 ? "fail" : "lost";
+      if (outcome !== "ok") failures += 1;
       debug("  answer", request.path, outcome, JSON.stringify(request.body ?? ""));
       request.release(outcome);
     },
@@ -237,6 +280,7 @@ async function sequence(seed: number, trace: string[]) {
     ["exits", 1],
     ["crash", 0.6],
     ["exitDown", 2],
+    ["wait", 0.5],
     ["drain", 1.5],
     ["answer", 20],
   ];
@@ -255,10 +299,9 @@ async function sequence(seed: number, trace: string[]) {
     after = [];
     if (left) {
       assert.equal(left.nullStarts, 0, "a node with no identity started after a disconnect");
-      assert.ok(
-        left.identityStarts <= 1,
-        "more than the one logout node started after a disconnect",
-      );
+      // While it runs, only its logout node may launch (and relaunch, if that container dies);
+      // once it is done, nothing launches until the next sign-in.
+      assert.equal(left.launches, 0, "a container launched after a disconnect finished");
       assert.equal(value("route-v1:state"), undefined, "an identity came back after a disconnect");
       assert.equal(
         value("route-v1:login-until"),
@@ -288,6 +331,14 @@ async function sequence(seed: number, trace: string[]) {
       await idle();
     }
   };
+  /** At rest: a route with no identity runs no idle node, and a switched-off one runs nothing. */
+  const rested = () => {
+    const identity = value("route-v1:state") !== undefined;
+    const signingIn = signIns > 0 || value("route-v1:login-until") !== undefined;
+    if (!identity && !signingIn && !left)
+      assert.equal(container.running, false, "a node runs for a route with no identity");
+    if (stopped) assert.equal(container.running, false, "a switched-off gateway still runs");
+  };
   /** The gateway never routes an exit storage does not hold for a signed-in route. */
   const matched = () => {
     if (container.appliedExit === null) return;
@@ -306,7 +357,10 @@ async function sequence(seed: number, trace: string[]) {
     if (event === "drain") {
       await drain();
       check();
-      if (pending.size === 0) matched();
+      if (pending.size === 0) {
+        matched();
+        rested();
+      }
       continue;
     }
     debug(step, event, "waiting:", container.waiting.map((request) => request.path).join(","));
@@ -325,11 +379,10 @@ async function sequence(seed: number, trace: string[]) {
   }
   check();
   matched();
-  // Once quiet, one more poll leaves the gateway running exactly what storage says.
+  // Once quiet, one more read leaves the gateway running exactly what storage says.
   container.manual = false;
   container.exitOnline = true;
-  advance(30_000);
-  await gateway.alarm();
+  await gateway.reading(caller).catch(() => {});
   const selection = value<Selection>("route-v1:selection");
   if (value("route-v1:state") && selection?.exitId)
     assert.equal(

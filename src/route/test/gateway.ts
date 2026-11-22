@@ -40,13 +40,27 @@ export class FakeGateway implements GatewayContainer {
    * answered ("ok") or failed like a reset connection ("fail").
    */
   manual = false;
-  waiting: Array<{ path: string; body: unknown; release(outcome: "ok" | "fail"): void }> = [];
+  /**
+   * "fail" is a request that never reached the gateway; "lost" one the gateway processed whose
+   * reply never came back (a timeout). A destroy and a warm-up wait here too, as container I/O.
+   */
+  waiting: Array<{
+    path: string;
+    body: unknown;
+    release(outcome: "ok" | "fail" | "lost"): void;
+  }> = [];
+  /** Called on every container launch, before the node in it has been started. */
+  onLaunch: (() => void) | undefined;
   /** Which container instance is up; a request in flight when it goes down dies with it. */
   private instance = 0;
   /** Every control request's path, in arrival order. */
   requests: string[] = [];
   /** Called with the identity each node is started from. */
   onStart: ((state: string | null) => void) | undefined;
+  /** Whether a node runs signed in, i.e. a device the tailnet knows is up. */
+  get signedIn() {
+    return this.running && !!this.boot?.state;
+  }
   /** The exit the running node routes through, or null while it routes nothing. */
   get appliedExit() {
     return this.running && this.boot?.state ? (this.boot.selection?.exit_id ?? null) : null;
@@ -75,20 +89,31 @@ export class FakeGateway implements GatewayContainer {
 
   start(options: { enableInternet: boolean }) {
     if (!options.enableInternet) throw new Error("The gateway needs the internet");
-    if (!this.running) this.instance += 1;
+    if (!this.running) {
+      this.instance += 1;
+      this.onLaunch?.();
+    }
     this.running = true;
     this.boot = undefined;
     this.pendingLogin = false;
   }
   async destroy() {
     this.destroyed += 1;
+    if (this.manual) await this.io("destroy");
     this.instance += 1;
     this.running = false;
     this.boot = undefined;
     this.pendingLogin = false;
   }
   async setInactivityTimeout(ms: number) {
+    if (this.manual) await this.io("warm");
     this.inactivity.push(ms);
+  }
+  /** Container I/O the scheduler releases; it may let other events in, but never fails here. */
+  private async io(path: string) {
+    await new Promise<"ok" | "fail" | "lost">((resolve) =>
+      this.waiting.push({ path, body: undefined, release: resolve }),
+    );
   }
   /** The container restarted underneath the DO (a deploy, a crash). */
   crash() {
@@ -149,25 +174,27 @@ export class FakeGateway implements GatewayContainer {
   private async handle(method: string, path: string, body: unknown): Promise<Response> {
     this.requests.push(path);
     const instance = this.instance;
+    let outcome: "ok" | "fail" | "lost" = "ok";
     if (this.manual) {
-      const outcome = await new Promise<"ok" | "fail">((resolve) =>
+      outcome = await new Promise<"ok" | "fail" | "lost">((resolve) =>
         this.waiting.push({ path, body, release: resolve }),
       );
       if (outcome === "fail") throw new TypeError("connection reset");
     }
-    // A connection to a container that has since stopped is gone, whatever starts after it.
-    if (instance !== this.instance) throw new TypeError("connection reset");
     const gate = this.gates.get(path);
     if (gate) this.gates.delete(path);
     if (gate?.reply === "before") {
       gate.arrived();
       await gate.opened;
     }
+    // A connection to a container that has since stopped is gone, whatever starts after it.
+    if (instance !== this.instance) throw new TypeError("connection reset");
     if (this.garbleNext === path) {
       this.garbleNext = undefined;
       return Response.json({ exits: "https://login.example.invalid/a/leak" });
     }
     const response = await this.answer(method, path, body);
+    if (outcome === "lost") throw new TypeError("reply lost");
     if (gate?.reply === "after") {
       gate.arrived();
       await gate.opened;
@@ -208,6 +235,8 @@ export class FakeGateway implements GatewayContainer {
       const selection = body as { exit_id: string | null; when_down: string };
       this.selects.push(selection);
       this.boot.selection = selection;
+      // The gateway rewrites its prefs, and with them the state file (I1).
+      this.boot.revision += 1;
       return Response.json(this.status());
     }
     if (path === "/logout" && method === "POST") {

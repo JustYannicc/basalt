@@ -702,16 +702,16 @@ test("a disconnect whose start a switch-off abandoned still logs the device out"
   assert.equal(container.running, false);
 });
 
-test("a start abandoned during a sign-in is no outage and emits nothing", async () => {
-  const { gateway, container, events } = await created();
+test("a sign-in whose node died ends without a launch, a down reading or an event", async () => {
+  const { gateway, container, events, storage } = await created();
   await gateway.login(caller);
   container.crash();
-  const held = container.hold("/status");
-  const alarm = gateway.alarm();
-  await held.reached;
-  await gateway.select(caller, { exitId: null, whenDown: "stop" });
-  held.release();
-  await alarm;
+  const starts = container.starts.length;
+  await gateway.alarm();
+  assert.equal(container.running, false);
+  assert.equal(container.starts.length, starts);
+  assert.equal(await storage.get("route-v1:login-until"), undefined);
+  assert.equal((await gateway.reading(caller)).state, "needs_login");
   assert.equal(events.filter((event) => event.state === "down").length, 0);
 });
 
@@ -771,4 +771,16 @@ test("a burst of tunnels on a down route shares one fresh read", async () => {
   );
   assert.ok(burst.every((result) => result.status === "rejected"));
   assert.equal(container.requests.length, one);
+});
+
+test("a choice overtaken while its identity read is in flight is not confirmed", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  const held = container.hold("/state");
+  const choosing = gateway.select(caller, { exitId: "n2", whenDown: "stop" });
+  await held.reached;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  held.release();
+  await refusedWith(choosing, "route_gateway_unavailable");
+  assert.equal((await storage.get<{ exitId: string | null }>("route-v1:selection"))?.exitId, null);
 });

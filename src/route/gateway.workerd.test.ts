@@ -10,7 +10,7 @@ const routeId = "rt_" + "a".repeat(26);
 const strangerRoute = "rt_" + "z".repeat(26);
 const brokenRoute = "rt_" + "b".repeat(26);
 
-// Real workerd, real RouteGateway, RouteHost RPC and PoolRoutePeer relay; only the container is fake.
+// Real workerd, real RouteGateway, signed acquisitions and PoolRoutePeer relay; only the container is fake.
 const fixture = `
 import { DurableObject } from 'cloudflare:workers';
 import { RouteGateway as Gateway, routeAcquisition } from './src/route/gateway.worker.ts';

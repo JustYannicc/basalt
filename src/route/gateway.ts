@@ -106,15 +106,29 @@ export class RouteGatewayCore {
     await this.access.authorize(input);
     await this.leaving;
     const since = ++this.epoch;
-    const launch = await this.runtime.started(since, "sign-in");
-    const reply = await this.runtime.call(launch, () => this.runtime.control.login());
-    if (!("url" in reply)) return reply;
-    const expiresAt = this.deps.now() + loginWindowMs;
-    await this.commitOrRefuse(since, async () => {
-      await this.deps.storage.put(keys.loginUntil, expiresAt);
-      await this.schedule();
-    });
-    return { url: reply.url, expiresAt };
+    // A node left from an ended sign-in may still hold a half-finished login; a new sign-in on an
+    // unjoined route starts from a fresh one.
+    if (
+      this.runtime.running &&
+      !(await this.identity.exists()) &&
+      (await this.deps.storage.get(keys.loginUntil)) === undefined
+    )
+      await this.runtime.stop();
+    try {
+      const launch = await this.runtime.started(since, "sign-in");
+      const reply = await this.runtime.call(launch, () => this.runtime.control.login());
+      if (!("url" in reply)) return reply;
+      const expiresAt = this.deps.now() + loginWindowMs;
+      await this.commitOrRefuse(since, async () => {
+        await this.deps.storage.put(keys.loginUntil, expiresAt);
+        await this.schedule();
+      });
+      return { url: reply.url, expiresAt };
+    } catch (error) {
+      // A sign-in that failed leaves no node behind on a route with no identity to run it for.
+      if (since === this.epoch && !(await this.identity.exists())) await this.runtime.stop();
+      throw error;
+    }
   }
 
   /** Whether the person has approved the device: a sealed identity exists and is still signed in. */
@@ -160,11 +174,14 @@ export class RouteGatewayCore {
     const selection: Selection = decode(SelectInput, input);
     if (selection.exitId === null) {
       ++this.epoch;
+      const signingIn = (await this.deps.storage.get(keys.loginUntil)) !== undefined;
+      // Off and its reading are stored before any container work, so nothing reads it as routed.
       await this.deps.storage.put(keys.selection, selection);
-      // A disconnect in progress owns the container until its logout is done.
-      if (!this.leaving) await this.runtime.stop();
       const reading = await this.record(await this.idle(selection), true);
       await this.schedule();
+      // The gateway stops without the switch-off waiting for it. An open sign-in keeps its node,
+      // and a disconnect in progress owns the container until its logout is done.
+      if (!this.leaving && !signingIn) this.runtime.stop().catch(() => {});
       return reading;
     }
     // A route with no sealed identity has nothing to route through, and a node that is still
@@ -204,6 +221,8 @@ export class RouteGatewayCore {
         : new RouteRefused("route_gateway_unavailable");
     }
     await this.persist(since, launch, status!);
+    // An event that overtook it after the commit owns the outcome; the choice is not confirmed.
+    if (since !== this.epoch) throw new RouteRefused("route_gateway_unavailable");
     await this.schedule();
     return reading;
   }
@@ -223,7 +242,7 @@ export class RouteGatewayCore {
     await this.leaving;
     const since = ++this.epoch;
     const { state: captured } = await this.identity.open(routeId);
-    const signingIn = captured === null && this.runtime.running && !this.runtime.isStarting;
+    const signingIn = captured === null && this.runtime.running;
     const launch = this.runtime.launch;
     await this.deps.storage.delete([keys.state, keys.selection, keys.loginUntil]);
     await this.deps.storage.deleteAlarm();
@@ -240,6 +259,9 @@ export class RouteGatewayCore {
   /** The socket to the gateway's SOCKS port for one tunnel; the DO never parses what it carries. */
   async openTunnel(caller: { owner: string }) {
     if (caller.owner !== (await this.access.owner())) throw new RouteRefused("route_not_permitted");
+    // The tunnel belongs to the epoch it began in: a switch-off or disconnect after it starts
+    // nothing for it.
+    const since = this.epoch;
     // Only a signed-in route with an exit selected may start compute for traffic.
     if (!(await this.routing())) throw new RouteRefused("route_gateway_unavailable");
     // A tunnel goes to the pool only while the latest reading is routed. One that is not is read
@@ -250,7 +272,7 @@ export class RouteGatewayCore {
       if (!routed.has(fresh.state)) throw new RouteRefused("route_gateway_unavailable");
     }
     try {
-      const launch = await this.runtime.started(this.epoch);
+      const launch = await this.runtime.started(since);
       this.runtime.live(launch);
       return await this.runtime.control.connect();
     } catch {
@@ -262,10 +284,24 @@ export class RouteGatewayCore {
     if ((await this.access.owner()) === undefined) return;
     await this.refresh();
     const loginUntil = await this.deps.storage.get<number>(keys.loginUntil);
-    if (loginUntil !== undefined && this.deps.now() >= loginUntil)
-      await this.deps.storage.delete([keys.loginUntil]);
+    if (loginUntil !== undefined && this.deps.now() >= loginUntil) await this.endSignIn();
     if (await this.routing()) await this.runtime.control.keepWarm(warmForMs);
     await this.schedule();
+  }
+
+  /**
+   * The sign-in window ended unapproved: the window goes, and a node that never sealed an identity
+   * is logged out and stopped, like a cancel, so a late approval cannot leave a device behind.
+   */
+  private async endSignIn() {
+    const since = ++this.epoch;
+    await this.deps.storage.delete([keys.loginUntil]);
+    if (await this.identity.exists()) return;
+    if (this.runtime.running) {
+      const launch = this.runtime.launch;
+      await this.runtime.call(launch, () => this.runtime.control.logout()).catch(() => {});
+    }
+    if (since === this.epoch) await this.runtime.stop();
   }
 
   private async logOut(since: number, launch: number, signingIn: boolean, captured: string | null) {
@@ -321,6 +357,20 @@ export class RouteGatewayCore {
   private async refreshNow(since: number): Promise<Reading> {
     const selection = await this.deps.storage.get<Selection>(keys.selection);
     const signingIn = (await this.deps.storage.get(keys.loginUntil)) !== undefined;
+    // A sign-in whose node died cannot complete: its link belongs to that node. The window ends and
+    // nothing is launched to find that out.
+    if (
+      signingIn &&
+      !this.leaving &&
+      !this.runtime.running &&
+      !this.runtime.isStarting &&
+      !(await this.identity.exists())
+    ) {
+      await this.commit(since, () => this.deps.storage.delete([keys.loginUntil])).catch(() => {});
+      return this.record(
+        localReading("needs_login", "route_needs_login", selection, this.deps.now()),
+      );
+    }
     // A route that routes nothing and signs nobody in is read without starting compute. A node that
     // still runs is put back on what storage holds, through its own launch, so one that applied a
     // choice an event overtook converges without anything being started.
