@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A Container in a dependency cycle with its Worker creates its application once, in reconcile, attached to the namespace the Worker published: precreate only publishes the image and records a placeholder id, so no application is created unattached, deleted and recreated. A deployed Worker gaining a Container-backed class keeps the placeholder until it publishes the namespace, and the convergence pass then creates the application and hands the Worker its id. Backport of alchemy-run/alchemy#3265."
+    }
+  }
+}
