@@ -106,7 +106,7 @@ export function vendorAllowances(
     const match = pattern.exec(body);
     const full = match ? number(match[1]!) : NaN;
     if (!Number.isFinite(full) || full <= 0) throw new Error("Vendor allowance statement changed");
-    return (id === "claude-max" ? [18_000, 604_800] : [604_800]).map((windowSeconds) =>
+    const entries = (id === "claude-max" ? [18_000, 604_800] : [604_800]).map((windowSeconds) =>
       allowanceEntry({
         vendor: "anthropic",
         plan: id === "claude-max" ? "max_5x" : "ultra",
@@ -124,6 +124,27 @@ export function vendorAllowances(
             : "Session and weekly allowance stated by the vendor",
       }),
     );
+    // Max 20x accounts keep the pool's 20x policy while the vendor still names Max 20x as the
+    // plan that became Ultra; if that statement goes, the refresh revokes the policy rows.
+    if (id === "claude-ultra" && /The Max 20x plan is now called the Ultra plan/iu.test(body))
+      for (const windowSeconds of [18_000, 604_800])
+        entries.push(
+          allowanceEntry({
+            vendor: "anthropic",
+            plan: "max_20x",
+            windowSeconds,
+            full: 20,
+            unit: claudeUnit,
+            kind: "policy",
+            verification: "policy",
+            sources: [...vendorSources[id]],
+            checkedAt: now,
+            fetchedAt: now,
+            detail:
+              "Pool policy: Max 20x counts as twenty Pro-eq; the vendor names it the plan that became Ultra",
+          }),
+        );
+    return entries;
   }
   const entries: PlanAllowance[] = [];
   for (const line of bodies[0]!.split("\n")) {
