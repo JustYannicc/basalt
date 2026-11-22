@@ -257,6 +257,15 @@
             "mode": "manual",
             "requires": "Retire only when pinned Home excludes expired OAuth credentials and its five-minute dispatch safety window before model-state, scheduler, full-credential and affinity admission. Prove no stale upstream dispatch, next-account fallback, clean temporary unavailability, same-UUID fresh replacement and quota-deadline compatibility through native public requests."
           }
+        },
+        {
+          "identity": "cliproxy-home-coordination-pool",
+          "file": "0691-home-coordination-pool.patch",
+          "sha256": "b8ecfbdecf0d5f32c090146b9cef540539f36fd33050d46efd423ea29a6cfbcd",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0691 is offered to Home upstream as the coordination-pool pull request. Retire when the pinned Home provides pgsql.coordination-max-open-conns: a separately capped pool that serves heartbeats, election, master lookup, node liveness, the cluster TLS fingerprint check and the management node listing (GET /v8/management/nodes) while the main pool is saturated, and passes the saturated-main-pool heartbeat, node-lookup and node-listing regressions."
+          }
         }
       ]
     },

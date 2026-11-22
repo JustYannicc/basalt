@@ -4,6 +4,7 @@ import type { Input } from "alchemy/Input";
 import { Effect, type Redacted } from "effect";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readinessCommandSeconds } from "./readiness-budget.ts";
 
 export const verifyRuntimeDatabaseBudget = (
   id: string,
@@ -49,8 +50,7 @@ export const verifyRuntimeDatabaseBudget = (
             DATABASE_BUDGET_DEPLOYMENT: options.deployment.pipe(Output.map(() => "deployed")),
           },
           memo: false,
-          // The new readiness command reserves teardown time outside the 180-second startup budget.
-          timeout: "185 seconds",
+          timeout: `${readinessCommandSeconds} seconds`,
         })
       : undefined;
     return yield* Command.Exec(id, {
@@ -71,4 +71,39 @@ export const verifyRuntimeDatabaseBudget = (
       memo: false,
       timeout: "2 minutes",
     });
+  });
+
+/**
+ * The pool Worker's readiness wait and acceptance. Both are keyed on the Worker's upload with memo
+ * off, so they run on every release, after the upload, whatever the database commands did:
+ * readiness waits until the pool object adopts the new code, acceptance until readiness is done.
+ */
+export const poolWorkerAcceptance = (
+  worker: {
+    readonly hash: Output.Output<unknown, never>;
+    readonly workerName: Output.Output<string, never>;
+  },
+  inputs: {
+    adminUrl: Input<Redacted.Redacted<string>>;
+    runtimeLogin: Output.Output<string, never>;
+    candidate: string;
+    accountId: Input<string>;
+    key: Input<Redacted.Redacted<string>>;
+    workerInput: string;
+    imageHash: Output.Output<string, never>;
+  },
+) =>
+  verifyRuntimeDatabaseBudget("PoolBackendBudget", {
+    adminUrl: inputs.adminUrl,
+    runtimeLogin: inputs.runtimeLogin,
+    databases: ["basalt_pool"],
+    deployment: worker.hash,
+    candidate: inputs.candidate,
+    readiness: {
+      worker: worker.workerName,
+      accountId: inputs.accountId,
+      key: inputs.key,
+      workerInput: inputs.workerInput,
+      imageHash: inputs.imageHash,
+    },
   });

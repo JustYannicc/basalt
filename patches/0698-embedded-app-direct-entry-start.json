@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-embedded-app-direct-entry-start",
+  "file": "0698-embedded-app-direct-entry-start.patch",
+  "content_sha256": "dd05e99ce1b2eef6ac99c7a20f06d594ecdc9cd760442b789aa016d7278d2ab1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

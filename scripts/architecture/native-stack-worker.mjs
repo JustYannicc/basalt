@@ -26,9 +26,20 @@ try {
   };
   const { brand } = await load("brand.ts");
   if (setupRequestDenied) throw new Error();
-  const previewConnection = process.env.NATIVE_STACK_PREVIEW_CONNECTION_PROOF === "true";
-  const http = declarationFetch(previewConnection ? "preview.fixture.invalid" : brand.zone);
+  const settlesProof = process.env.NATIVE_STACK_SETTLES_PROOF;
+  const previewStack = settlesProof === "preview";
+  const http = declarationFetch(previewStack ? "preview.fixture.invalid" : brand.zone);
   globalThis.fetch = http.fetch;
+  if (settlesProof)
+    // A test stage seeds its private billing instance while its declaration is resolved. The plan
+    // proof answers that one request; every other request still meets the declaration fixtures.
+    globalThis.fetch = (input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      return (init?.method ?? request?.method) === "POST" &&
+        /^https:\/\/emulators\.dev\/[^?#]+\/_emulate\/seed$/.test(String(request?.url ?? input))
+        ? Promise.resolve(Response.json({}))
+        : http.fetch(input, init);
+    };
   const { deployEnvironment, previewEnvironment, requiredSecrets } =
     await load("scripts/environment.ts");
   const synthetic = Object.fromEntries(
@@ -45,7 +56,11 @@ try {
     APP_DOMAIN_CONTROLLER_TOKEN: "fixture-app-domain-token",
     POOL_APP_SIGNING_KEY: "f".repeat(64),
     POOL_DEPLOYMENT_KEY: "a".repeat(64),
-    BASALT_POOL_IMAGE_RECEIPT: "fixture-publication-receipt.json",
+    // Production always declares the root by its pinned digest.
+    POOL_ROOT_IMAGE: JSON.stringify({
+      image: `registry.cloudflare.com/${fixtureAccount}/basalt-pool@sha256:${"e".repeat(64)}`,
+      input: "0123456789abcdef",
+    }),
     GITHUB_SHA: "a".repeat(40),
     BASALT_RELEASE_ATTEMPT: "00000000-0000-4000-8000-000000000001",
     SENTRY_DSN: "https://fixture_public_key@o0.ingest.de.sentry.io/123456",
@@ -53,13 +68,7 @@ try {
     POSTHOG_PROJECT_KEY: "fixture_posthog_project_key",
     POSTHOG_HOST: "https://us.i.posthog.com",
   });
-  const candidateProof = process.env.NATIVE_STACK_CANDIDATE_PROOF;
-  if (candidateProof) {
-    delete synthetic.BASALT_RELEASE_ATTEMPT;
-    delete synthetic.BASALT_POOL_IMAGE_RECEIPT;
-    delete synthetic.GITHUB_SHA;
-  }
-  const settings = previewConnection
+  const settings = previewStack
     ? {
         ...previewEnvironment(1, {
           ...synthetic,
@@ -76,81 +85,9 @@ try {
     : deployEnvironment(synthetic);
   if (settings.BASALT_RELEASE_ATTEMPT)
     process.env.BASALT_RELEASE_ATTEMPT = settings.BASALT_RELEASE_ATTEMPT;
+  // The release entry gives every stage an attempt id, test stages included.
+  if (settlesProof) process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000001";
   settings.EXECUTOR_E2E_MANUAL_CRON = process.env.NATIVE_STACK_MANUAL_CRON ?? "false";
-  if (candidateProof) {
-    if (
-      candidateProof === "ready" ||
-      candidateProof.startsWith("retirement-") ||
-      candidateProof.startsWith("release-state-") ||
-      candidateProof.startsWith("forward-state-") ||
-      candidateProof.startsWith("entry-")
-    ) {
-      const { randomUUID } = await import("node:crypto");
-      process.env.BASALT_RELEASE_ATTEMPT = randomUUID();
-    }
-    if (
-      candidateProof.startsWith("release-state-") ||
-      candidateProof.startsWith("forward-state-")
-    ) {
-      const { releaseStateProof } = await import("../release-barrier/test/release-state-proof.mjs");
-      emit(JSON.stringify(await releaseStateProof(settings, http, candidateProof)));
-      process.exit(0);
-    }
-    if (candidateProof.startsWith("entry-")) {
-      const { candidateProbeProof } =
-        await import("../release-barrier/test/candidate-probe-proof.mjs");
-      emit(JSON.stringify(await candidateProbeProof(settings, candidateProof, http, synthetic)));
-      process.exit(0);
-    }
-    const retirement = candidateProof.startsWith("retirement-")
-      ? await (
-          await import("../release-barrier/test/candidate-retirement-fixture.mjs")
-        ).retirementFixture(
-          http,
-          candidateProof === "retirement-v8" ? 8 : candidateProof === "retirement-future" ? 9 : 7,
-        )
-      : undefined;
-    if (retirement) globalThis.fetch = retirement.fetch;
-    const { baselineRoles } = await load("scripts/release-barrier/baseline-probe.ts");
-    const { candidateScriptSettings } = await load("scripts/release-barrier/candidate-settings.ts");
-    const { CandidateSettingsReadFailure, candidateFailureDetails } = await load(
-      "scripts/release-barrier/candidate-failure.ts",
-    );
-    try {
-      const rows = await candidateScriptSettings(
-        baselineRoles.map((role) => ({
-          role,
-          scriptName: `basalt-${role.toLowerCase()}-production-fixture`,
-        })),
-        settings,
-        retirement?.fetch,
-      );
-      http.assertAllowed();
-      emit(
-        JSON.stringify({
-          ok: true,
-          roles: rows.map((row) => row.role),
-          ...(retirement
-            ? {
-                retirementRows: rows.filter((row) => typeof row.retiredPlacement === "boolean")
-                  .length,
-                stateRequests: retirement.requests,
-              }
-            : {}),
-        }),
-      );
-    } catch (error) {
-      if (!(error instanceof CandidateSettingsReadFailure)) throw error;
-      emit(
-        JSON.stringify({
-          ok: false,
-          failure: candidateFailureDetails(error),
-          ...(retirement ? { stateRequests: retirement.requests } : {}),
-        }),
-      );
-    }
-    process.exit(0);
-  }
   phase = "import";
   const [
     { default: actualRoot },
@@ -176,62 +113,17 @@ try {
     process.env.NATIVE_STACK_ROOT_CONTAINER_PROOF === "true"
       ? await import("./root-container-plan-proof.mjs")
       : undefined;
-  const connectionProof =
-    process.env.NATIVE_STACK_CONNECTION_PROOF === "true"
-      ? await import("../release-barrier/connection-proof.mjs")
-      : undefined;
-  const containerProof = process.env.NATIVE_STACK_CONTAINER_PROOF
-    ? await import("../release-barrier/test/container-stack-proof.mjs")
-    : undefined;
-  const settingsProof =
-    process.env.NATIVE_STACK_SETTINGS_PROOF === "true"
-      ? await load("scripts/release-barrier/candidate-settings.ts")
-      : undefined;
-  const inspect = settingsProof
+  const planSettles = settlesProof ? await import("./plan-settles-proof.mjs") : undefined;
+  const inspect = planSettles
     ? (stack) =>
-        settingsProof.settingsFromDeclarations(
-          stack,
-          Object.values(stack.resources)
-            .filter((resource) => resource.Type === "Cloudflare.Worker")
-            .map((resource) => ({
-              role: resource.FQN,
-              scriptName: `basalt-${resource.FQN.toLowerCase()}-production-fixture`,
-            })),
-        )
-    : containerProof
-      ? (stack) =>
-          containerProof.proveContainerStack(
-            stack,
-            (inspectNext) => {
-              const previous = Number(process.env.BASALT_RELEASE_ATTEMPT?.slice(-12) ?? 1);
-              process.env.BASALT_RELEASE_ATTEMPT = `00000000-0000-4000-8000-${String(previous + 1).padStart(12, "0")}`;
-              return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-            },
-            process.env.NATIVE_STACK_CONTAINER_PROOF,
-          )
-      : previewConnection
-        ? (await import("../release-barrier/preview-connection-proof.mjs")).provePreviewConnection
-        : connectionProof
-          ? (stack) =>
-              connectionProof.proveConnectionPlan(
-                stack,
-                (inspectNext) => {
-                  process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
-                  return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
-                },
-                process.env.NATIVE_STACK_CONNECTION_CHANGE,
-                process.env.NATIVE_STACK_CONNECTION_TARGET,
-              )
-          : process.env.NATIVE_STACK_RELEASE_PROOF === "true"
-            ? (await import("../release-phases/proof.mjs")).proveReleasePhases
-            : (stack) =>
-                Effect.sync(() =>
-                  inventoryDeclarations(
-                    Object.values(stack.resources),
-                    stack.bindings,
-                    Output.isOutput,
-                  ),
-                );
+        planSettles.provePlanSettles(stack, (inspectNext) => {
+          process.env.BASALT_RELEASE_ATTEMPT = "00000000-0000-4000-8000-000000000002";
+          return evalStack(actualRoot, inspectNext, { stage: settings.ALCHEMY_STAGE });
+        })
+    : (stack) =>
+        Effect.sync(() =>
+          inventoryDeclarations(Object.values(stack.resources), stack.bindings, Output.isOutput),
+        );
   const program = evalStack(
     actualRoot,
     (stack) =>

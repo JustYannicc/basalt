@@ -3,7 +3,7 @@ import { requireHomePrivacyReady } from "./privacy.ts";
 import { counter, invalidHistory } from "./record.ts";
 import { homeHistorySelect, homeHistorySource, homeRequest } from "./home.ts";
 import type { HistoryDatabase } from "./schema.ts";
-import { historyBatchSize, insertRequests } from "./store.ts";
+import { historyBatchSize, historyForwardPages, insertRequests } from "./store.ts";
 import { pendingPoolHistoryChanges, poolHistoryPendingProjection } from "./change-revisions.ts";
 import { projectPoolHistoryChanges } from "./change-projection.ts";
 
@@ -65,7 +65,7 @@ export async function captureHomeRequests(db: HistoryDatabase) {
       complete = state.backfill_complete === true,
       inserted = 0,
       scanned = 0;
-    for (let page = 0; page < 2; page++) {
+    for (let page = 0; page < historyForwardPages; page++) {
       const rows = (
         await db.query(`${homeHistorySelect} WHERE u.id > $1::bigint ORDER BY u.id LIMIT $2`, [
           next,

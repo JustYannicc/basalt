@@ -1,0 +1,7 @@
+model {
+  extend basalt.pool {
+    metadata {
+      constraint "A demand cohort restarts only when one of its accounts brings a weight revision that account has not had since the cohort last restarted. Accounts joining, leaving or returning at a known revision, including an account moving between unit cohorts as an account calibration forms and lapses, keep every cohort's training. A calibration that re-forms within its size band keeps its size and revision."
+    }
+  }
+}

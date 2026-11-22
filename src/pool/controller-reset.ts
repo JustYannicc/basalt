@@ -11,6 +11,7 @@ import { isPublicModelPath } from "./lifecycle.ts";
 import { endpointMetadata } from "./model-history/record.ts";
 import { shape } from "./runtime-fleet/endpoint-trace.ts";
 import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
+import { handingOver } from "./code-handover.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -236,6 +237,60 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
   }
 }
 
+/**
+ * A controller handing over to new code refuses new model calls until it resets itself. A call it
+ * refused was never sent on, so a safe read or a held model call is sent again each second inside
+ * the replay window, and once the new instance answers the caller sees nothing. Past the window,
+ * or without a held body, the refusal itself goes back: the retryable 503 clients already follow.
+ */
+async function awaitHandover(
+  request: Request,
+  hop: ControllerHop,
+  model: boolean,
+  copy: ReturnType<typeof hold>,
+  response: Response,
+  begun: number,
+): Promise<Response> {
+  if (!handingOver(response) || (!model && !safeRead(request))) return response;
+  const now = hop.now ?? Date.now;
+  let sends = 0;
+  while (handingOver(response)) {
+    if (now() - begun + controllerReplayDelayMs > controllerReplayWindowMs) break;
+    let resend: Request = request;
+    if (model) {
+      await copy.ready;
+      const held = copy.take();
+      if ("refused" in held) break;
+      resend = new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: held.body,
+        redirect: request.redirect,
+        signal: request.signal,
+      });
+    }
+    await (hop.wait ?? sleep)(controllerReplayDelayMs, request.signal);
+    sends++;
+    try {
+      const next = await hop.controller().fetch(resend);
+      void response.body?.cancel().catch(() => {});
+      response = next;
+    } catch (error) {
+      if (request.signal.aborted) throw error;
+      // The old instance reset itself while this send was on its way; the next one reaches the new.
+      if (controllerInstanceEnded(error)) continue;
+      // Any other failure: the caller still gets the retryable refusal it already holds.
+      break;
+    }
+  }
+  console.info("POOL_CODE_HANDOVER_WAITED", {
+    sends,
+    waitedMs: now() - begun,
+    outcome: handingOver(response) ? "refused" : "answered",
+  });
+  return response;
+}
+
 async function forwardHeld(
   request: Request,
   hop: ControllerHop,
@@ -278,12 +333,14 @@ async function forwardHeld(
         report(hop, request, requestId, "surfaced", error, "not_replayable");
         throw error;
       }
-      if (request.method === "POST" && !request.headers.has("upgrade")) {
-        // A job the provider may have accepted is never started twice; its client decides.
+      if (request.method === "POST" && !modelCallReplayable(pathname)) {
+        // A job the provider may have accepted is never started twice, whatever its headers say
+        // (model sockets are GET); its client decides.
         report(hop, request, requestId, "outcome_unknown", error, "not_replayable");
         return upstreamOutcomeUnknown(requestId, pathname);
       }
-      // A model socket or a job status read starts nothing, so its client retries it.
+      // A model socket or a job status read starts nothing, and an allow-listed call it could not
+      // hold costs one response at most, so its client retries it.
       report(hop, request, requestId, "retry_advised", error, "not_replayable");
       return retryAdvice(request, requestId);
     }
@@ -321,6 +378,7 @@ async function forwardHeld(
     }
     report(hop, request, requestId, "replayed", error, undefined, response.ok);
   }
+  response = await awaitHandover(request, hop, model, copy, response, begun);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
   return nativeRuntimeStream(response, request, (error) =>

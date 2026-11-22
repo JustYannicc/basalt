@@ -376,6 +376,14 @@ test("the Durable Object alarm provisions pending pool members", async () => {
   assert.ok(alarm);
 });
 
+interface StubStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  transaction<T>(work: (transaction: StubStorage) => Promise<T>): Promise<T>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
+}
+
 test("reconstructing a running or stopped object without a request leaves compute and idle state alone", async () => {
   const env = {
     POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
@@ -385,9 +393,25 @@ test("reconstructing a running or stopped object without a request leaves comput
   };
   const timeouts: number[] = [];
   const pending: Promise<unknown>[] = [];
+  const armed: number[] = [];
   let writes = 0,
     starts = 0,
     destroys = 0;
+  // With no runtime selected, reconstruction arms no upkeep alarm, writes nothing and touches no
+  // compute.
+  const values = new Map<string, unknown>();
+  const storage: StubStorage = {
+    get: async (key: string) => values.get(key),
+    put: async (key: string, value: unknown) => {
+      if (key !== "pool-alarm-v1:deadlines") writes++;
+      values.set(key, value);
+    },
+    transaction: async (work) => work(storage),
+    getAlarm: async () => null,
+    setAlarm: async (at: number) => {
+      armed.push(at);
+    },
+  };
   const object = (running: boolean) =>
     new PoolContainer(
       {
@@ -407,12 +431,7 @@ test("reconstructing a running or stopped object without a request leaves comput
         waitUntil: (work: Promise<unknown>) => {
           pending.push(work);
         },
-        storage: {
-          get: async () => undefined,
-          put: async () => {
-            writes++;
-          },
-        },
+        storage,
       },
       env,
     );
@@ -423,6 +442,7 @@ test("reconstructing a running or stopped object without a request leaves comput
   await Promise.all(pending);
   assert.deepEqual(timeouts, []);
   assert.equal(writes, 0);
+  assert.deepEqual(armed, [], "nothing is selected, so no object arms an upkeep alarm");
   assert.equal(starts, 0);
   assert.equal(destroys, 0);
 });
@@ -1008,7 +1028,9 @@ for (const retire of [false, true])
       const entered = Promise.withResolvers<void>(),
         release = Promise.withResolvers<void>();
       const installed: NativeMembershipPolicy[] = [];
-      let alarm: number | null = null,
+      // A pool whose alarm is alive, so the deadlines read below are the reservation's own; a pool
+      // with none is armed at once instead (alarms.test.ts, runtime-heal-no-alarm.worker.test.ts).
+      let alarm: number | null = start + 3_600_000,
         reads = 0,
         native = true;
       if (retire)
