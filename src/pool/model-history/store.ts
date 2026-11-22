@@ -3,6 +3,8 @@ import type { HistoryDatabase } from "./schema.ts";
 import type { ModelRequest } from "./record.ts";
 
 export const historyBatchSize = 200;
+/** Forward pages one capture run reads; more uncaptured rows than this wait for a later run. */
+export const historyForwardPages = 2;
 export class HistoryConflict extends Error {
   constructor() {
     super("Model usage identity conflicts with retained history");
