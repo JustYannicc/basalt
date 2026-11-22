@@ -5,12 +5,12 @@ import { seriesFixture } from "./series-fixture.ts";
 
 /** The raw answer the rollup must reproduce exactly: one group per pool, UTC hour, source and model. */
 const raw = `SELECT pool,date_trunc('hour',timestamp) AS hour,source,provider,model,
-    count(*)::text AS requests,count(*) FILTER (WHERE failed)::text AS failed,
+    count(*)::text AS requests,nullif(count(*) FILTER (WHERE failed),0)::text AS failed,
     sum(input_tokens)::text AS input,sum(output_tokens)::text AS output,
     sum(total_tokens)::text AS total,max(timestamp_exact) AS last_at
   FROM basalt_model_requests GROUP BY 1,2,3,4,5 ORDER BY 1,2,3,4 NULLS FIRST,5 NULLS FIRST`;
 const rolled = `SELECT pool,hour,source,provider,model,
-    sum(requests)::text AS requests,sum(failed_requests)::text AS failed,
+    sum(requests)::text AS requests,(sum(requests) FILTER (WHERE failed))::text AS failed,
     sum(input_tokens_sum)::text AS input,sum(output_tokens_sum)::text AS output,
     sum(total_tokens_sum)::text AS total,max(last_at) AS last_at
   FROM basalt_model_usage_hourly GROUP BY 1,2,3,4,5 ORDER BY 1,2,3,4 NULLS FIRST,5 NULLS FIRST`;

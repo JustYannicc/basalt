@@ -17,6 +17,7 @@ import {
   historyJournalActivateVersion,
   historyJournalActivateStatements,
 } from "./change-journal-schema.ts";
+import { historyUsageRollupStatements, historyUsageRollupVersion } from "./usage-rollup-schema.ts";
 
 export interface HistoryDatabase {
   query(
@@ -183,6 +184,7 @@ export const historySchemaMigrations = [
   { name: historyJournalPrepareVersion, statements: historyJournalPrepareStatements },
   { name: historyRowSchemaVersion, statements: historyRowStatements },
   { name: historyChangeOnceVersion, statements: historyChangeOnceStatements },
+  { name: historyUsageRollupVersion, statements: historyUsageRollupStatements },
 ];
 export const historyJournalActivationMigration = {
   name: historyJournalActivateVersion,
