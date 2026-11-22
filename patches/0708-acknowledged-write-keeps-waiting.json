@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-acknowledged-write-keeps-waiting",
+  "file": "0708-acknowledged-write-keeps-waiting.patch",
+  "content_sha256": "5137706abad2f7036dfd5d87cedb69e4139a53185cd1186370c5b61722023dc9",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

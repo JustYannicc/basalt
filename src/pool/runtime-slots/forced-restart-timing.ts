@@ -67,3 +67,25 @@ export const forcedRestartServesWithinMs =
 /** The same, when a non-zero stream count stands still: the stop waits out `leakedStreamsMs`. */
 export const forcedRestartServesWithinHeldStreamsMs =
   forcedRestartServesWithinMs - unservingBoundMs + Math.max(unservingBoundMs, leakedStreamsMs);
+
+/**
+ * What the totals above leave out: the time `destroy()` takes, and the one membership pass that
+ * renews an expired pool policy before recovery reports ready. An allowance, until a stage heal's
+ * stop path measures both.
+ */
+export const destroyAndMembershipMs = 120_000;
+/**
+ * The platform may keep an active controller object on its previous code for 300 seconds after an
+ * upload; thirty more cover transport. The new code's recovery runs only once the object adopts it.
+ * https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/
+ */
+export const controllerAdoptionMs = 330_000;
+/**
+ * A healing release's acceptance waits this long for recovery to report ready on a new boot. It
+ * budgets a stream count that stands still, since nothing can read the old boot's count before the
+ * apply.
+ */
+export const healingAcceptanceWithinMs =
+  forcedRestartServesWithinHeldStreamsMs + destroyAndMembershipMs;
+/** Readiness after the pool Worker's upload: the object adopts the new code, then the heal runs. */
+export const healingReadinessWithinMs = controllerAdoptionMs + healingAcceptanceWithinMs;

@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "The request reliability read finds Home rows without terminal evidence by probing each row's start through its key, so its cost follows the window's Home rows, not all retained evidence, and stays within the read's five-second statement limit. Only a canonical lowercase UUID request identity names a start; any other identity stays unmatched and cannot fail the read. Every statement of the read that fails logs whether it served the check-in or an overview, its closed step name and a closed failure or server SQLSTATE, never SQL text, parameters or driver messages, and the read still fails. Every failed read logs a session line with a closed cause: the read's own session names its first failure's own class, whether it failed while connecting, in its statements or while closing the connection, and how closing failed after a statement failure, and passes its caller only a fixed message; the availability check-in logs the causes only it sees, such as disabled history or its own budget running out. Its alert stays collection_unavailable."
+    }
+  }
+}

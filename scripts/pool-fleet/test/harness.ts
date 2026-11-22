@@ -5,10 +5,12 @@ import { tmpdir } from "node:os";
 import { RuntimeFleetConfiguration } from "../../../src/pool/runtime-fleet/configuration.ts";
 import { RuntimeFleetState } from "../../../src/pool/runtime-fleet/state.ts";
 import { RuntimeProviderReader } from "../../../src/pool/runtime-provider/read.ts";
+import { observeBoundProvider } from "../../../src/pool/runtime-provider/observation.ts";
 import { handleRuntimeHandoff, type HandoffFleet } from "../../../src/pool/runtime-slots/http.ts";
 import { crashNonceKey } from "../../../src/pool/runtime-crash-contract.ts";
 import type { SlotIdentity } from "../../../src/pool/runtime-slots/contract.ts";
 import { openEnvelope } from "../../../src/pool/token.ts";
+import { nativeModelHeader } from "../../../src/pool/native-contract.ts";
 import { runtimeHandoffCommandPrefix } from "../../../src/pool/runtime-slots/handoff-command.ts";
 import { SlotMemory } from "../../pool-tests/runtime-slot-storage.ts";
 import { StorageBookmarks } from "../../../src/pool/storage-bookmark.ts";
@@ -71,6 +73,8 @@ export interface HarnessOptions {
   turnStatus?: number;
   /** Simulates the controller starting a ready cell once the fleet is enabled. */
   startCell?: boolean;
+  /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
+  providerSecret?: string | null;
 }
 
 export async function harness(options: HarnessOptions = {}) {
@@ -184,6 +188,11 @@ export async function harness(options: HarnessOptions = {}) {
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
   let restart = 0;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
+  const providerRequests: string[] = [];
+  const providerSecret = {
+    get: async () =>
+      options.providerSecret === undefined ? "observation-token" : options.providerSecret,
+  };
   // The real controller command handler over the real fleet configuration; only the slot layer is a stub.
   const fleet: HandoffFleet = {
     configure: (operationId, value) => configuration.configure(operationId, value),
@@ -219,6 +228,21 @@ export async function harness(options: HarnessOptions = {}) {
       submission: (await storage.get(crashNonceKey(nonce))) ?? null,
       target: null,
     }),
+    // Production's own provider-observe path; only the Cloudflare API host is moved to the fixture.
+    observeProvider: async (target, signal) => {
+      const original = globalThis.fetch;
+      globalThis.fetch = (input, init) => {
+        const url = String(input);
+        if (!url.startsWith("https://api.cloudflare.com/")) return original(input, init);
+        providerRequests.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`);
+        return original(url.replace("https://api.cloudflare.com", cloudflare.origin), init);
+      };
+      try {
+        return await observeBoundProvider(providerSecret, target, signal);
+      } finally {
+        globalThis.fetch = original;
+      }
+    },
   };
   // The real bookmark rules over a storage double that has the platform's recovery calls.
   const bookmarks = new StorageBookmarks({
@@ -270,8 +294,16 @@ export async function harness(options: HarnessOptions = {}) {
   });
 
   let turns = 0;
+  /** How each model call was authorized: the lane's credential, never a bearer. */
+  const modelCalls: { call: string; authorization: string | null; assertion: string | null }[] = [];
   const pool = await listen(async (request) => {
     const path = new URL(request.url!, "http://local").pathname;
+    if (path === "/v1/models" || path === "/v1/chat/completions")
+      modelCalls.push({
+        call: `${request.method} ${path}`,
+        authorization: request.headers.authorization ?? null,
+        assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
+      });
     const isEnabled = await enabled();
     const boot = (index: number) =>
       options.boot?.(index, isEnabled) ?? (isEnabled ? "cell-boot" : "primary-boot");
@@ -315,7 +347,7 @@ export async function harness(options: HarnessOptions = {}) {
     }),
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
-      apiKey: "acceptance-key",
+      credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
       access: { token: "pool-token", owner: "acceptance" },
     },
     sleep: async () => {},
@@ -324,8 +356,10 @@ export async function harness(options: HarnessOptions = {}) {
   });
   return {
     deps,
+    modelCalls,
     actions,
     crashes,
+    providerRequests,
     storage,
     configuration,
     cloudflareReads,

@@ -929,3 +929,122 @@ test("a destroy deletes exactly the resources its own plan names, and nothing el
     `DELETE /accounts/${ACCOUNT}/workers/scripts/basalt-test-pr-7-poolworker`,
   ]);
 });
+
+test("a destroy plan's Workflow row admits that Workflow's delete and no other", async (t) => {
+  const { destroyTargets } = await import("./plan-summary.ts");
+  const own = "basalt-rehearsal-usage-test-rehearsal-1";
+  const plan = {
+    resources: {
+      Usage: {
+        action: "delete",
+        state: {
+          resourceType: "Cloudflare.Workflow",
+          attr: {
+            workflowName: own,
+            scriptName: "basalt-rehearsal-api-test-rehearsal-1",
+            accountId: ACCOUNT,
+          },
+        },
+      },
+    },
+    deletions: {},
+  };
+  const run = await guarded(t, { deletable: destroyTargets(plan as never) }, () =>
+    Effect.gen(function* () {
+      const mine = yield* Effect.exit(
+        Workflows.deleteWorkflow({ accountId: ACCOUNT, workflowName: own }),
+      );
+      const other = yield* Effect.exit(
+        Workflows.deleteWorkflow({ accountId: ACCOUNT, workflowName: "basalt-production-usage" }),
+      );
+      // The host Worker the row records is not a Workflow target.
+      const host = yield* Effect.exit(
+        Workflows.deleteWorkflow({
+          accountId: ACCOUNT,
+          workflowName: "basalt-rehearsal-api-test-rehearsal-1",
+        }),
+      );
+      return { mine, other, host };
+    }),
+  );
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  assert.ok(Exit.isSuccess(run.exit.value.mine));
+  assert.equal(refusalOf(run.exit.value.other).resource, "Workflow basalt-production-usage");
+  assert.equal(
+    refusalOf(run.exit.value.host).resource,
+    "Workflow basalt-rehearsal-api-test-rehearsal-1",
+  );
+  assert.deepEqual(reads(run.received), [`DELETE /accounts/${ACCOUNT}/workflows/${own}`]);
+});
+
+test("a destroy plan's PlanetScale role and branch admit those deletes, never the database", async (t) => {
+  const { destroyTargets } = await import("./plan-summary.ts");
+  const database = "basalt-preview-rehearsal-1";
+  const plan = {
+    resources: {
+      Role: {
+        action: "delete",
+        state: {
+          resourceType: "Planetscale.PostgresRole",
+          attr: {
+            id: "role-own",
+            name: "pscale_api_x",
+            database,
+            branch: "test-rehearsal-1",
+            databaseName: "postgres",
+          },
+        },
+      },
+      Branch: {
+        action: "delete",
+        state: {
+          resourceType: "Planetscale.PostgresBranch",
+          attr: { name: "test-rehearsal-1", database, organization: "org" },
+        },
+      },
+    },
+    deletions: {},
+  };
+  const at = (base: string, path: string) =>
+    Effect.exit(
+      Effect.tryPromise(() =>
+        fetch(`${base}/v1/organizations/org/databases/${path}`, { method: "DELETE" }),
+      ),
+    );
+  const run = await guarded(t, { deletable: destroyTargets(plan as never) }, (base) =>
+    Effect.gen(function* () {
+      return {
+        role: yield* at(base, `${database}/branches/test-rehearsal-1/roles/role-own`),
+        otherRole: yield* at(base, `${database}/branches/test-rehearsal-1/roles/role-other`),
+        branch: yield* at(base, `${database}/branches/test-rehearsal-1`),
+        otherBranch: yield* at(base, `${database}/branches/main`),
+        database: yield* at(base, database),
+        production: yield* at(base, "basalt/branches/main/roles/role-own"),
+      };
+    }),
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  const value = run.exit.value;
+  assert.ok(Exit.isSuccess(value.role) && Exit.isSuccess(value.branch));
+  assert.equal(
+    refusalOf(value.otherRole).resource,
+    `PlanetScale role ${database}/branches/test-rehearsal-1/roles/role-other`,
+  );
+  assert.equal(
+    refusalOf(value.otherBranch).resource,
+    `PlanetScale branch ${database}/branches/main`,
+  );
+  assert.equal(refusalOf(value.database).resource, `PlanetScale database ${database}`);
+  // The role id the plan records, on production's database, is not the plan's role.
+  assert.equal(
+    refusalOf(value.production).resource,
+    "PlanetScale role basalt/branches/main/roles/role-own",
+  );
+  assert.deepEqual(reads(run.received), [
+    `DELETE /v1/organizations/org/databases/${database}/branches/test-rehearsal-1/roles/role-own`,
+    `DELETE /v1/organizations/org/databases/${database}/branches/test-rehearsal-1`,
+  ]);
+});

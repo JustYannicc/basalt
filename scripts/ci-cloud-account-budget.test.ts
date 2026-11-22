@@ -116,7 +116,7 @@ test("all 45 Cloud account scenarios keep one owner and their original isolated 
 test("both jobs prepare separately and retain evidence inside unchanged deadlines", () => {
   for (const id of [transport, actions]) {
     const job = workflow.jobs[id];
-    assert.equal(job.needs, "select");
+    assert.ok([job.needs].flat().includes("select"), id);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${id}')`);
     assert.equal(job["timeout-minutes"], 20);
     assert.deepEqual(job.steps.slice(0, 6), workflow.jobs[transport].steps.slice(0, 6));

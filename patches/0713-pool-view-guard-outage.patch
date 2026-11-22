@@ -1,0 +1,17 @@
+diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hosted/server/src/implementation/pool-view-cache.ts
+--- a/apps/hosted/server/src/implementation/pool-view-cache.ts
++++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
+@@ -61,7 +61,12 @@ export const makePoolViewCache = () => {
+   ) =>
+     Effect.gen(function* () {
+       if (!entries.has(key) && !(yield* eligible)) return yield* read;
+-      const head = yield* guard.pipe(Effect.onError(() => Effect.sync(() => drop(key))));
++      const first = yield* Effect.result(
++        guard.pipe(Effect.onError(() => Effect.sync(() => drop(key)))),
++      );
++      // Unreadable heads end reuse, not the request: the dropped result is never served.
++      if (first._tag === "Failure") return yield* read;
++      const head = first.success;
+       const now = yield* Clock.currentTimeMillis;
+       if (head.validUntil !== undefined && head.validUntil <= now) {
+         drop(key);
