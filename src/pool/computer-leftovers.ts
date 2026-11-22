@@ -74,6 +74,8 @@ export class ComputerLeftovers {
     });
     try {
       for (const row of rows) {
+        // Counted from when it is tried, so a long pass can't shorten its wait.
+        this.retryAt.set(row.id, this.deps.now() + leftoverRetryMs);
         try {
           if ((await Promise.race([this.revokeKeys(row), budget])) === "budget") break;
         } catch (error) {
@@ -129,7 +131,11 @@ export class ComputerLeftovers {
 
 function leftBehind(computer: StoredComputer, now: number) {
   if (computer.state === "revoking")
-    return !computer.removalPending && computer.homeKeysRevokedAt === undefined;
+    return (
+      !computer.removalPending &&
+      !computer.restoredWithoutHistory &&
+      computer.homeKeysRevokedAt === undefined
+    );
   return (
     computer.state === "issuing" &&
     !computer.native &&

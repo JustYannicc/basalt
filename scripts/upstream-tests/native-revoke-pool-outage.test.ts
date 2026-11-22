@@ -4,12 +4,10 @@
 // the real setup host; during an outage both pool endpoints answer as the pool Worker does.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { handleSetup } from "../../src/setup/host.ts";
-import { failureResponse } from "../../src/pool/json.ts";
 import { nativeModelHeader, nativeModelPrefix } from "../../src/pool/native-contract.ts";
 import { pool, signingKey } from "../../src/pool/test/computers.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
-import { device, origin } from "./native-pool-device-fixture.ts";
+import { device } from "./native-pool-device-fixture.ts";
 
 type Device = Awaited<ReturnType<typeof device>>;
 
@@ -39,25 +37,7 @@ const pendingCleanups = (d: Device) =>
   });
 
 /** Connect's Revoke button, through the real setup host. */
-const connectRevoke = (d: Device, computer: string) =>
-  handleSetup(
-    new Request(`${origin}/setup/v1/computers/${computer}?intent=${encodeURIComponent(d.intent)}`, {
-      method: "DELETE",
-      headers: { cookie: d.f.cookies, origin },
-    }),
-    {
-      POOL_APP_SIGNING_KEY: signingKey,
-      TOOLS_SERVICE: { fetch: (request) => d.f.handler(request) },
-      // The setup API runs in the same control plane as the native control endpoint.
-      POOL_SERVICE: {
-        fetch: async (request) => {
-          if (d.down()) return failureResponse(new Error("synthetic controller outage"));
-          d.p.advance(Date.now() - d.p.now());
-          return d.p.setup(request);
-        },
-      },
-    },
-  );
+const connectRevoke = (d: Device, computer: string) => d.connect(`/${computer}`, "DELETE");
 
 /** The device's first model use, which mints its key at Home. */
 async function mintKey(d: Device, computer: string, grant: string) {

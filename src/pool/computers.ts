@@ -348,6 +348,11 @@ export class Computers {
               name: directory.entry(intent.pool)?.name ?? "",
             });
           case "computers":
+            // The tools service approves and revokes a tools-only device without this pool; what
+            // it reports of the person's own devices reaches the list here, and listing saves it.
+            if (Array.isArray(payload.native) && payload.native.length <= 200)
+              for (const device of payload.native)
+                if (object(device)) this.native.learn(registry, user, device);
             return json({ computers: await this.listLocked(registry, user), pools });
           case "links": {
             // A link may name any pool this person can use; it defaults to the intent's own pool.
@@ -556,6 +561,7 @@ export class Computers {
     const computer = this.own(registry, user, id);
     computer.state = computer.state === "revoked" ? "revoked" : "revoking";
     delete computer.link;
+    delete computer.restoredWithoutHistory;
     await this.save(registry);
     await this.leftovers.revokeKeys(computer);
     // A native device signs in with its own grant, which the setup host revokes at the tools

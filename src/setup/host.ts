@@ -14,7 +14,7 @@ import {
 import { emitProductEvent } from "./product-events.ts";
 import { poolPicks, teamsOf } from "./pool-choices.ts";
 import { brand } from "../../brand.ts";
-import { computerName, readIntent } from "../pool/setup-links.ts";
+import { computerName, readIntent, setupTtl, signIntent } from "../pool/setup-links.ts";
 export type { SetupEnv } from "./session.ts";
 
 /** Only public computer metadata can leave the browser endpoints. */
@@ -126,6 +126,26 @@ async function ownPool(
   }
   return undefined;
 }
+/**
+ * The person's tools-only devices, which the tools service approves and revokes without the pool,
+ * so the pool lists one it never heard of and marks one it missed revoking. Undefined when
+ * unavailable or too large for the pool's setup request: the list still works without them.
+ */
+async function toolsOnlyDevices(request: Request, env: SetupEnv): Promise<unknown[] | undefined> {
+  try {
+    const response = await native(request, env, "native/devices");
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    const devices = record(await response.json()).devices;
+    // The pool refuses setup requests over 64,000 characters; its signed envelope grows by a third.
+    return Array.isArray(devices) && JSON.stringify(devices).length <= 32_000 ? devices : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Lists still work while the organization list is unavailable; only minting needs it. */
 const ownPoolIfAvailable = (request: Request, env: SetupEnv, person: string) =>
   ownPool(request, env, person).catch(() => undefined);
@@ -142,8 +162,28 @@ async function setupContext(request: Request, env: SetupEnv): Promise<Response> 
     `/api/organizations/${encodeURIComponent(own.organization)}/apps/${encodeURIComponent(own.pool)}/data/query`,
     { name: "computerContext", input: {} },
   );
-  if (!response.ok) throw new SetupError(502, "Could not complete setup. Try again.");
-  const result = await body(response);
+  const result = response.ok ? await body(response) : undefined;
+  if (!result) await response.body?.cancel();
+  // The native approval page asks for this: a tools-only device never needs the pool, so while the
+  // pool doesn't answer or reports itself unavailable (as it also does while a computer's removal
+  // is unfinished), it gets the claims the pool signs for its owner, taken from the tools service's
+  // record that the person created it. The pool checks them like its own on later setup actions.
+  if (
+    new URL(request.url).searchParams.get("fallback") === "tools" &&
+    (result
+      ? result.ok === false && result.error === "backend_unavailable"
+      : response.status >= 500)
+  ) {
+    const intent = await signIntent(env.POOL_APP_SIGNING_KEY, {
+      pool: own.pool,
+      owner: person,
+      organization: own.organization,
+      user: person,
+      expiresAt: Date.now() + setupTtl,
+    });
+    return json({ intent, reason: "NATIVE_POOL_UNAVAILABLE" });
+  }
+  if (!result) throw new SetupError(502, "Could not complete setup. Try again.");
   const href = record(result.value).href;
   const target = typeof href === "string" ? URL.parse(href) : null;
   if (
@@ -417,9 +457,19 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     } else input = { intent: url.searchParams.get("intent") };
     if (!text(input.intent)) throw new SetupError(400, "A setup intent is required.");
     const person = await user(request, env);
-    if (method === "DELETE" && computer) signedOut = await revokeDevice(request, env, computer[1]);
-    // The list only needs the session; start it now so it overlaps the pool calls below.
+    // A native device's sign-in ends at the tools service first. A tools service that doesn't
+    // answer leaves the pool's revoke to say whether this computer has a grant to end.
+    let unconfirmed = false;
+    if (method === "DELETE" && computer)
+      try {
+        signedOut = await revokeDevice(request, env, computer[1]);
+      } catch (error) {
+        if (!(error instanceof SetupError) || error.status !== 502) throw error;
+        unconfirmed = true;
+      }
+    // The list only needs the session; start these now so they overlap the pool calls below.
     if (method === "GET") void organizationList(request, env);
+    const devices = method === "GET" ? toolsOnlyDevices(request, env) : undefined;
     // Revoking needs no pool lookup; listing, minting and refreshing record the person's own pool.
     const selection = await body(
       await pool(request, env, "validate", { user: person, intent: input.intent }),
@@ -459,7 +509,10 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
       return response;
     }
     if (method === "GET") {
-      const result = await body(await pool(request, env, "computers", payload));
+      const known = await devices;
+      const result = await body(
+        await pool(request, env, "computers", { ...payload, ...(known && { native: known }) }),
+      );
       if (!Array.isArray(result.computers)) throw new SetupError(502, "Could not list computers.");
       return json({
         computers: result.computers.map(computerSummary),
@@ -469,6 +522,9 @@ export async function handleSetup(request: Request, env: SetupEnv): Promise<Resp
     }
     const revoke = { ...payload, id: computer![1] };
     const result = await body(await pool(request, env, "revoke", revoke));
+    // Fails closed: a native device whose grant the tools service didn't confirm ended.
+    if (unconfirmed && result.grant !== undefined)
+      throw new SetupError(502, "Could not revoke this device's sign-in. Retry removing it.");
     // A models-only computer has no tools token to delete.
     if (result.toolsKeyId !== null) {
       if (!text(result.toolsKeyId, 512))

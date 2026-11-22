@@ -33,6 +33,10 @@ export interface StoredComputer {
   beforeRemoval?: { state: StoredComputer["state"]; link?: SealedLink };
   /** Upkeep revoked its Home keys; a web setup's tools token still waits for the person's revoke. */
   homeKeysRevokedAt?: string;
+  /** Why access removal finished it `removed`: during its person's revoke, or for lost access. */
+  removedFor?: "revoke" | "access";
+  /** Access was restored to a row that kept no record of its state before removal. */
+  restoredWithoutHistory?: true;
 }
 export interface ComputerStorage {
   get<T>(key: string): Promise<T | undefined>;
