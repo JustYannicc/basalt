@@ -2103,10 +2103,29 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     if (source.GITHUB_STEP_SUMMARY)
       await appendFile(
         source.GITHUB_STEP_SUMMARY,
-        `**${mode}** on \`${stage}\`: ${result.seconds}s${result.failed ? " (failed)" : ""}\n\n\`\`\`json\n${redactor(source)(JSON.stringify(result.plan ?? result.apply ?? result.readBack ?? result, null, 2)).slice(0, 60_000)}\n\`\`\`\n`,
+        `**${mode}** on \`${stage}\`: ${result.seconds}s${result.failed ? " (failed)" : ""}\n\n\`\`\`json\n${redactor(source)(JSON.stringify(publicRecord(result.plan ?? result.apply ?? result.readBack ?? result), null, 2)).slice(0, 60_000)}\n\`\`\`\n`,
       );
   }
   return result;
+}
+
+/**
+ * The record as it may go public (the job log and step summary). A refused or failed command's
+ * own text can name hosts, ids and values, so every such field keeps only that it was there; the
+ * full record stays in the private `stage-<mode>.json`.
+ */
+export function publicRecord(value: unknown, depth = 0): unknown {
+  if (depth > 12) return "[deep]";
+  if (Array.isArray(value)) return value.map((item) => publicRecord(item, depth + 1));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      /refus|fail|unavailable|unreadable|error/iu.test(key) && typeof item === "string"
+        ? `[kept privately, ${item.length} chars]`
+        : publicRecord(item, depth + 1),
+    ]),
+  );
 }
 
 /** Every file the run kept, sealed with the stage's key so the artifact holds no readable output. */
@@ -2161,9 +2180,20 @@ if (process.argv[1] === fileURLToPath(import.meta.url) && process.argv[2] === "s
   try {
     if (!parsed) throw new Error(`Usage: stage.ts stage-<${stageModes.join("|")}>[-2|-3]`);
     const result = await runStageMode(parsed.mode, parsed.lane);
-    console.log(redactor(process.env)(JSON.stringify(result)));
+    console.log(redactor(process.env)(JSON.stringify(publicRecord(result))));
   } catch (error) {
-    console.error(describeError(error, redactor(process.env)));
+    // A thrown error can carry a refused command's own text; only its first line goes public,
+    // capped, and the whole of it stays in the private output.
+    const redact = redactor(process.env);
+    const full = describeError(error, redact);
+    const directory = resolve(process.env.BASALT_STAGE_OUTPUT_DIR ?? join(root, ".local/stage"));
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, "stage-error.txt"), `${full}\n`, { mode: 0o600 }).catch(
+      () => {},
+    );
+    console.error(
+      `${(full.split("\n")[0] ?? "").slice(0, 200)} (the full error is in the private output)`,
+    );
     process.exitCode = 1;
   }
 }

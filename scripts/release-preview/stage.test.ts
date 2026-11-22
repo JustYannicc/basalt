@@ -33,3 +33,28 @@ test("no stage path runs the Alchemy CLI with --yes", () => {
     assert.doesNotMatch(source, /"--yes"/u, file);
   }
 });
+
+test("the public record keeps no refused command's own text", async () => {
+  const { publicRecord } = await import("./stage.ts");
+  const record = {
+    mode: "redrelease",
+    device: { failed: "Command failed: --origin https://app.rehearsal-6.example.dev --pool app_x" },
+    rollback: { exit: 1, refused: "WorkerVersionRefusal: host app.rehearsal-6.example.dev" },
+    planRefused: "Release stopped in plan: names a host",
+    steps: [{ exit: 4, refused: "secret-shaped detail" }],
+    poolWorkerVersions: { count: 1, numbers: [10] },
+  };
+  const text = JSON.stringify(publicRecord(record));
+  for (const leak of [
+    "example.dev",
+    "app_x",
+    "WorkerVersionRefusal",
+    "secret-shaped",
+    "names a host",
+  ])
+    assert.equal(text.includes(leak), false, leak);
+  // What is not a refusal's text stays as it was.
+  assert.match(text, /"count":1/u);
+  assert.match(text, /"exit":1/u);
+  assert.match(text, /kept privately/u);
+});
