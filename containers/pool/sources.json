@@ -315,10 +315,10 @@
         {
           "identity": "cliproxy-home-cooldown-provider-time",
           "file": "0763-home-cooldown-provider-time.patch",
-          "sha256": "1d911f745c591c93c6ebdf73f3a8dfbba06e4fc7e2e4599d4b313a1fb9c993a5",
+          "sha256": "3e018f9a27936645cca6f1d6b4e3830b4bf4f06fa2fa8e86de967677f01afaf3",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0763 lets a quota cooldown end at the provider's own time. Retire when the pinned Home ends a 429 cooldown at the provider's reset or retry time for every provider, never later on the blind backoff, keeps a one-second floor, never shortens an open window because two limits can hold at once, grows the backoff only for a 429 without a provider time, reads the node's fail.retry_after_ms, and passes the provider-time, high-backoff, floor, open-window and usage-payload regressions."
+            "requires": "Carry 0763 lets a quota cooldown end at the provider's own time. Retire when the pinned Home ends a 429 cooldown at the provider's reset or retry time for every provider when that time is 10 s or more, never later on the blind backoff, lets a shorter provider time only lengthen the escalating backoff so a provider that keeps saying retry in a moment is never called every second, never shortens an open window because two limits can hold at once, grows the backoff only for a 429 without a provider time, reads the node's fail.retry_after_ms, and passes the provider-time, high-backoff, floor, open-window and usage-payload regressions."
           }
         }
       ]
