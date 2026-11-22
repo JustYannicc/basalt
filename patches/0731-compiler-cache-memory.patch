@@ -1,0 +1,112 @@
+diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/cloud/src/implementation/app-build.ts
+--- a/apps/hosted/cloud/src/implementation/app-build.ts
++++ b/apps/hosted/cloud/src/implementation/app-build.ts
+@@ -20,14 +20,15 @@ export const compileCloudApp = (
+     // An unused authored dependency must not turn a formerly valid app into a build failure.
+     const prepared = yield* prepareWorkerApp(files, host).pipe(Effect.option);
+     if (Option.isNone(prepared)) return yield* compileWorkerApp(files, host, publicPaths);
+-    const dependencyFiles = prepared.value.filesystem
+-      .list()
+-      .sort()
+-      .map((path) => ({
++    // The filesystem's own strings and bytes, by reference: the cache digests them one file at a time.
++    const dependencyFiles = prepared.value.filesystem.list().map((path) => {
++      const bytes = prepared.value.filesystem.readBinary(path);
++      return {
+         path,
+         content: prepared.value.filesystem.read(path),
+-        bytes: Array.from(prepared.value.filesystem.readBinary(path) ?? []),
+-      }));
++        ...(bytes === null ? {} : { bytes }),
++      };
++    });
+     return yield* cachedCompilerResult(
+       {
+         files,
+diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+--- a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
++++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+@@ -57,11 +57,41 @@ const Envelope = Schema.fromJsonString(
+     payload: Schema.String,
+   }),
+ );
+-const digest = (text: string) =>
+-  Effect.promise(async () => {
+-    const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+-    return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
+-  });
++const hex = (hash: ArrayBuffer) =>
++  Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");
++const digestBytes = (bytes: Uint8Array<ArrayBuffer>) =>
++  Effect.promise(async () => hex(await crypto.subtle.digest("SHA-256", bytes)));
++const digest = (text: string) => digestBytes(new TextEncoder().encode(text));
++/**
++ * The compiler isolate shares 128 MB between two builds. One file is digested at a time, so the key
++ * never holds the dependency set as one string: an Obsidian vault's set is about 34 MB.
++ */
++const fileDigests = (
++  files: ReadonlyArray<{
++    readonly path: string;
++    readonly content: string | null;
++    readonly bytes?: Uint8Array<ArrayBuffer>;
++  }>,
++) =>
++  Effect.forEach(
++    [...files].sort((a, b) => a.path.localeCompare(b.path)),
++    ({ path, content, bytes }) =>
++      Effect.all({
++        path: Effect.succeed(path),
++        content: content === null ? Effect.succeed(null) : digest(content),
++        bytes:
++          bytes === undefined || bytes.length === 0 ? Effect.succeed(null) : digestBytes(bytes),
++      }),
++  );
++/** Characters the stored envelope needs at least: every string, and base64 for every byte array. */
++const encodedFloor = (value: unknown): number => {
++  if (typeof value === "string") return value.length;
++  if (value instanceof Uint8Array) return Math.ceil(value.length / 3) * 4;
++  if (Array.isArray(value)) return value.reduce((sum: number, item) => sum + encodedFloor(item), 0);
++  if (typeof value === "object" && value !== null)
++    return Object.values(value).reduce((sum: number, item) => sum + encodedFloor(item), 0);
++  return 0;
++};
+ const validBundle = (value: typeof CompiledCloudApp.Type) => {
+   const entry = value.bundle.modules[value.bundle.mainModule];
+   const safeName = (name: string) =>
+@@ -94,7 +124,7 @@ export const cachedCompilerResult = <E, R>(
+     readonly dependencyFiles: ReadonlyArray<{
+       readonly path: string;
+       readonly content: string | null;
+-      readonly bytes?: ReadonlyArray<number>;
++      readonly bytes?: Uint8Array<ArrayBuffer>;
+     }>;
+     readonly onHit?: () => void;
+   },
+@@ -110,14 +140,12 @@ export const cachedCompilerResult = <E, R>(
+     const key = yield* digest(
+       JSON.stringify([
+         input.release,
+-        input.files
+-          .map(({ path, content }) => ({ path, content }))
+-          .sort((a, b) => a.path.localeCompare(b.path)),
++        yield* fileDigests(input.files),
+         [...input.publicPaths].sort(),
+-        [...input.dependencyFiles].sort((a, b) => a.path.localeCompare(b.path)),
++        yield* fileDigests(input.dependencyFiles),
+       ]),
+     );
+-    const url = `https://compiler-cache.invalid/v2/${key}`;
++    const url = `https://compiler-cache.invalid/v3/${key}`;
+     const hit = yield* optional(
+       attempt(() => cache.value.match(url)).pipe(
+         Effect.flatMap((response) =>
+@@ -146,6 +174,9 @@ export const cachedCompilerResult = <E, R>(
+       return hit.value;
+     }
+     const value = yield* compile;
++    // A result the envelope cannot fit is never encoded. Obsidian's needs about 6 MB of characters
++    // (its UI and the framework's modules), 12 MB as two-byte units: over the 8 MB limit.
++    if (encodedFloor(value) * 2 > maximumBytes) return value;
+     yield* optional(
+       Schema.encodeEffect(CachedOutput)(value).pipe(
+         Effect.flatMap((payload) =>
