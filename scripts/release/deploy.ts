@@ -177,7 +177,7 @@ if (command === "boot" || command === "accept") {
     const { acceptanceCredential, COULD_NOT_TEST_EXIT, refusalFix } =
       await import("./acceptance-device.ts");
     const { PoolAcceptanceClient } = await import("../pool-acceptance/client.ts");
-    const { controllerRootReads, retryingReads, servedBootStandsIn, servingControllerCode } =
+    const { controllerRootReads, retryingReads, servingControllerCode } =
       await import("./root-boot.ts");
     const { controllerAdoptionMs } =
       await import("../../src/pool/runtime-slots/forced-restart-timing.ts");
@@ -330,26 +330,16 @@ if (command === "boot" || command === "accept") {
     if (rootRecord) {
       const { checkoutControllerCode } = await import("../pool-fleet/controller.ts");
       controller = retryingReads(await readsFor(checkoutControllerCode), controllerAdoptionMs);
-      // After a healing release's wait, so a failed apply still reports what that wait found.
-      if (rootRecord.source !== "controller") {
-        const { unreadable } = await import("./root-boot.ts");
-        const served = rootRecord.boot === NOT_SERVING ? undefined : rootRecord.boot;
-        const stops = await controller.read().then(
-          (now) => servedBootStandsIn(now, served),
-          (error: unknown) => unreadable(error),
-        );
-        if (stops) {
-          // No `passed` or `outcome`: nothing judged the pool, and the stop steps must not say it did.
-          const view = { stop: "root-boot-unknown", ...(restart ? { restart } : {}) };
-          if (values.out) await output(resolve(values.out), view);
-          await summary(`ACCEPTANCE CANNOT TELL THE ROOT'S BOOT: ${stops}.`);
-          process.exit(1);
-        }
-      }
     }
     const result = await runAcceptance({
       credential,
       ...(controller ? { controller } : {}),
+      // A served record from before the apply stands in for the root's boot only if the same read
+      // after the calls proves it; that runs after a healing release's wait, so a failed apply still
+      // reports what the wait found.
+      ...(rootRecord && rootRecord.source !== "controller"
+        ? { standIn: { served: rootRecord.boot === NOT_SERVING ? undefined : rootRecord.boot } }
+        : {}),
       ...(process.env.POOL_ACCEPTANCE_MODEL ? { model: process.env.POOL_ACCEPTANCE_MODEL } : {}),
       // After a declared restart, every request must be served by the one new boot.
       expect: (expect === "restart" ? "same-boot" : expect) as "same-boot",
@@ -371,6 +361,13 @@ if (command === "boot" || command === "accept") {
       await summary(`NOT SERVING after the healing release: ${safeJson(view)}`);
       process.exit(1);
     });
+    if (result.unjudged) {
+      // No `passed` or `outcome`: nothing judged the pool, and the stop steps must not say it did.
+      const view = { stop: "root-boot-unknown", ...(restart ? { restart } : {}) };
+      if (values.out) await output(resolve(values.out), view);
+      await summary(`ACCEPTANCE CANNOT TELL THE ROOT'S BOOT: ${result.unjudged}.`);
+      process.exit(1);
+    }
     // A healing release ends healed, serving but needing a person, could not test, or not serving.
     const outcome = verdict
       ? healingOutcome(verdict, result)

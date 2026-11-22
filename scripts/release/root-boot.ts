@@ -88,24 +88,31 @@ export async function controllerRootReads(options: {
   ]);
   const { CLOUDFLARE_ACCOUNT_ID: accountId = "", CLOUDFLARE_API_TOKEN: apiToken = "" } =
     options.env;
-  const worker = await Effect.runPromise(
-    cloudflare.poolWorkerName(
-      { accountId, apiToken, fetch: globalThis.fetch },
-      "basalt",
-      options.stage,
-    ),
-  );
-  const access = {
-    accountId,
-    worker,
-    // The pool Worker opens handoff envelopes with its deployment key, as the crash dispatcher signs them.
-    signingKey: options.env.POOL_DEPLOYMENT_KEY ?? "",
-    code: options.code,
-    // Reads write no operator packet.
-    directory: "",
-  };
+  // Resolved at the first read: a run whose model calls already failed never needs the controller.
+  let worker: Promise<string> | undefined;
   return {
     read: async () => {
+      worker ??= Effect.runPromise(
+        cloudflare.poolWorkerName(
+          { accountId, apiToken, fetch: globalThis.fetch },
+          "basalt",
+          options.stage,
+        ),
+      );
+      const resolved = await worker.catch((error: unknown) => {
+        worker = undefined;
+        throw error;
+      });
+      const access = {
+        accountId,
+        worker: resolved,
+        // The pool Worker opens handoff envelopes with its deployment key, as the crash dispatcher
+        // signs them.
+        signingKey: options.env.POOL_DEPLOYMENT_KEY ?? "",
+        code: options.code,
+        // Reads write no operator packet.
+        directory: "",
+      };
       const root = fleet.primaryBoot(await controller.inspectController(access));
       const view = await controller.inspectFleet(access);
       return {

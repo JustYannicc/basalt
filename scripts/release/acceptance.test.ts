@@ -794,3 +794,63 @@ test("the reads after an upload wait out the object's adoption, then fail closed
   );
   assert.ok(bounded.now() >= 60_000);
 });
+
+test("a failed or refused call decides without the controller, which a pool-only run may not reach", async () => {
+  for (const options of [{ fail: 9 }, { answer: { 9: "cap" as const } }]) {
+    const live = await pool(options);
+    try {
+      const reads = controller(["boot-root"]);
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted: true,
+        client: live.client,
+        controller: reads,
+      });
+      assert.equal(result.passed, false);
+      assert.equal(reads.reads(), 0, JSON.stringify(options));
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a served record that may be a cell's leaves the root unjudged, from the one read after the calls", async () => {
+  const live = await pool({ catalogBoot: "boot-cell-1", boots: ["boot-cell-1"] });
+  try {
+    const reads = controller(["boot-root"], ["boot-cell-1"]);
+    const result = await runAcceptance({
+      credential,
+      expect: "same-boot",
+      rootBoot: "boot-cell-1",
+      admitted: true,
+      client: live.client,
+      controller: reads,
+      standIn: { served: "boot-cell-1" },
+    });
+    assert.equal(result.passed, false);
+    assert.equal(result.couldNotTest, false);
+    assert.match(result.unjudged ?? "", /pass --serving-controller/u);
+    assert.equal(reads.reads(), 1);
+  } finally {
+    live.close();
+  }
+  // A served record the controller names now is the root's: judged as usual.
+  const root = await pool();
+  try {
+    const proven = await runAcceptance({
+      credential,
+      expect: "same-boot",
+      rootBoot: "boot-root",
+      admitted: true,
+      client: root.client,
+      controller: controller(["boot-root"]),
+      standIn: { served: "boot-root" },
+    });
+    assert.equal(proven.passed, true, proven.cause ?? "");
+    assert.equal(proven.unjudged, undefined);
+  } finally {
+    root.close();
+  }
+});

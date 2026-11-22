@@ -1,6 +1,6 @@
 import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
 import { deviceRefusal, refusedDevice } from "./acceptance-device.ts";
-import { unreadable, type RootReads } from "./root-boot.ts";
+import { servedBootStandsIn, unreadable, type RootReads } from "./root-boot.ts";
 import {
   healingAcceptanceWithinMs,
   healingReadinessWithinMs,
@@ -40,6 +40,11 @@ export interface AcceptanceOptions {
   readonly rootBoot?: string;
   /** The controller's signed reads; when given, they alone judge the root and the cells. */
   readonly controller?: RootReads;
+  /**
+   * The boot record before the apply was a served answer, not the controller's (`served` is
+   * undefined when the pool did not answer). The same read then decides whether it stands in.
+   */
+  readonly standIn?: { readonly served: string | undefined };
   readonly client?: PoolAcceptanceClient;
 }
 
@@ -230,6 +235,11 @@ export interface AcceptanceResult {
   readonly boots: readonly string[];
   readonly firstByteMs: { readonly p50: number; readonly p95: number };
   readonly cause?: string;
+  /**
+   * Nothing proved whose boot the record before the apply was: no verdict on the root at all. The
+   * run stops without a pass or a failed request, and names the missing input.
+   */
+  readonly unjudged?: string;
 }
 
 const percentile = (values: number[], fraction: number) => {
@@ -301,9 +311,12 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
   await turn();
   const distinct = [...new Set(boots)];
   const refused = [...new Set(refusals)].sort((a, b) => a - b);
-  const judged = options.controller
-    ? await judgeByController(options.rootBoot, options.controller, distinct)
-    : undefined;
+  // A failed request decides alone, and a run the pool refused stops red untested, whatever the
+  // root did; only a run whose calls all served needs the controller.
+  const judged =
+    options.controller && !failures.length && !refusals.length
+      ? await judgeByController(options.rootBoot, options.controller, distinct, options.standIn)
+      : undefined;
   // What the served requests show decides first: a failed request, or a root that restarted.
   const servingCause = failures.length
     ? `${failures.length} of ${requests} requests failed: ${[...new Set(failures)].join("; ")}`
@@ -331,6 +344,18 @@ export async function runAcceptance(options: AcceptanceOptions): Promise<Accepta
         : distinct.length < 2
           ? "Every request was served by one runtime; no fleet cell served"
           : undefined);
+  if (judged?.unjudged)
+    return {
+      passed: false,
+      couldNotTest: false,
+      refused,
+      requests,
+      failures,
+      boots: distinct,
+      firstByteMs: { p50: percentile(timings, 0.5), p95: percentile(timings, 0.95) },
+      cause: judged.unjudged,
+      unjudged: judged.unjudged,
+    };
   return {
     passed: cause === undefined,
     couldNotTest: servingCause === undefined && untested !== undefined,
@@ -352,13 +377,16 @@ async function judgeByController(
   rootBoot: string | undefined,
   controller: RootReads,
   served: readonly string[],
-): Promise<{ root?: string; cellServed: boolean }> {
+  standIn: AcceptanceOptions["standIn"],
+): Promise<{ root?: string; cellServed: boolean; unjudged?: string }> {
   let now;
   try {
     now = await controller.read();
   } catch (error) {
     return { root: unreadable(error), cellServed: false };
   }
+  const unjudged = standIn && servedBootStandsIn(now, standIn.served);
+  if (unjudged) return { cellServed: false, unjudged };
   const alone = !now.fleetEnabled && now.cells.size === 0;
   const unknown = alone ? served.filter((boot) => boot !== now.root) : [];
   return {
