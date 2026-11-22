@@ -77,6 +77,14 @@ export function pythonDependencies(
     else if (!entry.stdlib || networkStdlib.test(entry.name))
       report(entry, `Unmodelled SDK or library: ${entry.name}`);
   }
+  // A plain TCP dial to the host parsed from a variable that exactly one service declares.
+  for (const entry of scan.addresses ?? []) {
+    const owners = services.filter((service) => service.addressEnvs?.includes(entry.variable));
+    if (owners.length === 1) add(entry, owners[0]!.id, `address from ${entry.variable}`);
+    else if (owners.length) report(entry, `Several services declare the address ${entry.variable}`);
+    else
+      report(entry, `Outside address from an undeclared environment variable: ${entry.variable}`);
+  }
   for (const entry of scan.urls) {
     const authority = /^(?:https?|wss?|tcp):\/\/([^/\s?#]*)/i.exec(entry.value)?.[1];
     if (!authority || authority.includes("<dynamic>")) {

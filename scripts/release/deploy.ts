@@ -33,40 +33,41 @@ import { stackConfig } from "./stack-config.ts";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
 
+// Every option that names a file is declared here, so none can be added without being resolved
+// below. `--config` is not one of them: stackConfig resolves it, with its own fallback to the repo
+// root.
+const pathOptions = {
+  policy: { type: "string" },
+  out: { type: "string" },
+  before: { type: "string" },
+  after: { type: "string" },
+  from: { type: "string" },
+  "root-boot": { type: "string" },
+  admitted: { type: "string" },
+  serving: { type: "string" },
+} as const;
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
+    ...pathOptions,
     stage: { type: "string" },
     config: { type: "string" },
-    policy: { type: "string" },
     include: { type: "string", multiple: true },
     "plan-digest": { type: "string" },
     attempt: { type: "string" },
     name: { type: "string" },
-    out: { type: "string" },
-    before: { type: "string" },
-    after: { type: "string" },
     fqn: { type: "string" },
-    from: { type: "string" },
     expect: { type: "string" },
     light: { type: "boolean" },
     to: { type: "string" },
-    "root-boot": { type: "string" },
-    admitted: { type: "string" },
     apply: { type: "string" },
-    serving: { type: "string" },
     "allow-not-serving": { type: "boolean" },
     "verify-only": { type: "boolean" },
   },
 });
 // Before the entry moves into the cloud app (below): a relative path names a file in the directory
-// the command was started in, not one inside the cloud app. `--config` is not here: stackConfig
-// resolves it, with its own fallback to the repo root.
-resolvePathFlags(
-  values,
-  ["policy", "out", "before", "after", "from", "root-boot", "admitted", "serving"],
-  process.cwd(),
-);
+// the command was started in, not one inside the cloud app.
+resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[], process.cwd());
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
@@ -164,6 +165,7 @@ if (command === "boot" || command === "accept") {
     const { Schema } = await import("effect");
     const {
       acceptanceExit,
+      acceptanceModelBeforeApply,
       awaitRecoveryReady,
       bootBeforeApply,
       healingOutcome,
@@ -181,12 +183,37 @@ if (command === "boot" || command === "accept") {
     if (command === "boot") {
       // Read before the apply: the root serves alone until a fleet is enabled.
       // Only a release that declares a root restart may start on a pool that does not serve the read.
-      const boot = await bootBeforeApply(credential, client, values["allow-not-serving"] === true);
-      await output(resolve(values.out ?? ""), { boot });
+      const healing = values["allow-not-serving"] === true;
+      const boot = await bootBeforeApply(credential, client, healing);
+      // Every other release needs acceptance's model served once first. A healing release comes to
+      // mend a pool that may refuse model calls, so it never waits on one before its apply.
+      let model: string | undefined;
+      if (!healing)
+        try {
+          model = await acceptanceModelBeforeApply(
+            credential,
+            client,
+            process.env.POOL_ACCEPTANCE_MODEL || undefined,
+          );
+        } catch (error) {
+          // Our own words and the pool's status, never a host: the line is public. The cause can
+          // name hosts, so it stays in the private detail.
+          const line = error instanceof Error ? error.message : String(error);
+          console.error(`::error::${line}`);
+          await summary(line);
+          await keepPrivate(
+            "boot",
+            String(error instanceof Error && error.cause !== undefined ? error.cause : error),
+          );
+          process.exit(1);
+        }
+      await output(resolve(values.out ?? ""), { boot, ...(model ? { model } : {}) });
       await summary(
         boot === NOT_SERVING
           ? "The pool did not serve the boot read before the apply (no answer, an error status, or a 429). This release declares a root restart, so it goes on, but without that boot acceptance cannot confirm the root restarted."
-          : "The root's boot is recorded before the apply.",
+          : model
+            ? `The root's boot is recorded before the apply. Acceptance will test with ${model}, which served one turn.`
+            : "The root's boot is recorded before the apply.",
       );
       process.exit(0);
     }
@@ -399,7 +426,7 @@ if (command === "db-load") {
   }
 }
 
-// The PoolDatabase command re-runs per attempt, so plan and apply share one attempt id.
+// Plan and apply share one attempt id, which both records and the summary name.
 const attempt = values.attempt ?? (command === "apply" ? "" : randomUUID());
 if (command === "apply" && !/^[0-9a-f-]{36}$/u.test(attempt))
   throw new Error("--attempt <id printed by the plan run> is required");
@@ -413,7 +440,6 @@ Object.assign(process.env, { BASALT_RELEASE_ATTEMPT: attempt, ALCHEMY_STAGE: sta
 // Alchemy captures the working directory once, when its first module loads (alchemy/Util/Node.ts
 // `initialCwd`), and resolves every command's relative cwd from it. The stack's commands are
 // declared relative to the cloud app, so the entry moves there before anything loads Alchemy.
-const policyPath = values.policy;
 process.chdir(cloud);
 const { decodeReleasePolicy } = await import("./policy.ts");
 const { initialCwd } = await import("alchemy/Util/Node");
@@ -421,8 +447,8 @@ if (initialCwd !== process.cwd())
   throw new Error(
     "Alchemy loaded before the entry moved into the cloud app, so the stack's command directories would resolve elsewhere",
   );
-const policy = policyPath
-  ? decodeReleasePolicy(JSON.parse(await readFile(policyPath, "utf8")))
+const policy = values.policy
+  ? decodeReleasePolicy(JSON.parse(await readFile(values.policy, "utf8")))
   : undefined;
 for (const [name, value] of Object.entries(policy?.env ?? {}))
   if (value !== undefined) process.env[name] = value;
@@ -760,7 +786,23 @@ try {
           yield* Effect.promise(() => summary(report.summary));
           if (report.annotation) console.log(report.annotation);
         }
-        if (command === "plan") return { snapshot, digest, planned: changedRows(snapshot) };
+        if (command === "plan") {
+          // Names and types only, never a value: which bindings each updated Worker changes, and
+          // whether its rollback could force every changed secret. Read after the digest, from the
+          // plan alone; nothing the apply compares depends on it.
+          const changes = yield* Effect.promise(() => import("./binding-changes.ts"));
+          // A line that cannot be built must not change the plan's outcome, and its error can
+          // carry a value, so it is replaced by a fixed sentence.
+          const line = (() => {
+            try {
+              return changes.bindingChangesReport(snapshot.native, changes.forceListOf(policy));
+            } catch {
+              return "Binding changes per updated Worker: could not be listed for this plan.";
+            }
+          })();
+          yield* Effect.promise(() => summary(line));
+          return { snapshot, digest, planned: changedRows(snapshot) };
+        }
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(
             new Error(
@@ -948,6 +990,25 @@ try {
               .filter((change) => change.type === "Cloudflare.Worker" && change.action === "update")
               .map((change) => change.fqn)
         : [];
+    // The secrets the release policy says a release changes by design: the one `--policy`
+    // names, else the job's POLICY. A policy that cannot be read forces nothing; every Worker is
+    // still rolled back where it can be.
+    let forceSecrets: ReadonlySet<string> = new Set();
+    if (command === "rollback")
+      try {
+        const named =
+          policy ??
+          (process.env.POLICY
+            ? decodeReleasePolicy(
+                JSON.parse(await readFile(resolve(root, process.env.POLICY), "utf8")),
+              )
+            : undefined);
+        forceSecrets = new Set(named?.rollback?.forceSecrets ?? []);
+      } catch {
+        console.error(
+          "::warning::The release policy could not be read; the rollback forces nothing.",
+        );
+      }
     const result = await run(
       Effect.gen(function* () {
         const at = (script: string) => ({
@@ -970,21 +1031,35 @@ try {
           return yield* Effect.die(
             new Error("rollback needs --from <serving.json> or --fqn and --to"),
           );
-        const rolledBack: { fqn: string; version: string }[] = [];
+        const rolledBack: { fqn: string; version: string; forcedSecrets?: readonly string[] }[] =
+          [];
         // Every Worker is tried: one that fails must not leave the rest on the failed release.
         const failed: { fqn: string; cause: unknown }[] = [];
         for (const target of targets) {
           const exit = yield* Effect.exit(
             Effect.gen(function* () {
-              yield* rollbackTo(
+              return yield* rollbackTo(
                 at(yield* scriptName(target.fqn)),
                 target.version,
                 `release rollback ${process.env.GITHUB_RUN_ID ?? "local"}`,
+                forceSecrets,
               );
             }),
           );
-          if (exit._tag === "Success") rolledBack.push(target);
-          else failed.push({ fqn: target.fqn, cause: exit.cause });
+          if (exit._tag === "Failure") {
+            failed.push({ fqn: target.fqn, cause: exit.cause });
+            continue;
+          }
+          const { forcedSecrets } = exit.value;
+          if (!forcedSecrets.length) {
+            rolledBack.push(target);
+            continue;
+          }
+          // Names from our own source, never values: the line is public.
+          console.log(
+            `Rolled back ${target.fqn} with force: only per-release secrets changed (${forcedSecrets.join(", ")})`,
+          );
+          rolledBack.push({ ...target, forcedSecrets });
         }
         if (failed.length)
           return yield* Effect.die(

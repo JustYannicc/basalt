@@ -25,3 +25,16 @@ test("a healing release's two bounds follow every part they are made of", () => 
   // The numbers the release notes state.
   assert.deepEqual([acceptance, readiness, readinessCommandSeconds], [658_000, 988_000, 993]);
 });
+
+test("a restart is given up to a person only after its slowest healthy path to ready", () => {
+  // The serving total counted from the stop pass: the time before it (a recovery pass, the
+  // unserving bound, the warm read) comes off, and destroy with the membership pass goes on.
+  const fromStopPass =
+    timing.forcedRestartServesWithinMs -
+    timing.recoveryPassMs -
+    timing.unservingBoundMs -
+    timing.recoveryWarmMs +
+    timing.destroyAndMembershipMs;
+  assert.ok(timing.forcedRestartBudgetMs >= fromStopPass);
+  assert.equal(timing.forcedRestartBudgetMs, 354_000);
+});

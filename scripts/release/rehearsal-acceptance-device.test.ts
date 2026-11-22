@@ -50,10 +50,19 @@ test("the origin is the stage's own: https, carrying its stage label, never prod
     [`https://${brand.host}./`, /production's host/u],
     [`https://${brand.host.toUpperCase()}`, /production's host/u],
     [`https://${brand.host.toUpperCase()}.`, /production's host/u],
-    // Anything under production's zone is production, whatever it names.
+    // Under production's zone only the stage's own app host is admitted; the rest is production.
     [`https://rehearsal-3.${brand.host}`, /production's host/u],
-    [`https://app.rehearsal-3.${brand.zone}.`, /production's host/u],
     [`https://${brand.zone}`, /production's host/u],
+    [`https://www.${brand.zone}`, /production's host/u],
+    [`https://rehearsal-3.${brand.zone}`, /production's host/u],
+    [`https://x.app.rehearsal-3.${brand.zone}`, /production's host/u],
+    [`https://api.rehearsal-3.${brand.zone}`, /production's host/u],
+    [`https://app.rehearsal-4.${brand.zone}`, /production's host/u],
+    [`https://app.rehearsal-30.${brand.zone}`, /production's host/u],
+    [`https://a-00000000-0000-4000-8000-000000000000.${brand.zone}`, /production's host/u],
+    // Two trailing dots, or any empty label, name no host at all.
+    [`https://app.rehearsal-3.${brand.zone}..`, /empty label/u],
+    [`https://${brand.host}..`, /empty label/u],
     // A host that is not this stage's.
     ["https://app.rehearsal-4.stage.example", /stage's label/u],
     ["https://app.stage.example", /stage's label/u],
@@ -77,40 +86,47 @@ test("the origin is the stage's own: https, carrying its stage label, never prod
     }).catch(() => {});
     assert.equal(sent, `https://app.rehearsal-3.stage.example${nativeControlPath}`, origin);
   }
-});
-
-test("a resolver drops every trailing dot, so production's zone with several is still production's", async () => {
-  // URL decodes percent escapes and maps the ideographic and full-width stops to dots first.
-  for (const tail of ["..", "...", ".%2E", "%2E%2E", ".。", "．｡"])
-    await assert.rejects(
-      registerRehearsalAcceptanceDevice(
-        { ...input, origin: `https://rehearsal-3.${brand.zone}${tail}` },
-        untouched,
-      ),
-      /production's host/u,
-      JSON.stringify(tail),
-    );
-  // No resolver names a host with an empty label, so none is sent to.
+  // A rehearsal stage in production's zone: its own app host, in any spelling, is admitted.
   for (const origin of [
-    "https://app..rehearsal-3.stage.example",
-    "https://app.rehearsal-3..stage.example",
-  ])
-    await assert.rejects(
-      registerRehearsalAcceptanceDevice({ ...input, origin }, untouched),
-      /empty label/u,
-      origin,
-    );
-  for (const origin of [
-    "https://app.rehearsal-3.stage.example..",
-    "https://app.rehearsal-3.stage.example.。/",
+    `https://app.rehearsal-3.${brand.zone}`,
+    `https://APP.Rehearsal-3.${brand.zone.toUpperCase()}./`,
   ]) {
     let sent: string | undefined;
     await registerRehearsalAcceptanceDevice({ ...input, origin }, async (url) => {
       sent = String(url);
       return new Response(null, { status: 403 });
     }).catch(() => {});
-    assert.equal(sent, `https://app.rehearsal-3.stage.example${nativeControlPath}`, origin);
+    assert.equal(sent, `https://app.rehearsal-3.${brand.zone}${nativeControlPath}`, origin);
   }
+});
+
+test("two or more trailing dots, in any spelling, name no host and nothing is sent", async () => {
+  // URL decodes percent escapes and maps the ideographic and full-width stops to dots first.
+  for (const tail of ["..", "...", ".%2E", "%2E%2E", ".。", "．｡"])
+    for (const host of [
+      `rehearsal-3.${brand.zone}`,
+      `app.rehearsal-3.${brand.zone}`,
+      "app.rehearsal-3.stage.example",
+    ])
+      await assert.rejects(
+        registerRehearsalAcceptanceDevice(
+          { ...input, origin: `https://${host}${tail}` },
+          untouched,
+        ),
+        /empty label/u,
+        JSON.stringify(`${host}${tail}`),
+      );
+  // No resolver names a host with an empty label, so none is sent to.
+  for (const origin of [
+    "https://app..rehearsal-3.stage.example",
+    "https://app.rehearsal-3..stage.example",
+    "https://.app.rehearsal-3.stage.example",
+  ])
+    await assert.rejects(
+      registerRehearsalAcceptanceDevice({ ...input, origin }, untouched),
+      /empty label/u,
+      origin,
+    );
 });
 
 test("the stage pool's own registration makes a models-only device the release then signs for", async () => {

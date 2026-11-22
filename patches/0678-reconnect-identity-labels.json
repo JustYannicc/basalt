@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-reconnect-identity-labels",
+  "file": "0678-reconnect-identity-labels.patch",
+  "content_sha256": "6731e035b6ecd8bfd4475bea2cd561f74ea2a16606be0d9db9161c19693e7e00",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

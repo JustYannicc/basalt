@@ -93,7 +93,7 @@ async function pool() {
     });
     response.end(
       catalog
-        ? '{"object":"list","data":[{"id":"model-a","object":"model"}]}'
+        ? '{"object":"list","data":[{"id":"claude-opus-5-5","object":"model"}]}'
         : 'data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n',
     );
   });

@@ -13,7 +13,7 @@
  * key stays sealed in the pool.
  */
 import { parseArgs } from "node:util";
-import { brand } from "../../brand.ts";
+import { appHosting, brand } from "../../brand.ts";
 import { nativeControlPath, nativeControlPrefix } from "../../src/pool/native-contract.ts";
 import { setupTtl, signIntent } from "../../src/pool/setup-links.ts";
 import { hostAssertionTtlMs, isSigningKey, signEnvelope } from "../../src/pool/token.ts";
@@ -40,20 +40,34 @@ function rehearsalOnly(stage: string) {
 
 /**
  * The stage's own https origin. Its host carries the stage's DNS label (`rehearsal-<n>`, the stage
- * without `test-`, as deploy.ts labels a stage's hostnames) as one whole label, and is never
- * production's zone or anything under it, its host included.
+ * without `test-`, as deploy.ts labels a stage's hostnames) as one whole label. Our rehearsal
+ * stages share production's zone, so under that zone exactly one host is admitted: the stage's own
+ * app host, `app.rehearsal-<n>.<zone>`. Production's own hosts, and anything else under its zone,
+ * are refused.
  */
 function stageOrigin(stage: string, value: string) {
   const origin = URL.parse(value);
   if (origin?.protocol !== "https:") throw new Error("Give the stage's https origin");
   // URL lowercases the host, decodes percent escapes and maps the ideographic and full-width stops
-  // to dots. A resolver drops every trailing dot, so they all name the same host.
-  const host = origin.hostname.replace(/\.+$/u, "");
+  // to dots. One trailing dot names the same host; an empty label anywhere, a second trailing dot
+  // included, names none.
+  const host = origin.hostname.replace(/\.$/u, "");
   const labels = host.split(".");
   if (labels.includes("")) throw new Error("The origin's host has an empty label");
-  if (host === brand.zone || host.endsWith(`.${brand.zone}`))
+  const label = stage.replace(/^test-/u, "");
+  const production = new Set([
+    brand.zone,
+    brand.host,
+    `www.${brand.zone}`,
+    ...appHosting.bypassHosts,
+  ]);
+  if (
+    production.has(host) ||
+    ((host === brand.zone || host.endsWith(`.${brand.zone}`)) &&
+      host !== `app.${label}.${brand.zone}`)
+  )
     throw new Error("The origin is production's host or under its zone");
-  if (!labels.includes(stage.replace(/^test-/u, "")))
+  if (!labels.includes(label))
     throw new Error("The origin's host does not carry the stage's label (rehearsal-<n>)");
   origin.hostname = host;
   return origin;

@@ -29,6 +29,19 @@ export const SlotRecord = Schema.Struct({
   target: SlotTarget,
   identity: Schema.optional(SlotIdentity),
   fenced: Schema.Boolean,
+  /** When the fence command last fenced the slot, for the operator; other fences don't record it. */
+  fencedAt: Schema.optional(Schema.Number),
+  /**
+   * How the last unfence ended the fence: with a passing proof, or by handing a slot that couldn't
+   * prove itself back to recovery, after which it serves only once `proven`.
+   */
+  unfenced: Schema.optional(
+    Schema.Struct({
+      by: Schema.Literals(["proof", "recovery"]),
+      at: Schema.Number,
+      proven: Schema.Boolean,
+    }),
+  ),
   retirement: Schema.optional(
     Schema.Struct({
       operationId: Identifier,
@@ -37,6 +50,11 @@ export const SlotRecord = Schema.Struct({
   ),
 });
 export type SlotRecord = typeof SlotRecord.Type;
+/**
+ * Handed back to recovery by an unfence: no model call, and nothing reports it serving, until
+ * current policies reach its boot. Home calls and installs do reach it; that is how they get there.
+ */
+export const awaitsProof = (slot: SlotRecord | undefined) => slot?.unfenced?.proven === false;
 export const SlotSelection = Schema.Struct({
   epoch: Counter,
   active: SlotRecord,

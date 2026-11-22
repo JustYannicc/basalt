@@ -19,6 +19,7 @@ import {
 import { reference, timestamp } from "../../src/pool/model-history/record.ts";
 import { historyMemoryOwnerFixture } from "./history-fixture.ts";
 import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
+import { historyBatchSize, historyForwardPages } from "../../src/pool/model-history/store.ts";
 import { summaryIncidents } from "../../src/pool/model-history/summary-incidents.ts";
 import { handleTrafficOperation } from "../../src/pool/model-history/traffic.ts";
 import {
@@ -719,7 +720,7 @@ test("the history operator exposes v7 as a self-creating additive step from v4",
   });
 });
 
-test("the 1h and 24h SLO uses exact real counts, detects stale capture and never treats no traffic as 100%", async () => {
+test("the 1h and 24h SLO uses exact real counts, detects stale and lagging capture and never treats no traffic as 100%", async () => {
   await fixture(async (db) => {
     const now = Date.parse("2026-11-12T03:00:00Z");
     const source = await digest("home-local-v1"),
@@ -762,7 +763,18 @@ test("the 1h and 24h SLO uses exact real counts, detects stale capture and never
     assert.equal(separated.state, "ok");
     assert.equal(separated.hour.real.requests, 100);
     assert.equal(separated.hour.proof.failed, 1);
+    const run = historyForwardPages * historyBatchSize;
     await db.query("INSERT INTO usage VALUES (1)");
+    const due = await readPoolReliabilitySlo(db, "fixture", now);
+    assert.equal(due.state, "ok", "a request since the last capture is not yet due");
+    assert.equal(due.reason, undefined);
+    await db.query("INSERT INTO usage SELECT n FROM generate_series(2, $1::int) n", [run]);
+    assert.equal(
+      (await readPoolReliabilitySlo(db, "fixture", now)).state,
+      "ok",
+      "one capture run takes the whole backlog",
+    );
+    await db.query("INSERT INTO usage VALUES ($1)", [run + 1]);
     const lagging = await readPoolReliabilitySlo(db, "fixture", now);
     assert.equal(lagging.state, "unavailable");
     assert.equal(lagging.reason, "capture_lagging");

@@ -10,6 +10,8 @@ on:
       - src/drive/shared/**
       # The plugin bundles the text-format rule the server shares.
       - src/drive/text-files.ts
+      # And the device-report label rule, which this carry adds to the upstream source.
+      - patches/*-device-report-label-module.patch
       - .github/workflows/obsidian-plugin-release.yml
   workflow_dispatch:
 
@@ -64,6 +66,23 @@ jobs:
         run: |
           bun install --frozen-lockfile --cwd src/drive/shared
           node "$RUNNER_TEMP/bundler/node_modules/typescript/bin/tsc" -p src/drive/shared
+      # The plugin also imports the device-report label rule from the carried upstream source. Only
+      # that source is needed, so the pinned upstream is checked out with its carries and nothing in
+      # it is installed.
+      - name: Check out the carried upstream source
+        run: |
+          node --input-type=module <<'EOF'
+          import { readFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { readPatchManifest } from "./scripts/releases/patches.ts";
+          import { prepareUpstreamCheckout } from "./scripts/upstream-cache.ts";
+          const root = process.cwd();
+          await prepareUpstreamCheckout(
+            join(root, ".upstream"),
+            JSON.parse(readFileSync(join(root, "upstream.json"), "utf8")),
+            readPatchManifest(root).patches.map(({ file }) => join(root, "patches", file)),
+          );
+          EOF
       - name: Build main.js, manifest.json and styles.css
         run: node clients/obsidian/build.mjs --esbuild "$RUNNER_TEMP/bundler/node_modules/.bin/esbuild" --outdir "$RUNNER_TEMP/signalbox-sync"
       - name: Publish the manifest version once
