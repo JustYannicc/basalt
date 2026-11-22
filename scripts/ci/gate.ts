@@ -11,7 +11,9 @@ export const fastJobs = [
   "client-connection",
   "browser-install",
 ];
-export const conditionalJobs = ["workerd-assets"];
+// box-watch runs only in a Check that routed jobs to the box; it passes or is skipped. A run it
+// cancels still reaches this gate, which runs on always(), and fails here; box-rerun.yml re-runs it.
+export const conditionalJobs = ["workerd-assets", "box-watch"];
 
 // The long tier: jobs that start as soon as `select` finishes. Every other job the selector starts
 // also needs the trivial `long-started` job, so when a full Check queues more jobs than there are
@@ -19,6 +21,8 @@ export const conditionalJobs = ["workerd-assets"];
 // successful hosted runs average 10 minutes or more in full Checks 44515987650 and 44504964672
 // (first attempts), plus workerd-assets, the short head of the upstream-image chain.
 export const longJobs = [
+  // Not long, but the watchdog of a Check's box jobs starts with them, ahead of the queue.
+  "box-watch",
   "fast",
   "pool-runtime",
   "host-managed-accounts-pool",
@@ -62,6 +66,13 @@ export function gateErrors(
   if (Object.keys(needs).sort().join("\n") !== [...expected].sort().join("\n"))
     errors.push("Aggregate gate dependencies differ from the declared CI jobs");
   for (const job of expected) {
+    // box-watch runs when this Check routed jobs to the box; it may also be skipped, never fail.
+    if (job === "box-watch") {
+      const result = needs[job]?.result ?? "missing";
+      if (result !== (box.length ? "success" : "skipped") && result !== "skipped")
+        errors.push(`box-watch: expected success or skipped, got ${result}`);
+      continue;
+    }
     const required =
       fastJobs.includes(job) ||
       (job === "workerd-assets" && selected.includes("upstream-image")) ||

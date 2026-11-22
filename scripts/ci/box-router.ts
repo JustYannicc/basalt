@@ -81,6 +81,11 @@ export type BoxInput = {
   matrices: Matrices;
   /** Measured seconds per declared file; defaults to scripts/ci/declared-durations.json. */
   durations?: Record<string, number>;
+  /**
+   * The box's own heartbeat runner's label. Without one a full or holding box's heartbeat waits
+   * behind its jobs, so box-watch could not tell holding from down: no second wave is planned.
+   */
+  heartbeatLabel?: string;
 };
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -133,11 +138,50 @@ export const fitsTimeout = (shard: BoxShard) => shard.minutes * boxSlowdown <= s
 
 /** Up to `limit` shards that fit their timeout on the box, longest first. */
 export function fillBox(shards: readonly BoxShard[], limit: number) {
-  return shards
+  return planBox(shards, limit, 0).map((job) => job.id);
+}
+
+/**
+ * The pace a second wave is planned at: the box's own worst case, not its best. Box jobs ran at
+ * 1.02–1.16× their hosted time under the load guard, and at 2.2–2.8× in a full Check that gates
+ * overran; a wave planned at a faster pace than the one ahead of it really runs at is cancelled
+ * while the box is healthy.
+ */
+export const waveSlowdown = boxSlowdown;
+/** A full suite's floor: its longest hosted jobs run 17.5–19.3 minutes, plus select. */
+export const fullCheckFloor = 20;
+/** At most this many jobs per free slot, counted over all slots: some start at once, the rest wait. */
+export const boxWaves = 2;
+
+/**
+ * Box jobs for `free` slots, longest first. Each free slot takes a job at once; a second wave waits
+ * on the box for whichever slot frees first, but only when it still ends by `floor` minutes at the
+ * keep rule's pace. The box starts a waiting job only when its own budget has room for it.
+ */
+export function planBox(shards: readonly BoxShard[], free: number, floor: number) {
+  const slots: number[] = Array.from({ length: Math.max(0, free) }, () => 0);
+  const planned: { id: string; minutes: number; wave: 1 | 2 }[] = [];
+  const fitting = shards
     .filter(fitsTimeout)
-    .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1))
-    .slice(0, Math.max(0, limit))
-    .map((shard) => shard.id);
+    .sort((a, b) => b.minutes - a.minutes || (a.id < b.id ? -1 : 1));
+  for (const shard of fitting) {
+    if (!slots.length || planned.length >= slots.length * boxWaves) break;
+    const slot = slots.indexOf(Math.min(...slots));
+    const start = slots[slot]!;
+    const end = start + shard.minutes * waveSlowdown;
+    // A waiting job is taken only on a known plan: no planned minutes or no floor runs it hosted.
+    if (start > 0 && !(shard.minutes > 0 && end <= floor)) continue;
+    slots[slot] = end;
+    planned.push({ id: shard.id, minutes: shard.minutes, wave: start > 0 ? 2 : 1 });
+  }
+  return planned;
+}
+
+/** The Check's floor for its plan: a full suite's, or the longest routable row's. */
+export function checkFloor(shards: readonly BoxShard[]) {
+  const longest = Math.max(0, ...shards.map((shard) => shard.minutes));
+  const declared = shards.some((shard) => declaredJobs.includes(shardJob(shard.id) ?? ""));
+  return Math.max(longest, declared ? fullCheckFloor : 0);
 }
 
 export function boxSettings(
@@ -204,8 +248,20 @@ export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   const budget = status.budget;
   if (typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 0)
     return "the box reported no whole-number CI budget";
-  if (budget === 0) return "the box's CI budget is 0" + why;
+  if (budget === 0) return zeroBudget + why;
   return { budget, why };
+}
+
+/** The heartbeat runner's own label, or "" when it is unset or one other runners share. */
+export const heartbeatRunnerLabel = (label = "") =>
+  /^[\w.-]+$/.test(label) && !refusedLabels.includes(label.toLowerCase()) ? label : "";
+
+const zeroBudget = "the box's CI budget is 0";
+
+/** Whether the newest heartbeat shows a healthy box: one that grants no budget now is holding. */
+export function boxIsUp(heartbeat: Heartbeat, now: number) {
+  const budget = heartbeatBudget(heartbeat, now);
+  return typeof budget !== "string" || budget.startsWith(zeroBudget);
 }
 
 export async function routeBox(
@@ -216,7 +272,9 @@ export async function routeBox(
 ) {
   const none = (why: string) => ({
     jobs: [] as string[],
+    plan: {} as Record<string, { minutes: number; wave: 1 | 2 }>,
     label: "",
+    floor: 0,
     summary: `Box routing: every job runs hosted, because ${why}.`,
   });
   const settings = boxSettings(input);
@@ -238,16 +296,32 @@ export async function routeBox(
     const budget = `a CI budget of ${box.budget}${box.why}`;
     if (!free)
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
-    const jobs = fillBox(plan.shards, free);
-    if (!jobs.length)
+    const floor = checkFloor(plan.shards);
+    // A job may wait on the box only while its heartbeat runs on its own runner: one that queued
+    // behind CI jobs would go stale, and box-watch would take a holding box for a down one.
+    // A heartbeat on the CI runners' own label would still queue behind them.
+    const ownRunner =
+      heartbeatRunnerLabel(input.heartbeatLabel) !== "" &&
+      input.heartbeatLabel?.toLowerCase() !== settings.label.toLowerCase();
+    const planned = planBox(plan.shards, free, ownRunner ? floor : 0);
+    if (!planned.length)
       return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
+    const jobs = planned.map((job) => job.id);
+    const waiting = planned.filter((job) => job.wave === 2).length;
     const hosted = plan.shards.length - jobs.length;
+    const wave = waiting
+      ? `, ${waiting} of them waiting on the box for a slot that frees by the ${floor.toFixed(0)}-minute floor`
+      : "";
     return {
       jobs,
+      plan: Object.fromEntries(
+        planned.map((job) => [job.id, { minutes: job.minutes, wave: job.wave }]),
+      ),
       label: settings.label,
+      floor,
       summary:
         `Box routing: box first. ${jobs.length} ${jobs.length === 1 ? "job goes" : "jobs go"} to the self-hosted runners ` +
-        `(${slots}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
+        `(${slots}${wave}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
         `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };
   } catch (error) {
@@ -259,7 +333,15 @@ type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /** Reads the heartbeat, the repository's hosted load and the box's busy slots through the REST API. */
 export function githubObserver(
-  env: { api: string; repository: string; token: string; runId: string; label: string },
+  env: {
+    api: string;
+    repository: string;
+    token: string;
+    runId: string;
+    label: string;
+    /** The box's own heartbeat runner's label, when it has one. */
+    heartbeatLabel?: string;
+  },
   fetcher: Fetch = fetch,
 ): BoxObserver {
   const get = async (path: string) => {
@@ -291,6 +373,12 @@ export function githubObserver(
   };
   const boxLabel = env.label.toLowerCase();
   const selfHosted = new Set([boxLabel, ...sharedLabels]);
+  // A heartbeat label that other runners share could let them vouch for the box, so it is refused.
+  const heartbeatLabel = (env.heartbeatLabel ?? "").toLowerCase();
+  const onHeartbeatRunner = (job: Record<string, unknown>) =>
+    heartbeatRunnerLabel(heartbeatLabel) !== "" &&
+    Array.isArray(job.labels) &&
+    job.labels.some((label) => String(label).toLowerCase() === heartbeatLabel);
   const onBox = (job: Record<string, unknown>) =>
     Array.isArray(job.labels) &&
     job.labels.some((label) => String(label).toLowerCase() === boxLabel);
@@ -329,7 +417,7 @@ export function githubObserver(
           return { conclusion: run.conclusion, completedAt: run.updated_at, log: "" };
         // A heartbeat that didn't run on the box's label says nothing about the box.
         const jobs = await list(`/actions/runs/${Number(run.id)}/jobs?filter=latest`, "jobs");
-        const job = jobs.find(onBox);
+        const job = jobs.find((candidate) => onBox(candidate) || onHeartbeatRunner(candidate));
         if (!job) continue;
         const log = await (await get(`/actions/jobs/${Number(job.id)}/logs`)).text();
         return { conclusion: job.conclusion, completedAt: job.completed_at, log };

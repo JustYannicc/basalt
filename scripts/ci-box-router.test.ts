@@ -9,6 +9,9 @@ import { heavyJobs } from "./ci/areas.ts";
 import {
   boxSettings,
   boxSlowdown,
+  boxWaves,
+  checkFloor,
+  planBox,
   checkPlan,
   declaredJobs,
   fillBox,
@@ -435,22 +438,58 @@ test("declared shard rows and benched named jobs route, and free slots and timeo
   assert.deepEqual(none.jobs, []);
   assert.match(none.summary, /runs no job the box can take/);
   assert.deepEqual(calls, { heartbeat: 0, active: 0 });
-  const fitting = plan.shards.filter(fitsTimeout).sort((a, b) => b.minutes - a.minutes);
+  const floor = checkFloor(plan.shards);
   for (const slots of [1, 2, 3, 5])
     for (const busy of [0, 1, 2]) {
+      const routing = {
+        slots: String(slots),
+        selected: everyJob,
+        matrices: real,
+        durations: undefined,
+      };
+      const busyBox = () =>
+        observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box;
       const routed = await routeBox(
-        input({ slots: String(slots), selected: everyJob, matrices: real, durations: undefined }),
-        observer({ hosted: 500, box: busy, log: budgetLog({ ci_budget: 3 }) }).box,
+        input({ ...routing, heartbeatLabel: "basalt-box-heartbeat" }),
+        busyBox(),
         () => now,
         noWait,
       );
       const free = Math.max(0, Math.min(slots, 3) - busy);
-      assert.equal(routed.jobs.length, Math.min(free, fitting.length), `${slots}/${busy}`);
+      // The free slots take the longest at once; a second wave waits behind them by the floor.
+      const planned = planBox(plan.shards, free, floor);
       assert.deepEqual(
-        routed.jobs.map((id) => plan.shards.find((shard) => shard.id === id)!.minutes),
-        fitting.slice(0, routed.jobs.length).map((shard) => shard.minutes),
+        routed.jobs,
+        planned.map((job) => job.id),
         `${slots}/${busy}`,
       );
+      assert.deepEqual(
+        routed.plan,
+        Object.fromEntries(planned.map(({ id, minutes, wave }) => [id, { minutes, wave }])),
+      );
+      assert.equal(routed.floor, routed.jobs.length ? floor : 0);
+      assert.ok(routed.jobs.length <= free * boxWaves, `${slots}/${busy}`);
+      // Without the heartbeat's own runner, a holding box's heartbeat could go stale behind its CI
+      // jobs and box-watch would take it for down: no job waits, only the free slots fill.
+      const unwatched = await routeBox(input(routing), busyBox(), () => now, noWait);
+      assert.deepEqual(unwatched.jobs, fillBox(plan.shards, free), `${slots}/${busy}`);
+      assert.ok(Object.values(unwatched.plan).every((job) => job.wave === 1));
+      // A label other runners share is no heartbeat runner of the box's own either.
+      const shared = await routeBox(
+        input({ ...routing, heartbeatLabel: "self-hosted" }),
+        busyBox(),
+        () => now,
+        noWait,
+      );
+      assert.deepEqual(shared.jobs, unwatched.jobs, `${slots}/${busy}`);
+      // The CI runners' own label queues the heartbeat behind them, as no heartbeat label does.
+      const sameLabel = await routeBox(
+        input({ ...routing, heartbeatLabel: "basalt-box" }),
+        busyBox(),
+        () => now,
+        noWait,
+      );
+      assert.deepEqual(sameLabel.jobs, unwatched.jobs, `${slots}/${busy}`);
     }
   assert.equal(boxSlowdown, 2);
   assert.deepEqual(fillBox([{ id: "a", minutes: 31, timeout: 61 }], 5), []);
@@ -703,6 +742,55 @@ test("a stale heartbeat waits for the one this Check's start triggered, then giv
   assert.deepEqual(waits, []);
 });
 
+test("a heartbeat on the box's own heartbeat runner vouches for it; a shared label never does", async () => {
+  const runs = "/actions/workflows/box-heartbeat.yml/runs?status=completed&per_page=50";
+  const routes = (labels: string[]): Record<string, unknown> => ({
+    [runs]: {
+      workflow_runs: [
+        {
+          id: 4,
+          event: "workflow_run",
+          path: heartbeatPath,
+          head_repository: { full_name: "owner/repo" },
+          head_branch: "main",
+          conclusion: "success",
+        },
+      ],
+    },
+    "/actions/runs/4/jobs?filter=latest&per_page=50&page=1": {
+      jobs: [{ id: 40, labels, conclusion: "success", completed_at: minutesAgo(1) }],
+    },
+    "/actions/jobs/40/logs": healthyLog,
+  });
+  const observe = (labels: string[], heartbeatLabel?: string) =>
+    githubObserver(
+      {
+        api: "https://api.test",
+        repository: "owner/repo",
+        token: "t",
+        runId: "99",
+        label: "basalt-box",
+        heartbeatLabel,
+      },
+      async (url) => {
+        const table = routes(labels);
+        const path = url.replace("https://api.test/repos/owner/repo", "");
+        if (!(path in table)) return new Response("missing", { status: 404 });
+        const body = table[path];
+        return new Response(typeof body === "string" ? body : JSON.stringify(body));
+      },
+    ).heartbeat();
+  assert.equal((await observe(["basalt-box-heartbeat"], "basalt-box-heartbeat")).log, healthyLog);
+  // Without a heartbeat label, or with one other runners share, only the box label counts.
+  for (const heartbeatLabel of [undefined, "", "self-hosted", "basalt-release", "linux"])
+    await assert.rejects(
+      observe([heartbeatLabel || "basalt-box-heartbeat"], heartbeatLabel),
+      /no completed heartbeat run from the box/,
+      String(heartbeatLabel),
+    );
+  assert.equal((await observe(["basalt-box"], "basalt-box-heartbeat")).log, healthyLog);
+});
+
 // A re-run reuses select's outputs, so only the first attempt may use them; the label is the one
 // select validated, never the variable read again at job time.
 const shardExpression =
@@ -883,7 +971,11 @@ test("the heartbeat runs on the box with no checkout, no secrets and no permissi
   const jobs = Object.values<Record<string, unknown>>(heartbeatWorkflow.jobs);
   assert.equal(jobs.length, 1);
   const [job] = jobs;
-  assert.equal(job!["runs-on"], "${{ vars.BASALT_CI_BOX_LABEL || 'basalt-box' }}");
+  // The box's own always-on heartbeat runner when one is set, else a CI runner of the box.
+  assert.equal(
+    job!["runs-on"],
+    "${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL || vars.BASALT_CI_BOX_LABEL || 'basalt-box' }}",
+  );
   assert.equal(job!["timeout-minutes"], 2);
   assert.equal(job!.permissions, undefined);
   const steps = job!.steps as { uses?: string; run?: string; env?: unknown; with?: unknown }[];

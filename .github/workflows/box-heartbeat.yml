@@ -22,7 +22,9 @@ concurrency:
 
 jobs:
   heartbeat:
-    runs-on: ${{ vars.BASALT_CI_BOX_LABEL || 'basalt-box' }}
+    # The box's own always-on heartbeat runner when one is set, so a full or holding box still
+    # reports; otherwise a CI runner of the box.
+    runs-on: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL || vars.BASALT_CI_BOX_LABEL || 'basalt-box' }}
     timeout-minutes: 2
     steps:
       - name: Report the box status
