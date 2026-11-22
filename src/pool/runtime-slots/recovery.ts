@@ -136,8 +136,8 @@ export class RuntimeSlotRecovery {
     );
     if (completion != null) {
       this.unavailable = true;
-      // A committed forced restart that never reaches ready must end in needs-a-person, whichever
-      // step of this branch keeps failing.
+      // A committed restart, forced or not, that never reaches ready must end in needs-a-person,
+      // whichever step of this branch keeps failing.
       await this.forced.refused();
       const value = Schema.decodeUnknownSync(Completion)(completion);
       const current = await storage.inspect();
@@ -296,7 +296,11 @@ export class RuntimeSlotRecovery {
         throw new SlotRefused("selection");
       retiredDenials(current);
     });
-    if (!retained.running) await driver.admit(previous, await envelope(false));
+    if (!retained.running) {
+      await driver.admit(previous, await envelope(false));
+      // Unless a forced stop began it, this restart is recovery's own, timed from its first admission.
+      await this.forced.clock.unforcedRestart(Date.now());
+    }
     signal.throwIfAborted();
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "starting",
