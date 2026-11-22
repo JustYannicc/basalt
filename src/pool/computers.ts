@@ -34,6 +34,7 @@ import {
   type UsageObservationEvent,
 } from "./usage-observation.ts";
 import { NativeComputers, revocableKeys } from "./native-computers.ts";
+import { toolsKeyDeleted, toolsLeftoverControl } from "./tools-leftovers.ts";
 
 interface Dependencies {
   retirePool?(pool: string, at: number): Promise<void>;
@@ -69,6 +70,12 @@ export class Computers {
       run: (work) => this.run(work),
       save: (registry) => this.save(registry),
       revokeKeys: (computer) => this.leftovers.revokeKeys(computer),
+      toolsLeftovers: (value) =>
+        toolsLeftoverControl(value, {
+          now: () => this.now(),
+          run: (work) => this.run(work),
+          save: (registry) => this.save(registry),
+        }),
     });
     this.leftovers = new ComputerLeftovers({
       home: deps.home,
@@ -388,8 +395,11 @@ export class Computers {
               computer.state !== "removed"
             )
               return fail(409, "busy", "Revoke the model key first.");
+            const at = new Date(this.now()).toISOString();
             computer.state = "revoked";
-            computer.revokedAt ??= new Date(this.now()).toISOString();
+            computer.revokedAt ??= at;
+            // The setup host asks this only once the computer's tools key is deleted.
+            toolsKeyDeleted(computer, at);
             await this.save(registry);
             return json(null);
           }

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-link-setup-tools-revokes",
+  "file": "0739-link-setup-tools-revokes.patch",
+  "content_sha256": "630a4c1bf30879e77992b70725553955a47623f8547d72a572a6c822d9554109",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

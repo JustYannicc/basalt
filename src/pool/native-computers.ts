@@ -41,6 +41,8 @@ interface Dependencies {
   save: (registry: Registry) => Promise<unknown>;
   /** Revokes the computer's Home keys, shared with upkeep finishing a left-behind revoke. */
   revokeKeys: (computer: StoredComputer) => Promise<void>;
+  /** The tools host's read and report of link-setup computers whose revoke left a tools key. */
+  toolsLeftovers: (value: Record<string, unknown>) => Promise<Response>;
 }
 interface Identity {
   user: string;
@@ -190,6 +192,8 @@ export class NativeComputers {
         nativeControlPrefix,
       );
       if (value.action === "register") return await this.register(value);
+      if (value.action === "tools-leftovers" || value.action === "tools-deleted")
+        return await this.deps.toolsLeftovers(value);
       const caller = identity(value);
       return await this.deps.run(async (registry) => {
         if (value.action === "check") {

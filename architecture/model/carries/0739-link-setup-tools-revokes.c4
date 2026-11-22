@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A computer set up with a link signs in with an ordinary tools key, which serving never checks with the pool. When its person's revoke on Connect stops after the pool marked it revoking, the tools host's every-minute native cleanup pass finishes it: it asks the pool, over the native control route with the host's own signed assertion, for at most 25 link-setup computers whose person revoked them and whose tools key isn't recorded gone, deletes each key only when it is that row's person's own, and reports the deleted or missing ones back so the pool records them. A pass makes at most two pool calls, a read and a report, however many keys exist. A pool that doesn't answer, or an answer the host can't read, deletes nothing; serving tools keeps working and only the cleanup waits for the next pass. A report the pool doesn't confirm is repeated by the next pass, which finds those keys gone."
+    }
+  }
+}

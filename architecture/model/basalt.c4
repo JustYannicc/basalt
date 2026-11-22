@@ -471,7 +471,7 @@ model {
   basalt.toolsGateway -[tool]-> outsideServices "dynamic egress"
 
   basalt.router -[sync]-> basalt.toolsGateway "TOOLS_SERVICE: validate native device grant before model ingress"
-  basalt.toolsGateway -[sync]-> basalt.router "signed native registration, tools-only device report, access check or revocation"
+  basalt.toolsGateway -[sync]-> basalt.router "signed native registration, tools-only device report, access check or revocation; read and report link-setup computers whose revoke left a tools key"
   basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: native control and short-lived model assertions"
   basalt.modelGateway -[sync]-> basalt.router "native computer identity; model key remains server-side"
 
