@@ -1,0 +1,34 @@
+diff --git a/packages/apps/scripts/reference.mjs b/packages/apps/scripts/reference.mjs
+--- a/packages/apps/scripts/reference.mjs
++++ b/packages/apps/scripts/reference.mjs
+@@ -54,6 +54,19 @@
+   ts.NodeBuilderFlags.UseAliasDefinedOutsideCurrentScope |
+   ts.NodeBuilderFlags.IgnoreErrors;
+ 
++/**
++ * A declaration's file, from the workspace's parent. A dependency is named from its last
++ * `node_modules`, so the reference and its digest do not depend on where the package store sits:
++ * that directory is new on every install.
++ */
++const referenceSource = (root, fileName) => {
++  const path = fileName.split("\\").join("/");
++  const dependency = path.lastIndexOf("/node_modules/");
++  return dependency === -1
++    ? relative(resolve(root, ".."), fileName).split("\\").join("/")
++    : path.slice(dependency + 1);
++};
++
+ /** Produce a deterministic catalog. No app code is imported or executed. */
+ export async function generateFrameworkReference() {
+   const manifest = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
+@@ -241,9 +254,7 @@
+       signatures,
+       ...(definition === undefined ? {} : { definition }),
+       tags: symbol.getJsDocTags(checker).map((tag) => ({ name: tag.name, text: text(tag.text) })),
+-      source: relative(resolve(root, ".."), declaration.getSourceFile().fileName)
+-        .split("\\")
+-        .join("/"),
++      source: referenceSource(root, declaration.getSourceFile().fileName),
+     };
+   };
+   const record = (id, symbol, { names, ...described }, docs) => {
