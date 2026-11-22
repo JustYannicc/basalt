@@ -123,11 +123,9 @@ export class RuntimeForcedStop {
     // Without SIGTERM the single root's Home, the elected master, would be killed mid-refresh.
     if (!container.signal) return "no_signal";
     try {
-      container.signal(15);
-      await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
-      if (!container.running) return "graceful_exit";
-      await container.destroy();
-      return "destroy_after_grace";
+      return (await stopGracefully(container)) === "exited"
+        ? "graceful_exit"
+        : "destroy_after_grace";
     } catch {
       return "stop_failed";
     }
@@ -143,4 +141,20 @@ export class RuntimeForcedStop {
       return false;
     }
   }
+}
+
+/**
+ * Every deliberate end of a running container: SIGTERM, then its own exit or the grace, and
+ * `destroy()` only if it still runs. Home drains its claimed token refreshes on SIGTERM, and whichever
+ * Home holds the master lease holds them all; a bare destroy can lose a token a vendor just rotated.
+ * A container without `signal()` can only be destroyed.
+ */
+export async function stopGracefully(container: NonNullable<ControllerState["container"]>) {
+  if (container.running && container.signal) {
+    container.signal(15);
+    await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
+  }
+  if (!container.running) return "exited" as const;
+  await container.destroy();
+  return "destroyed" as const;
 }

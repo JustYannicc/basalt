@@ -82,6 +82,7 @@ test("a retirement sends SIGTERM and destroys only once the grace has run out", 
 
 test("a cell that stops on SIGTERM retires at once, without waiting out the grace", async (context) => {
   const { f, target, identity, store } = await startedCell(context);
+  f.hooks.sigtermExits = true;
   context.mock.method(runtimeStopTiming, "stopGrace", () => new Promise<void>(() => {}));
   await f.endpoint.retire(target, identity, AbortSignal.timeout(5_000));
   assert.deepEqual(f.calls.signals, [15]);

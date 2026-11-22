@@ -116,6 +116,11 @@ export async function handoffRuntime(
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
     connections: async () => 0,
+    /**
+     * Whether SIGTERM ends the container at once. Fixtures run a zero stop grace, so by default
+     * Home is still draining when the grace ends and the stop falls to `destroy()`.
+     */
+    sigtermExits: false,
   };
   const ctx = {
     exports: { PoolHomePeer: ({ props }: { props: { source: HomePeerSource } }) => ({ props }) },
@@ -128,6 +133,7 @@ export async function handoffRuntime(
       signal(signal: number) {
         assert.ok(signal === 9 || signal === 15, `unexpected signal ${signal}`);
         calls.signals.push(signal);
+        if (signal === 15 && !hooks.sigtermExits) return;
         running = false;
         for (const stop of stops) stop();
         stops.clear();

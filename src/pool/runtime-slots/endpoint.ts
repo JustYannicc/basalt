@@ -47,7 +47,8 @@ import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
-import { RuntimeForcedStop } from "./forced-stop.ts";
+import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
+import { awaitProbe } from "../availability.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -595,7 +596,7 @@ export class RuntimeEndpoint {
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
-    return this.serialize(async () => {
+    const work = this.serialize(async () => {
       const { record } = await trace.run("witness_read", () => this.store.read(target));
       await trace.run("health", () => this.health(identity, signal), undefined, signal);
       signal.throwIfAborted();
@@ -608,11 +609,19 @@ export class RuntimeEndpoint {
         undefined,
         signal,
       );
-      await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
+      // From SIGTERM on, the stop no longer follows its caller's 2 s budget: Home's drain of claimed
+      // refreshes may take the whole grace, and the retirement read sees the stop end.
+      await trace.run(
+        "stop",
+        () => stopGracefully(this.ctx.container!),
+        (stopped) => ({ stopped }),
+      );
       await trace.run("retired_record", () =>
         this.store.retire(target, { ...record, retired: true }),
       );
     });
+    this.ctx.waitUntil(work.catch(() => {}));
+    return awaitProbe(() => work, signal);
   }
   async retirement(identity: SlotIdentity, signal?: AbortSignal) {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
