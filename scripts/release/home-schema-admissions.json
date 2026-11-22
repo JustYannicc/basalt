@@ -353,7 +353,7 @@
     },
     {
       "baselineInputHash": "59a7663b4fbc8e4a",
-      "candidateInputHash": "deff6a349867da39",
+      "candidateInputHash": "cdc62a9725fa810a",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
@@ -367,7 +367,35 @@
     },
     {
       "baselineInputHash": "b669a1335e786091",
-      "candidateInputHash": "deff6a349867da39",
+      "candidateInputHash": "cdc62a9725fa810a",
+      "fromVersions": [15, 16],
+      "targetVersion": 16,
+      "requiredIndexes": [
+        "idx_billing_charge_usage_cover_v1",
+        "idx_billing_charge_overview_time_v1",
+        "idx_usage_billing_complete_v2",
+        "idx_usage_summary_cursor_v1",
+        "idx_usage_key_success_time_v1",
+        "idx_billing_charge_key_usage_v1"
+      ]
+    },
+    {
+      "baselineInputHash": "59a7663b4fbc8e4a",
+      "candidateInputHash": "5ed1f28a518461f1",
+      "fromVersions": [15, 16],
+      "targetVersion": 16,
+      "requiredIndexes": [
+        "idx_billing_charge_usage_cover_v1",
+        "idx_billing_charge_overview_time_v1",
+        "idx_usage_billing_complete_v2",
+        "idx_usage_summary_cursor_v1",
+        "idx_usage_key_success_time_v1",
+        "idx_billing_charge_key_usage_v1"
+      ]
+    },
+    {
+      "baselineInputHash": "b669a1335e786091",
+      "candidateInputHash": "5ed1f28a518461f1",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
