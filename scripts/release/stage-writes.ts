@@ -19,13 +19,36 @@ export interface StageScope {
   readonly databases: ReadonlyArray<string>;
   /** The names and ids the stage's own State rows record for the resources they own. */
   readonly owned: ReadonlyArray<string>;
+  /**
+   * The names of the Workers the stage's own State rows record (`ownWorkers`). Only these may be a
+   * domain's service when a delete of a domain the State never recorded is proven.
+   */
+  readonly workers?: ReadonlyArray<string>;
+  /** The deployment account; a proof's read must go to it. */
+  readonly accountId?: string;
 }
 
 export type StageVerdict =
   | { readonly kind: "allow"; readonly creates?: true }
   | { readonly kind: "refuse"; readonly resource: string; readonly field: string }
   /** A Worker or Workflow name only Cloudflare can place: new, or carrying this stage's tags. */
-  | { readonly kind: "prove"; readonly family: "Worker" | "Workflow"; readonly name: string };
+  | {
+      readonly kind: "prove";
+      readonly family: "Worker" | "Workflow" | "Worker domain";
+      readonly name: string;
+    };
+
+const CLOUDFLARE_API_HOST = "api.cloudflare.com";
+
+/**
+ * Whether a hostname is named for this stage: under its own DNS label in the stage domain. A stage
+ * name outside the disposable shapes never owns a hostname: `test-app` must not reach
+ * `app.<production zone>`.
+ */
+export const stageHostname = (scope: Pick<StageScope, "label" | "domain">, host: string) =>
+  /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
+  !!scope.domain &&
+  (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
 
 type Mode = "id" | "worker" | "workflow" | "create" | "free" | "never";
 // Services only a test stage writes to: the billing emulator a preview seeds while it plans.
@@ -115,12 +138,7 @@ export function stageWriteVerdict(
     resource,
     field,
   });
-  // A stage name outside the disposable shapes never owns a hostname: `test-app` must not reach
-  // `app.<production zone>`.
-  const labelled = (host: string) =>
-    /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
-    !!scope.domain &&
-    (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
+  const labelled = (host: string) => stageHostname(scope, host);
   const path = url.pathname;
   // Alchemy's State store: `/state/stacks/:stack[/stages/:stage/...]`, on its own host.
   const state = /^\/state\/stacks\/([^/]+)(?:\/stages\/([^/]+))?/u.exec(path);
@@ -177,9 +195,9 @@ export function stageWriteVerdict(
       : isOwned(decoded(user[1]))
         ? { kind: "allow" }
         : refuse(`API token ${decoded(user[1])}`);
-  const account = /^\/accounts\/[^/]+(\/.*)?$/u.exec(api);
+  const account = /^\/accounts\/([^/]+)(\/.*)?$/u.exec(api);
   if (!account) return refuse(`path ${api}`, "path");
-  const rest = account[1] ?? "";
+  const rest = account[2] ?? "";
   if (rest === "/mtls_certificates" && method === "POST")
     return isSharedTrustRootUpload(body) ? { kind: "allow" } : refuse("mTLS certificate", "body");
   // Attaching a hostname: it must be named for the stage, and the Worker must be the stage's.
@@ -190,6 +208,19 @@ export function stageWriteVerdict(
       isOwned(body.service)
       ? { kind: "allow", creates: true }
       : refuse(`Worker domain ${hostOf(record(body) ? body.hostname : "")}`, "hostname");
+  // Detaching a hostname by an id the stage's State never recorded: only Cloudflare can place it.
+  // The guard's fresh read must show both that the hostname is named for this stage and that it
+  // serves a Worker the stage's State owns; one without the other is refused (wire-guard.ts).
+  const domain = /^\/workers\/domains\/([^/]+)$/u.exec(rest)?.[1];
+  if (domain !== undefined && method === "DELETE" && !isOwned(decoded(domain))) {
+    // That read goes to the request's own origin and account, so both must be the deployment's
+    // before it vouches for anything.
+    if (url.hostname.toLowerCase() !== CLOUDFLARE_API_HOST)
+      return refuse(`Worker domain ${decoded(domain)}`, "host");
+    if (!scope.accountId || decoded(account[1]!) !== scope.accountId)
+      return refuse(`Worker domain ${decoded(domain)}`, "account");
+    return { kind: "prove", family: "Worker domain", name: decoded(domain) };
+  }
   for (const [pattern, family, mode] of ACCOUNT) {
     const match = pattern.exec(rest);
     if (!match) continue;
@@ -212,6 +243,20 @@ const SHARED_KEYS = new Set(["accountId", "zoneId", "zoneName", "storeId", "orga
 const SHARED_TYPES = /^Cloudflare\.(?:SecretsStore|MtlsCertificate)/u;
 
 /** The own names and ids from a stage's State rows, both generations of an interrupted update. */
+/** The names of the Workers a stage's State rows record, both generations of an interrupted update. */
+export const ownWorkers = (rows: ReadonlyArray<unknown>) => {
+  const names = new Set<string>();
+  for (const row of rows) {
+    if (!record(row) || !/^Cloudflare\.Worker$/u.test(String(row.resourceType ?? ""))) continue;
+    for (const generation of [row, row.old])
+      if (record(generation) && record(generation.attr)) {
+        const name = generation.attr.workerName;
+        if (typeof name === "string" && name.length > 0) names.add(name);
+      }
+  }
+  return [...names];
+};
+
 export const ownIdentities = (rows: ReadonlyArray<unknown>) => {
   const owned = new Set<string>();
   for (const row of rows) {
