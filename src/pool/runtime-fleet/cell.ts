@@ -159,14 +159,26 @@ export class FleetHandoffCell implements FleetCell {
     );
     await begin();
     const signal = AbortSignal.timeout(2_000);
-    await trace.run(
-      "driver_retire",
-      () => this.deps.driver.retire(identity, identity, signal),
-      undefined,
-      signal,
-    );
+    try {
+      await trace.run(
+        "driver_retire",
+        () => this.deps.driver.retire(identity, identity, signal),
+        undefined,
+        signal,
+      );
+    } catch (error) {
+      // The stop may outlast this call's budget; one the endpoint reports under way is no failure.
+      if (!(await this.stopping(identity))) throw error;
+      return false;
+    }
     // A stop still under way is picked up by a later pass's retirement read.
     return this.retired(identity);
+  }
+  private async stopping(identity: SlotIdentity) {
+    const actual = await this.deps.driver
+      .retirement(identity, AbortSignal.timeout(2_000))
+      .catch(() => undefined);
+    return actual?.stopping === true && sameIdentity(actual.identity, identity);
   }
   async retired(identity: SlotIdentity, resumeBeforeDispatch = false) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);

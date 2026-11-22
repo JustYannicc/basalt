@@ -606,6 +606,7 @@ export class RuntimeEndpoint {
       // refuses every later drain and retire, and Home's drain of claimed refreshes may take the
       // whole grace. The retirement read sees the stop end.
       await trace.run("monitor_attach", async () => this.retirementMonitor.start(identity));
+      await this.store.stopSent(target, Date.now());
       await trace.run(
         "stop",
         () => stopGracefully(this.ctx.container!, () => (began = true)),

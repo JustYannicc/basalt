@@ -107,11 +107,15 @@ export class SlotRetirement {
     if (!started.slot) return this.recover(role, started.receipt);
     this.streams.abortSlot(executionKey(started.slot.identity!));
     if (!observation.retired)
-      await this.driver.retire(
-        started.slot.target,
-        started.slot.identity!,
-        AbortSignal.timeout(2_000),
-      );
+      await this.driver
+        .retire(started.slot.target, started.slot.identity!, AbortSignal.timeout(2_000))
+        .catch(async (error: unknown) => {
+          // A stop that outlasts this call's budget is read again below and on later passes.
+          const observed = await this.driver
+            .retirement(started.slot!.identity!, AbortSignal.timeout(2_000))
+            .catch(() => undefined);
+          if (!observed?.stopping) throw error;
+        });
     return this.recover(role, started.receipt);
   }
   private async recover(role: "candidate" | "draining", receipt: RetirementReceipt) {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
+import { fleetCellFixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
 import { runtimeGrant } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
 import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
@@ -130,6 +131,53 @@ test("a monitor() rejection that is no exit keeps the stop to the grace", async 
   graceOver();
   await f.settle();
   assert.equal(f.calls.destroy, 1);
+});
+
+test("a latched cell whose SIGTERM was never sent is reported stuck, not stopping", async (context) => {
+  const { f, identity, provider } = await startedCell(context);
+  await new RuntimeActivity(f.storage).retire(identity);
+  assert.deepEqual(await f.endpoint.retirement(identity), {
+    identity,
+    retired: false,
+    running: true,
+    provider,
+  });
+});
+
+test("a stop still running past its grace is reported stuck, not stopping", async (context) => {
+  const { f, target, identity } = await startedCell(context);
+  drainingHome(f);
+  const graceOver = heldGrace(context);
+  await f.endpoint.retire(target, identity, AbortSignal.timeout(200));
+  assert.equal((await f.endpoint.retirement(identity)).stopping, true);
+  const now = Date.now();
+  context.mock.method(Date, "now", () => now + forcedStopGraceMs + 31_000);
+  assert.equal((await f.endpoint.retirement(identity)).stopping, undefined);
+  context.mock.restoreAll();
+  graceOver();
+  await f.settle();
+});
+
+test("a fleet cell's retire call that times out while its stop runs is pending, not failed", async (context) => {
+  const f = await fleetCellFixture();
+  context.after(f.cleanup);
+  const selected = await f.cell.start(f.target);
+  assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
+  const sigterm = drainingHome(f);
+  const graceOver = heldGrace(context);
+  const fetch = f.stub.fetch.bind(f.stub);
+  // As in production, the call's own budget runs out after SIGTERM while the endpoint keeps stopping.
+  f.stub.fetch = async (request: Request) => {
+    if (new URL(request.url).pathname !== "/retire") return fetch(request);
+    void fetch(request).catch(() => {});
+    await sigterm;
+    throw new Error("caller budget ran out");
+  };
+  assert.equal(await f.cell.retire(selected, async () => {}), false);
+  assert.equal(f.calls.destroy, 0);
+  graceOver();
+  await f.settle();
+  assert.equal(await f.cell.retired(selected), true);
 });
 
 test("a caller that gives up right after the retiring latch still gets its cell stopped", async (context) => {
