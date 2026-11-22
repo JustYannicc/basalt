@@ -4,7 +4,7 @@ import { Effect, Result } from "effect";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
 import { crashTrafficAccepted, rootServes, runFleetAcceptance } from "./accept.ts";
-import { OwnTraffic } from "./own-traffic.ts";
+import { capReached, isCapReached, OwnTraffic, turnBudgets } from "./own-traffic.ts";
 import { poolWorkerName, type CloudflareAccess } from "./cloudflare.ts";
 import {
   inspectController,
@@ -158,7 +158,11 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       );
     if (mode === "accept") return { ...evidence, acceptance: yield* accept() };
     if (mode === "crash-cell") {
-      const traffic = new OwnTraffic(acceptance.client, acceptance.credential);
+      const traffic = new OwnTraffic(
+        acceptance.client,
+        acceptance.credential,
+        turnBudgets.crashCell,
+      );
       const catalog = yield* call(() => traffic.catalog());
       const model = acceptance.model ?? (catalog.ids.length === 1 ? catalog.ids[0]! : undefined);
       if (!model)
@@ -169,6 +173,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
             "Set the acceptance model variable.",
           ),
         );
+      // One served turn before anything else: a user at its cap stops the run here, before a kill.
+      yield* call(() => traffic.turn(model));
       // The killed cell is gone after the crash, so its boot is known only from this read.
       const before = yield* call(() => inspectFleet(access));
       const crash = yield* crashReadyCell({
@@ -176,10 +182,20 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         go: input.go,
         operator: "pool-fleet",
         // Every fifth request is a streamed turn, so inference is proven, not only routing.
-        request: (index) => (index % 5 === 0 ? traffic.turn(model) : traffic.catalog()),
+        // Past the turn budget, or once the user's cap answers, it reads the catalog instead:
+        // the cap is the user's, so its turn is no failed request.
+        request: (index) =>
+          index % 5 === 0 && traffic.turnsLeft > 0
+            ? traffic.turn(model).catch((error: unknown) => {
+                if (isCapReached(error)) return traffic.catalog();
+                throw error;
+              })
+            : traffic.catalog(),
+        halted: () => (traffic.capped ? capReached() : undefined),
         sleep: deps.sleep,
         now: deps.now,
       });
+      if (traffic.capped) return yield* Effect.fail(capReached());
       if (crash.status !== "proven") return { ...evidence, crash };
       const ownTraffic = yield* call(() =>
         crashTrafficAccepted({
@@ -214,6 +230,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     );
     if (Result.isSuccess(attempt)) return { ...evidence, ...(yield* read()) };
     const cause = describeError(attempt.failure);
+    const couldNotTest = isCapReached(attempt.failure);
     deps.log(`configure_and_accept status=failed; disabling the fleet`);
     const rollback = yield* Effect.result(
       Effect.gen(function* () {
@@ -224,6 +241,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               : Effect.fail(error),
           ),
         );
+        // At the user's cap the root's turn would be refused too, and no turn follows the cap.
+        if (couldNotTest) return { disabled, root: { status: "not-tested" as const } };
         const root = yield* call(() =>
           rootServes({ ...acceptance, controller: () => inspectController(access), log: deps.log }),
         );
@@ -232,6 +251,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     );
     return yield* Effect.fail({
       cause,
+      couldNotTest,
       rollback: Result.isSuccess(rollback)
         ? rollback.success
         : { failed: describeError(rollback.failure) },
@@ -252,16 +272,23 @@ export async function runPoolFleet(input: DispatchInput, deps: DispatchDependenc
   const detail =
     failure !== null && typeof failure === "object" && "cause" in failure && "rollback" in failure
       ? failure
-      : { cause: describeError(failure) };
+      : { cause: describeError(failure), couldNotTest: isCapReached(failure) };
   return redact({ mode: input.mode, go: input.go, startedAt, ok: false, ...detail }, secrets);
 }
+
+const couldNotTest = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
+  !result.ok && "couldNotTest" in result && result.couldNotTest === true;
+
+/** Exit 4 matches the release's "could not test": not green, and nothing failed. */
+export const fleetExit = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
+  result.ok ? 0 : couldNotTest(result) ? 4 : 1;
 
 export function stepSummary(result: Awaited<ReturnType<typeof runPoolFleet>>) {
   const lines = [
     `## Pool fleet: ${modes.includes(result.mode as Mode) ? result.mode : "invalid mode"}`,
     "",
     `- GO: \`${goPattern.test(result.go) ? result.go : "none"}\``,
-    `- Outcome: ${result.ok ? "passed" : "**failed**"}`,
+    `- Outcome: ${result.ok ? "passed" : couldNotTest(result) ? "**could not test**: the acceptance device's user is at its cap" : "**failed**"}`,
   ];
   const bookmark =
     "result" in result
@@ -276,7 +303,7 @@ export function stepSummary(result: Awaited<ReturnType<typeof runPoolFleet>>) {
 
 if (import.meta.main) {
   const env = process.env;
-  let ok = false;
+  let exit = 1;
   try {
     const result = await runPoolFleet(dispatchInput(env), await dependenciesFromEnvironment(env));
     const output = env.POOL_FLEET_OUTPUT_DIRECTORY ?? "";
@@ -284,9 +311,9 @@ if (import.meta.main) {
     await writeFile(join(output, "result.json"), JSON.stringify(result, null, 2), { mode: 0o600 });
     if (env.GITHUB_STEP_SUMMARY) await appendFile(env.GITHUB_STEP_SUMMARY, stepSummary(result));
     process.stdout.write(`ok=${result.ok}\n`);
-    ok = result.ok;
+    exit = fleetExit(result);
   } catch {
     process.stderr.write("Pool fleet result unavailable.\n");
   }
-  if (!ok) process.exitCode = 1;
+  if (exit) process.exitCode = exit;
 }

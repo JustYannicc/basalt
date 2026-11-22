@@ -2,7 +2,7 @@ import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.
 import { AcceptanceFailure } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
-import { OwnTraffic } from "./own-traffic.ts";
+import { OwnTraffic, turnBudgets } from "./own-traffic.ts";
 
 /*
  * scripts/pool-acceptance.ts asserts one boot for the whole pool ("Pool boot changed during
@@ -66,7 +66,7 @@ export async function servingBoots(input: Pick<AcceptanceInput, "controller" | "
  */
 export async function runFleetAcceptance(input: AcceptanceInput) {
   const { client, credential, log } = input;
-  const traffic = new OwnTraffic(client, credential);
+  const traffic = new OwnTraffic(client, credential, turnBudgets.accept);
   const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);
   log(`models status=200 count=${catalog.ids.length}`);
@@ -129,7 +129,7 @@ export async function crashTrafficAccepted(
 
 /** After a disable: one plain streamed turn must come back from the selected primary. */
 export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "sleep">) {
-  const traffic = new OwnTraffic(input.client, input.credential);
+  const traffic = new OwnTraffic(input.client, input.credential, turnBudgets.rootServes);
   const catalog = await traffic.catalog();
   const model = selectModel(catalog.ids, input.model);
   const result = await traffic.turn(model);

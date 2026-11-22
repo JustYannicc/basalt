@@ -83,6 +83,8 @@ export interface HarnessOptions {
   usage?: (index: number) => NativeUsageRecord[];
   /** A status the device usage read answers instead of rows, as the route does failing closed. */
   usageStatus?: number;
+  /** Turns, by call index, the pool refuses with its user-cap 429. */
+  capped?: (index: number) => boolean;
 }
 
 /** The acceptance device's own Home key, as the device usage read reports it. */
@@ -361,6 +363,13 @@ export async function harness(options: HarnessOptions = {}) {
     }
     if (path === "/v1/chat/completions") {
       const index = turns++;
+      if (options.capped?.(index))
+        return Response.json(
+          {
+            error: { message: "cap", type: "rate_limit_error", code: "user_period_limit_exceeded" },
+          },
+          { status: 429 },
+        );
       if (options.turnStatus && isEnabled)
         return new Response(null, { status: options.turnStatus });
       return new Response(
@@ -393,6 +402,7 @@ export async function harness(options: HarnessOptions = {}) {
   return {
     deps,
     modelCalls,
+    turns: () => turns,
     usageReads,
     ownerReads,
     actions,

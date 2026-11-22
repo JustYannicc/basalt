@@ -344,3 +344,39 @@ test("crash-cell holds its own traffic to the same isolation rule", async () => 
     await lane.close();
   }
 });
+
+test("a cap-coded 429 ends configure-and-accept as could not test, and the rollback sends no turn", async () => {
+  const lane = await harness({ capped: (index) => index >= 2 });
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), lane.deps());
+    assert.equal(result.ok, false);
+    assert.equal("couldNotTest" in result && result.couldNotTest, true);
+    assert.match(String("cause" in result && result.cause), /could-not-test-cap/u);
+    // One burst was in flight when the cap answered; neither a second burst nor the root check
+    // after the disable sent another turn.
+    assert.equal(lane.turns(), 6);
+    assert.match(stepSummary(result), /could not test/u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a cap-coded 429 before crash-cell's crash sends no crash and ends could not test", async () => {
+  let capped = false;
+  const lane = await harness({ capped: () => capped });
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const before = lane.turns();
+    capped = true;
+    const result = await runPoolFleet(
+      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
+      lane.deps(),
+    );
+    assert.equal(result.ok, false);
+    assert.equal("couldNotTest" in result && result.couldNotTest, true);
+    assert.equal(lane.crashes.length, 0, "no cell is killed for a run that cannot test");
+    assert.equal(lane.turns() - before, 1, "nothing is sent after the cap");
+  } finally {
+    await lane.close();
+  }
+});

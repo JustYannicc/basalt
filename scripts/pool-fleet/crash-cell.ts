@@ -7,8 +7,43 @@ import {
   shortHash,
   type ControllerAccess,
 } from "./controller.ts";
-import { refuse } from "./errors.ts";
+import { refuse, type FleetLaneRefused } from "./errors.ts";
 import { selectedPrimary } from "./operations.ts";
+
+/**
+ * About one request a second through the public pool, stopped by the proof or at `boundMs`,
+ * whichever comes first, so a proof that waits longer never keeps spending real accounts.
+ */
+export function requestLoop(input: {
+  request: (index: number) => Promise<unknown>;
+  sleep: (ms: number) => Promise<void>;
+  now: () => number;
+  boundMs: number;
+}) {
+  const outcomes: { startedAt: number; ok: boolean }[] = [];
+  let running = true;
+  const started = input.now();
+  const loop = (async () => {
+    for (let index = 0; running && input.now() - started < input.boundMs; index++) {
+      const startedAt = input.now();
+      const ok = await input.request(index).then(
+        () => true,
+        () => false,
+      );
+      outcomes.push({ startedAt, ok });
+      await input.sleep(1_000);
+    }
+  })();
+  return {
+    outcomes,
+    // Settles when the loop ends, by stop() or at its bound.
+    done: loop,
+    stop: async () => {
+      running = false;
+      await loop;
+    },
+  };
+}
 
 const call = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
@@ -28,6 +63,10 @@ export interface CrashInput {
   now: () => number;
   detectBoundMs?: number;
   restartBoundMs?: number;
+  /** When the request loop stops even if the proof still waits. */
+  trafficBoundMs?: number;
+  /** Checked just before the kill: a run that can no longer test anything kills no cell. */
+  halted?: () => FleetLaneRefused | undefined;
 }
 
 /**
@@ -64,25 +103,13 @@ export const crashReadyCell = (input: CrashInput) =>
       );
     const target = ready[0]!.identity!;
     const before = cells(fleet.resources).length;
-    const outcomes: { startedAt: number; ok: boolean }[] = [];
-    let running = true;
-    const loop = (async () => {
-      for (let index = 0; running; index++) {
-        const startedAt = now();
-        const ok = await input.request(index).then(
-          () => true,
-          () => false,
-        );
-        outcomes.push({ startedAt, ok });
-        await input.sleep(1_000);
-      }
-    })();
-    const stop = Effect.promise(async () => {
-      running = false;
-      await loop;
-    });
+    const loop = requestLoop({ ...input, boundMs: input.trafficBoundMs ?? 330_000 });
+    const { outcomes } = loop;
+    const stop = Effect.promise(loop.stop);
     const proof = Effect.gen(function* () {
       yield* call(() => input.sleep(3_000));
+      const halt = input.halted?.();
+      if (halt) return yield* Effect.fail(halt);
       yield* call(() => crashCell(access, target, nonce, input.operator));
       const killedAt = now();
       let detectedMs: number | undefined;

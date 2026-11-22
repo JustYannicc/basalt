@@ -1,10 +1,30 @@
 import { nativeUsageMaxSessions, type NativeUsage } from "../../src/pool/native-usage-contract.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { HttpStatusFailure } from "../pool-acceptance/types.ts";
-import { refuse } from "./errors.ts";
+import { HttpStatusFailure, UserCapReached } from "../pool-acceptance/types.ts";
+import { FleetLaneRefused, refuse } from "./errors.ts";
 
 /** About the 45 s the owner-token read waited for a turn's rows to land. */
 const usageReads = 45;
+
+/**
+ * The most streamed turns one run may send. They spend real accounts on production's pool, so each
+ * mode's budget is fixed here rather than left to its loop's defaults.
+ */
+export const turnBudgets = { accept: 19, crashCell: 60, rootServes: 1 } as const;
+
+/** The pool calls the lane makes; narrower than the client so a run's traffic is all here. */
+type TrafficClient = Pick<PoolAcceptanceClient, "modelCatalog" | "sendTurn" | "nativeUsage">;
+
+/** The device's user is at its cap: nothing more can be tested, and no further turn is sent. */
+export const capReached = () =>
+  refuse(
+    "could-not-test-cap",
+    "The pool refused a turn with its user-cap 429: the acceptance device's user is at its cap, so the lane sent no further turn and tested nothing more.",
+    "Wait for the cap to reset or raise it for the acceptance device's user, then rerun.",
+  );
+
+export const isCapReached = (error: unknown) =>
+  error instanceof FleetLaneRefused && error.reason === "could-not-test-cap";
 
 /** One of the lane's own turns; `served` means it streamed to its end. */
 interface OwnSession {
@@ -75,11 +95,18 @@ function checkUsage(sessions: readonly OwnSession[], answers: readonly NativeUsa
 export class OwnTraffic {
   readonly boots: string[] = [];
   private readonly sessions: OwnSession[] = [];
-  private readonly client: PoolAcceptanceClient;
+  private readonly client: TrafficClient;
   private readonly credential: ModelAuth;
-  constructor(client: PoolAcceptanceClient, credential: ModelAuth) {
+  private readonly turns: number;
+  /** Set by the first cap-coded 429; from then on this run sends no turn. */
+  capped = false;
+  constructor(client: TrafficClient, credential: ModelAuth, turns: number) {
     this.client = client;
     this.credential = credential;
+    this.turns = turns;
+  }
+  get turnsLeft() {
+    return this.capped ? 0 : Math.max(0, this.turns - this.sessions.length);
   }
   async catalog() {
     const catalog = await this.client.modelCatalog(this.credential);
@@ -87,6 +114,13 @@ export class OwnTraffic {
     return catalog;
   }
   async turn(model: string) {
+    if (this.capped) throw capReached();
+    if (this.sessions.length >= this.turns)
+      throw refuse(
+        "turn-budget",
+        `This run already sent its ${this.turns} turns, the most its mode may send.`,
+        "Each turn spends a real account; change the mode's budget in turnBudgets only on purpose.",
+      );
     const id = crypto.randomUUID().toLowerCase();
     try {
       const result = await this.client.sendTurn(this.credential, model, { id, expectedRecords: 1 });
@@ -96,6 +130,10 @@ export class OwnTraffic {
     } catch (error) {
       // A cut turn can still leave rows, and those must stay in the pool too.
       this.sessions.push({ id, served: false });
+      if (error instanceof UserCapReached) {
+        this.capped = true;
+        throw capReached();
+      }
       throw error;
     }
   }
