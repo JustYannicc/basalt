@@ -35,9 +35,9 @@ new file mode 100644
 +-  } else {
 +-    return normalizedFilename;
 +   }
-++  // A dependency is named from its last `node_modules`, so its scoped style ids do not depend on
-++  // where the package store sits.
-++  const dependency = normalizedFilename.lastIndexOf("/node_modules/");
+++  // A dependency is named from its first `node_modules` on, so its scoped style ids do not depend on
+++  // where the package store sits, and two versions of one package keep their own.
+++  const dependency = normalizedFilename.indexOf("/node_modules/");
 ++  return dependency === -1 ? normalizedFilename : normalizedFilename.slice(dependency);
 + }
 + export {

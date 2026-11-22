@@ -6,13 +6,13 @@ diff --git a/packages/apps/scripts/reference.mjs b/packages/apps/scripts/referen
    ts.NodeBuilderFlags.IgnoreErrors;
  
 +/**
-+ * A declaration's file, from the workspace's parent. A dependency is named from its last
-+ * `node_modules`, so the reference and its digest do not depend on where the package store sits:
-+ * that directory is new on every install.
++ * A declaration's file, from the workspace's parent. A dependency is named from its first
++ * `node_modules` on, so the reference and its digest do not depend on where the package store sits
++ * (that directory is new on every install), and two versions of one package keep their own names.
 + */
 +const referenceSource = (root, fileName) => {
 +  const path = fileName.split("\\").join("/");
-+  const dependency = path.lastIndexOf("/node_modules/");
++  const dependency = path.indexOf("/node_modules/");
 +  return dependency === -1
 +    ? relative(resolve(root, ".."), fileName).split("\\").join("/")
 +    : path.slice(dependency + 1);

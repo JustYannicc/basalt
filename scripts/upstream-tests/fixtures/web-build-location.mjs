@@ -18,8 +18,17 @@ import { pathToFileURL } from "node:url";
 // The installed Vite+ and the dashboard's own build options, as the web app builds with them.
 const web = new URL("../../../.upstream/apps/hosted/cloud/web/", import.meta.url);
 const require = createRequire(new URL("package.json", web));
-const { build } = await import(pathToFileURL(require.resolve("vite-plus")).href);
+const { build, loadConfigFromFile } = await import(
+  pathToFileURL(require.resolve("vite-plus")).href
+);
 const { reproducibleBuild } = await import(new URL("reproducible-build.ts", web).href);
+
+// The dashboard's own config carries the options: removing them from it fails here.
+const dashboard = await loadConfigFromFile(
+  { command: "build", mode: "production" },
+  new URL("vite.config.ts", web).pathname,
+);
+assert.equal(dashboard?.config.build?.rolldownOptions?.experimental?.attachDebugInfo, "none");
 
 // Real path: the bundler resolves through symlinks, and the temporary directory may be one.
 const root = await realpath(await mkdtemp(join(tmpdir(), "web-build-location-")));
@@ -77,11 +86,18 @@ const twice = async (options) => {
   return outputs;
 };
 
-// Today's default names each module's location in the server build's code.
-const [plainFirst, plainSecond] = await twice({});
-assert.notDeepEqual(plainSecond, plainFirst, "the default build differs between stores");
-// The dashboard's options leave the code the same bytes, whatever the store.
-const [first, second] = await twice(reproducibleBuild);
-await rm(root, { recursive: true, force: true });
-assert.ok(Object.keys(first).length > 0, "the build wrote its output");
-assert.deepEqual(second, first, "a dependency's store location leaves the server build unchanged");
+try {
+  // Today's default names each module's location in the server build's code.
+  const [plainFirst, plainSecond] = await twice({});
+  assert.notDeepEqual(plainSecond, plainFirst, "the default build differs between stores");
+  // The dashboard's options leave the code the same bytes, whatever the store.
+  const [first, second] = await twice(reproducibleBuild);
+  assert.ok(Object.keys(first).length > 0, "the build wrote its output");
+  assert.deepEqual(
+    second,
+    first,
+    "a dependency's store location leaves the server build unchanged",
+  );
+} finally {
+  await rm(root, { recursive: true, force: true });
+}

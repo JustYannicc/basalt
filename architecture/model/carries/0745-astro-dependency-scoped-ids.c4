@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "Astro names a component that sits outside the project root from its last `node_modules` segment, not by its absolute path. A dependency store's directory is new on every install, and Astro derives each component's scoped style id from that name, so the docs site's styles, their chunk names and every page that links them, and with them the site build's output hash and each Worker that serves it, changed on every fresh install. A component inside the root keeps its root-relative name."
+      constraint "Astro names a component that sits outside the project root from its first `node_modules` segment on, not by its absolute path, so two versions of one package keep their own ids. A dependency store's directory is new on every install, and Astro derives each component's scoped style id from that name, so the docs site's styles, their chunk names and every page that links them, and with them the site build's output hash and each Worker that serves it, changed on every fresh install. A component inside the root keeps its root-relative name."
     }
   }
 }

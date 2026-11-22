@@ -63,16 +63,19 @@ const files = async (directory) => {
 
 // The same project, built once with the package in each store.
 const outputs = [];
-for (const name of ["first-install", "second-install-in-a-longer-store-path"]) {
-  const link = join(project, "node_modules/fixture-card");
-  await rm(link, { force: true });
-  await symlink(await store(name), link);
-  await rm(join(project, "dist"), { recursive: true, force: true });
-  await rm(join(project, "node_modules/.astro"), { recursive: true, force: true });
-  await build({ root: project, logLevel: "silent" });
-  outputs.push(await files(join(project, "dist")));
+try {
+  for (const name of ["first-install", "second-install-in-a-longer-store-path"]) {
+    const link = join(project, "node_modules/fixture-card");
+    await rm(link, { force: true });
+    await symlink(await store(name), link);
+    await rm(join(project, "dist"), { recursive: true, force: true });
+    await rm(join(project, "node_modules/.astro"), { recursive: true, force: true });
+    await build({ root: project, logLevel: "silent" });
+    outputs.push(await files(join(project, "dist")));
+  }
+} finally {
+  await rm(root, { recursive: true, force: true });
 }
-await rm(root, { recursive: true, force: true });
 
 assert.ok(Object.keys(outputs[0]).length > 0, "the build wrote its pages");
 assert.deepEqual(
