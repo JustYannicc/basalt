@@ -21,6 +21,9 @@ let source: ReturnType<typeof sourceDependencies>;
 let imports: ReturnType<typeof sourceDependencies>;
 let pipeline: ReturnType<typeof pipelineDependencies>;
 let ownershipErrors: ReturnType<typeof moduleErrors>;
+// Loading the model and the stack inventory and reading every source file takes about five seconds
+// on an idle core and well past thirty beside a full gate; the bound stops only a hang.
+const setupMs = 5 * 60_000;
 beforeAll(async () => {
   workspace = await LikeC4.fromWorkspace(`${root}/architecture`, { logger: false });
   expect(workspace.getErrors()).toEqual([]);
@@ -31,7 +34,7 @@ beforeAll(async () => {
   imports = sourceDependencies(root, modules(), [], sources);
   pipeline = pipelineDependencies(root, modules(), services());
   ownershipErrors = moduleErrors(root, modules());
-}, 30_000);
+}, setupMs);
 afterAll(() => workspace?.dispose());
 
 const modules = () =>

@@ -47,6 +47,7 @@ export async function readRuntimeHealth(
       ? { policyLeaseUntil: requestedAt + milliseconds }
       : {}),
     ...(database ? { database } : {}),
+    ...("resume" in status && status.resume === "v1" ? { resume: "v1" as const } : {}),
   };
 }
 

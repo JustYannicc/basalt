@@ -164,7 +164,7 @@ test(
 );
 
 test(
-  "a later successful alarm clears an earlier failed primary recovery without reconstruction",
+  "a later successful alarm recovers the root after an earlier failed recovery, without reconstruction",
   { timeout: 15_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
@@ -186,6 +186,7 @@ test(
       });
     });
     f.secretAvailable(false);
+    const starts = f.old.calls.start;
     assert.equal(
       (await f.model(new Request("http://pool/v1/responses", { method: "POST", body: "{}" })))
         .status,
@@ -195,9 +196,13 @@ test(
     f.secretAvailable(true);
     await f.upkeep();
     await f.settle();
+    // The later alarm restarted the crashed root on the same object.
+    assert.ok(f.old.calls.start > starts);
+    assert.equal(f.old.ctx.container?.running, true);
+    // A ready cell takes the call, as production routes them, and the pool serves.
     const response = await f.model();
     assert.equal(response.status, 200);
-    assert.equal(response.headers.get("x-proof-runtime"), f.old.target.instanceId);
+    assert.notEqual(response.headers.get("x-proof-runtime"), f.old.target.instanceId);
     assert.equal(await response.text(), "healthy");
   },
 );

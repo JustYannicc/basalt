@@ -1,0 +1,44 @@
+diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -179,6 +179,7 @@
+     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
+     "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
+     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
++    "astro@7.3.3": "patches/astro@7.3.3.patch",
+     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
+     "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
+     "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
+diff --git a/bun.lock b/bun.lock
+--- a/bun.lock
++++ b/bun.lock
+@@ -868,6 +868,7 @@
+     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
+     "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
+     "esbuild-wasm@0.28.1": "patches/esbuild-wasm@0.28.1.patch",
++    "astro@7.3.3": "patches/astro@7.3.3.patch",
+     "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
+     "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
+     "effect@4.0.1": "patches/effect@4.0.1.patch",
+diff --git a/patches/astro@7.3.3.patch b/patches/astro@7.3.3.patch
+new file mode 100644
+--- /dev/null
++++ b/patches/astro@7.3.3.patch
+@@ -0,0 +1,17 @@
++diff --git a/dist/core/compile/compile.js b/dist/core/compile/compile.js
++--- a/dist/core/compile/compile.js
+++++ b/dist/core/compile/compile.js
++@@ -94,9 +94,11 @@
++   const normalizedRoot = normalizePath(fileURLToPath(root));
++   if (normalizedFilename.startsWith(normalizedRoot)) {
++     return normalizedFilename.slice(normalizedRoot.length - 1);
++-  } else {
++-    return normalizedFilename;
++   }
+++  // A dependency is named from its first `node_modules` on, so its scoped style ids do not depend on
+++  // where the package store sits, and two versions of one package keep their own.
+++  const dependency = normalizedFilename.indexOf("/node_modules/");
+++  return dependency === -1 ? normalizedFilename : normalizedFilename.slice(dependency);
++ }
++ export {
++   compile
