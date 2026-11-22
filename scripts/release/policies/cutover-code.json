@@ -43,6 +43,10 @@
   "wire": {
     "sqliteClasses": {}
   },
+  "rollback": {
+    "forceSecrets": ["EXECUTOR_TELEMETRY"],
+    "why": "EXECUTOR_TELEMETRY holds the telemetry settings and, beside them, the release's build version, its commit, so it differs between any two releases. Cloudflare refuses to roll a Worker back across it without force, and the earlier version comes back with the value it ran with."
+  },
   "env": {
     "POOL_FLEET_CLASSES": "absent"
   }
