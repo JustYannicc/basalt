@@ -4,7 +4,10 @@ import { Effect, Redacted } from "effect";
 import { roleHost } from "../../.upstream/e2e/support/role-hosts.ts";
 import { installClock } from "../../.upstream/e2e/support/browser-clock.ts";
 import { batchedReads, batchPath } from "../../.upstream/e2e/support/read-batches.ts";
-import { appSignInCallbackPath } from "../../.upstream/packages/apps/src/contracts/ui-auth.ts";
+
+// The app frame's sign-in callback (`appSignInCallbackPath` in the apps package); a changed path
+// fails this proof at its wait instead of passing it.
+const appSignInCallbackPath = "/_executor/auth/callback";
 
 /** Real hosted counter writes and authorized browser reads, including the former idle timers. */
 export const accountTrafficProof = ({
