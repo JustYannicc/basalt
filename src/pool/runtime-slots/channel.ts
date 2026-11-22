@@ -126,8 +126,12 @@ export class RuntimeChannel {
         target === 8318 || target === 8327 || target === 8329 ? target : undefined,
       );
     } catch (error) {
-      if (port === 8317 && this.ctx.container?.running === false)
-        refuseRuntime(step, new SlotRefused("unhealthy"));
+      // A stopped container is the runtime's failure on either port, never the front layer's.
+      if ((port === 8317 || port === resumeLayerPort) && this.ctx.container?.running === false)
+        refuseRuntime(
+          step === "resume_layer" ? "port_dispatch" : step,
+          new SlotRefused("unhealthy"),
+        );
       refuseRuntime(step, error);
     }
   }

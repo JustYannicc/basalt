@@ -122,11 +122,20 @@ export function resumeRoute<Port extends number>(
   return { request: new Request(request, { headers }), port: marked ? resumeLayerPort : port };
 }
 
-/** The platform refused the connection, so the layer accepted nothing of the call. */
+/**
+ * The platform refused the connection, so the layer accepted nothing of the call. A container
+ * port with nothing listening fails with this message and no code (the platform's containers
+ * library matches the same text); a plain socket refusal carries ECONNREFUSED.
+ */
 export function layerConnectRefused(error: unknown) {
   let current = error;
   for (let depth = 0; depth < 3 && typeof current === "object" && current !== null; depth++) {
     if ("code" in current && current.code === "ECONNREFUSED") return true;
+    if (
+      current instanceof Error &&
+      current.message.toLowerCase().includes("the container is not listening")
+    )
+      return true;
     current = "cause" in current ? current.cause : undefined;
   }
   return false;

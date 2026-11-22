@@ -3,6 +3,8 @@ import { test, type TestContext } from "node:test";
 import { fetchController, type ControllerHop } from "./controller-reset.ts";
 import { nativeRuntimeStream } from "./runtime-unavailable.ts";
 import { runtimeFailureDiagnostic } from "./runtime-route-diagnostic.ts";
+import { RuntimeChannel } from "./runtime-slots/channel.ts";
+import { SlotRefused } from "./runtime-slots/contract.ts";
 import {
   layerConnectRefused,
   resumeLayerPort,
@@ -310,6 +312,10 @@ test("a layer that died since the readiness read costs resumability only", async
   assert.equal(layerConnectRefused(refused), true);
   assert.equal(layerConnectRefused(new Error("wrapped", { cause: refused })), true);
   assert.equal(layerConnectRefused(new Error("Network connection lost.")), false);
+  // The platform's own shape for a container port with nothing listening: a message, no code.
+  const notListening = new Error("The container is not listening in the TCP address 10.0.0.1:8316");
+  assert.equal(layerConnectRefused(notListening), true);
+  assert.equal(layerConnectRefused(new Error("wrapped", { cause: notListening })), true);
 
   // Refused: nothing was accepted, so the call goes on to the node unmarked, with its body.
   const sends: { port: number; marked: string | null; body: string }[] = [];
@@ -327,6 +333,15 @@ test("a layer that died since the readiness read costs resumability only", async
     { port: resumeLayerPort, marked: "1", body: '{"model":"m"}' },
     { port: 8317, marked: null, body: '{"model":"m"}' },
   ]);
+  const ports: number[] = [];
+  const unlistened = await toLayer(marked(), async (request, port) => {
+    ports.push(port);
+    if (port === resumeLayerPort) throw notListening;
+    assert.equal(await request.text(), '{"model":"m"}');
+    return new Response("node after a layer with nothing listening");
+  });
+  assert.equal(await unlistened.text(), "node after a layer with nothing listening");
+  assert.deepEqual(ports, [resumeLayerPort, 8317]);
 
   // Any other failure is the layer's: never sent again, and never read as the runtime failing.
   const lost = new Error("Network connection lost.");
@@ -364,4 +379,59 @@ test("a layer that died since the readiness read costs resumability only", async
     },
   );
   assert.equal(gone.status, 410);
+});
+
+test("on a runtime's endpoint, a stopped container is the runtime's failure and a silent layer port is not", async () => {
+  const configuration = {
+    databaseUrl: "postgresql://fixture@database.invalid/pool",
+    signingKey: "ab".repeat(32),
+    managementKey: "fixture-management-key",
+    imageInput: "2".repeat(16),
+    databaseOwner: "basalt_pool_owner" as const,
+  };
+  const notListening = new Error("The container is not listening in the TCP address 10.0.0.1:8316");
+  const channel = (running: boolean, ports: number[]) =>
+    new RuntimeChannel(
+      {
+        container: {
+          running,
+          getTcpPort: (port: number) => ({
+            fetch: async () => {
+              ports.push(port);
+              if (port === resumeLayerPort)
+                throw running ? notListening : new Error("Network connection lost.");
+              return new Response("node answer");
+            },
+          }),
+        },
+      } as unknown as ConstructorParameters<typeof RuntimeChannel>[0],
+      { POOL_APP_SIGNING_KEY: "cd".repeat(32) } as ConstructorParameters<typeof RuntimeChannel>[1],
+    );
+  const marked = () =>
+    new Request("http://runtime/v1/messages", {
+      method: "POST",
+      headers: { "X-Basalt-Resumable": "1" },
+      body: '{"model":"m"}',
+    });
+
+  // Nothing listens on the layer's port of a running container: the node answers, unmarked.
+  const served: number[] = [];
+  const running = channel(true, served);
+  const answer = await toLayer(marked(), (request, port) =>
+    running.fetch(configuration, request, port),
+  );
+  assert.equal(await answer.text(), "node answer");
+  assert.deepEqual(served, [resumeLayerPort, 8317]);
+
+  // A stopped container refuses as unhealthy at the node's step, so the fleet acts as today.
+  const stopped = channel(false, []);
+  const failure = await toLayer(marked(), (request, port) =>
+    stopped.fetch(configuration, request, port),
+  ).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  assert.ok(failure instanceof SlotRefused);
+  assert.equal(failure.reason, "unhealthy");
+  assert.equal(runtimeFailureDiagnostic(failure, "fleet_forward").runtimeStep, "port_dispatch");
 });
