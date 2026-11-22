@@ -140,3 +140,25 @@ test("native model discovery does not offer an OAuth sign-in for Jev keys", asyn
   assert.equal(f.calls.length, 0);
   assert.equal(f.markers.size, 0);
 });
+
+test("a sign-in its owner's rules route is refused with route_unavailable before Home sees it", async () => {
+  const f = fixture();
+  for (const routing of [
+    { hasRules: true, route: { routeId: "rt_" + "a".repeat(26), owner } },
+    { hasRules: true },
+  ]) {
+    const refused = await f.send("start", routing);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(await refused.json(), { error: "route_unavailable" });
+  }
+  assert.equal(f.calls.length, 0);
+});
+
+test("a sign-in without route rules, or one the host decided is direct, starts exactly as on main", async () => {
+  for (const routing of [{}, { hasRules: false }, { hasRules: true, route: null }]) {
+    const f = fixture();
+    const started = await body(await f.send("start", routing));
+    assert.equal(typeof started.session, "string");
+    assert.equal(f.calls.filter((call) => call.path.includes("/oauth/auth-url")).length, 1);
+  }
+});

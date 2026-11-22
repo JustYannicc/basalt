@@ -8,6 +8,11 @@ function anthropic(request: Request) {
   return /\/(?:v1\/)?messages$/.test(new URL(request.url).pathname);
 }
 
+/** Home's status text for a credential whose route refused it names the proxy; show the code. */
+export function routeSafeMessage(message: string | null) {
+  return message?.includes(routePeerAddress) ? "route_down" : message;
+}
+
 /** The model error a caller sees in place of the node's raw refusal. */
 export function routeDownRefusal(request: Request) {
   return Response.json(

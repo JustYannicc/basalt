@@ -477,7 +477,7 @@ test(
       await noRoutedLookups("beside the direct control");
       await membership([routed, unrouted, refusedRef, downRef, oauthRouted, oauthDirect]);
 
-      // Everything through one route: drop the others, and the global follows.
+      // Everything through one route: the pool still never writes the node's global proxy.
       const configRemoval = { type: "config", family: "openai-compatibility" };
       for (const item of [unrouted, refusedRef, downRef])
         await mirror(item, "remove", configRemoval);
@@ -489,61 +489,54 @@ test(
         const requests = (await home.data("/config")).requests as
           | Record<string, unknown>
           | undefined;
-        return requests?.["proxy-url"];
+        return requests?.["proxy-url"] ?? "";
       };
-      assert.equal(await globalProxy(), routeProxyUrl(route));
-      // Home reloads on the global change; the routed credential keeps its route through it.
-      await reset();
-      await new Promise((resolve) => setTimeout(resolve, 20_000));
-      await noRoutedLookups("after the global was set");
-      // The node picks the Home-set global up across a restart; its own calls are then routed.
+      assert.equal(await globalProxy(), "");
+      // Across a restart the routed credential still never leaves directly; the node's own
+      // calls go direct, the named gap.
       await reset();
       docker(["restart", "--time", "20", pool], 120_000);
       await ready();
       await new Promise((resolve) => setTimeout(resolve, 20_000));
-      const afterGlobal = await records();
-      const routedBackground = [
-        ...new Set(
-          afterGlobal.connects
-            .filter((item) => item.host !== "models.example.test")
-            .map((item) => item.host),
-        ),
-      ].sort();
-      const stillDirect = [...new Set(afterGlobal.dns)].sort();
+      const afterRestart = await records();
+      const backgroundDirect = [...new Set(afterRestart.dns)].sort();
       assert.deepEqual(
-        afterGlobal.dns.filter((name) => routedHosts.has(name)),
+        afterRestart.dns.filter((name) => routedHosts.has(name)),
         [],
         "the routed credential leaked after the restart",
       );
-      assert.equal(await globalProxy(), routeProxyUrl(route));
 
-      // A teammate's credential while the global names someone else's route: explicitly direct.
-      await mirror(teammate, "upsert", apiKey("teammate-model", "teammate-model-key"), {
+      // A teammate in a Home where every credential is routed. Home creates an acquired
+      // credential itself, without the mirror: it inherits no one's route. Its refresh is a
+      // plain direct lookup and no tunnel opens; a mirrored one gets no proxy either.
+      await reset();
+      await home.data("/credentials", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...expired, type: "codex", uuid: teammate }),
+      });
+      const acquired = await until(async () => {
+        const now = await records();
+        return now.dns.includes("auth.openai.com") ? now : undefined;
+      }, 120_000);
+      assert.deepEqual(
+        acquired.tunnels,
+        [],
+        "an acquired credential inherited another owner's route",
+      );
+      assert.deepEqual(acquired.connects, []);
+      const mateKey = reference(10);
+      await mirror(mateKey, "upsert", apiKey("teammate-model", "teammate-model-key"), {
         hasRules: false,
       });
-      await membership([routed, oauthRouted, teammate]);
+      await membership([routed, oauthRouted, mateKey]);
       assert.equal(
-        (await readHomeConfigProxies(home, AbortSignal.timeout(10_000))).get(teammate)?.proxy,
-        "direct",
+        (await readHomeConfigProxies(home, AbortSignal.timeout(10_000))).get(mateKey)?.proxy,
+        "",
       );
-      await until(async () => {
-        const models = (await (
-          await fetch(`${origin(8317)}/v1/models`, {
-            headers: { Authorization: `Bearer ${poolKey}` },
-          })
-        ).json()) as { data?: { id: string }[] };
-        return models.data?.some((model) => model.id === "teammate-model") ? true : undefined;
-      });
+      await listed(poolKey, ["teammate-model"]);
       await reset();
-      const mate = await fetch(`${origin(8317)}/v1/chat/completions`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${poolKey}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "teammate-model",
-          stream: true,
-          messages: [{ role: "user", content: "fixture" }],
-        }),
-      });
+      const mate = await chatWith(poolKey, "teammate-model");
       assert.equal(mate.status, 200);
       await mate.text();
       seen = await records();
@@ -586,8 +579,7 @@ test(
           refreshHosts,
           directRefresh,
           bootDirect,
-          routedBackground,
-          stillDirect,
+          backgroundDirect,
         }),
       );
     } finally {

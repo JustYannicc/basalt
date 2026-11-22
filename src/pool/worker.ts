@@ -45,6 +45,7 @@ import { RouteAssignments } from "./route-assignments.ts";
 import { routeResolver } from "./route-resolver.ts";
 import { routeDownAnswer } from "./route-refusal.ts";
 import { RouteReadings, gatewayReader } from "./route-reading.ts";
+import { installRoutePeer } from "./route-peer-intercept.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import { captureProduct, type ProductEvent, type TelemetryEnv } from "../telemetry/product.ts";
 import type { ProductEventCallback } from "../setup/product-events.ts";
@@ -345,6 +346,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       },
     });
     ctx.waitUntil(this.peers.restore().catch(() => {}));
+    // The controller's own container reaches its routes too, not only the fleet cells.
+    ctx.waitUntil(installRoutePeer(ctx, ctx.id.toString()));
     this.lifecycle = createPoolLifecycle(ctx, env, undefined, (at) =>
       this.alarms.schedule("home", at),
     );
@@ -532,15 +535,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       },
       actual: (pool) => membership.actual(pool),
       invalidateView: (pool) => this.control.invalidateViews(pool),
-      // New members are routed before Home or a runtime may serve them; a failure leaves them out.
+      // New members are routed before Home's channel membership lets them serve. Policy installs
+      // and lease renewals never wait on routing.
       reconcile: async (pool, accounts) => {
         const organization = organizations.get(pool);
-        if (organization === undefined) throw new Error("Pool organization unknown");
-        await this.routes.prepare({ pool, organization }, accounts, AbortSignal.timeout(30_000));
+        if (organization !== undefined) await this.routes.prepare({ pool, organization }, accounts);
         await membership.reconcile(pool, accounts);
       },
       install: async (policy) => {
-        await this.routes.prepare(policy, policy.accounts, AbortSignal.timeout(30_000));
         await Promise.all([this.fleet.install(policy), this.installPrimaryMembership(policy)]);
       },
       abort: (pool) => {
@@ -786,13 +788,14 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       ),
     );
     await trace.run("memberships", () => this.memberships.tick());
-    await trace
-      .run("routes", () => this.routes.tick(AbortSignal.timeout(60_000)))
-      .catch(() => console.error("POOL_ROUTE_ASSIGNMENTS_PENDING"));
     await trace.run("computers", () => this.computers.expire());
     await trace.run("warm", () =>
       this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm())),
     );
+    // After warmth, so routing can never delay it.
+    await trace
+      .run("routes", () => this.routes.tick(AbortSignal.timeout(60_000)))
+      .catch(() => console.error("POOL_ROUTE_ASSIGNMENTS_PENDING"));
     await trace.run("first_request", () =>
       reportWhenDue(this.ctx.storage, "first-request", (progress) =>
         this.computers.observeUsage(undefined, true, progress),

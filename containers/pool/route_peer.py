@@ -14,6 +14,7 @@ import os
 import re
 import socket
 import threading
+import time
 from collections.abc import Callable
 
 from .home_peer import pipe_local, pipe_peer
@@ -157,6 +158,8 @@ class RoutePeers:
         self.port = port
         self.listener: socket.socket | None = None
         self.connections: set[socket.socket] = set()
+        # One per tunnel; each tunnel holds three sockets, so the sockets aren't the measure.
+        self.clients = 0
         self.lock = threading.Lock()
         self.closed = False
 
@@ -165,18 +168,25 @@ class RoutePeers:
         threading.Thread(target=self.accept, daemon=True).start()
 
     def accept(self) -> None:
-        assert self.listener is not None
-        try:
-            while not self.closed:
-                client, _ = self.listener.accept()
-                with self.lock:
-                    if self.closed or len(self.connections) >= MAX_CONNECTIONS:
-                        client.close()
-                        continue
-                    self.connections.add(client)
-                threading.Thread(target=self.serve, args=(client,), daemon=True).start()
-        except OSError:
-            self.close()
+        listener = self.listener
+        assert listener is not None
+        while not self.closed:
+            try:
+                client, _ = listener.accept()
+            except OSError:
+                # A transient failure (too many open files, an aborted handshake) keeps the
+                # listener; only close() ends it.
+                if self.closed:
+                    return
+                time.sleep(0.05)
+                continue
+            with self.lock:
+                if self.closed or self.clients >= MAX_CONNECTIONS:
+                    client.close()
+                    continue
+                self.clients += 1
+                self.connections.add(client)
+            threading.Thread(target=self.serve, args=(client,), daemon=True).start()
 
     def serve(self, client: socket.socket) -> None:
         local = remote = None
@@ -228,6 +238,7 @@ class RoutePeers:
                     pass
                 connection.close()
             with self.lock:
+                self.clients -= 1
                 self.connections.difference_update((client, local, remote))
 
     def close(self) -> None:

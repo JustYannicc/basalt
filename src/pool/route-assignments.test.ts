@@ -42,12 +42,13 @@ function storage(): RouteStorage & { map: Map<string, unknown> } {
   };
 }
 
-/** Home's management surface as the pool uses it: one API-key family, OAuth files, the global. */
+/** Home's management surface as the pool uses it: one API-key family, OAuth files, the config. */
 function fakeHome() {
   const state = {
     codex: [] as Record<string, unknown>[],
     files: [] as Record<string, unknown>[],
     global: "",
+    failFields: false,
     writes: [] as string[],
   };
   const client = new HomeClient(async (path, init) => {
@@ -68,6 +69,8 @@ function fakeHome() {
       state.files.push({ id: body.uuid, proxy_url: body.proxy_url ?? "" });
       return Response.json({ status: "ok", name: `${body.uuid}.json` });
     }
+    if (route === "/credentials/fields" && method === "PATCH" && state.failFields)
+      return new Response(null, { status: 500 });
     if (route === "/credentials/fields" && method === "PATCH") {
       const file = state.files.find((item) => item.id === body.id);
       if (!file) return Response.json({ error: "not_found" }, { status: 404 });
@@ -284,7 +287,7 @@ test("rule changes rewrite only the credentials whose route changed, and a faile
   assert.equal(await routes.routeOwner(home), null);
 });
 
-test("the global follows a route only when every credential does; a teammate's credential is then explicitly direct", async () => {
+test("in a Home where every credential is routed, a teammate's new credential gets no proxy and the global is never written", async () => {
   const { client, state, keyProxy } = fakeHome();
   const rules = scripted({ [mine]: { routeId: home, owner }, [oauth]: { routeId: home, owner } });
   const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
@@ -292,18 +295,43 @@ test("the global follows a route only when every credential does; a teammate's c
   await mirror(client, routes, oauth, claude);
   await routes.prepare(scope, [mine, oauth], signal());
   await routes.refresh(signal());
-  assert.equal(state.global, routeProxyUrl(home));
-  // A teammate adds a credential to the same pool while the global names someone else's route.
-  await mirror(client, routes, teammate, apiKey);
-  assert.equal(keyProxy(teammate), "direct");
-  await routes.prepare(scope, [mine, oauth, teammate], signal());
-  assert.equal(keyProxy(teammate), "direct");
-  state.writes.length = 0;
+  assert.equal(keyProxy(mine), routeProxyUrl(home));
+  // Home creates an acquired credential itself, without the mirror: it must inherit nothing.
+  state.files.push({ id: teammate, proxy_url: "" });
   await routes.refresh(signal());
+  await routes.prepare(scope, [mine, oauth, teammate], signal());
+  assert.equal(state.files.find((file) => file.id === teammate)!.proxy_url, "");
   assert.equal(state.global, "");
-  assert.deepEqual(state.writes, ["global"]);
-  assert.equal(keyProxy(teammate), "direct");
+  assert.ok(!state.writes.includes("global"));
   assert.equal(await routes.routeOwner(home), owner);
+});
+
+test("a malformed route never becomes direct, and one failing write doesn't stop the others", async () => {
+  const { client, keyProxy, state } = fakeHome();
+  const rules = scripted({ [mine]: { routeId: home, owner }, [oauth]: { routeId: home, owner } });
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  await routes.prepare(scope, [], signal());
+  await routes.refresh(signal());
+  assert.equal(
+    (
+      await mirror(client, routes, mine, apiKey, {
+        hasRules: true,
+        route: { routeId: "rt_../x", owner },
+      })
+    ).status,
+    503,
+  );
+  await mirror(client, routes, mine, apiKey);
+  await mirror(client, routes, oauth, claude);
+  // Home refuses the OAuth record's write: the API key is still routed, and the pass fails.
+  state.failFields = true;
+  await assert.rejects(routes.prepare(scope, [mine, oauth], signal()));
+  assert.equal(keyProxy(mine), routeProxyUrl(home));
+  assert.equal(state.files.find((file) => file.id === oauth)!.proxy_url, "");
+  // The next membership pass retries them, and Home takes the write this time.
+  state.failFields = false;
+  await routes.prepare(scope, [mine, oauth], signal());
+  assert.equal(state.files.find((file) => file.id === oauth)!.proxy_url, routeProxyUrl(home));
 });
 
 test("credentials under different owners' routes keep their own owners; a clash refuses that route", async () => {
@@ -448,14 +476,10 @@ test("a 200 that leaves a reference out, before any good answer, still means dir
 
 test("a proxy the host configured itself is never cleared or replaced by a direct rule", () => {
   assert.equal(
-    credentialProxy(null, false, "http://proxy.example.test:3128"),
+    credentialProxy(null, "http://proxy.example.test:3128"),
     "http://proxy.example.test:3128",
   );
-  assert.equal(
-    credentialProxy(null, true, "http://proxy.example.test:3128"),
-    "http://proxy.example.test:3128",
-  );
-  assert.equal(credentialProxy(null, false, routeProxyUrl(home)), "");
-  assert.equal(credentialProxy(null, true, ""), "direct");
+  assert.equal(credentialProxy(null, routeProxyUrl(home)), "");
+  assert.equal(credentialProxy(null, ""), "");
   assert.throws(() => routeProxyUrl("rt_../../x"));
 });

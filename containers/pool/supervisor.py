@@ -276,9 +276,13 @@ def main(stop: threading.Event | None = None) -> int:
         if home_identity.ordinal is not None:
             home_peers = HomePeers(home_identity.ordinal)
             home_peers.start()
-        # Routed credentials reach their route only through this loopback listener.
-        route_peers = RoutePeers()
-        route_peers.start()
+        # Routed credentials reach their route only through this loopback listener. Without it
+        # their tunnels are refused anyway, so it never fails the boot.
+        try:
+            route_peers = RoutePeers()
+            route_peers.start()
+        except OSError:
+            route_peers = None
 
         def launch_generation(recovering: bool = False) -> tuple[str, int]:
             """Reuse boot, child capture and health gates; import only on first boot."""

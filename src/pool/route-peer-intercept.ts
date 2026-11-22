@@ -13,8 +13,13 @@ type RoutePeerExport = (options: { props: { pool: string } }) => never;
 export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
   const peer: unknown = Reflect.get(ctx.exports, "PoolRoutePeer");
   if (typeof peer !== "function" || !ctx.container) return;
-  await ctx.container.interceptOutboundHttp(
-    "route-peer.internal",
-    (peer as RoutePeerExport)({ props: { pool } }),
-  );
+  try {
+    await ctx.container.interceptOutboundHttp(
+      "route-peer.internal",
+      (peer as RoutePeerExport)({ props: { pool } }),
+    );
+  } catch {
+    // Never fails the home-peer install beside it: without the intercept, tunnels are refused.
+    console.error("POOL_ROUTE_PEER_INTERCEPT_PENDING");
+  }
 }

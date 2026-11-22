@@ -139,3 +139,40 @@ class RoutePeerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoutePeerLimitTests(unittest.TestCase):
+    def test_the_connection_limit_counts_tunnels_not_sockets(self):
+        from . import route_peer
+
+        held: list[threading.Event] = []
+
+        def hang(_route_id: str):
+            event = threading.Event()
+            held.append(event)
+            event.wait(5)
+            raise PeerRefused("released")
+
+        peers = RoutePeers(hang, 0)
+        peers.start()
+        self.addCleanup(peers.close)
+        address = peers.listener.getsockname()
+        limit = route_peer.MAX_CONNECTIONS
+        route_peer.MAX_CONNECTIONS = 3
+        self.addCleanup(setattr, route_peer, "MAX_CONNECTIONS", limit)
+        clients = []
+        for _ in range(4):
+            connection = socket.create_connection(address, timeout=5)
+            self.addCleanup(connection.close)
+            clients.append(connection)
+        for connection in clients[:3]:
+            connection.sendall(b"\x05\x01\x02")
+            self.assertEqual(exact(connection, 2), b"\x05\x02")
+            name = ROUTED.encode("ascii")
+            connection.sendall(b"\x01" + bytes([len(name)]) + name + b"\x01x")
+            self.assertEqual(exact(connection, 2), b"\x01\x00")
+            connection.sendall(connect_request("localhost", 9))
+        # Three tunnels are open (nine sockets); the fourth client is the one refused.
+        self.assertEqual(clients[3].recv(1), b"")
+        for event in held:
+            event.set()

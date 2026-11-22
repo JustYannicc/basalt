@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { routeDownAnswer, routePeerAddress } from "./route-refusal.ts";
+import { routeDownAnswer, routePeerAddress, routeSafeMessage } from "./route-refusal.ts";
 
 // The node's own refusal text when route_peer.py answers 0x02 (pinned node, Docker integration).
 const raw = JSON.stringify({
@@ -55,4 +55,10 @@ test("other answers pass through byte for byte, including large and streamed err
     await (await routeDownAnswer(request, new Response(streamed, { status: 502 }))).text(),
     large,
   );
+});
+
+test("an account's status text never shows the route listener", () => {
+  assert.equal(routeSafeMessage(`dial ${routePeerAddress}: refused`), "route_down");
+  assert.equal(routeSafeMessage("quota exceeded"), "quota exceeded");
+  assert.equal(routeSafeMessage(null), null);
 });

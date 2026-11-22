@@ -109,6 +109,10 @@ export class HomeAccountAcquisitions {
           )
         )
           return unavailable();
+        // Home's code exchange takes no per-session proxy yet, so a sign-in the host says must be
+        // routed can't be. Blocked beats direct: it is refused before anything reaches Home.
+        if (value.hasRules === true && value.route !== null)
+          return Response.json({ error: "route_unavailable" }, { status: 409 });
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
         );

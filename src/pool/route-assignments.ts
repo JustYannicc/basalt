@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { readHomeConfigProxies, setHomeConfigProxy } from "./account-config-mirror.ts";
 import type { HomeClient } from "./control.ts";
-import { object, post, rows, unavailable } from "./json.ts";
+import { post, rows, unavailable } from "./json.ts";
 import { routePeerAddress } from "./route-refusal.ts";
 
 /** What the tools service answers for one credential: its contributor's rule, under that owner. */
@@ -55,7 +55,6 @@ const refreshFloorMs = 15 * 60_000;
 
 const State = Schema.Struct({
   served: Schema.Boolean,
-  global: Schema.String,
   // The pools this controller has prepared, so the alarm reads them by key, never by scan.
   pools: Schema.Array(Schema.String),
 });
@@ -69,30 +68,22 @@ const PoolRecord = Schema.Struct({
   references: Schema.Array(Schema.String),
 });
 type PoolRecord = typeof PoolRecord.Type;
+/** What a pass decides for one credential: a route, direct, a hold, or keep what it has. */
+type Decision = Entry | null | "hold" | "keep";
 
 export function routeProxyUrl(route: string) {
   if (!routeId.test(route)) return unavailable();
   return `socks5://${route}:x@${routePeerAddress}`;
 }
 
-const direct = (proxy: string) => proxy === "" || proxy.toLowerCase() === "direct";
-
 /**
- * An empty credential setting inherits the node's global proxy. While the global names a route,
- * an unrouted credential must say "direct", or it would leave through someone else's route.
+ * The pool writes only per-credential settings and never the node's global proxy: Home creates
+ * acquired credentials without the pool, and an empty setting would inherit the global.
  */
-export function credentialProxy(route: string | null, globalRouted: boolean, current = "") {
+export function credentialProxy(route: string | null, current = "") {
   if (route) return routeProxyUrl(route);
   // A proxy the host itself configured is not ours to clear.
-  if (!direct(current) && !current.includes(routePeerAddress)) return current;
-  if (globalRouted) return "direct";
-  return direct(current) ? current : "";
-}
-
-/** The node's own calls (version checks, plugin store) follow a route only when every credential does. */
-export function globalProxy(routes: readonly (string | null)[]) {
-  const first = routes[0];
-  return first && routes.every((route) => route === first) ? routeProxyUrl(first) : "";
+  return current.includes(routePeerAddress) ? "" : current;
 }
 
 const valid = (value: RouteResolution | Entry | undefined): value is Entry =>
@@ -102,42 +93,27 @@ const valid = (value: RouteResolution | Entry | undefined): value is Entry =>
     routeId.test(value.routeId) &&
     value.routeId !== unassignedRoute,
   );
+/** A route that names something we can't route through is a failure, never direct. */
+const malformed = (value: RouteResolution | undefined) =>
+  value !== undefined && value.routeId !== null && !valid(value);
 
 /**
  * One credential's answers from every pool it serves. A route beats direct; two different routes
- * are a conflict, and a conflict keeps whatever the credential has now.
+ * can't both apply, so the credential is held until the rules agree.
  */
-function combine(
-  answers: readonly (RouteResolution | Entry | undefined)[],
-): Entry | null | "conflict" {
+function combine(answers: readonly (RouteResolution | Entry | undefined)[]): Entry | null | "hold" {
   const routed = answers.filter(valid);
   if (!routed.length) return null;
   return routed.every(
     (entry) => entry.routeId === routed[0]!.routeId && entry.owner === routed[0]!.owner,
   )
     ? { routeId: routed[0]!.routeId, owner: routed[0]!.owner }
-    : "conflict";
+    : "hold";
 }
 
 type Credential =
   | { kind: "config"; family: string; proxy: string }
   | { kind: "auth"; proxy: string };
-
-async function readGlobal(home: HomeClient, signal: AbortSignal) {
-  const requests = (await home.data("/config", { signal })).requests;
-  const value = object(requests) ? requests["proxy-url"] : undefined;
-  return typeof value === "string" ? value : "";
-}
-
-async function writeGlobal(home: HomeClient, proxy: string, signal: AbortSignal) {
-  // PATCH changes only this field; the supervisor's boot patch never names it.
-  await home.data("/config", {
-    ...post({ requests: { "proxy-url": proxy } }),
-    method: "PATCH",
-    signal,
-  });
-  if ((await readGlobal(home, signal)) !== proxy) return unavailable();
-}
 
 async function writeAuth(home: HomeClient, id: string, proxy: string, signal: AbortSignal) {
   const result = await home.data("/credentials/fields", {
@@ -159,6 +135,12 @@ async function readCredentials(home: HomeClient, signal: AbortSignal) {
   }
   return credentials;
 }
+
+// A resolve answers in well under a second; it never holds a membership step for long.
+const resolveMs = 5_000;
+const writeMs = 30_000;
+const within = (ms: number, signal?: AbortSignal) =>
+  signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
 
 /**
  * Which route each credential in this Home leaves through, and whose route it is. Any failed read,
@@ -185,9 +167,7 @@ export class RouteAssignments {
 
   private async state(): Promise<State> {
     const raw = await this.storage.get(stateKey);
-    return raw === undefined
-      ? { served: false, global: "", pools: [] }
-      : Schema.decodeUnknownSync(State)(raw);
+    return raw === undefined ? { served: false, pools: [] } : Schema.decodeUnknownSync(State)(raw);
   }
   private async listed<T>(prefix: string, schema: Schema.Codec<T>) {
     return new Map(
@@ -226,8 +206,14 @@ export class RouteAssignments {
       answer = { served: false, revision: 0, resolutions: new Map() };
     }
     const state = await this.state();
-    // An answer missing a requested reference is a failure like any other.
-    if (answer.served && references.some((reference) => !answer.resolutions.has(reference)))
+    // An answer missing a requested reference, or naming a route we can't use, is a failure.
+    if (
+      answer.served &&
+      references.some(
+        (reference) =>
+          !answer.resolutions.has(reference) || malformed(answer.resolutions.get(reference)),
+      )
+    )
       answer = { served: false, revision: 0, resolutions: new Map() };
     if (!answer.served) {
       if (state.served) return unavailable();
@@ -272,50 +258,49 @@ export class RouteAssignments {
 
   /**
    * Write `routes` into Home. Owners are recorded before Home names a route, and dropped only
-   * after Home no longer does, so the tunnel's owner check never lags the credential.
+   * after Home no longer does, so the tunnel's owner check never lags the credential. Each
+   * credential is written on its own; one failed write doesn't stop the others, and the pass
+   * fails afterwards so it runs again.
    */
-  private async apply(
-    routes: ReadonlyMap<string, Entry | null | "conflict" | "pending">,
-    global: string | undefined,
-    signal: AbortSignal,
-  ) {
+  private async apply(routes: ReadonlyMap<string, Decision>, signal: AbortSignal) {
     const credentials = await readCredentials(this.home, signal);
-    const state = await this.state();
-    const globalRouted = (global ?? state.global) !== "";
-    const cleared: string[] = [];
-    for (const [reference, entry] of routes) {
-      if (entry === "conflict") continue;
+    let failed = false;
+    for (const [reference, decision] of routes) {
+      if (decision === "keep") continue;
       const credential = credentials.get(reference);
-      if (entry === "pending") {
-        // Held only until a resolve answers; a credential another pool already routes keeps it.
-        if (!credential || credential.proxy.includes(routePeerAddress)) continue;
-      } else if (entry) await this.record(reference, entry);
-      else cleared.push(reference);
-      if (!credential) continue;
+      if (!credential) {
+        if (decision === null) await this.record(reference, null);
+        continue;
+      }
+      // A hold never replaces a route another pool already gave the credential.
+      if (decision === "hold" && credential.proxy.includes(routePeerAddress)) continue;
+      if (decision !== "hold" && decision !== null) await this.record(reference, decision);
       const proxy =
-        entry === "pending"
+        decision === "hold"
           ? routeProxyUrl(unassignedRoute)
-          : credentialProxy(entry?.routeId ?? null, globalRouted, credential.proxy);
-      if (proxy === credential.proxy) continue;
-      if (credential.kind === "config")
-        await setHomeConfigProxy(this.home, credential.family, reference, proxy, signal);
-      else await writeAuth(this.home, reference, proxy, signal);
+          : credentialProxy(decision?.routeId ?? null, credential.proxy);
+      try {
+        if (proxy !== credential.proxy) {
+          if (credential.kind === "config")
+            await setHomeConfigProxy(this.home, credential.family, reference, proxy, signal);
+          else await writeAuth(this.home, reference, proxy, signal);
+        }
+        if (decision === null) await this.record(reference, null);
+      } catch {
+        failed = true;
+      }
     }
-    if (global !== undefined && (await readGlobal(this.home, signal)) !== global)
-      await writeGlobal(this.home, global, signal);
-    for (const reference of cleared) await this.record(reference, null);
-    if (global !== undefined)
-      await this.storage.put(stateKey, { ...(await this.state()), global } satisfies State);
+    if (failed) return unavailable();
   }
 
   /**
-   * Called before a pool's membership is reconciled or installed, so its new members are routed
-   * before Home or a runtime may serve them. It never fails the membership step: when the resolve
-   * fails, only new members whose owner has rules are held on the refusing route, everyone else
-   * keeps serving as before, and the next pass resolves them again.
+   * Called before a pool's membership is reconciled, so its new members are routed before Home
+   * lets them serve. It never fails the membership step on a resolve: only new members whose
+   * owner has rules are then held on the refusing route, everyone else serves as on main, and the
+   * next pass resolves them again. It reads storage by key and touches Home only when a route,
+   * a hold or a hold to clear is at stake.
    */
-  async prepare(scope: RouteScope, accounts: readonly string[], signal: AbortSignal) {
-    // Point reads only: this runs before every policy install and never scans storage.
+  async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
     const record = raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw);
     const known = new Set(record?.references ?? []);
@@ -325,34 +310,24 @@ export class RouteAssignments {
     if (added.length) {
       let answer: RouteAnswer | undefined;
       try {
-        answer = await this.ask(scope, added, signal);
+        answer = await this.ask(scope, added, within(resolveMs, signal));
       } catch {
         unresolved = added;
       }
-      const entries = new Map<string, Entry>();
+      const atStake = new Map<string, Decision>();
       for (const reference of added) {
         const stored = await this.storage.get(entryPrefix + reference);
-        if (stored !== undefined) entries.set(reference, Schema.decodeUnknownSync(Entry)(stored));
+        const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
+        const rules = await this.hasRules(reference);
+        const decision: Decision = answer
+          ? combine([answer.resolutions.get(reference), entry])
+          : rules
+            ? "hold"
+            : "keep";
+        if (decision !== "keep" && (decision !== null || entry || rules))
+          atStake.set(reference, decision);
       }
-      const routes = new Map<string, Entry | null | "conflict" | "pending">();
-      for (const reference of added) {
-        if (answer)
-          routes.set(
-            reference,
-            combine([answer.resolutions.get(reference), entries.get(reference)]),
-          );
-        else if (await this.hasRules(reference)) routes.set(reference, "pending");
-      }
-      // Home is read only when a route, a hold or a hold to clear is at stake. For everyone else
-      // this step, which also runs before every native policy install, stays as cheap as on main.
-      const atStake = new Map<string, Entry | null | "conflict" | "pending">();
-      for (const [reference, entry] of routes)
-        if (
-          entry !== "conflict" &&
-          (entry !== null || entries.has(reference) || (await this.hasRules(reference)))
-        )
-          atStake.set(reference, entry);
-      if (atStake.size) await this.apply(atStake, undefined, signal);
+      if (atStake.size) await this.apply(atStake, within(writeMs, signal));
     }
     if (!record) {
       const state = await this.state();
@@ -374,9 +349,9 @@ export class RouteAssignments {
   /**
    * The setting a credential is written with when the host mirrors it, or undefined to keep the
    * host's own. Home refreshes a credential as soon as it holds it, before any membership step.
-   * - The host's pool-free route is written at once.
-   * - An owner with rules: every pool here is asked; if none claims it yet, it waits on the
-   *   refusing route until its membership step routes it, and a failed resolve answers 503.
+   * - The host's pool-free route is written at once; a malformed one answers 503.
+   * - An owner with rules: every pool here is asked; if none claims it yet, or the pools
+   *   disagree, it waits on the refusing route, and a failed resolve answers 503.
    * - Anyone else, or a host that sends no hint, is mirrored exactly as before with no resolve
    *   call; without a hint a route its membership step already assigned is kept.
    */
@@ -386,23 +361,22 @@ export class RouteAssignments {
     signal: AbortSignal,
   ): Promise<string | undefined> {
     if (hint.hasRules !== undefined) await this.storage.put(hintPrefix + reference, hint.hasRules);
-    const state = await this.state();
-    const direct = () => (state.global !== "" ? "direct" : undefined);
     if (hint.route !== undefined) {
-      const route = hint.route ?? undefined;
-      const entry = valid(route) ? { routeId: route.routeId, owner: route.owner } : null;
+      const route = hint.route;
+      if (route !== null && !valid(route)) return unavailable();
+      const entry = route && valid(route) ? { routeId: route.routeId, owner: route.owner } : null;
       await this.record(reference, entry);
-      return entry ? routeProxyUrl(entry.routeId) : direct();
+      return entry ? routeProxyUrl(entry.routeId) : undefined;
     }
     if (hint.hasRules === false) {
       await this.record(reference, null);
-      return direct();
+      return undefined;
     }
     if (hint.hasRules === undefined) {
       // A re-mirror never drops a credential its membership step routed.
       const stored = await this.storage.get(entryPrefix + reference);
       const kept = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
-      return kept ? routeProxyUrl(kept.routeId) : direct();
+      return kept ? routeProxyUrl(kept.routeId) : undefined;
     }
     const answers: (RouteResolution | undefined)[] = [];
     let claimed = false;
@@ -415,11 +389,11 @@ export class RouteAssignments {
       claimed = true;
       answers.push(answer);
     }
-    const entry = combine(answers);
-    if (entry === "conflict") return unavailable();
-    if (!claimed && (await this.state()).served) return routeProxyUrl(unassignedRoute);
-    await this.record(reference, entry);
-    return entry ? routeProxyUrl(entry.routeId) : direct();
+    const decision = combine(answers);
+    const served = (await this.state()).served;
+    if (decision === "hold" || (!claimed && served)) return routeProxyUrl(unassignedRoute);
+    await this.record(reference, decision);
+    return decision ? routeProxyUrl(decision.routeId) : undefined;
   }
 
   /** `owner`'s first routed credential among `accounts`, in the caller's display order. */
@@ -471,7 +445,7 @@ export class RouteAssignments {
     }
     const credentials = await readCredentials(this.home, signal);
     const entries = await this.entries();
-    const routes = new Map<string, Entry | null | "conflict">();
+    const routes = new Map<string, Decision>();
     // A credential no pool claims keeps what it has; one Home no longer holds drops its owner.
     for (const reference of new Set([...credentials.keys(), ...entries.keys()]))
       routes.set(
@@ -480,16 +454,9 @@ export class RouteAssignments {
           ? null
           : answers.has(reference)
             ? combine(answers.get(reference)!)
-            : "conflict",
+            : "keep",
       );
-    // A conflicted credential keeps its current route, so it counts as that route for the global.
-    const effective = [...credentials.keys()].map((reference) => {
-      const entry = routes.get(reference);
-      return entry === "conflict"
-        ? (entries.get(reference)?.routeId ?? null)
-        : (entry?.routeId ?? null);
-    });
-    await this.apply(routes, globalProxy(effective), signal);
+    await this.apply(routes, signal);
     const at = this.now();
     for (const [pool, record] of pools)
       await this.storage.put(poolPrefix + pool, {

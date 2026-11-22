@@ -33,6 +33,7 @@ const reasonCode = /^route_[a-z_]{2,40}$/;
 // The pool's alarm interval: a pool view never starts the gateway's compute.
 const freshMs = 5 * 60_000;
 const failedMs = 30_000;
+const readingMs = 2_000;
 
 /** Readings for the pool view, cached so many views share one gateway call per interval. */
 export class RouteReadings {
@@ -51,7 +52,15 @@ export class RouteReadings {
     let until = this.now() + freshMs;
     try {
       if (!this.reader) throw new Error("route gateway unavailable");
-      const value = Schema.decodeUnknownSync(Reading)(await this.reader(routeId, owner), {
+      // A slow gateway never holds the pool view.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const answer = await Promise.race([
+        this.reader(routeId, owner),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error("timeout")), readingMs);
+        }),
+      ]).finally(() => clearTimeout(timer));
+      const value = Schema.decodeUnknownSync(Reading)(answer, {
         onExcessProperty: "ignore",
       });
       reading = { ...value };
