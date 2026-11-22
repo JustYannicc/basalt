@@ -5,6 +5,7 @@ import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
+import type { PrimaryRoute } from "./runtime-fleet/state.ts";
 import { fleetRouting } from "./runtime-fleet/production.ts";
 
 const responseModule = "./native-response.worker.ts";
@@ -15,7 +16,7 @@ const { nativeResponse } = (await import(responseModule)) as {
 function fixture(
   maximum = 4,
   targetActive = 1,
-  primary: { balancePrimary?: boolean; primaryAvailable?(): boolean } = {},
+  primary: { primary?: PrimaryRoute; primaryAvailable?(): boolean } = {},
 ) {
   const state = new RuntimeFleetState(new SlotMemory(), maximum, () => 100);
   const pending: Promise<unknown>[] = [];
@@ -311,7 +312,7 @@ test("a pre-dispatch selection failure releases its reservation and lets planned
 });
 
 test("with no sibling, an unavailable primary still gets the request's own admission", async () => {
-  const f = fixture(4, 1, { balancePrimary: true, primaryAvailable: () => false });
+  const f = fixture(4, 1, { primary: "balanced", primaryAvailable: () => false });
   const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
   assert.equal(await response.text(), "legacy");
   assert.equal(f.calls.legacy, 1);
@@ -319,7 +320,7 @@ test("with no sibling, an unavailable primary still gets the request's own admis
 });
 
 test("with no sibling, a primary that just failed admission is asked again, not refused", async () => {
-  const f = fixture(4, 1, { balancePrimary: true, primaryAvailable: () => true });
+  const f = fixture(4, 1, { primary: "balanced", primaryAvailable: () => true });
   let lapsed = true;
   const primary = async () => {
     if (lapsed) throw new Error("readiness unhealthy");
@@ -356,10 +357,13 @@ test("with production routing, a ready cell takes the call and the root serves n
 test("with production routing and no ready cell, the root serves the call", async () => {
   const f = fixture(4, 1, { ...fleetRouting, primaryAvailable: () => true });
   const response = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  // A counted reservation, so a restarted controller's growth still sees the root's demand.
+  assert.equal(await f.state.primaryActive(), 1);
   assert.equal(await response.text(), "legacy");
   assert.equal(f.calls.legacy, 1);
   assert.equal(f.calls.dispatches, 0);
   await f.settle();
+  assert.equal(await f.state.primaryActive(), 0);
 });
 
 test("with production routing, a fenced root never fails a call a ready cell can serve", async () => {

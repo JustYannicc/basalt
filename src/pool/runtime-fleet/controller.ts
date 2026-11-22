@@ -7,7 +7,7 @@ import {
   type SlotIdentity,
   type SlotTarget,
 } from "../runtime-slots/contract.ts";
-import { FleetRefused, RuntimeFleetState } from "./state.ts";
+import { FleetRefused, RuntimeFleetState, type PrimaryRoute } from "./state.ts";
 import { FleetDispatches } from "./dispatches.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
@@ -74,7 +74,8 @@ interface Dependencies {
   enabled?(): boolean;
   changed?(): void;
   keepReady?(identity: SlotIdentity): Promise<boolean>;
-  balancePrimary?: boolean;
+  /** How the root takes calls beside ready cells; without it, only when no cell has capacity. */
+  primary?: PrimaryRoute;
   recentDemandUntil?(): Promise<number>;
   primaryAvailable?(): boolean;
   primaryDistance?(): Promise<RuntimeDistance | undefined>;
@@ -263,9 +264,9 @@ export class RuntimeFleet {
     let acquired;
     try {
       acquired = await this.dispatches.acquire(() =>
-        this.deps.balancePrimary && !this.primaryFailed && this.deps.primaryAvailable?.() !== false
-          ? this.deps.state.acquire(Number.MAX_SAFE_INTEGER, true, this.placement())
-          : this.deps.state.acquire(Number.MAX_SAFE_INTEGER, false, this.placement()),
+        this.deps.primary && !this.primaryFailed && this.deps.primaryAvailable?.() !== false
+          ? this.deps.state.acquire(Number.MAX_SAFE_INTEGER, this.deps.primary, this.placement())
+          : this.deps.state.acquire(Number.MAX_SAFE_INTEGER, undefined, this.placement()),
       );
     } catch (error) {
       if (!(error instanceof FleetRefused) || error.reason !== "capacity")
