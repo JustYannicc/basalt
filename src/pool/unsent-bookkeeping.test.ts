@@ -190,6 +190,7 @@ test("a call refused by its runtime's endpoint before the send records no outcom
 
 test("a re-send refused again before its own send stays the one request, with no second record", async (context) => {
   const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
   const attempt = "4f3e2d1c-0b9a-4876-9543-210fedcba987";
   const refused = await h.send(await h.call({ [attemptHeader]: attempt }), async () => {
     throw new Error("protection refused before the send");
@@ -201,4 +202,7 @@ test("a re-send refused again before its own send stays the one request, with no
   await h.settle();
   assert.deepEqual(h.starts, []);
   assert.deepEqual(h.finishes, []);
+  const lines = logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT");
+  assert.equal(lines.length, 1);
+  assert.equal(JSON.parse(String(lines[0]!.arguments[1])).requestId, attempt);
 });

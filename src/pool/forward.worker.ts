@@ -362,9 +362,18 @@ export async function forwardPoolRequest(
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
     if (error instanceof ControlFailure) return failureResponse(error);
     // A re-send of a call never sent that is refused again before its own send ran nowhere either.
-    // It stays the one request its first attempt started: no refusal record beside that start, and
-    // the entry keeps sending inside its window.
-    if (resent && isPublicModelPath(pathname) && !request.signal.aborted) {
+    // It stays the one request its first attempt started: no refusal record beside that start, even
+    // when its client has left, and the entry keeps sending inside its window.
+    if (resent && isPublicModelPath(pathname)) {
+      console.error(
+        "POOL_CONTROLLER_UNSENT",
+        JSON.stringify({
+          requestId,
+          step: diagnostic.runtimeStep ?? null,
+          reason: diagnostic.runtimeReason ?? null,
+          resent: true,
+        }),
+      );
       const refused = unsentRefusal(request);
       refused.headers.set("X-Request-Id", requestId);
       return refused;
