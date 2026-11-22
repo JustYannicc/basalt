@@ -24,6 +24,11 @@ export interface StageScope {
   /** The names and ids the stage's own State rows record for the resources they own. */
   readonly owned: ReadonlyArray<string>;
   /**
+   * The names of the Workers the stage's own State rows record (`ownWorkers`). Only these may be a
+   * domain's service when a delete of a domain the State never recorded is proven.
+   */
+  readonly workers?: ReadonlyArray<string>;
+  /**
    * A rehearsal stage's teardown (`deploy.ts teardown`): what its stack destroys leave without a
    * State row, retained fleet applications and pushed images, is deleted by the stage token in
    * its name. Nothing else is: every other stage run leaves this unset.
@@ -260,6 +265,20 @@ const SHARED_KEYS = new Set(["accountId", "zoneId", "zoneName", "storeId", "orga
 const SHARED_TYPES = /^Cloudflare\.SecretsStore/u;
 
 /** The own names and ids from a stage's State rows, both generations of an interrupted update. */
+/** The names of the Workers a stage's State rows record, both generations of an interrupted update. */
+export const ownWorkers = (rows: ReadonlyArray<unknown>) => {
+  const names = new Set<string>();
+  for (const row of rows) {
+    if (!record(row) || !/^Cloudflare\.Worker$/u.test(String(row.resourceType ?? ""))) continue;
+    for (const generation of [row, row.old])
+      if (record(generation) && record(generation.attr)) {
+        const name = generation.attr.workerName;
+        if (typeof name === "string" && name.length > 0) names.add(name);
+      }
+  }
+  return [...names];
+};
+
 export const ownIdentities = (rows: ReadonlyArray<unknown>) => {
   const owned = new Set<string>();
   for (const row of rows) {

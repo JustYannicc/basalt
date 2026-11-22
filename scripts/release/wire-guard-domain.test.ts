@@ -16,8 +16,9 @@ const scope: StageScope = {
   label: "rehearsal-2",
   domain: ZONE,
   databases: [],
-  // What the stage's State rows record: its own Worker, and one domain id it did record.
-  owned: [STAGE_WORKER, "domain-recorded"],
+  // What the stage's State rows record: its own Worker, a D1 database's name, and one domain id.
+  owned: [STAGE_WORKER, "basalt-rehearsal-db-test-rehearsal-2", "domain-recorded"],
+  workers: [STAGE_WORKER],
   accountId: ACCOUNT,
 };
 
@@ -52,7 +53,19 @@ const domains: Record<string, Domain | { answer: Domain } | number> = {
     hostname: `api.rehearsal-2.${ZONE}`,
     service: "basalt-rehearsal-api-test-rehearsal-2",
   },
-  // A hostname that only ends like the stage's label.
+  // Hostnames that only end like the stage's label.
+  "label-prefix": { id: "label-prefix", hostname: `xrehearsal-2.${ZONE}`, service: STAGE_WORKER },
+  "label-prefix-sub": {
+    id: "label-prefix-sub",
+    hostname: `mcp.xrehearsal-2.${ZONE}`,
+    service: STAGE_WORKER,
+  },
+  // Under the label, on a name the State records but not as a Worker.
+  "label-other-kind": {
+    id: "label-other-kind",
+    hostname: `db.rehearsal-2.${ZONE}`,
+    service: "basalt-rehearsal-db-test-rehearsal-2",
+  },
   "label-suffix": {
     id: "label-suffix",
     hostname: `xrehearsal-2.${ZONE}.evil.example`,
@@ -63,6 +76,8 @@ const domains: Record<string, Domain | { answer: Domain } | number> = {
     answer: { id: "domain-own", hostname: `mcp.rehearsal-2.${ZONE}`, service: STAGE_WORKER },
   },
   "read-fails": 500,
+  // A redirect answers from an address no rule checked.
+  redirects: 302,
 };
 
 /** Cloudflare's API as the guard's proof read sees it; deletes are recorded, never judged here. */
@@ -79,6 +94,13 @@ const cloudflare =
     if (request.method === "GET" && id !== undefined) {
       if (entry === undefined)
         return Response.json({ success: false, result: null }, { status: 404 });
+      if (entry === 302)
+        return new Response(null, {
+          status: 302,
+          headers: {
+            location: `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/domains/domain-own`,
+          },
+        });
       if (typeof entry === "number") return Response.json({ success: false }, { status: entry });
       return Response.json({ success: true, result: "answer" in entry ? entry.answer : entry });
     }
@@ -110,7 +132,7 @@ const deleting = async (urls: readonly string[]) => {
         }),
       ),
     );
-    return { outcomes, deletes: sent.filter((line) => line.startsWith("DELETE ")) };
+    return { outcomes, sent, deletes: sent.filter((line) => line.startsWith("DELETE ")) };
   } finally {
     globalThis.fetch = original;
   }
@@ -119,9 +141,10 @@ const api = (id: string, account = ACCOUNT) =>
   `https://api.cloudflare.com/client/v4/accounts/${account}/workers/domains/${id}`;
 
 test("a stage deletes a domain its State never recorded only when both its hostname and its Worker are the stage's", async () => {
-  const { outcomes, deletes } = await deleting([api("domain-own"), api("domain-own")]);
-  // Proven once, a retry of the same delete passes by its id.
+  const { outcomes, deletes, sent } = await deleting([api("domain-own"), api("domain-own")]);
+  // Proven once, a retry of the same delete passes without a second read.
   assert.deepEqual(outcomes, ["sent 200", "sent 200"]);
+  assert.equal(sent.filter((line) => line.startsWith("GET ")).length, 1);
   assert.deepEqual(deletes, [
     `DELETE api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/domains/domain-own`,
     `DELETE api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/domains/domain-own`,
@@ -149,8 +172,16 @@ test("another stage's domain is refused, on its own Worker or on this stage's", 
     api("other-stage"),
     api("other-stage-label"),
     api("label-suffix"),
+    api("label-prefix"),
+    api("label-prefix-sub"),
   ]);
-  assert.deepEqual(outcomes, ["refused hostname", "refused hostname", "refused hostname"]);
+  assert.deepEqual(outcomes, [
+    "refused hostname",
+    "refused hostname",
+    "refused hostname",
+    "refused hostname",
+    "refused hostname",
+  ]);
   assert.deepEqual(deletes, []);
 });
 
@@ -159,8 +190,10 @@ test("a hostname under the stage's label on a Worker its State does not own is r
     api("label-foreign-worker"),
     // Carrying the stage's name is not owning: only the stage's State is.
     api("label-named-worker"),
+    // A name the State records for another kind is not a Worker it owns.
+    api("label-other-kind"),
   ]);
-  assert.deepEqual(outcomes, ["refused service", "refused service"]);
+  assert.deepEqual(outcomes, ["refused service", "refused service", "refused service"]);
   assert.deepEqual(deletes, []);
 });
 
@@ -169,13 +202,15 @@ test("a read that cannot vouch for the domain is refused, and so is any other or
     api("answers-another"),
     api("read-fails"),
     api("gone-already"),
+    api("redirects"),
     api("domain-own", OTHER_ACCOUNT),
     `https://other.example/client/v4/accounts/${ACCOUNT}/workers/domains/domain-own`,
   ]);
   assert.deepEqual(outcomes, [
-    "refused hostname",
-    "refused hostname",
-    "refused hostname",
+    "refused read",
+    "refused read",
+    "refused read",
+    "refused read",
     "refused account",
     "refused host",
   ]);
@@ -183,7 +218,9 @@ test("a read that cannot vouch for the domain is refused, and so is any other or
 });
 
 test("a domain id the stage's State records is deleted without a read, as before", async () => {
-  const { outcomes, deletes } = await deleting([api("domain-recorded")]);
+  const { outcomes, sent } = await deleting([api("domain-recorded")]);
   assert.deepEqual(outcomes, ["sent 200"]);
-  assert.equal(deletes.length, 1);
+  assert.deepEqual(sent, [
+    `DELETE api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/domains/domain-recorded`,
+  ]);
 });

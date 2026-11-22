@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   createdIdentities,
   ownIdentities,
+  ownWorkers,
   stageWriteVerdict,
   type StageScope,
 } from "./stage-writes.ts";
@@ -294,4 +295,24 @@ test("a Workers custom domain delete the State never recorded goes to a live pro
     },
   );
   assert.equal(verdict("DELETE", `${CF}/workers/domains/unrecorded`), "refuse");
+});
+
+test("a stage's Workers are only the names its Worker rows record, both generations", () => {
+  assert.deepEqual(
+    ownWorkers([
+      {
+        resourceType: "Cloudflare.Worker",
+        attr: { workerName: "w-new" },
+        old: { attr: { workerName: "w-old" } },
+      },
+      // Other kinds' names are the stage's too, but never a Worker it owns.
+      {
+        resourceType: "Cloudflare.D1Database",
+        attr: { databaseName: "db", name: "named-like-a-worker" },
+      },
+      { resourceType: "Cloudflare.Workflow", attr: { workerName: "not-a-worker-row" } },
+      null,
+    ]).sort(),
+    ["w-new", "w-old"],
+  );
 });

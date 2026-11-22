@@ -574,8 +574,9 @@ const proveStageDomain = (
     const hostname = typeof domain?.hostname === "string" ? domain.hostname.toLowerCase() : "";
     const service = typeof domain?.service === "string" ? domain.service : "";
     const named = stageHostname(scope, hostname);
-    // The State's own record only: a Worker this run proved by its tags is not enough here.
-    const served = service !== "" && scope.owned.includes(service);
+    // A Worker the State's own rows record: one this run proved by its tags, or any other name the
+    // State holds, is not enough here.
+    const served = service !== "" && (scope.workers ?? []).includes(service);
     if (named && served) return;
     return yield* refuse(
       {
@@ -584,7 +585,7 @@ const proveStageDomain = (
         path: template(apiPath(url.pathname)),
       },
       "stage",
-      named ? "service" : "hostname",
+      !domain ? "read" : named ? "service" : "hostname",
       !response
         ? "unreadable"
         : !domain
@@ -649,6 +650,7 @@ const stageGate = (
   config: WireGuardConfig,
   ownedHere: Set<string>,
   provenDeletes: Set<string>,
+  provenDomains: Set<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   url: URL,
@@ -685,9 +687,10 @@ const stageGate = (
       return undefined;
     }
     if (verdict.kind === "prove" && verdict.family === "Worker domain") {
-      yield* proveStageDomain(scope, inner, request, url, verdict.name);
-      // Proven once, a retry of the same delete passes by its id.
-      ownedHere.add(verdict.name);
+      // Proven once, a retry of the same delete passes; the id opens nothing else.
+      if (!provenDomains.has(verdict.name))
+        yield* proveStageDomain(scope, inner, request, url, verdict.name);
+      provenDomains.add(verdict.name);
       return undefined;
     }
     if (verdict.kind === "prove") {
@@ -824,6 +827,8 @@ export const install = (config: WireGuardConfig = {}) =>
     const ownedHere = new Set<string>();
     // Applications a rehearsal teardown proved are the stage's by name, each for its delete.
     const provenDeletes = new Set<string>();
+    // Workers custom domains a stage proved its own, each for its delete alone.
+    const provenDomains = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
@@ -836,6 +841,7 @@ export const install = (config: WireGuardConfig = {}) =>
             config,
             ownedHere,
             provenDeletes,
+            provenDomains,
             inner,
             request,
             url,
