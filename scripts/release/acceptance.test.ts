@@ -71,11 +71,7 @@ async function pool(
     request.on("data", (chunk) => (body += chunk));
     request.on("end", () => answer(request, response, body));
   });
-  const answer = (
-    request: IncomingMessage,
-    response: ServerResponse,
-    body: string,
-  ) => {
+  const answer = (request: IncomingMessage, response: ServerResponse, body: string) => {
     const model = request.url === "/v1/models" ? undefined : String(JSON.parse(body || "{}").model);
     if (model !== undefined) asked.push(model);
     if (model !== undefined && options.refuse?.includes(model)) {
@@ -107,7 +103,9 @@ async function pool(
         "x-signalbox-pool-boot": "boot-root",
       });
       const ids = options.models ?? ["claude-opus-5-5"];
-      response.end(JSON.stringify({ object: "list", data: ids.map((id) => ({ id, object: "model" })) }));
+      response.end(
+        JSON.stringify({ object: "list", data: ids.map((id) => ({ id, object: "model" })) }),
+      );
       return;
     }
     chats++;
@@ -594,7 +592,12 @@ test("without Opus 5.5 acceptance takes GPT-6.1 Sol, and with neither it sends n
 test("a configured acceptance model is used only when the catalog lists it", async () => {
   const live = await pool({ models: catalog22Nov });
   try {
-    await runAcceptance({ credential, expect: "same-boot", client: live.client, model: "gpt-6.1-sol" });
+    await runAcceptance({
+      credential,
+      expect: "same-boot",
+      client: live.client,
+      model: "gpt-6.1-sol",
+    });
     assert.deepEqual([...new Set(live.asked())], ["gpt-6.1-sol"]);
     await assert.rejects(
       runAcceptance({ credential, expect: "same-boot", client: live.client, model: "claude-x" }),
@@ -617,7 +620,10 @@ test("one real turn before the apply stops a model the pool cannot serve, and na
       /^Error: The acceptance model claude-3-5-haiku-20241022 did not serve one turn before the apply \(HTTP 429\); nothing was applied$/u,
     );
     assert.equal(live.chats(), 2);
-    await assert.rejects(acceptanceModelBeforeApply(credential, none.client), /None of the acceptance models/u);
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, none.client),
+      /None of the acceptance models/u,
+    );
     assert.equal(none.chats(), 0);
   } finally {
     live.close();

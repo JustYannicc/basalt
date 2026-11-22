@@ -65,7 +65,9 @@ export function acceptanceModel(ids: readonly string[], configured?: string) {
   }
   const model = acceptanceModels.find((id) => ids.includes(id));
   if (!model)
-    throw new Error(`None of the acceptance models (${acceptanceModels.join(", ")}) is in /v1/models`);
+    throw new Error(
+      `None of the acceptance models (${acceptanceModels.join(", ")}) is in /v1/models`,
+    );
   return model;
 }
 
