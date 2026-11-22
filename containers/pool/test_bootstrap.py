@@ -10,8 +10,11 @@ import urllib.parse
 from contextlib import redirect_stdout
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 
+from . import pool_contract
 from .pool_contract import (
+    StartupError,
     bootstrap_yaml,
     cluster_yaml,
     home_boot_requires_import,
@@ -141,6 +144,36 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertNotIn("api-keys", patch)
         self.assertNotIn("codex-api-key", patch)
         self.assertNotIn("secret-key", patch["management"])
+
+    def test_native_policy_scheduler_is_required_on_every_boot(self) -> None:
+        # Without it Home would fall back to its built-in selector once the veto plugin fuses.
+        self.assertIn(
+            "    basalt-native-policy:\n      enabled: true\n      load-in-home: true\n      scheduler-required: true\n",
+            bootstrap_yaml(False),
+        )
+        self.assertEqual(bootstrap_yaml(False).count("scheduler-required"), 1)
+        patched = pool_config_patch(False)["plugins"]["configs"]["basalt-native-policy"]
+        self.assertEqual(patched, {"enabled": True, "load-in-home": True, "scheduler-required": True})
+        for other in ("gemini-cli", "typesafe"):
+            self.assertNotIn("scheduler-required", pool_config_patch(False)["plugins"]["configs"][other])
+
+    def test_boot_refuses_a_home_that_drops_scheduler_required(self) -> None:
+        kept = {"enabled": True, "load-in-home": True, "scheduler-required": True}
+        for readback in ((200, {"enabled": True, "load-in-home": True}), (200, {**kept, "scheduler-required": "true"}), (404, {})):
+            with self.subTest(readback=readback), patch.object(
+                pool_contract, "request_json", side_effect=[(200, {}), readback]
+            ), patch.object(pool_contract, "provision_billing_policy") as billing:
+                with self.assertRaisesRegex(StartupError, "scheduler-required"):
+                    pool_contract.apply_pool_config("fixture-management-key", False)
+                billing.assert_not_called()
+        with patch.object(pool_contract, "request_json", side_effect=[(200, {}), (200, kept)]) as request, patch.object(
+            pool_contract, "provision_billing_policy"
+        ) as billing:
+            pool_contract.apply_pool_config("fixture-management-key", False)
+        self.assertEqual(request.call_args_list[1].args[:2], (
+            f"{pool_contract.HOME_URL}/v8/management/config/plugins/configs/basalt-native-policy", "GET"
+        ))
+        billing.assert_called_once()
 
     def test_child_logs_allow_only_audit_counts(self) -> None:
         self.assertIsNone(privacy_audit_line("node", "prompt=private auth=secret"))
@@ -417,9 +450,11 @@ class BootstrapContractTests(unittest.TestCase):
         readiness = Readiness("fixture-management-key")
         ready, payload = readiness.snapshot()
         self.assertFalse(ready)
-        # Besides boot identity, only the closed distance fields controllers route on.
-        self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
+        # Besides boot identity, only the closed distance fields controllers route on, and the
+        # closed refusal of a 503.
+        self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state", "refusal"})
         self.assertEqual(payload["db_rtt_state"], "pending")
+        self.assertEqual(payload["refusal"], "policy_unproven")
         self.assertTrue(readiness.authorized("Bearer fixture-management-key"))
         self.assertFalse(readiness.authorized("Bearer wrong"))
         readiness.set_ready(True)

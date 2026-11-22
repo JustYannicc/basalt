@@ -25,7 +25,10 @@ export const runtimeStopTiming = {
   confirmExit: () => pause(exitConfirmationMs),
   /** How long SIGTERM gets before `destroy()`. */
   stopGrace: () => pause(forcedStopGraceMs),
-  /** Whether Home is mid token refresh. The image doesn't report it yet; the Home owner adds it. */
+  /**
+   * Whether Home is mid token refresh. Images with carry 0695 report `refresh_in_flight` on
+   * readiness; the Worker doesn't read it yet.
+   */
   refreshInFlight: async (): Promise<boolean> => false,
 };
 type StopPath = "graceful_exit" | "destroy_after_grace" | "no_signal" | "stop_failed";

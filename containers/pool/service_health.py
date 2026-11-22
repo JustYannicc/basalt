@@ -20,9 +20,11 @@ class ServiceHealth:
         full_check: Callable[[str, str], bool] | None = None,
         fast_check: Callable[[str], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        observe: Callable[[int | None], None] | None = None,
     ) -> None:
         # Construction follows the generation's successful startup contract.
         self._key = key
+        self._observe = observe
         self._node_id = node_id
         self._full_check = full_check
         self._fast_check = fast_check
@@ -49,7 +51,7 @@ class ServiceHealth:
         fast_ok = (
             self._fast_check(self._key)
             if self._fast_check is not None
-            else check_liveness(self._key)
+            else check_liveness(self._key, self._observe)
         )
         audit_epoch: int | None = None
         with self._lock:

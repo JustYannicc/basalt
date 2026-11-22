@@ -82,6 +82,7 @@ class BillingPolicyTests(unittest.TestCase):
                 "request_json",
                 side_effect=[
                     (200, {}),
+                    (200, {"enabled": True, "load-in-home": True, "scheduler-required": True}),
                     (200, {**LEGACY, "allow_unpriced_models": False}),
                     (200, {"allow_unpriced_models": True}),
                     (200, {**LEGACY, "allow_unpriced_models": False}),
