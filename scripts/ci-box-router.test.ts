@@ -541,12 +541,12 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
         heartbeatRun(6, "schedule"),
       ],
     },
-    "/actions/runs/9/jobs?filter=latest&per_page=100&page=1": boxJob(90),
-    "/actions/runs/8/jobs?filter=latest&per_page=100&page=1": boxJob(80),
-    "/actions/runs/7/jobs?filter=latest&per_page=100&page=1": boxJob(70, ["ubuntu-latest"]),
-    "/actions/runs/6/jobs?filter=latest&per_page=100&page=1": boxJob(60, ["Basalt-Box"]),
+    "/actions/runs/9/jobs?filter=latest&per_page=50&page=1": boxJob(90),
+    "/actions/runs/8/jobs?filter=latest&per_page=50&page=1": boxJob(80),
+    "/actions/runs/7/jobs?filter=latest&per_page=50&page=1": boxJob(70, ["ubuntu-latest"]),
+    "/actions/runs/6/jobs?filter=latest&per_page=50&page=1": boxJob(60, ["Basalt-Box"]),
     "/actions/jobs/60/logs": healthyLog,
-    "/actions/runs?status=in_progress&per_page=100&page=1": {
+    "/actions/runs?status=in_progress&per_page=50&page=1": {
       workflow_runs: [
         { id: 1, path: ".github/workflows/ci.yml" },
         { id: 99, path: ".github/workflows/ci.yml" },
@@ -555,10 +555,10 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
         { id: 3, path: ".github/workflows/app-conventions.yml" },
       ],
     },
-    "/actions/runs?status=queued&per_page=100&page=1": {
+    "/actions/runs?status=queued&per_page=50&page=1": {
       workflow_runs: [{ id: 2, path: ".github/workflows/ci.yml@refs/pull/7/merge" }],
     },
-    "/actions/runs/1/jobs?filter=latest&per_page=100&page=1": {
+    "/actions/runs/1/jobs?filter=latest&per_page=50&page=1": {
       jobs: [
         job("in_progress", ["ubuntu-latest"], "GitHub Actions"),
         job("queued", ["ubuntu-latest"]),
@@ -571,7 +571,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
         job("in_progress", ["basalt-release"], "Default"),
       ],
     },
-    "/actions/runs/2/jobs?filter=latest&per_page=100&page=1": {
+    "/actions/runs/2/jobs?filter=latest&per_page=50&page=1": {
       // A queued box job holds a slot just like a running one, whatever its label's case.
       jobs: [
         job("queued", ["windows-latest"]),
@@ -580,7 +580,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
       ],
     },
     // The heartbeat's own job in flight doesn't hold a CI slot.
-    "/actions/runs/5/jobs?filter=latest&per_page=100&page=1": {
+    "/actions/runs/5/jobs?filter=latest&per_page=50&page=1": {
       jobs: [job("in_progress", ["basalt-box"], "Default")],
     },
   };
@@ -623,7 +623,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
   assert.deepEqual(routed.jobs, ["declared-cloud-1"]);
   assert.match(routed.summary, /while 3 hosted jobs are active elsewhere/);
 
-  delete routes["/actions/runs?status=queued&per_page=100&page=1"];
+  delete routes["/actions/runs?status=queued&per_page=50&page=1"];
   const failed = await routeBox(input(), githubObserver(env, fetcher), () => now, noWait);
   assert.deepEqual(failed.jobs, []);
   assert.match(failed.summary, /GitHub returned 404 for \/actions\/runs/);
@@ -651,7 +651,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
   routes[heartbeatRuns] = {
     workflow_runs: [heartbeatRun(11, "workflow_run", own, { head_branch: "feature" })],
   };
-  routes["/actions/runs/11/jobs?filter=latest&per_page=100&page=1"] = boxJob(110);
+  routes["/actions/runs/11/jobs?filter=latest&per_page=50&page=1"] = boxJob(110);
   routes["/actions/jobs/110/logs"] = healthyLog;
   assert.deepEqual(await githubObserver(env, fetcher).heartbeat(), {
     conclusion: "success",

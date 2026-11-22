@@ -275,13 +275,17 @@ export function githubObserver(
       throw new Error(`GitHub returned ${response.status} for ${path.split("?")[0]}`);
     return response;
   };
+  // GitHub answers 502 to a hundred jobs a page of a Check that was re-run, every time; fifty works.
+  const perPage = 50;
   const list = async (path: string, key: string) => {
     const items: Record<string, unknown>[] = [];
-    for (let page = 1; page <= 10; page++) {
-      const batch = record(await (await get(`${path}&per_page=100&page=${page}`)).json())[key];
+    for (let page = 1; page <= 20; page++) {
+      const batch = record(await (await get(`${path}&per_page=${perPage}&page=${page}`)).json())[
+        key
+      ];
       if (!Array.isArray(batch)) throw new Error("GitHub listed no " + key);
       items.push(...batch.map(record));
-      if (batch.length < 100) return items;
+      if (batch.length < perPage) return items;
     }
     throw new Error("more than 1000 active " + key);
   };
