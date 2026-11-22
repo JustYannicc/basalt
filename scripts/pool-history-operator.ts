@@ -20,6 +20,10 @@ import {
   historySchemaApplyPath,
   historySchemaCatalogPath,
 } from "../src/pool/model-history/operator.ts";
+import {
+  historyUsageRollupBackfillVersion,
+  historyUsageRollupPath,
+} from "../src/pool/model-history/usage-rollup-backfill.ts";
 
 import {
   historyJournalActivationMigration,
@@ -69,7 +73,10 @@ export function historyOperatorOptions(args: string[]) {
     !values.worker ||
     !/^[a-z0-9][a-z0-9-]{0,62}$/.test(values.worker) ||
     !values.plan ||
-    (operation !== "schema" && operation !== "backfill" && operation !== "journal-activation") ||
+    (operation !== "schema" &&
+      operation !== "backfill" &&
+      operation !== "journal-activation" &&
+      operation !== "usage-rollup") ||
     (values["readers-ready"] !== undefined &&
       (operation !== "journal-activation" ||
         values["readers-ready"] !== historyJournalReaderVersion)) ||
@@ -79,7 +86,7 @@ export function historyOperatorOptions(args: string[]) {
     Boolean(values.apply) !== Boolean(values.go)
   )
     throw new Error(
-      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation] [--apply --go] [--readers-ready checkpoint-count-v1]",
+      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation|usage-rollup] [--apply --go] [--readers-ready checkpoint-count-v1]",
     );
   return {
     worker: values.worker,
@@ -90,7 +97,7 @@ export function historyOperatorOptions(args: string[]) {
   } satisfies {
     worker: string;
     plan: string;
-    operation: "schema" | "backfill" | "journal-activation";
+    operation: "schema" | "backfill" | "journal-activation" | "usage-rollup";
     apply: boolean;
     readersReady?: string;
   };
@@ -207,10 +214,19 @@ function pendingMigrations(
 }
 
 function approvalFor(
-  operation: "schema" | "backfill" | "journal-activation",
+  operation: "schema" | "backfill" | "journal-activation" | "usage-rollup",
   report: Record<string, unknown>,
 ) {
   if (operation === "schema") return hashes(report);
+  if (operation === "usage-rollup") {
+    if (
+      report.version !== historyUsageRollupBackfillVersion ||
+      typeof report.digest !== "string" ||
+      !/^[a-f0-9]{64}$/.test(report.digest)
+    )
+      throw new Error("Invalid usage rollup plan");
+    return { digest: report.digest, plan: historyObject(report.plan) };
+  }
   if (operation === "journal-activation")
     return { ...hashes(report), readersReady: historyJournalReaderVersion };
   if (
@@ -250,7 +266,7 @@ export async function runHistoryOperator(
       throw new Error("History schema plan target changed");
     const report = historyObject(saved.report);
     approval = approvalFor(options.operation, report);
-    if (options.operation !== "backfill") {
+    if (options.operation !== "backfill" && options.operation !== "usage-rollup") {
       const preview = schemaPreview(report, options.operation);
       if (
         JSON.stringify(report.pendingDdl) !== JSON.stringify(preview.pendingDdl) ||
@@ -321,9 +337,11 @@ export async function runHistoryOperator(
         ? historyJournalActivationPath
         : options.operation === "backfill"
           ? historyBackfillPath
-          : approval
-            ? historySchemaApplyPath
-            : historySchemaCatalogPath;
+          : options.operation === "usage-rollup"
+            ? historyUsageRollupPath
+            : approval
+              ? historySchemaApplyPath
+              : historySchemaCatalogPath;
     const operations = platform.env.POOL_OPERATIONS;
     const response = await historyOperatorStep("operator.request", () =>
       operations.fetch(
@@ -343,6 +361,27 @@ export async function runHistoryOperator(
     let report = await historyOperatorStep("operator.response.json", async () =>
       historyObject(await response.json()),
     );
+    // Each rollup request recomputes days within its budget; the same approval resumes the rest.
+    for (
+      let run = 1;
+      options.operation === "usage-rollup" && approval && report.status === "progress";
+      run++
+    ) {
+      if (run > 10_000 || !("digest" in approval) || report.digest !== approval.digest)
+        throw new Error("Invalid usage rollup progress");
+      console.error(JSON.stringify({ run, status: report.status, pools: report.pools }));
+      const next = await historyOperatorStep("operator.request", () =>
+        operations.fetch(
+          new Request(`http://pool-operations${path}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...approval, go: true }),
+          }),
+        ),
+      );
+      if (!next.ok) throw new HistoryOperatorFailure("operator.response.status", next.status);
+      report = historyObject(await next.json());
+    }
     if (approval) {
       if (
         report.status !== "complete" ||
@@ -351,7 +390,8 @@ export async function runHistoryOperator(
             typeof report.applied !== "boolean" ||
             (options.operation === "journal-activation" &&
               report.readersReady !== historyJournalReaderVersion)
-          : report.digest !== approval.digest || report.activated !== true)
+          : report.digest !== approval.digest ||
+            (options.operation === "usage-rollup" ? false : report.activated !== true))
       )
         throw new Error("Invalid history apply response");
       await writeFile(receipt, JSON.stringify(report), { mode: 0o600 });
@@ -359,10 +399,15 @@ export async function runHistoryOperator(
       approvalFor(options.operation, report);
       if (report.status !== "dry-run") throw new HistoryOperatorFailure("report.status");
       if (report.writes !== false) throw new HistoryOperatorFailure("report.writes");
-      if (options.operation !== "backfill" && report.automaticBackfill !== false)
+      const schemaOperation =
+        options.operation !== "backfill" && options.operation !== "usage-rollup";
+      if (schemaOperation && report.automaticBackfill !== false)
         throw new HistoryOperatorFailure("report.automaticBackfill");
-      if (options.operation !== "backfill")
-        report = { ...report, ...schemaPreview(report, options.operation) };
+      if (schemaOperation)
+        report = {
+          ...report,
+          ...schemaPreview(report, options.operation as "schema" | "journal-activation"),
+        };
       await writeFile(
         options.plan,
         JSON.stringify({ accountId, worker: options.worker, operation: options.operation, report }),
