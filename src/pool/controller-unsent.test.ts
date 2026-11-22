@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import { fetchController, type ControllerHop } from "./controller-reset.ts";
 import { containerAnswer, reachedNoContainer } from "./controller-unsent.ts";
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { rootFallbackRefused } from "./runtime-fleet/root-fallback.ts";
 
 const mark = "X-Signalbox-Controller-Unsent";
 const body = JSON.stringify({
@@ -175,4 +176,30 @@ test("a handover refusal between re-sends keeps the refused attempt's name", asy
   const response = await fetchController(call(), hop);
   assert.equal(response.status, 200);
   assert.deepEqual(named, [null, refusedId, refusedId]);
+});
+
+test("the root cap's refusal is sent again by the entry inside its window and never reaches the client", async (context) => {
+  context.mock.method(console, "info", () => {});
+  context.mock.method(console, "error", () => {});
+  let now = 5_000_000;
+  const sends: string[] = [];
+  const hop: ControllerHop = {
+    controller: () => ({
+      fetch: async (request) => {
+        sends.push(await request.text());
+        // The root was at its cap while no cell was ready, then a cell became ready.
+        return sends.length === 1 ? rootFallbackRefused(request) : Response.json({ id: "message" });
+      },
+    }),
+    env: { SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456" },
+    defer: () => {},
+    now: () => now,
+    wait: async (milliseconds) => {
+      now += milliseconds;
+    },
+  };
+  const response = await fetchController(call(), hop);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get(mark), null);
+  assert.deepEqual(sends, [body, body], "the held call went once more, with its body");
 });
