@@ -59,11 +59,13 @@ export class FakeGateway implements GatewayContainer {
     if (!options.enableInternet) throw new Error("The gateway needs the internet");
     this.running = true;
     this.boot = undefined;
+    this.pendingLogin = false;
   }
   async destroy() {
     this.destroyed += 1;
     this.running = false;
     this.boot = undefined;
+    this.pendingLogin = false;
   }
   async setInactivityTimeout(ms: number) {
     this.inactivity.push(ms);
@@ -72,6 +74,7 @@ export class FakeGateway implements GatewayContainer {
   crash() {
     this.running = false;
     this.boot = undefined;
+    this.pendingLogin = false;
   }
   /** The person approved the login link. */
   approve() {

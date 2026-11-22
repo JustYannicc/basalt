@@ -75,6 +75,7 @@ test("saved-account steps bind the first account and act on the route", async ()
   const { send, session, saved, container, storage } = setup();
   await send(session("start", { app: "tailscale" }));
   container.approve();
+  await send(session("status"));
   assert.deepEqual((await send(saved("exits"))).body, {
     exits: [
       { id: "n1", name: "home-exit", online: true, lastSeen: null },
@@ -150,6 +151,7 @@ test("signing in again is start on the same route: a fresh link, then connected,
   const { send, session, saved, container, storage } = setup();
   await send(session("start", { app: "tailscale" }));
   container.approve();
+  await send(session("status"));
   await send(saved("select", { exitId: "n1", whenDown: "stop" }));
   assert.deepEqual((await send(saved("remove"))).body, {});
   const again = await send(session("start", { app: "tailscale" }));

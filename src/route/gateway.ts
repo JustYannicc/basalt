@@ -193,9 +193,9 @@ export class RouteGatewayCore {
       await this.schedule();
       return reading;
     }
-    // A route with no identity has nothing to route through, and choosing must not start a node.
-    if (!this.gateway.running && !(await this.identity.exists()))
-      throw new RouteRefused("route_needs_login");
+    // A route with no sealed identity has nothing to route through; a node that is still signing
+    // in must not be told to route either, or it would be kept warm and polled with no identity.
+    if (!(await this.identity.exists())) throw new RouteRefused("route_needs_login");
     try {
       await this.ensureStarted();
     } catch {
@@ -231,9 +231,14 @@ export class RouteGatewayCore {
     // Every sign-in, selection and refresh already in flight is now stale and writes nothing.
     this.generation += 1;
     // With no stored identity and nothing running there is no device to log out, so a repeated
-    // disconnect starts no compute.
-    if (this.gateway.running || (await this.identity.exists()))
+    // disconnect starts no compute. A start a switch-off abandoned meanwhile is retried once, so
+    // the device is still logged out.
+    if (this.gateway.running || (await this.identity.exists())) {
+      const launch = this.launch;
       await this.ensureStarted().catch(() => {});
+      if (launch !== this.launch && (await this.identity.exists()))
+        await this.ensureStarted().catch(() => {});
+    }
     return this.exclusive(async () => {
       try {
         if (this.gateway.running) await this.gateway.logout();
@@ -313,9 +318,10 @@ export class RouteGatewayCore {
     if (generation !== this.generation) throw new RouteRefused("route_gateway_unavailable");
   }
 
-  /** Routing is on while an exit is selected; only then is the gateway kept warm and polled. */
+  /** Routing is on while a signed-in route has an exit selected; only then is it warmed and polled. */
   private async routing() {
-    return ((await this.deps.storage.get<Selection>(keys.selection))?.exitId ?? null) !== null;
+    const exitId = (await this.deps.storage.get<Selection>(keys.selection))?.exitId ?? null;
+    return exitId !== null && (await this.identity.exists());
   }
 
   /** Concurrent reads share one refresh, so an outage costs one start attempt, not one per caller. */
@@ -338,6 +344,7 @@ export class RouteGatewayCore {
       );
     // The start runs outside the lock: a hung gateway must not hold up a switch-off behind it.
     const generation = this.generation;
+    const launch = this.launch;
     const started = await this.ensureStarted().then(
       () => undefined,
       (error: unknown) => error ?? new Error("start failed"),
@@ -349,7 +356,8 @@ export class RouteGatewayCore {
         this.gateway.running ||
         (selection?.exitId ?? null) !== null ||
         (await this.deps.storage.get(keys.loginUntil)) !== undefined;
-      if (generation !== this.generation || !live)
+      // A start that a switch-off abandoned is no outage: the route reads as that switch-off left it.
+      if (generation !== this.generation || launch !== this.launch || !live)
         return this.record(await this.idle(selection), true);
       try {
         if (started) throw started;
@@ -448,9 +456,11 @@ export class RouteGatewayCore {
     const live = () => {
       if (launch !== this.launch) throw new RouteRefused("route_gateway_unavailable");
     };
-    this.gateway.launch();
     const deadline = this.deps.now() + startDeadlineMs;
     for (;;) {
+      // Launched again whenever it is not running, so a start begun while a stop's destroy was
+      // still settling does not probe a gone container until its deadline.
+      this.gateway.launch();
       const probe = await this.gateway.probe();
       live();
       if (probe === "started") return;
@@ -461,11 +471,18 @@ export class RouteGatewayCore {
     }
   }
 
+  /** Checks before each container request, so a stopped start never reaches the next container. */
   private async boot(live: () => void) {
     const { routeId } = await this.meta();
-    await this.gateway.start(await this.identity.open(routeId));
+    const state = await this.identity.open(routeId);
+    // A sign-in link belongs to the node that issued it; a fresh node cannot complete it, so the
+    // person is told to sign in again rather than left waiting on a dead link.
+    if (state === null) await this.deps.storage.delete([keys.loginUntil]);
+    live();
+    await this.gateway.start(state);
     live();
     const selection = await this.deps.storage.get<Selection>(keys.selection);
+    live();
     if (selection) await this.gateway.select(selection);
     live();
   }

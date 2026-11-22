@@ -126,6 +126,7 @@ test("select returns the reading, keeps the route warm and polls every 30 s", as
   const { gateway, container, storage, deps } = await created();
   await gateway.login(caller);
   container.approve();
+  await gateway.joinStatus(caller);
   const reading = await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   assert.deepEqual(reading, {
     state: "active",
@@ -160,6 +161,7 @@ test("a restarted container gets the stored identity and selection before anythi
   const { gateway, container, advance } = await created();
   await gateway.login(caller);
   container.approve();
+  await gateway.joinStatus(caller);
   await gateway.select(caller, { exitId: "n1", whenDown: "direct" });
   container.crash();
   advance(30_000);
@@ -204,6 +206,7 @@ test("only crossing into or out of down emits, with reason codes and no names", 
   const { gateway, container, events, advance } = await created();
   await gateway.login(caller);
   container.approve();
+  await gateway.joinStatus(caller);
   await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   assert.equal(events.length, 0);
   container.reachable = false;
@@ -241,6 +244,7 @@ test("an unreachable gateway reads down, and a never-joined route reads without 
   assert.equal(container.running, false);
   await gateway.login(caller);
   container.approve();
+  await gateway.joinStatus(caller);
   await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   container.reachable = false;
   const reading = await gateway.reading(caller);
@@ -252,6 +256,7 @@ test("disconnect logs the device out, forgets its identity and stops the contain
   const { gateway, container, storage } = await created();
   await gateway.login(caller);
   container.approve();
+  await gateway.joinStatus(caller);
   await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
   assert.deepEqual(await gateway.disconnect(caller), {});
   assert.equal(container.logouts, 1);
@@ -669,4 +674,62 @@ test("a gateway reply that breaks the wire is refused by reason code, never its 
   const { gateway, container } = await joined();
   container.garbleNext = "/exits";
   await refusedWith(gateway.exits(caller), "route_gateway_unavailable");
+});
+
+test("a disconnect whose start a switch-off abandoned still logs the device out", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  const held = container.hold("/status");
+  const tunnel = gateway.openTunnel({ owner }).catch(() => {});
+  await held.reached;
+  const leaving = gateway.disconnect(caller);
+  await settle();
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  held.release();
+  await leaving;
+  await tunnel;
+  assert.equal(container.logouts, 1);
+  assert.equal(await storage.get("route-v1:state"), undefined);
+  assert.equal(container.running, false);
+});
+
+test("a start abandoned during a sign-in is no outage and emits nothing", async () => {
+  const { gateway, container, events } = await created();
+  await gateway.login(caller);
+  container.crash();
+  const held = container.hold("/status");
+  const alarm = gateway.alarm();
+  await held.reached;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  held.release();
+  await alarm;
+  assert.equal(events.filter((event) => event.state === "down").length, 0);
+});
+
+test("an exit cannot be chosen before the identity is sealed, even while the node runs", async () => {
+  const { gateway, container, storage } = await created();
+  await gateway.login(caller);
+  await refusedWith(
+    gateway.select(caller, { exitId: "n1", whenDown: "stop" }),
+    "route_needs_login",
+  );
+  assert.equal(await storage.get("route-v1:selection"), undefined);
+  container.approve();
+  await gateway.joinStatus(caller);
+  assert.equal((await gateway.select(caller, { exitId: "n1", whenDown: "stop" })).state, "active");
+});
+
+test("a restart during a sign-in asks for a new sign-in instead of waiting on a dead link", async () => {
+  const { gateway, container, advance } = await created();
+  await gateway.login(caller);
+  assert.deepEqual(await gateway.joinStatus(caller), { state: "waiting" });
+  container.crash();
+  advance(2_000);
+  await gateway.alarm();
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "failed",
+    reason: "route_needs_login",
+  });
+  assert.equal("url" in (await gateway.login(caller)) ? "new link" : "ready", "new link");
 });
