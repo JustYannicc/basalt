@@ -1,0 +1,424 @@
+diff --git a/apps/hosted/cloud/src/implementation/error-reporting.ts b/apps/hosted/cloud/src/implementation/error-reporting.ts
+--- a/apps/hosted/cloud/src/implementation/error-reporting.ts
++++ b/apps/hosted/cloud/src/implementation/error-reporting.ts
+@@ -7,6 +7,7 @@ import { CurrentUserId, CurrentOrganization } from "@executor-js/hosted-server";
+ import { isRequestRejection } from "@executor-js/telemetry/http";
+ import { recordedError } from "@executor-js/telemetry/recorded-failure";
+ import { catalogBuildIncident } from "./catalog-build-incident.ts";
++import { poolAppIncident } from "./pool-app-incident.ts";
+ 
+ /**
+  * Client rejections stay in request telemetry and are not incidents: declared
+@@ -76,16 +77,25 @@ export const sentryBeforeSend = (settings: SentrySettings) =>
+         const environment = boundedLabel(settings.environment, 64);
+         const eventId = traceId(event.event_id, 32);
+         const catalog = catalogBuildIncident(event);
+-        const failure = catalog === undefined ? "UnhandledFailure" : "CatalogBuildResourceFailed";
++        const poolApp = catalog === undefined ? poolAppIncident(event) : undefined;
++        const failure =
++          catalog === undefined
++            ? (poolApp?.failure ?? "UnhandledFailure")
++            : "CatalogBuildResourceFailed";
+         return {
+           ...(eventId === undefined ? {} : { event_id: eventId }),
+           timestamp: Date.now() / 1000,
+           level: "error",
+           platform: "javascript",
+           message: failure,
+-          exception: { values: [{ type: failure }] },
+-          fingerprint: ["basalt", failure],
++          exception: {
++            values: [
++              { type: failure, ...(poolApp?.value === undefined ? {} : { value: poolApp.value }) },
++            ],
++          },
++          fingerprint: poolApp?.fingerprint ?? ["basalt", failure],
+           ...(catalog === undefined ? {} : { tags: catalog }),
++          ...(poolApp === undefined ? {} : { tags: poolApp.tags }),
+           type: undefined,
+           ...(release === undefined ? {} : { release }),
+           ...(environment === undefined ? {} : { environment }),
+@@ -200,6 +210,8 @@ export const withCloudSentry = <A, E, R>(
+             "executor.attempt.id",
+             "executor.catalog.resource_failure",
+             "executor.catalog.phase",
++            "executor.pool_app.route",
++            "executor.pool_app.refusal",
+           ]) {
+             const value = span.value.attributes.get(key);
+             if (typeof value === "string") scope.setTag(key, value);
+diff --git a/apps/hosted/cloud/src/implementation/pool-app-incident.ts b/apps/hosted/cloud/src/implementation/pool-app-incident.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/pool-app-incident.ts
+@@ -0,0 +1,34 @@
++/** Only a pool app route's closed failure fields pass the direct error sink's privacy boundary. */
++import type { ErrorEvent } from "@sentry/core";
++import {
++  isPoolAppRoute,
++  isPoolRefusalCode,
++  poolAppRefusalAttribute,
++  poolAppRouteAttribute,
++  reportedType,
++  scrubReportedText,
++} from "@executor-js/hosted-server/pool-app-failure";
++
++export const poolAppIncident = (event: ErrorEvent) => {
++  const route = event.tags?.[poolAppRouteAttribute];
++  const refusal = event.tags?.[poolAppRefusalAttribute];
++  const exception = event.exception?.values?.[0];
++  const failure = reportedType(exception?.type);
++  if (
++    !isPoolAppRoute(route) ||
++    (refusal !== undefined && !isPoolRefusalCode(refusal)) ||
++    failure === undefined
++  )
++    return undefined;
++  // The reporter already scrubbed it; scrubbing again keeps this boundary its own check.
++  const value = typeof exception?.value === "string" ? scrubReportedText(exception.value) : "";
++  return {
++    failure,
++    ...(value === "" ? {} : { value }),
++    tags: {
++      [poolAppRouteAttribute]: route,
++      ...(refusal === undefined ? {} : { [poolAppRefusalAttribute]: refusal }),
++    },
++    fingerprint: ["basalt", failure, route, ...(refusal === undefined ? [] : [refusal])],
++  };
++};
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -7,6 +7,7 @@
+     "./app-link-schema": "./src/implementation/app-link-schema.ts",
+     "./background-work": "./src/implementation/background-work.ts",
+     "./pool-account-registry": "./src/implementation/pool-account-registry.ts",
++    "./pool-app-failure": "./src/implementation/pool-app-failure.ts",
+     "./contributed-departures": "./src/implementation/contributed-departure-queue.ts",
+     "./connection-retention": "./src/implementation/connection-retention.ts",
+     ".": "./src/index.ts",
+diff --git a/apps/hosted/server/src/implementation/pool-app-failure.ts b/apps/hosted/server/src/implementation/pool-app-failure.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-app-failure.ts
+@@ -0,0 +1,107 @@
++/**
++ * A pool app API route answers its page "unavailable" for every failure it does not name, so the
++ * page never says why. Each such 5xx reaches error reporting here, tagged with its route and the
++ * pool's closed refusal code. The report is the failure as telemetry records it
++ * (`@executor-js/telemetry/recorded-failure`): its type and its message, with the message's values
++ * scrubbed. No field, cause, stack, request content or account data is reported.
++ */
++import { recordedError } from "@executor-js/telemetry/recorded-failure";
++import { Cause, Clock, Effect, ErrorReporter } from "effect";
++import { poolRefusal, type PoolRefusalCode } from "./pool-refusal.ts";
++
++export { isPoolRefusalCode } from "./pool-refusal.ts";
++
++export const poolAppRoutes = [
++  "pool-usage/summary",
++  "pool-usage/series",
++  "pool-usage/overview",
++  "pool-usage/personal-overview",
++  "pool-usage/account-label",
++] as const;
++export type PoolAppRoute = (typeof poolAppRoutes)[number];
++const routes: ReadonlySet<string> = new Set(poolAppRoutes);
++export const isPoolAppRoute = (value: unknown): value is PoolAppRoute =>
++  typeof value === "string" && routes.has(value);
++
++/** Span attributes the cloud error reporter copies to an incident's tags. */
++export const poolAppRouteAttribute = "executor.pool_app.route";
++export const poolAppRefusalAttribute = "executor.pool_app.refusal";
++
++const identifier = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
++/** A failure's type, when it is a plain identifier. */
++export const reportedType = (value: unknown) =>
++  typeof value === "string" && identifier.test(value) ? value : undefined;
++
++/**
++ * The hosted structured logs' rule for a message: the first kilobyte of its first line, with URLs,
++ * addresses, quoted values and long runs holding a digit (tokens, keys, hashes, IDs) replaced. It
++ * matters for an untagged error, whose message comes from the engine or a library.
++ */
++export const scrubReportedText = (message: string) =>
++  (message.split("\n", 1)[0] ?? "")
++    .slice(0, 1024)
++    .replace(/[a-z][a-z0-9+.-]{0,30}:\/\/\S*/gi, "<url>")
++    .replace(/[^\s"'<>@]{1,64}@[^\s"'<>@]{1,255}/g, "<email>")
++    .replace(/"[^"\n]*"|'[^'\n]*'/g, "<value>")
++    .replace(/[\w.~+/=-]{16,}/g, (run) => (/\d/.test(run) ? "<value>" : run))
++    .slice(0, 180);
++
++/** The error reported in place of `error`: its recorded type and scrubbed message only. */
++export const reportedFailure = (error: unknown): Error => {
++  const recorded = recordedError(error);
++  const name =
++    recorded instanceof Error
++      ? (reportedType(recorded.name) ?? "UnrecognizedFailure")
++      : "UnrecognizedFailure";
++  const message = recorded instanceof Error ? scrubReportedText(recorded.message) : "";
++  const failure = new Error(message);
++  failure.name = name;
++  failure.stack = message === "" ? name : `${name}: ${message}`;
++  return failure;
++};
++
++/**
++ * A summary the pool cannot roll up answers `history_too_large` on every load until a later rollup
++ * lands, so it reports once per pool within a window instead of once per page load. Only these
++ * deliberate refusals are held back: every other 5xx, named or not, reports each time, so a second
++ * outage is never hidden behind the first.
++ */
++const reportedOncePerCause: ReadonlySet<PoolRefusalCode> = new Set(["history_too_large"]);
++const causeWindowMs = 60 * 60 * 1000;
++const causeLimit = 512;
++const causesReportedAt = new Map<string, number>();
++
++const firstInWindow = (key: string, now: number) => {
++  const last = causesReportedAt.get(key);
++  if (last !== undefined && now - last < causeWindowMs) return false;
++  causesReportedAt.delete(key);
++  // Insertion order is report order, so the first key is the oldest cause.
++  for (const oldest of causesReportedAt.keys()) {
++    if (causesReportedAt.size < causeLimit) break;
++    causesReportedAt.delete(oldest);
++  }
++  causesReportedAt.set(key, now);
++  return true;
++};
++
++/** Report a failure a pool app route answers with a 5xx. Statuses below 500 never report. */
++export const reportPoolAppFailure = (route: PoolAppRoute, error: unknown) =>
++  Effect.gen(function* () {
++    const refusal = poolRefusal(error);
++    // The pool's own 4xx refusals still answer the page "unavailable", but nothing failed.
++    if (refusal !== undefined && refusal.status < 500) return;
++    if (
++      refusal?.code !== undefined &&
++      reportedOncePerCause.has(refusal.code) &&
++      !firstInWindow(`${refusal.code}\n${refusal.pool ?? ""}`, yield* Clock.currentTimeMillis)
++    )
++      return;
++    yield* ErrorReporter.report(Cause.fail(reportedFailure(error))).pipe(
++      Effect.withSpan("pool_app.failure", {
++        attributes: {
++          [poolAppRouteAttribute]: route,
++          ...(refusal?.code === undefined ? {} : { [poolAppRefusalAttribute]: refusal.code }),
++        },
++      }),
++    );
++  });
+diff --git a/apps/hosted/server/src/implementation/pool-app-ui.ts b/apps/hosted/server/src/implementation/pool-app-ui.ts
+--- a/apps/hosted/server/src/implementation/pool-app-ui.ts
++++ b/apps/hosted/server/src/implementation/pool-app-ui.ts
+@@ -23,6 +23,7 @@ import {
+ } from "./pool-usage.ts";
+ import { PoolUsageTimedOut } from "../contracts/pool-usage.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { reportPoolAppFailure, type PoolAppRoute } from "./pool-app-failure.ts";
+ 
+ export const poolAppUsagePath = "/_executor/api/pool-usage/series";
+ export const poolAppUsageOverviewPath = "/_executor/api/pool-usage/overview";
+@@ -71,9 +72,13 @@ export const poolAppUsage = <E, R>(
+         return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
+       if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
+         return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
+-      if (Schema.is(PoolUsageTimedOut)(error))
+-        return Effect.succeed(json({ _tag: "UiFailed", reason: "timeout" }, 504));
+-      return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
++      return reportPoolAppFailure("pool-usage/series", error).pipe(
++        Effect.as(
++          Schema.is(PoolUsageTimedOut)(error)
++            ? json({ _tag: "UiFailed", reason: "timeout" }, 504)
++            : json({ _tag: "UiFailed", reason: "unavailable" }, 503),
++        ),
++      );
+     }),
+   );
+ 
+@@ -88,6 +93,7 @@ const appUsageOverview = <E, R>(
+     R
+   >,
+   read: typeof poolUsageOverview | typeof poolPersonalUsageOverview,
++  route: PoolAppRoute,
+ ) =>
+   Effect.gen(function* () {
+     const current = yield* appUiPhase("overview-authorize", authorize);
+@@ -115,16 +121,18 @@ const appUsageOverview = <E, R>(
+         return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
+       if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
+         return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
+-      return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
++      return reportPoolAppFailure(route, error).pipe(
++        Effect.as(json({ _tag: "UiFailed", reason: "unavailable" }, 503)),
++      );
+     }),
+   );
+ 
+ export const poolAppUsageOverview = <E, R>(
+   authorize: Parameters<typeof appUsageOverview<E, R>>[0],
+-) => appUsageOverview(authorize, poolUsageOverview);
++) => appUsageOverview(authorize, poolUsageOverview, "pool-usage/overview");
+ export const poolAppPersonalUsageOverview = <E, R>(
+   authorize: Parameters<typeof appUsageOverview<E, R>>[0],
+-) => appUsageOverview(authorize, poolPersonalUsageOverview);
++) => appUsageOverview(authorize, poolPersonalUsageOverview, "pool-usage/personal-overview");
+ 
+ export const poolAppUsageAccountLabel = <E, R>(
+   authorize: Effect.Effect<
+@@ -165,6 +173,8 @@ export const poolAppUsageAccountLabel = <E, R>(
+         return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
+       if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
+         return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
+-      return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
++      return reportPoolAppFailure("pool-usage/account-label", error).pipe(
++        Effect.as(json({ _tag: "UiFailed", reason: "unavailable" }, 503)),
++      );
+     }),
+   );
+diff --git a/apps/hosted/server/src/implementation/pool-backend.ts b/apps/hosted/server/src/implementation/pool-backend.ts
+--- a/apps/hosted/server/src/implementation/pool-backend.ts
++++ b/apps/hosted/server/src/implementation/pool-backend.ts
+@@ -12,6 +12,7 @@ import {
+ } from "./resource-policy.ts";
+ import { hostAssertionTtlMs, signEnvelope } from "./pool-token.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { poolRefusal, refusedBy } from "./pool-refusal.ts";
+ 
+ const isBulkUpload = Schema.is(Schema.Struct({ operation: Schema.Literal("upload") }));
+ 
+@@ -98,9 +99,19 @@ export const sendPoolCommand = <A>(
+ ) =>
+   Effect.gen(function* () {
+     const response = yield* sendPoolCommandResponse(action, payload);
+-    if (response.status !== 200) return yield* new PoolUsageUnavailable();
++    if (response.status !== 200)
++      return yield* Effect.fail(refusedBy(new PoolUsageUnavailable(), response, payload));
+     return yield* Schema.decodeUnknownEffect(responseSchema)(response.body);
+-  }).pipe(Effect.catch(() => new PoolUsageUnavailable()));
++  }).pipe(
++    // A refusal keeps the pool's status and code; any other failure stays unnamed.
++    Effect.catch((error) =>
++      Effect.fail(
++        Schema.is(PoolUsageUnavailable)(error) && poolRefusal(error) !== undefined
++          ? error
++          : new PoolUsageUnavailable(),
++      ),
++    ),
++  );
+ 
+ const authorizedPool = <A, E, R>(
+   actor: typeof lockCurrentActor,
+diff --git a/apps/hosted/server/src/implementation/pool-refusal.ts b/apps/hosted/server/src/implementation/pool-refusal.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/pool-refusal.ts
+@@ -0,0 +1,52 @@
++/**
++ * What the pool answered when a usage read failed: its status and closed error code. The pool's
++ * `message` is its own text and is never kept. The refusal is held beside the tagged error, so
++ * the error's fields, wire encoding and what any caller receives stay as they were.
++ */
++import { Predicate } from "effect";
++
++/**
++ * Basalt's pool `ControlErrorCode` values that its usage reads answer. A mirror of the pool's
++ * contract (a TypeScript union only); a Basalt test fails when one is not in that union.
++ */
++export const poolRefusalCodes = [
++  "invalid_query",
++  "unauthorized",
++  "not_found",
++  "backend_unavailable",
++  "history_timeout",
++  "history_too_large",
++] as const;
++export type PoolRefusalCode = (typeof poolRefusalCodes)[number];
++
++const codes: ReadonlySet<string> = new Set(poolRefusalCodes);
++export const isPoolRefusalCode = (value: unknown): value is PoolRefusalCode =>
++  typeof value === "string" && codes.has(value);
++
++export interface PoolRefusal {
++  readonly status: number;
++  /** Absent when the pool's body named no listed code. */
++  readonly code?: PoolRefusalCode;
++  /** The pool the command named; it keys repeated refusals and is never reported. */
++  readonly pool?: string;
++}
++
++const refusals = new WeakMap<object, PoolRefusal>();
++
++/** Record the pool's answer for `error`, keeping only its status and a listed `error` code. */
++export const refusedBy = <E extends object>(
++  error: E,
++  response: { readonly status: number; readonly body: unknown },
++  payload: Readonly<Record<string, unknown>>,
++): E => {
++  const code = Predicate.hasProperty(response.body, "error") ? response.body.error : undefined;
++  refusals.set(error, {
++    status: response.status,
++    ...(isPoolRefusalCode(code) ? { code } : {}),
++    ...(typeof payload.pool === "string" ? { pool: payload.pool } : {}),
++  });
++  return error;
++};
++
++export const poolRefusal = (error: unknown): PoolRefusal | undefined =>
++  typeof error === "object" && error !== null ? refusals.get(error) : undefined;
+diff --git a/apps/hosted/server/src/implementation/pool-summary-app-ui.ts b/apps/hosted/server/src/implementation/pool-summary-app-ui.ts
+--- a/apps/hosted/server/src/implementation/pool-summary-app-ui.ts
++++ b/apps/hosted/server/src/implementation/pool-summary-app-ui.ts
+@@ -14,6 +14,7 @@ import {
+ import { PoolUsageOverviewReadInput } from "../contracts/pool-usage-summary.ts";
+ import { poolUsageOverviewRead } from "./pool-usage-summary.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { reportPoolAppFailure } from "./pool-app-failure.ts";
+ 
+ export const poolAppUsageSummaryPath = "/_executor/api/pool-usage/summary";
+ const Request = Schema.Struct({ version: VersionId, input: PoolUsageOverviewReadInput });
+@@ -57,6 +58,8 @@ export const poolAppUsageSummary = <E, R>(
+         return Effect.succeed(json({ _tag: "UiUnauthorized" }, 401));
+       if (Schema.is(UiForbidden)(error) || Schema.is(OrganizationForbidden)(error))
+         return Effect.succeed(json({ _tag: "UiForbidden" }, 403));
+-      return Effect.succeed(json({ _tag: "UiFailed", reason: "unavailable" }, 503));
++      return reportPoolAppFailure("pool-usage/summary", error).pipe(
++        Effect.as(json({ _tag: "UiFailed", reason: "unavailable" }, 503)),
++      );
+     }),
+   );
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -35,6 +35,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ import { historyReadPhase } from "./pool-history-read-phase.ts";
+ import { poolMemberDirectory } from "./pool-usage-directory.ts";
++import { refusedBy } from "./pool-refusal.ts";
+ 
+ const Person = Schema.Struct({
+   user: Principal.fields.userId,
+@@ -135,15 +136,18 @@ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+   withPool(app, (pool) =>
+     Effect.gen(function* () {
+       const accounts = yield* usageSeriesAccounts(pool, input.accounts);
+-      const response = yield* sendPoolCommandResponse("poolUsageSeries", {
++      const payload = {
+         pool: pool.pool,
+         organization: pool.organization,
+         user: pool.user,
+         input: { ...input, pool: pool.pool },
+         authority: { canManage: true, accounts },
+-      });
+-      if (response.status === 504) return yield* new PoolUsageTimedOut();
+-      if (response.status !== 200) return yield* new PoolUsageUnavailable();
++      };
++      const response = yield* sendPoolCommandResponse("poolUsageSeries", payload);
++      if (response.status === 504)
++        return yield* Effect.fail(refusedBy(new PoolUsageTimedOut(), response, payload));
++      if (response.status !== 200)
++        return yield* Effect.fail(refusedBy(new PoolUsageUnavailable(), response, payload));
+       const result = yield* Schema.decodeUnknownEffect(PoolUsageSeriesData)(response.body);
+       return input.by.includes("person") && input.after === undefined
+         ? { ...result, directory: yield* poolMemberDirectory(pool) }
