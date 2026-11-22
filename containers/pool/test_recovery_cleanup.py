@@ -79,8 +79,9 @@ class OrdinaryStopTests(unittest.TestCase):
 
             def wait(timeout, state=state, name=name):
                 waits.append((name, clock.now, timeout))
+                # Each child takes its whole allowance, before and after the kill.
+                clock.now += timeout
                 if not state["killed"]:
-                    clock.now += timeout
                     raise subprocess.TimeoutExpired(name, timeout)
                 return -9
 
@@ -105,4 +106,6 @@ class OrdinaryStopTests(unittest.TestCase):
         self.assertEqual(waits[:2], [("home", 0.0, 15.0), ("node", 15.0, 0)])
         self.assertEqual(killed, [("home", 15.0), ("node", 15.0)])
         self.assertEqual([timeout for _, _, timeout in waits[2:]], [1, 1])
-        self.assertLessEqual(clock.now, 16.0)
+        # One second for each killed child, one after the other: 17 s for two, inside the
+        # controller's 30 s forced stop.
+        self.assertEqual(clock.now, 17.0)

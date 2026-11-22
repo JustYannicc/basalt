@@ -431,7 +431,7 @@ class SupervisorTests(unittest.TestCase):
 class FirstBootStartupBoundTests(unittest.TestCase):
     """A first boot is the quiet case: no recovery episode, only the startup budget."""
 
-    def wait(self, answers_at: float | None) -> tuple[str | Exception, Clock, Stop]:
+    def first_boot(self, answers_at: float | None) -> tuple[SimpleNamespace, Clock, Stop]:
         clock = Clock()
         stop = Stop(clock)
         child = SimpleNamespace(
@@ -439,27 +439,23 @@ class FirstBootStartupBoundTests(unittest.TestCase):
             process=Mock(poll=Mock(return_value=None)),
             config_empty=threading.Event(),
         )
+
         def ready(_key: str) -> bool:
             return answers_at is not None and clock.now >= answers_at
 
-        with (
-            patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)),
-            patch.object(supervisor, "management_ready", side_effect=ready),
-        ):
-            try:
-                return supervisor.wait_for_home(child, "fixture", stop), clock, stop
-            except Exception as error:
-                return error, clock, stop
+        self.enterContext(patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)))
+        self.enterContext(patch.object(supervisor, "management_ready", side_effect=ready))
+        return child, clock, stop
 
     def test_a_home_that_never_answers_gets_exactly_the_startup_budget(self) -> None:
-        outcome, clock, stop = self.wait(None)
-        self.assertIsInstance(outcome, supervisor.StartupError)
-        # 180 s is also the controller's runtimeStartupMs (forced-restart-timing.ts).
+        child, clock, stop = self.first_boot(None)
+        with self.assertRaises(supervisor.StartupError):
+            supervisor.wait_for_home(child, "fixture", stop)
+        # runtime-forced-stop.test.ts keeps this equal to the controller's runtimeStartupMs.
         self.assertEqual(clock.now, 180)
         self.assertEqual(set(stop.waits), {0.5})
 
     def test_a_home_that_answers_inside_the_budget_is_ready_at_its_first_answer(self) -> None:
-        last = 179.5
-        outcome, clock, _ = self.wait(last)
-        self.assertEqual(outcome, "ready")
-        self.assertEqual(clock.now, last)
+        child, clock, stop = self.first_boot(179.5)
+        self.assertEqual(supervisor.wait_for_home(child, "fixture", stop), "ready")
+        self.assertEqual(clock.now, 179.5)
