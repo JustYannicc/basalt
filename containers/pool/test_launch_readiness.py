@@ -40,7 +40,7 @@ class LaunchReadinessTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(headers["X-Signalbox-Launch-Generation"], "7")
         self.assertEqual(headers["X-Signalbox-Launch-Token-Sha256"], hashlib.sha256(token.encode()).hexdigest())
-        self.assertEqual(set(json.loads(body)), {"boot_id", "started_at"})
+        self.assertEqual(set(json.loads(body)), {"boot_id", "started_at", "db_rtt_state"})
         self.assertNotIn(token.encode(), body)
         clock[0] += 1_500_000_000
         status, headers, _ = request("fixture")
