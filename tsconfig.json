@@ -29,9 +29,11 @@
     "src/pool/model-history/bulk-do.worker.ts",
     "src/pool/forward.worker.ts",
     "src/pool/native-response.worker.ts",
+    "src/pool/stream-resume.worker.ts",
     "src/pool/terminal-socket.worker.ts",
     "scripts/preview/stack",
     "scripts/scale-test/stack.ts",
-    "scripts/scale-test/worker.ts"
+    "scripts/scale-test/worker.ts",
+    "scripts/release/test/plan-worker.ts"
   ]
 }

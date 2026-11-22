@@ -13,12 +13,12 @@ const price = (basis: Price["basis"], refreshFailed: boolean, asOf = "2026-11-03
 test("a failed first refresh names the shipped baseline, never last good live prices", () => {
   const value = price("baseline", true);
   assert.deepEqual(priceSentence(value), {
-    text: "Shipped baseline models.dev prices, as of 3 Nov 2026. Price refresh failed.",
+    text: "Shipped baseline models.dev prices, as of 03.11.2026. Price refresh failed.",
     failed: true,
     detail: "models.dev v1",
   });
   assert.deepEqual(priceNoteLines(value), {
-    lines: ["Refresh failed", "Baseline price as of 3 Nov"],
+    lines: ["Refresh failed", "Baseline price as of 03.11.2026"],
     failed: true,
   });
 });
@@ -27,15 +27,15 @@ test("a failed refresh after a live read keeps the last good prices", () => {
   const value = price("live", true, "2026-11-10T06:00:00Z");
   assert.equal(
     priceSentence(value).text,
-    "Price refresh failed. Last good models.dev prices, as of 10 Nov 2026.",
+    "Price refresh failed. Last good models.dev prices, as of 10.11.2026.",
   );
-  assert.deepEqual(priceNoteLines(value), { lines: ["Refresh failed · 10 Nov"], failed: true });
+  assert.deepEqual(priceNoteLines(value), { lines: ["Refresh failed · 10.11.2026"], failed: true });
 });
 
 test("rows stay quiet for live rates and date baseline rates", () => {
   assert.equal(priceNoteLines(price("live", false)), null);
   assert.deepEqual(priceNoteLines(price("baseline", false)), {
-    lines: ["Price as of 3 Nov"],
+    lines: ["Price as of 03.11.2026"],
     failed: false,
   });
 });
@@ -54,7 +54,7 @@ test("mixing a failed live slice with a baseline slice reports both", () => {
   ]);
   assert.equal(
     priceSentence(value).text,
-    "Shipped baseline models.dev prices, as of 3 Nov 2026. Price refresh failed.",
+    "Shipped baseline models.dev prices, as of 03.11.2026. Price refresh failed.",
   );
 });
 
@@ -67,7 +67,7 @@ test("token-count pricing shows even on live rates, and older servers never impl
   });
   assert.equal(
     priceSentence(counted(price("live", false))).text,
-    "Live models.dev prices, updated 3 Nov 2026. Priced from token counts where usage details were missing.",
+    "Live models.dev prices, updated 03.11.2026. Priced from token counts where usage details were missing.",
   );
   const old = slicePrice([
     { price: { source: "models.dev", version: "v1", asOf: "2026-11-03T00:00:00Z" } },
@@ -78,18 +78,18 @@ test("token-count pricing shows even on live rates, and older servers never impl
 
 test("token-count pricing sits beside date and failed-refresh notes, never replacing them", () => {
   assert.deepEqual(priceNoteLines(counted(price("baseline", false))), {
-    lines: ["Price as of 3 Nov", "Priced from token counts"],
+    lines: ["Price as of 03.11.2026", "Priced from token counts"],
     failed: false,
   });
   assert.deepEqual(priceNoteLines(counted(price("baseline", true))), {
-    lines: ["Refresh failed", "Baseline price as of 3 Nov", "Priced from token counts"],
+    lines: ["Refresh failed", "Baseline price as of 03.11.2026", "Priced from token counts"],
     failed: true,
   });
   const failed = priceSentence(counted(price("live", true, "2026-11-10T06:00:00Z")));
   assert.equal(failed.failed, true);
   assert.equal(
     failed.text,
-    "Price refresh failed. Last good models.dev prices, as of 10 Nov 2026. Priced from token counts where usage details were missing.",
+    "Price refresh failed. Last good models.dev prices, as of 10.11.2026. Priced from token counts where usage details were missing.",
   );
 });
 

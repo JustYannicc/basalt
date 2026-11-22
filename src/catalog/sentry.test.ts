@@ -5,10 +5,11 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-metadata.ts";
 import { onServedFramework } from "./framework.ts";
 import { oauthFitness, oauthReviews, withOAuthDeferrals } from "./oauth-policy.ts";
 import reviews from "./oauth-reviews.json" with { type: "json" };
+import connections from "./sentry.connections.json" with { type: "json" };
 import { sentrySource, withSentryConnections } from "./sentry.ts";
 import { handleCatalog } from "./worker.ts";
 
@@ -50,6 +51,29 @@ test("Sentry source serves without the publisher and its patch replays exactly",
   } finally {
     rmSync(directory, { recursive: true });
   }
+});
+
+test("Sentry's REST section says which account it needs, with which scopes, and why", () => {
+  const index = sentrySource.files.find((file) => file.path === "index.ts")?.content ?? "";
+  const declared = /title: "Sentry API",\s+description:\s+("(?:[^"\\]|\\.)*")/u.exec(index);
+  assert.ok(declared, "the served Sentry app declares its REST section");
+  const description = String(JSON.parse(declared[1]!));
+  assert.match(description, /personal token/u);
+  // An agent reads this when a sign-in account lists no REST tools, so it says why.
+  assert.match(description, /Sentry sign-in/u);
+  // The scopes are the ones the personal-token connect step asks for.
+  const steps = connections.connectionGuidance
+    .flatMap((guide) => guide.credentials?.steps ?? [])
+    .join(" ");
+  const scopes = steps.match(/\b[a-z]+:[a-z]+\b/gu) ?? [];
+  assert.deepEqual(scopes, [
+    "org:read",
+    "project:write",
+    "team:write",
+    "event:write",
+    "alerts:write",
+  ]);
+  for (const scope of scopes) assert.ok(description.includes(scope), `names ${scope}`);
 });
 
 test("Sentry's available OAuth claim is bound to the served source and DCR metadata", async () => {

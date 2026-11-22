@@ -344,6 +344,7 @@ export type ControlErrorCode =
   | "not_found"
   | "backend_unavailable"
   | "history_timeout"
+  | "history_too_large"
   | "bulk_import_not_provisioned"
   | "busy";
 

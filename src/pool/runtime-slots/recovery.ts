@@ -8,9 +8,11 @@ import {
 import {
   SlotIdentity,
   SlotRefused,
+  awaitsProof,
   sameIdentity,
   sameTarget,
   type ControllerCode,
+  type SlotSnapshot,
 } from "./contract.ts";
 import {
   healthy,
@@ -27,6 +29,8 @@ import { providerDigest } from "../runtime-provider/canonical.ts";
 import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
 import { awaitProbe } from "../availability.ts";
+import { RuntimeForcedRestart } from "./forced-restart.ts";
+import { recoveryWarmMs } from "./forced-restart-timing.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
 const Completion = Schema.Struct({ identity: SlotIdentity, fingerprint: Schema.String });
@@ -56,8 +60,10 @@ export class RuntimeSlotRecovery {
   private deps: Dependencies;
   private pending?: Promise<void>;
   private unavailable = false;
+  private forced: RuntimeForcedRestart;
   constructor(deps: Dependencies) {
     this.deps = deps;
+    this.forced = new RuntimeForcedRestart(deps.storage, deps.driver);
   }
   available() {
     return !this.unavailable;
@@ -100,10 +106,27 @@ export class RuntimeSlotRecovery {
       await transaction.put(completionKey, null);
     });
     this.unavailable = false;
+    // The restart served: it is not a failed restart, whenever the next refusal comes.
+    await this.forced.clock.serving();
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "ready",
       at: Date.now(),
       slot: identity.slotId,
+    });
+  }
+  /** A boot handed back by an unfence that answers again serves once current policies reach it. */
+  private async proveHandedBack(identity: SlotIdentity, snapshot: SlotSnapshot) {
+    await proveSlot(this.deps.driver, identity, snapshot, slotClock);
+    await this.deps.storage.transact(async (current, transaction) => {
+      const selection = current.selection;
+      if (!selection || !awaitsProof(selection.active)) return;
+      if (!sameIdentity(selection.active.identity, identity) || current.digest !== snapshot.digest)
+        throw new SlotRefused("selection");
+      const unfenced = selection.active.unfenced!;
+      await transaction.put(slotSelectionKey, {
+        ...selection,
+        active: { ...selection.active, unfenced: { ...unfenced, proven: true } },
+      });
     });
   }
   private async runWithin(signal: AbortSignal) {
@@ -113,6 +136,9 @@ export class RuntimeSlotRecovery {
     );
     if (completion != null) {
       this.unavailable = true;
+      // A committed restart, forced or not, that never reaches ready must end in needs-a-person,
+      // whichever step of this branch keeps failing.
+      await this.forced.refused();
       const value = Schema.decodeUnknownSync(Completion)(completion);
       const current = await storage.inspect();
       if (
@@ -150,25 +176,38 @@ export class RuntimeSlotRecovery {
       selection.draining
     )
       throw new SlotRefused("selection");
+    let refusal: unknown;
     try {
-      await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(2_000)]));
+      await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(recoveryWarmMs)]));
+      if (awaitsProof(selection.active)) await this.proveHandedBack(previous, snapshot);
       this.unavailable = false;
+      await this.forced.clock.serving();
       return;
-    } catch {
+    } catch (error) {
       this.unavailable = true;
+      refusal = error;
     }
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "detected",
       at: Date.now(),
       slot: previous.slotId,
     });
+    await this.forced.refused();
     retiredDenials(snapshot);
-    const retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
+    let retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "witness",
       at: Date.now(),
       slot: previous.slotId,
     });
+    // Restart-on-exit alone can't recover a root that runs but refuses.
+    if (
+      await this.forced.consider(
+        { previous, epoch: selection.epoch, digest: snapshot.digest, refusal, retained },
+        signal,
+      )
+    )
+      retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
     const original = retained.authorization;
     const operationId = `restart-${(await providerDigest(previous)).slice(0, 48)}`;
     const joining =
@@ -257,7 +296,11 @@ export class RuntimeSlotRecovery {
         throw new SlotRefused("selection");
       retiredDenials(current);
     });
-    if (!retained.running) await driver.admit(previous, await envelope(false));
+    if (!retained.running) {
+      await driver.admit(previous, await envelope(false));
+      // Unless a forced stop began it, this restart is recovery's own, timed from its first admission.
+      await this.forced.clock.unforcedRestart(Date.now());
+    }
     signal.throwIfAborted();
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "starting",
@@ -298,7 +341,15 @@ export class RuntimeSlotRecovery {
       await transaction.put(slotSelectionKey, {
         ...selection,
         epoch: selection.epoch + 1,
-        active: { ...selection.active, identity: health.identity },
+        // The new boot holds no grant from before a fence: it took every unexpired policy above,
+        // and an expired one reaches it only through Home. So a handed-back slot is proven.
+        active: {
+          ...selection.active,
+          identity: health.identity,
+          ...(selection.active.unfenced
+            ? { unfenced: { ...selection.active.unfenced, proven: true } }
+            : {}),
+        },
       });
       await transaction.put(completionKey, {
         identity: health.identity,

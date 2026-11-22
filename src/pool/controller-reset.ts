@@ -11,6 +11,14 @@ import { isPublicModelPath } from "./lifecycle.ts";
 import { endpointMetadata } from "./model-history/record.ts";
 import { shape } from "./runtime-fleet/endpoint-trace.ts";
 import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
+import { handingOver } from "./code-handover.ts";
+import {
+  sentNowhere,
+  unsentAttempt,
+  unsentAttemptHeader,
+  withoutUnsentMark,
+} from "./controller-unsent.ts";
+import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -53,7 +61,10 @@ export function controllerInstanceEnded(error: unknown): boolean {
 
 export interface ControllerHop {
   /** Resolved per attempt: the platform says a stub that threw this error fails again at once. */
-  controller(): { fetch(request: Request): Promise<Response> };
+  controller(): {
+    fetch(request: Request): Promise<Response>;
+    resume?(input: StreamResumeInput): Promise<Response>;
+  };
   env: SentryEnv;
   defer(work: Promise<unknown>): void;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -213,6 +224,12 @@ const sleep = (milliseconds: number, signal: AbortSignal) =>
  * terminal. A control write keeps today's unknown-outcome failure.
  */
 export async function fetchController(request: Request, hop: ControllerHop): Promise<Response> {
+  // Only the entry's own re-send names a refused attempt; a client never chooses that id.
+  if (request.headers.has(unsentAttemptHeader)) {
+    const headers = new Headers(request.headers);
+    headers.delete(unsentAttemptHeader);
+    request = new Request(request, { headers });
+  }
   const model = replayableCall(request);
   const requestId = crypto.randomUUID();
   const copy = hold(
@@ -235,6 +252,75 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
     // Past the controller's answer, or any failure, the held copy can never be sent again.
     copy.release();
   }
+}
+
+const resendable = (response: Response) => handingOver(response) || sentNowhere(response);
+
+/**
+ * A controller handing over to new code refuses new model calls until it resets itself, and a call
+ * whose runtime refused it before its container send comes back marked unsent. Either way the call
+ * was never sent on, so a safe read or a held model call is sent again each second inside the
+ * replay window, and once an answer comes the caller sees nothing. Past the window, or without a
+ * held body, the refusal itself goes back: the retryable 503 clients already follow.
+ */
+
+async function awaitHandover(
+  request: Request,
+  hop: ControllerHop,
+  model: boolean,
+  copy: ReturnType<typeof hold>,
+  response: Response,
+  begun: number,
+): Promise<Response> {
+  if (!resendable(response) || (!model && !safeRead(request))) return withoutUnsentMark(response);
+  const now = hop.now ?? Date.now;
+  const cause = handingOver(response) ? "handover" : "unsent";
+  let sends = 0;
+  // The first unsent answer names the attempt for every later re-send, a handover refusal between.
+  let attempt: string | undefined;
+  while (resendable(response)) {
+    if (now() - begun + controllerReplayDelayMs > controllerReplayWindowMs) break;
+    // A re-send of a call never sent names that attempt, so the controller records one request.
+    attempt ??= sentNowhere(response)
+      ? unsentAttempt(response.headers.get("X-Request-Id"))
+      : undefined;
+    const headers = new Headers(request.headers);
+    if (attempt) headers.set(unsentAttemptHeader, attempt);
+    // A safe read has no body, so it is rebuilt with the name; a model call's copy is below.
+    let resend: Request = attempt && !model ? new Request(request, { headers }) : request;
+    if (model) {
+      await copy.ready;
+      const held = copy.take();
+      if ("refused" in held) break;
+      resend = new Request(request.url, {
+        method: request.method,
+        headers,
+        body: held.body,
+        redirect: request.redirect,
+        signal: request.signal,
+      });
+    }
+    await (hop.wait ?? sleep)(controllerReplayDelayMs, request.signal);
+    sends++;
+    try {
+      const next = await hop.controller().fetch(resend);
+      void response.body?.cancel().catch(() => {});
+      response = next;
+    } catch (error) {
+      if (request.signal.aborted) throw error;
+      // The old instance reset itself while this send was on its way; the next one reaches the new.
+      if (controllerInstanceEnded(error)) continue;
+      // Any other failure: the caller still gets the retryable refusal it already holds.
+      break;
+    }
+  }
+  console.info("POOL_CODE_HANDOVER_WAITED", {
+    cause,
+    sends,
+    waitedMs: now() - begun,
+    outcome: resendable(response) ? "refused" : "answered",
+  });
+  return withoutUnsentMark(response);
 }
 
 async function forwardHeld(
@@ -279,12 +365,14 @@ async function forwardHeld(
         report(hop, request, requestId, "surfaced", error, "not_replayable");
         throw error;
       }
-      if (request.method === "POST" && !request.headers.has("upgrade")) {
-        // A job the provider may have accepted is never started twice; its client decides.
+      if (request.method === "POST" && !modelCallReplayable(pathname)) {
+        // A job the provider may have accepted is never started twice, whatever its headers say
+        // (model sockets are GET); its client decides.
         report(hop, request, requestId, "outcome_unknown", error, "not_replayable");
         return upstreamOutcomeUnknown(requestId, pathname);
       }
-      // A model socket or a job status read starts nothing, so its client retries it.
+      // A model socket or a job status read starts nothing, and an allow-listed call it could not
+      // hold costs one response at most, so its client retries it.
       report(hop, request, requestId, "retry_advised", error, "not_replayable");
       return retryAdvice(request, requestId);
     }
@@ -322,9 +410,25 @@ async function forwardHeld(
     }
     report(hop, request, requestId, "replayed", error, undefined, response.ok);
   }
+  response = await awaitHandover(request, hop, model, copy, response, begun);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
-  return nativeRuntimeStream(response, request, (error) =>
+  // A resumable answer is re-attached through the new instance first; only an answer it cannot
+  // resume reaches the retry terminal below, unchanged.
+  const answer = resumableAnswer(response, {
+    resume: (input) => {
+      const controller = hop.controller();
+      return controller.resume
+        ? controller.resume(input)
+        : Promise.reject(new Error("This controller cannot resume a stream"));
+    },
+    ended: controllerInstanceEnded,
+    wait: hop.wait ?? sleep,
+    now,
+    delayMs: controllerReplayDelayMs,
+    signal: request.signal,
+  });
+  return nativeRuntimeStream(answer, request, (error) =>
     report(
       hop,
       request,

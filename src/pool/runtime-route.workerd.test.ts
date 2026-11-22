@@ -192,10 +192,27 @@ test(
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, 0);
         });
-      for (const [fault, count] of [
-        ["model-port-lookup", 0],
-        ["model-port-dispatch", 1],
-      ] as const)
+      // The port lookup fails before any send, so nothing ran: the retryable refusal, marked unsent
+      // for the entry, which still holds the call and sends it again.
+      await context.test("model-port-lookup", async () => {
+        const response = await mf.dispatchFetch(
+          "http://fixture/v1/messages?fault=model-port-lookup",
+          {
+            method: "POST",
+            body: "{}",
+          },
+        );
+        assert.equal(response.status, 503);
+        assert.equal(response.headers.get("Retry-After"), "1");
+        assert.equal(response.headers.get("X-Signalbox-Controller-Unsent"), "1");
+        assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
+        assert.ok(response.headers.get("X-Request-Id"));
+        const text = await response.text();
+        assert.equal(text.includes("synthetic-private-exception-body"), false);
+        const calls = await mf.dispatchFetch("http://fixture/calls?fault=model-port-lookup");
+        assert.equal((await calls.json()).calls, 0);
+      });
+      for (const [fault, count] of [["model-port-dispatch", 1]] as const)
         await context.test(fault, async () => {
           const response = await mf.dispatchFetch(`http://fixture/v1/messages?fault=${fault}`, {
             method: "POST",
@@ -215,6 +232,26 @@ test(
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, count);
         });
+      // The runtime exits after accepting a paid job, so its client is never told to send it again.
+      await context.test(
+        "job call accepted by a runtime that exits keeps the cautious answer",
+        async () => {
+          const response = await mf.dispatchFetch(
+            "http://fixture/v1/images/generations?fault=model-port-exit",
+            { method: "POST", body: "{}" },
+          );
+          assert.equal(response.status, 502);
+          assert.equal(response.headers.get("x-should-retry"), "false");
+          assert.equal(response.headers.get("Retry-After"), null);
+          assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
+          assert.ok(response.headers.get("X-Request-Id"));
+          const value = await response.json();
+          assert.equal(value.error.code, "upstream_outcome_unknown");
+          assert.equal(value.error.retryable, false);
+          const calls = await mf.dispatchFetch("http://fixture/calls?fault=model-port-exit");
+          assert.equal((await calls.json()).calls, 1);
+        },
+      );
       await context.test(
         "native socket lifetime crosses the runtime endpoint and holds drain until completion",
         async () => {
