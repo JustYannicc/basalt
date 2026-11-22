@@ -172,5 +172,9 @@ test("a storable result is still reused, and any source or dependency change mis
     counter,
     source: [...files.slice(1), { ...files[0]!, content: `${files[0]!.content} ` }],
   });
-  assert.equal(counter.compiles, 4, "changed dependency bytes, dependency text or source compile again");
+  assert.equal(
+    counter.compiles,
+    4,
+    "changed dependency bytes, dependency text or source compile again",
+  );
 });

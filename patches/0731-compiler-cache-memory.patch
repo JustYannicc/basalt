@@ -26,7 +26,7 @@ diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/clo
 diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 --- a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 +++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
-@@ -57,11 +57,40 @@ const Envelope = Schema.fromJsonString(
+@@ -57,11 +57,41 @@ const Envelope = Schema.fromJsonString(
      payload: Schema.String,
    }),
  );
@@ -57,7 +57,8 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
 +      Effect.all({
 +        path: Effect.succeed(path),
 +        content: content === null ? Effect.succeed(null) : digest(content),
-+        bytes: bytes === undefined || bytes.length === 0 ? Effect.succeed(null) : digestBytes(bytes),
++        bytes:
++          bytes === undefined || bytes.length === 0 ? Effect.succeed(null) : digestBytes(bytes),
 +      }),
 +  );
 +/** Characters the stored envelope needs at least: every string, and base64 for every byte array. */
@@ -72,7 +73,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
  const validBundle = (value: typeof CompiledCloudApp.Type) => {
    const entry = value.bundle.modules[value.bundle.mainModule];
    const safeName = (name: string) =>
-@@ -94,7 +123,7 @@ export const cachedCompilerResult = <E, R>(
+@@ -94,7 +124,7 @@ export const cachedCompilerResult = <E, R>(
      readonly dependencyFiles: ReadonlyArray<{
        readonly path: string;
        readonly content: string | null;
@@ -81,7 +82,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
      }>;
      readonly onHit?: () => void;
    },
-@@ -110,14 +139,12 @@ export const cachedCompilerResult = <E, R>(
+@@ -110,14 +140,12 @@ export const cachedCompilerResult = <E, R>(
      const key = yield* digest(
        JSON.stringify([
          input.release,
@@ -99,7 +100,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
      const hit = yield* optional(
        attempt(() => cache.value.match(url)).pipe(
          Effect.flatMap((response) =>
-@@ -146,6 +173,9 @@ export const cachedCompilerResult = <E, R>(
+@@ -146,6 +174,9 @@ export const cachedCompilerResult = <E, R>(
        return hit.value;
      }
      const value = yield* compile;
