@@ -1,0 +1,79 @@
+# Throwaway: how often member provisioning fails its first attempt, with and without #1394.
+# Lives only on this branch, which is deleted once the runs are counted.
+name: Measure privacy proof provisioning
+on:
+  push:
+    branches: ["measure/privacy-provisioning"]
+
+env:
+  E2E_BUN_VERSION: 1.4.2
+  BASALT_CI_OMIT_RELEASE_DOWNLOADS: "true"
+
+permissions:
+  contents: read
+
+jobs:
+  scoped-changes:
+    name: scoped-changes ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      # Leave runners for other Checks.
+      max-parallel: 4
+      matrix:
+        include:
+          - { label: main-01, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-02, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-03, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-04, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-05, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-06, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-07, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-08, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-09, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: main-10, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '0', settle: '1' }
+          - { label: pr1394-01, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-02, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-03, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-04, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-05, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-06, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-07, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-08, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-09, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: pr1394-10, tree: 172e64eb84bed4c77ebbe1fc4960f550c371ebf9, hold: '0', settle: '1' }
+          - { label: switch-red, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '1', settle: '0' }
+          - { label: switch-green, tree: 75018d86012ae1fc7edb1203f823f045ef32af69, hold: '1', settle: '1' }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.tree }}
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-autumn-emulator
+      - run: npm run prepare:upstream
+      - name: Build the isolated Cloud test assets
+        working-directory: .upstream
+        run: bun run e2e:prepare
+      - name: Install the suite's browser engine
+        uses: ./.github/actions/setup-browser
+      - name: Verify scoped account and pool updates without idle polling
+        env:
+          BASALT_E2E_PRIVACY_HOLD_SETUP: ${{ matrix.hold }}
+          BASALT_E2E_PRIVACY_SETTLE: ${{ matrix.settle }}
+        run: node e2e/scoped-change-consumers.mjs .generated/scoped-change-consumers/ci
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          include-hidden-files: true
+          name: measure-${{ matrix.label }}
+          path: |
+            .generated/scoped-change-consumers/**/report.json
+            .generated/scoped-change-consumers/**/failure.json
+            .generated/scoped-change-consumers/**/runtime-diagnostics.json
+          if-no-files-found: warn
