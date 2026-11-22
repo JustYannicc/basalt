@@ -81,6 +81,8 @@ export interface HarnessOptions {
   providerSecret?: string | null;
   /** Rows the device usage read returns for one of the lane's sessions, by the order it was first read. */
   usage?: (index: number) => NativeUsageRecord[];
+  /** A status the device usage read answers instead of rows, as the route does failing closed. */
+  usageStatus?: number;
 }
 
 /** The acceptance device's own Home key, as the device usage read reports it. */
@@ -344,6 +346,7 @@ export async function harness(options: HarnessOptions = {}) {
         assertion: (request.headers[nativeModelHeader] as string | undefined) ?? null,
         sessions: ids.length,
       });
+      if (options.usageStatus) return new Response(null, { status: options.usageStatus });
       const sessions = ids.map((session) => {
         if (!sessionOrder.has(session)) sessionOrder.set(session, sessionOrder.size);
         const index = sessionOrder.get(session)!;

@@ -301,6 +301,8 @@ test("a usage fault or an unknown boot in the lane's own traffic fails acceptanc
       /usage-duplicate/u,
     ],
     ["no success row", { usage: (i) => (i === 1 ? [] : [ownRow(i)]) }, /usage-missing/u],
+    // The route fails closed on a row of another session or key, so that is how another key shows.
+    ["a usage read the route refuses", { usageStatus: 503 }, /usage-read-refused/u],
     [
       "an unknown boot",
       { boot: (index, on) => (index === 2 ? "stranger-boot" : on ? "cell-boot" : "primary-boot") },

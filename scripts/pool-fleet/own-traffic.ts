@@ -1,5 +1,6 @@
 import { nativeUsageMaxSessions, type NativeUsage } from "../../src/pool/native-usage-contract.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import { HttpStatusFailure } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 
 /** About the 45 s the owner-token read waited for a turn's rows to land. */
@@ -24,6 +25,8 @@ function checkUsage(sessions: readonly OwnSession[], answers: readonly NativeUsa
     answers.flatMap((answer) => answer.sessions.map((row) => [row.session, row])),
   );
   const records = [...bySession.values()].flatMap((row) => row.records);
+  // The route already fails closed on another key's row (usage-read-refused); this holds if the
+  // route ever changes.
   if (answers.some((answer) => answer.key !== key) || records.some((row) => row.key !== key))
     throw refuse(
       "usage-other-key",
@@ -119,17 +122,33 @@ export class OwnTraffic {
       // One request at a time keeps Home at one request's bounded lookups.
       for (let at = 0; at < this.sessions.length; at += nativeUsageMaxSessions) {
         const ids = this.sessions.slice(at, at + nativeUsageMaxSessions).map(({ id }) => id);
-        answers.push(await this.client.nativeUsage(this.credential, ids));
+        answers.push(await this.read(ids));
       }
       const { waiting, summary } = checkUsage(this.sessions, answers);
       if (!waiting) return summary;
       if (attempt >= usageReads)
         throw refuse(
           "usage-missing",
-          `${waiting} of ${this.sessions.filter(({ served }) => served).length} served turns still had no success row after ${usageReads} reads.`,
-          "Check that Home records usage for the acceptance device's key.",
+          `${waiting} of ${this.sessions.filter(({ served }) => served).length} served turns still had no success row charged to the acceptance device's key after ${usageReads} reads.`,
+          "Read those sessions' rows in Home across every key: the device reads only its own key's rows, so a turn Home never recorded and one charged to another key look the same here.",
         );
       await sleep(1_000);
+    }
+  }
+
+  private async read(ids: readonly string[]) {
+    try {
+      return await this.client.nativeUsage(this.credential, ids);
+    } catch (error) {
+      // The route fails the whole read closed when Home returns a row of another session or key, so
+      // another key's row shows only as this.
+      if (error instanceof HttpStatusFailure && error.status === 503)
+        throw refuse(
+          "usage-read-refused",
+          "The device usage read answered 503: Home returned a row of another session or key, or Home was unavailable.",
+          "Read the lane's sessions in Home across every key; a row on another key means routing charged a key other than the acceptance device's.",
+        );
+      throw error;
     }
   }
 }
