@@ -530,6 +530,17 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-database-distance") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0741-home-database-distance.patch");
+        assert.match(
+          patch.retirement.requires,
+          /shortest database round trip over its coordination pool/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /measured-distance and unavailable-database regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-heartbeat-fresh-lease") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0735-home-heartbeat-fresh-lease.patch");
