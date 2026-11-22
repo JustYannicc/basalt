@@ -2,9 +2,10 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
+import { fastConfigs, readDeclarations } from "./declarations.ts";
 import { githubObserver, routeBox } from "./box-router.ts";
 import { fastJobs, type Lane } from "./gate.ts";
-import { declaredMatrices } from "./shards.ts";
+import { planDeclaredShards, readDeclaredDurations } from "./shards.ts";
 
 const root = process.cwd();
 const full = process.argv.includes("--all");
@@ -24,7 +25,10 @@ try {
   console.log("::warning::Changed inputs could not be resolved. Every heavy CI job is selected.");
 }
 const output = ".generated/ci/selection.json";
-const matrices = declaredMatrices(selection.full ? null : selection.declaredFiles);
+const declared = selection.full ? null : selection.declaredFiles;
+const declarations = readDeclarations();
+const matrices = planDeclaredShards(declarations, readDeclaredDurations(), declared);
+const configs = fastConfigs(declared, declarations);
 const env = process.env;
 const box = await routeBox(
   {
@@ -51,7 +55,14 @@ const box = await routeBox(
 );
 // A changed-inputs selection that could not be resolved ran as the full suite, so it is one.
 const lane: Lane = selection.full ? "full" : fast ? "fast" : "affected";
-const routed = { ...selection, lane, matrices, boxJobs: box.jobs, boxRouting: box.summary };
+const routed = {
+  ...selection,
+  lane,
+  matrices,
+  fastConfigs: configs,
+  boxJobs: box.jobs,
+  boxRouting: box.summary,
+};
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, JSON.stringify(routed, null, 2));
 if (process.env.GITHUB_OUTPUT)
@@ -83,6 +94,10 @@ if (process.env.GITHUB_OUTPUT)
       "\n" +
       "matrices=" +
       JSON.stringify(matrices) +
+      "\n" +
+      // The fast job's e2e configs whose specs the change reaches; the step runs when any is.
+      "fast_configs=" +
+      JSON.stringify(configs) +
       "\n",
   );
 if (process.env.GITHUB_STEP_SUMMARY)
@@ -110,6 +125,9 @@ if (process.env.GITHUB_STEP_SUMMARY)
         )
         .join("\n") +
       "\n\n" +
+      (configs.length && !selection.full
+        ? "The fast job runs the e2e configs this change reaches: " + configs.join(", ") + ".\n\n"
+        : "") +
       box.summary +
       "\n",
   );

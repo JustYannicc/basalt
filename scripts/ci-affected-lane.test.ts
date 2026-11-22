@@ -318,7 +318,6 @@ test("selection and gate scripts run only the fast job, which tests them", () =>
     "scripts/ci/select-jobs.ts",
     "scripts/ci/gate.ts",
     "scripts/ci/box-router.ts",
-    "scripts/ci/shards.ts",
   ])
     assert.deepEqual(select([path]), nothing, path);
   // The lane's fast job lints the workflows and runs every CI test for these and for a job block.

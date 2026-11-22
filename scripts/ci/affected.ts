@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { areas, heavyJobs, selectionInputs, sharedInputs, staticInputs } from "./areas.ts";
 import { declarationJobs, matchingDeclarations } from "./declarations.ts";
 import { dependents, isCode } from "./import-graph.ts";
-import { addTo, carryTargets, frozenInputMatcher, isRelativeInput } from "./inputs.ts";
+import { addTo, carryPatch, carryTargets, frozenInputMatcher, isRelativeInput } from "./inputs.ts";
 import { checkWorkflow as workflow, parseWorkflow, readWorkflow } from "./job-inputs.ts";
 import { reach } from "./reach.ts";
 
@@ -50,7 +50,8 @@ export function workflowInputs(base: string, head: string): string[] {
  * scripts that select and gate jobs none. A changed Check job block selects that job and the jobs
  * that need it. A code file selects the jobs whose inputs import or read it, directly or
  * transitively; one that reaches only fast jobs' tests runs nothing heavy. Other paths keep their
- * area and scenario declarations. Whatever none of these resolves selects every job.
+ * area and scenario declarations, except upstream product files, which nothing here graphs.
+ * Whatever none of these resolves selects every job.
  */
 export function selectPaths(
   paths: readonly string[],
@@ -141,17 +142,16 @@ export function selectPaths(
     }
     const declared = matchingDeclarations(path, declarations);
     scenario(declared, path);
-    if (
-      /^(?:\.upstream\/e2e\/tests\/|e2e\/plans\/)/.test(path) &&
-      declared.some((entry) => entry.jobs.length)
-    )
-      continue;
+    const planned = declared.some((entry) => entry.jobs.length);
+    if (/^(?:\.upstream\/e2e\/tests\/|e2e\/plans\/)/.test(path) && planned) continue;
     reached(path);
     const affected = areas.filter((area) => matches(path, area.paths));
-    // Upstream area heuristics cannot establish that every dependent scenario is declared.
+    // Nothing graphs imports inside `.upstream`, so neither upstream area heuristics nor a plan
+    // naming an upstream product file establish which scenarios reach it: a plan names what its
+    // spec reads, not every spec that reads it. Only e2e paths keep their declarations.
     const covered =
       frozenInput(path) &&
-      (declared.some((entry) => entry.jobs.length) || (!upstream && affected.length > 0));
+      (upstream ? path.startsWith(".upstream/e2e/") && planned : planned || affected.length > 0);
     if (!covered) complete = true;
     select(covered ? affected.flatMap((area) => area.jobs) : heavyJobs, path);
   }
@@ -186,11 +186,12 @@ export function changedInputs(root: string, base: string, head: string) {
         inputs.add(input);
       continue;
     }
-    if (!/^patches\/\d{4}-.+\.(?:patch|json)$/.test(path)) {
+    // A carry and its record, or an e2e test correction, change only the carry's target files.
+    const carry = path.replace(/^(patches\/\d{4}-[^/]+)\.json$/, "$1.patch");
+    if (!carryPatch.test(carry)) {
       inputs.add(path);
       continue;
     }
-    const carry = path.replace(/\.json$/, ".patch");
     let found = false;
     for (const ref of [base, head]) {
       const source = content(root, ref, carry);

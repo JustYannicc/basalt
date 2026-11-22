@@ -346,36 +346,49 @@ export const areas = [
     paths: ["assets/fonts/**", "scripts/docs-fonts/**", ".upstream/apps/docs/**"],
     jobs: ["docs-build"],
   },
+  // `select` plans every declared shard's rows and timeout from the measured durations.
+  {
+    paths: ["scripts/ci/declared-durations.json"],
+    jobs: heavyJobs.filter((job) => job.startsWith("declared-")),
+  },
 ];
 
 /**
  * Reads by computed paths that the import graph cannot follow, declared as edges from the file
- * that reads them: preparation bundles the whole pool app into the e2e product, and the pool
- * runtime shards list their test files by directory. Preparation also writes a hash of the pool
- * Worker's sources into the product, but e2e compares it only with the same generated value, so
- * those sources reach no scenario through it.
+ * that reads them: preparation bundles the whole pool app into the e2e product, the pool
+ * runtime shards list their test files by directory, the Cloudflare family fixture loads its
+ * catalog sources by name, and the Home peer program bundles the peer modules the pool Worker
+ * build checks. Preparation also writes a hash of the pool Worker's sources into the product,
+ * but e2e compares it only with the same generated value, so those sources reach no scenario
+ * through it.
  */
 export const runtimeReads = [
   { reader: "scripts/pool-app-bundle.ts", paths: ["apps/pool/**"] },
   { reader: "scripts/ci/pool-test-shard.ts", paths: ["scripts/pool-tests/*.test.ts"] },
+  {
+    reader: "scripts/upstream-tests/cloudflare-family-fixture.ts",
+    paths: ["src/catalog/cloudflare.json", "src/catalog/cloudflare.published.json"],
+  },
+  { reader: "scripts/pool-peer-program.ts", paths: ["containers/pool/home_peer*.py"] },
 ];
 
 /**
  * The scripts that select, route, gate and report on the Check's jobs, and their data. They run
  * in `select`, `fast`, `check`, `box-watch`, the re-run workflows or locally, and `fast` runs
  * their tests (scripts/ci*.test.ts, through the owned unit suite) and actionlint in every Check,
- * so a change to them runs no heavy job. Heavy jobs touch only two corners of them: preparation
- * checks declarations against `areas.ts` and `inputs.ts`, which `fast`'s preparation also runs
- * on the same tree, and declared jobs parse their shard and its per-file deadline with
- * `shards.ts`. What a change to one breaks beyond `fast` meets the batch Check, which runs every
- * heavy job.
+ * so a change to them runs no heavy job. Heavy jobs touch one corner of them: preparation checks
+ * declarations against `areas.ts` and `inputs.ts`, which `fast`'s preparation also runs on the
+ * same tree. The declared jobs' shard planner, `shards.ts`, and its measured durations are not
+ * listed: each declared shard runs with the rows, timeout and per-file deadline they plan, so
+ * they reach the declared jobs. What a change to one breaks beyond `fast` meets the batch Check,
+ * which runs every heavy job.
  */
 export const selectionInputs = [
   "scripts/ci/{affected,areas,reach,import-graph,job-inputs,inputs,e2e-workflow}.ts",
-  "scripts/ci/{select-jobs,unit-tests,shards,box-router,box-watch,box-rerun}.ts",
+  "scripts/ci/{select-jobs,unit-tests,box-router,box-watch,box-rerun}.ts",
   "scripts/ci/{cancel-superseded,reuse,gate,aggregate-retries,retry-history,workflow-run}.ts",
   "scripts/ci/{retries,fast-local}.ts",
-  "scripts/ci/{declared-durations,e2e-exceptions}.json",
+  "scripts/ci/e2e-exceptions.json",
 ];
 
 export const staticInputs = [

@@ -200,8 +200,25 @@ export function importGraph(root: string, files = trackedFiles(root)) {
     throw new Error("Import of an untracked file outside every directory: " + from);
   };
   const importers = new Map<string, Set<string>>();
+  // A package's manifest and lockfile decide the dependencies every file in it imports.
+  const manifests = new Map<string, string[]>();
+  const manifestsOf = (directory: string): string[] => {
+    if (!manifests.has(directory)) {
+      const manifest = posix.join(directory, "package.json");
+      manifests.set(
+        directory,
+        tracked.has(manifest)
+          ? [manifest, posix.join(directory, "bun.lock")].filter((path) => tracked.has(path))
+          : directory === "."
+            ? []
+            : manifestsOf(posix.dirname(directory)),
+      );
+    }
+    return manifests.get(directory)!;
+  };
   for (const file of files) {
     if (!isCode(file)) continue;
+    for (const manifest of manifestsOf(posix.dirname(file))) addTo(importers, manifest, file);
     for (const reference of sourceReferences(file, readFileSync(join(root, file), "utf8")))
       // Types are erased before anything runs; the fast job's typecheck covers their importers.
       for (const target of reference.kind === "type" ? [] : resolved(file, reference))

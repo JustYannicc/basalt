@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { resolve, relative } from "node:path";
+import { configsReached, fullOnly } from "./e2e-workflow.ts";
 
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -31,6 +32,12 @@ function environment(value: unknown, context: FastContext): Record<string, strin
   );
 }
 
+// This runs the fast-only lane, which selects no e2e config, so it skips what other lanes add.
+const otherLanes = new Map([
+  [fullOnly, "full lane only"],
+  [configsReached, "full or affected lane only"],
+]);
+
 export function fastPlan(document: unknown, context: FastContext) {
   if (
     !object(document) ||
@@ -61,11 +68,8 @@ export function fastPlan(document: unknown, context: FastContext) {
       skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
       continue;
     }
-    if (
-      step.if !== undefined &&
-      step.if !== "needs.select.outputs.full_suite == 'true'" &&
-      step.if !== "needs.select.outputs.full_suite != 'true'"
-    )
+    const skip = typeof step.if === "string" ? otherLanes.get(step.if) : undefined;
+    if (step.if !== undefined && step.if !== "needs.select.outputs.full_suite != 'true'" && !skip)
       throw new Error("Unsupported fast step condition");
     if (typeof step.uses === "string") {
       if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
@@ -109,10 +113,10 @@ export function fastPlan(document: unknown, context: FastContext) {
     if (relative(context.root, cwd).split(/[\\/]/).includes(".."))
       throw new Error("Fast step escapes checkout");
     const stepEnv = { ...env, ...environment(step.env, context) };
-    if (step.if === "needs.select.outputs.full_suite == 'true'") {
+    if (skip) {
       skipped.push({
         name: typeof step.name === "string" ? step.name : step.run.trim(),
-        reason: "full lane only",
+        reason: skip,
       });
       continue;
     }
