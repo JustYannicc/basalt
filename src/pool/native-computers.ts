@@ -108,8 +108,11 @@ export const homeFailure = (error: unknown) =>
  * counts as revoked: every native check refused it then, so ending its grant changes nothing it had.
  * A row restored without history never counts, since its person may never have revoked it.
  */
-function revokedByPerson(row: StoredComputer) {
-  if (row.removalPending || row.restoredWithoutHistory) return false;
+export function revokedByPerson(row: StoredComputer) {
+  if (row.restoredWithoutHistory) return false;
+  // Under access removal, the state it had before removal began says whether its person revoked it.
+  if (row.removalPending)
+    return row.beforeRemoval?.state === "revoking" || row.beforeRemoval?.state === "revoked";
   if (row.state === "revoking" || row.state === "revoked") return true;
   return row.state === "removed" && row.removedFor !== "access";
 }
@@ -235,6 +238,8 @@ export class NativeComputers {
         computer.state = "revoking";
         delete computer.link;
         delete computer.restoredWithoutHistory;
+        // Under access removal, the revoke is recorded for when removal finishes the row.
+        if (computer.beforeRemoval) computer.beforeRemoval.state = "revoking";
         await this.deps.save(registry);
         // The saved state stops requests and active streams before Home cleanup can fail.
         await this.deps.revokeKeys(computer);
@@ -356,6 +361,9 @@ export class NativeComputers {
         known.state = state;
         if (state === "removed") known.removedAt ??= at;
         else delete known.removedAt;
+        // Removed here only because its person left its tools organization.
+        if (state === "removed") known.removedFor = "access";
+        else delete known.removedFor;
         if (state === "revoked") known.revokedAt ??= at;
         // A pending sweep on a tools-only row is stale: no pool access change touches it now.
         delete known.removalPending;
@@ -365,6 +373,8 @@ export class NativeComputers {
         return true;
       };
       if (revoked || device.revoked === true) return settle("revoked");
+      // A row that shows its person revoked it is finished revoked; membership never revives it.
+      if (revokedByPerson(known)) return settle("revoked");
       const pending = known.removalPending === true;
       if (member === true && (known.state === "removed" || pending)) return settle("active");
       if (member === false && (known.state === "active" || pending)) return settle("removed");
@@ -392,7 +402,7 @@ export class NativeComputers {
       firstModelRequestAt: null,
       firstToolCallAt: null,
       revokedAt: revoked ? at : null,
-      ...(state === "removed" && { removedAt: at }),
+      ...(state === "removed" && { removedAt: at, removedFor: "access" as const }),
       native: { grant, models: false, toolsOrganization },
     };
     return true;

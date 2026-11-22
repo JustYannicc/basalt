@@ -1,7 +1,7 @@
 import type { ComputerHome } from "./computer-home.ts";
 import type { Registry, StoredComputer } from "./computer-registry.ts";
 import { BackendFailure, ControlFailure } from "./json.ts";
-import { homeFailure } from "./native-computers.ts";
+import { homeFailure, revokedByPerson } from "./native-computers.ts";
 
 /** How long upkeep waits before asking Home again about one row, or about any row after Home fails. */
 export const leftoverRetryMs = 60_000;
@@ -32,6 +32,7 @@ export class ComputerLeftovers {
   private revoking = new Map<string, Promise<void>>();
   private retryAt = new Map<string, number>();
   private homeRetryAt = 0;
+  private undecidedReported: number | undefined;
   constructor(deps: Dependencies) {
     this.deps = deps;
   }
@@ -51,8 +52,10 @@ export class ComputerLeftovers {
    */
   async finish(): Promise<void> {
     const start = this.deps.now();
-    if (start < this.homeRetryAt) return;
     const rows = await this.deps.run(async (registry) => {
+      // Needs no Home, so it runs whatever Home answered last.
+      await this.finishLegacy(registry, start);
+      if (start < this.homeRetryAt) return [];
       for (const id of this.retryAt.keys())
         if (!Object.hasOwn(registry, id) || !leftBehind(registry[id]!, start))
           this.retryAt.delete(id);
@@ -95,6 +98,38 @@ export class ComputerLeftovers {
     }
     if (counts.revoked || counts.awaitsPerson || counts.interruptedRemoved)
       console.info("POOL_LEFTOVERS_FINISHED", counts);
+  }
+  /**
+   * Tools-only rows an older release left that show their person revoked them (a `removed` row
+   * with no recorded reason, or one under removal that began during a revoke) are finished
+   * revoked, so membership can never bring them back. One count-only line reports them, and the
+   * rows under removal that began from `active`, which can't be told apart from an access removal.
+   */
+  private async finishLegacy(registry: Registry, now: number) {
+    let revoked = 0;
+    let undecided = 0;
+    for (const computer of Object.values(registry)) {
+      if (computer.native?.models !== false || computer.restoredWithoutHistory) continue;
+      const pending = computer.removalPending === true;
+      if (!pending && computer.state !== "removed") continue;
+      if (!revokedByPerson(computer)) {
+        if (pending) undecided++;
+        continue;
+      }
+      computer.state = "revoked";
+      computer.revokedAt ??= new Date(now).toISOString();
+      delete computer.removedAt;
+      delete computer.removedFor;
+      delete computer.removalPending;
+      delete computer.removalAt;
+      delete computer.beforeRemoval;
+      revoked++;
+    }
+    if (revoked) await this.deps.save(registry);
+    if (revoked || undecided !== this.undecidedReported) {
+      if (revoked || undecided) console.info("POOL_LEGACY_TOOLS_ONLY_ROWS", { revoked, undecided });
+      this.undecidedReported = undecided;
+    }
   }
   /** Finish the row if nothing changed it while Home was asked. */
   private async settle(registry: Registry, row: StoredComputer): Promise<Outcome | undefined> {

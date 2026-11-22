@@ -264,6 +264,8 @@ export class PoolDirectory {
       if (computer.state === "issuing" && (computer.beforeRemoval?.link?.expiresAt ?? 0) > now)
         computer.link = computer.beforeRemoval!.link;
     } else {
+      const before = computer.beforeRemoval?.state;
+      computer.removedFor = before === "revoking" || before === "revoked" ? "revoke" : "access";
       computer.state = "removed";
       computer.removedAt ??= new Date(now).toISOString();
       delete computer.switching;

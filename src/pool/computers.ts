@@ -562,6 +562,9 @@ export class Computers {
     computer.state = computer.state === "revoked" ? "revoked" : "revoking";
     delete computer.link;
     delete computer.restoredWithoutHistory;
+    // Under access removal, the revoke is recorded for when removal finishes the row.
+    if (computer.beforeRemoval && computer.beforeRemoval.state !== "revoked")
+      computer.beforeRemoval.state = "revoking";
     await this.save(registry);
     await this.leftovers.revokeKeys(computer);
     // A native device signs in with its own grant, which the setup host revokes at the tools
