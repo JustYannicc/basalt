@@ -10,7 +10,11 @@ const provider = await import(
     import.meta.url,
   )
 );
-assert.equal(typeof provider.resolveWorkerMetadataHash, "function", "the metadata hash is exported");
+assert.equal(
+  typeof provider.resolveWorkerMetadataHash,
+  "function",
+  "the metadata hash is exported",
+);
 
 // A Worker bound to one Hyperdrive, as the binding layer contributes it: the wire binding the
 // upload carries, and the dev-only `hyperdrives` channel beside it.
@@ -37,10 +41,16 @@ const hash = (bindings) =>
 const reconciled = await hash([binding("hyperdrive-1", "db.internal", "first")]);
 // The same Hyperdrive as a later plan reads it back: another origin shape, the same wire binding.
 const planned = await hash([binding("hyperdrive-1", "db.internal.example", "second")]);
-assert.equal(planned, reconciled, "a dev-only origin difference leaves the metadata hash unchanged");
+assert.equal(
+  planned,
+  reconciled,
+  "a dev-only origin difference leaves the metadata hash unchanged",
+);
 // The upload's own binding still counts.
 const rebound = await hash([binding("hyperdrive-2", "db.internal", "first")]);
 assert.notEqual(rebound, reconciled, "a different wire binding changes the metadata hash");
 // A binding without the channel hashes as before.
-const plain = await hash([{ sid: "Api", data: { bindings: [{ type: "service", name: "Api", service: "api" }] } }]);
+const plain = await hash([
+  { sid: "Api", data: { bindings: [{ type: "service", name: "Api", service: "api" }] } },
+]);
 assert.equal(typeof plain, "string");
