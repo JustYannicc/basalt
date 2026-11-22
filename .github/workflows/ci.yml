@@ -593,6 +593,12 @@ jobs:
     if: contains(fromJSON(needs.select.outputs.jobs), 'catalog-compat')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The catalog build took 13.6 of the job's 17.5 hosted minutes; three legs each build a third
+    # of the packages, and the first also runs the connector checks.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node
@@ -604,14 +610,18 @@ jobs:
       - run: npm run prepare:upstream
       - run: bun run --cwd .upstream e2e:prepare
       - name: Build every catalog package as served, on the framework Basalt ships
-        run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8
+        run: bun e2e/catalog-compat.mjs .generated/catalog-compat/ci all 8 ${{ matrix.shard }}/3
       - name: Verify ElevenLabs tools load as the catalog serves it, with dropped routes
+        if: matrix.shard == 1
         run: bun e2e/elevenlabs-discovery.mjs .generated/elevenlabs-discovery/ci
       - name: Verify Zoho People regional sign-in and approved API writes
+        if: matrix.shard == 1
         run: bun e2e/zoho-people.mjs .generated/zoho-people/ci
       - name: Set up the Zoho connection proof's browser
+        if: matrix.shard == 1
         uses: ./.github/actions/setup-browser
       - name: Verify private Zoho MCP OAuth, tool approvals and masked URL entry
+        if: matrix.shard == 1
         run: bun e2e/zoho-people-mcp.mjs .generated/zoho-people-mcp/ci
       - name: Collect sanitized connector diagnostics
         if: always()
@@ -619,7 +629,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: catalog-compat-evidence
+          name: catalog-compat-evidence-${{ matrix.shard }}
           path: ${{ runner.temp }}/connector-evidence.json
           if-no-files-found: error
 
