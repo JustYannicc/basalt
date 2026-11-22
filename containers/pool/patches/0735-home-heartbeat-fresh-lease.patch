@@ -1,8 +1,8 @@
 diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
-index d7ca86d..20366ee 100644
+index d7ca86d..4bd46ee 100644
 --- a/internal/cluster/coordinator.go
 +++ b/internal/cluster/coordinator.go
-@@ -405,6 +405,9 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
+@@ -405,8 +405,12 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
  	if errDB != nil {
  		return errDB
  	}
@@ -11,8 +11,24 @@ index d7ca86d..20366ee 100644
 +	}
  
  	var elected ClusterNodeRecord
++	var readAt time.Time
  	errTransaction := db.WithContext(contextOrBackground(ctx)).Transaction(func(tx *gorm.DB) error {
-@@ -473,6 +476,93 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
+ 		gate := ClusterMasterGateRecord{ID: 1}
+ 		if errCreate := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&gate).Error; errCreate != nil {
+@@ -420,6 +424,7 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
+ 		if errNow != nil {
+ 			return errNow
+ 		}
++		readAt = time.Now()
+ 		record := ClusterNodeRecord{
+ 			IP:          c.node.IP,
+ 			Port:        c.node.Port,
+@@ -469,10 +474,98 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
+ 	if errTransaction != nil {
+ 		return errTransaction
+ 	}
+-	c.setMaster(clusterNodeMatches(elected, c.node.IP, c.node.Port))
++	c.claimMaster(clusterNodeMatches(elected, c.node.IP, c.node.Port), readAt)
  	return nil
  }
  
@@ -28,6 +44,7 @@ index d7ca86d..20366ee 100644
 +	if errNow != nil {
 +		return false, errNow
 +	}
++	readAt := time.Now()
 +	record := ClusterNodeRecord{
 +		IP:          c.node.IP,
 +		Port:        c.node.Port,
@@ -80,7 +97,7 @@ index d7ca86d..20366ee 100644
 +			return false, nil
 +		}
 +	}
-+	c.setMaster(self)
++	c.claimMaster(self, readAt)
 +	return true, nil
 +}
 +
@@ -106,6 +123,48 @@ index d7ca86d..20366ee 100644
  func (c *Coordinator) heartbeatHomeIncarnation(ctx context.Context) (HomeIncarnationID, error) {
  	c.mu.RLock()
  	incarnation := c.homeIncarnation
+@@ -511,20 +604,38 @@ func cpaNodeSnapshotRetention(heartbeatTimeout time.Duration) time.Duration {
+ }
+ 
+ // setMaster sets a master.
++// claimMaster takes the role from an election decided on a database time read at readAt. The lease
++// written in that election runs out one heartbeat timeout after the read, so a Home whose work after
++// the read took that long (a stalled row, a slow pool) holds a lease that may already have expired
++// while a follower elects itself: it drops the role instead. Otherwise the local role runs out with
++// the written lease.
++func (c *Coordinator) claimMaster(self bool, readAt time.Time) {
++	remaining := c.heartbeatTimeout - time.Since(readAt)
++	if !self || remaining <= 0 {
++		c.setMaster(false)
++		return
++	}
++	c.setMasterFor(true, remaining)
++}
++
+ func (c *Coordinator) setMaster(next bool) {
++	c.setMasterFor(next, c.heartbeatTimeout)
++}
++
++func (c *Coordinator) setMasterFor(next bool, lease time.Duration) {
+ 	c.mu.Lock()
+ 	changed := !c.masterKnown || c.isMaster != next
+ 	c.isMaster = next
+ 	c.masterKnown = true
+ 	c.masterLease++
+-	lease := c.masterLease
++	generation := c.masterLease
+ 	if c.masterTimer != nil {
+ 		c.masterTimer.Stop()
+ 		c.masterTimer = nil
+ 	}
+ 	if next {
+-		c.masterTimer = time.AfterFunc(c.heartbeatTimeout, func() {
+-			c.expireMasterLease(lease)
++		c.masterTimer = time.AfterFunc(lease, func() {
++			c.expireMasterLease(generation)
+ 		})
+ 	}
+ 	c.mu.Unlock()
 diff --git a/internal/cluster/heartbeat_gate_postgres_test.go b/internal/cluster/heartbeat_gate_postgres_test.go
 new file mode 100644
 index 0000000..1b70998
@@ -258,6 +317,58 @@ index 0000000..ee8322f
 +	now, _ := DatabaseNow(context.Background(), db)
 +	t.Logf("after blocked renewal: master local IsMaster=%v, lease_until=%s, db now=%s, lease expired=%v",
 +		master.IsMaster(), gate.LeaseUntil.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), !now.Before(gate.LeaseUntil))
++	fHome, _ := follower.HomeIncarnation()
++	if errBeat := follower.heartbeatAndElect(context.Background(), fHome); errBeat != nil {
++		t.Fatal(errBeat)
++	}
++	if master.IsMaster() && follower.IsMaster() {
++		t.Fatalf("split brain: both Homes believe they are master (term %d -> %d)", gate.Term, readGate(t, db).Term)
++	}
++}
+diff --git a/internal/cluster/heartbeat_row_stall_postgres_test.go b/internal/cluster/heartbeat_row_stall_postgres_test.go
+new file mode 100644
+index 0000000..d4e07de
+--- /dev/null
++++ b/internal/cluster/heartbeat_row_stall_postgres_test.go
+@@ -0,0 +1,46 @@
++package cluster
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"gorm.io/gorm/clause"
++)
++
++// Regression from review: the master stalls between its fast-path clock read and its renewal on something other
++// than the gate (here: its own node row, held by another transaction). The renewal's guard and new lease
++// both use the pre-stall clock, so it writes an already-expired lease and calls setMaster(true).
++func TestHomeDBPoolHeartbeatMasterStalledOnItsRowNeverSplitsTheElection(t *testing.T) {
++	db, master, follower := newElectedPair(t)
++	master.heartbeatTimeout = 2 * time.Second
++	follower.heartbeatTimeout = 2 * time.Second
++	home, _ := master.HomeIncarnation()
++	if errBeat := master.heartbeatAndElect(context.Background(), home); errBeat != nil {
++		t.Fatal(errBeat)
++	}
++	tx := db.Begin()
++	var row ClusterNodeRecord
++	if errLock := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
++		First(&row, "ip = ? AND port = ?", master.node.IP, master.node.Port).Error; errLock != nil {
++		t.Fatal(errLock)
++	}
++	done := make(chan error, 1)
++	go func() { done <- master.heartbeatAndElect(context.Background(), home) }()
++	time.Sleep(3 * time.Second)
++	_ = tx.Rollback().Error
++	if errBeat := <-done; errBeat != nil {
++		t.Fatal(errBeat)
++	}
++	gate := readGate(t, db)
++	now, _ := DatabaseNow(context.Background(), db)
++	t.Logf("after stalled renewal: master IsMaster=%v term=%d lease_until=%s db now=%s expired=%v",
++		master.IsMaster(), gate.Term, gate.LeaseUntil.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), !now.Before(gate.LeaseUntil))
 +	fHome, _ := follower.HomeIncarnation()
 +	if errBeat := follower.heartbeatAndElect(context.Background(), fHome); errBeat != nil {
 +		t.Fatal(errBeat)
