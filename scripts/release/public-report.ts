@@ -6,7 +6,8 @@ import { selectionBoundary } from "./selection-boundary.ts";
  * public) and what it keeps private. Public: the tagged reason in our own vocabulary, the error
  * class, the key paths a plan refusal names, and the check and resource names a selection boundary
  * names (see selection-boundary.ts). Private: names, ids, paths, values and raw messages, which can
- * carry hosts or account ids.
+ * carry hosts or account ids. A provider's own error code and message print only redacted (see
+ * failure-line.ts).
  */
 export interface FailureReport {
   readonly publicText: string;
@@ -15,7 +16,15 @@ export interface FailureReport {
 
 const PUBLIC_FIELDS = ["check", "rule", "field", "exit", "why", "fix"] as const;
 const PRIVATE_FIELDS = ["resource", "script", "method", "path", "value"] as const;
-const CHAIN = ["cause", "reason", "error", "defect", "failures", "reasons", "issue"] as const;
+export const CHAIN = [
+  "cause",
+  "reason",
+  "error",
+  "defect",
+  "failures",
+  "reasons",
+  "issue",
+] as const;
 
 /**
  * Records in the providers the stack loads that are keyed by data rather than by names in our
@@ -90,13 +99,47 @@ const keyPaths = (change: unknown) => {
   return paths.length ? `[${shown}${more > 0 ? `,+${more} more` : ""}]` : "";
 };
 
+/**
+ * A property read that a throwing getter or a revoked proxy cannot turn into a throw: a failure's
+ * line prints on the way to the re-point, so reading the error must not stop it.
+ */
+export const readSafely = (value: object, key: string): unknown => {
+  try {
+    return (value as Record<string, unknown>)[key];
+  } catch {
+    return undefined;
+  }
+};
+
+/** A chain link's values to visit: an array's items, at most `limit` of them, or the value. */
+export const linksOf = (value: unknown, limit = 50): readonly unknown[] => {
+  try {
+    return Array.isArray(value) ? value.slice(0, limit) : [value];
+  } catch {
+    return [];
+  }
+};
+
+const isError = (value: object) => {
+  try {
+    return value instanceof Error;
+  } catch {
+    return false;
+  }
+};
+
 const errorClass = (error: unknown) => {
   if (error && typeof error === "object") {
-    const tag = (error as { _tag?: unknown })._tag;
+    const tag = readSafely(error, "_tag");
     if (typeof tag === "string") return tag;
-    const name = (error as { name?: unknown }).name;
+    const name = readSafely(error, "name");
     if (typeof name === "string" && name) return name;
-    return error.constructor?.name ?? "object";
+    try {
+      const constructed = error.constructor?.name;
+      return typeof constructed === "string" && constructed ? constructed : "object";
+    } catch {
+      return "object";
+    }
   }
   return typeof error;
 };
@@ -150,17 +193,16 @@ export function errorKind(error: unknown) {
   const visit = (value: unknown, depth: number) => {
     if (!value || typeof value !== "object" || seen.has(value) || depth > 10) return;
     seen.add(value);
-    const record = value as Record<string, unknown>;
-    if (typeof record._tag === "string") names.push(record._tag);
-    else if (value instanceof Error && value.name) names.push(value.name);
-    for (const key of ["status", "statusCode"])
-      if (typeof record[key] === "number" && status === undefined) status = record[key] as number;
+    const tag = readSafely(value, "_tag");
+    const name = typeof tag === "string" || !isError(value) ? undefined : readSafely(value, "name");
+    if (typeof tag === "string") names.push(tag);
+    else if (typeof name === "string" && name) names.push(name);
+    for (const key of ["status", "statusCode"]) {
+      const code = readSafely(value, key);
+      if (typeof code === "number" && status === undefined) status = code;
+    }
     for (const key of CHAIN)
-      if (key in record) {
-        const next = record[key];
-        if (Array.isArray(next)) for (const item of next) visit(item, depth + 1);
-        else visit(next, depth + 1);
-      }
+      for (const next of linksOf(readSafely(value, key))) visit(next, depth + 1);
   };
   visit(error, 0);
   const all = names.join(" ");
