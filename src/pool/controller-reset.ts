@@ -238,6 +238,8 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
   }
 }
 
+const resendable = (response: Response) => handingOver(response) || sentNowhere(response);
+
 /**
  * A controller handing over to new code refuses new model calls until it resets itself, and a call
  * whose runtime refused it before its container send comes back marked unsent. Either way the call
@@ -245,7 +247,6 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
  * replay window, and once an answer comes the caller sees nothing. Past the window, or without a
  * held body, the refusal itself goes back: the retryable 503 clients already follow.
  */
-const resendable = (response: Response) => handingOver(response) || sentNowhere(response);
 
 async function awaitHandover(
   request: Request,

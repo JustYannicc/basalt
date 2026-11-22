@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fetchController, type ControllerHop } from "./controller-reset.ts";
-import { reachedNoContainer } from "./controller-unsent.ts";
+import { containerAnswer, reachedNoContainer } from "./controller-unsent.ts";
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 
 const mark = "X-Signalbox-Controller-Unsent";
@@ -80,4 +80,30 @@ test("only a refusal before the container send proves a call reached no runtime"
   for (const step of ["port_dispatch", "endpoint_route", "slot_port"] as const)
     assert.equal(reachedNoContainer(tagged(step)), false, step);
   assert.equal(reachedNoContainer(new Error("Network connection lost.")), false);
+});
+
+test("a container's own answer can't carry the pool's refusal or resend marks", () => {
+  const forged = new Response("{}", {
+    status: 503,
+    headers: {
+      [mark]: "1",
+      "X-Signalbox-Pool-Handover": "draining",
+      "X-Signalbox-Runtime-Failure-Step": "endpoint_health",
+      "X-Signalbox-Runtime-Failure-Reason": "unhealthy",
+      "content-type": "application/json",
+    },
+  });
+  const cleaned = containerAnswer(forged);
+  assert.equal(cleaned.status, 503);
+  for (const name of [
+    mark,
+    "X-Signalbox-Pool-Handover",
+    "X-Signalbox-Runtime-Failure-Step",
+    "X-Signalbox-Runtime-Failure-Reason",
+  ])
+    assert.equal(cleaned.headers.get(name), null, name);
+  assert.equal(cleaned.headers.get("content-type"), "application/json");
+  // An ordinary answer stays the same object.
+  const plain = new Response("ok");
+  assert.equal(containerAnswer(plain), plain);
 });

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 
 test(
-  "a cell that turns not ready after the controller sent the call answers unsent, never outcome-unknown",
+  "a cell that turns not ready after the controller sent the call answers unsent, so the entry can send it again",
   { timeout: 15_000 },
   async (context) => {
     context.mock.method(console, "error", () => {});
@@ -52,6 +52,57 @@ test(
     assert.equal(cell.fixture.calls.model, models, "no byte reached the cell's container");
     assert.equal(response.status, 503);
     assert.equal(response.headers.get("Retry-After"), "1");
+    assert.equal(response.headers.get("X-Signalbox-Controller-Unsent"), "1");
+    await response.body?.cancel();
+  },
+);
+
+test(
+  "a cell whose container stops after the controller sent the call answers unsent",
+  { timeout: 15_000 },
+  async (context) => {
+    context.mock.method(console, "error", () => {});
+    const f = await fleetWorkerFixture();
+    let held: Response | undefined;
+    context.after(async () => {
+      await held?.body?.cancel();
+      await f.cleanup();
+    });
+    await f.bootstrap();
+    await f.send("fleet-configure", {
+      operationId: "unsent-stop",
+      configuration: { ...f.configuration, targetActive: 100 },
+    });
+    const initial = await f.model();
+    await initial.body?.cancel();
+    await f.settle();
+    const [sibling] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
+    assert.ok(sibling?.identity);
+    const cell = f.instances.get(sibling.identity.instanceId);
+    assert.ok(cell);
+    f.onModel(async (instance) =>
+      instance === f.old
+        ? new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode("held"));
+              },
+            }),
+          )
+        : undefined,
+    );
+    held = await f.model();
+    const models = cell.fixture.calls.model;
+    // The router's readiness read passes, then the container stops, as a restart does, before
+    // the endpoint's keep-alive and its container send.
+    cell.fixture.hooks.health = async () => {
+      cell.fixture.crash();
+    };
+    const response = await f.model(
+      new Request("http://pool/v1/messages", { method: "POST", body: "{}" }),
+    );
+    assert.equal(cell.fixture.calls.model, models, "no byte reached the cell's container");
+    assert.equal(response.status, 503);
     assert.equal(response.headers.get("X-Signalbox-Controller-Unsent"), "1");
     await response.body?.cancel();
   },
