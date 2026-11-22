@@ -1,25 +1,29 @@
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index 2877fff22..f457156d3 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -5,7 +5,8 @@
-   appSandboxLabel,
+@@ -6,10 +6,12 @@ import {
    appSandboxResponse,
  } from "@executor-js/mcp";
--import { HostedExecutor } from "@executor-js/hosted-server";
-+import { ConcurrentStatements, HostedExecutor } from "@executor-js/hosted-server";
+ import {
++  ConcurrentStatements,
+   HostedExecutor,
+   recordUnclassifiedRefusals,
+   requestServices,
+ } from "@executor-js/hosted-server";
 +import { PgPool } from "@effect/sql-pg";
- import { requestServices } from "@executor-js/hosted-server";
  import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
  /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
-@@ -37,6 +38,7 @@
+ import {
+@@ -45,6 +47,7 @@ import { cloudAnalytics } from "./implementation/product-analytics.ts";
  import { postHogBindings } from "./infrastructure/posthog.ts";
  import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
  import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 +import { InvocationStatementGroups } from "./infrastructure/invocation-database.ts";
  import { cloudServingProduct } from "./infrastructure/serving-product.ts";
  import { sentryBindings } from "./infrastructure/sentry.ts";
- import { cloudHosts } from "./infrastructure/stage.ts";
-@@ -178,6 +180,7 @@
+ import { cloudHosts, cloudResourceOrigins } from "./infrastructure/stage.ts";
+@@ -188,6 +191,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          appSessions,
          executor,
          Layer.succeed(ScopedChanges, changeRevisions.transport),
@@ -27,7 +31,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
        ),
      );
      const notFound = HttpServerResponse.empty({ status: 404 });
-@@ -255,7 +258,12 @@
+@@ -267,7 +271,12 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
        ),
      };
    }).pipe(
@@ -42,9 +46,10 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
    ),
  ) {}
 diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+index f8e443550..d227b3460 100644
 --- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
 +++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
-@@ -28,6 +28,11 @@
+@@ -28,6 +28,11 @@ export class InvocationDatabase extends Context.Service<
    Effect.Effect<Context.Context<SqlServices>, SqlError.SqlError>
  >()("executor/cloud/InvocationDatabase") {}
  
@@ -56,7 +61,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/
  /**
   * One client per execution, closed with the event. A Durable Object lends its own held client
   * instead. Both come from {@link cloudDatabasePool}, so neither relies on session state, and both
-@@ -37,6 +42,7 @@
+@@ -37,6 +42,7 @@ export const cloudInvocationDatabase = Layer.effect(
    InvocationDatabase,
    Effect.gen(function* () {
      const connection = yield* cloudDatabaseConnection;
@@ -64,18 +69,19 @@ diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/
      return yield* makeBatchExecutionMemo(
        Effect.gen(function* () {
          const object = yield* Effect.serviceOption(ObjectDatabase);
-@@ -48,6 +54,7 @@
-           cloudDatabasePool({
+@@ -49,6 +55,7 @@ export const cloudInvocationDatabase = Layer.effect(
              url,
+             route: connection.route,
              maxConnections: invocationConnectionLimit,
 +            statementGroups,
            }),
          );
          return Context.add(sql, ConnectionReservations, {
 diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/hosted/server/src/implementation/change-revisions.ts
+index 0138b185d..66eecbc79 100644
 --- a/apps/hosted/server/src/implementation/change-revisions.ts
 +++ b/apps/hosted/server/src/implementation/change-revisions.ts
-@@ -13,22 +13,25 @@
+@@ -13,22 +13,25 @@ export class ChangeDispatchFailed extends Schema.TaggedError<ChangeDispatchFaile
  
  /** Captures the request's uncached SQL client, never a rendered answer or authorization verdict. */
  export const makeChangeJournal = (sql: SqlClient.SqlClient) => ({
@@ -113,9 +119,10 @@ diff --git a/apps/hosted/server/src/implementation/change-revisions.ts b/apps/ho
      }),
    /** Network I/O holds no transaction. The pass leaves five seconds for host cleanup before a forced stop. */
 diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
+index c9354bfba..021112107 100644
 --- a/apps/hosted/server/src/implementation/pool-account-read-facts.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-read-facts.ts
-@@ -11,7 +11,7 @@
+@@ -11,7 +11,7 @@ import { ObservationPolicy } from "../contracts/account-observations.ts";
  import { AccountId } from "@executor-js/sdk/core";
  import { acquisitionLabels } from "./account-identity.ts";
  import { CurrentUserId } from "../contracts/auth.ts";
@@ -124,7 +131,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/
  import { CurrentOrganization } from "../contracts/organization.ts";
  import { recordedServiceInstalls } from "./service-install-records.ts";
  import { AccountFactLink, AccountFactReads } from "./account-fact-reads.ts";
-@@ -71,12 +71,17 @@
+@@ -71,12 +71,17 @@ export const withPoolAccountReadFacts = <A, E, R, E2 = never, R2 = never>(
      });
      const facts = Effect.gen(function* () {
        const executor = yield* Effect.flatten(HostedExecutor);
@@ -146,7 +153,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/
        );
        const ids = [...new Set([app.id, ...links.map((link) => link.app)])];
        const [apps, appPolicies, accountPolicies] = yield* Effect.all(
-@@ -88,34 +93,40 @@
+@@ -88,34 +93,40 @@ export const withPoolAccountReadFacts = <A, E, R, E2 = never, R2 = never>(
          { concurrency: "unbounded" },
        );
        const metadata = new Map(apps.map((app) => [app.id, app]));
@@ -206,7 +213,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/
          actor,
          accounts: new Set(accounts),
          apps: metadata,
-@@ -140,5 +151,5 @@
+@@ -140,5 +151,5 @@ export const withPoolAccountReadFacts = <A, E, R, E2 = never, R2 = never>(
            Effect.provideService(HostedExecutor, Effect.succeed(facts.executor)),
          ),
        fresh,
@@ -214,9 +221,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-read-facts.ts b/
 +    ).pipe(statementGroup);
    });
 diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hosted/server/src/implementation/pool-view-cache.ts
+index fc36c0103..bd422b319 100644
 --- a/apps/hosted/server/src/implementation/pool-view-cache.ts
 +++ b/apps/hosted/server/src/implementation/pool-view-cache.ts
-@@ -2,6 +2,7 @@
+@@ -2,6 +2,7 @@ import { Clock, Effect, Schema, Semaphore } from "effect";
  import { StorageError, observationDeadline, type App } from "@executor-js/sdk/core";
  import { AccountObservationResult } from "apps/contracts";
  import { HttpServerRequest } from "effect/http";
@@ -224,7 +232,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hos
  import { CurrentAuthorization } from "../contracts/authorization.ts";
  import { CurrentOrganization, organizationOwner } from "../contracts/organization.ts";
  import { CurrentUserId } from "../contracts/auth.ts";
-@@ -139,17 +140,18 @@
+@@ -139,17 +140,18 @@ const current = (app: App) =>
      const user = yield* CurrentUserId;
      if (user === undefined) return yield* new StorageError();
      const sql = yield* Effect.flatten(GroupDatabase);
@@ -251,7 +259,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hos
    }).pipe(Effect.catch(() => new StorageError()));
  
  export const withPoolViewCache = <E, R>(
-@@ -189,5 +191,5 @@
+@@ -189,5 +191,5 @@ export const withPoolViewCache = <E, R>(
        app.activeVersion ?? "",
        JSON.stringify(operation.input),
      ]);
@@ -259,9 +267,10 @@ diff --git a/apps/hosted/server/src/implementation/pool-view-cache.ts b/apps/hos
 +    return yield* cached(key, current(app), read, registeredPool(app.id)).pipe(statementGroup);
    });
 diff --git a/apps/hosted/server/src/implementation/selected-account-read.ts b/apps/hosted/server/src/implementation/selected-account-read.ts
+index b84e9b76b..49cc3c76a 100644
 --- a/apps/hosted/server/src/implementation/selected-account-read.ts
 +++ b/apps/hosted/server/src/implementation/selected-account-read.ts
-@@ -48,15 +48,16 @@
+@@ -48,15 +48,16 @@ export const withSelectedAccountInspection = <A, E, R>(work: Effect.Effect<A, E,
          const apps = yield* linkedApps(owner, input.account);
          const ids = apps.map((app) => app.id);
          const canInspect = (yield* observationAccess(input.account)).canInspect;
@@ -288,9 +297,10 @@ diff --git a/apps/hosted/server/src/implementation/selected-account-read.ts b/ap
            {
              account,
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 526b5e5d3..c2cbacde5 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -42,6 +42,7 @@
+@@ -44,6 +44,7 @@ import { nativeProcessDiagnostics } from "./native-process-diagnostics.ts";
  import { productionOpsDatabaseFixture } from "./production-ops-database-fixture.ts";
  import { productionOpsDatabaseProxy } from "./production-ops-database-proxy.ts";
  import { statementBatchProxy } from "./statement-batch-proxy.ts";
@@ -298,7 +308,7 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
  import { cloudPoolGateway, poolFixtureSigningKey } from "./cloud-pool-gateway.ts";
  import { cloudNativeStack } from "./cloud-native-stack.ts";
  import { startMapsRoutesEmulator } from "./maps-routes-emulator.ts";
-@@ -187,8 +188,13 @@
+@@ -191,8 +192,13 @@ export const startCloudEnvironment = (input: {
      const directory = path.resolve(input.directory);
      const batchProxy =
        process.env.BASALT_E2E_BATCH_STALL === "1" ? yield* statementBatchProxy : undefined;
@@ -313,21 +323,22 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
          ? yield* productionOpsDatabaseProxy()
          : undefined);
 diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.ts
+index 2711d6334..3957d78d7 100644
 --- a/e2e/support/cloud-pool-gateway.ts
 +++ b/e2e/support/cloud-pool-gateway.ts
-@@ -60,6 +60,11 @@
-       path = yield* Path.Path;
+@@ -61,6 +61,11 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
      const source = yield* fs.readFileString(
        path.resolve("..", "src/catalog/provider-apps/openai.json"),
-+    );
+     );
 +    const additionalSources = yield* Effect.forEach(["anthropic", "xai"], (lab) =>
 +      fs
 +        .readFileString(path.resolve("..", "src/catalog/provider-apps", `${lab}.json`))
 +        .pipe(Effect.map((source) => ({ lab, source }))),
-     );
++    );
      const events = yield* Ref.make<
        readonly {
-@@ -286,6 +291,15 @@
+         path: string;
+@@ -286,6 +291,15 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
                  icons: [],
                  source: "apps/provider-openai.json",
                },
@@ -343,24 +354,25 @@ diff --git a/e2e/support/cloud-pool-gateway.ts b/e2e/support/cloud-pool-gateway.
              ],
            }),
          ),
-@@ -294,6 +308,13 @@
-         "GET",
+@@ -295,6 +309,13 @@ export const cloudPoolGateway = (origin: string, directory: string, api: URL) =>
          `${catalog}/apps/provider-openai.json`,
          Effect.succeed(HttpServerResponse.text(source, { contentType: "application/json" })),
-+      ),
+       ),
 +      ...additionalSources.map(({ lab, source }) =>
 +        HttpRouter.add(
 +          "GET",
 +          `${catalog}/apps/provider-${lab}.json`,
 +          Effect.succeed(HttpServerResponse.text(source, { contentType: "application/json" })),
 +        ),
-       ),
++      ),
      );
      const context = yield* Layer.build(
+       HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
 diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-handoff-setup.ts
+index 440920f1b..a5cb26bf4 100644
 --- a/e2e/support/legacy-pool-handoff-setup.ts
 +++ b/e2e/support/legacy-pool-handoff-setup.ts
-@@ -13,7 +13,7 @@
+@@ -13,7 +13,7 @@ const Source = Schema.Struct({
  });
  const Links = Schema.Array(Schema.Struct({ requirement: Schema.String, account: Resource }));
  
@@ -369,7 +381,7 @@ diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-
    Effect.gen(function* () {
      const api = yield* SessionClients,
        actors = yield* Actors,
-@@ -55,16 +55,22 @@
+@@ -55,16 +55,22 @@ const prepare = (diagnostic: string) =>
      for (const [requirement, method, count] of [
        ["openai", "codex", 1],
        ["anthropic", "claude", 3],
@@ -396,7 +408,7 @@ diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-
        );
        for (let index = 0; index < count; index++) {
          const connection = yield* body(
-@@ -85,6 +91,14 @@
+@@ -85,6 +91,14 @@ const prepare = (diagnostic: string) =>
            yield* api.request(actors.owner, "GET", `${interactive}/status`),
          );
          accounts.push({ id: connected.account.id, requirement });
@@ -411,7 +423,7 @@ diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-
          expect(
            (yield* api.request(
              actors.owner,
-@@ -100,7 +114,7 @@
+@@ -100,7 +114,7 @@ const prepare = (diagnostic: string) =>
          .pipe(Effect.flatMap((response) => body(Links, response)));
      const beforeLinks = yield* links();
      expect(beforeLinks.filter((link) => link.requirement === "pool")).toHaveLength(1);
@@ -420,7 +432,7 @@ diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-
      const control = beforeLinks.find((link) => link.requirement === "pool")!.account.id;
      const controlState = () =>
        database.run({
-@@ -124,14 +138,14 @@
+@@ -124,14 +138,14 @@ export const legacyPoolHandoffFixture = (context: TestContext) => {
  
  // The native hook owns fixture preparation; Effect Vitest still owns the strict case deadline.
  /* oxlint-disable executor/no-manual-effect-runtime-in-tests */
@@ -439,6 +451,7 @@ diff --git a/e2e/support/legacy-pool-handoff-setup.ts b/e2e/support/legacy-pool-
          Effect.provide(SessionClients.layer),
 diff --git a/e2e/support/pool-account-view-observations.ts b/e2e/support/pool-account-view-observations.ts
 new file mode 100644
+index 000000000..a0ec89afc
 --- /dev/null
 +++ b/e2e/support/pool-account-view-observations.ts
 @@ -0,0 +1,49 @@
@@ -493,6 +506,7 @@ new file mode 100644
 +};
 diff --git a/e2e/support/sql-latency-proxy.ts b/e2e/support/sql-latency-proxy.ts
 new file mode 100644
+index 000000000..ecd111aec
 --- /dev/null
 +++ b/e2e/support/sql-latency-proxy.ts
 @@ -0,0 +1,183 @@
@@ -681,6 +695,7 @@ new file mode 100644
 +  });
 diff --git a/e2e/support/sql-wire-proof.ts b/e2e/support/sql-wire-proof.ts
 new file mode 100644
+index 000000000..4a691e35e
 --- /dev/null
 +++ b/e2e/support/sql-wire-proof.ts
 @@ -0,0 +1,46 @@
@@ -731,6 +746,7 @@ new file mode 100644
 +  };
 +});
 diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-account-view-cloud-read.spec.ts
+index 0e0ab8db7..97b4708ec 100644
 --- a/e2e/tests/pool-account-view-cloud-read.spec.ts
 +++ b/e2e/tests/pool-account-view-cloud-read.spec.ts
 @@ -1,3 +1,4 @@
@@ -738,7 +754,7 @@ diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-acc
  import { appCallDelivery } from "../support/app-call-delivery.ts";
  import { sqlCriticalPath } from "../support/sql-critical-path.ts";
  import { expect, layer } from "@effect/vitest";
-@@ -198,10 +199,12 @@
+@@ -198,10 +199,12 @@ export default defineApp({
          const browser = yield* Browser;
          const evidence = yield* Evidence;
          const telemetry = yield* Telemetry;
@@ -751,7 +767,7 @@ diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-acc
            const start = yield* Clock.currentTimeMillis;
            const reply = yield* browser.use("Read five selected provider accounts", (page) =>
              page.evaluate(
-@@ -234,6 +237,8 @@
+@@ -234,6 +237,8 @@ export default defineApp({
              ),
            );
            const end = yield* Clock.currentTimeMillis;
@@ -760,7 +776,7 @@ diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-acc
            expect(
              yield* telemetry.export([
                {
-@@ -307,7 +312,7 @@
+@@ -307,7 +312,7 @@ export default defineApp({
                spans.filter(({ span }) => span.operationName === operation).length,
              ]),
            );
@@ -771,6 +787,7 @@ diff --git a/e2e/tests/pool-account-view-cloud-read.spec.ts b/e2e/tests/pool-acc
              criticalPath,
 diff --git a/e2e/tests/pool-account-view-latency.spec.ts b/e2e/tests/pool-account-view-latency.spec.ts
 new file mode 100644
+index 000000000..b2cfdc61c
 --- /dev/null
 +++ b/e2e/tests/pool-account-view-latency.spec.ts
 @@ -0,0 +1,262 @@
@@ -1037,6 +1054,7 @@ new file mode 100644
 +  );
 +});
 diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/src/implementation/account-health.ts
+index 21974fde3..fbcb148d6 100644
 --- a/packages/sdk/src/implementation/account-health.ts
 +++ b/packages/sdk/src/implementation/account-health.ts
 @@ -1,3 +1,4 @@
@@ -1044,43 +1062,44 @@ diff --git a/packages/sdk/src/implementation/account-health.ts b/packages/sdk/sr
  import { AccountSourceFailure } from "../contracts/account-check-failure.ts";
  import { accountCheckFailure, recordAccountCheckFailure } from "./account-check-failure.ts";
  import {
-@@ -291,21 +292,27 @@
+@@ -297,6 +298,7 @@ export const makeAccountHealth = (
+     ids: readonly AppId[],
+   ) =>
      Effect.gen(function* () {
-       // The product names the apps; their owner can differ from the account's, as in local, where
-       // apps belong to the host and accounts to its user.
--      const apps = ids.length === 0 ? [] : yield* listApps({ ids });
--      const rows = yield* query(() =>
--        db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
--      );
--      const report = yield* query(() =>
--        db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
 +      const facts = yield* SelectionReadFacts;
-+      const [apps, rows, report, acquired, driverHealth] = yield* Effect.all(
+       const [stored, [apps, rows]] = yield* inOrder(
+         account,
+         inOrder(
+@@ -306,17 +308,23 @@ export const makeAccountHealth = (
+           query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+         ),
+       );
+-      const report = yield* query(() =>
+-        db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) }),
++      // Inside a statement group these reads share one round trip; otherwise they stay sequential.
++      const [report, acquired, driverHealth] = yield* Effect.all(
 +        [
-+          ids.length === 0 ? Effect.succeed([]) : listApps({ ids }),
-+          query(() =>
-+            db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
-+          ),
-+          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) })),
-+          interactiveBinding(db, { account: account.id, owner: account.owner }),
-+          driver.report(account),
++          query(() => db.findFirst("accountReports", { where: (b) => b("id", "=", stored.id) })),
++          interactiveBinding(db, { account: stored.id, owner: stored.owner }),
++          driver.report(stored),
 +        ],
 +        { concurrency: facts === undefined ? 1 : "unbounded" },
        );
        const health = yield* project(
-         account,
+         stored,
          apps,
          rows,
--        yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
+-        yield* interactiveBinding(db, { account: stored.id, owner: stored.owner }),
 +        acquired,
          report === null ? undefined : { status: report.status },
        );
--      return withDriverHealth(health, yield* driver.report(account));
+-      return withDriverHealth(health, yield* driver.report(stored));
 +      return withDriverHealth(health, driverHealth);
      });
  
    /**
 diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/sdk/src/implementation/account-observations.ts
+index 534fb4893..cc44d5d1f 100644
 --- a/packages/sdk/src/implementation/account-observations.ts
 +++ b/packages/sdk/src/implementation/account-observations.ts
 @@ -1,3 +1,4 @@
@@ -1088,7 +1107,7 @@ diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/
  import { accountCheckFailure } from "./account-check-failure.ts";
  import type { AccountDriverResolver } from "./account-driver-source.ts";
  import { retainedDriverBinding } from "./account-driver-source.ts";
-@@ -31,8 +32,11 @@
+@@ -31,8 +32,11 @@ export const makeAccountObservations = (
    const store = makeObservationStore(db, crypto);
    const report = (account: StoredAccount, apps: readonly App[]) =>
      Effect.gen(function* () {
@@ -1103,9 +1122,10 @@ diff --git a/packages/sdk/src/implementation/account-observations.ts b/packages/
        return driver === undefined ? view : { ...view, reports: [...view.reports, driver] };
      });
 diff --git a/packages/sdk/src/implementation/app-connections.ts b/packages/sdk/src/implementation/app-connections.ts
+index aba45e527..9312ba719 100644
 --- a/packages/sdk/src/implementation/app-connections.ts
 +++ b/packages/sdk/src/implementation/app-connections.ts
-@@ -349,26 +349,33 @@
+@@ -349,26 +349,33 @@ export const makeAppConnections = (
    const bindings: AppCallsHost["bindings"] = {
      list: (input) =>
        Effect.gen(function* () {

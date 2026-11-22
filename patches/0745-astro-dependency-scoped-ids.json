@@ -1,7 +1,7 @@
 {
   "identity": "astro-dependency-scoped-ids",
   "file": "0745-astro-dependency-scoped-ids.patch",
-  "content_sha256": "2be3f3fd8de4d9bfdc1a88a5fd92f5848df66e5441495a9db2cbca0fd2fe9722",
+  "content_sha256": "1df550284908b17eb74c3643e15e979df32b64380506eafc6ad5471de6ab4969",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-app-pages-statement-groups",
   "file": "0651-pool-app-pages-statement-groups.patch",
-  "content_sha256": "254ab139f39eadb59ab959632a2f4bf1e0718db0e1166163c65f34bc3400a598",
+  "content_sha256": "e35db21c26bd87f94e3ed5e09ccb979f92fc8a64a3ab63e2d21e3ab8578711e7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

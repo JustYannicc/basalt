@@ -1,7 +1,7 @@
 {
   "identity": "alchemy-uploaded-binding-metadata",
   "file": "0740-alchemy-uploaded-binding-metadata.patch",
-  "content_sha256": "b9c8406eda66b378c2cd95de376caca6b291c0053f3db072549ff110248df500",
+  "content_sha256": "f744c1e3129ff28e9a5b31a5db113aec3b11c3c5f2128a27d792e7af4eb25090",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

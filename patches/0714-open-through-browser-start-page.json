@@ -1,9 +1,0 @@
-{
-  "identity": "basalt-open-through-browser-start-page",
-  "file": "0714-open-through-browser-start-page.patch",
-  "content_sha256": "9a5429360708836736c16d7070b4ac41be55c0ec77b30bfb24d7bf1fd6040925",
-  "kind": "overlay",
-  "upstream_pull_request": null,
-  "database_sensitive": false,
-  "workflow_sensitive": false
-}

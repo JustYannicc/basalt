@@ -1,7 +1,8 @@
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index 9bc54085e..9e71cf0fd 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -7954,3 +7954,306 @@
+@@ -8184,3 +8184,306 @@ index 3cf80d2..64ca6b2 100644
   }) => (importPath: string) => string;
   /**
    * The default source provider: bundle `props.main` with rolldown.

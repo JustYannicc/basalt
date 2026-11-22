@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-view-deterministic-sql-proof",
   "file": "0656-pool-view-deterministic-sql-proof.patch",
-  "content_sha256": "5d364b739515142c5904cbd44fc7d968223326f3a83d7a738e5a053011adfb73",
+  "content_sha256": "6f313324682d77aee1e0623a90094d1d5a3f2e2c62f2d70505e749115835ff14",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

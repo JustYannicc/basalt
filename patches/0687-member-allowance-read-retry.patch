@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/contracts/billing-meter.ts b/apps/hosted/cloud/src/contracts/billing-meter.ts
-index 3ee5c8b..545d059 100644
+index 3ee5c8b6c..545d05938 100644
 --- a/apps/hosted/cloud/src/contracts/billing-meter.ts
 +++ b/apps/hosted/cloud/src/contracts/billing-meter.ts
 @@ -1,14 +1,30 @@
@@ -36,7 +36,7 @@ index 3ee5c8b..545d059 100644
      readonly syncSeats: (organization: OrganizationId) => Effect.Effect<void, BillingUnavailable>;
      /** Daily repair: seat plans, unconfirmed organizations and changed counts, checked in Autumn. */
 diff --git a/apps/hosted/cloud/src/implementation/autumn-client.ts b/apps/hosted/cloud/src/implementation/autumn-client.ts
-index f042417..4092078 100644
+index 7253183e6..a1a5f302b 100644
 --- a/apps/hosted/cloud/src/implementation/autumn-client.ts
 +++ b/apps/hosted/cloud/src/implementation/autumn-client.ts
 @@ -40,6 +40,13 @@ export const autumnReads = {
@@ -54,10 +54,10 @@ index f042417..4092078 100644
  
  const readRetryDelay = Schedule.exponential("200 millis").pipe(Schedule.jittered);
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
-index 7b786c6..4ef9c21 100644
+index 5ca73a384..045418078 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
-@@ -11,6 +11,7 @@ import { Cause, Effect, Layer, Option, Schema } from "effect";
+@@ -11,6 +11,7 @@ import { Cause, Effect, Fiber, Layer, Option, Schema } from "effect";
  import { FetchHttpClient, HttpServerRequest } from "effect/http";
  import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
  import { autumnLive, autumnReads } from "./autumn-client.ts";
@@ -65,15 +65,16 @@ index 7b786c6..4ef9c21 100644
  import {
    recordSeatPlan,
    recordSeats,
-@@ -26,7 +27,6 @@ import {
+@@ -27,7 +28,7 @@ import {
    BillingPlanUnavailable,
    BillingUnavailable,
  } from "../contracts/billing.ts";
--import { freeMembers } from "../contracts/billing-catalog.ts";
+-import { billingCustomerId, freeMembers } from "../contracts/billing-catalog.ts";
++import { billingCustomerId } from "../contracts/billing-catalog.ts";
  import { ExecutorCloudApi } from "../contracts/api.ts";
  import { billingSettings } from "../infrastructure/billing.ts";
  
-@@ -44,16 +44,6 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
+@@ -45,16 +46,6 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
    }
  }
  
@@ -90,7 +91,7 @@ index 7b786c6..4ef9c21 100644
  /** Resolve the selected Autumn environment once; each invocation owns its client. */
  export const billingLive = Effect.gen(function* () {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
-@@ -94,10 +84,11 @@ export const billingLive = Effect.gen(function* () {
+@@ -95,10 +86,11 @@ export const billingLive = Effect.gen(function* () {
        const secret = yield* settings.secretKey;
        const server = yield* settings.serverUrl;
        const catalog = yield* settings.catalog;
@@ -104,7 +105,7 @@ index 7b786c6..4ef9c21 100644
      }).pipe(Effect.provide(FetchHttpClient.layer)),
    );
    const use = <A>(call: Effect.Effect<A, AutumnRequestFailed>) =>
-@@ -262,11 +253,13 @@ export const billingLive = Effect.gen(function* () {
+@@ -284,11 +276,13 @@ export const billingLive = Effect.gen(function* () {
    const meter = BillingMeter.of({
      memberLimit: (organization) =>
        Effect.gen(function* () {
@@ -123,7 +124,7 @@ index 7b786c6..4ef9c21 100644
      syncSeats: (organization) => syncSeats(organization, "changed"),
      reconcileSeats: Effect.gen(function* () {
        const rows = yield* members.use(seatReconcileCandidates);
-@@ -360,7 +353,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
+@@ -382,7 +376,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
        )
        .handle("memberLimit", () =>
          Effect.gen(function* () {
@@ -136,7 +137,7 @@ index 7b786c6..4ef9c21 100644
        )
 diff --git a/apps/hosted/cloud/src/implementation/member-allowance.ts b/apps/hosted/cloud/src/implementation/member-allowance.ts
 new file mode 100644
-index 0000000..95eeec7
+index 000000000..95eeec78b
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/member-allowance.ts
 @@ -0,0 +1,70 @@
@@ -210,11 +211,11 @@ index 0000000..95eeec7
 +    ),
 +    Effect.withSpan("billing.memberAllowance"),
 +  );
-diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index 060abd7..3726e21 100644
---- a/apps/hosted/cloud/src/infrastructure/auth.ts
-+++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -110,9 +110,20 @@ export const cloudAuth = (
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-core.ts b/apps/hosted/cloud/src/infrastructure/auth-core.ts
+index 944c8ecff..96376f5ca 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth-core.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth-core.ts
+@@ -103,9 +103,20 @@ export const cloudAuthCore = (
              Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
                Effect.flatMap(meter.memberLimit),
                Effect.mapError(
