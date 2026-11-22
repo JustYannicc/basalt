@@ -221,11 +221,9 @@ export class NativeComputers {
           await this.deps.save(registry);
           return json({ revoked: true });
         }
-        // The host repeats a revoke until it is confirmed. A device that is gone, or finished
-        // revoking, needs Home no more.
-        if (!computer) return json({ revoked: true });
-        if (computer.user !== caller.user || computer.native?.grant !== caller.grant)
+        if (!computer || computer.user !== caller.user || computer.native?.grant !== caller.grant)
           return fail(404, "not_found", "This native device does not exist.");
+        // The host repeats a revoke until it is confirmed; a finished one needs Home no more.
         if (computer.state === "revoked") {
           if (computer.native.key) {
             delete computer.native.key;

@@ -104,7 +104,20 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
 diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
 --- a/apps/hosted/server/src/implementation/native-grant-host.ts
 +++ b/apps/hosted/server/src/implementation/native-grant-host.ts
-@@ -75,7 +75,8 @@ const control = <A>(
+@@ -55,9 +55,10 @@ const control = <A>(
+       }),
+     );
+     if (!response.ok) {
+-      // Registration keeps only the pool's refusal class; its message and edge pages stay here.
++      // Registration and revocation keep only the pool's refusal class; its message and edge pages
++      // stay here.
+       const refusal =
+-        action === "register" &&
++        (action === "register" || action === "revoke") &&
+         response.headers.get("content-type")?.startsWith("application/json") === true
+           ? Schema.decodeUnknownOption(PoolRefusal)(
+               yield* Effect.promise(() => response.json().catch(() => undefined)),
+@@ -75,7 +76,8 @@ const control = <A>(
            dependencyStatus: response.status,
            ...(Option.isSome(refusal) ? { dependencyCode: refusal.value.error } : {}),
          },
@@ -114,16 +127,20 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
        );
      }
      const body: unknown = yield* nativeControlCall(action, "native_control_response", () =>
-@@ -421,11 +422,17 @@ export const nativeGrantHost = (
-             : { models: false, toolsOrganization: access.policy.toolsOrganization }),
-         },
+@@ -423,9 +425,23 @@ export const nativeGrantHost = (
          Schema.Struct({ revoked: Schema.Literal(true) }),
--      ).pipe(
--        Effect.asVoid,
+       ).pipe(
+         Effect.asVoid,
 -        // A tools-only device's grant alone authorizes it, so revoking the grant ends it whatever
 -        // the pool answers; a pool that never heard of it answers that it doesn't exist.
 -        Effect.catch((error) => (access.policy.models ? Effect.fail(error) : Effect.void)),
-+      ).pipe(Effect.asVoid),
++        // The pool holds no such device for this grant, so nothing is left to clean there.
++        Effect.catch((error) =>
++          error.body?.dependencyStatus === 404 && error.body?.dependencyCode === "not_found"
++            ? Effect.void
++            : Effect.fail(error),
++        ),
++      ),
 +    // Any other refusal, such as a device whose person lost access to its pool, keeps a tools-only
 +    // grant: its tools are the person's own. Fails only while the pool doesn't answer.
 +    revokedAtPool: (_ctx, access) =>
