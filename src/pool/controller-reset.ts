@@ -12,6 +12,7 @@ import { endpointMetadata } from "./model-history/record.ts";
 import { shape } from "./runtime-fleet/endpoint-trace.ts";
 import { nativeRuntimeStream, nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
 import { handingOver } from "./code-handover.ts";
+import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -53,7 +54,10 @@ export function controllerInstanceEnded(error: unknown): boolean {
 
 export interface ControllerHop {
   /** Resolved per attempt: the platform says a stub that threw this error fails again at once. */
-  controller(): { fetch(request: Request): Promise<Response> };
+  controller(): {
+    fetch(request: Request): Promise<Response>;
+    resume?(input: StreamResumeInput): Promise<Response>;
+  };
   env: SentryEnv;
   defer(work: Promise<unknown>): void;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
@@ -381,7 +385,22 @@ async function forwardHeld(
   response = await awaitHandover(request, hop, model, copy, response, begun);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
-  return nativeRuntimeStream(response, request, (error) =>
+  // A resumable answer is re-attached through the new instance first; only an answer it cannot
+  // resume reaches the retry terminal below, unchanged.
+  const answer = resumableAnswer(response, {
+    resume: (input) => {
+      const controller = hop.controller();
+      return controller.resume
+        ? controller.resume(input)
+        : Promise.reject(new Error("This controller cannot resume a stream"));
+    },
+    ended: controllerInstanceEnded,
+    wait: hop.wait ?? sleep,
+    now,
+    delayMs: controllerReplayDelayMs,
+    signal: request.signal,
+  });
+  return nativeRuntimeStream(answer, request, (error) =>
     report(
       hop,
       request,

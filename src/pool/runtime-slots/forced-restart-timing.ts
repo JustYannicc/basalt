@@ -6,8 +6,6 @@
 
 /** A selected runtime that runs but refuses this long, with no successful read between, is stopped. */
 export const unservingBoundMs = 60_000;
-/** A forced restart that hasn't reached ready this long after its stop has failed: needs a person. */
-export const forcedRestartBudgetMs = 300_000;
 /** Forced restarts allowed per hour, counted by the controller. */
 export const forcedRestartsPerHour = 3;
 /** Forced stops allowed per hour, counted again by the container's own object before the signal. */
@@ -71,6 +69,22 @@ export const forcedRestartServesWithinHeldStreamsMs =
  * stop path measures both.
  */
 export const destroyAndMembershipMs = 120_000;
+/**
+ * A restart that hasn't reached ready this long after it began has failed: needs a person. A forced
+ * restart begins at its stop; one recovery tries on its own, at its first try since serving. It is
+ * the forced restart's worst case from the start of its stop pass to ready, with `destroy()` and the
+ * membership pass, which also covers recovery's own restart, so a slow but healthy restart never
+ * pages a person.
+ */
+export const forcedRestartBudgetMs =
+  2 * readinessReadMs +
+  forcedStopGraceMs +
+  2 * exitConfirmationMs +
+  providerReadAllowanceMs +
+  runtimeStartupMs +
+  restartTailAllowanceMs +
+  recoveryPassMs +
+  destroyAndMembershipMs;
 /**
  * The platform may keep an active controller object on its previous code for 300 seconds after an
  * upload; thirty more cover transport. The new code's recovery runs only once the object adopts it.
