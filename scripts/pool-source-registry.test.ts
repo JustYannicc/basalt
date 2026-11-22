@@ -530,6 +530,18 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-cooldown-provider-time") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0763-home-cooldown-provider-time.patch");
+        assert.match(patch.retirement.requires, /never later on the blind backoff/);
+        assert.match(patch.retirement.requires, /never shortens an open window/);
+        assert.match(patch.retirement.requires, /provider-time, high-backoff, floor, open-window and usage-payload regressions/);
+      } else if (patch.identity === "cliproxy-node-provider-retry-time") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0764-node-provider-retry-time.patch");
+        assert.match(patch.retirement.requires, /assumes carry 0646's metadata-only failure keeps only the status/);
+        assert.match(patch.retirement.requires, /without any provider body or header/);
+        assert.match(patch.retirement.requires, /Claude, Codex and Antigravity on-the-wire regression/);
       } else if (patch.identity === "cliproxy-home-funding-aged-reading") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0762-home-funding-aged-reading.patch");
