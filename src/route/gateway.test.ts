@@ -496,7 +496,8 @@ test("cancelling during a sign-in leaves no poll and no compute", async () => {
   const leaving = gateway.disconnect(caller);
   await settle();
   held.release();
-  await signing;
+  // The cancel overtook it, so the sign-in is refused rather than left half-armed.
+  await assert.rejects(signing, (error: Error) => error.message === "route_gateway_unavailable");
   await leaving;
   assert.equal(await storage.get("route-v1:login-until"), undefined);
   assert.equal(storage.alarm, null);
@@ -513,9 +514,14 @@ test("switching off during a boot leaves the gateway off, not on the old exit", 
   const off = gateway.select(caller, { exitId: null, whenDown: "stop" });
   await settle();
   held.release();
-  await (await tunnel).close();
+  // Switching off does not wait for the start: it stops the starting gateway, so the tunnel it
+  // was starting for is refused and nothing is left routing through the old exit.
+  await tunnel.then(
+    (socket) => socket.close(),
+    () => {},
+  );
   assert.equal((await off).state, "off");
-  assert.deepEqual(container.selects.at(-1), { exit_id: null, when_down: "stop" });
+  assert.equal(container.running, false);
 });
 
 test("a switch-off the running gateway misses stops it, so it cannot keep routing", async () => {
@@ -536,4 +542,64 @@ test("a failed identity read right after approval keeps the sign-in waiting, not
     state: "connected",
     tailnet: "example-tailnet",
   });
+});
+
+test("switching off answers at once while an outage refresh is stuck starting the gateway", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  const held = container.hold("/status");
+  const alarm = gateway.alarm();
+  await held.reached;
+  const off = gateway.select(caller, { exitId: null, whenDown: "stop" });
+  const answered = await Promise.race([off.then(() => true), settle().then(() => false)]);
+  assert.equal(answered, true);
+  assert.equal((await off).state, "off");
+  held.release();
+  await alarm;
+  assert.deepEqual(await storage.get("route-v1:selection"), { exitId: null, whenDown: "stop" });
+  assert.equal(container.running, false);
+});
+
+test("readings during one outage share one start attempt", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.crash();
+  const held = container.hold("/status");
+  const reads = [gateway.alarm(), gateway.reading(caller), gateway.reading(caller)];
+  await held.reached;
+  held.release();
+  await Promise.all(reads);
+  assert.deepEqual(container.starts, [null, "node-state-after-login"]);
+});
+
+test("a tunnel never restarts a switched-off, stopped gateway", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  container.crash();
+  const starts = container.starts.length;
+  await refusedWith(gateway.openTunnel({ owner }), "route_gateway_unavailable");
+  assert.equal(container.starts.length, starts);
+  assert.equal(container.running, false);
+});
+
+test("a malformed caller is refused with the reason code, never schema text", async () => {
+  const { gateway } = await created();
+  for (const input of [
+    { routeId, owner: "person-1" },
+    { routeId, owner, extra: true },
+    { routeId },
+    "not an object",
+  ])
+    await refusedWith(gateway.reading(input), "route_not_permitted");
+  await refusedWith(gateway.select(caller, { exitId: 7, whenDown: "stop" }), "route_not_permitted");
+  await refusedWith(gateway.create({ routeId, owner }), "route_not_permitted");
+});
+
+test("listing exits on a route with no identity starts no node", async () => {
+  const { gateway, container } = await created();
+  await refusedWith(gateway.exits(caller), "route_needs_login");
+  assert.equal(container.running, false);
+  assert.deepEqual(container.starts, []);
 });

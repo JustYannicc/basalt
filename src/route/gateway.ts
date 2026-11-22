@@ -39,6 +39,14 @@ export type RouteCaller = typeof Caller.Type;
 const CreateInput = Schema.Struct({ routeId: RouteId, owner: RouteOwner, app: Opaque });
 const SelectInput = Schema.Struct({ exitId: Schema.NullOr(Opaque), whenDown: WhenDown });
 const strict = { onExcessProperty: "error" } as const;
+/** Malformed input crosses the RPC boundary as a reason code, never as schema text. */
+function decode<T, E>(schema: Schema.Codec<T, E>, input: unknown): T {
+  try {
+    return Schema.decodeUnknownSync(schema, strict)(input);
+  } catch {
+    throw new RouteRefused("route_not_permitted");
+  }
+}
 
 export interface GatewayStorage {
   get<T>(key: string): Promise<T | undefined>;
@@ -76,7 +84,10 @@ const startDeadlineMs = 30_000;
 
 export class RouteGatewayCore {
   private starting: Promise<void> | undefined;
+  private refreshing: Promise<Reading> | undefined;
   private selecting: Promise<unknown> = Promise.resolve();
+  /** Bumped by disconnect, so a call it overtook writes nothing after it. */
+  private generation = 0;
   private deps: GatewayDependencies;
   private gateway: GatewayControl;
   private identity: RouteIdentityStore;
@@ -87,7 +98,7 @@ export class RouteGatewayCore {
   }
 
   async create(input: unknown): Promise<Record<string, never>> {
-    const next = Schema.decodeUnknownSync(CreateInput, strict)(input);
+    const next = decode(CreateInput, input);
     if (this.deps.name !== undefined && this.deps.name !== next.routeId)
       throw new RouteRefused("route_not_permitted");
     const current = await this.deps.storage.get<RouteMeta>(keys.meta);
@@ -105,10 +116,13 @@ export class RouteGatewayCore {
   }
 
   async login(input: unknown): Promise<{ url: string; expiresAt: number } | { state: "ready" }> {
-    await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
+    await this.authorize(input);
+    const generation = this.generation;
+    await this.ensureStarted();
     return this.exclusive(async () => {
-      await this.ensureStarted();
+      this.current(generation);
       const reply = await this.gateway.login();
+      this.current(generation);
       if (!("url" in reply)) return reply;
       const expiresAt = this.deps.now() + loginWindowMs;
       await this.deps.storage.put(keys.loginUntil, expiresAt);
@@ -125,8 +139,8 @@ export class RouteGatewayCore {
     | { state: "connected"; tailnet: string | null }
     | { state: "failed"; reason: ReasonCode }
   > {
-    await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
-    const { reading } = await this.refresh();
+    await this.authorize(input);
+    const reading = await this.refresh();
     const signedOut =
       reading.reason === "route_needs_login" || reading.reason === "route_key_expired";
     if ((await this.identity.exists()) && !signedOut)
@@ -137,7 +151,10 @@ export class RouteGatewayCore {
   }
 
   async exits(input: unknown) {
-    await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
+    await this.authorize(input);
+    // A route with no identity has no netmap to offer, and listing it must not start a node.
+    if (!this.gateway.running && !(await this.identity.exists()))
+      throw new RouteRefused("route_needs_login");
     await this.ensureStarted();
     const exits = await this.gateway.exits();
     const selected = (await this.deps.storage.get<Selection>(keys.selection)) ?? {
@@ -152,29 +169,39 @@ export class RouteGatewayCore {
 
   /**
    * Choosing an exit that does not reach the gateway changes nothing and is refused, so the host
-   * writes no rule for it. Switching off always succeeds and needs no compute: a running gateway
-   * that misses it is stopped, so it cannot keep routing, and its next start applies off.
+   * writes no rule for it. Switching off always succeeds within one control call and never waits
+   * on a start: a gateway that is starting or misses it is stopped, and its next start applies off.
    */
   async select(caller: unknown, input: unknown): Promise<Reading> {
-    await this.authorize(Schema.decodeUnknownSync(Caller, strict)(caller));
-    const selection: Selection = Schema.decodeUnknownSync(SelectInput, strict)(input);
-    const reading = await this.exclusive(async () => {
-      const previous = await this.deps.storage.get<Selection>(keys.selection);
-      await this.deps.storage.put(keys.selection, selection);
-      if (selection.exitId === null) {
-        // A boot in flight (started by a tunnel) sends the selection it read before this one.
-        await this.starting?.catch(() => {});
-        if (this.gateway.running)
+    await this.authorize(caller);
+    const selection: Selection = decode(SelectInput, input);
+    const generation = this.generation;
+    if (selection.exitId === null) {
+      const reading = await this.exclusive(async () => {
+        await this.deps.storage.put(keys.selection, selection);
+        if (this.starting) await this.gateway.destroy();
+        else if (this.gateway.running)
           try {
             return await this.applied(await this.gateway.select(selection));
           } catch {
             await this.gateway.destroy();
           }
         return this.record(await this.idle(selection), true);
-      }
+      });
+      await this.schedule();
+      return reading;
+    }
+    try {
+      await this.ensureStarted();
+    } catch {
+      throw new RouteRefused("route_gateway_unavailable");
+    }
+    const reading = await this.exclusive(async () => {
+      this.current(generation);
+      const previous = await this.deps.storage.get<Selection>(keys.selection);
+      await this.deps.storage.put(keys.selection, selection);
       let status: GatewayStatus;
       try {
-        await this.ensureStarted();
         status = await this.gateway.select(selection);
       } catch {
         if (previous) await this.deps.storage.put(keys.selection, previous);
@@ -190,21 +217,21 @@ export class RouteGatewayCore {
   }
 
   async reading(input: unknown): Promise<Reading> {
-    await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
-    return (await this.refresh()).reading;
+    await this.authorize(input);
+    return this.refresh();
   }
 
   async disconnect(input: unknown): Promise<Record<string, never>> {
-    await this.authorize(Schema.decodeUnknownSync(Caller, strict)(input));
+    await this.authorize(input);
+    // Every sign-in, selection and refresh already in flight is now stale and writes nothing.
+    this.generation += 1;
+    // With no stored identity and nothing running there is no device to log out, so a repeated
+    // disconnect starts no compute.
+    if (this.gateway.running || (await this.identity.exists()))
+      await this.ensureStarted().catch(() => {});
     return this.exclusive(async () => {
-      // With no stored identity and nothing running there is no device to log out, so a repeated
-      // disconnect starts no compute.
-      const identity = this.gateway.running || (await this.identity.exists());
       try {
-        if (identity) {
-          await this.ensureStarted();
-          await this.gateway.logout();
-        }
+        if (this.gateway.running) await this.gateway.logout();
       } catch {
         // The device stays listed, offline, in the owner's tailnet until it expires. Disconnecting
         // must still finish, so the identity is forgotten here either way.
@@ -224,8 +251,9 @@ export class RouteGatewayCore {
   async openTunnel(caller: { owner: string }) {
     const meta = await this.deps.storage.get<RouteMeta>(keys.meta);
     if (!meta || caller.owner !== meta.owner) throw new RouteRefused("route_not_permitted");
-    // A logged-out or disconnected route has nothing to carry traffic, so it starts no compute.
-    if (!this.gateway.running && !(await this.identity.exists()))
+    // Only a signed-in route with an exit selected may start compute for traffic; anything else
+    // could only be refused by the gateway, so it is refused here without a start.
+    if (!this.gateway.running && (!(await this.identity.exists()) || !(await this.routing())))
       throw new RouteRefused("route_gateway_unavailable");
     try {
       await this.ensureStarted();
@@ -254,9 +282,10 @@ export class RouteGatewayCore {
   /**
    * Every call names its route and either the person who started it or, for a saved account, that
    * account in the owner's organization. The first account step binds the account; any other
-   * account, organization or person is refused alike.
+   * account, organization or person, and any malformed caller, is refused alike.
    */
-  private async authorize(caller: RouteCaller) {
+  private async authorize(input: unknown) {
+    const caller: RouteCaller = decode(Caller, input);
     const meta = await this.meta();
     if (meta.routeId !== caller.routeId) throw new RouteRefused("route_not_permitted");
     if ("owner" in caller) {
@@ -274,38 +303,58 @@ export class RouteGatewayCore {
     return meta;
   }
 
+  /** Refuses the rest of a call that a disconnect overtook. */
+  private current(generation: number) {
+    if (generation !== this.generation) throw new RouteRefused("route_gateway_unavailable");
+  }
+
   /** Routing is on while an exit is selected; only then is the gateway kept warm and polled. */
   private async routing() {
     return ((await this.deps.storage.get<Selection>(keys.selection))?.exitId ?? null) !== null;
   }
 
-  private refresh(): Promise<{ reading: Reading }> {
-    return this.exclusive(() => this.refreshNow());
+  /** Concurrent reads share one refresh, so an outage costs one start attempt, not one per caller. */
+  private refresh(): Promise<Reading> {
+    this.refreshing ??= this.refreshNow().finally(() => {
+      this.refreshing = undefined;
+    });
+    return this.refreshing;
   }
 
-  private async refreshNow(): Promise<{ reading: Reading }> {
-    const selection = await this.deps.storage.get<Selection>(keys.selection);
+  private async refreshNow(): Promise<Reading> {
     const live =
       this.gateway.running ||
       (await this.routing()) ||
       (await this.deps.storage.get(keys.loginUntil)) !== undefined;
-    if (!live) {
-      // A stopped gateway that routes nothing is read without starting compute.
-      return { reading: await this.record(await this.idle(selection), true) };
-    }
-    try {
-      await this.ensureStarted();
-      const observed = await this.gateway.status();
-      // A select the gateway lost (a failed boot-time select) is re-sent.
-      const status =
-        selection && !matches(observed, selection)
-          ? await this.gateway.select(selection)
-          : observed;
-      await this.persistState(status);
-      return { reading: await this.record(readingFromStatus(status, this.deps.now())) };
-    } catch (error) {
-      return { reading: await this.record(this.failed(error, selection), true) };
-    }
+    // A stopped gateway that routes nothing is read without starting compute.
+    if (!live)
+      return this.exclusive(async () =>
+        this.record(await this.idle(await this.deps.storage.get<Selection>(keys.selection)), true),
+      );
+    // The start runs outside the lock: a hung gateway must not hold up a switch-off behind it.
+    const generation = this.generation;
+    const started = await this.ensureStarted().then(
+      () => undefined,
+      (error: unknown) => error ?? new Error("start failed"),
+    );
+    return this.exclusive(async () => {
+      const selection = await this.deps.storage.get<Selection>(keys.selection);
+      if (generation !== this.generation || (selection?.exitId === null && !this.gateway.running))
+        return this.record(await this.idle(selection), true);
+      try {
+        if (started) throw started;
+        const observed = await this.gateway.status();
+        // A select the gateway lost (a failed boot-time select) is re-sent.
+        const status =
+          selection && !matches(observed, selection)
+            ? await this.gateway.select(selection)
+            : observed;
+        await this.persistState(status);
+        return this.record(readingFromStatus(status, this.deps.now()));
+      } catch (error) {
+        return this.record(this.failed(error, selection), true);
+      }
+    });
   }
 
   private async applied(status: GatewayStatus) {
@@ -320,9 +369,9 @@ export class RouteGatewayCore {
   }
 
   /**
-   * Everything that writes route state from a gateway reply (login, select, disconnect, every
-   * refresh with its heal and identity save) runs one at a time. A DO interleaves at every awaited
-   * container call, so without this a late reply could undo a disconnect or a newer selection.
+   * Every state write that follows a gateway reply (sign-in, selection, disconnect, each refresh
+   * with its heal and identity save) runs one at a time. Starts stay outside it, so a lock holder
+   * waits on at most a few bounded control calls, never a container start.
    */
   private exclusive<T>(work: () => Promise<T>): Promise<T> {
     const run = this.selecting.then(work, work);
