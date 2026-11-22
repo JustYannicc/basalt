@@ -156,10 +156,19 @@ const nodeAnswer: Route = async (request, ...rest) => {
 
 test("a call never sent and then sent again is recorded once, by the answer its client got", async (context) => {
   const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
   const refused = await h.send(await h.call(), unsentAnswer);
   assert.equal(refused.status, 503);
   const attempt = refused.headers.get("X-Request-Id");
   assert.ok(attempt);
+  // The route failure names the endpoint's trace and the attempt its client sees, so both match.
+  const [route] = logged.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_RUNTIME_ROUTE_FAILURE",
+  );
+  assert.ok(route);
+  const routed = route.arguments[1] as { requestId: string; attemptRequestId?: string };
+  assert.equal(routed.requestId, "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d");
+  assert.equal(routed.attemptRequestId, attempt);
   await refused.text();
   await h.settle();
   assert.deepEqual(h.finishes, [], "the attempt that never ran records no outcome");
@@ -204,5 +213,42 @@ test("a re-send refused again before its own send stays the one request, with no
   assert.deepEqual(h.finishes, []);
   const lines = logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT");
   assert.equal(lines.length, 1);
-  assert.equal(JSON.parse(String(lines[0]!.arguments[1])).requestId, attempt);
+  // Refused outside the runtime, the line still says where: the forward's guard and cause.
+  assert.deepEqual(JSON.parse(String(lines[0]!.arguments[1])), {
+    requestId: attempt,
+    step: null,
+    reason: null,
+    guard: "runtime_port",
+    cause: "Error",
+    resent: true,
+  });
+});
+
+test("a re-send whose client has left adds no record either", async (context) => {
+  const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
+  const attempt = "6a5b4c3d-2e1f-4a9b-8c7d-6e5f4a3b2c1d";
+  const left = new AbortController();
+  left.abort();
+  const request = new Request(await h.call({ [attemptHeader]: attempt }), {
+    signal: left.signal,
+  });
+  const refused = await h.send(request, async () => {
+    throw new Error("protection refused before the send");
+  });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.headers.get(mark), "1");
+  assert.equal(refused.headers.get("X-Request-Id"), attempt);
+  await refused.text();
+  await h.settle();
+  assert.deepEqual(h.starts, []);
+  assert.deepEqual(h.finishes, []);
+  assert.equal(
+    logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT").length,
+    1,
+  );
+  assert.equal(
+    logged.mock.calls.filter((call) => call.arguments[0] === "POOL_GATEWAY_FAILURE").length,
+    0,
+  );
 });

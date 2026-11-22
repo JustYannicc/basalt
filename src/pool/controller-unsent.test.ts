@@ -110,6 +110,28 @@ test("a container's own answer can't carry the pool's refusal or resend marks", 
   assert.equal(containerAnswer(plain), plain);
 });
 
+test("the front layer's own answer keeps every resume header the entry and the pool read", () => {
+  const resume = {
+    "X-Basalt-Resumable": "1",
+    "X-Basalt-Resume": "v1",
+    "X-Basalt-Resume-From": "3",
+    "X-Basalt-Resume-Target": "primary",
+    "X-Basalt-Resume-Boot": "boot",
+    "X-Basalt-Resume-State": "open",
+    "X-Basalt-Resume-Upstream": "unreachable",
+    "X-Basalt-Request-Id": "0b5c3a4e-8f1d-4c2b-9a7e-3d6f1e2a4b5c",
+    "X-Request-Id": "0b5c3a4e-8f1d-4c2b-9a7e-3d6f1e2a4b5c",
+  };
+  // A layer that could not dial its node, with a pool mark a container must never set.
+  const cleaned = containerAnswer(
+    new Response(null, { status: 502, headers: { ...resume, [mark]: "1" } }),
+  );
+  assert.equal(cleaned.status, 502);
+  assert.equal(cleaned.headers.get(mark), null);
+  for (const [name, value] of Object.entries(resume))
+    assert.equal(cleaned.headers.get(name), value, name);
+});
+
 test("the entry names the refused attempt on its re-send, and never lets a client name one", async (context) => {
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "error", () => {});
