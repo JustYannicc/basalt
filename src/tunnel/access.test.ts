@@ -161,7 +161,14 @@ for (const operation of ["tunnel", "model"] as const)
     );
     if (operation === "tunnel") {
       const { tunnelAccess } = await import("./access.ts");
-      assert.deepEqual(await tunnelAccess(request, env), access);
+      const admitted = await tunnelAccess(request, env);
+      assert.ok(!(admitted instanceof Response));
+      const { checkedAt, ...answer } = admitted;
+      assert.deepEqual(answer, access);
+      assert.ok(
+        checkedAt !== undefined && checkedAt <= times[0],
+        "reuse is measured from before the check",
+      );
       assert.equal(forwarded, 0);
     } else {
       const response = await nativeModelRequest(request, env);

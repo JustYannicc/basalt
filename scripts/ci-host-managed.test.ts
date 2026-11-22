@@ -11,8 +11,12 @@ const { parse } = createRequire(new URL("./architecture/package.json", import.me
 const workflow = parse(
   readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
 );
-const ids = ["host-managed-accounts", "host-managed-accounts-pool"];
-const [accounts, pool] = ids.map((id) => workflow.jobs[id]);
+const ids = [
+  "host-managed-accounts",
+  "host-managed-accounts-pool",
+  "host-managed-accounts-pool-actions",
+];
+const [accounts, pool, poolActions] = ids.map((id) => workflow.jobs[id]);
 
 const selectedScenarios = (pattern: string) =>
   Object.values(readDeclarations().files)
@@ -126,7 +130,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       ],
     },
     {
-      job: "host-managed-accounts-pool",
+      job: "host-managed-accounts-pool-actions",
       name: "Keep listed account actions usable during the detail read",
       run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:listed-account-actions)" --workers 1',
       env: null,
@@ -152,7 +156,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       ],
     },
     {
-      job: "host-managed-accounts-pool",
+      job: "host-managed-accounts-pool-actions",
       name: "Verify bounded per-account usage through the public host API",
       run: 'bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api)" --workers 1',
       env: null,
@@ -161,7 +165,7 @@ test("account and pool jobs retain their owned scenarios, commands and execution
       scenarios: ["poolOwnerImport", "poolUsageSeries"],
     },
   ];
-  const commands = [accounts, pool].flatMap((job, index) =>
+  const commands = [accounts, pool, poolActions].flatMap((job, index) =>
     job.steps
       .filter((step: { run?: string }) => step.run?.includes("--test-name"))
       .map(
@@ -208,15 +212,15 @@ test("account and pool jobs retain their owned scenarios, commands and execution
   );
 });
 
-test("both halves prepare independently, retain evidence and keep the 20-minute limit", () => {
+test("every part prepares independently, retains evidence and keeps its limit", () => {
   assert.deepEqual(accounts.steps.slice(0, 6), pool.steps.slice(0, 6));
-  for (const [index, job] of [accounts, pool].entries()) {
-    assert.equal(job.needs, "select");
-    assert.equal(
-      job["runs-on"],
-      `\${{ contains(fromJSON(needs.select.outputs.boat_jobs), '${ids[index]}') && 'boat-large' || 'ubuntu-latest' }}`,
-    );
-    assert.equal(job["timeout-minutes"], 20);
+  assert.deepEqual(accounts.steps.slice(0, 6), poolActions.steps.slice(0, 6));
+  for (const [index, job] of [accounts, pool, poolActions].entries()) {
+    // The two long parts start with select; the shorter actions part waits for the long tier.
+    const long = job !== poolActions;
+    assert.deepEqual(job.needs, long ? "select" : ["select", "long-started"]);
+    assert.equal(job["runs-on"], "ubuntu-latest");
+    assert.equal(job["timeout-minutes"], long ? 30 : 20);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
     assert.deepEqual(job.steps.at(-2), accounts.steps.at(-2));
     assert.equal(job.steps.at(-2).if, "always()");
@@ -225,10 +229,15 @@ test("both halves prepare independently, retain evidence and keep the 20-minute 
   }
 });
 
-test("affected selection and aggregate require both account halves", () => {
+test("affected selection picks the parts that run a spec, and the aggregate requires every part", () => {
+  // The listed-account-actions spec runs in the account job and the pool's actions part, not in
+  // the retained-accounts part.
   const selected = selectPaths([".upstream/e2e/tests/listed-account-actions.spec.ts"]).jobs;
+  assert.deepEqual(
+    ids.filter((id) => selected.includes(id)),
+    ["host-managed-accounts", "host-managed-accounts-pool-actions"],
+  );
   for (const id of ids) {
-    assert.ok(selected.includes(id));
     assert.ok(workflow.jobs.check.needs.includes(id));
     const needs = Object.fromEntries(
       [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [

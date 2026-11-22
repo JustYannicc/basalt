@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { Effect, Redacted } from "effect";
 import { roleHost } from "../../.upstream/e2e/support/role-hosts.ts";
+import { installClock } from "../../.upstream/e2e/support/browser-clock.ts";
 import { batchedReads, batchPath } from "../../.upstream/e2e/support/read-batches.ts";
+
+// The app frame's sign-in callback (`appSignInCallbackPath` in the apps package); a changed path
+// fails this proof at its wait instead of passing it.
+const appSignInCallbackPath = "/_executor/auth/callback";
 
 /** Real hosted counter writes and authorized browser reads, including the former idle timers. */
 export const accountTrafficProof = ({
@@ -21,8 +26,17 @@ export const accountTrafficProof = ({
     const scope = `organization:${h.actors.organization.id}`;
     const run = (work) => Effect.promise(work).pipe(Effect.timeout("30 seconds"));
     const published = () => h.request("PATCH", `${h.prefix}/accounts/${saved.account.id}`, {});
+    const recorded = () =>
+      database
+        .run({
+          sql: "select coalesce(sum(requests), 0)::text as requests from executor_account_tool_calls where account=$1",
+          params: [saved.account.id],
+        })
+        .pipe(Effect.map((rows) => Number(rows[0]?.requests ?? "0")));
+    const recordedBefore = yield* recorded();
+    const widths = [1280, 390];
     diagnostics.accountTraffic = [];
-    for (const width of [1280, 390]) {
+    for (const width of widths) {
       const context = yield* Effect.acquireRelease(
         Effect.promise(() =>
           browser.newContext({ viewport: { width, height: 900 }, ignoreHTTPSErrors: true }),
@@ -104,8 +118,16 @@ export const accountTrafficProof = ({
           (response) => response.status() === 200 && kinds(response.request()).includes("traffic"),
         ),
       ]);
+      // The page keeps the app's screen in a hidden frame, which signs in after hydration.
+      const frameCallback = Promise.allSettled([
+        page.waitForResponse(
+          (response) =>
+            response.frame() !== page.mainFrame() &&
+            new URL(response.url()).pathname === appSignInCallbackPath,
+        ),
+      ]);
       yield* run(async () => {
-        await page.clock.install();
+        await installClock(page);
         await page.goto(
           `${origin}/org/${h.actors.organization.slug}/apps/${pool.id}?view=accounts`,
         );
@@ -114,6 +136,15 @@ export const accountTrafficProof = ({
         const [first] = await firstTraffic;
         if (first.status === "rejected") throw first.reason;
         await first.value.json();
+        const [callback] = await frameCallback;
+        if (callback.status === "rejected") throw callback.reason;
+        assert.equal(callback.value.status(), 302, "the hidden app frame's sign-in succeeds");
+        const appOrigin = new URL(callback.value.url()).origin;
+        await callback.value
+          .frame()
+          .waitForURL((url) => url.origin === appOrigin && url.pathname !== appSignInCallbackPath, {
+            waitUntil: "domcontentloaded",
+          });
         await idle();
         await flush();
       });
@@ -130,6 +161,11 @@ export const accountTrafficProof = ({
         }),
       );
       assert.ok(initial.traffic > 0, "the real Accounts tab loads tool-call traffic");
+      check(
+        `Account detail at ${width}: loading and the app frame's sign-in read no app or user body`,
+        { app: initial.app, user: initial.user },
+        { app: 0, user: 0 },
+      );
       yield* run(() => page.clock.runFor(31_000).then(flush));
       check(`Account detail at ${width}: healthy idle makes zero body reads`, counts, initial);
       timeline.push({ event: "idle-proved", at: Date.now(), counts: { ...counts } });
@@ -238,4 +274,10 @@ export const accountTrafficProof = ({
       progress.phase = "complete";
       yield* run(() => page.goto("about:blank"));
     }
+    // The pool page reads each selected account's view to present it; only app work is traffic.
+    check(
+      "Account traffic: rendering pool pages records no requests beyond each committed counter",
+      (yield* recorded()) - recordedBefore,
+      widths.length,
+    );
   });

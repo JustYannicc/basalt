@@ -27,6 +27,7 @@ function fixture(t: { after: (use: () => void) => void }) {
     "physical-state-digests.ndjson",
     "physical-provisioning-completed.json",
     "sso-idp.log",
+    "autumn-emulator.log",
   ])
     writeFileSync(join(run, "cloud", file), "selected-diagnostic");
   writeFileSync(join(run, "cloud/report/diagnostics/result.json"), "synthetic-evidence");
@@ -64,6 +65,7 @@ test("failed runs export selected CI evidence before pruning and never follow ru
     "physical-state-digests.ndjson",
     "physical-provisioning-completed.json",
     "sso-idp.log",
+    "autumn-emulator.log",
   ])
     assert.equal(readFileSync(join(retained, "cloud", file), "utf8"), "selected-diagnostic");
   assert.equal(existsSync(join(retained, "cloud/report/runtime-link")), false);

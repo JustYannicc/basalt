@@ -1,6 +1,6 @@
 import { envelopeFailure, responseFailure } from "./provider-failure.ts";
 import { UpgradeRefusal, workerId, digest, type Binding, type Observation } from "./plan.ts";
-import { normalizePlacement } from "../release-barrier/script-placement.ts";
+import { normalizePlacement } from "./script-placement.ts";
 
 export const object = (value: unknown): Record<string, unknown> => {
   if (value === null || typeof value !== "object" || Array.isArray(value))

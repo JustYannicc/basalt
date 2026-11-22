@@ -1,0 +1,182 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/executor.ts b/apps/hosted/cloud/src/infrastructure/executor.ts
+--- a/apps/hosted/cloud/src/infrastructure/executor.ts
++++ b/apps/hosted/cloud/src/infrastructure/executor.ts
+@@ -18,6 +18,7 @@ import {
+   makeExecutorRuntimeStorage,
+ } from "@executor-js/sdk/core";
+ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
++import { vaultDevicesOnly } from "@executor-js/hosted-server/vault-device-grants";
+ import { SqlClient } from "effect/sql";
+ import { makeBatchExecutionMemo } from "./batch-execution.ts";
+ import * as Cloudflare from "alchemy/Cloudflare";
+@@ -143,7 +144,12 @@ export const cloudExecutor = Effect.fn(function* (
+         // SDK owners include a namespace; dashboard routes resolve the organization ID itself.
+         workflowInputUrl: ({ owner, app, id }) =>
+           `${origin}/org/${encodeURIComponent(owner.replace(/^organization:/u, ""))}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
+-        drives,
++        // A vault's device list reads grant storage from the event's own database, as event
++        // delivery's checks do.
++        drives: vaultDevicesOnly(
++          drives,
++          Effect.succeed(Context.get(services, SqlClient.SqlClient)),
++        ),
+         registry: {
+           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryRuntimeStorage).pipe(
+             Effect.provideContext(services),
+diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+--- a/apps/hosted/server/package.json
++++ b/apps/hosted/server/package.json
+@@ -30,6 +30,7 @@
+     "./database": "./src/implementation/database.ts",
+     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
+     "./events": "./src/implementation/events.ts",
++    "./vault-device-grants": "./src/implementation/vault-device-grants.ts",
+     "./app-ui": "./src/app-ui.ts",
+     "./app-ui/contracts": "./src/contracts/app-ui.ts",
+     "./provisioning": "./src/implementation/provisioning.ts",
+diff --git a/apps/hosted/server/src/implementation/bearer-access.ts b/apps/hosted/server/src/implementation/bearer-access.ts
+--- a/apps/hosted/server/src/implementation/bearer-access.ts
++++ b/apps/hosted/server/src/implementation/bearer-access.ts
+@@ -118,7 +118,7 @@ const jsonText = (text: string | null): unknown => {
+   }
+ };
+ const Strings = Schema.Array(Schema.String);
+-const strings = (text: string | null) =>
++export const strings = (text: string | null) =>
+   Option.getOrUndefined(Schema.decodeUnknownOption(Strings)(jsonText(text)));
+ 
+ /**
+diff --git a/apps/hosted/server/src/implementation/vault-device-grants.ts b/apps/hosted/server/src/implementation/vault-device-grants.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/vault-device-grants.ts
+@@ -0,0 +1,129 @@
++/**
++ * A vault's devices, classified by grant. The vault sees only grant ids, so it records every grant
++ * that makes the plugin's sync calls, an agent's included. Grant storage tells them apart by what
++ * each grant is: a device's grant was issued by device authorization (RFC 8628), to a client that
++ * registered for nothing else, through a connection for this vault's app alone, run as the app.
++ * The tools a connection selects never decide it: an agent may hold exactly a device's tools.
++ */
++import { DriveDevices, DriveRequestFailed } from "apps/contracts";
++import { ConnectionPolicy } from "@executor-js/mcp-auth/connections";
++import type { DriveBackend, StorageError } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++import { strings } from "./bearer-access.ts";
++
++const deviceCode = "urn:ietf:params:oauth:grant-type:device_code";
++
++const GrantRow = Schema.Struct({
++  id: Schema.String,
++  userId: Schema.String,
++  resource: Schema.String,
++  revoked: Schema.Boolean,
++  clientGrants: Schema.NullOr(Schema.String),
++  connectionPolicy: Schema.fromJsonString(ConnectionPolicy),
++  connectionRevoked: Schema.Boolean,
++  connectionUser: Schema.String,
++  connectionResource: Schema.String,
++});
++
++/** Leaving out a record this reader cannot read could hide a device, so the list fails instead. */
++const unreadable = () =>
++  new DriveRequestFailed({
++    reason: "integrity",
++    message: "Grant storage holds a record of one of this vault's grants that could not be read.",
++  });
++
++/**
++ * A client registered for device authorization only, so device authorization issued its grant.
++ * Better Auth reads a client with no registered grant types as an authorization code client.
++ */
++const deviceClient = (grants: readonly string[] | null) =>
++  grants !== null &&
++  grants.includes(deviceCode) &&
++  grants.every((grant) => grant === deviceCode || grant === "refresh_token");
++
++/** Connect Obsidian's connection: the vault's app alone, run as the app, whatever its tools. */
++const vaultConnection = (app: string, policy: ConnectionPolicy) => {
++  const [only, ...rest] = policy.apps;
++  return (
++    only !== undefined &&
++    rest.length === 0 &&
++    only.app === app &&
++    only.runsAs.length === 1 &&
++    only.runsAs[0].kind === "app"
++  );
++};
++
++/** The grants among these that are current devices of the app's vault. */
++export const vaultDeviceGrants = (
++  sql: SqlClient.SqlClient,
++  app: string,
++  grants: readonly string[],
++) =>
++  Effect.gen(function* () {
++    const devices = new Set<string>();
++    if (grants.length === 0) return devices;
++    const rows = yield* sql`select g.id, g."userId" as "userId", g.resource, g.revoked,
++        c."grantTypes"::text as "clientGrants",
++        mc.policy as "connectionPolicy", mc.revoked as "connectionRevoked",
++        mc."userId" as "connectionUser", mc.resource as "connectionResource"
++      from "mcpGrant" g join "mcpConnection" mc on mc.id = g.connection
++      left join "oauthClient" c on c."clientId" = g."clientId"
++      where g.id in ${sql.in(grants)}`.pipe(
++      Effect.mapError(() => new DriveRequestFailed({ reason: "unavailable" })),
++    );
++    for (const raw of rows) {
++      const grant = yield* Schema.decodeUnknownEffect(GrantRow)(raw).pipe(
++        Effect.mapError(unreadable),
++      );
++      const clientGrants = grant.clientGrants === null ? null : strings(grant.clientGrants);
++      if (clientGrants === undefined) return yield* unreadable();
++      // A connection grant has no authority of its own; it stands only with its connection.
++      if (
++        !grant.revoked &&
++        !grant.connectionRevoked &&
++        grant.connectionUser === grant.userId &&
++        grant.connectionResource === grant.resource &&
++        vaultConnection(app, grant.connectionPolicy) &&
++        deviceClient(clientGrants)
++      )
++        devices.add(grant.id);
++    }
++    return devices;
++  });
++
++/**
++ * The drive with `devices` listing only the vault's device grants; every other command passes
++ * through unchanged. Grant storage is the request's own database.
++ */
++export const vaultDevicesOnly = (
++  backend: DriveBackend,
++  database: Effect.Effect<SqlClient.SqlClient, StorageError>,
++): DriveBackend => ({
++  request: (input) =>
++    input.command.method !== "devices"
++      ? backend.request(input)
++      : backend.request(input).pipe(
++          Effect.flatMap((value) =>
++            Schema.decodeUnknownEffect(DriveDevices)(value).pipe(
++              Effect.mapError(() => new DriveRequestFailed({ reason: "invalid_response" })),
++            ),
++          ),
++          Effect.flatMap((reply) =>
++            database.pipe(
++              Effect.mapError(() => new DriveRequestFailed({ reason: "unavailable" })),
++              Effect.flatMap((sql) =>
++                vaultDeviceGrants(
++                  sql,
++                  input.app,
++                  reply.devices.map((device) => device.agent),
++                ),
++              ),
++              Effect.map((devices) => ({
++                ...reply,
++                devices: reply.devices.filter((device) => devices.has(device.agent)),
++              })),
++            ),
++          ),
++        ),
++});

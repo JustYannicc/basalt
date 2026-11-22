@@ -9,12 +9,12 @@ function job(file: string, name: string) {
   return section;
 }
 
-test("Check and Deploy share preparation before validation without separate install lists", () => {
+test("Check and Release share preparation before validation without separate install lists", () => {
   const prepare = "run: npm run prepare:upstream";
   for (const { file, name } of [
     { file: "ci.yml", name: "fast" },
     { file: "ci.yml", name: "production-build" },
-    { file: "deploy.yml", name: "deploy" },
+    { file: "release.yml", name: "release" },
   ]) {
     const section = job(file, name);
     assert.equal(

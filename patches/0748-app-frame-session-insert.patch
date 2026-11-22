@@ -1,0 +1,200 @@
+diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
+--- a/apps/hosted/server/src/implementation/account-change-schema.ts
++++ b/apps/hosted/server/src/implementation/account-change-schema.ts
+@@ -2,10 +2,12 @@
+ import { SqlClient } from "effect/sql";
+ import { migrateDeferredChanges } from "./deferred-change-schema.ts";
+ 
+-/** Triggers cover SQL writers, including background work and writes from another isolate. */
+-export const migrateAccountChanges = Effect.gen(function* () {
++/**
++ * The body every committed-change trigger calls. CREATE OR REPLACE keeps the function's identity,
++ * so installing it again changes what existing triggers do without recreating them.
++ */
++export const installAccountChangeFunction = Effect.gen(function* () {
+   const sql = yield* SqlClient.SqlClient;
+-  yield* migrateDeferredChanges;
+   yield* sql`create or replace function hosted_account_changed() returns trigger language plpgsql as $$
+     declare previous jsonb; following jsonb; item jsonb; target_scope text; topic text;
+       reference text; ignored text[]; identity jsonb; notified text[] := '{}'; candidate text;
+@@ -62,6 +64,8 @@
+           notified := array_append(notified, target_scope);
+           foreach topic in array string_to_array(TG_ARGV[1], ',') loop
+             if topic = 'observations' and TG_TABLE_NAME = 'executor_accounts' and TG_OP = 'INSERT' then continue; end if;
++            -- A new app-UI session cannot end or shorten any stream's access.
++            if topic = 'session' and TG_TABLE_NAME = 'verification' and TG_OP = 'INSERT' then continue; end if;
+             if topic = 'observations' and TG_TABLE_NAME = 'hosted_app_account_links'
+               and not exists (select 1 from executor_account_observations where account = item ->> 'account' and source = item ->> 'app') then continue; end if;
+             if topic = 'membership' and TG_TABLE_NAME = 'hosted_account_access' and TG_OP = 'INSERT'
+@@ -85,65 +89,80 @@
+       if TG_OP = 'DELETE' then return OLD; end if;
+       return NEW;
+     end $$`;
+-  const triggers = [
+-    ["executor_accounts", "owner", "accounts,observations", "owner", "encrypted_credentials"],
+-    ["executor_account_checks", "account", "accounts", "account", ""],
+-    ["executor_account_reports", "owner", "accounts", "owner", "lease,lease_until"],
+-    ["executor_account_driver_checks", "owner", "accounts", "owner", ""],
+-    ["executor_account_targets", "owner", "accounts", "owner", ""],
+-    [
+-      "executor_account_observations",
+-      "owner",
+-      "observations",
+-      "owner",
+-      "lease,lease_until,next_allowed_at",
+-    ],
+-    ["executor_account_acquisitions", "owner", "accounts,observations", "owner", ""],
+-    ["executor_account_connections", "owner", "accounts", "owner", ""],
+-    ["executor_app_connections", "owner", "accounts,apps", "owner", "updated_at"],
+-    ["executor_account_identities", "owner", "accounts", "owner", ""],
+-    ["executor_oauth_grants", "grant", "accounts", "id", "encrypted,updated_at"],
+-    ["executor_apps", "owner", "apps,accounts,observations", "owner", "repository"],
+-    ["executor_providers", "provider", "accounts", "id", ""],
+-    ["hosted_app_account_links", "app", "accounts,observations", "app", ""],
+-    ["hosted_app_access", "organization", "accounts,apps,observations", "organization_id", ""],
+-    ["hosted_account_access", "organization", "accounts,membership", "organization_id", ""],
+-    [
+-      "hosted_account_observation_access",
+-      "organization",
+-      "observations,membership",
+-      "organization_id",
+-      "",
+-    ],
+-    [
+-      "hosted_account_rechecks",
+-      "organization",
+-      "accounts",
+-      "organization_id",
+-      "lease,lease_until,provider_next_at,next_at",
+-    ],
+-    ["hosted_app_groups", "organization", "accounts,apps,observations", "organization_id", ""],
+-    ["hosted_account_groups", "organization", "accounts,membership", "organization_id", ""],
+-    ["hosted_model_bindings", "app", "accounts,apps,membership", "app_id", ""],
+-    ["hosted_groups", "organization", "accounts,apps,membership", "organization_id", ""],
+-    ["hosted_group_members", "group", "accounts,apps,membership", "group_id", ""],
+-    ["member", "organization", "accounts,apps,membership", "organizationId", "createdAt"],
+-    ["organization", "organization", "accounts,apps,membership", "id", "logo"],
+-    [
+-      "hosted_provisioning",
+-      "organization",
+-      "apps,accounts",
+-      "organization_id",
+-      "updated_at,attempts,available_at",
+-    ],
+-    ["hosted_organization_removal", "organization", "membership", "organization_id", ""],
+-    ["session", "user", "session", "userId", "updatedAt,ipAddress,userAgent"],
+-    ["user", "user", "session", "id", "updatedAt"],
+-    ["verification", "verification", "session", "identifier", "updatedAt"],
+-  ] as const;
+-  for (const [table, mode, topics, field, ignored] of triggers)
+-    yield* sql.unsafe(
+-      `create or replace trigger hosted_committed_change after insert or update or delete on "${table}"
+-        for each row execute function hosted_account_changed('${mode}', '${topics}', '${field}', '${ignored}')`,
+-    );
+ });
++
++/** Per table: scope mode, topics, the column naming the scope, and columns whose writes are ignored. */
++export const accountChangeTriggers = [
++  ["executor_accounts", "owner", "accounts,observations", "owner", "encrypted_credentials"],
++  ["executor_account_checks", "account", "accounts", "account", ""],
++  ["executor_account_reports", "owner", "accounts", "owner", "lease,lease_until"],
++  ["executor_account_driver_checks", "owner", "accounts", "owner", ""],
++  ["executor_account_targets", "owner", "accounts", "owner", ""],
++  [
++    "executor_account_observations",
++    "owner",
++    "observations",
++    "owner",
++    "lease,lease_until,next_allowed_at",
++  ],
++  ["executor_account_acquisitions", "owner", "accounts,observations", "owner", ""],
++  ["executor_account_connections", "owner", "accounts", "owner", ""],
++  ["executor_app_connections", "owner", "accounts,apps", "owner", "updated_at"],
++  ["executor_account_identities", "owner", "accounts", "owner", ""],
++  ["executor_oauth_grants", "grant", "accounts", "id", "encrypted,updated_at"],
++  ["executor_apps", "owner", "apps,accounts,observations", "owner", "repository"],
++  ["executor_providers", "provider", "accounts", "id", ""],
++  ["hosted_app_account_links", "app", "accounts,observations", "app", ""],
++  ["hosted_app_access", "organization", "accounts,apps,observations", "organization_id", ""],
++  ["hosted_account_access", "organization", "accounts,membership", "organization_id", ""],
++  [
++    "hosted_account_observation_access",
++    "organization",
++    "observations,membership",
++    "organization_id",
++    "",
++  ],
++  [
++    "hosted_account_rechecks",
++    "organization",
++    "accounts",
++    "organization_id",
++    "lease,lease_until,provider_next_at,next_at",
++  ],
++  ["hosted_app_groups", "organization", "accounts,apps,observations", "organization_id", ""],
++  ["hosted_account_groups", "organization", "accounts,membership", "organization_id", ""],
++  ["hosted_model_bindings", "app", "accounts,apps,membership", "app_id", ""],
++  ["hosted_groups", "organization", "accounts,apps,membership", "organization_id", ""],
++  ["hosted_group_members", "group", "accounts,apps,membership", "group_id", ""],
++  ["member", "organization", "accounts,apps,membership", "organizationId", "createdAt"],
++  ["organization", "organization", "accounts,apps,membership", "id", "logo"],
++  [
++    "hosted_provisioning",
++    "organization",
++    "apps,accounts",
++    "organization_id",
++    "updated_at,attempts,available_at",
++  ],
++  ["hosted_organization_removal", "organization", "membership", "organization_id", ""],
++  ["session", "user", "session", "userId", "updatedAt,ipAddress,userAgent"],
++  ["user", "user", "session", "id", "updatedAt"],
++  ["verification", "verification", "session", "identifier", "updatedAt"],
++] as const;
++
++export const accountChangeTrigger = ([
++  table,
++  mode,
++  topics,
++  field,
++  ignored,
++]: (typeof accountChangeTriggers)[number]) =>
++  `create or replace trigger hosted_committed_change after insert or update or delete on "${table}"
++        for each row execute function hosted_account_changed('${mode}', '${topics}', '${field}', '${ignored}')`;
++
++/** Triggers cover SQL writers, including background work and writes from another isolate. */
++export const migrateAccountChanges = Effect.gen(function* () {
++  const sql = yield* SqlClient.SqlClient;
++  yield* migrateDeferredChanges;
++  yield* installAccountChangeFunction;
++  for (const trigger of accountChangeTriggers) yield* sql.unsafe(accountChangeTrigger(trigger));
++});
+diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+--- a/apps/hosted/server/src/implementation/migrations.ts
++++ b/apps/hosted/server/src/implementation/migrations.ts
+@@ -24,7 +24,7 @@
+ import { migrateAccountRechecks } from "./account-recheck-schema.ts";
+ import { migrateAccountObservations } from "./account-observation-schema.ts";
+ import { migrateChangeRevisions } from "./change-revision-schema.ts";
+-import { migrateAccountChanges } from "./account-change-schema.ts";
++import { installAccountChangeFunction, migrateAccountChanges } from "./account-change-schema.ts";
+ import { migrateAccountTrafficChanges } from "./account-traffic-change-schema.ts";
+ import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
+ 
+@@ -141,7 +141,7 @@
+     Effect.mapError(migrationFailed("product")),
+   );
+ 
+-const hostedProductMigrations = migrateProductSteps("private_hosted_migrations", {
++export const hostedProductMigrations = migrateProductSteps("private_hosted_migrations", {
+   "1_baseline": Effect.gen(function* () {
+     yield* migrateGroups;
+     yield* migrateResourceAccess;
+@@ -183,6 +183,8 @@
+   "20_account_changes": migrateAccountChanges,
+   "21_change_journal_prepare": prepareChangeJournal,
+   "23_account_traffic_changes": migrateAccountTrafficChanges,
++  // Step 20 ran once; its existing triggers call the reinstalled body.
++  "24_app_session_inserts": installAccountChangeFunction,
+ });
+ 
+ /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
