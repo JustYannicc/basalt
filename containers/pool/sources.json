@@ -324,10 +324,10 @@
         {
           "identity": "cliproxy-home-oauth-session-proxy",
           "file": "0758-home-oauth-session-proxy.patch",
-          "sha256": "517b2331ac29694e4d3f30f08f78b4d7b880f472852bc47ed50f8523e549b3bd",
+          "sha256": "bd7e2028c748f0413c5e9977ec2cc275c5378df7afddf1ba16afbe1cd731c443",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0758 lets one Home sign-in go through its own proxy; it is to be offered upstream. Retire when the pinned Home accepts an optional proxy_url on /oauth/auth-url, sends that sign-in's code exchange and every call it makes only through that proxy, saves the proxy on the credential it creates, refuses a proxy it cannot route through before any session exists (invalid_proxy_url, or proxy_unsupported for plugin providers and for Claude with an http proxy), fails the sign-in closed with proxy_unavailable when the proxy can't be reached, never through Home's own proxy or direct, and passes the through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions."
+            "requires": "Carry 0758 lets one Home sign-in go through its own proxy; it is to be offered upstream. Retire when the pinned Home accepts an optional proxy_url on /oauth/auth-url and advertises oauth_session_proxy_v1 on /capabilities, sends that sign-in's code exchange and every call it makes only through that proxy, saves the proxy on the credential it creates, refuses a proxy it cannot route through before any session exists (invalid_proxy_url, or proxy_unsupported for plugin providers and for Claude with an http or https proxy), fails the sign-in closed with proxy_unavailable when the proxy can't be reached, never through Home's own proxy or direct, and passes the through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions."
           }
         }
       ]

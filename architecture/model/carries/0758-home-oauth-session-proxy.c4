@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "A sign-in that names its own proxy on Home's /oauth/auth-url sends its code exchange and every call it makes only through that proxy, and the credential it creates keeps it, so its refreshes and quota calls use it too. Home builds that transport itself: its shared proxy helper connects direct when a proxy can't be built. A proxy Home can't route through is refused before any session exists, and one that can't be reached fails the sign-in with the fixed proxy_unavailable. Nothing goes through Home's own proxy or direct. Plugin providers make their own calls and refuse a sign-in proxy."
+      constraint "A sign-in that names its own proxy on Home's /oauth/auth-url sends its code exchange and every call it makes only through that proxy, and the credential it creates keeps it, so its refreshes and quota calls use it too. Home builds that transport itself: its shared proxy helper connects direct when a proxy can't be built. A proxy Home can't route through is refused before any session exists, and one that can't be reached fails the sign-in with the fixed proxy_unavailable. Nothing goes through Home's own proxy or direct. Plugin providers make their own calls and refuse a sign-in proxy. Home advertises the field as oauth_session_proxy_v1 on /capabilities; a Home without it ignores the field, so the pool sends one only where every Home that could finish the sign-in has it."
     }
   }
 }

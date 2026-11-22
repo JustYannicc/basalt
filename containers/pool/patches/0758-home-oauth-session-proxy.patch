@@ -383,10 +383,10 @@ index 51b5964..2596870 100644
  			return "", fmt.Errorf("execute request: %w", errDo)
 diff --git a/internal/cluster/management/oauth_session_proxy.go b/internal/cluster/management/oauth_session_proxy.go
 new file mode 100644
-index 0000000..3650b98
+index 0000000..db32609
 --- /dev/null
 +++ b/internal/cluster/management/oauth_session_proxy.go
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,156 @@
 +package management
 +
 +import (
@@ -440,8 +440,13 @@ index 0000000..3650b98
 +
 +// validateOAuthSessionProxy accepts only a proxy URL Home's transport builder routes through. The
 +// provider clients build from the same function, so their direct fallback on a bad proxy can't
-+// apply to a URL that passed here.
++// apply to a URL that passed here. The host and port must be explicit: an empty host dials this
++// machine, and a SOCKS URL without a port never dials.
 +func validateOAuthSessionProxy(raw string) error {
++	setting, errParse := proxyutil.Parse(raw)
++	if errParse != nil || setting.Mode != proxyutil.ModeProxy || setting.URL.Hostname() == "" || setting.URL.Port() == "" {
++		return errOAuthSessionProxy
++	}
 +	transport, mode, errBuild := proxyutil.BuildHTTPTransport(raw)
 +	if errBuild != nil || mode != proxyutil.ModeProxy || transport == nil {
 +		return errOAuthSessionProxy
@@ -540,10 +545,10 @@ index 0000000..3650b98
 +}
 diff --git a/internal/cluster/management/oauth_session_proxy_test.go b/internal/cluster/management/oauth_session_proxy_test.go
 new file mode 100644
-index 0000000..ee0eb70
+index 0000000..5fd6f92
 --- /dev/null
 +++ b/internal/cluster/management/oauth_session_proxy_test.go
-@@ -0,0 +1,449 @@
+@@ -0,0 +1,573 @@
 +package management
 +
 +import (
@@ -565,7 +570,10 @@ index 0000000..ee0eb70
 +	"net/url"
 +	"os"
 +	"os/exec"
++	"slices"
++	"strings"
 +	"sync"
++	"sync/atomic"
 +	"testing"
 +	"time"
 +
@@ -578,11 +586,30 @@ index 0000000..ee0eb70
 +	"gorm.io/gorm"
 +)
 +
-+// TestOAuthSessionProxy runs in its own process: the stand-in providers' TLS roots can be set only
-+// once per process.
++// The pool sends a sign-in proxy only to a Home that says it honours one.
++func TestOAuthSessionProxyCapability(t *testing.T) {
++	db, cleanup := openManagementLogTestDB(t)
++	defer cleanup()
++	router := gin.New()
++	router.GET("/capabilities", NewHandler(cluster.NewRepository(db), nil, "127.0.0.1", 0).GetCapabilities)
++	response := httptest.NewRecorder()
++	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/capabilities", nil))
++	var body struct {
++		Capabilities map[string]any `json:"capabilities"`
++	}
++	if errDecode := json.Unmarshal(response.Body.Bytes(), &body); errDecode != nil || response.Code != http.StatusOK {
++		t.Fatalf("capabilities: HTTP %d: %s", response.Code, response.Body.String())
++	}
++	if body.Capabilities["oauth_session_proxy_v1"] != true {
++		t.Fatalf("capabilities don't advertise the sign-in proxy: %v", body.Capabilities)
++	}
++}
++
++// TestOAuthSessionProxy runs in its own process: the stand-in providers' TLS roots and the
++// resolver that catches direct lookups can be set only once per process.
 +func TestOAuthSessionProxy(t *testing.T) {
 +	if os.Getenv("HOME_OAUTH_SESSION_PROXY_FIXTURE") != "1" {
-+		cmd := exec.Command(os.Args[0], "-test.run=^TestOAuthSessionProxy$", "-test.v")
++		cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestOAuthSessionProxy$", "-test.v", "-test.timeout=150s")
 +		cmd.Env = append(os.Environ(), "HOME_OAUTH_SESSION_PROXY_FIXTURE=1")
 +		output, errRun := cmd.CombinedOutput()
 +		t.Log(string(output))
@@ -592,60 +619,63 @@ index 0000000..ee0eb70
 +		return
 +	}
 +	provider := startSessionProxyProvider(t)
++	lookups := catchDirectLookups(t)
 +
-+	t.Run("a Claude exchange goes only through the sign-in's proxy and the credential keeps it", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
-+		proxyURL := "socks5://route-a:x@" + f.session.addr()
-+		state := f.start(t, "claude", proxyURL, http.StatusOK)["state"].(string)
-+		f.handler.processOAuthCallback("anthropic", state, "fixture-code")
-+		f.wantStatus(t, state, map[string]any{"status": "ok"})
-+		f.wantRoutes(t, "api.anthropic.com", "")
-+		f.wantCredential(t, "claude", proxyURL)
-+	})
-+
-+	t.Run("a Codex exchange goes only through the sign-in's proxy and the credential keeps it", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
-+		proxyURL := "socks5h://" + f.session.addr()
-+		state := f.start(t, "codex", proxyURL, http.StatusOK)["state"].(string)
-+		f.handler.processOAuthCallback("codex", state, "fixture-code")
-+		f.wantStatus(t, state, map[string]any{"status": "ok"})
-+		f.wantRoutes(t, "auth.openai.com", "")
-+		f.wantCredential(t, "codex", proxyURL)
-+	})
++	exchanges := []struct {
++		name, callback string
++		hosts          []string
++	}{
++		{"claude", "anthropic", []string{"api.anthropic.com"}},
++		{"codex", "codex", []string{"auth.openai.com"}},
++		{"antigravity", "antigravity", []string{"oauth2.googleapis.com", "www.googleapis.com", "daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"}},
++		{"devin", "devin", []string{"api.devin.ai"}},
++	}
++	for _, exchange := range exchanges {
++		t.Run(exchange.name+" sends every sign-in call only through the sign-in's proxy, and the credential keeps it", func(t *testing.T) {
++			f := newSessionProxyFixture(t, provider, lookups)
++			proxyURL := "socks5://route-a:x@" + f.session.addr()
++			state := f.start(t, exchange.name, proxyURL, http.StatusOK)["state"].(string)
++			f.handler.processOAuthCallback(exchange.callback, state, "fixture-code")
++			f.wantStatus(t, state, map[string]any{"status": "ok"})
++			f.wantRoutes(t, exchange.hosts, nil)
++			f.wantCredential(t, exchange.name, proxyURL)
++		})
++	}
 +
 +	t.Run("an unreachable proxy fails the sign-in closed and sends nothing anywhere else", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
++		f := newSessionProxyFixture(t, provider, lookups)
 +		state := f.start(t, "claude", "socks5://"+closedAddress(t), http.StatusOK)["state"].(string)
 +		f.handler.processOAuthCallback("anthropic", state, "fixture-code")
 +		f.wantStatus(t, state, map[string]any{"status": "error", "error": "proxy_unavailable"})
-+		f.wantRoutes(t, "", "")
++		f.wantRoutes(t, nil, nil)
 +		f.wantNoCredential(t)
 +	})
 +
 +	t.Run("without the field the exchange keeps Home's own proxy and saves no proxy", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
++		f := newSessionProxyFixture(t, provider, lookups)
 +		state := f.start(t, "claude", "", http.StatusOK)["state"].(string)
 +		f.handler.processOAuthCallback("anthropic", state, "fixture-code")
 +		f.wantStatus(t, state, map[string]any{"status": "ok"})
-+		f.wantRoutes(t, "", "api.anthropic.com")
++		f.wantRoutes(t, nil, []string{"api.anthropic.com"})
 +		f.wantCredential(t, "claude", "")
 +	})
 +
 +	t.Run("a proxy Home cannot route through starts no session", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
-+		for _, raw := range []string{"", " ", "ftp://127.0.0.1:1", "direct", "none", "socks5://", "127.0.0.1:1"} {
-+			for _, name := range []string{"claude", "codex", "kimi"} {
++		f := newSessionProxyFixture(t, provider, lookups)
++		invalid := []string{"", " ", "ftp://127.0.0.1:1", "direct", "none", "socks5://", "127.0.0.1:1", "socks5://:1080", "http://:3128", "http://@:1", "socks5://127.0.0.1"}
++		for _, raw := range invalid {
++			for _, name := range []string{"claude", "codex", "antigravity", "devin", "kimi", "xai", "meta"} {
 +				if body := f.start(t, name, raw, http.StatusBadRequest); body["error"] != "invalid_proxy_url" {
 +					t.Fatalf("%s with proxy %q answered %v", name, raw, body)
 +				}
 +			}
 +		}
 +		f.wantNoSession(t)
-+		f.wantRoutes(t, "", "")
++		f.wantRoutes(t, nil, nil)
 +	})
 +
 +	t.Run("Claude refuses an http proxy its TLS client would bypass, and starts no session", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
++		f := newSessionProxyFixture(t, provider, lookups)
 +		for _, raw := range []string{"http://" + f.session.addr(), "https://" + f.session.addr()} {
 +			if body := f.start(t, "claude", raw, http.StatusBadRequest); body["error"] != "proxy_unsupported" {
 +				t.Fatalf("claude with proxy %q answered %v", raw, body)
@@ -654,38 +684,77 @@ index 0000000..ee0eb70
 +		f.wantNoSession(t)
 +	})
 +
-+	t.Run("a device sign-in starts and polls through the sign-in's proxy", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
-+		proxyURL := "socks5://" + f.session.addr()
-+		state := f.start(t, "kimi", proxyURL, http.StatusOK)["state"].(string)
-+		select {
-+		case <-provider.kimiToken:
-+		case <-time.After(20 * time.Second):
-+			t.Fatal("the device sign-in never polled for its token")
-+		}
-+		f.waitFinished(t, state)
-+		f.wantStatus(t, state, map[string]any{"status": "ok"})
-+		f.wantRoutes(t, "auth.kimi.com", "")
-+		f.wantCredential(t, "kimi", proxyURL)
-+	})
++	devices := []struct {
++		name  string
++		hosts []string
++	}{
++		{"kimi", []string{"auth.kimi.com"}},
++		{"xai", []string{"auth.x.ai", "device.x.ai", "token.x.ai"}},
++		{"meta", []string{"auth.meta.com", "api.meta.ai"}},
++	}
++	for _, device := range devices {
++		t.Run(device.name+" device sign-in starts and polls through the sign-in's proxy", func(t *testing.T) {
++			f := newSessionProxyFixture(t, provider, lookups)
++			proxyURL := "socks5://" + f.session.addr()
++			state := f.start(t, device.name, proxyURL, http.StatusOK)["state"].(string)
++			f.waitFinished(t, state)
++			f.wantStatus(t, state, map[string]any{"status": "ok"})
++			f.wantRoutes(t, device.hosts, nil)
++			f.wantCredential(t, device.name, proxyURL)
++		})
++		t.Run(device.name+" device sign-in whose proxy is down answers proxy_unavailable and starts no session", func(t *testing.T) {
++			f := newSessionProxyFixture(t, provider, lookups)
++			if body := f.start(t, device.name, "socks5://"+closedAddress(t), http.StatusBadGateway); body["error"] != "proxy_unavailable" {
++				t.Fatalf("start answered %v", body)
++			}
++			f.wantNoSession(t)
++			f.wantRoutes(t, nil, nil)
++		})
++	}
 +
-+	t.Run("a device sign-in whose proxy is down answers proxy_unavailable and starts no session", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
-+		if body := f.start(t, "kimi", "socks5://"+closedAddress(t), http.StatusBadGateway); body["error"] != "proxy_unavailable" {
++	t.Run("an xAI start whose proxy can't reach the device endpoint answers proxy_unavailable", func(t *testing.T) {
++		f := newSessionProxyFixture(t, provider, lookups)
++		f.session.refuse("device.x.ai")
++		if body := f.start(t, "xai", "socks5://"+f.session.addr(), http.StatusBadGateway); body["error"] != "proxy_unavailable" {
 +			t.Fatalf("start answered %v", body)
 +		}
 +		f.wantNoSession(t)
-+		f.wantRoutes(t, "", "")
++		f.wantRoutes(t, []string{"auth.x.ai", "device.x.ai"}, nil)
 +	})
 +
++	// Kimi starts and polls on one host and first polls after 5 s, so the poll host is refused
++	// after the start. xAI polls at once but never starts on its token host, so it is refused first.
++	polls := []struct {
++		name, host  string
++		beforeStart bool
++	}{{"kimi", "auth.kimi.com", false}, {"xai", "token.x.ai", true}}
++	for _, poll := range polls {
++		t.Run(poll.name+" device sign-in whose proxy fails while polling ends with proxy_unavailable", func(t *testing.T) {
++			f := newSessionProxyFixture(t, provider, lookups)
++			if poll.beforeStart {
++				f.session.refuse(poll.host)
++			}
++			state := f.start(t, poll.name, "socks5://"+f.session.addr(), http.StatusOK)["state"].(string)
++			if !poll.beforeStart {
++				f.session.refuse(poll.host)
++			}
++			f.waitFinished(t, state)
++			f.wantStatus(t, state, map[string]any{"status": "error", "error": "proxy_unavailable"})
++			f.wantNoCredential(t)
++			if got := f.direct.destinations(); len(got) != 0 || f.lookups.Load() != 0 {
++				t.Fatalf("Home's own proxy saw %v, direct lookups %d", got, f.lookups.Load())
++			}
++		})
++	}
++
 +	t.Run("a plugin provider refuses a proxy it cannot honour, and starts no session", func(t *testing.T) {
-+		f := newSessionProxyFixture(t, provider)
++		f := newSessionProxyFixture(t, provider, lookups)
 +		f.handler.pluginOAuthStatus = sessionProxyPlugin{provider: "acme"}
 +		if body := f.start(t, "acme", "socks5://"+f.session.addr(), http.StatusBadRequest); body["error"] != "proxy_unsupported" {
 +			t.Fatalf("plugin start answered %v", body)
 +		}
 +		f.wantNoSession(t)
-+		f.wantRoutes(t, "", "")
++		f.wantRoutes(t, nil, nil)
 +	})
 +}
 +
@@ -696,13 +765,15 @@ index 0000000..ee0eb70
 +	router  *gin.Engine
 +	session *recordingSOCKS
 +	direct  *recordingSOCKS
++	lookups *atomic.Int64
 +}
 +
-+func newSessionProxyFixture(t *testing.T, provider *sessionProxyProvider) *sessionProxyFixture {
++func newSessionProxyFixture(t *testing.T, provider string, lookups *atomic.Int64) *sessionProxyFixture {
 +	t.Helper()
-+	session := startRecordingSOCKS(t, provider.addr)
++	lookups.Store(0)
++	session := startRecordingSOCKS(t, provider)
 +	// Home's own proxy stands for every path that is not the sign-in's: anything it sees went around it.
-+	direct := startRecordingSOCKS(t, provider.addr)
++	direct := startRecordingSOCKS(t, provider)
 +	global := "socks5://" + direct.addr()
 +	runtime, errRuntime := home.NewRuntime(&config.Config{AuthDir: t.TempDir(), SDKConfig: config.SDKConfig{ProxyURL: global}})
 +	if errRuntime != nil {
@@ -715,7 +786,7 @@ index 0000000..ee0eb70
 +	router := gin.New()
 +	router.GET("/v8/management/oauth/auth-url", h.StartOAuthV8)
 +	router.GET("/oauth/status", h.GetAuthStatusV8)
-+	return &sessionProxyFixture{handler: h, repo: repo, db: db, router: router, session: session, direct: direct}
++	return &sessionProxyFixture{handler: h, repo: repo, db: db, router: router, session: session, direct: direct, lookups: lookups}
 +}
 +
 +func (f *sessionProxyFixture) start(t *testing.T, provider, proxyURL string, status int) map[string]any {
@@ -751,7 +822,7 @@ index 0000000..ee0eb70
 +
 +func (f *sessionProxyFixture) waitFinished(t *testing.T, state string) {
 +	t.Helper()
-+	deadline := time.Now().Add(10 * time.Second)
++	deadline := time.Now().Add(20 * time.Second)
 +	for time.Now().Before(deadline) {
 +		if session, errSession := f.repo.GetOAuthSession(t.Context(), state); errSession == nil && session != nil && session.Status != "" {
 +			return
@@ -761,16 +832,19 @@ index 0000000..ee0eb70
 +	t.Fatal("the device sign-in never finished")
 +}
 +
-+// wantRoutes checks that each proxy saw only connections to host, at least one, or none for "".
-+// The provider stand-in is reachable only through the two proxies, so a call it answered went
-+// through one of them.
-+func (f *sessionProxyFixture) wantRoutes(t *testing.T, session, direct string) {
++// wantRoutes checks the distinct hosts each proxy was asked for. The provider stand-in is reachable
++// only through the two proxies, and Home looking up any name itself fails the check, so a call the
++// stand-in answered went through one of them.
++func (f *sessionProxyFixture) wantRoutes(t *testing.T, session, direct []string) {
 +	t.Helper()
-+	if got := f.session.destinations(); !onlyHost(got, session) {
-+		t.Fatalf("the sign-in's proxy saw %v, want only %q", got, session)
++	if got := distinct(f.session.destinations()); !slices.Equal(got, distinct(session)) {
++		t.Fatalf("the sign-in's proxy saw %v, want %v", got, session)
 +	}
-+	if got := f.direct.destinations(); !onlyHost(got, direct) {
-+		t.Fatalf("Home's own proxy saw %v, want only %q", got, direct)
++	if got := distinct(f.direct.destinations()); !slices.Equal(got, distinct(direct)) {
++		t.Fatalf("Home's own proxy saw %v, want %v", got, direct)
++	}
++	if lookups := f.lookups.Load(); lookups != 0 {
++		t.Fatalf("Home looked up %d names itself", lookups)
 +	}
 +}
 +
@@ -808,21 +882,58 @@ index 0000000..ee0eb70
 +	}
 +}
 +
-+// sessionProxyProvider answers as each provider's real host, over TLS the test process trusts.
-+type sessionProxyProvider struct {
-+	addr      string
-+	kimiToken chan struct{}
++// catchDirectLookups counts every name lookup Home makes itself. Through a proxy the proxy
++// resolves names, so a lookup means a call that went around it.
++func catchDirectLookups(t *testing.T) *atomic.Int64 {
++	t.Helper()
++	lookups := &atomic.Int64{}
++	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(context.Context, string, string) (net.Conn, error) {
++		lookups.Add(1)
++		return nil, errors.New("direct lookup refused")
++	}}
++	if _, errLookup := net.DefaultResolver.LookupHost(t.Context(), "lookup-probe.invalid"); errLookup == nil || lookups.Load() == 0 {
++		t.Fatal("the lookup catcher does not see Go's resolver")
++	}
++	return lookups
 +}
 +
-+func startSessionProxyProvider(t *testing.T) *sessionProxyProvider {
++// sessionProxyAnswers are the stand-in's answers, as each provider's real host and path.
++var sessionProxyAnswers = map[string]string{
++	"api.anthropic.com/v1/oauth/token":                            `{"access_token":"claude-access","refresh_token":"claude-refresh","expires_in":3600,"account":{"email_address":"session-proxy@example.invalid"}}`,
++	"auth.openai.com/oauth/token":                                 `{"access_token":"codex-access","refresh_token":"codex-refresh","id_token":"","expires_in":3600}`,
++	"oauth2.googleapis.com/token":                                 `{"access_token":"ag-access","refresh_token":"ag-refresh","expires_in":3600}`,
++	"www.googleapis.com/oauth2/v2/userinfo":                       `{"email":"antigravity@example.invalid"}`,
++	"daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": `{"allowedTiers":[{"id":"free-tier","isDefault":true}]}`,
++	"cloudcode-pa.googleapis.com/v1internal:onboardUser":          `{"done":true,"response":{"cloudaicompanionProject":{"id":"ag-project"}}}`,
++	"api.devin.ai/auth/cli/token":                                 `{"token":"devin-token"}`,
++	"api.devin.ai/v3/self":                                        `{"user_name":"devin-user","user_id":"devin-id","org_id":"devin-org"}`,
++	"auth.kimi.com/api/oauth/device_authorization":                `{"device_code":"kimi-device","user_code":"KIMI-CODE","verification_uri_complete":"https://auth.kimi.com/device?code=KIMI-CODE","expires_in":600,"interval":1}`,
++	"auth.kimi.com/api/oauth/token":                               `{"access_token":"kimi-access","refresh_token":"kimi-refresh","token_type":"Bearer","expires_in":3600}`,
++	"auth.x.ai/.well-known/openid-configuration":                  `{"authorization_endpoint":"https://auth.x.ai/authorize","token_endpoint":"https://token.x.ai/oauth2/token","device_authorization_endpoint":"https://device.x.ai/oauth2/device"}`,
++	"device.x.ai/oauth2/device":                                   `{"device_code":"xai-device","user_code":"XAI-CODE","verification_uri_complete":"https://accounts.x.ai/device?code=XAI-CODE","expires_in":600,"interval":1}`,
++	"token.x.ai/oauth2/token":                                     `{"access_token":"xai-access","refresh_token":"xai-refresh","token_type":"Bearer","expires_in":3600}`,
++	"auth.meta.com/oidc/device/authorization/":                    `{"device_code":"meta-device","user_code":"META-CODE","verification_uri_complete":"https://auth.meta.com/device?code=META-CODE","expires_in":600,"interval":1}`,
++	"auth.meta.com/oidc/device/token/":                            `{"access_token":"meta-access","token_type":"Bearer","expires_in":3600}`,
++	"api.meta.ai/muse-code/key":                                   `{"api_key":"meta-key","base_url":"https://api.meta.ai/v1","user_email":"meta@example.invalid"}`,
++}
++
++// startSessionProxyProvider answers as each provider's real host, over TLS this process trusts.
++func startSessionProxyProvider(t *testing.T) string {
 +	t.Helper()
++	hosts := []string{}
++	for route := range sessionProxyAnswers {
++		host, _, _ := strings.Cut(route, "/")
++		if !slices.Contains(hosts, host) {
++			hosts = append(hosts, host)
++		}
++	}
 +	key, errKey := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 +	if errKey != nil {
 +		t.Fatal(errKey)
 +	}
 +	template := &x509.Certificate{
 +		SerialNumber: big.NewInt(758), Subject: pkix.Name{CommonName: "OAuth session proxy fixture"},
-+		DNSNames: []string{"api.anthropic.com", "auth.openai.com", "auth.kimi.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
++		DNSNames: hosts, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 +		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 +		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 +	}
@@ -838,36 +949,30 @@ index 0000000..ee0eb70
 +	roots.AddCert(cert)
 +	t.Setenv("GODEBUG", "x509usefallbackroots=1")
 +	x509.SetFallbackRoots(roots)
-+	provider := &sessionProxyProvider{kimiToken: make(chan struct{}, 4)}
 +	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-+		w.Header().Set("Content-Type", "application/json")
-+		switch r.Host + r.URL.Path {
-+		case "api.anthropic.com/v1/oauth/token":
-+			_, _ = io.WriteString(w, `{"access_token":"claude-access","refresh_token":"claude-refresh","expires_in":3600,"account":{"email_address":"session-proxy@example.invalid"}}`)
-+		case "auth.openai.com/oauth/token":
-+			_, _ = io.WriteString(w, `{"access_token":"codex-access","refresh_token":"codex-refresh","id_token":"","expires_in":3600}`)
-+		case "auth.kimi.com/api/oauth/device_authorization":
-+			_, _ = io.WriteString(w, `{"device_code":"kimi-device","user_code":"KIMI-CODE","verification_uri_complete":"https://auth.kimi.com/device?code=KIMI-CODE","expires_in":600,"interval":1}`)
-+		case "auth.kimi.com/api/oauth/token":
-+			provider.kimiToken <- struct{}{}
-+			_, _ = io.WriteString(w, `{"access_token":"kimi-access","refresh_token":"kimi-refresh","token_type":"Bearer","expires_in":3600}`)
-+		default:
++		answer, ok := sessionProxyAnswers[r.Host+r.URL.Path]
++		if !ok {
 +			w.WriteHeader(http.StatusNotFound)
++			return
 +		}
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, answer)
 +	}))
 +	server.EnableHTTP2 = true
 +	server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
 +	server.StartTLS()
 +	t.Cleanup(server.Close)
-+	provider.addr = server.Listener.Addr().String()
-+	return provider
++	return server.Listener.Addr().String()
 +}
 +
-+// recordingSOCKS is a SOCKS5 proxy that records each destination and connects it to the provider.
++// recordingSOCKS is a SOCKS5 proxy that records each destination and connects it to the provider
++// stand-in, except a destination it was told to refuse.
 +type recordingSOCKS struct {
 +	listener net.Listener
 +	mu       sync.Mutex
 +	seen     []string
++	refused  map[string]bool
++	open     map[net.Conn]string
 +}
 +
 +func startRecordingSOCKS(t *testing.T, provider string) *recordingSOCKS {
@@ -876,7 +981,7 @@ index 0000000..ee0eb70
 +	if errListen != nil {
 +		t.Fatal(errListen)
 +	}
-+	proxy := &recordingSOCKS{listener: listener}
++	proxy := &recordingSOCKS{listener: listener, refused: map[string]bool{}, open: map[net.Conn]string{}}
 +	t.Cleanup(func() { _ = listener.Close() })
 +	go func() {
 +		for {
@@ -896,6 +1001,18 @@ index 0000000..ee0eb70
 +	p.mu.Lock()
 +	defer p.mu.Unlock()
 +	return append([]string(nil), p.seen...)
++}
++
++// refuse fails every later connection to host and drops the ones already open.
++func (p *recordingSOCKS) refuse(host string) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	p.refused[host] = true
++	for conn, destination := range p.open {
++		if destination == host {
++			_ = conn.Close()
++		}
++	}
 +}
 +
 +func (p *recordingSOCKS) serve(conn net.Conn, provider string) {
@@ -939,7 +1056,20 @@ index 0000000..ee0eb70
 +	}
 +	p.mu.Lock()
 +	p.seen = append(p.seen, host)
++	refused := p.refused[host]
++	if !refused {
++		p.open[conn] = host
++	}
 +	p.mu.Unlock()
++	if refused {
++		_, _ = conn.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
++		return
++	}
++	defer func() {
++		p.mu.Lock()
++		delete(p.open, conn)
++		p.mu.Unlock()
++	}()
 +	upstream, errDial := net.Dial("tcp", provider)
 +	if errDial != nil {
 +		return
@@ -967,16 +1097,15 @@ index 0000000..ee0eb70
 +	return address
 +}
 +
-+func onlyHost(got []string, host string) bool {
-+	if host == "" {
-+		return len(got) == 0
-+	}
-+	for _, seen := range got {
-+		if seen != host {
-+			return false
++func distinct(hosts []string) []string {
++	out := []string{}
++	for _, host := range hosts {
++		if !slices.Contains(out, host) {
++			out = append(out, host)
 +		}
 +	}
-+	return len(got) > 0
++	slices.Sort(out)
++	return out
 +}
 +
 +// sessionProxyPlugin stands for a Home-loaded plugin that owns a provider's sign-in.
@@ -1085,3 +1214,15 @@ index 151f065..faf90dc 100644
  		return false
  	}
  
+diff --git a/internal/cluster/management/usage_observability.go b/internal/cluster/management/usage_observability.go
+index 3ca0740..cfc9442 100644
+--- a/internal/cluster/management/usage_observability.go
++++ b/internal/cluster/management/usage_observability.go
+@@ -47,6 +47,7 @@ func (h *Handler) GetCapabilities(c *gin.Context) {
+ 			"usage_summary_cursor_v1":              true,
+ 			"usage_summary_pending_v1":             true,
+ 			"usage_first_success_v1":               true,
++			"oauth_session_proxy_v1":               true,
+ 			"usage_record_details":                 true,
+ 			"usage_aggregates":                     true,
+ 			"usage_export":                         true,
