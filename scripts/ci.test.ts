@@ -9,7 +9,7 @@ import { carryTargets, changedInputs, selectPaths } from "./ci/affected.ts";
 import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { activeSteps } from "./ci/e2e-workflow.ts";
-import { conditionalJobs, fastJobs, gateErrors, longJobs } from "./ci/gate.ts";
+import { conditionalJobs, fastJobs, gateErrors, longJobs, startJobs } from "./ci/gate.ts";
 import { declaredMatrices } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -216,8 +216,8 @@ test("every workflow job has a gate dependency and declared selection policy", (
   );
   const jobs = workflow.jobs;
   const expected = [...fastJobs, ...heavyJobs, ...conditionalJobs];
-  assert.deepEqual(Object.keys(jobs).sort(), ["reuse", ...expected, "check"].sort());
-  assert.deepEqual([...jobs.check.needs].sort(), ["reuse", ...expected].sort());
+  assert.deepEqual(Object.keys(jobs).sort(), [...expected, "check"].sort());
+  assert.deepEqual([...jobs.check.needs].sort(), [...expected].sort());
   for (const job of heavyJobs) {
     assert.deepEqual(
       jobs[job].needs,
@@ -233,13 +233,22 @@ test("every workflow job has a gate dependency and declared selection policy", (
   assert.equal(jobs.check.if, "always()");
   assert.equal(
     jobs.check.name,
-    "${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || needs.select.outputs.lane == 'affected' && 'check (affected)' || 'check (fast-only)' }}",
+    "${{ (needs.select.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || needs.select.outputs.lane == 'affected' && 'check (affected)' || 'check (fast-only)' }}",
   );
   assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
+  const selection = jobs.select.steps.find((step: { id?: string }) => step.id === "jobs");
   assert.equal(
-    jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env.FULL_SUITE,
+    selection.env.FULL_SUITE,
     "${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}",
   );
+  // The jobs that start with the Check resolve the lane from select's own lane inputs.
+  for (const id of startJobs) {
+    const lane = jobs[id].steps.find((step: { id?: string }) => step.id === "lane");
+    assert.equal(lane.run, "node scripts/ci/lane.ts", id);
+    for (const key of ["FULL_SUITE", "AFFECTED_LANE", "HEAD_SHA"])
+      assert.equal(lane.env[key], selection.env[key], `${id} ${key}`);
+    assert.equal(lane.env.BASE_SHA, "${{ steps.comparison.outputs.base_sha }}", id);
+  }
 });
 
 test("box routing keeps every original selected job required", () => {
@@ -341,7 +350,7 @@ test("workflow cancels superseded PRs, preserves each main push and gates build 
   ])
     assert.equal(
       workflow.jobs.fast.steps.find((step: { name?: string }) => step.name === name).if,
-      "needs.select.outputs.full_suite == 'true'",
+      "steps.lane.outputs.full_suite == 'true'",
     );
 });
 
@@ -419,9 +428,9 @@ test("batch pushes compare with main even when a force push removes the previous
       workflow.jobs.fast.steps.find(
         (entry: { run?: string }) => entry.run === "node scripts/batch-preflight.ts",
       ).env.BASE_SHA,
-      "${{ needs.select.outputs.base_sha }}",
+      "${{ steps.comparison.outputs.base_sha }}",
     );
-    assert.deepEqual(workflow.jobs["cpa-pipeline"].needs, ["select", "reuse"]);
+    assert.equal(workflow.jobs["cpa-pipeline"].needs, "select");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

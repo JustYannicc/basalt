@@ -61,7 +61,7 @@ export function commands(run: string): string[] {
 }
 
 /** A step condition true only in the full suite: the affected lane never runs that step. */
-export const fullOnly = "needs.select.outputs.full_suite == 'true'";
+export const fullOnly = "steps.lane.outputs.full_suite == 'true'";
 
 /**
  * The repository files each workflow job's own steps name: the scripts and test files they run,

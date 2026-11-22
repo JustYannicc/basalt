@@ -6,10 +6,10 @@ import { dependents, importGraph, isTest, trackedFiles } from "./import-graph.ts
 import { addTo, carriedReferences, fileMatcher, upstreamInputFiles } from "./inputs.ts";
 import { jobEntries, readWorkflow } from "./job-inputs.ts";
 
-// The jobs that decide which jobs run: a file they run reaches every job. These and the fast jobs
-// and the aggregate run in every Check, so a file the affected lane runs in them is proven there.
-// The lane's fast job runs the owned unit tests a change reaches (scripts/ci/unit-tests.ts).
-const deciding = ["reuse", "select"];
+// The job that decides which jobs run: a file it runs reaches every job. It and the fast jobs and
+// the aggregate run in every Check, so a file the affected lane runs in them is proven there.
+// The lane's fast-units legs run the owned unit tests a change reaches (scripts/ci/unit-tests.ts).
+const deciding = ["select"];
 const always = [...fastJobs, ...deciding, "check"];
 const ownedUnitSuite = { jobs: { owned: { steps: [{ run: "npm run check" }] } } };
 

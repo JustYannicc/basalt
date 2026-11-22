@@ -43,8 +43,8 @@ const conditionCanRun = (
       "true",
       "always()",
       "success()",
-      "needs.select.outputs.full_suite == 'true'",
-      "needs.select.outputs.full_suite != 'true'",
+      "steps.lane.outputs.full_suite == 'true'",
+      "steps.lane.outputs.full_suite != 'true'",
     ].includes(expression) ||
     (job && /^contains\(fromJSON\(needs\.select\.outputs\.jobs\), '[\w-]+'\)$/.test(expression))
   );

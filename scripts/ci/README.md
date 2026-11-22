@@ -8,7 +8,7 @@ The complete command automatically enters `heavy-slot` before running any checks
 
 Preparation installs dependencies and builds setup assets. The framework reference build, deployment generation and upstream typecheck can also build generated inputs. These steps require the slot even though they belong to the fast job. During a pause, use named format, type, lint, registry, LikeC4 or fitness checks directly against an already prepared checkout. Those partial checks do not establish a complete fast-gate pass.
 
-The command reads `.github/workflows/ci.yml` and runs every applicable shell step in `fast`, in order, with its environment and working directory. It follows the `fast` job of an ordinary pull request. The reviewed fast/full conditions select focused checks and skip full-lane-only commands; skipped steps appear in the plan, console and result record. It stops at the first failure. Preparation rebuilds the generated `.upstream` checkout, just as CI does. Save carry work before running it.
+The command reads `.github/workflows/ci.yml` and runs every applicable shell step in `fast`, in order, with its environment and working directory, then the owned unit tests that CI splits over `fast-units`' legs, as one leg. It follows the `fast` job of an ordinary pull request. The reviewed fast/full conditions select focused checks and skip full-lane-only commands; skipped steps appear in the plan, console and result record. It stops at the first failure. Preparation rebuilds the generated `.upstream` checkout, just as CI does. Save carry work before running it.
 
 `npm run ci:fast -- --base origin/main --list` prints the resolved commits and commands without running checks. A completed run keeps its commit-bound result under `.generated/ci-fast/`.
 
