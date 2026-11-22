@@ -1,12 +1,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { generateDeployment } from "./deployment.ts";
 import { stackFingerprint } from "./fingerprint.ts";
 import { nativeFixture } from "./native-stack-fixture-helpers.ts";
 import { resourceId } from "./native-stack.ts";
 import { readGeneratedInventory } from "./generated-inventory.ts";
+
+// Each test runs whole fingerprint and deployment generations: about 1 s alone, 3.4 s on a hosted
+// runner and up to 15 s while other suites share the machine, past vitest's 5 s default.
+vi.setConfig({ testTimeout: 30_000 });
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cleanups: (() => void)[] = [];

@@ -10,7 +10,7 @@ import { digest } from "../backend-users.ts";
 const fingerprints = new Map<string, string>();
 
 /** Row locks keep disable, unlink and provider changes behind an admitted chunk's commit. */
-async function eligibleTargets(db: HistoryDatabase, definition: BulkDefinition) {
+export async function eligibleTargets(db: HistoryDatabase, definition: BulkDefinition) {
   const ids = [...new Set(definition.accountMappings.map((mapping) => mapping.targetAccountId))];
   if (!ids.length) return;
   const result = await db.query(
