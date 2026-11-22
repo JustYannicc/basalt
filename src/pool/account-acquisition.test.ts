@@ -141,24 +141,81 @@ test("native model discovery does not offer an OAuth sign-in for Jev keys", asyn
   assert.equal(f.markers.size, 0);
 });
 
-test("a sign-in its owner's rules route is refused with route_unavailable before Home sees it", async () => {
-  const f = fixture();
-  for (const routing of [
-    { hasRules: true, route: { routeId: "rt_" + "a".repeat(26), owner } },
-    { hasRules: true },
-  ]) {
+const signInRoute = { routeId: "rt_" + "a".repeat(26), owner: "org/fixture/user/example-user" };
+function routeRecorder() {
+  const events: string[] = [];
+  return {
+    events,
+    routes: {
+      beginSignIn: async (session: string, route: { routeId: string }) => {
+        events.push(`begin ${route.routeId}`);
+      },
+      settleSignIn: async (_session: string, references: readonly string[]) => {
+        events.push(`settle ${references.join(",")}`);
+      },
+    },
+  };
+}
+
+test("a routed owner's sign-in sends Home's code exchange through the route, and the saved credential keeps it", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "gemini-cli", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  const start = f.calls.find((call) => call.path.includes("/oauth/auth-url"))!;
+  assert.equal(
+    new URL(start.path, "https://fixture.invalid").searchParams.get("proxy_url"),
+    `socks5://${signInRoute.routeId}:x@127.0.0.1:20990`,
+  );
+  // The owner check knows the route before Home can open the exchange's tunnel.
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`]);
+  f.complete(["fresh"]);
+  assert.equal(
+    (await body(await f.send("status", { session: started.session }))).state,
+    "connected",
+  );
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle fresh"]);
+});
+
+test("a routed sign-in whose route is down fails as route_unavailable and is never retried directly", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "gemini-cli", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  f.statusIs({ status: "error", error: "proxy_unavailable" });
+  assert.deepEqual(await body(await f.send("status", { session: started.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+  const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
+  assert.equal(starts.length, 1);
+  assert.ok(starts.every((call) => call.path.includes("proxy_url=")));
+  assert.ok(!f.calls.some((call) => call.path.includes("/oauth/callback")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a sign-in its owner's rules route but no route applies to is refused with route_unavailable before Home sees it", async () => {
+  for (const [routing, routes] of [
+    [{ hasRules: true }, routeRecorder().routes],
+    [{ hasRules: true, route: { routeId: "rt_../x", owner: "x" } }, routeRecorder().routes],
+    // A controller without routing wired can't route anything.
+    [{ hasRules: true, route: signInRoute }, undefined],
+  ] as const) {
+    const f = fixture([], "gemini-cli", {}, routes);
     const refused = await f.send("start", routing);
     assert.equal(refused.status, 409);
     assert.deepEqual(await refused.json(), { error: "route_unavailable" });
+    assert.equal(f.calls.length, 0);
   }
-  assert.equal(f.calls.length, 0);
 });
 
 test("a sign-in without route rules, or one the host decided is direct, starts exactly as on main", async () => {
   for (const routing of [{}, { hasRules: false }, { hasRules: true, route: null }]) {
-    const f = fixture();
+    const recorder = routeRecorder();
+    const f = fixture([], "gemini-cli", {}, recorder.routes);
     const started = await body(await f.send("start", routing));
     assert.equal(typeof started.session, "string");
-    assert.equal(f.calls.filter((call) => call.path.includes("/oauth/auth-url")).length, 1);
+    const starts = f.calls.filter((call) => call.path.includes("/oauth/auth-url"));
+    assert.equal(starts.length, 1);
+    assert.ok(!starts[0]!.path.includes("proxy_url"));
+    assert.deepEqual(recorder.events, []);
   }
 });

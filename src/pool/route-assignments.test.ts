@@ -474,6 +474,21 @@ test("a 200 that leaves a reference out, before any good answer, still means dir
   assert.equal(keyProxy(mine), "");
 });
 
+test("the owner check knows a routed sign-in's route during its exchange and keeps it on what it saved", async () => {
+  const { client } = fakeHome();
+  const routes = new RouteAssignments(storage(), scripted({}).resolver, client, () => now);
+  assert.equal(await routes.routeOwner(home), null);
+  await routes.beginSignIn("session-1", { routeId: home, owner });
+  assert.equal(await routes.routeOwner(home), owner);
+  await routes.settleSignIn("session-1", [mine]);
+  assert.equal(await routes.routeOwner(home), owner);
+  assert.equal(await routes.ownRoute(owner, [mine]), home);
+  // A failed sign-in saved nothing, so its route no longer vouches for anyone.
+  await routes.beginSignIn("session-2", { routeId: other, owner: mate });
+  await routes.settleSignIn("session-2", []);
+  assert.equal(await routes.routeOwner(other), null);
+});
+
 test("a proxy the host configured itself is never cleared or replaced by a direct rule", () => {
   assert.equal(
     credentialProxy(null, "http://proxy.example.test:3128"),

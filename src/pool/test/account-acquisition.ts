@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { HomeAccountAcquisitions } from "../account-acquisition.ts";
+import { HomeAccountAcquisitions, type SignInRoutes } from "../account-acquisition.ts";
 import {
   accountAcquisitionPath,
   accountAcquisitionPrefix,
@@ -15,6 +15,7 @@ export function fixture(
   existing: readonly string[] = [],
   provider = "gemini-cli",
   startFields: Record<string, unknown> = {},
+  routes?: SignInRoutes,
 ) {
   const retained = new Map<string, unknown>();
   let alarm: number | null = null;
@@ -114,7 +115,8 @@ export function fixture(
       for (const ref of ids) excluded.add(ref);
     },
   };
-  const make = () => new HomeAccountAcquisitions(storage, home, key, attribution);
+  const make = () =>
+    new HomeAccountAcquisitions(storage, home, key, attribution, undefined, Date.now, routes);
   let controller = make();
   return {
     calls,
@@ -131,6 +133,9 @@ export function fixture(
     },
     restart() {
       controller = make();
+    },
+    statusIs(value: Record<string, unknown>) {
+      status = value;
     },
     complete(ids: readonly string[]) {
       for (const id of ids) credentials.add(id);

@@ -446,6 +446,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       defer: (work) => ctx.waitUntil(work),
       home,
       onProductEvent,
+      signInRoutes: {
+        beginSignIn: (session, route) => this.routes.beginSignIn(session, route),
+        settleSignIn: (session, references) => this.routes.settleSignIn(session, references),
+      },
       // Without a gateway binding there is no reading at all, so the pool view omits `route`.
       ...(gateway && {
         route: async (owner: string, accounts: readonly { id: string; label: string }[]) => {

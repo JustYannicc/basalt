@@ -50,6 +50,7 @@ const stateKey = "route-assignments-v1";
 const entryPrefix = "route-assignment:";
 const poolPrefix = "route-pool:";
 const hintPrefix = "route-hint:";
+const signInPrefix = "route-sign-in:";
 // Rules change rarely; the revision poll catches edits, the floor catches anything it missed.
 const refreshFloorMs = 15 * 60_000;
 
@@ -70,6 +71,25 @@ const PoolRecord = Schema.Struct({
 type PoolRecord = typeof PoolRecord.Type;
 /** What a pass decides for one credential: a route, direct, a hold, or keep what it has. */
 type Decision = Entry | null | "hold" | "keep";
+
+/** A sign-in start's routing from the host: its route, direct, or refused (change 28/29). */
+export function signInRoute(value: {
+  hasRules?: unknown;
+  route?: unknown;
+}): Entry | null | "refuse" {
+  const route = value.route;
+  if (
+    route &&
+    typeof route === "object" &&
+    "routeId" in route &&
+    "owner" in route &&
+    typeof route.routeId === "string" &&
+    typeof route.owner === "string" &&
+    valid({ routeId: route.routeId, owner: route.owner })
+  )
+    return { routeId: route.routeId, owner: route.owner };
+  return value.hasRules === true && route !== null ? "refuse" : null;
+}
 
 export function routeProxyUrl(route: string) {
   if (!routeId.test(route)) return unavailable();
@@ -239,7 +259,8 @@ export class RouteAssignments {
     if (!this.owners) {
       const owners = new Map<string, string>();
       const conflicting = new Set<string>();
-      for (const entry of (await this.entries()).values()) {
+      const signIns = await this.listed(signInPrefix, Entry);
+      for (const entry of [...(await this.entries()).values(), ...signIns.values()]) {
         const known = owners.get(entry.routeId);
         if (known !== undefined && known !== entry.owner) conflicting.add(entry.routeId);
         owners.set(entry.routeId, entry.owner);
@@ -404,6 +425,23 @@ export class RouteAssignments {
       if (entry?.owner === owner) return entry.routeId;
     }
     return null;
+  }
+
+  /**
+   * A routed sign-in's own owner check: Home's code exchange tunnels through the route before any
+   * credential exists. Settling it gives each saved credential the same route and owner.
+   */
+  async beginSignIn(session: string, route: Entry) {
+    this.owners = undefined;
+    await this.storage.put(signInPrefix + session, route);
+  }
+  async settleSignIn(session: string, references: readonly string[]) {
+    const raw = await this.storage.get(signInPrefix + session);
+    if (raw === undefined) return;
+    const route = Schema.decodeUnknownSync(Entry)(raw);
+    for (const reference of references) await this.record(reference, route);
+    this.owners = undefined;
+    await this.storage.delete(signInPrefix + session);
   }
 
   /** A removed credential no longer vouches for its route. */

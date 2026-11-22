@@ -7,6 +7,7 @@ import type { HomeClient } from "./control.ts";
 import { object, rows, text, unavailable } from "./json.ts";
 import { acquisitionAssertion } from "./account-acquisition-assertion.ts";
 import { homeReference, homeReferences } from "./home-references.ts";
+import { routeProxyUrl, signInRoute } from "./route-assignments.ts";
 
 const storageKey = "pool-account-acquisitions-v1";
 const ttl = 20 * 60_000;
@@ -30,6 +31,13 @@ interface Attempt {
     paste?: { label: string };
   };
   result?: { state: "connected"; ref: string } | { state: "failed"; message: string };
+  /** A routed sign-in: Home's exchange and the saved credential go through this route. */
+  route?: { routeId: string; owner: string };
+}
+/** The route side of a sign-in; absent where routing isn't wired. */
+export interface SignInRoutes {
+  beginSignIn(session: string, route: { routeId: string; owner: string }): Promise<void>;
+  settleSignIn(session: string, references: readonly string[]): Promise<void>;
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -47,6 +55,7 @@ interface Attribution {
 export class HomeAccountAcquisitions {
   private storage: Storage;
   private home: HomeClient;
+  private routes?: SignInRoutes;
   private signingKey: string;
   private attribution: Attribution;
   private previousSigningKey: string | undefined;
@@ -59,6 +68,7 @@ export class HomeAccountAcquisitions {
     attribution: Attribution,
     previousSigningKey?: string,
     now = Date.now,
+    routes?: SignInRoutes,
   ) {
     this.storage = storage;
     this.home = home;
@@ -66,6 +76,7 @@ export class HomeAccountAcquisitions {
     this.attribution = attribution;
     this.previousSigningKey = previousSigningKey;
     this.now = now;
+    this.routes = routes;
   }
 
   async handle(request: Request): Promise<Response> {
@@ -109,9 +120,10 @@ export class HomeAccountAcquisitions {
           )
         )
           return unavailable();
-        // Home's code exchange takes no per-session proxy yet, so a sign-in the host says must be
-        // routed can't be. Blocked beats direct: it is refused before anything reaches Home.
-        if (value.hasRules === true && value.route !== null)
+        // A sign-in the owner's rules route goes through that route, the code exchange included;
+        // one that should be routed but can't be is refused before anything reaches Home.
+        const route = signInRoute(value);
+        if (route === "refuse" || (route && !this.routes))
           return Response.json({ error: "route_unavailable" }, { status: 409 });
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
@@ -139,14 +151,18 @@ export class HomeAccountAcquisitions {
           marker: await acquisitionStep("attribution", () => this.attribution.begin()),
           before,
           ...(text(value.reconnect) ? { reconnect: String(value.reconnect) } : {}),
+          ...(route ? { route } : {}),
         };
         attempts[session] = attempt;
         // An uncertain start is retained and refused; repeating it could create another credential.
         await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
         await this.arm();
+        // The owner check knows this route before the exchange can open its tunnel.
+        if (route) await acquisitionStep("state", () => this.routes!.beginSignIn(session, route));
+        const proxy = route ? `&proxy_url=${encodeURIComponent(routeProxyUrl(route.routeId))}` : "";
         const started = await acquisitionStep("oauth_start", async () => {
           const started = await this.home.data(
-            `/oauth/auth-url?provider=${encodeURIComponent(provider)}`,
+            `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`,
             { signal: request.signal },
           );
           if (!text(started.state) || !text(started.url)) return unavailable();
@@ -298,7 +314,12 @@ export class HomeAccountAcquisitions {
       );
       if (status.status === "wait") return;
       if (status.status === "error") {
-        attempt.result = { state: "failed", message: signInFailure(attempt.provider, status) };
+        // Home's routed session failed closed on its route: nothing was sent directly.
+        attempt.result =
+          attempt.route &&
+          (status.error === "proxy_unavailable" || status.reason === "proxy_unavailable")
+            ? { state: "failed", message: "route_unavailable" }
+            : { state: "failed", message: signInFailure(attempt.provider, status) };
       } else if (status.status === "ok") {
         const ids = [
           ...new Set([
@@ -357,6 +378,13 @@ export class HomeAccountAcquisitions {
     // Retain the exact outcome before releasing the legacy attribution exclusion.
     await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
     if (attempt.settled) return;
+    if (attempt.route && attempt.started)
+      await acquisitionStep("state", () =>
+        this.routes!.settleSignIn(
+          attempt.started!.session,
+          attempt.result?.state === "connected" ? homeReferences(attempt.result.ref) : [],
+        ),
+      );
     await acquisitionStep("attribution", () =>
       this.attribution.settle(attempt.marker, attempt.observed ?? []),
     );

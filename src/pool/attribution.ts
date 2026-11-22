@@ -126,6 +126,7 @@ export class PoolControl implements ControlAttribution {
       },
       deps.previousSigningKey,
       () => this.now(),
+      deps.signInRoutes,
     );
     this.collection = new QuotaCollection(storage, this.client, { now: () => this.now() });
     this.actions = new AccountActions(this.client, storage, this.collection, () => this.now());

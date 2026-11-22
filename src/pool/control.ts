@@ -69,6 +69,8 @@ export interface HomeDependencies {
   defer?: (work: Promise<void>) => void;
   /** Current pool audience projected by the host's existing access adapter. */
   audience?: (pool: string) => Promise<readonly string[]>;
+  /** Routed sign-ins; absent where routing isn't wired. */
+  signInRoutes?: import("./account-acquisition.ts").SignInRoutes;
   /** The reading of `owner`'s first routed credential among `accounts`, or null. */
   route?: (owner: string, accounts: readonly Account[]) => Promise<PoolRouteReading | null>;
 }
