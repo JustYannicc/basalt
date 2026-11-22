@@ -43,6 +43,8 @@ type call struct {
 	header  http.Header
 	idle    *time.Timer
 	ended   time.Time
+	// writer is the current reader's connection, so a takeover can close one blocked in Write.
+	writer *http.ResponseController
 }
 
 func newCall(s *Store, id string, cancel func()) *call {
@@ -61,7 +63,8 @@ func (c *call) begin(status int, header http.Header) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.status, c.header = status, header
-	c.gen, c.reader = 1, true
+	c.gen++
+	c.reader = true
 	return c.gen
 }
 
@@ -151,6 +154,18 @@ func (c *call) finish(state callState) {
 // reader takes over. nil means the whole answer was written and the upstream ended normally.
 func (c *call) serve(ctx context.Context, w http.ResponseWriter, gen int) error {
 	flusher := http.NewResponseController(w)
+	c.mu.Lock()
+	if c.gen == gen {
+		c.writer = flusher
+	}
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		if c.writer == flusher {
+			c.writer = nil
+		}
+		c.mu.Unlock()
+	}()
 	stop := context.AfterFunc(ctx, func() {
 		c.mu.Lock()
 		c.changedLocked()
@@ -235,45 +250,70 @@ func (c *call) releaseLocked() {
 	c.chunks, c.base = nil, c.end
 }
 
+// sentToEndLocked is a finished call written to its end: every byte it holds is a written one.
+func (c *call) sentToEndLocked() bool {
+	return c.state != stateLive && c.sent == c.end && c.writing == 0
+}
+
 func (c *call) evictionView() (finished bool, ended time.Time, written int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.state != stateLive, c.ended, int(c.sent-c.base) / c.size()
+	written = int(c.sent-c.base) / c.size()
+	if c.sentToEndLocked() {
+		written = len(c.chunks)
+	}
+	return c.state != stateLive, c.ended, written
 }
 
-// freeWritten frees the oldest written chunk, if any; the chunk holding the write position stays.
+// freeWritten frees the oldest written chunk, if any. A live call keeps the chunk holding its write
+// position; a finished call sent to its end gives up its last one too, so a burst of short calls
+// can't pin the pool until their idle limits.
 func (c *call) freeWritten() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	size := int64(c.size())
-	if len(c.chunks) == 0 || c.base+size > c.sent || c.writing > 0 {
+	if len(c.chunks) == 0 || c.writing > 0 {
 		return false
 	}
-	c.store.pool.release(c.chunks[0])
-	c.chunks, c.base = c.chunks[1:], c.base+size
-	return true
+	if c.base+size <= c.sent {
+		c.store.pool.release(c.chunks[0])
+		c.chunks, c.base = c.chunks[1:], c.base+size
+		return true
+	}
+	if c.sentToEndLocked() {
+		c.releaseLocked()
+		return true
+	}
+	return false
 }
 
-// attach makes a resume read the only reader, from offset from.
-func (c *call) attach(from int64) (int, callState, error) {
+// attach makes a resume read the only reader, from offset from, and returns the answer's header.
+func (c *call) attach(from int64) (int, callState, http.Header, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch {
-	case c.dropped:
-		return 0, 0, errGone
+	case c.dropped, c.status == 0:
+		// Before the node's answer began there is nothing to resume.
+		return 0, 0, nil, errGone
 	case c.state == stateFailed:
-		return 0, 0, errFailed
+		return 0, 0, nil, errFailed
 	case from < c.base || from > c.end || from > c.sent:
 		// The entry cannot hold bytes the layer never wrote; skipping them would be a silent gap.
-		return 0, 0, errGone
+		return 0, 0, nil, errGone
 	}
 	if c.idle != nil {
 		c.idle.Stop()
 	}
+	if c.writer != nil {
+		// A reader blocked in Write never sees the wake below: closing its connection ends it, so
+		// the retain window applies again from the new reader's position.
+		_ = c.writer.SetWriteDeadline(time.Now())
+		c.writer = nil
+	}
 	c.gen++
 	c.sent, c.reader = from, true
 	c.changedLocked()
-	return c.gen, c.state, nil
+	return c.gen, c.state, c.header.Clone(), nil
 }
 
 // detach starts the idle limit once the current reader has gone.

@@ -12,8 +12,10 @@ import (
 // canonicalID is the lowercase 8-4-4-4-12 form crypto.randomUUID produces.
 var canonicalID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// resumable buffers a marked call. The upstream runs on its own context so it outlives the caller;
-// only the idle limit cancels it.
+// resumable buffers a marked call. Once the node's answer has begun, the upstream runs on its own
+// context so it outlives the caller and only the idle limit cancels it. Before that there is nothing
+// to resume, so the caller leaving cancels the call, as it does without the layer: otherwise the
+// controller would send the call again while the node still runs the first one.
 func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
 	id := r.Header.Get(requestIDHeader)
 	if !canonicalID.MatchString(id) {
@@ -33,8 +35,12 @@ func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
 		closedError(w, http.StatusBadRequest, "resume_layer_bad_request")
 		return
 	}
+	// Offsets count the bytes the client receives: a resumed answer is never re-encoded.
+	out.Header.Set("Accept-Encoding", "identity")
+	early := context.AfterFunc(r.Context(), cancel)
 	resp, err := l.transport.RoundTrip(out)
 	if err != nil {
+		early()
 		l.abandon(c)
 		upstreamFailure(w, err)
 		return
@@ -45,14 +51,19 @@ func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
 		l.store.remove(c)
 		defer cancel()
 		defer resp.Body.Close()
-		stop := context.AfterFunc(r.Context(), cancel)
-		defer stop()
+		defer early()
 		writeHead(w, resp)
 		if err := copyBody(w, resp.Body); err != nil {
 			panic(http.ErrAbortHandler)
 		}
 		writeTrailers(w, resp)
 		return
+	}
+	if !early() {
+		// The caller left before the headers and the call is already cancelled: drop it whole.
+		resp.Body.Close()
+		l.abandon(c)
+		panic(http.ErrAbortHandler)
 	}
 	gen := c.begin(resp.StatusCode, resp.Header.Clone())
 	go c.pump(ctx, resp.Body)
@@ -87,7 +98,7 @@ func (l *Layer) resume(w http.ResponseWriter, r *http.Request) {
 		gone(w, "gone")
 		return
 	}
-	gen, state, err := c.attach(from)
+	gen, state, answerHeader, err := c.attach(from)
 	if errors.Is(err, errFailed) {
 		gone(w, "failed")
 		return
@@ -97,7 +108,7 @@ func (l *Layer) resume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	header := w.Header()
-	if contentType := c.header.Values("Content-Type"); len(contentType) > 0 {
+	if contentType := answerHeader.Values("Content-Type"); len(contentType) > 0 {
 		header["Content-Type"] = contentType
 	} else {
 		header["Content-Type"] = nil

@@ -71,6 +71,11 @@ func upstreamRequest(ctx context.Context, upstream *url.URL, in *http.Request) (
 func writeHead(w http.ResponseWriter, resp *http.Response) {
 	header := w.Header()
 	for name, values := range resp.Header {
+		// The resume contract's headers are the layer's alone: one the node passed through from a
+		// provider must never tell the controller a call was unreachable or resumable.
+		if strings.HasPrefix(name, "X-Basalt-Resume") {
+			continue
+		}
 		header[name] = append([]string(nil), values...)
 	}
 	stripHop(header)

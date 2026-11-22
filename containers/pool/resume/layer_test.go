@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"io"
 	"net"
 	"net/http"
@@ -369,5 +370,65 @@ func TestANodeThatFailsAfterAcceptingTheCallIsFailedNeverUnreachable(t *testing.
 			t.Fatalf("%s: a node that took the call answered %d %q; a resend could run it twice",
 				name, resp.StatusCode, resp.Header.Get(upstreamStateHeader))
 		}
+	}
+}
+
+func TestCallerLeavingBeforeTheHeadersCancelsAMarkedUpstream(t *testing.T) {
+	cancelled := make(chan struct{})
+	upstream := newUpstream(t, func(_ http.ResponseWriter, r *http.Request) {
+		// A non-streaming answer: nothing is sent until the whole generation is done.
+		<-r.Context().Done()
+		close(cancelled)
+	})
+	layer := newLayerServer(t, upstream)
+	ctx, cancel := context.WithCancel(context.Background())
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, layer.URL+"/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set(resumableHeader, "1")
+	request.Header.Set(requestIDHeader, "6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := http.DefaultClient.Do(request); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	<-upstream.seen
+	cancel()
+	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a marked call kept running after its caller left before any answer")
+	}
+	<-done
+	resp, err := http.Get(layer.URL + "/__basalt/resume/v1/6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e5f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("a call cancelled before its answer is still resumable")
+	}
+}
+
+func TestTheNodesOwnResumeHeadersNeverReachTheController(t *testing.T) {
+	upstream := newUpstream(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Basalt-Resume-Upstream", "unreachable")
+		w.Header().Set("X-Basalt-Resume", "forged")
+		_, _ = w.Write([]byte("ok"))
+	})
+	layer := newLayerServer(t, upstream)
+	plain, _ := rawCall(t, layer.URL, "POST /v1/messages HTTP/1.1\r\nHost: pool\r\nContent-Length: 0\r\n\r\n")
+	marked, _ := rawCall(t, layer.URL, "POST /v1/messages HTTP/1.1\r\nHost: pool\r\n"+
+		"X-Basalt-Resumable: 1\r\nX-Basalt-Request-Id: 6f1c2b8e-1d2a-4c3b-9e8f-0a1b2c3d4e60\r\nContent-Length: 0\r\n\r\n")
+	for name, resp := range map[string]*http.Response{"pass-through": plain, "marked": marked} {
+		if resp.Header.Get("X-Basalt-Resume-Upstream") != "" {
+			t.Fatalf("%s: the node's unreachable header reached the controller", name)
+		}
+	}
+	if plain.Header.Get(resumeHeader) != "" || marked.Header.Get(resumeHeader) != "v1" {
+		t.Fatalf("resume headers: plain %q marked %q", plain.Header.Get(resumeHeader), marked.Header.Get(resumeHeader))
 	}
 }

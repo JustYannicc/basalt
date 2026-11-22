@@ -64,7 +64,9 @@ class ResumeLayer:
         if now >= self._next_start:
             try:
                 self._child = self._spawn()
-            except OSError:
+            except Exception:
+                # Any start failure, not only the OS's, waits for the next start: the layer never
+                # ends the supervisor.
                 self._schedule_restart(now)
         # A layer that just started answers health on a later tick.
         return False

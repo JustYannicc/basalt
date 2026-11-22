@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -462,5 +463,87 @@ func TestAResumeFromBeyondTheWritePositionIsGone(t *testing.T) {
 	}
 	if r := x.resume(id, sent, testBoot); r.StatusCode != http.StatusOK {
 		t.Fatalf("a resume at the write position answered %d", r.StatusCode)
+	}
+}
+
+func TestATakeoverClosesAReaderBlockedInWrite(t *testing.T) {
+	x := newResumeFixture(t, testLimits())
+	id := testID(21)
+	_, old := x.open(id)
+	feed := x.feeds.get(id)
+	// The old reader never reads: once its socket is full, its Write blocks in the kernel.
+	go func() {
+		part := randomBytes(64 << 10)
+		for i := 0; i < 128; i++ {
+			select {
+			case feed.parts <- part:
+			case <-feed.cancelled:
+				return
+			}
+		}
+	}()
+	c := x.store.lookup(id)
+	deadline := time.Now().Add(5 * time.Second)
+	var stuck int64
+	for {
+		c.mu.Lock()
+		writing, sent := c.writing, c.sent
+		c.mu.Unlock()
+		if writing > 0 && sent == stuck && sent > 0 {
+			break
+		}
+		stuck = sent
+		if time.Now().After(deadline) {
+			t.Fatal("the old reader never blocked in Write")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	newer := x.resume(id, stuck, testBoot)
+	if newer.StatusCode != http.StatusOK {
+		t.Fatalf("takeover answered %d", newer.StatusCode)
+	}
+	if _, err := io.ReadFull(newer.Body, make([]byte, 1<<10)); err != nil {
+		t.Fatalf("the new reader got nothing: %v", err)
+	}
+	if _, err := io.ReadAll(old.Body); err == nil {
+		t.Fatal("the reader blocked in Write was never closed")
+	}
+}
+
+func TestAFinishedCallSentToItsEndGivesUpItsLastChunk(t *testing.T) {
+	x := newResumeFixture(t, testLimits())
+	id := testID(22)
+	_, answer := x.open(id)
+	feed := x.feeds.get(id)
+	feed.parts <- []byte("short answer")
+	close(feed.parts)
+	if got, err := io.ReadAll(answer.Body); err != nil || string(got) != "short answer" {
+		t.Fatalf("answer %q %v", got, err)
+	}
+	x.waitEnd(id, 12)
+	c := x.store.lookup(id)
+	if !x.store.evictWritten() {
+		t.Fatal("a finished, fully sent call was not evictable")
+	}
+	c.mu.Lock()
+	held := len(c.chunks)
+	c.mu.Unlock()
+	if held != 0 {
+		t.Fatalf("a finished call sent to its end still holds %d chunks", held)
+	}
+	end := x.resume(id, 12, testBoot)
+	if got, _ := io.ReadAll(end.Body); end.StatusCode != http.StatusOK || len(got) != 0 {
+		t.Fatalf("a resume from the end answered %d with %d bytes", end.StatusCode, len(got))
+	}
+}
+
+func TestNoResumeAttachesBeforeTheAnswerBegins(t *testing.T) {
+	store := NewStore(testLimits())
+	c, err := store.reserve(testID(23), func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := c.attach(0); !errors.Is(err, errGone) {
+		t.Fatalf("a resume before the node answered got %v, want gone", err)
 	}
 }
