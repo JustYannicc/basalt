@@ -1,0 +1,27 @@
+package cluster
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// The floor's edge, crossed both ways: a node stale one second inside it keeps serving, one
+// second past it is fenced.
+func TestBasaltQuietLivenessFloorEdge(t *testing.T) {
+	for _, edge := range []struct {
+		age  time.Duration
+		want string
+	}{
+		{nodeLivenessFloor - time.Second, MembershipStateActive},
+		{nodeLivenessFloor + time.Second, MembershipStateCanceling},
+	} {
+		repo, home, member := staleOwnNode(t, edge.age)
+		if errCleanup := repo.CleanupStaleMemberships(context.Background(), home); errCleanup != nil {
+			t.Fatal(errCleanup)
+		}
+		if state := membershipState(t, repo, member.CertificateFingerprint); state != edge.want {
+			t.Fatalf("a node stale for %s is %q, want %q", edge.age, state, edge.want)
+		}
+	}
+}

@@ -34,6 +34,16 @@ test("the timing module has no imports and matches the values the runtime enforc
   assert.equal(forcedRestartServesWithinHeldStreamsMs, 538_000);
 });
 
+test("the controller's startup allowance is the supervisor's own startup budget", async () => {
+  const supervisor = await readFile(
+    new URL("../../containers/pool/supervisor.py", import.meta.url),
+    "utf8",
+  );
+  const budget = /^STARTUP_TIMEOUT_SECONDS = (\d+)$/mu.exec(supervisor);
+  assert.ok(budget, "the supervisor's startup budget moved: update runtimeStartupMs with it");
+  assert.equal(runtimeStartupMs, Number(budget[1]) * 1_000);
+});
+
 test("a forced stop waits longer than the supervisor's own shutdown grace", async () => {
   const supervisor = await readFile(
     new URL("../../containers/pool/supervisor.py", import.meta.url),
