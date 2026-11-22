@@ -26,6 +26,17 @@ test("the clock stops a refusing runtime only after its bound, within its hourly
     unservingDecision({ ...state, needsPerson: { at: now, reason: "stop_failed" } }, now),
     "needs_person",
   );
+  const failed = { at: now, reason: "restart_failed" as const };
+  assert.equal(
+    unservingDecision({ ...state, unforcedRestartAt: since, needsPerson: failed }, now),
+    "stop",
+    "an unforced restart that failed never blocks the stop that heals a running, refusing runtime",
+  );
+  assert.equal(
+    unservingDecision({ ...state, restartedAt: since, needsPerson: failed }, now),
+    "needs_person",
+    "a forced restart that failed is never stopped again",
+  );
 });
 
 test("an install guard failure keeps the selected runtime's closed refusal code", async () => {

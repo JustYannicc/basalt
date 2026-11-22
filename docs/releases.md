@@ -87,12 +87,12 @@ An apply then:
 3. backs up the production database branch on PlanetScale and waits for it (`backup`);
 4. counts accounts and history (`snapshot`);
 5. re-plans and applies only if the digest still matches (`apply --plan-digest --attempt`). A wire guard installed before the stack loads refuses any Worker upload that deletes, renames or transfers a Durable Object class, and tests itself in the same process first;
-6. accepts the release through the live pool (`accept`). A failed apply or acceptance rolls PoolWorker back to the recorded serving version by itself (`rollback --to`);
+6. accepts the release through the live pool (`accept`). A failed apply or acceptance rolls PoolWorker back to the recorded serving version by itself (`rollback --to`). Acceptance signs each model call for one registered models-only device named by the `POOL_ACCEPTANCE_DEVICE` secret, which is release infrastructure and must not be removed. The fleet lane signs for the same device and reads usage in its pool, so register it in a dedicated `acceptance-<run>` pool. When the pool refuses the device at the boot read, the run stops before the apply. After the apply, a 401 or 403 is a failed release, because the boot read admitted the device; its user's cap (429) stops the run red without a rollback;
 7. counts again and refuses any drop (`compare`).
 
 Plan, counts and acceptance are kept as run artifacts.
 
-**Policies.** [scripts/release/policies](../scripts/release/policies) holds the reviewed plan policies. `release` covers ordinary releases. `cutover-code` releases PoolWorker code alone as a Worker version that `rollback` can undo; use it for any code-only PoolWorker release. `cutover-classes` is the one Durable Object class change. A class change cannot be rolled back, so a failure there stops without rollback and the pool keeps serving on the root. A policy may set only the declaration switches it names.
+**Policies.** [scripts/release/policies](../scripts/release/policies) holds the reviewed plan policies. `release` covers ordinary releases. `code` releases every Worker whose code changed as Worker versions that `rollback` can undo; use it for any code-only release, the one before the class change included. `cutover-code` plans PoolWorker alone, which would leave the other Workers on older code than the pool Worker. `cutover-classes` is the one Durable Object class change. A class change cannot be rolled back, so a failure there stops without rollback and the pool keeps serving on the root. A policy may set only the declaration switches it names.
 
 **Root image pin.** Production always declares the root `PoolContainer` by its pinned digest. The `POOL_ROOT_PIN` variable holds the repository and digest of PoolContainer's recorded image, without the registry or the account, and the 16-hex build input from PoolWorker's `POOL_IMAGE_HASH`. The release entry adds the account from its secret in its own process, so the full reference is never in a log or an artifact. A pin that differs from State is refused with the parts that differ and how State records the image, by digest, by tag or absent. Without a pin the declaration refuses, because a build from `containers/pool` would roll the live root and boot a new Home against production. Other stages build from the context. `POOL_FLEET_BUILD`, `POOL_FLEET_IMAGES` and `POOL_FLEET_CLASSES` declare the fleet cells as before.
 
@@ -109,7 +109,7 @@ Plan, counts and acceptance are kept as run artifacts.
 Production moved from the old release layer to this path once, under the hold and a coordinator GO for each step:
 
 1. Plan read-only with `mode: plan`. The old layer's SQL schema journal must show no unresolved Home step ([scripts/release/legacy](../scripts/release/legacy) reads it). Export the old layer's journals and the stack output keys it wrote, sealed, to the private archive; a plain apply overwrites or orphans them. Read PoolContainer's and PoolWorker's State rows and set `POOL_ROOT_PIN` from them.
-2. Release PoolWorker's code alone with `cutover-code`, as a rollbackable Worker version.
+2. Release main's code with `code`, as rollbackable Worker versions. The class change then runs on that same commit.
 3. Apply the class change with `cutover-classes`. The fleet classes are created beside the root, which keeps its pinned image.
 4. Configure the fleet cells through the signed fleet client in [scripts/pool-fleet](../scripts/pool-fleet), then run pool acceptance.
 

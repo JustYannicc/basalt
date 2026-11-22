@@ -192,10 +192,27 @@ test(
           const calls = await mf.dispatchFetch(`http://fixture/calls?fault=${fault}`);
           assert.equal((await calls.json()).calls, 0);
         });
-      for (const [fault, count] of [
-        ["model-port-lookup", 0],
-        ["model-port-dispatch", 1],
-      ] as const)
+      // The port lookup fails before any send, so nothing ran: the retryable refusal, marked unsent
+      // for the entry, which still holds the call and sends it again.
+      await context.test("model-port-lookup", async () => {
+        const response = await mf.dispatchFetch(
+          "http://fixture/v1/messages?fault=model-port-lookup",
+          {
+            method: "POST",
+            body: "{}",
+          },
+        );
+        assert.equal(response.status, 503);
+        assert.equal(response.headers.get("Retry-After"), "1");
+        assert.equal(response.headers.get("X-Signalbox-Controller-Unsent"), "1");
+        assert.equal(response.headers.get("X-Signalbox-Runtime-Failure-Step"), null);
+        assert.ok(response.headers.get("X-Request-Id"));
+        const text = await response.text();
+        assert.equal(text.includes("synthetic-private-exception-body"), false);
+        const calls = await mf.dispatchFetch("http://fixture/calls?fault=model-port-lookup");
+        assert.equal((await calls.json()).calls, 0);
+      });
+      for (const [fault, count] of [["model-port-dispatch", 1]] as const)
         await context.test(fault, async () => {
           const response = await mf.dispatchFetch(`http://fixture/v1/messages?fault=${fault}`, {
             method: "POST",
