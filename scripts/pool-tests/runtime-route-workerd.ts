@@ -55,7 +55,7 @@ export class Root extends DurableObject {
    cell:()=>({selected:async()=>fault==='identity'?{...identity,bootId:'other-boot'}:identity,
     forward:(request,port,pool,before)=>router.forward(pool,request,port,async()=>request,before)}),
    legacyActive:async()=>1,currentRequests:()=>1,targetActive:100,idleMilliseconds:60000,maximum:1,
-   enabled:()=>false,balancePrimary:true,defer:work=>this.ctx.waitUntil(work),wrap:nativeResponse,now:Date.now});
+   enabled:()=>false,primary:"balanced",defer:work=>this.ctx.waitUntil(work),wrap:nativeResponse,now:Date.now});
   const streams=new NativeStreams();
   const response=await forwardPoolRequest(request,fault==='missing-port'?undefined:8317,{
    env:this.env,computers:{observeUsage:async()=>{}},memberships:{configured:async()=>false},streams,
