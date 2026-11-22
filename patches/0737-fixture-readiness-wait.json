@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-e2e-fixture-readiness-wait",
+  "file": "0737-fixture-readiness-wait.patch",
+  "content_sha256": "801bae4b1a43446e119502592e7b6ca5782e9861ce8e1161f4bc0f6208dbb539",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

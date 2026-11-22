@@ -1,0 +1,40 @@
+diff --git a/e2e/sdk/fixtures.ts b/e2e/sdk/fixtures.ts
+--- a/e2e/sdk/fixtures.ts
++++ b/e2e/sdk/fixtures.ts
+@@ -2,6 +2,7 @@
+ import {
+   Cause,
+   Config,
++  Duration,
+   Effect,
+   FileSystem,
+   Path,
+@@ -73,6 +74,7 @@
+   origin: string,
+   directory: string,
+   browserOrigin: string = roleHost(origin, "app"),
++  readiness: Duration.Input = "2 minutes",
+ ) =>
+   Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem,
+@@ -111,7 +113,19 @@
+             Schema.fromJsonString(Schema.Struct({ origin: FixtureControl.fields.origin })),
+           ),
+         ),
+-        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
++        // A process that is alive is still starting, which takes well past ten seconds on a busy
++        // runner: read until it reports ready or stops, within the readiness bound.
++        Effect.retry({ schedule: Schedule.spaced("100 millis") }),
++        Effect.timeoutOrElse({
++          duration: readiness,
++          orElse: () =>
++            Effect.fail(
++              new FixtureFailed({
++                operation: `readiness (the process was still running after ${Duration.format(Duration.fromInputUnsafe(readiness))} with no ready file; its output is in ${path.join(directory, "fixtures.log")})`,
++                reason: "timeout",
++              }),
++            ),
++        }),
+       );
+     const value = yield* Effect.raceFirst(
+       ready,
