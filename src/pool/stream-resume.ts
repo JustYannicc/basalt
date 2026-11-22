@@ -38,8 +38,14 @@ export const streamResumeCuts = 5;
 /** A body kept for a refused connect's resend stays inside the entry's own bounds for a held copy. */
 const spareBytes = 4 * 1024 * 1024;
 const spareBudgetBytes = 32 * 1024 * 1024;
-// Each share carries its own deadline, as the entry's held copy does: a send that never settles
-// never reaches its release, and its bytes must not stay counted for the life of the isolate.
+/**
+ * How long a kept copy can still be re-sent. A refused connect comes at the layer's connect, and an
+ * unreachable node within the layer's 5 s dial limit, before it reads a body byte. Past this a copy
+ * only costs memory, so it is dropped and its share given back.
+ */
+const spareWindowMs = 20_000;
+// Each share also carries its own deadline: a request the platform cancels never runs its timers,
+// and its bytes must not stay counted for the life of the isolate.
 const spares = new Map<object, { bytes: number; until: number }>();
 function spareHeld(now: number) {
   let total = 0;
@@ -167,15 +173,30 @@ function spareOf(request: Request) {
   if (!Number.isSafeInteger(size) || size < 0 || size > spareBytes) return undefined;
   const now = Date.now();
   if (spareHeld(now) + size > spareBudgetBytes) return undefined;
+  const copy = request.clone();
   const key = {};
-  // A refused connect or an unreachable node answers at the connect, well inside the window; past
-  // it the share is no longer counted, so the copy is never sent either.
-  const until = now + streamResumeWindowMs;
+  const until = now + spareWindowMs;
+  let state: "kept" | "taken" | "dropped" = "kept";
+  const release = () => {
+    clearTimeout(timer);
+    spares.delete(key);
+  };
+  const timer = setTimeout(() => {
+    if (state !== "kept") return;
+    state = "dropped";
+    release();
+    void copy.body?.cancel().catch(() => {});
+  }, spareWindowMs);
   spares.set(key, { bytes: size, until });
   return {
-    request: request.clone(),
-    usable: () => Date.now() < until,
-    release: () => spares.delete(key),
+    copy,
+    /** The copy to re-send, once and only inside its window; a taken copy is never cut. */
+    take() {
+      if (state !== "kept" || Date.now() >= until) return undefined;
+      state = "taken";
+      return copy;
+    },
+    release,
   };
 }
 
@@ -222,7 +243,8 @@ export async function toLayer(
       answer = await send(request, resumeLayerPort);
     } catch (error) {
       if (!running()) throw error;
-      if (spare?.usable() && layerConnectRefused(error)) return await toNode(spare.request);
+      const copy = layerConnectRefused(error) ? spare?.take() : undefined;
+      if (copy) return await toNode(copy);
       rememberRuntimeFailure("resume_layer", error);
       throw error;
     }
@@ -230,7 +252,8 @@ export async function toLayer(
     if (upstream !== "unreachable" && upstream !== "failed") return answer;
     void answer.body?.cancel().catch(() => {});
     // The layer couldn't reach the node, so the node saw nothing: its port answers as today.
-    if (upstream === "unreachable" && spare?.usable()) return await toNode(spare.request);
+    const copy = upstream === "unreachable" ? spare?.take() : undefined;
+    if (copy) return await toNode(copy);
     // The node failed, or can't be reached and the call can't be re-sent: the node's own failure,
     // as on its port, and never sent twice, since the node may have started it.
     refuseRuntime(
@@ -241,7 +264,7 @@ export async function toLayer(
     );
   } finally {
     spare?.release();
-    if (!resent) void spare?.request.body?.cancel().catch(() => {});
+    if (!resent) void spare?.copy.body?.cancel().catch(() => {});
   }
 }
 
