@@ -35,8 +35,8 @@
     "sqliteClasses": {}
   },
   "rollback": {
-    "forceSecrets": ["EXECUTOR_TELEMETRY", "EXECUTOR_COMPILER_CACHE_RELEASE"],
-    "why": "EXECUTOR_TELEMETRY holds the telemetry settings and the build version, the pinned upstream commit: it changes only when a release moves that pin or the telemetry destination, so between two ordinary releases it is equal and no force is expected. EXECUTOR_COMPILER_CACHE_RELEASE, on AppCompiler only, is the release commit that keys the compiler's framework cache, so it differs on every release. Cloudflare refuses to roll a Worker back across a changed secret without force; forced, the earlier version comes back with the value it ran with, the one that matches its code, and serving depends on neither."
+    "forceSecrets": ["EXECUTOR_TELEMETRY"],
+    "why": "EXECUTOR_TELEMETRY holds the telemetry settings and the build version, the pinned upstream commit: it changes only when a release moves that pin or the telemetry destination, so between two ordinary releases it is equal and no force is expected. When it does change, Cloudflare refuses to roll a Worker back across it without force; forced, the earlier version comes back with the value it ran with, the one that matches its code, and serving does not depend on it."
   },
   "env": {
     "POOL_FLEET_BUILD": "true"

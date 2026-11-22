@@ -246,14 +246,14 @@ test("a rollback given no list of per-release secrets forces nothing", async () 
   }
 });
 
-test("each rolling-back policy forces the compiler's release secret alone, and never beside an unlisted one", async () => {
+test("each rolling-back policy forces the telemetry secret alone, and never beside an unlisted one", async () => {
   for (const name of ["code", "cutover-code", "release"]) {
     const policy = decodeReleasePolicy(
       JSON.parse(await readFile(new URL(`./policies/${name}.json`, import.meta.url), "utf8")),
     );
     const listed = new Set(policy.rollback?.forceSecrets ?? []);
     const alone = await api([deployment("v241"), deployment("v240")], {
-      ...secretChanged("EXECUTOR_COMPILER_CACHE_RELEASE"),
+      ...secretChanged("EXECUTOR_TELEMETRY"),
       yieldsToForce: true,
     });
     try {
@@ -262,24 +262,30 @@ test("each rolling-back policy forces the compiler's release secret alone, and n
       );
       assert.deepEqual(
         exit,
-        Exit.succeed({ id: "dep-new", forcedSecrets: ["EXECUTOR_COMPILER_CACHE_RELEASE"] }),
+        Exit.succeed({ id: "dep-new", forcedSecrets: ["EXECUTOR_TELEMETRY"] }),
         name,
       );
     } finally {
       alone.close();
     }
-    const mixed = await api([deployment("v241")], {
-      ...secretChanged("EXECUTOR_COMPILER_CACHE_RELEASE, TEST_STAGE_EXPIRES_AT"),
-      yieldsToForce: true,
-    });
-    try {
-      const exit = await run(
-        withHttp(rollbackTo(target(mixed.origin), "v240", "rollback", listed)),
-      );
-      assert.ok(Exit.isFailure(exit), name);
-      assert.deepEqual(mixed.seen, [`POST ${deployments}`], name);
-    } finally {
-      mixed.close();
+    // AppCompiler's cache release is plain text on the live Worker, so it is not on any list.
+    for (const names of [
+      "EXECUTOR_TELEMETRY, EXECUTOR_APPS_VERSION",
+      "EXECUTOR_COMPILER_CACHE_RELEASE",
+    ]) {
+      const refused = await api([deployment("v241")], {
+        ...secretChanged(names),
+        yieldsToForce: true,
+      });
+      try {
+        const exit = await run(
+          withHttp(rollbackTo(target(refused.origin), "v240", "rollback", listed)),
+        );
+        assert.ok(Exit.isFailure(exit), `${name}: ${names}`);
+        assert.deepEqual(refused.seen, [`POST ${deployments}`], `${name}: ${names}`);
+      } finally {
+        refused.close();
+      }
     }
   }
 });
