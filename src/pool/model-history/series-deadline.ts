@@ -17,6 +17,20 @@ export class HistoryTimeoutFailure extends ControlFailure {
   }
 }
 
+/**
+ * A summary window holding more requests than one bounded read can aggregate. Refused before any
+ * aggregate statement runs, so a page load costs a bounded index count instead of a 5 s scan.
+ */
+export class HistoryTooLarge extends ControlFailure {
+  constructor() {
+    super(
+      503,
+      "history_too_large",
+      "This pool's usage history is too large to summarize in one read yet.",
+    );
+  }
+}
+
 export function historyTimeoutReason(error: unknown): HistoryTimeoutReason | undefined {
   if (error instanceof HistoryTimeoutFailure) return error.reason;
   if (typeof error !== "object" || error === null) return;

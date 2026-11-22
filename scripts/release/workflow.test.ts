@@ -11,7 +11,11 @@ const { parse } = createRequire(new URL("../architecture/package.json", import.m
 /** The release job's steps as Actions reads them, with every YAML alias resolved. */
 const parsedSteps = (
   parse(workflow) as {
-    jobs: { release: { steps: { name?: string; run?: string; env?: object; with?: object }[] } };
+    jobs: {
+      release: {
+        steps: { name?: string; if?: string; run?: string; env?: object; with?: object }[];
+      };
+    };
   }
 ).jobs.release.steps;
 const step = (name: string) => {
@@ -74,13 +78,56 @@ test("a failed apply or acceptance rolls PoolWorker back by itself and ends red"
   const rollback = step("Roll back a failed release");
   assert.equal(
     condition("Roll back a failed release"),
-    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
+    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))",
   );
   assert.match(rollback, /rollback --stage production --from .local\/release\/serving.json/u);
   assert.match(rollback, /exit 1/u);
   assert.match(rollback, /POLICY_NAME != 'cutover-classes'/u);
   assert.match(step("Apply the reviewed plan"), /continue-on-error: true/u);
   assert.match(step("Accept the release through the live pool"), /continue-on-error: true/u);
+});
+
+test("an acceptance that could not test stops the run red without rolling back", () => {
+  // The pool refused the acceptance device: nothing failed to serve, so nothing is undone.
+  assert.equal(
+    condition("Stop on an acceptance that could not test"),
+    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'",
+  );
+  const [rollback, counts, stop, record] = order(
+    "Roll back a failed release",
+    "Count accounts and history after",
+    "Stop on an acceptance that could not test",
+    "Finish the deployment record",
+  );
+  assert.ok(rollback! < stop!, "after the rollback it replaces");
+  // The release stays live, so its counts still run before the stop, and its record says failure.
+  assert.ok(counts! < stop! && stop! < record!, "after the counts, before the record");
+  assert.match(
+    step("Stop on an acceptance that could not test"),
+    /::error::.*the release's acceptance device was refused: check that it is still registered and allowed[\s\S]*exit 1/u,
+  );
+});
+
+test("release acceptance signs for a device named by a masked secret; no stored model key remains", () => {
+  assert.doesNotMatch(workflow, /POOL_ACCEPTANCE_KEY/u);
+  for (const name of [
+    "Record the root's boot before the apply",
+    "Accept the release through the live pool",
+    "Roll back a failed release",
+  ]) {
+    const env = parsedSteps.find((entry) => entry.name === name)?.env as
+      | Record<string, string>
+      | undefined;
+    // A secret, not a variable: GitHub prints a step's env in its log and masks only secrets.
+    assert.equal(env?.POOL_ACCEPTANCE_DEVICE, "${{ secrets.POOL_ACCEPTANCE_DEVICE }}", name);
+    assert.equal(env?.POOL_APP_SIGNING_KEY, "${{ secrets.POOL_APP_SIGNING_KEY }}", name);
+    // Mid-rotation acceptance signs with the previous key, which both Workers accept.
+    assert.equal(
+      env?.POOL_APP_SIGNING_KEY_PREVIOUS,
+      "${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}",
+      name,
+    );
+  }
 });
 
 test("the class change states what was verified first and never pretends it can roll back", () => {
@@ -101,6 +148,50 @@ test("the class change states what was verified first and never pretends it can 
   );
   assert.ok(summary! < apply!);
   assert.match(step("Stop on a failed class change"), /cannot be rolled back/u);
+});
+
+test("a plan runs the apply's read-only steps too, so an apply is never their first run", () => {
+  for (const name of [
+    "Record the serving version of every Worker the plan updates",
+    "Count accounts and history before",
+    "Record the root's boot before the apply",
+  ])
+    assert.equal(condition(name), undefined, name);
+  // A plan proves the read; the full count stays with the policies that change data.
+  assert.match(
+    step("Count accounts and history before"),
+    /\(env\.MODE == 'plan' \|\| [^}]*'--light'/u,
+  );
+  for (const name of [
+    "Record the deployment",
+    "Back up the pool database",
+    "Read the provider observation again right before the apply",
+    "Apply the reviewed plan",
+    "Accept the release through the live pool",
+  ])
+    assert.match(condition(name) ?? "", /env\.MODE == 'apply'/u, name);
+  // Every other step that carries production secrets writes, so it never runs in a plan.
+  const reads = new Set([
+    "Preflight against State",
+    "Read the provider observation before a declared root restart",
+    "Plan and check",
+    "Record the serving version of every Worker the plan updates",
+    "Count accounts and history before",
+    "Record the root's boot before the apply",
+  ]);
+  const writes = parsedSteps.filter(
+    (entry) =>
+      !reads.has(entry.name ?? "") &&
+      JSON.stringify({ env: entry.env, run: entry.run, with: entry.with }).includes("secrets."),
+  );
+  assert.ok(writes.length > 0);
+  for (const entry of writes)
+    assert.match(entry.if ?? "", /env\.MODE == 'apply'/u, entry.name ?? "(unnamed step)");
+  assert.match(step("Check the apply's tools are present"), /for tool in gh jq bun node; do/u);
+  assert.match(step("Check the apply's tools are present"), /gh api rate_limit/u);
+  assert.equal(condition("Check the apply's tools are present"), undefined);
+  const [tools, prepare] = order("Check the apply's tools are present", "Prepare");
+  assert.ok(tools! < prepare!);
 });
 
 test("every production attempt from the backup on leaves a GitHub Deployment with its outcome", async () => {

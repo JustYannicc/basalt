@@ -297,7 +297,7 @@
     "mode": "managed"
   },
   "host-managed-accounts-pool:listed-account-actions": {
-    "job": "host-managed-accounts-pool",
+    "job": "host-managed-accounts-pool-actions",
     "target": "self-host",
     "mode": "managed"
   },
@@ -317,7 +317,7 @@
     "mode": "managed"
   },
   "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api": {
-    "job": "host-managed-accounts-pool",
+    "job": "host-managed-accounts-pool-actions",
     "target": "self-host",
     "mode": "managed"
   },

@@ -8,7 +8,8 @@ import {
   validateSmokeSecrets,
 } from "./credentials.ts";
 import { manifestPath, previewNumber } from "./checkpoint.ts";
-import { privateOperation } from "./process.ts";
+import { privateOperation, publicEnvironment } from "./process.ts";
+import { reportFailure } from "../failure/report.ts";
 import { runPreview } from "./lifecycle.ts";
 import { previewReceipt } from "./receipt.ts";
 import { previewIdentity } from "../environment.ts";
@@ -174,10 +175,13 @@ export async function executePreview(
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     await executePreview(process.cwd(), previewNumber(process.argv[2]), process.env);
-  } catch {
-    console.error(
-      "Release preview failed; no merge receipt was written. Run trusted cleanup if resources remain.",
-    );
+  } catch (error) {
+    await reportFailure(error, {
+      title: "Release preview failed",
+      summaryPath: process.env.GITHUB_STEP_SUMMARY,
+      environment: publicEnvironment(process.env),
+    });
+    console.error("No merge receipt was written. Run trusted cleanup if resources remain.");
     process.exitCode = 1;
   }
 }

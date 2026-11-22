@@ -326,6 +326,37 @@ test(
 );
 
 test(
+  "a moment's not-running read never turns a held stop into needs-a-person",
+  { timeout: 30_000 },
+  async (context) => {
+    const { f, advance, stopPaths } = await root(context);
+    const identity = f.old.identity();
+    await f.old.storage.put(
+      `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`,
+      { identity, phase: "open", active: 1, known: true, leases: { leaked: "active" } },
+    );
+    refuseCurrentBoot(f);
+    // The first pass reads the container as not running; it lives, so no restart is admitted.
+    let blip = true;
+    context.mock.method(runtimeStopTiming, "confirmExit", async () => {
+      if (blip) f.old.revive();
+    });
+    f.old.crash();
+    await pass(f);
+    blip = false;
+    assert.equal(f.old.calls.start, 0);
+    for (let elapsed = 0; elapsed <= leakedStreamsMs; elapsed += 10_000) {
+      advance(10_000);
+      await pass(f);
+    }
+    assert.deepEqual(stopPaths(), ["graceful_exit"], "stopped once the count stood still");
+    await pass(f);
+    assert.equal(await serves(f), true);
+    assert.equal((await recoveryState(f)).needsPerson, undefined);
+  },
+);
+
+test(
   "a stream count that stands still holds the stop for leakedStreamsMs from the first refusal, visibly",
   { timeout: 60_000 },
   async (context) => {

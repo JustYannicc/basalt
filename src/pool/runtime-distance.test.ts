@@ -88,7 +88,11 @@ test("near runtimes take requests first, far and unknown ones take the overflow"
   const near = await f.add(frankfurt);
   const picks: string[] = [];
   for (let request = 0; request < 4; request++) {
-    const reservation = await f.state.acquire(Number.MAX_SAFE_INTEGER, true, placement("unknown"));
+    const reservation = await f.state.acquire(
+      Number.MAX_SAFE_INTEGER,
+      "balanced",
+      placement("unknown"),
+    );
     picks.push(reservation.kind === "primary" ? "root" : reservation.identity.slotId);
   }
   // The near cell fills to the growth target, then the far cell and the old-image root share it.
@@ -98,7 +102,7 @@ test("near runtimes take requests first, far and unknown ones take the overflow"
 test("the root keeps its tie preference among equals, and nothing changes without distances", async () => {
   const near = await fleet();
   await near.add(amsterdam);
-  const first = await near.state.acquire(Number.MAX_SAFE_INTEGER, true, placement("near"));
+  const first = await near.state.acquire(Number.MAX_SAFE_INTEGER, "balanced", placement("near"));
   assert.equal(first.kind, "primary", "a near root wins the tie against a near cell");
 
   const old = await fleet();
@@ -107,7 +111,7 @@ test("the root keeps its tie preference among equals, and nothing changes withou
   for (let request = 0; request < 3; request++) {
     const reservation = await old.state.acquire(
       Number.MAX_SAFE_INTEGER,
-      true,
+      "balanced",
       placement("unknown"),
     );
     picks.push(reservation.kind === "primary" ? "root" : reservation.identity.slotId);
@@ -119,7 +123,11 @@ test("the root keeps its tie preference among equals, and nothing changes withou
 test("a lone far runtime still serves", async () => {
   const f = await fleet();
   const far = await f.add(lisbon);
-  const reservation = await f.state.acquire(Number.MAX_SAFE_INTEGER, false, placement("unknown"));
+  const reservation = await f.state.acquire(
+    Number.MAX_SAFE_INTEGER,
+    undefined,
+    placement("unknown"),
+  );
   assert.equal(reservation.kind === "runtime" && reservation.identity.slotId, far.slotId);
 });
 
@@ -226,7 +234,7 @@ function redrawFleet(draws: object[], serving: boolean) {
         defer: () => {},
         wrap: (response) => response,
         now: () => 100,
-        balancePrimary: true,
+        primary: "balanced",
         primaryAvailable: () => rootServing,
       });
     },
@@ -243,7 +251,11 @@ test("a far cell is redrawn while the root serves, never takes a request and sto
   assert.equal(row?.phase, "draining");
   assert.equal(row?.active, 0);
   assert.deepEqual(row?.database, { state: "measured", rttMs: 44, location: "ath01" });
-  const reservation = await f.state.acquire(Number.MAX_SAFE_INTEGER, true, placement("unknown"));
+  const reservation = await f.state.acquire(
+    Number.MAX_SAFE_INTEGER,
+    "balanced",
+    placement("unknown"),
+  );
   assert.equal(reservation.kind, "primary", "the redrawn cell is never routable");
   await reservation.release();
   await runtime.upkeep();
@@ -320,7 +332,7 @@ test("without distances the order is today's on both sides of the growth target"
     for (let request = 0; request < 7; request++) {
       const reservation = await f.state.acquire(
         Number.MAX_SAFE_INTEGER,
-        true,
+        "balanced",
         withPlacement ? placement("unknown") : undefined,
       );
       order.push(reservation.kind === "primary" ? "root" : reservation.identity.slotId);
