@@ -17,6 +17,7 @@ import {
   historyJournalActivateVersion,
   historyJournalActivateStatements,
 } from "./change-journal-schema.ts";
+import { historyUsageRollupStatements, historyUsageRollupVersion } from "./usage-rollup-schema.ts";
 
 export interface HistoryDatabase {
   query(
@@ -29,7 +30,7 @@ export const historyBaseSchemaVersion = "model_request_history_v1";
 export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
 export const historyAccountTimeSchemaVersion = "model_request_history_v3_account_time";
 export const historyTrafficSchemaVersion = "model_request_history_v4_traffic_purpose";
-export const historySchemaVersion = historyChangeOnceVersion;
+export const historySchemaVersion = historyUsageRollupVersion;
 export const historyTerminalIntegrityVersion = "model_request_history_v7_terminal_integrity";
 export const historyChangeSchemaVersion = "model_request_history_v5_change_revisions";
 
@@ -183,6 +184,7 @@ export const historySchemaMigrations = [
   { name: historyJournalPrepareVersion, statements: historyJournalPrepareStatements },
   { name: historyRowSchemaVersion, statements: historyRowStatements },
   { name: historyChangeOnceVersion, statements: historyChangeOnceStatements },
+  { name: historyUsageRollupVersion, statements: historyUsageRollupStatements },
 ];
 export const historyJournalActivationMigration = {
   name: historyJournalActivateVersion,
