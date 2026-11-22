@@ -242,7 +242,12 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
     assert.ok(typeof slow.slowHour === "string");
     // A hold measured over its limit stops the run after that hour, naming it; the hour is done.
     let tick = 0;
-    const held = await runUsageRollup(f.db, plan, 60_000, () => (tick += usageRollupHoldLimitMs + 50));
+    const held = await runUsageRollup(
+      f.db,
+      plan,
+      60_000,
+      () => (tick += usageRollupHoldLimitMs + 50),
+    );
     assert.equal(held.stopped, "slow_hold");
     assert.ok(typeof held.slowHour === "string");
     assert.equal(held.pools[0]!.recomputedHours, 1);

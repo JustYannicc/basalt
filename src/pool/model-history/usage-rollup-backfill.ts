@@ -120,9 +120,10 @@ export async function runUsageRollup(
   const walWritten = async () =>
     Number(
       (
-        await db.query("SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1::pg_lsn)::text AS bytes", [
-          walStart,
-        ])
+        await db.query(
+          "SELECT pg_wal_lsn_diff(pg_current_wal_insert_lsn(),$1::pg_lsn)::text AS bytes",
+          [walStart],
+        )
       ).rows[0]?.bytes ?? 0,
     );
   let stop: "budget" | "wal" | "lock" | "slow_hour" | "slow_hold" | undefined;

@@ -155,7 +155,11 @@ async function scaleCase(shape: Shape) {
         backfillWal = Math.max(backfillWal, result.walBytes);
         longestHold = Math.max(longestHold, result.maxHoldMs);
         // The deadline is on the backfill's own hold, not only on the writer that waits behind it.
-        assert.notEqual(result.stopped, "slow_hold", `the backfill held the pool ${result.maxHoldMs} ms`);
+        assert.notEqual(
+          result.stopped,
+          "slow_hold",
+          `the backfill held the pool ${result.maxHoldMs} ms`,
+        );
         assert.ok(result.maxHoldMs <= usageRollupHoldLimitMs, `a hold of ${result.maxHoldMs} ms`);
         // The cap counts all WAL the database writes during the call, the racing writer's too, and
         // stops before the hour after it is crossed: one hour's WAL, plus anyone else's, past 32 MiB.
