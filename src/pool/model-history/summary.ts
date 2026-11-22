@@ -25,6 +25,13 @@ import { summaryGroups, summaryCostRows } from "./summary-values.ts";
 import { summaryHourly } from "./summary-hourly.ts";
 import { summaryIncidents } from "./summary-incidents.ts";
 import { summaryKnownDays } from "./summary-known-days.ts";
+import {
+  rollupCoverageQuery,
+  rollupDailyQuery,
+  rollupPricesSupported,
+  rollupSelection,
+  summaryModeTargets,
+} from "./summary-rollup-query.ts";
 import type { HistoryReadStep } from "./read-failure.ts";
 
 type Prices = (
@@ -55,10 +62,14 @@ export async function poolUsageSummary(
   try {
     await db.query("SET LOCAL statement_timeout = '5s'");
     let selection = await summarySelection(pool, readFrom, input.to, authority);
-    const targetQuery = summaryPriceTargets(selection, windowRows);
+    // A pool whose rollup is ready reads it; every range boundary cuts its groups.
+    const boundaries = [readFrom, input.from, input.to, previous.from, previous.to, heatmapFrom];
+    const targetQuery = summaryModeTargets(selection, windowRows, boundaries);
     mark("targets");
-    const targets = (await db.query(targetQuery.text, targetQuery.values)).rows;
-    if (targets.some((row) => row.window_rows !== null)) throw new HistoryTooLarge();
+    const first = (await db.query(targetQuery.text, targetQuery.values)).rows;
+    if (first.some((row) => row.window_rows !== null)) throw new HistoryTooLarge();
+    const targets = first.filter((row) => row.kind === "target");
+    let rolled = first.some((row) => row.kind === "rollup");
     const priceUnavailableReason =
       targets.length > 100
         ? "More than 100 provider/model pairs need prices; money estimates are unavailable."
@@ -73,10 +84,18 @@ export async function poolUsageSummary(
         prices = { prices: [], issues: [] };
       }
     selection = await summarySelection(pool, readFrom, input.to, authority, prices);
+    // A price tier the rollup's bands cannot separate is priced exactly only from raw rows.
+    if (rolled && !rollupPricesSupported(String(selection.values[6]))) rolled = false;
+    const source = rolled ? rollupSelection(selection, boundaries) : selection;
     mark("coverage");
-    const observed = await summaryCoverage(db, selection, authority);
-    const dailyQuery = summaryDailyQuery(
-      selection,
+    const observed = await summaryCoverage(
+      db,
+      source,
+      authority,
+      rolled ? rollupCoverageQuery : undefined,
+    );
+    const dailyQuery = (rolled ? rollupDailyQuery : summaryDailyQuery)(
+      source,
       input.from,
       previous.from,
       input.by === "model",
@@ -141,7 +160,14 @@ export async function poolUsageSummary(
       authority,
     );
     mark("hourly");
-    const hourly = await summaryHourly(db, hourlySelection, input.from, heatmapFrom, input.to);
+    const hourly = await summaryHourly(
+      db,
+      rolled ? rollupSelection(hourlySelection, boundaries) : hourlySelection,
+      input.from,
+      heatmapFrom,
+      input.to,
+      rolled,
+    );
     const missingHours = capture.incompleteHours;
     const nativeComplete =
       observed.nativeMappingProven &&

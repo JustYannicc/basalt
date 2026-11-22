@@ -12,8 +12,9 @@ export async function summaryCoverage(
   db: HistoryDatabase,
   selection: Awaited<ReturnType<typeof summarySelection>>,
   authority: SeriesAuthority,
+  coverageQuery: typeof summaryCoverageQuery = summaryCoverageQuery,
 ) {
-  const query = summaryCoverageQuery(selection);
+  const query = coverageQuery(selection);
   const rows = (await db.query(query.text, query.values)).rows;
   if (rows.length > 500) throw new Error("Usage source coverage exceeds its bound");
   // Read one indexed timestamp bucket. Too many microsecond ties leave the exact start unknown.
