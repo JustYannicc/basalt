@@ -43,6 +43,8 @@ export class FakeGateway implements GatewayContainer {
   waiting: Array<{ path: string; body: unknown; release(outcome: "ok" | "fail"): void }> = [];
   /** Which container instance is up; a request in flight when it goes down dies with it. */
   private instance = 0;
+  /** Every control request's path, in arrival order. */
+  requests: string[] = [];
   /** Called with the identity each node is started from. */
   onStart: ((state: string | null) => void) | undefined;
   /** The exit the running node routes through, or null while it routes nothing. */
@@ -145,6 +147,7 @@ export class FakeGateway implements GatewayContainer {
   }
 
   private async handle(method: string, path: string, body: unknown): Promise<Response> {
+    this.requests.push(path);
     const instance = this.instance;
     if (this.manual) {
       const outcome = await new Promise<"ok" | "fail">((resolve) =>

@@ -30,9 +30,36 @@ function generator(seed: number) {
   };
 }
 
+// Node's WebCrypto runs on a thread pool, unlike workerd's, so a seal can outlast any fixed number
+// of turns. Counting the operations in flight makes "idle" exact instead of a guess about speed.
+// ROUTE_MODEL_SLOW_CRYPTO=<ms> delays each one, to reproduce a loaded machine.
+let cryptoInFlight = 0;
+const slowCrypto = Number(process.env.ROUTE_MODEL_SLOW_CRYPTO ?? 0);
+const subtle = globalThis.crypto.subtle as unknown as Record<
+  string,
+  (...args: unknown[]) => Promise<unknown>
+>;
+for (const name of ["encrypt", "decrypt", "deriveKey", "importKey", "digest", "sign", "verify"]) {
+  const original = subtle[name]!.bind(globalThis.crypto.subtle);
+  subtle[name] = async (...args: unknown[]) => {
+    cryptoInFlight += 1;
+    try {
+      if (slowCrypto) await new Promise((resolve) => setTimeout(resolve, slowCrypto));
+      return await original(...args);
+    } finally {
+      cryptoInFlight -= 1;
+    }
+  };
+}
+
 /** Lets everything that can run without a container reply run to its next wait. */
 async function idle() {
-  for (let round = 0; round < 25; round += 1) await new Promise((resolve) => setImmediate(resolve));
+  for (let round = 0, quiet = 0; round < 25 || quiet < 5; round += 1) {
+    assert.ok(round < 100_000, "the gateway never went idle");
+    if (cryptoInFlight > 0) await new Promise((resolve) => setTimeout(resolve, 1));
+    else await new Promise((resolve) => setImmediate(resolve));
+    quiet = cryptoInFlight === 0 ? quiet + 1 : 0;
+  }
 }
 
 /** How often the interesting paths ran, so a green run is known to have reached them. */

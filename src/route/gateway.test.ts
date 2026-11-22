@@ -756,3 +756,19 @@ test("stop when down: an offline exit refuses tunnels, and a recovered one opens
   const socket = await gateway.openTunnel({ owner });
   await socket.close();
 });
+
+test("a burst of tunnels on a down route shares one fresh read", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.exitOnline = false;
+  assert.equal((await gateway.reading(caller)).state, "down");
+  container.requests = [];
+  await refusedWith(gateway.openTunnel({ owner }), "route_gateway_unavailable");
+  const one = container.requests.length;
+  container.requests = [];
+  const burst = await Promise.allSettled(
+    Array.from({ length: 5 }, () => gateway.openTunnel({ owner })),
+  );
+  assert.ok(burst.every((result) => result.status === "rejected"));
+  assert.equal(container.requests.length, one);
+});
