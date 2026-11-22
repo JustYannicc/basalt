@@ -14,6 +14,8 @@ concurrency:
 
 jobs:
   renew:
+    # It holds a release token, so a manual run from another branch must not start it.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
