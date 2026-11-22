@@ -26,8 +26,11 @@ export type JobFlake = {
   job: string;
   /** Every one of these appears in the failed job's log. */
   match: string[];
-  /** Every log line carrying `marker` also carries `allow`: the listed failure is the only one. */
-  only: { marker: string; allow: string };
+  /**
+   * For each rule, every log line carrying `marker` also carries `allow`: the listed failure is the
+   * only one of each kind its job can print.
+   */
+  only: { marker: string; allow: string }[];
   issue: number;
   /** The day, UTC, a person listed it. */
   listed: string;
@@ -45,8 +48,9 @@ const day = (value: unknown): value is string =>
   typeof value === "string" &&
   /^\d{4}-\d{2}-\d{2}$/.test(value) &&
   !Number.isNaN(Date.parse(value));
-/** A line break or another control character, which could write past a line into the outputs. */
-const hasControl = (text: string) => [...text].some((char) => char.charCodeAt(0) < 0x20);
+/** A line break or another control character but a tab, which could write past a line into the outputs. */
+const hasControl = (text: string) =>
+  [...text].some((char) => char.charCodeAt(0) < 0x20 && char !== "\t");
 const line = (value: unknown, length: number): value is string =>
   typeof value === "string" && value.trim().length >= length && !hasControl(value);
 
@@ -56,7 +60,7 @@ export function parseJobFlakes(value: unknown) {
     .filter((entry) => (entry as Record<string, unknown>)?.scope === "job")
     .map((entry: Record<string, unknown>): JobFlake => {
       const { id, job, match, only, issue, listed, expires } = entry;
-      const rule = only as Record<string, unknown> | undefined;
+      const rules = (Array.isArray(only) ? only : []) as Record<string, unknown>[];
       if (
         typeof id !== "string" ||
         !/^[a-z0-9-]+$/.test(id) ||
@@ -65,8 +69,8 @@ export function parseJobFlakes(value: unknown) {
         !Array.isArray(match) ||
         !match.length ||
         !match.every((part) => line(part, 12)) ||
-        !line(rule?.marker, 4) ||
-        !line(rule?.allow, 12) ||
+        !rules.length ||
+        !rules.every((rule) => line(rule?.marker, 4) && line(rule?.allow, 12)) ||
         !Number.isSafeInteger(issue) ||
         (issue as number) <= 0 ||
         !day(listed) ||
@@ -81,7 +85,7 @@ export function parseJobFlakes(value: unknown) {
         id,
         job,
         match: match as string[],
-        only: { marker: rule!.marker as string, allow: rule!.allow as string },
+        only: rules.map((rule) => ({ marker: rule.marker as string, allow: rule.allow as string })),
         issue: issue as number,
         listed,
         expires,
@@ -104,7 +108,9 @@ export const explains = (flake: JobFlake, log: string) =>
   flake.match.every((part) => log.includes(part)) &&
   log
     .split("\n")
-    .every((text) => !text.includes(flake.only.marker) || text.includes(flake.only.allow));
+    .every((text) =>
+      flake.only.every(({ marker, allow }) => !text.includes(marker) || text.includes(allow)),
+    );
 
 const shown = (date: string) => date.split("-").reverse().join("-");
 // A job name ends up in the re-run job's own name; past this, the note names the flakes only.

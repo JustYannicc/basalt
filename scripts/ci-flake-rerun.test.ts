@@ -17,7 +17,10 @@ const flake: JobFlake = {
   id: "go-race",
   job: "pool-runtime",
   match: ["--- FAIL: TestRace ", "FAIL\tgithub.com/example/pkg"],
-  only: { marker: "--- FAIL: ", allow: "--- FAIL: TestRace " },
+  only: [
+    { marker: "--- FAIL: ", allow: "--- FAIL: TestRace " },
+    { marker: "FAIL\t", allow: "FAIL\tgithub.com/example/pkg\t" },
+  ],
   issue: 1656,
   listed: "2026-11-22",
   expires: "2026-12-22",
@@ -50,7 +53,12 @@ test("a job is re-run only when its log carries a listed flake's whole signature
   for (const log of ["--- FAIL: TestRace (0.00s)", "panic: other", ""])
     assert.equal(decide(jobs, new Map([[1, log]])).action, "report", log);
   // The listed failure beside another of its kind is no flake: a new failing test stays red.
-  for (const extra of ["--- FAIL: TestFoo (0.01s)", "--- FAIL: TestRaceDetector (0.00s)"])
+  // A package that fails without a test line, such as a build or timeout failure, is another.
+  for (const extra of [
+    "--- FAIL: TestFoo (0.01s)",
+    "--- FAIL: TestRaceDetector (0.00s)",
+    "FAIL\tgithub.com/example/other [build failed]",
+  ])
     assert.equal(decide(jobs, new Map([[1, flaky + extra + "\n"]])).action, "report", extra);
   // A declared job's shards match its id.
   const shard = { ...flake, job: "declared-cloud" };
@@ -155,7 +163,7 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
     scope: "job",
     job: "fast",
     match: ["a signature line"],
-    only: { marker: "FAIL ", allow: "FAIL the listed one" },
+    only: [{ marker: "FAIL ", allow: "FAIL the listed one" }],
     issue: 1,
     listed: "2026-11-22",
     expires: "2026-12-01",
@@ -171,7 +179,8 @@ test("every listed job flake names its issue, a signature and an expiry; test-sc
     { match: ["a signature\nline"] },
     { job: "Fast" },
     { only: undefined },
-    { only: { marker: "FAIL ", allow: "short" } },
+    { only: [] },
+    { only: [{ marker: "FAIL ", allow: "short" }] },
     { listed: undefined },
     // No flake lives there forever: at most 90 days from listing, and never before it.
     { expires: "2027-02-21" },

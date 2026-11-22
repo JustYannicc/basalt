@@ -70,7 +70,7 @@ jobs:
           # event, so the run's own state is read again right before the POST.
           state=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '"\(.run_attempt) \(.status)"')
           if [ "$state" != "1 completed" ]; then
-            echo "Not re-running: Check run $RUN_ID is now at attempt and status $state."
+            echo "::notice::Not re-running: Check run $RUN_ID is now at attempt and status $state."
             exit 0
           fi
           if [ "$RUN_EVENT" = pull_request ]; then
@@ -80,7 +80,7 @@ jobs:
               --jq "[.workflow_runs[] | select(.id > $RUN_ID and .head_repository.full_name == \"$GITHUB_REPOSITORY\")] | length")
             head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/${PULL_REQUEST:-0}" --jq .head.sha 2>/dev/null || true)
             if [ "$newer" != 0 ] || [ "$head" != "$HEAD_SHA" ]; then
-              echo "Not re-running: pull request #${PULL_REQUEST:-?} moved past this Check."
+              echo "::notice::Not re-running: pull request #${PULL_REQUEST:-?} moved past this Check."
               exit 0
             fi
           fi
