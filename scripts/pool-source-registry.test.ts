@@ -522,8 +522,14 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
       } else if (patch.identity === "cliproxy-home-live-owner-members") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0732-home-live-owner-members.patch");
-        assert.match(patch.retirement.requires, /only after the Home that holds it has stopped heartbeating/);
-        assert.match(patch.retirement.requires, /live-owner, silent-owner, expired-owner and own-node regressions/);
+        assert.match(
+          patch.retirement.requires,
+          /only after the Home that holds it has stopped heartbeating/,
+        );
+        assert.match(
+          patch.retirement.requires,
+          /live-owner, silent-owner, expired-owner and own-node regressions/,
+        );
       } else {
         assert.ok(
           patch.retirement.requires.includes("forced failure") &&
