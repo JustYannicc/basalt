@@ -101,9 +101,11 @@ test("only the healing release declares a root restart, bounded, and it is other
   // Only the healing release admits the root's row the old layer left: its recorded hash alone.
   for (const name of ["release", "code", "cutover-code", "cutover-classes"])
     assert.equal((await read(name)).check.poolContainer.recordedHashOnly, undefined, name);
-  // The attachment the plan cannot know while the pool Worker updates: the heal and the class change.
-  for (const name of ["release", "code", "cutover-code"])
+  // The attachment the plan cannot know while the pool Worker updates: the heal, the code-only
+  // cutover step and the class change, which all ship main's pool Worker as a whole.
+  for (const name of ["release", "code"])
     assert.equal((await read(name)).check.poolContainer.workerAttachment, undefined, name);
+  assert.equal((await read("cutover-code")).check.poolContainer.workerAttachment, true);
   assert.equal((await read("cutover-classes")).check.poolContainer.workerAttachment, true);
   // No general loosening: apart from its named commands, the two connections that wait on them
   // and the bulk-import store's code, it is the code policy.
@@ -151,6 +153,31 @@ test("only the healing release declares a root restart, bounded, and it is other
   // Its code moves only with its uploads held to the serving bindings, and the reason is written.
   assert.deepEqual(fixedBindings, ["ArtifactsCredentials"]);
   assert.match(allow[0]?.codeOnly?.why ?? "", /version skew/u);
+});
+
+test("the code-only cutover step admits the bulk-import store's code and the root's attachment as the heal does, and nothing else", async () => {
+  const step = await read("cutover-code");
+  const heal = await read("code-restart");
+  // Every release from main carries the store's Worker (its telemetry setting holds the build
+  // version), so the step that ships main before the class change admits it under the same rule.
+  assert.deepEqual(
+    step.check.allow.find((entry) => entry.fqn === "ArtifactsCredentials"),
+    heal.check.allow.find((entry) => entry.fqn === "ArtifactsCredentials"),
+  );
+  assert.deepEqual(step.wire.fixedBindings, ["ArtifactsCredentials"]);
+  assert.deepEqual(
+    step.check.allow.map((entry) => [entry.fqn, entry.action]),
+    [
+      ["ArtifactsCredentials", "update"],
+      ["PoolDatabase", "update"],
+    ],
+  );
+  // No restart and no recorded-hash row: acceptance holds the same boot, and the rollback is a
+  // Worker rollback.
+  assert.equal(step.acceptance, undefined);
+  assert.equal(step.check.poolContainer.recordedHashOnly, undefined);
+  assert.equal(step.check.removedBindings, undefined);
+  assert.equal(step.env.POOL_FLEET_CLASSES, "absent");
 });
 
 test("the class change adopts the shared Secrets Store and expects the pool database command settled", async () => {
