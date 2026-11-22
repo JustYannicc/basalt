@@ -1,0 +1,121 @@
+name: Production
+# Alchemy's own plan and apply of a main commit, one smoke turn, and Cloudflare's own rollback of
+# the updated Workers if that turn fails (scripts/production.ts).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: plan prints each row's name, type and action; deploy plans, applies and smokes
+        required: true
+        type: choice
+        options: [plan, deploy]
+        default: plan
+      candidate:
+        description: The full sha of the main commit to release
+        required: true
+        type: string
+      fleet_classes:
+        description: Declare the fleet's classes. Only turns them on, and creating them cannot be rolled back
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  production:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    # The release's lock: a pending run waits for the one running, and never cancels it.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    environment:
+      name: production-release
+      deployment: false
+    env:
+      BASALT_RELEASE_CANDIDATE: ${{ inputs.candidate }}
+      POOL_ROOT_PIN: ${{ vars.POOL_ROOT_PIN }}
+      ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
+      ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
+      POOL_AVAILABILITY_TARGET: ${{ vars.POOL_AVAILABILITY_TARGET }}
+      POOL_AUTOMATIC_RECOVERY_TARGET: ${{ vars.POOL_AUTOMATIC_RECOVERY_TARGET }}
+      POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Release only a commit on main, named by its full sha
+        run: |
+          [ "$(git rev-parse HEAD)" = "$BASALT_RELEASE_CANDIDATE" ] || { echo "::error::candidate is not a full sha"; exit 1; }
+          git merge-base --is-ancestor HEAD origin/main || { echo "::error::candidate is not on main"; exit 1; }
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Prepare
+        run: npm run prepare:upstream
+      - name: Build
+        run: npm run build
+      - name: ${{ inputs.mode == 'deploy' && 'Plan, apply and smoke' || 'Plan' }}
+        run: bun scripts/production.ts "${{ inputs.mode }}" ${{ inputs.fleet_classes && '--fleet-classes' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          PLANETSCALE_ORGANIZATION: ${{ secrets.PLANETSCALE_ORGANIZATION }}
+          PLANETSCALE_API_TOKEN_ID: ${{ secrets.PLANETSCALE_API_TOKEN_ID }}
+          PLANETSCALE_API_TOKEN: ${{ secrets.PLANETSCALE_API_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_ID }}
+          EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_ID }}
+          EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITHUB_OAUTH_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ZENDESK_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_ID }}
+          EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZENDESK_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_GITLAB_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_ID }}
+          EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_GITLAB_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_ID }}
+          EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_PLANETSCALE_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_MIRO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_ID }}
+          EXECUTOR_OAUTH_MIRO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_MIRO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_NOTION_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_ID }}
+          EXECUTOR_OAUTH_NOTION_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_NOTION_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_TODOIST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_ID }}
+          EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TODOIST_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_TRELLO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_ID }}
+          EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_TRELLO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ZOHO_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_ID }}
+          EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ZOHO_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_ID }}
+          EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_ATLASSIAN_CLIENT_SECRET }}
+          EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_ID }}
+          EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET: ${{ secrets.EXECUTOR_OAUTH_SLACK_REST_CLIENT_SECRET }}
+          AUTH_GITHUB_CLIENT_ID: ${{ secrets.AUTH_GITHUB_CLIENT_ID }}
+          AUTH_GITHUB_CLIENT_SECRET: ${{ secrets.AUTH_GITHUB_CLIENT_SECRET }}
+          BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET }}
+          EXECUTOR_ENCRYPTION_KEY: ${{ secrets.EXECUTOR_ENCRYPTION_KEY }}
+          MCP_SESSION_KEY_CURRENT: ${{ secrets.MCP_SESSION_KEY_CURRENT }}
+          MCP_SESSION_KEY_PREVIOUS: ${{ secrets.MCP_SESSION_KEY_PREVIOUS }}
+          APP_DOMAIN_CONTROL_SECRET: ${{ secrets.APP_DOMAIN_CONTROL_SECRET }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          GOOGLE_MAPS_ROUTES_API_KEY: ${{ secrets.GOOGLE_MAPS_ROUTES_API_KEY }}
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_OTLP_ENDPOINT: ${{ secrets.SENTRY_OTLP_ENDPOINT }}
+          POSTHOG_PROJECT_KEY: ${{ secrets.POSTHOG_PROJECT_KEY }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+          APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
+          POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          # A masked secret: the ids of the registered models-only device acceptance signs a fresh
+          # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
+          # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
+          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
