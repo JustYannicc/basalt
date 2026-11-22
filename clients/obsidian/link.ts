@@ -1,3 +1,4 @@
+import { deviceReportLabel } from "../../.upstream/packages/mcp-auth/src/contracts/device-label.ts";
 import { connectionUrl } from "./auth.ts";
 import type { DeviceConfig } from "./controller.ts";
 
@@ -39,6 +40,14 @@ export function parseConnectLink(params: Readonly<Record<string, string>>): Conn
     host: new URL(scoped).host,
   };
 }
+
+/**
+ * Whether a link was made for a vault other than this one. Links name the vault app, which
+ * Signalbox named after this vault as the device reported it, kept by the server's label rule;
+ * both names go through that rule so the spacing or length it drops never reads as another vault.
+ */
+export const linkedToOtherVault = (linked: string | null, vault: string) =>
+  linked !== null && deviceReportLabel(linked) !== deviceReportLabel(vault);
 
 /**
  * Builds the link Basalt opens after it creates the app-scoped MCP connection.
