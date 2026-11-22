@@ -48,7 +48,6 @@ interface PrimaryReservation {
   kind: "primary";
   release(): Promise<void>;
 }
-/** Where runtimes sit relative to the database. Without it, routing is unchanged. */
 /**
  * How the root takes a call beside ready cells. Balanced, it ranks with them and keeps its tie
  * preference within a tier; last, it takes one only when no ready cell can. Either way its calls
@@ -56,6 +55,7 @@ interface PrimaryReservation {
  */
 export type PrimaryRoute = "balanced" | "last";
 
+/** Where runtimes sit relative to the database. Without it, routing is unchanged. */
 export interface FleetPlacement {
   // The growth target: near runtimes under it come first, then everything else under it.
   comfortable: number;
