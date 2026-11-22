@@ -11,7 +11,8 @@ import type { TunnelTiming } from "./timing.ts";
 
 export function serveTunnel(
   socket: TunnelSocket,
-  lease: TunnelSocket,
+  /** The pool's session lease; a tools-only device has none. */
+  lease: TunnelSocket | undefined,
   request: Request,
   env: TunnelEnvironment,
   access: TunnelAccess,
@@ -50,7 +51,7 @@ export function serveTunnel(
       socket.close(code, "Session ended");
     } catch {}
     try {
-      lease.close(1000, "Session ended");
+      lease?.close(1000, "Session ended");
     } catch {}
     finish();
   };
@@ -66,7 +67,7 @@ export function serveTunnel(
   };
   armDeadline();
   request.signal.addEventListener("abort", () => close(), { once: true });
-  for (const remote of [socket, lease]) {
+  for (const remote of lease ? [socket, lease] : [socket]) {
     remote.addEventListener("close", () => close());
     remote.addEventListener("error", () => close(1011));
   }
@@ -114,7 +115,7 @@ export function serveTunnel(
       close(1008);
     }
   });
-  lease.accept();
+  lease?.accept();
   socket.accept();
   if (request.signal.aborted || Date.now() >= expiresAt) close(1008);
   else {
