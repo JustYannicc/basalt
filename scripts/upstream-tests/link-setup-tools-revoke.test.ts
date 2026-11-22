@@ -142,6 +142,23 @@ test("an answer the host can't read, or a key that isn't the person's, deletes n
   assert.ok(await works(h, left.key));
 });
 
+test("a link-setup computer removed before the pool recorded why loses its key; one removed for access keeps it", async (t) => {
+  const h = await host(t);
+  const legacy = await linked(h, "Old laptop");
+  const access = await linked(h, "Team laptop");
+  const registry = await h.p.registry();
+  const at = new Date(h.p.now()).toISOString();
+  // An earlier release finished both as `removed`; only the second recorded that access ended it.
+  Object.assign(registry[legacy.id]!, { state: "removed", removedAt: at });
+  Object.assign(registry[access.id]!, { state: "removed", removedAt: at, removedFor: "access" });
+  await h.p.storage.put("computer-registry-v1", registry);
+
+  const result = await pass(h);
+  assert.deepEqual(result.tools, { deleted: 1, finished: 1, unavailable: false });
+  assert.equal(await works(h, legacy.key), false, "taken as its person's revoke");
+  assert.ok(await works(h, access.key), "its tools are still its person's own");
+});
+
 test("a grant cleanup that keeps failing doesn't hold back a stuck revoke's key", async (t) => {
   const h = await host(t);
   const left = await linked(h, "Lost laptop");

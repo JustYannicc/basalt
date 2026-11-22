@@ -87,6 +87,7 @@ test("the host reads only link-setup computers whose person's revoke left a tool
   const pending = await linked(p, "key-pending");
   const revokedInRemoval = await linked(p, "key-revoked-in-removal");
   const restoredThenRemoved = await linked(p, "key-restored-then-removed");
+  const legacyRemoved = await linked(p, "key-legacy-removed");
   const registry = await p.registry();
   // Access removal, not its person, ended this one; its tools are still the person's own.
   Object.assign(registry[removed.id]!, { state: "removed", removedFor: "access" });
@@ -106,12 +107,14 @@ test("the host reads only link-setup computers whose person's revoke left a tool
     removedFor: "revoke",
     restoredWithoutHistory: true,
   });
+  // Removed before the pool recorded why: taken as its person's revoke, as for a tools-only device.
+  Object.assign(registry[legacyRemoved.id]!, { state: "removed" });
   await p.storage.put("computer-registry-v1", registry);
 
   const listed = await leftovers(p);
   assert.deepEqual(
     listed.map((row) => row.toolsKeyId).sort(),
-    ["key-home-down", "key-revoked-in-removal", "key-tools-down"],
+    ["key-home-down", "key-legacy-removed", "key-revoked-in-removal", "key-tools-down"],
     "only rows its person revoked whose key may still work",
   );
   assert.deepEqual(
@@ -151,6 +154,30 @@ test("a revoke upkeep already left waiting for its tools key finishes on the rep
 
   assert.equal(await deleted(p, [{ computer: toolsDown.id, toolsKeyId: "key-tools-down" }]), 1);
   assert.equal((await state(p, toolsDown))?.state, "revoked");
+});
+
+test("a report counts the legacy removed rows it finishes, as a number only", async (t) => {
+  const p = fixture();
+  const legacy = await linked(p, "key-legacy");
+  const toolsDown = await linked(p, "key-tools-down");
+  assert.equal((await revoke(p, toolsDown)).status, 200);
+  const registry = await p.registry();
+  Object.assign(registry[legacy.id]!, {
+    state: "removed",
+    removedAt: new Date(p.now()).toISOString(),
+  });
+  await p.storage.put("computer-registry-v1", registry);
+  const info = t.mock.method(console, "info");
+
+  assert.equal(await deleted(p, await leftovers(p)), 2);
+  const lines = info.mock.calls
+    .map((call) => call.arguments)
+    .filter(([line]) => line === "POOL_LINK_SETUP_TOOLS_KEYS_FINISHED");
+  assert.deepEqual(lines, [
+    ["POOL_LINK_SETUP_TOOLS_KEYS_FINISHED", { finished: 2, legacyRemoved: 1 }],
+  ]);
+  assert.equal((await state(p, legacy))?.state, "removed");
+  assert.ok((await state(p, legacy))?.toolsKeyDeletedAt, "its key is recorded gone");
 });
 
 test("a report never finishes a row that isn't left behind, or names another key", async () => {
