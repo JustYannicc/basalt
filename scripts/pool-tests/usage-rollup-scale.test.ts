@@ -21,6 +21,21 @@ const to = "2026-03-31T13:37:12.000000123Z";
 const window = Date.parse("2026-03-31T13:37:12Z") - Date.parse("2026-01-01T00:00:00Z");
 
 /** `count` requests spread over the window from `offset`, in every shape the summary separates. */
+/**
+ * Context input per request. The default is production's shape: mostly short requests, one in
+ * fifty long-context. POOL_TEST_ROLLUP_SHAPE=worst varies every key, and every price band, per
+ * request: the grouping worst case, which the summary must refuse over its group bound.
+ */
+const worst = process.env.POOL_TEST_ROLLUP_SHAPE === "worst";
+const input = worst
+  ? "1000+n%250000"
+  : "(CASE WHEN n%50=0 THEN 200001+n%60000 ELSE 1000+n%30000 END)";
+/**
+ * Which caller a request comes from. Production's requests come from a few accounts, apps and
+ * models whose shape travels together; the worst case varies every key independently.
+ */
+const profile = worst ? "n" : "n%8";
+
 const generated = (
   poolId: string,
   sources: { home: string; gateway: string; imported: string },
@@ -36,18 +51,19 @@ const generated = (
       encode(sha256(convert_to('scale-record-'||n,'UTF8')),'hex'),at,
       to_char(at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US')||'000Z',$1,
       CASE WHEN src=$3 THEN NULL WHEN src=$4 THEN 'i:'||repeat('e',62)
-        WHEN n%7=0 THEN $6 ELSE $5 END,
-      CASE WHEN src=$4 THEN 'import-owner' WHEN n%3=0 THEN 'charge-snapshot' ELSE 'key-at-capture' END,
-      'fixture-lab',CASE WHEN n%23=0 THEN NULL ELSE 'fixture-model-'||(n%2) END,
-      CASE n%4 WHEN 0 THEN 'responses' WHEN 1 THEN 'messages' WHEN 2 THEN NULL ELSE 'chat-completions' END,
-      1000+n%250000,n%500,n%300,n%50,n%30,1000+n%250000+n%500,
-      CASE n%13 WHEN 0 THEN 'legacy' WHEN 1 THEN 'unclassified' ELSE 'complete' END,
+        WHEN k%7=0 THEN $6 ELSE $5 END,
+      CASE WHEN src=$4 THEN 'import-owner' WHEN k%3=0 THEN 'charge-snapshot' ELSE 'key-at-capture' END,
+      'fixture-lab',CASE WHEN k%23=0 THEN NULL ELSE 'fixture-model-'||(k%2) END,
+      CASE k%4 WHEN 0 THEN 'responses' WHEN 1 THEN 'messages' WHEN 2 THEN NULL ELSE 'chat-completions' END,
+      ${input},n%500,n%300,n%50,n%30,${input}+n%500,
+      CASE k%13 WHEN 0 THEN 'legacy' WHEN 1 THEN 'unclassified' ELSE 'complete' END,
       src=$3 OR n%17=0,CASE WHEN src=$3 THEN 503 WHEN n%17=0 THEN CASE WHEN n%2=0 THEN 429 ELSE 500 END END,
-      CASE WHEN src=$4 THEN 0.001*(n%10) WHEN n%5=0 THEN 0.002*(n%9) END,
-      CASE WHEN src=$4 OR n%5=0 THEN 'USD' END,
-      CASE WHEN src=$4 THEN 'historical-api-price' WHEN n%5=0 THEN 'home-charge' ELSE 'unpriced' END
+      CASE WHEN src=$4 THEN 0.001*(n%10) WHEN k%5=0 THEN 0.002*(n%9) END,
+      CASE WHEN src=$4 OR k%5=0 THEN 'USD' END,
+      CASE WHEN src=$4 THEN 'historical-api-price' WHEN k%5=0 THEN 'home-charge' ELSE 'unpriced' END
     FROM generate_series($7::int,$8::int) n
-    CROSS JOIN LATERAL (SELECT CASE n%10 WHEN 0 THEN $3 WHEN 1 THEN $4 ELSE $2 END AS src,
+    CROSS JOIN LATERAL (SELECT ${profile} AS k) p
+    CROSS JOIN LATERAL (SELECT CASE k%10 WHEN 0 THEN $3 WHEN 1 THEN $4 ELSE $2 END AS src,
       '2026-01-01T00:00:00Z'::timestamptz + ((n % $9)::double precision/$9 * $10) * interval '1 millisecond' AS at) g`,
   values: [
     poolId,
@@ -182,6 +198,14 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
       ])
     ).rows[0]!.n as number;
     console.info("ROLLUP_GROUPS", JSON.stringify({ rows, runs, groups, groupRows }));
+    if (process.env.POOL_TEST_ROLLUP_SHAPE === "worst") {
+      // Past the group bound the summary refuses fast instead of reading every group.
+      await assert.rejects(
+        poolUsageSummary(timed, input, async () => ({ prices, issues: [] }), Date.parse(to)),
+        /too large to summarize/,
+      );
+      return;
+    }
     const rolled = await poolUsageSummary(
       timed,
       input,
