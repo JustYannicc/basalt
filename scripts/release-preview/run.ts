@@ -1,22 +1,20 @@
-import { brand } from "../../brand.ts";
-import { openPreviewPoolGrant } from "./pool-grant.ts";
-import { runScopedPreviewAcceptance } from "../pool-acceptance/preview-scoped.ts";
-import { previewStageConfig } from "../pool-acceptance/preview-config.ts";
-import { catalogAcceptanceOperation } from "./catalog-acceptance-report.ts";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
-import { lifecycleEnvironment, validateSmokeSecrets } from "./credentials.ts";
+import {
+  lifecycleEnvironment,
+  materializeSmokeSecrets,
+  validateSmokeSecrets,
+} from "./credentials.ts";
 import { manifestPath, previewNumber } from "./checkpoint.ts";
 import { privateOperation } from "./process.ts";
 import { runPreview } from "./lifecycle.ts";
 import { previewReceipt } from "./receipt.ts";
-import { requireCompilerPreviewIdentity } from "./policy.ts";
 import { previewIdentity } from "../environment.ts";
 import { readPreviewManifest } from "../preview/manifest.ts";
 
-type Identity = { pullRequest: number; head: string; base: string; compilerAcceptance?: true };
+type Identity = { pullRequest: number; head: string; base: string };
 
 function requireIdentity(value: unknown, pullRequest: number): Identity {
   if (!value || typeof value !== "object") throw new Error("Missing preview candidate identity");
@@ -31,12 +29,7 @@ function requireIdentity(value: unknown, pullRequest: number): Identity {
   ) {
     throw new Error("Invalid preview candidate identity");
   }
-  return {
-    pullRequest,
-    head: identity.head,
-    base: identity.base,
-    ...(identity.compilerAcceptance === true ? { compilerAcceptance: true } : {}),
-  };
+  return { pullRequest, head: identity.head, base: identity.base };
 }
 
 export async function executePreview(
@@ -44,21 +37,16 @@ export async function executePreview(
   pullRequest: number,
   source: NodeJS.ProcessEnv,
   runOperation: typeof privateOperation = privateOperation,
-  dependencies: {
-    openGrant?: typeof openPreviewPoolGrant;
-    smoke?: typeof runScopedPreviewAcceptance;
-  } = {},
 ): Promise<void> {
   if (source.GITHUB_ACTIONS !== "true")
     throw new Error("Release previews run only in GitHub Actions");
   if (source.PREVIEW_MANIFEST_CHECKPOINTED !== "1")
     throw new Error("The encrypted cleanup checkpoint must be uploaded before deployment");
   validateSmokeSecrets(source);
-  const candidate: unknown = JSON.parse(
-    await readFile(join(root, ".local", "candidate.json"), "utf8"),
+  const identity = requireIdentity(
+    JSON.parse(await readFile(join(root, ".local", "candidate.json"), "utf8")),
+    pullRequest,
   );
-  const identity = requireIdentity(candidate, pullRequest);
-  requireCompilerPreviewIdentity(source, candidate, identity);
   const privateRoot = await mkdtemp(
     join(source.RUNNER_TEMP ?? tmpdir(), "basalt-release-preview-"),
   );
@@ -67,8 +55,6 @@ export async function executePreview(
   process.once("SIGINT", abort);
   process.once("SIGTERM", abort);
   let sequence = 0;
-  let grant: Awaited<ReturnType<typeof openPreviewPoolGrant>> | undefined;
-  let grantCloseAttempted = false;
   const deployEnvironment = lifecycleEnvironment(source, "deploy");
   const cleanupEnvironment = lifecycleEnvironment(source, "cleanup");
   const operation = (
@@ -89,16 +75,22 @@ export async function executePreview(
       signal: cleanup ? undefined : controller.signal,
     });
   try {
+    await mkdir(join(privateRoot, "credentials"), { mode: 0o700 });
+    const materialized = await materializeSmokeSecrets(source, join(privateRoot, "credentials"));
     const runnerEnvironment: NodeJS.ProcessEnv = {};
-    let catalogAcceptance: unknown;
     for (const name of [
       "PATH",
       "LANG",
       "RUNNER_TEMP",
       "PREVIEW_SMOKE_EMAIL",
       "PREVIEW_SMOKE_PASSWORD",
+      "PREVIEW_CLAUDE_AUTH_FILE",
+      "PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE",
+      "PREVIEW_CODEX_CLI_AUTH_FILE",
+      "PREVIEW_CLAUDE_MODEL",
+      "PREVIEW_CODEX_MODEL",
     ] as const)
-      runnerEnvironment[name] = source[name];
+      runnerEnvironment[name] = materialized[name];
     const outcome = await runPreview({
       prepare: async () => {
         // The encrypted plan is uploaded by the workflow before the first provider mutation.
@@ -127,38 +119,27 @@ export async function executePreview(
         runnerEnvironment.TEST_STAGE_DOMAIN = source.TEST_STAGE_DOMAIN;
         runnerEnvironment.PREVIEW_SMOKE_ORGANIZATION_ID = manifest.organizationId;
         runnerEnvironment.PREVIEW_SMOKE_POOL_APP_ID = manifest.poolAppId;
+        runnerEnvironment.POOL_ACCEPTANCE_ACCOUNTS_FILE = join(
+          privateRoot,
+          "provider-accounts.json",
+        );
+        await operation(
+          "provider-account-setup",
+          "scripts/pool-acceptance/preview-accounts.ts",
+          [],
+          runnerEnvironment,
+        );
       },
       smoke: async () => {
-        if (identity.compilerAcceptance) {
-          const catalogPath = join(root, "preview-catalog-acceptance.json");
-          catalogAcceptance = await catalogAcceptanceOperation(
-            () =>
-              operation(
-                "catalog-acceptance",
-                "scripts/release-preview/catalog-acceptance-cli.ts",
-                [],
-                {
-                  ...runnerEnvironment,
-                  GITHUB_ACTIONS: "true",
-                  EXECUTOR_COMPILER_PREVIEW_ACCEPTANCE: "true",
-                  BASALT_RELEASE_CANDIDATE: identity.head,
-                  PREVIEW_CATALOG_ACCEPTANCE_RESULT: catalogPath,
-                },
-              ),
-            catalogPath,
-            identity.head,
-            { summaryPath: source.GITHUB_STEP_SUMMARY },
-          );
-        }
-        const stage = await previewStageConfig(runnerEnvironment);
-        grant = await (dependencies.openGrant ?? openPreviewPoolGrant)({
-          poolId: source.PREVIEW_POOL_ID!,
-          organizationId: source.ORGANIZATION_ID!,
-          ownerId: source.OWNER_ID!,
-          signingKey: source.POOL_APP_SIGNING_KEY!,
-          origin: `https://${brand.host}`,
+        const resultPath = join(privateRoot, "smoke-result.json");
+        await operation("native-smoke", "scripts/pool-acceptance.ts", [], {
+          ...runnerEnvironment,
+          PREVIEW_CLAUDE_AUTH_FILE: undefined,
+          PREVIEW_CODEX_SUBSCRIPTION_AUTH_FILE: undefined,
+          POOL_ACCEPTANCE_MODE: "preview",
+          POOL_ACCEPTANCE_RESULT_PATH: resultPath,
         });
-        return (dependencies.smoke ?? runScopedPreviewAcceptance)(stage, grant);
+        return JSON.parse(await readFile(resultPath, "utf8")) as unknown;
       },
       destroy: () =>
         operation(
@@ -177,13 +158,7 @@ export async function executePreview(
           true,
         ),
     });
-    if (!grant) throw new Error("Preview did not create its scoped model grant");
-    grantCloseAttempted = true;
-    const revoked = await grant.close();
-    const receipt = previewReceipt(outcome.smoke, identity, outcome.teardown, catalogAcceptance, {
-      ...grant.evidence(),
-      ...revoked,
-    });
+    const receipt = previewReceipt(outcome.smoke, identity, outcome.teardown);
     await writeFile(join(root, "preview-receipt.json"), `${JSON.stringify(receipt)}\n`, {
       flag: "wx",
       mode: 0o600,
@@ -192,14 +167,7 @@ export async function executePreview(
   } finally {
     process.removeListener("SIGINT", abort);
     process.removeListener("SIGTERM", abort);
-    try {
-      if (grant && !grantCloseAttempted) {
-        grantCloseAttempted = true;
-        await grant.close();
-      }
-    } finally {
-      await rm(privateRoot, { recursive: true, force: true });
-    }
+    await rm(privateRoot, { recursive: true, force: true });
   }
 }
 

@@ -5,26 +5,14 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import test, { type TestContext } from "node:test";
 import { once } from "node:events";
-import {
-  createNativePreviewSession,
-  type NativeClient,
-  type NativePreviewSession,
-  type NativeSetupPayload,
-} from "./preview-native.ts";
+import { createNativePreviewSession, type NativeClient, type NativePreviewSession, type NativeSetupPayload } from "./preview-native.ts";
 
 type Trace = Record<string, unknown>;
 
-function payload(
-  origin: string,
-  options: { setupId?: string; modelUrl?: string; toolsUrl?: string } = {},
-): NativeSetupPayload {
+function payload(origin: string, options: { setupId?: string; modelUrl?: string; toolsUrl?: string } = {}): NativeSetupPayload {
   return {
     version: 1,
-    brand: {
-      name: "Preview Brand",
-      mcpServerName: "signalbox",
-      setup: { id: options.setupId ?? "preview-setup", marker: "setup marker" },
-    },
+    brand: { name: "Preview Brand", mcpServerName: "signalbox", setup: { id: options.setupId ?? "preview-setup", marker: "setup marker" } },
     instructions: "Local test payload",
     credentials: {
       modelUrl: options.modelUrl ?? origin,
@@ -35,10 +23,7 @@ function payload(
   };
 }
 
-function installerSource(
-  tracePath: string,
-  options: { failInstall?: boolean; brokenUndo?: boolean; changeAuth?: "install" | "undo" },
-): string {
+function installerSource(tracePath: string, options: { failInstall?: boolean; brokenUndo?: boolean }): string {
   return `import { appendFile, lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 const trace = ${JSON.stringify(tracePath)};
 const args = process.argv.slice(2);
@@ -55,58 +40,28 @@ if (args[0] === "--payload-file") {
   await record({ kind: "install", args, home: process.env.HOME, installer: process.argv[1], payloadMode: await mode(args[1]), installerMode: await mode(process.argv[1]), authMode,
     payloadVersion: payload.version, origin: payload.credentials.modelUrl });
   process.stderr.write("PRIVATE_INSTALLER_DIAGNOSTIC");
-  ${options.changeAuth === "install" ? 'await writeFile(codex + "/auth.json", "changed-auth");' : ""}
   ${options.failInstall ? "process.exitCode = 23;" : ""}
 } else if (args[0] === "--undo") {
   const existing = await Promise.all(paths.map(path => lstat(path).then(() => true, () => false)));
   ${options.brokenUndo ? "" : "await Promise.all(paths.map(path => rm(path, { force: true })));"}
-  ${options.changeAuth === "undo" ? 'await writeFile(codex + "/auth.json", "changed-auth");' : ""}
   await record({ kind: "undo", args, home: process.env.HOME, installer: process.argv[1], foundConfig: existing.some(Boolean) });
   process.stderr.write("PRIVATE_UNDO_DIAGNOSTIC");
 } else { process.exitCode = 24; }
 `;
 }
 
-function cliSource(
-  tracePath: string,
-  client: NativeClient,
-  marker: string,
-  wrongReply: boolean,
-  searchArgs: unknown,
-): string {
-  const events =
-    client === "claude"
-      ? [
-          {
-            type: "assistant",
-            message: {
-              content: [
-                {
-                  type: "tool_use",
-                  name: "mcp__signalbox__search",
-                  ...(searchArgs === undefined ? {} : { input: searchArgs }),
-                },
-              ],
-            },
-          },
-          { type: "result", result: wrongReply ? "wrong-preview-reply" : marker },
-        ]
-      : [
-          {
-            type: "item.completed",
-            item: {
-              type: "mcp_tool_call",
-              server: "signalbox",
-              tool: "search",
-              ...(searchArgs === undefined ? {} : { arguments: searchArgs }),
-              status: "completed",
-            },
-          },
-          {
-            type: "item.completed",
-            item: { type: "agent_message", text: wrongReply ? "wrong-preview-reply" : marker },
-          },
-        ];
+function cliSource(tracePath: string, client: NativeClient, marker: string, wrongReply: boolean, searchArgs: unknown): string {
+  const events = client === "claude"
+    ? [
+      { type: "assistant", message: { content: [{ type: "tool_use", name: "mcp__signalbox__search",
+        ...(searchArgs === undefined ? {} : { input: searchArgs }) }] } },
+      { type: "result", result: wrongReply ? "wrong-preview-reply" : marker },
+    ]
+    : [
+      { type: "item.completed", item: { type: "mcp_tool_call", server: "signalbox", tool: "search",
+        ...(searchArgs === undefined ? {} : { arguments: searchArgs }), status: "completed" } },
+      { type: "item.completed", item: { type: "agent_message", text: wrongReply ? "wrong-preview-reply" : marker } },
+    ];
   return `#!/usr/bin/env node
 const fs = require("node:fs/promises");
 const trace = ${JSON.stringify(tracePath)};
@@ -117,70 +72,44 @@ const record = { kind: "cli", args: process.argv.slice(2), home: process.env.HOM
   inheritedSdkSetting: process.env.OPENAI_BASE_URL !== undefined || process.env.ANTHROPIC_BASE_URL !== undefined };
 (async () => { await fs.appendFile(trace, JSON.stringify(record) + "\\n");
   process.stderr.write("PRIVATE_CLI_DIAGNOSTIC");
-  process.stdout.write(${JSON.stringify(events.map((event) => JSON.stringify(event)).join("\n") + "\n")});
+  process.stdout.write(${JSON.stringify(events.map(event => JSON.stringify(event)).join("\n") + "\n")});
 })().catch(() => { process.exitCode = 25; });
 `;
 }
 
 async function readTrace(path: string): Promise<Trace[]> {
-  try {
-    return (await readFile(path, "utf8"))
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
-  } catch {
-    return [];
-  }
+  try { return (await readFile(path, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line)); }
+  catch { return []; }
 }
 
 async function exists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
+  try { await access(path); return true; } catch { return false; }
 }
 
-async function fixture(
-  t: TestContext,
-  client: NativeClient,
-  options: {
-    failInstall?: boolean;
-    brokenUndo?: boolean;
-    wrongReply?: boolean;
-    searchArgs?: unknown;
-    setupId?: string;
-    modelUrl?: string;
-    toolsUrl?: string;
-    modelOrigin?: string;
-    changeAuth?: "install" | "undo";
-  } = {},
-) {
+async function fixture(t: TestContext, client: NativeClient, options: {
+  failInstall?: boolean;
+  brokenUndo?: boolean;
+  wrongReply?: boolean;
+  searchArgs?: unknown;
+  setupId?: string;
+  modelUrl?: string;
+  toolsUrl?: string;
+} = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "pool-native-test-"));
   const bin = join(scratch, "bin");
   await import("node:fs/promises").then(({ mkdir }) => mkdir(bin, { mode: 0o700 }));
   const tracePath = join(scratch, "trace.jsonl");
   const marker = "pool-preview-marker-unique-47a91";
-  const searchArgs = Object.hasOwn(options, "searchArgs")
-    ? options.searchArgs
-    : { query: "pool", limit: 1 };
+  const searchArgs = Object.hasOwn(options, "searchArgs") ? options.searchArgs : { query: "pool", limit: 1 };
   const cliFile = join(bin, client);
-  await writeFile(
-    cliFile,
-    cliSource(tracePath, client, marker, options.wrongReply ?? false, searchArgs),
-    { mode: 0o700 },
-  );
+  await writeFile(cliFile, cliSource(tracePath, client, marker, options.wrongReply ?? false, searchArgs), { mode: 0o700 });
   await chmod(cliFile, 0o700);
 
   const downloaded: string[] = [];
   const server = createServer(async (request, response) => {
     downloaded.push(`${request.method} ${request.url}`);
     if (request.method !== "GET" || request.url !== "/setup/client.mjs") {
-      response.writeHead(404);
-      response.end();
-      return;
+      response.writeHead(404); response.end(); return;
     }
     response.writeHead(200, { "content-type": "text/javascript" });
     response.end(installerSource(tracePath, options));
@@ -196,37 +125,21 @@ async function fixture(
   let authFile: string | undefined;
   if (client === "codex") {
     authFile = join(scratch, "auth.json");
-    await writeFile(
-      authFile,
-      JSON.stringify({
-        auth_mode: "chatgpt",
-        tokens: {
-          id_token: "dedicated-export-id",
-          access_token: "dedicated-export-access",
-          refresh_token: "dedicated-export-refresh",
-        },
-      }),
-      { mode: 0o600 },
-    );
+    await writeFile(authFile, JSON.stringify({ auth_mode: "chatgpt", tokens: {
+      id_token: "dedicated-export-id", access_token: "dedicated-export-access", refresh_token: "dedicated-export-refresh",
+    } }), { mode: 0o600 });
     await chmod(authFile, 0o600);
   }
   const restore = async () => {
     process.env.PATH = originalPath;
     server.closeAllConnections();
-    await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await rm(scratch, { recursive: true, force: true });
   };
   let session: NativePreviewSession;
   try {
-    session = await createNativePreviewSession({
-      client,
-      model: client === "claude" ? "claude-preview-model" : "codex-preview-model",
-      payload: payload(origin, options),
-      codexAuthFile: authFile,
-      marker,
-      origin,
-      modelOrigin: options.modelOrigin,
-    });
+    session = await createNativePreviewSession({ client, model: client === "claude" ? "claude-preview-model" : "codex-preview-model",
+      payload: payload(origin, options), codexAuthFile: authFile, marker, origin });
   } catch (error) {
     await restore();
     throw error;
@@ -239,14 +152,14 @@ async function fixture(
   return { session, scratch, tracePath, marker, origin, downloaded };
 }
 
-test("Claude preview downloads the public installer and proves a native MCP event plus exact reply", async (t) => {
+test("Claude preview downloads the public installer and proves a native MCP event plus exact reply", async t => {
   const parentHome = process.env.HOME;
   const f = await fixture(t, "claude");
   assert.deepEqual(await f.session.run(), { modelReplyMatched: true, toolCallObserved: true });
   const trace = await readTrace(f.tracePath);
   assert.deepEqual(f.downloaded, ["GET /setup/client.mjs"]);
-  const install = trace.find((value) => value.kind === "install");
-  const cli = trace.find((value) => value.kind === "cli");
+  const install = trace.find(value => value.kind === "install");
+  const cli = trace.find(value => value.kind === "cli");
   assert.ok(install && cli);
   assert.deepEqual(install.args, ["--payload-file", (install.args as string[])[1]]);
   assert.equal(install.payloadMode, 0o600);
@@ -260,17 +173,12 @@ test("Claude preview downloads the public installer and proves a native MCP even
   assert.equal(cli.codexHome, join(nativeRoot, "codex"));
   assert.equal(cli.temp, join(nativeRoot, "tmp"));
   assert.equal(cli.xdg, join(nativeRoot, "xdg"));
-  assert.deepEqual((cli.args as string[]).slice(0, 4), [
-    "--bare",
-    "--print",
-    "--no-session-persistence",
-    "--setting-sources",
-  ]);
+  assert.deepEqual((cli.args as string[]).slice(0, 4), ["--bare", "--print", "--no-session-persistence", "--setting-sources"]);
   assert.ok((cli.args as string[]).includes("claude-preview-model"));
   assert.ok((cli.args as string[]).includes("mcp__signalbox__search"));
   assert.ok(String((cli.args as string[]).at(-1)).includes('{"query":"pool","limit":1}'));
   await f.session.undo();
-  const undo = (await readTrace(f.tracePath)).find((value) => value.kind === "undo");
+  const undo = (await readTrace(f.tracePath)).find(value => value.kind === "undo");
   assert.deepEqual(undo?.args, ["--undo"]);
   assert.equal(undo?.installer, install.installer);
   assert.equal(undo?.foundConfig, true);
@@ -279,29 +187,15 @@ test("Claude preview downloads the public installer and proves a native MCP even
   assert.equal(process.env.HOME, parentHome);
 });
 
-test("Codex preview copies only the dedicated auth.json and parses its native MCP completion", async (t) => {
+test("Codex preview copies only the dedicated auth.json and parses its native MCP completion", async t => {
   const f = await fixture(t, "codex");
-  assert.deepEqual(await f.session.run(), {
-    modelReplyMatched: true,
-    toolCallObserved: true,
-    chatgptAuthPreserved: true,
-    refreshTokenUntouched: true,
-  });
+  assert.deepEqual(await f.session.run(), { modelReplyMatched: true, toolCallObserved: true });
   const trace = await readTrace(f.tracePath);
-  const install = trace.find((value) => value.kind === "install");
-  const cli = trace.find((value) => value.kind === "cli");
+  const install = trace.find(value => value.kind === "install");
+  const cli = trace.find(value => value.kind === "cli");
   assert.ok(install && cli);
   assert.equal(install.authMode, 0o600);
-  assert.deepEqual((cli.args as string[]).slice(0, 8), [
-    "exec",
-    "--ephemeral",
-    "--skip-git-repo-check",
-    "--sandbox",
-    "read-only",
-    "--disable",
-    "apps",
-    "--model",
-  ]);
+  assert.deepEqual((cli.args as string[]).slice(0, 8), ["exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--disable", "apps", "--model"]);
   assert.ok((cli.args as string[]).includes("codex-preview-model"));
   assert.ok((cli.args as string[]).includes("--json"));
   assert.ok(String((cli.args as string[]).at(-1)).includes('{"query":"pool","limit":1}'));
@@ -311,107 +205,65 @@ test("Codex preview copies only the dedicated auth.json and parses its native MC
   await f.session.dispose();
 });
 
-test("a partial installer failure runs the same downloaded installer's undo without launching a CLI", async (t) => {
+test("a partial installer failure runs the same downloaded installer's undo without launching a CLI", async t => {
   const f = await fixture(t, "codex", { failInstall: true });
-  await assert.rejects(f.session.run(), (error) => {
+  await assert.rejects(f.session.run(), error => {
     assert.match(String(error), /Native preview installer failed/);
-    assert.doesNotMatch(
-      String(error),
-      /PRIVATE_INSTALLER_DIAGNOSTIC|fixture-model-key|dedicated-export/,
-    );
+    assert.doesNotMatch(String(error), /PRIVATE_INSTALLER_DIAGNOSTIC|fixture-model-key|dedicated-export/);
     return true;
   });
   const trace = await readTrace(f.tracePath);
-  assert.deepEqual(
-    trace.filter((value) => value.kind === "undo").map((value) => value.args),
-    [["--undo"]],
-  );
-  assert.equal(
-    trace.some((value) => value.kind === "cli"),
-    false,
-  );
-  assert.equal(trace.find((value) => value.kind === "undo")?.foundConfig, true);
+  assert.deepEqual(trace.filter(value => value.kind === "undo").map(value => value.args), [["--undo"]]);
+  assert.equal(trace.some(value => value.kind === "cli"), false);
+  assert.equal(trace.find(value => value.kind === "undo")?.foundConfig, true);
   await f.session.dispose();
 });
 
-test("a mismatched final marker fails closed and remains undoable", async (t) => {
+test("a mismatched final marker fails closed and remains undoable", async t => {
   const f = await fixture(t, "claude", { wrongReply: true });
-  await assert.rejects(f.session.run(), (error) => {
+  await assert.rejects(f.session.run(), error => {
     assert.match(String(error), /did not observe the expected model reply and MCP search/);
     assert.doesNotMatch(String(error), /PRIVATE_CLI_DIAGNOSTIC|wrong-preview-reply/);
     return true;
   });
   await f.session.undo();
-  const cli = (await readTrace(f.tracePath)).find((value) => value.kind === "cli");
+  const cli = (await readTrace(f.tracePath)).find(value => value.kind === "cli");
   assert.ok(cli);
   const root = dirname(String(cli.home));
   await f.session.dispose();
   assert.equal(await exists(root), false);
 });
 
-test("Claude native evidence rejects a missing MCP search argument object", async (t) => {
+test("Claude native evidence rejects a missing MCP search argument object", async t => {
   const f = await fixture(t, "claude", { searchArgs: undefined });
   await assert.rejects(f.session.run(), /did not observe the expected model reply and MCP search/);
   await f.session.undo();
   await f.session.dispose();
 });
 
-test("Codex native evidence rejects search arguments that differ from query pool and limit 1", async (t) => {
+test("Codex native evidence rejects search arguments that differ from query pool and limit 1", async t => {
   const f = await fixture(t, "codex", { searchArgs: { query: "pool", limit: 2 } });
   await assert.rejects(f.session.run(), /did not observe the expected model reply and MCP search/);
   await f.session.undo();
   await f.session.dispose();
 });
 
-test("payload origin and setup identifier cannot redirect config or cleanup outside the isolated home", async (t) => {
-  await assert.rejects(
-    fixture(t, "claude", { modelUrl: "https://other.invalid" }),
-    /payload origin does not match the stage/,
-  );
-  await assert.rejects(
-    fixture(t, "claude", { toolsUrl: "https://other.invalid/mcp" }),
-    /payload origin does not match the stage/,
-  );
+test("payload origin and setup identifier cannot redirect config or cleanup outside the isolated home", async t => {
+  await assert.rejects(fixture(t, "claude", { modelUrl: "https://other.invalid" }), /payload origin does not match the stage/);
+  await assert.rejects(fixture(t, "claude", { toolsUrl: "https://other.invalid/mcp" }), /payload origin does not match the stage/);
   await assert.rejects(fixture(t, "claude", { setupId: "../outside" }), /setup payload is invalid/);
 });
 
-test("failed undo is reported safely and dispose still deletes the isolated root", async (t) => {
+test("failed undo is reported safely and dispose still deletes the isolated root", async t => {
   const f = await fixture(t, "claude", { failInstall: true, brokenUndo: true });
-  await assert.rejects(f.session.run(), (error) => {
+  await assert.rejects(f.session.run(), error => {
     assert.match(String(error), /cleanup could not be verified/);
     assert.doesNotMatch(String(error), /PRIVATE_UNDO_DIAGNOSTIC|owned-0/);
     return true;
   });
-  const install = (await readTrace(f.tracePath)).find((value) => value.kind === "install");
+  const install = (await readTrace(f.tracePath)).find(value => value.kind === "install");
   assert.ok(install);
   const root = dirname(String(install.home));
   await assert.rejects(f.session.dispose(), /Native preview cleanup failed/);
   assert.equal(await exists(root), false);
-});
-
-for (const phase of ["install", "undo"] as const) {
-  test(`Codex fixture refuses auth or refresh token mutation during ${phase}`, async (t) => {
-    const f = await fixture(t, "codex", { changeAuth: phase });
-    if (phase === "install")
-      await assert.rejects(f.session.run(), /changed the existing ChatGPT auth or refresh token/);
-    else {
-      await f.session.run();
-      await assert.rejects(f.session.undo(), /changed the existing ChatGPT auth or refresh token/);
-    }
-  });
-}
-test("only an explicitly supplied loopback model origin may differ from the stage", async (t) => {
-  const f = await fixture(t, "claude", {
-    modelUrl: "http://127.0.0.1:45678",
-    modelOrigin: "http://127.0.0.1:45678",
-  });
-  await f.session.run();
-  await f.session.undo();
-  await assert.rejects(
-    fixture(t, "claude", {
-      modelUrl: "https://other.invalid",
-      modelOrigin: "https://other.invalid",
-    }),
-    /owned loopback origin/,
-  );
 });
