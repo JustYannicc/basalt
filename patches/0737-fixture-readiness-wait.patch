@@ -17,24 +17,39 @@ diff --git a/e2e/sdk/fixtures.ts b/e2e/sdk/fixtures.ts
  ) =>
    Effect.gen(function* () {
      const fs = yield* FileSystem.FileSystem,
-@@ -111,7 +113,19 @@
-             Schema.fromJsonString(Schema.Struct({ origin: FixtureControl.fields.origin })),
-           ),
+@@ -103,16 +105,26 @@
+       ),
+       Effect.forkScoped,
+     );
+-    const ready = fs
+-      .readFileString(output)
+-      .pipe(
+-        Effect.flatMap(
+-          Schema.decodeUnknownEffect(
+-            Schema.fromJsonString(Schema.Struct({ origin: FixtureControl.fields.origin })),
+-          ),
++    const ready = fs.readFileString(output).pipe(
++      Effect.flatMap(
++        Schema.decodeUnknownEffect(
++          Schema.fromJsonString(Schema.Struct({ origin: FixtureControl.fields.origin })),
          ),
 -        Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
-+        // A process that is alive is still starting, which takes well past ten seconds on a busy
-+        // runner: read until it reports ready or stops, within the readiness bound.
-+        Effect.retry({ schedule: Schedule.spaced("100 millis") }),
-+        Effect.timeoutOrElse({
-+          duration: readiness,
-+          orElse: () =>
-+            Effect.fail(
-+              new FixtureFailed({
-+                operation: `readiness (the process was still running after ${Duration.format(Duration.fromInputUnsafe(readiness))} with no ready file; its output is in ${path.join(directory, "fixtures.log")})`,
-+                reason: "timeout",
-+              }),
-+            ),
-+        }),
-       );
+-      );
++      ),
++      // A process that is alive is still starting, which takes well past ten seconds on a busy
++      // runner: read until it reports ready or stops, within the readiness bound.
++      Effect.retry({ schedule: Schedule.spaced("100 millis") }),
++      Effect.timeoutOrElse({
++        duration: readiness,
++        orElse: () =>
++          Effect.fail(
++            new FixtureFailed({
++              operation: `readiness (the process was still running after ${Duration.format(Duration.fromInputUnsafe(readiness))} with no ready file; its output is in ${path.join(directory, "fixtures.log")})`,
++              reason: "timeout",
++            }),
++          ),
++      }),
++    );
      const value = yield* Effect.raceFirst(
        ready,
+       child.exitCode.pipe(
