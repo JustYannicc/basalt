@@ -349,11 +349,12 @@ export class RuntimeFleet {
       return response;
     }
     const { reservation, dispatched } = acquired;
+    // Grow before the root's cap admits, so nothing can stand between an admission and its call.
+    this.grow();
     // The root as the only route takes the same capped rate as the capacity fallback above.
     const counted =
       reservation.kind === "primary" && reservation.alone && rootFallbackCounts(request);
     if (counted && !this.rootFallback.admit()) {
-      this.grow();
       dispatched();
       try {
         await reservation.release();
@@ -364,7 +365,6 @@ export class RuntimeFleet {
     }
     let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
       reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
-    this.grow();
     try {
       if (reservation.kind === "primary") {
         const response = stampResumeTarget(

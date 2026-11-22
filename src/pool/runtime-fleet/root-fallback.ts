@@ -1,4 +1,4 @@
-import { nativeRuntimeUnavailable } from "../runtime-unavailable.ts";
+import { unsentRefusal } from "../controller-unsent.ts";
 import { fleetSafeRead } from "./retry.ts";
 
 /*
@@ -68,12 +68,16 @@ export class RootFallback {
  */
 export const rootFallbackCounts = (request: Request) => !fleetSafeRead(request);
 
-/** Nothing was sent: the retryable answer clients already follow, and one count line. */
+/**
+ * Nothing was sent, so the refusal is marked unsent: the entry sends a held call again each second
+ * inside its replay window, and a client that isn't held gets the retryable answer it already
+ * follows. One count line either way.
+ */
 export function rootFallbackRefused(request: Request) {
   const id = request.headers.get("X-Basalt-Request-Id");
   console.error(
     "POOL_ROOT_FALLBACK_REFUSED",
     JSON.stringify({ count: 1, requestId: id && requestIdPattern.test(id) ? id : null }),
   );
-  return nativeRuntimeUnavailable(request);
+  return unsentRefusal(request);
 }

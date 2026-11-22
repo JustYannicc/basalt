@@ -540,6 +540,7 @@ const burst = async (f: ReturnType<typeof fixture>, size: number) =>
       return {
         status: response.status,
         retryAfter: response.headers.get("Retry-After"),
+        unsent: response.headers.get("X-Signalbox-Controller-Unsent"),
         body: await response.text(),
       };
     }),
@@ -552,8 +553,8 @@ test("with no ready cell, a burst sends the root at most its fallback bucket; th
   assert.equal(f.calls.legacy, rootFallbackBurst, "the root takes only the bucket");
   const refused = answers.filter((answer) => answer.status === 503);
   assert.equal(refused.length, 25 - rootFallbackBurst);
-  // The retryable answer clients already follow, and nothing was sent anywhere for it.
-  assert.ok(refused.every((answer) => answer.retryAfter === "1"));
+  // The retryable answer clients already follow, marked unsent so the entry re-sends a held call.
+  assert.ok(refused.every((answer) => answer.retryAfter === "1" && answer.unsent === "1"));
   assert.equal(f.calls.dispatches, 0);
   const lines = log.mock.calls.filter((call) => call.arguments[0] === "POOL_ROOT_FALLBACK_REFUSED");
   assert.equal(lines.length, 25 - rootFallbackBurst);
