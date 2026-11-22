@@ -21,14 +21,16 @@ test("affected selection is conservative for unknown and shared inputs", () => {
     ".upstream/bun.lock",
     ".upstream/packages/sdk/src/unknown.ts",
     "src/new-feature.ts",
-    "scripts/ci.test.ts",
-    "scripts/architecture/source.ts",
+    "scripts/architecture/package.json",
     "clients/mobile/src/account.ts",
   ]) {
     const selected = selectPaths([file]);
     assert.deepEqual(selected.jobs, heavyJobs, file);
     assert.equal(selected.declaredFiles, null, file);
   }
+  // Code only the fast job's own checks import runs no heavy job.
+  for (const file of ["scripts/ci.test.ts", "scripts/architecture/source.ts"])
+    assert.deepEqual(selectPaths([file]), { declaredFiles: [], jobs: [], reasons: {} }, file);
   assert.deepEqual(selectPaths(["docs/guide.md", "architecture/model/build.c4"]).jobs, []);
   assert.throws(() => selectPaths(["../outside.ts"]));
 });
@@ -176,9 +178,11 @@ test("AWS catalog, proof inputs and loopback carries select the AWS runtime proo
     for (const target of carryTargets(patch))
       assert.ok(selectPaths([target]).jobs.includes("aws-connectors"), target);
   }
+  // Catalog data selects its area's account and connector proofs, not the client builds.
   const vercel = selectPaths(["src/catalog/vercel.json"]).jobs;
   assert.ok(vercel.includes("vercel-sign-in"));
-  assert.deepEqual(vercel, heavyJobs);
+  assert.ok(vercel.includes("production-build"));
+  assert.ok(!vercel.includes("client-desktop"));
 });
 
 test("the aggregate blocks missing, failed, cancelled and unexpectedly skipped work", () => {
@@ -229,7 +233,7 @@ test("every workflow job has a gate dependency and declared selection policy", (
   assert.equal(jobs.check.if, "always()");
   assert.equal(
     jobs.check.name,
-    "${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || 'check (fast-only)' }}",
+    "${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || needs.select.outputs.lane == 'affected' && 'check (affected)' || 'check (fast-only)' }}",
   );
   assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
   assert.equal(
@@ -281,15 +285,15 @@ test("fast-only and full gates reject missing work and dishonest lane selections
         },
       ]),
     );
-  assert.deepEqual(gateErrors(needs([]), [], [], false), []);
-  assert.deepEqual(gateErrors(needs(heavyJobs), heavyJobs, [], true), []);
-  assert.ok(gateErrors(needs([]), [], [], true).length);
-  assert.ok(gateErrors(needs(heavyJobs), heavyJobs, [], false).length);
+  assert.deepEqual(gateErrors(needs([]), [], [], "fast"), []);
+  assert.deepEqual(gateErrors(needs(heavyJobs), heavyJobs, [], "full"), []);
+  assert.ok(gateErrors(needs([]), [], [], "full").length);
+  assert.ok(gateErrors(needs(heavyJobs), heavyJobs, [], "fast").length);
   for (const job of fastJobs)
     for (const result of ["failure", "cancelled", "skipped"])
-      assert.ok(gateErrors({ ...needs([]), [job]: { result } }, [], [], false).length);
+      assert.ok(gateErrors({ ...needs([]), [job]: { result } }, [], [], "fast").length);
   assert.ok(
-    gateErrors({ ...needs([]), "production-build": { result: "success" } }, [], [], false).length,
+    gateErrors({ ...needs([]), "production-build": { result: "success" } }, [], [], "fast").length,
   );
 });
 
@@ -322,9 +326,11 @@ test("workflow cancels superseded PRs, preserves each main push and gates build 
     workflow.concurrency["cancel-in-progress"],
     "${{ github.event_name == 'pull_request' }}",
   );
-  assert.equal(
+  // Full runs and the other pull request runs have their own groups; ci-affected-lane.test.ts
+  // proves which group each event lands in.
+  assert.match(
     workflow.concurrency.group,
-    "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}",
+    /^\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}-/,
   );
   assert.ok(workflow.on.pull_request.types.includes("labeled"));
   assert.ok(workflow.on.pull_request.types.includes("unlabeled"));

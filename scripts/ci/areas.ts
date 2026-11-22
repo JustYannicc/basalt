@@ -110,6 +110,8 @@ export const sharedInputs = [
   "tsconfig*.json",
   ".github/workflows/**",
   "scripts/ci/**",
+  // Selection parses the workflow and the import graph with this package's pinned tooling.
+  "scripts/architecture/{package.json,bun.lock}",
   "scripts/prepare-upstream.ts",
   "scripts/upstream-cache.ts",
   "scripts/upstream-carries.ts",
@@ -174,19 +176,19 @@ export const areas = [
     jobs: ["client-native-product", "production-build"],
   },
   {
+    // Pool data its code and proofs read at runtime. Pool code reaches its jobs through the import
+    // graph, and the e2e product's reads of it are declared in productReads below.
     paths: [
-      "apps/pool/**",
-      "src/pool/**",
-      "containers/pool/**",
-      "scripts/pool-*",
-      "scripts/pool-*/**",
-      "e2e/pool-*.mjs",
-      "e2e/recipes/pool-*.mjs",
+      "src/pool/**/*.{json,txt}",
+      "apps/pool/**/*.{json,html,css}",
+      "scripts/pool-*/**/*.{json,lock,py}",
     ],
     jobs: [...accounts, "pool-runtime", "pool-inventory", "upstream-contracts"],
   },
+  // Only pool-runtime and its pool proofs build the pool image.
+  { paths: ["containers/pool/**"], jobs: ["pool-runtime"] },
   {
-    paths: ["src/catalog/**", "recipes/**", "scripts/connectors*", "scripts/connectors*/**"],
+    paths: ["src/catalog/**", "recipes/**", "scripts/connectors*/**/*.{json,lock}"],
     jobs: accounts,
   },
   {
@@ -222,7 +224,11 @@ export const areas = [
     jobs: ["gitlab-connectors"],
   },
   {
+    // The Workers the stack deploys, which production-build bundles and measures from their entries.
     paths: [
+      "alchemy.run.ts",
+      "infrastructure/**",
+      "src/*.ts",
       "src/catalog/**",
       "src/setup/**",
       "src/site/**",
@@ -330,6 +336,18 @@ export const areas = [
     paths: ["assets/fonts/**", "scripts/docs-fonts/**", ".upstream/apps/docs/**"],
     jobs: ["docs-build"],
   },
+];
+
+/**
+ * Reads by computed paths that the import graph cannot follow, declared as edges from the file
+ * that reads them: preparation bundles the whole pool app into the e2e product, and the pool
+ * runtime shards list their test files by directory. Preparation also writes a hash of the pool
+ * Worker's sources into the product, but e2e compares it only with the same generated value, so
+ * those sources reach no scenario through it.
+ */
+export const runtimeReads = [
+  { reader: "scripts/pool-app-bundle.ts", paths: ["apps/pool/**"] },
+  { reader: "scripts/ci/pool-test-shard.ts", paths: ["scripts/pool-tests/*.test.ts"] },
 ];
 
 export const staticInputs = [

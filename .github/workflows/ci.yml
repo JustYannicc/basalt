@@ -6,8 +6,10 @@ on:
   push:
     branches: [main, "batch/**"]
 
+# A pull request's full runs and its other runs have separate groups, so a full run a label asks
+# for never waits behind the run it replaces; select cancels that one (scripts/ci/cancel-superseded.ts).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name != 'pull_request' && github.run_id || ((startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update')))) && 'pr-full' || 'pr' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -44,14 +46,16 @@ jobs:
   select:
     needs: reuse
     if: always() && !cancelled() && needs.reuse.outputs.reused != 'true'
-    # Reads the box heartbeat and the hosted load for scripts/ci/box-router.ts.
+    # Reads the box heartbeat and the hosted load for scripts/ci/box-router.ts, and cancels this
+    # pull request's superseded runs.
     permissions:
       contents: read
-      actions: read
+      actions: write
     runs-on: ubuntu-latest
     outputs:
       base_sha: ${{ steps.comparison.outputs.base_sha }}
       full_suite: ${{ steps.jobs.outputs.full_suite }}
+      lane: ${{ steps.jobs.outputs.lane }}
       jobs: ${{ steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
@@ -73,6 +77,8 @@ jobs:
         with:
           warm: "true"
       - uses: ./.github/actions/setup-actionlint
+      - name: Install the workflow and source parsers selection reads with
+        run: bun install --frozen-lockfile --cwd scripts/architecture
       - name: Resolve the comparison commit
         id: comparison
         env:
@@ -90,7 +96,7 @@ jobs:
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
-      - name: Select the PR fast lane or full suite
+      - name: Select the full suite, the jobs this change reaches, or the fast lane
         id: jobs
         env:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
@@ -102,9 +108,16 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
+          # This repository's pull requests run the jobs their changes reach. A batch branch's push
+          # already runs the full suite on the same head, and forks keep the fast lane.
+          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
+          HEAD_BRANCH: ${{ github.head_ref }}
         run: |
+          node scripts/ci/cancel-superseded.ts
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
+          elif [ "$AFFECTED_LANE" = true ]; then
+            node scripts/ci/select-jobs.ts
           else
             node scripts/ci/select-jobs.ts --fast
           fi
@@ -2713,7 +2726,7 @@ jobs:
           MIGRATION_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
 
   check:
-    name: ${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || 'check (fast-only)' }}
+    name: ${{ (needs.reuse.outputs.reused == 'true' || needs.select.outputs.full_suite == 'true') && 'check' || needs.select.outputs.lane == 'affected' && 'check (affected)' || 'check (fast-only)' }}
     needs:
       [
         reuse,
@@ -2812,6 +2825,7 @@ jobs:
           CI_REUSED: ${{ needs.reuse.outputs.reused }}
           CI_REUSE_EVIDENCE: ${{ needs.reuse.outputs.evidence }}
           CI_FULL_SUITE: ${{ needs.select.outputs.full_suite }}
+          CI_LANE: ${{ needs.select.outputs.lane }}
           CI_JOBS: ${{ needs.select.outputs.jobs }}
           CI_BOX_JOBS: ${{ needs.select.outputs.box_jobs }}
         run: node scripts/ci/gate.ts

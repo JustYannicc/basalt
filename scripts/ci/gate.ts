@@ -43,15 +43,19 @@ export const longJobs = [
   "workerd-assets",
 ];
 
+/** full runs every heavy job, affected the ones the change reaches, fast none. */
+export const lanes = ["full", "affected", "fast"] as const;
+export type Lane = (typeof lanes)[number];
+
 export function gateErrors(
   needs: Record<string, { result: string }>,
   selected: readonly string[],
   box: readonly string[] = [],
-  full?: boolean,
+  lane?: Lane,
 ) {
   const errors: string[] = [];
-  if (full === false && selected.length) errors.push("Fast lane selected heavy jobs");
-  if (full === true && [...selected].sort().join("\n") !== [...heavyJobs].sort().join("\n"))
+  if (lane === "fast" && selected.length) errors.push("Fast lane selected heavy jobs");
+  if (lane === "full" && [...selected].sort().join("\n") !== [...heavyJobs].sort().join("\n"))
     errors.push("Full suite must select every heavy job");
   const expected = [...fastJobs, ...heavyJobs, ...conditionalJobs];
   if (
@@ -128,13 +132,15 @@ export function runGateCli(env = process.env): void {
   }
   if (reuse?.result !== "success")
     throw new Error(`reuse: expected success, got ${reuse?.result ?? "missing"}`);
-  if (!["true", "false"].includes(env.CI_FULL_SUITE ?? ""))
+  const lane = lanes.find((name) => name === env.CI_LANE);
+  // The fast job's full-only steps read full_suite, so it must agree with the lane.
+  if (!lane || env.CI_FULL_SUITE !== String(lane === "full"))
     throw new Error("Missing or invalid CI lane");
   const errors = gateErrors(
     suite,
     JSON.parse(env.CI_JOBS ?? "null"),
     JSON.parse(env.CI_BOX_JOBS ?? "null"),
-    env.CI_FULL_SUITE === "true",
+    lane,
   );
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;
