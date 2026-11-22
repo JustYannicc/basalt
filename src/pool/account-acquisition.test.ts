@@ -353,3 +353,21 @@ test("a routed device sign-in that loses a homogeneous fleet stops polling: rout
   });
   assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
 });
+
+test("a routed sign-in that fails for any other reason keeps main's failure message", async () => {
+  const failure = { status: "error", error: "Meta device sign-in failed" };
+  const plain = fixture([], "meta");
+  const plainStart = await body(await plain.send("start"));
+  plain.statusIs(failure);
+  const expected = await body(await plain.send("status", { session: plainStart.session }));
+  const recorder = routeRecorder();
+  const routed = fixture([], "meta", {}, recorder.routes);
+  const routedStart = await body(
+    await routed.send("start", { hasRules: true, route: signInRoute }),
+  );
+  routed.statusIs(failure);
+  const answer = await body(await routed.send("status", { session: routedStart.session }));
+  assert.equal(answer.state, "failed");
+  assert.deepEqual(answer, expected);
+  assert.notEqual(answer.message, "route_unavailable");
+});
