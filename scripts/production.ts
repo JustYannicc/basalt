@@ -42,12 +42,18 @@ type PlanNode = {
   bindings?: Binding[];
   state?: State;
 };
-type Plan = { resources: Record<string, PlanNode | undefined> };
+type Plan = {
+  resources: Record<string, PlanNode | undefined>;
+  deletions?: Record<string, PlanNode | undefined>;
+};
 type Snapshot = {
   summary: Record<string, number>;
   resources: { fqn: string; resourceType: string; action: string }[];
   native: Plan;
 };
+
+/** Our own words, naming only resources and classes: the one error printed whole. */
+class Refused extends Error {}
 
 const workers = (plan: Plan) =>
   Object.entries(plan.resources).flatMap(([fqn, node]) =>
@@ -71,20 +77,39 @@ const localClasses = ({ data }: Binding) => {
     .map((wire) => String(wire.className));
 };
 
+/** A Worker row's own classes: the generation it finished and any an interrupted apply started. */
+const recordedClasses = (state?: State) =>
+  [state, state?.old].flatMap((row) =>
+    (row?.bindings ?? []).flatMap((binding) =>
+      localClasses(binding).map((name) => ({ sid: binding.sid, name })),
+    ),
+  );
+
 /**
- * Durable Object classes a Worker's last finished apply bound on itself whose binding the plan
- * deletes or no longer has. Alchemy would send them as `deleted_classes`, which deletes every
- * object of the class and its storage: never applied. An interrupted apply's row is read from the
- * generation it started from, as Alchemy compares it.
+ * The Durable Object classes a plan creates and drops. A drop is a Worker's own recorded class whose
+ * binding the plan deletes or no longer has, or any class of a Worker it deletes or replaces:
+ * Alchemy sends it as `deleted_classes`, which deletes every object of the class, so it is never
+ * applied. A created class cannot be rolled back.
  */
-export const droppedClasses = (plan: Plan) =>
-  workers(plan).flatMap(([fqn, node]) => {
-    const state = node.state?.status === "updating" && node.state.old ? node.state.old : node.state;
+export function classChanges(plan: Plan) {
+  const dropped = new Set<string>();
+  const created = new Set<string>();
+  for (const [fqn, node] of workers(plan)) {
+    const recorded = recordedClasses(node.state);
     const planned = new Map(node.bindings?.map((binding) => [binding.sid, binding.action]));
-    return (state?.bindings ?? [])
-      .filter((binding) => [undefined, "delete"].includes(planned.get(binding.sid)))
-      .flatMap((binding) => localClasses(binding).map((name) => `${fqn}: ${name}`));
-  });
+    for (const { sid, name } of recorded)
+      if (node.action === "replace" || [undefined, "delete"].includes(planned.get(sid)))
+        dropped.add(`${fqn}: ${name}`);
+    const before = new Set(recorded.map(({ name }) => name));
+    for (const binding of node.bindings ?? [])
+      if (binding.action !== "delete")
+        for (const name of localClasses(binding))
+          if (!before.has(name)) created.add(`${fqn}: ${name}`);
+  }
+  for (const [fqn, node] of workers({ resources: plan.deletions ?? {} }))
+    for (const { name } of recordedClasses(node.state)) dropped.add(`${fqn}: ${name}`);
+  return { dropped: [...dropped].sort(), created: [...created].sort() };
+}
 
 /** One streamed turn through the public pool. Says why it failed by error class and status only. */
 export async function smoke(send: () => Promise<unknown>) {
@@ -117,12 +142,13 @@ async function main() {
     options: { "fleet-classes": { type: "boolean" } },
   });
   const mode = positionals[0];
-  if (mode !== "plan" && mode !== "deploy") throw new Error("Usage: production.ts plan|deploy");
+  if (mode !== "plan" && mode !== "deploy") throw new Refused("Usage: production.ts plan|deploy");
   const candidate = process.env.BASALT_RELEASE_CANDIDATE ?? "";
   if (process.env.GITHUB_ACTIONS !== "true" || !/^[a-f0-9]{40}$/u.test(candidate))
-    throw new Error("Production deploys only in GitHub Actions, from a candidate's full sha");
+    throw new Refused("Production deploys only in GitHub Actions, from a candidate's full sha");
   const model = process.env.POOL_ACCEPTANCE_MODEL ?? "";
-  if (mode === "deploy" && !model) throw new Error("POOL_ACCEPTANCE_MODEL names the smoke's model");
+  if (mode === "deploy" && !model)
+    throw new Refused("POOL_ACCEPTANCE_MODEL names the smoke's model");
   const root = fileURLToPath(new URL("../", import.meta.url));
   const { deployEnvironment } = await import("./environment.ts");
   const { assignEnvironment } = await import("./release/process-env.ts");
@@ -135,20 +161,27 @@ async function main() {
   });
   // The root is declared by its pinned image (POOL_ROOT_PIN plus the account), never built.
   (await import("./release/root-pin.ts")).setRootPin(process.env);
+  // A missing or malformed acceptance device stops here, before anything changes.
+  const { acceptanceCredential } = await import("./release/acceptance-device.ts");
+  const credential = mode === "deploy" ? acceptanceCredential(process.env) : undefined;
   // Alchemy captures the working directory on its first load and resolves the stack's commands
   // from it; they are declared relative to the cloud app.
   process.chdir(resolve(root, ".upstream/apps/hosted/cloud"));
-  const { Effect, Logger, Redacted } = await import("effect");
+  const { initialCwd } = await import("alchemy/Util/Node");
+  if (initialCwd !== process.cwd()) throw new Refused("Alchemy loaded before the cloud app");
+  const { Cause, Effect, Logger, Redacted } = await import("effect");
   const { FetchHttpClient } = await import("effect/http");
   const Alchemist = await import("alchemy/Alchemist");
   const Session = await import("alchemy/Alchemist/Session");
   const { storeCannotBootstrap } = await import("./release/state-store-guard.ts");
   const { rollbackTo, servingVersion } = await import("./release/worker-version.ts");
+  const { errorKind } = await import("./release/public-report.ts");
   const target = { entrypoint: resolve(root, "alchemy.run.ts"), stage: "production" };
-  // Alchemy's own log lines name scripts and hosts; the public log gets only the lines below.
+  // Each run is its own Alchemy session, which reads the environment when it first loads the
+  // stack. Alchemy's own log lines name scripts and hosts; the public log gets only ours.
   const run = <A>(effect: Fx.Effect<A, unknown, unknown>) =>
     Effect.runPromise(
-      Effect.scoped(effect).pipe(
+      Effect.scoped(Effect.andThen(storeCannotBootstrap, effect)).pipe(
         Effect.provide(Alchemist.layer()),
         Effect.provide(Logger.layer([])),
         Effect.provide(FetchHttpClient.layer),
@@ -160,11 +193,13 @@ async function main() {
     script,
   });
   const print = (line: string) => Effect.promise(() => say(line));
+  const refuse = (line: string) =>
+    Effect.andThen(print(`::error::${line}`), Effect.fail(new Refused(line)));
 
-  // One Alchemy session plans and applies: the snapshot holds that session's providers.
-  const { serving, applied, creating } = await run(
+  // First session: the State store's version and the classes PoolWorker hosts, before the stack
+  // reads the fleet's setting.
+  const hosted = await run(
     Effect.gen(function* () {
-      yield* storeCannotBootstrap;
       type Key = { stack: string; stage: string; fqn: string };
       const store = (yield* Alchemist.State.store({
         backend: "configured",
@@ -174,38 +209,50 @@ async function main() {
         get: (key: Key) => Fx.Effect<State | undefined, unknown, never>;
       };
       const version = yield* store.getVersion();
-      if (version !== 8)
-        return yield* Effect.die(new Error(`State store version ${version}, not 8`));
+      if (version !== 8) return yield* refuse(`State store version ${version}, not 8`);
       const { stackName } = yield* Session.importStack(target.entrypoint) as unknown as Fx.Effect<
         { stackName: string },
         unknown,
         never
       >;
       const pool = yield* store.get({ stack: stackName, stage: "production", fqn: "PoolWorker" });
-      const hosted = Object.keys(pool?.attr?.durableObjectNamespaces ?? {});
-      const declared = classesDeclared(values["fleet-classes"] === true, hosted);
-      // A version from before this run would not host the classes it creates: nothing to re-point to.
-      const creating = declared && !fleetClasses.every((name) => hosted.includes(name));
-      assignEnvironment(process.env, fleetEnvironment(declared));
+      return [pool, pool?.old].flatMap((row) =>
+        Object.keys(row?.attr?.durableObjectNamespaces ?? {}),
+      );
+    }),
+  );
+  const declared = classesDeclared(values["fleet-classes"] === true, hosted);
+  assignEnvironment(process.env, fleetEnvironment(declared));
+
+  // Second session plans and applies: the snapshot holds this session's providers.
+  const { serving, applied, creating } = await run(
+    Effect.gen(function* () {
       const snapshot = (yield* Alchemist.Stack.plan({
         target,
         operation: "deploy",
         updateStateStore: false,
       } as never)) as unknown as Snapshot;
+      const { dropped, created } = classChanges(snapshot.native);
       yield* print(
         `Plan of ${candidate}, fleet classes ${declared ? "declared" : "absent"}: ${JSON.stringify(snapshot.summary)}`,
       );
       for (const row of snapshot.resources)
         if (row.action !== "noop") yield* print(`- ${row.fqn} ${row.resourceType} ${row.action}`);
-      const dropped = droppedClasses(snapshot.native);
+      yield* print(
+        `Creates Durable Object classes (cannot be rolled back): ${created.join(", ") || "none"}`,
+      );
       if (dropped.length)
-        return yield* Effect.die(
-          new Error(
-            `The plan drops Durable Object classes (${dropped.join("; ")}); nothing applied`,
-          ),
+        return yield* refuse(
+          `The plan drops Durable Object classes (${dropped.join("; ")}); nothing applied`,
+        );
+      // The stack read the setting this run set, or this run stops before it applies anything.
+      const fleet = created.filter((name) => fleetClasses.some((cls) => name.endsWith(`: ${cls}`)));
+      if (fleet.length !== (declared && fleetClasses.some((cls) => !hosted.includes(cls)) ? 2 : 0))
+        return yield* refuse(
+          `The plan's fleet classes (${fleet.join(", ") || "none"}) do not match the switch`,
         );
       const serving: { fqn: string; script: string; version: string }[] = [];
-      if (mode === "plan") return { serving, applied: false, creating };
+      if (mode === "plan") return { serving, applied: false, creating: created.length > 0 };
       for (const fqn of workersToRepoint(snapshot.native)) {
         const script = String(snapshot.native.resources[fqn]!.state?.attr?.workerName ?? "");
         serving.push({ fqn, script, version: yield* servingVersion(at(script)) });
@@ -214,15 +261,16 @@ async function main() {
         `Serving before the apply: ${serving.map((w) => `${w.fqn} ${w.version}`).join(", ") || "none"}`,
       );
       const exit = yield* Effect.exit(Alchemist.Stack.apply(snapshot as never));
-      return { serving, applied: exit._tag === "Success", creating };
+      if (exit._tag === "Failure")
+        yield* print(`::error::The apply failed: ${errorKind(Cause.squash(exit.cause))}`);
+      return { serving, applied: exit._tag === "Success", creating: created.length > 0 };
     }),
   );
   if (mode === "plan") return;
   const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
-  const { acceptanceCredential } = await import("./release/acceptance-device.ts");
   const result = applied
     ? await smoke(() =>
-        new PoolAcceptanceClient().sendTurn(acceptanceCredential(process.env), model, {
+        new PoolAcceptanceClient().sendTurn(credential!, model, {
           id: randomUUID(),
           expectedRecords: 1,
         }),
@@ -232,7 +280,7 @@ async function main() {
     return void (await say(`Deployed ${candidate}; the smoke turn on ${model} served.`));
   if (creating) {
     await say(
-      `::error::Failed (${result.why}). The fleet's classes cannot be rolled back: fix forward.`,
+      `::error::Failed (${result.why}). New Durable Object classes cannot be rolled back: fix forward.`,
     );
     process.exit(1);
   }
@@ -245,9 +293,16 @@ async function main() {
     ).catch(() => failed.push(worker.fqn));
   await say(
     `::error::Failed (${result.why}); re-pointed ${serving.length - failed.length} of ${serving.length} Workers` +
-      ` to their versions from before the apply${failed.length ? `; not re-pointed: ${failed.join(", ")}` : "."}`,
+      ` to their versions from before the apply${failed.length ? `; not re-pointed: ${failed.join(", ")}` : ""}.` +
+      " State still records this release, so the next deploy is a new commit, not this one again.",
   );
   process.exit(1);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) await main();
+// An error's message and cause can carry hosts or derived values; the public log names its kind.
+if (process.argv[1] === fileURLToPath(import.meta.url))
+  await main().catch(async (error: unknown) => {
+    const { errorKind } = await import("./release/public-report.ts");
+    await say(`::error::Stopped: ${error instanceof Refused ? error.message : errorKind(error)}`);
+    process.exit(1);
+  });

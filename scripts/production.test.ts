@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { HttpStatusFailure } from "./pool-acceptance/types.ts";
 import {
   classesDeclared,
-  droppedClasses,
+  classChanges,
   fleetEnvironment,
   smoke,
   workersToRepoint,
@@ -45,19 +45,46 @@ test("a failed smoke re-points every Worker the apply uploads, and nothing else"
   assert.deepEqual(workersToRepoint(plan), ["Api", "Router"]);
 });
 
-test("a plan that stops binding a class PoolWorker hosts is refused; creating classes is not", async (context) => {
+test("a plan that stops binding a class a Worker hosts is a drop; the fleet's classes are creates", async (context) => {
   const kept = await makePlan(context, { rows: productionRows() });
-  assert.deepEqual(droppedClasses(kept.plan as never), []);
+  assert.deepEqual(classChanges(kept.plan as never).dropped, []);
   const created = await makePlan(context, {
     rows: productionRows(),
     declared: { fleetClasses: true },
   });
-  assert.deepEqual(droppedClasses(created.plan as never), []);
+  assert.deepEqual(classChanges(created.plan as never), {
+    dropped: [],
+    created: ["PoolWorker: PoolRuntimeBlue", "PoolWorker: PoolRuntimeGreen"],
+  });
   const dropped = await makePlan(context, {
     rows: productionRows(),
     declared: { ledger: undefined },
   });
-  assert.deepEqual(droppedClasses(dropped.plan as never), ["PoolWorker: PoolLedger"]);
+  assert.deepEqual(classChanges(dropped.plan as never).dropped, ["PoolWorker: PoolLedger"]);
+});
+
+test("deleting or replacing a Worker drops every class it hosts", () => {
+  const own = {
+    sid: "Ledger",
+    data: { bindings: [{ type: "durable_object_namespace", className: "Ledger" }] },
+  };
+  const other = {
+    sid: "Far",
+    data: { bindings: [{ type: "durable_object_namespace", className: "Far", scriptName: "x" }] },
+  };
+  const worker = (action: string) => ({
+    resource: { Type: "Cloudflare.Worker" },
+    action,
+    bindings: [{ sid: "Ledger", action: "noop" }],
+    state: { bindings: [own, other] },
+  });
+  assert.deepEqual(
+    classChanges({
+      resources: { Kept: worker("update"), New: worker("replace") },
+      deletions: { Gone: worker("delete") },
+    }).dropped,
+    ["Gone: Ledger", "New: Ledger"],
+  );
 });
 
 test("the smoke passes on a served turn and names a failure by class and status only", async () => {

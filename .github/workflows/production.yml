@@ -27,7 +27,7 @@ jobs:
   production:
     if: github.ref == 'refs/heads/main'
     runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     # The release's lock: a pending run waits for the one running, and never cancels it.
     concurrency:
       group: deploy-production
