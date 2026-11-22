@@ -8,9 +8,11 @@ import {
 import {
   SlotIdentity,
   SlotRefused,
+  awaitsProof,
   sameIdentity,
   sameTarget,
   type ControllerCode,
+  type SlotSnapshot,
 } from "./contract.ts";
 import {
   healthy,
@@ -112,6 +114,21 @@ export class RuntimeSlotRecovery {
       slot: identity.slotId,
     });
   }
+  /** A boot handed back by an unfence that answers again serves once current policies reach it. */
+  private async proveHandedBack(identity: SlotIdentity, snapshot: SlotSnapshot) {
+    await proveSlot(this.deps.driver, identity, snapshot, slotClock);
+    await this.deps.storage.transact(async (current, transaction) => {
+      const selection = current.selection;
+      if (!selection || !awaitsProof(selection.active)) return;
+      if (!sameIdentity(selection.active.identity, identity) || current.digest !== snapshot.digest)
+        throw new SlotRefused("selection");
+      const unfenced = selection.active.unfenced!;
+      await transaction.put(slotSelectionKey, {
+        ...selection,
+        active: { ...selection.active, unfenced: { ...unfenced, proven: true } },
+      });
+    });
+  }
   private async runWithin(signal: AbortSignal) {
     const { storage, driver, provider, code, key } = this.deps;
     const completion = await storage.transact(async (_, transaction) =>
@@ -162,6 +179,7 @@ export class RuntimeSlotRecovery {
     let refusal: unknown;
     try {
       await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(recoveryWarmMs)]));
+      if (awaitsProof(selection.active)) await this.proveHandedBack(previous, snapshot);
       this.unavailable = false;
       await this.forced.clock.serving();
       return;
@@ -319,7 +337,15 @@ export class RuntimeSlotRecovery {
       await transaction.put(slotSelectionKey, {
         ...selection,
         epoch: selection.epoch + 1,
-        active: { ...selection.active, identity: health.identity },
+        // The new boot holds no grant from before a fence: it took every unexpired policy above,
+        // and an expired one reaches it only through Home. So a handed-back slot is proven.
+        active: {
+          ...selection.active,
+          identity: health.identity,
+          ...(selection.active.unfenced
+            ? { unfenced: { ...selection.active.unfenced, proven: true } }
+            : {}),
+        },
       });
       await transaction.put(completionKey, {
         identity: health.identity,
