@@ -443,6 +443,10 @@ export class PoolRuntimeFleet {
   abortPool(pool: string) {
     this.runtime?.abortPool(pool);
   }
+  /** Arms the next fleet pass from durable state, for a pass a reset cut before it re-armed. */
+  reschedule() {
+    return this.schedule();
+  }
   private async schedule() {
     if (!this.deps.schedule) return;
     const permission = await this.configuration.inspect();
