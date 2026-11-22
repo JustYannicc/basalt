@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-account-read-facts",
   "file": "0638-pool-account-read-facts.patch",
-  "content_sha256": "b304e8ecd4e882c69703a73788c10631b504e7693548026bf4ec2b8334c4c032",
+  "content_sha256": "6b935c2adbd58517e68c079cfd0bde0397b9a2e7e7d2e172e6c5afeeb1ccf1c5",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "During an apply, only resources in the same dependency cycle read each other's attributes before they settle. A resource in one cycle that reads a resource in another cycle waits for that resource's reconciled attributes, as a resource outside any cycle does, so a release uploads it once with the new values instead of once with the old ones and again to converge, unless the other cycle itself has to converge. Waiting cannot deadlock, because no cycle depends back on a cycle it reads. The plan's rows and their digest stay the same: only the apply's waiting changes."
+      constraint "During an apply, only resources in the same dependency cycle read each other's attributes before they settle. A resource in one cycle that reads a resource in another cycle waits for that resource's reconciled attributes, as a resource outside any cycle does, so a release uploads it once with the new values instead of once with the old ones and again to converge, unless the other cycle itself has to converge. Waiting cannot deadlock, because no cycle depends back on a cycle it reads. The plan's rows and their digest stay the same: only the apply's waiting changes. The change rides in the pinned Alchemy release's dependency patch, so an Alchemy upgrade carries it forward or retires it explicitly."
     }
   }
 }

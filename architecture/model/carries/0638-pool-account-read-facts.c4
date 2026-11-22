@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Registered pool queries may batch raw facts only for the current caller, accepted accounts and their exact linked source apps. Each permission check derives its own verdict; live grant checks and source calls remain authoritative. Shared facts end with the query and are bypassed inside write transactions. Uncached organization journal heads fence each speculative read; a changed or unavailable ending head reruns once with freshly resolved links and no shared facts, preserving existing authoritative denials. Complete request traces bound sequential SQL round trips at 150 for the five-account public path, while retained provider readings, icons and next-read revocation remain observable."
+      constraint "Registered pool queries may batch raw facts only for the current caller, accepted accounts and their exact linked source apps. Each permission check derives its own verdict; live grant checks and source calls remain authoritative. Shared facts end with the query and are bypassed inside write transactions. Uncached organization journal heads fence each speculative read; a changed or unavailable ending head reruns once with freshly resolved links and no shared facts, preserving existing authoritative denials. Complete request traces bound sequential SQL round trips at 150 for the five-account public path, while retained provider readings, icons and next-read revocation remain observable. Cached app-list rows carry each deployment's requirements and build, as the uncached read does, so an unverified framework's details survive a shared fact."
     }
   }
 }

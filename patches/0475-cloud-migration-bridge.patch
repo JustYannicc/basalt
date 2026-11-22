@@ -461,10 +461,10 @@ index 000000000..23725c002
 +}).pipe(Effect.mapError(migrationFailed("product")));
 diff --git a/apps/hosted/cloud/src/implementation/executor-version-gate.ts b/apps/hosted/cloud/src/implementation/executor-version-gate.ts
 new file mode 100644
-index 000000000..466636b7c
+index 000000000..0020cb9a9
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/executor-version-gate.ts
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,88 @@
 +import { PgClient } from "@effect/sql-pg";
 +import { Console, Duration, Effect, Redacted } from "effect";
 +import { SqlClient } from "effect/sql";
@@ -514,13 +514,11 @@ index 000000000..466636b7c
 +  Effect.gen(function* () {
 +    const admission = yield* read.pipe(
 +      Effect.map(admitExecutorStorage),
-+      Effect.orElseSucceed(
-+        (): ExecutorStorageAdmission => ({
-+          outcome: "refused",
-+          reason: "query_failed",
-+          observed: null,
-+        }),
-+      ),
++      Effect.orElseSucceed((): ExecutorStorageAdmission => ({
++        outcome: "refused",
++        reason: "query_failed",
++        observed: null,
++      })),
 +    );
 +    if (admission.outcome !== "refused") return admission;
 +    const message =

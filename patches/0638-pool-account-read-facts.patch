@@ -1434,7 +1434,7 @@ index f894a38a6..7645057c5 100644
            projectedApp({ app, version }),
          );
 diff --git a/packages/sdk/src/implementation/database.ts b/packages/sdk/src/implementation/database.ts
-index 02fa0ba23..633fa3701 100644
+index 02fa0ba23..8bce01102 100644
 --- a/packages/sdk/src/implementation/database.ts
 +++ b/packages/sdk/src/implementation/database.ts
 @@ -1,3 +1,4 @@
@@ -1442,17 +1442,39 @@ index 02fa0ba23..633fa3701 100644
  /** Native Effect database operations; SQL failures are projected to safe domain errors. */
  import { Effect, Result } from "effect";
  import { SqlError } from "effect/sql";
-@@ -26,7 +27,9 @@ export const query = <A, E, R>(work: () => Effect.Effect<A, E, R>) =>
+@@ -26,17 +27,21 @@ export const query = <A, E, R>(work: () => Effect.Effect<A, E, R>) =>
    );
  /** Preserve native Effect failures and cancellation through the SQL transaction. */
  export const transaction = <A, E, R>(db: Query, work: (tx: Query) => Effect.Effect<A, E, R>) =>
 -  db.transaction(Effect.suspend(() => work(db))).pipe(
-+  db.transaction(
-+    Effect.suspend(() => work(db)).pipe(Effect.provideService(SelectionReadFacts, undefined)),
-+  ).pipe(
-     Effect.withSpan("storage.transaction"),
-     Effect.catchTag("SqlError", (error) =>
-       // A statement inside it that failed outside `query` names itself; otherwise the transaction does.
+-    Effect.withSpan("storage.transaction"),
+-    Effect.catchTag("SqlError", (error) =>
+-      // A statement inside it that failed outside `query` names itself; otherwise the transaction does.
+-      withFailureAttributes(new StorageError(), {
+-        "executor.storage.operation": "transaction",
+-        ...(SqlError.isSqlError(error) && { "executor.storage.reason": error.reason._tag }),
+-        ...failureAttributes(error),
+-      }),
+-    ),
+-  );
++  db
++    .transaction(
++      Effect.suspend(() => work(db)).pipe(Effect.provideService(SelectionReadFacts, undefined)),
++    )
++    .pipe(
++      Effect.withSpan("storage.transaction"),
++      Effect.catchTag("SqlError", (error) =>
++        // A statement inside it that failed outside `query` names itself; otherwise the transaction does.
++        withFailureAttributes(new StorageError(), {
++          "executor.storage.operation": "transaction",
++          ...(SqlError.isSqlError(error) && { "executor.storage.reason": error.reason._tag }),
++          ...failureAttributes(error),
++        }),
++      ),
++    );
+ /**
+  * Run two effects at once but report the first one's failure first, as if they ran in order. Read
+  * ahead of a check this way only: the second's result is released only once the first succeeded.
 diff --git a/packages/sdk/src/implementation/selection-read-facts.ts b/packages/sdk/src/implementation/selection-read-facts.ts
 new file mode 100644
 index 000000000..691da335b
