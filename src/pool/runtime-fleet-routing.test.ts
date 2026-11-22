@@ -404,3 +404,37 @@ test("a runtime whose front layer fails keeps serving: no quarantine and no reco
   );
   assert.equal(recoveries, 0);
 });
+
+test("a marked answer cut mid-body never counts against its runtime, and logs one line", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const f = fixture(3, 1);
+  const identity = await f.add();
+  const cell = f.cell(identity);
+  const forward = cell.forward;
+  cell.forward = async (...args) => {
+    const answer = await forward(...args);
+    return new Response(answer.body, { headers: { "X-Basalt-Resume": "v1" } });
+  };
+  const marked = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  const cut = marked.text();
+  f.bodies[0]!.error(new Error("Network connection lost."));
+  await assert.rejects(cut);
+  await f.settle();
+  assert.ok((await f.state.inspect()).every((row) => row.phase !== "quarantined"));
+  const lines = log.mock.calls.filter((call) => call.arguments[0] === "POOL_RESUMABLE_STREAM_CUT");
+  assert.equal(lines.length, 1);
+  assert.deepEqual(Object.keys(JSON.parse(String(lines[0]!.arguments[1]))), [
+    "slot",
+    "instance",
+    "kind",
+  ]);
+
+  // The same cut on an answer the layer did not mark is the runtime's failure, as today.
+  cell.forward = forward;
+  const plain = await f.fleet.forward(request(), "pool", f.legacy, () => {});
+  const plainCut = plain.text();
+  f.bodies[1]!.error(new Error("Network connection lost."));
+  await assert.rejects(plainCut);
+  await f.settle();
+  assert.ok((await f.state.inspect()).some((row) => row.phase === "quarantined"));
+});

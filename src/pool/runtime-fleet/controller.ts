@@ -13,7 +13,12 @@ import {
 } from "../runtime-slots/contract.ts";
 import { FleetRefused, RuntimeFleetState } from "./state.ts";
 import { FleetDispatches } from "./dispatches.ts";
-import { resumeGone, stampResumeTarget } from "../stream-resume.ts";
+import {
+  resumeGone,
+  stampResumeTarget,
+  streamResumeHeader,
+  streamResumeVersion,
+} from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
@@ -88,6 +93,17 @@ interface Dependencies {
 }
 
 /** The concurrency target triggers growth; it never becomes another fixed inference cap. */
+function markedCut(identity: SlotIdentity, error: unknown) {
+  console.error(
+    "POOL_RESUMABLE_STREAM_CUT",
+    JSON.stringify({
+      slot: identity.slotId,
+      instance: identity.instanceId,
+      kind: runtimeFailureDiagnostic(error, "fleet_forward").runtimeReason,
+    }),
+  );
+}
+
 export class RuntimeFleet {
   private deps: Dependencies;
   private growing?: Promise<void>;
@@ -315,10 +331,17 @@ export class RuntimeFleet {
         }),
         { kind: "runtime", identity: reservation.identity },
       );
+      // A marked answer runs through the front layer, and a cut mid-body can't tell a layer exit
+      // from a node failure: it never counts against the runtime, which readiness and the layer's
+      // pre-header `failed` still judge.
+      const marked = response.headers.get(streamResumeHeader) === streamResumeVersion;
       return this.deps.wrap(response, {
         signal: request.signal,
         onClose: () => {},
-        failed: (error) => this.failures.failed(reservation.identity, error, request.signal),
+        failed: (error) =>
+          marked
+            ? markedCut(reservation.identity, error)
+            : this.failures.failed(reservation.identity, error, request.signal),
         release: () => {
           this.deps.defer(reservation.release().then(() => this.deps.changed?.()));
           return true;
