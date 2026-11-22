@@ -95,7 +95,7 @@ export function quietFleet(options: Options = {}) {
         await begin();
         calls.retires++;
         retired = own().retired ? await own().retired!() : true;
-        if (!retired) throw new Error("retirement not yet observed");
+        return retired;
       },
       retired: async () => (own().retired ? own().retired!() : retired),
       failed: async () => false,

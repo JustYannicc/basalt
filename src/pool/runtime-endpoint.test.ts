@@ -173,6 +173,7 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
     identity,
     retired: false,
     running: true,
+    stopping: true,
     provider: f.grant.proof.provider,
   });
 });

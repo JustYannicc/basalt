@@ -165,7 +165,8 @@ export class FleetHandoffCell implements FleetCell {
       undefined,
       signal,
     );
-    if (!(await this.retired(identity))) throw new SlotRefused("uncertain");
+    // A stop still under way is picked up by a later pass's retirement read.
+    return this.retired(identity);
   }
   async retired(identity: SlotIdentity, resumeBeforeDispatch = false) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
@@ -229,8 +230,7 @@ export class FleetHandoffCell implements FleetCell {
       const drain = await this.drain(identity);
       if (!drain.known || drain.active !== 0) return false;
       // A healthy transport casualty follows the ordinary zero-activity retirement path.
-      await this.retire(identity, async () => {});
-      return true;
+      return await this.retire(identity, async () => {});
     } catch {
       return false;
     }

@@ -76,39 +76,35 @@ test("a retirement sends SIGTERM and destroys only once the grace has run out", 
   assert.equal(f.calls.destroy, 0, "destroyed while Home was still draining");
   assert.notEqual((await store.retained(target.slotId))?.retired, true);
   graceOver();
-  await retiring;
+  await f.settle();
   assert.equal(f.calls.destroy, 1);
   assert.equal((await store.retained(target.slotId))?.retired, true);
 });
 
 test("a cell that stops on SIGTERM retires at once, without waiting out the grace", async (context) => {
   const { f, target, identity, store } = await startedCell(context);
+  f.hooks.sigtermExits = true;
   context.mock.method(runtimeStopTiming, "stopGrace", () => new Promise<void>(() => {}));
-  const destroy = f.ctx.container.destroy.bind(f.ctx.container);
-  let runningAtDestroy: boolean | undefined;
-  f.ctx.container.destroy = async () => {
-    runningAtDestroy = f.ctx.container.running;
-    await destroy();
-  };
   await f.endpoint.retire(target, identity, AbortSignal.timeout(5_000));
+  await f.settle();
   assert.deepEqual(f.calls.signals, [15]);
-  // Destroyed after the exit all the same: the provider lists only a destroyed instance as inactive.
-  assert.equal(f.calls.destroy, 1);
-  assert.equal(runningAtDestroy, false, "destroyed before Home's drain ended");
+  // An exited instance is listed inactive as a destroyed one is; a destroy now would change nothing.
+  assert.equal(f.calls.destroy, 0);
   assert.equal((await store.retained(target.slotId))?.retired, true);
 });
 
-test("the stop outlives its caller's budget, and the retirement read sees it finish", async (context) => {
+test("a stop longer than its caller's budget answers it without failing, and the retirement read sees it end", async (context) => {
   const { f, target, identity, provider } = await startedCell(context);
-  const sigterm = drainingHome(f);
+  drainingHome(f);
   const graceOver = heldGrace(context);
-  await assert.rejects(f.endpoint.retire(target, identity, AbortSignal.timeout(100)));
-  await sigterm;
+  await f.endpoint.retire(target, identity, AbortSignal.timeout(200));
+  assert.deepEqual(f.calls.signals, [15], "retire answered before its stop began");
   assert.equal(f.calls.destroy, 0);
   assert.deepEqual(await f.endpoint.retirement(identity), {
     identity,
     retired: false,
     running: true,
+    stopping: true,
     provider,
   });
   graceOver();
@@ -120,6 +116,20 @@ test("the stop outlives its caller's budget, and the retirement read sees it fin
     running: false,
     provider,
   });
+});
+
+test("a monitor() rejection that is no exit keeps the stop to the grace", async (context) => {
+  const { f, target, identity } = await startedCell(context);
+  drainingHome(f);
+  f.ctx.container.monitor = async () => {
+    throw new Error("monitor transport lost");
+  };
+  const graceOver = heldGrace(context);
+  await f.endpoint.retire(target, identity, AbortSignal.timeout(200));
+  assert.equal(f.calls.destroy, 0, "a transport failure was taken for an exit");
+  graceOver();
+  await f.settle();
+  assert.equal(f.calls.destroy, 1);
 });
 
 test("a caller that gives up right after the retiring latch still gets its cell stopped", async (context) => {

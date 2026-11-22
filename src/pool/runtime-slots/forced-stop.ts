@@ -145,26 +145,41 @@ export class RuntimeForcedStop {
   }
 }
 
+const isProcessExit = Schema.is(Schema.Struct({ exitCode: Schema.Int }));
+
 /**
  * SIGTERM, then the container's own exit or the grace. Home drains its claimed token refreshes on
  * SIGTERM, and whichever Home holds the master lease holds them all; a bare destroy can lose a token
- * a vendor just rotated.
+ * a vendor just rotated. `monitor()` rejecting without an exit code isn't an exit, so the wait keeps
+ * to the grace. `signalled` runs once SIGTERM is sent.
  */
-async function signalStop(container: NonNullable<ControllerState["container"]>) {
-  if (!container.running || !container.signal) return;
+async function signalStop(
+  container: NonNullable<ControllerState["container"]>,
+  signalled: () => void = () => {},
+) {
+  if (!container.running || !container.signal) return signalled();
   container.signal(15);
-  await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
+  signalled();
+  const grace = runtimeStopTiming.stopGrace();
+  const exit = container.monitor().then(
+    () => "exit" as const,
+    (error: unknown) => (error instanceof Error && isProcessExit(error) ? "exit" : "unknown"),
+  );
+  if ((await Promise.race([exit, grace.then(() => "grace" as const)])) === "unknown") await grace;
 }
 
 /**
  * A deliberate end of a running container that never runs again: the graceful stop, then
- * `destroy()` even after a clean exit. The provider lists a destroyed instance as inactive, which an
- * absence proof accepts; one that only exited may stay listed as stopped, which it never does. A
+ * `destroy()` only if it still runs. An exited instance is listed inactive about 10 s after its exit
+ * code 0 or 137 alike, as a destroyed one is, and `destroy()` after an exit changes nothing. A
  * container without `signal()` can only be destroyed.
  */
-export async function stopGracefully(container: NonNullable<ControllerState["container"]>) {
-  await signalStop(container);
-  const exited = !container.running;
+export async function stopGracefully(
+  container: NonNullable<ControllerState["container"]>,
+  signalled?: () => void,
+) {
+  await signalStop(container, signalled);
+  if (!container.running) return "exited" as const;
   await container.destroy();
-  return exited ? ("exited" as const) : ("destroyed" as const);
+  return "destroyed" as const;
 }

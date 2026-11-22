@@ -120,6 +120,8 @@ export class SlotRetirement {
     if (this.streams.active(executionKey(identity))) throw new SlotRefused("draining");
     let observed = await this.driver.retirement(identity, AbortSignal.timeout(2_000));
     if (!sameIdentity(observed.identity, identity)) throw new SlotRefused("identity");
+    // Its stop is under way; a later pass reads it again.
+    if (observed.stopping) return receipt;
     if (!observed.retired && observed.retireNotStarted) {
       const drain = await this.driver.drain(identity, AbortSignal.timeout(2_000));
       if (!drain.known || drain.active !== 0) throw new SlotRefused("draining");

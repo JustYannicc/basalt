@@ -94,7 +94,13 @@ export async function observeRuntimeRetirement(
   if (retired || intent) {
     monitor.start(identity);
     if (!retired && container.running)
-      return { identity, retired: false, running: true, provider: record.authorization.provider };
+      return {
+        identity,
+        retired: false,
+        running: true,
+        stopping: true as const,
+        provider: record.authorization.provider,
+      };
     await monitor.stopped(identity, trace, signal);
     if (!retired) {
       await trace.run(
