@@ -1,5 +1,5 @@
 diff --git a/internal/cluster/coordinator.go b/internal/cluster/coordinator.go
-index d7ca86d..b23747a 100644
+index d7ca86d..20366ee 100644
 --- a/internal/cluster/coordinator.go
 +++ b/internal/cluster/coordinator.go
 @@ -405,6 +405,9 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
@@ -12,7 +12,7 @@ index d7ca86d..b23747a 100644
  
  	var elected ClusterNodeRecord
  	errTransaction := db.WithContext(contextOrBackground(ctx)).Transaction(func(tx *gorm.DB) error {
-@@ -473,6 +476,76 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
+@@ -473,6 +476,93 @@ func (c *Coordinator) heartbeatAndElect(ctx context.Context, home HomeIncarnatio
  	return nil
  }
  
@@ -72,18 +72,35 @@ index d7ca86d..b23747a 100644
 +	}
 +	self := clusterNodeMatches(elected, c.node.IP, c.node.Port)
 +	if self {
-+		renewed := db.Model(&ClusterMasterGateRecord{}).
-+			Where("id = ? AND term = ? AND master_key = ?", 1, gate.Term, gate.MasterKey).
-+			Update("lease_until", now.Add(c.heartbeatTimeout))
-+		if renewed.Error != nil {
-+			return false, renewed.Error
++		renewed, errRenew := renewMasterLease(db, gate, now, c.heartbeatTimeout)
++		if errRenew != nil {
++			return false, errRenew
 +		}
-+		if renewed.RowsAffected != 1 {
++		if !renewed {
 +			return false, nil
 +		}
 +	}
 +	c.setMaster(self)
 +	return true, nil
++}
++
++// renewMasterLease extends the master's lease only if the gate is free at that moment and still
++// names this term, this master and an unexpired lease. It never waits on the gate: a renewal queued
++// behind a rebalance pass would write a lease computed before the wait, possibly already expired,
++// while a follower elects itself. A held gate returns false and the locked election runs instead,
++// reading the time only after it holds the gate.
++func renewMasterLease(db *gorm.DB, gate ClusterMasterGateRecord, now time.Time, timeout time.Duration) (bool, error) {
++	if db.Dialector != nil && db.Dialector.Name() == "postgres" {
++		renewed := db.Exec(`UPDATE cluster_master_gate SET lease_until = ? WHERE id = (
++			SELECT id FROM cluster_master_gate
++			WHERE id = 1 AND term = ? AND master_key = ? AND lease_until > ?
++			FOR UPDATE SKIP LOCKED)`, now.Add(timeout), gate.Term, gate.MasterKey, now)
++		return renewed.Error == nil && renewed.RowsAffected == 1, renewed.Error
++	}
++	renewed := db.Model(&ClusterMasterGateRecord{}).
++		Where("id = ? AND term = ? AND master_key = ? AND lease_until > ?", 1, gate.Term, gate.MasterKey, now).
++		Update("lease_until", now.Add(timeout))
++	return renewed.Error == nil && renewed.RowsAffected == 1, renewed.Error
 +}
 +
  func (c *Coordinator) heartbeatHomeIncarnation(ctx context.Context) (HomeIncarnationID, error) {
@@ -202,5 +219,50 @@ index 0000000..1b70998
 +	after := readGate(t, db)
 +	if !follower.IsMaster() || after.Term != before.Term+1 {
 +		t.Fatalf("follower master %v, term %d -> %d", follower.IsMaster(), before.Term, after.Term)
++	}
++}
+diff --git a/internal/cluster/heartbeat_gate_split_postgres_test.go b/internal/cluster/heartbeat_gate_split_postgres_test.go
+new file mode 100644
+index 0000000..ee8322f
+--- /dev/null
++++ b/internal/cluster/heartbeat_gate_split_postgres_test.go
+@@ -0,0 +1,39 @@
++package cluster
++
++import (
++	"context"
++	"testing"
++	"time"
++)
++
++// Regression from review: the master's fast-path renewal reads `now` before its conditional UPDATE, and that
++// UPDATE waits on the gate's row lock. If a gate holder (rebalance pass, slow election) outlasts the
++// lease, the renewal commits a lease that is already expired and the master still calls setMaster(true).
++func TestHomeDBPoolHeartbeatRenewalBlockedByAHeldGateNeverSplitsTheElection(t *testing.T) {
++	db, master, follower := newElectedPair(t)
++	master.heartbeatTimeout = 2 * time.Second
++	follower.heartbeatTimeout = 2 * time.Second
++	home, _ := master.HomeIncarnation()
++	if errBeat := master.heartbeatAndElect(context.Background(), home); errBeat != nil {
++		t.Fatal(errBeat)
++	}
++	release := holdGate(t, db)
++	done := make(chan error, 1)
++	go func() { done <- master.heartbeatAndElect(context.Background(), home) }()
++	time.Sleep(3 * time.Second) // gate held longer than the 2 s lease
++	release()
++	if errBeat := <-done; errBeat != nil {
++		t.Fatal(errBeat)
++	}
++	gate := readGate(t, db)
++	now, _ := DatabaseNow(context.Background(), db)
++	t.Logf("after blocked renewal: master local IsMaster=%v, lease_until=%s, db now=%s, lease expired=%v",
++		master.IsMaster(), gate.LeaseUntil.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), !now.Before(gate.LeaseUntil))
++	fHome, _ := follower.HomeIncarnation()
++	if errBeat := follower.heartbeatAndElect(context.Background(), fHome); errBeat != nil {
++		t.Fatal(errBeat)
++	}
++	if master.IsMaster() && follower.IsMaster() {
++		t.Fatalf("split brain: both Homes believe they are master (term %d -> %d)", gate.Term, readGate(t, db).Term)
 +	}
 +}

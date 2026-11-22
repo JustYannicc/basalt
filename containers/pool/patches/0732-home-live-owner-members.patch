@@ -229,10 +229,10 @@ index 025d303..81b4b4a 100644
  	if errFind := repo.db.First(&member, "certificate_fingerprint = ?", lifetime.Fingerprint).Error; errFind != nil {
 diff --git a/internal/cluster/membership_ownership_test.go b/internal/cluster/membership_ownership_test.go
 new file mode 100644
-index 0000000..f040385
+index 0000000..bb5c2de
 --- /dev/null
 +++ b/internal/cluster/membership_ownership_test.go
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,101 @@
 +package cluster
 +
 +import (
@@ -251,7 +251,7 @@ index 0000000..f040385
 +		t.Fatal(errSelf)
 +	}
 +	if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", member.CertificateFingerprint).
-+		Update("last_seen_at", time.Now().UTC().Add(-time.Minute)).Error; errUpdate != nil {
++		Update("last_seen_at", time.Now().UTC().Add(-peerFenceBackstop/2)).Error; errUpdate != nil {
 +		t.Fatal(errUpdate)
 +	}
 +	return repo, self, peer, member
@@ -319,8 +319,23 @@ index 0000000..f040385
 +		t.Fatalf("the node of an expired Home was left active: state %q", state)
 +	}
 +}
++
++func TestLiveHomeOwnsMembersPeerFencesPastTheBackstop(t *testing.T) {
++	ctx := context.Background()
++	repo, self, _, member := staleNodeOfPeer(t, ctx)
++	if errUpdate := repo.db.Model(&CPANodeMembershipRecord{}).Where("certificate_fingerprint = ?", member.CertificateFingerprint).
++		Update("last_seen_at", time.Now().UTC().Add(-peerFenceBackstop-time.Minute)).Error; errUpdate != nil {
++		t.Fatal(errUpdate)
++	}
++	if errCleanup := repo.CleanupStaleMemberships(ctx, self); errCleanup != nil {
++		t.Fatal(errCleanup)
++	}
++	if state := membershipState(t, repo, member.CertificateFingerprint); state != MembershipStateCanceling {
++		t.Fatalf("a node stale past the backstop stayed active because its Home still heartbeats: state %q", state)
++	}
++}
 diff --git a/internal/cluster/quiescence.go b/internal/cluster/quiescence.go
-index cf1977d..754e9f3 100644
+index cf1977d..6c2a3cb 100644
 --- a/internal/cluster/quiescence.go
 +++ b/internal/cluster/quiescence.go
 @@ -143,8 +143,11 @@ func beginFingerprintCancellationForMembershipTx(ctx context.Context, tx *gorm.D
@@ -354,11 +369,13 @@ index cf1977d..754e9f3 100644
  	db, errDB := r.database()
  	if errDB != nil {
  		return errDB
-@@ -189,11 +192,39 @@ func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint str
+@@ -189,11 +192,45 @@ func (r *Repository) cleanupStaleMembership(ctx context.Context, fingerprint str
  		if !membership.LastSeenAt.Before(now.Add(-membership.CPAHeartbeatTimeout)) {
  			return nil
  		}
-+		if !membershipOwnedByHome(membership, self) {
++		// A peer leaves a live Home's stale node to that Home, up to the backstop: a Home whose own
++		// cleanup cannot run would otherwise keep a dead node active forever.
++		if !membershipOwnedByHome(membership, self) && !membership.LastSeenAt.Before(now.Add(-peerFenceBackstop)) {
 +			ownerLive, errOwner := homeIncarnationLiveTx(tx, membership.HomeIP, membership.HomePort, membership.HomeStartedAt, now)
 +			if errOwner != nil {
 +				return errOwner
@@ -372,6 +389,10 @@ index cf1977d..754e9f3 100644
  	})
  }
  
++// peerFenceBackstop is how long a peer leaves a live Home's stale node alone. It is far above any
++// liveness stall measured on a serving node, so it only catches a Home whose own cleanup is stuck.
++const peerFenceBackstop = 60 * time.Second
++
 +// homeIncarnationLiveTx reports whether a Home is active and heartbeated within the node heartbeat
 +// timeout. It reads the lifecycle row without locking it.
 +func homeIncarnationLiveTx(tx *gorm.DB, ip string, port int, startedAt time.Time, now time.Time) (bool, error) {

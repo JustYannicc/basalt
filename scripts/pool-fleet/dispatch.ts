@@ -2,7 +2,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Effect, Result } from "effect";
 import type { PoolAccess } from "../pool-acceptance/types.ts";
-import type { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
 import { rootServes, runFleetAcceptance } from "./accept.ts";
 import { poolWorkerName, type CloudflareAccess } from "./cloudflare.ts";
@@ -35,10 +35,17 @@ export interface DispatchInput {
   ref: string;
   event: string;
 }
+export interface FleetAcceptance {
+  client: PoolAcceptanceClient;
+  credential: ModelAuth;
+  model?: string;
+  access: PoolAccess;
+}
 export interface DispatchDependencies {
   cloudflare: CloudflareAccess;
   controller: (worker: string) => ControllerAccess;
-  acceptance?: { client: PoolAcceptanceClient; apiKey: string; model?: string; access: PoolAccess };
+  /** Or why the lane has none: only modes that send model calls need it. */
+  acceptance: FleetAcceptance | FleetLaneRefused;
   sleep: (ms: number) => Promise<void>;
   now: () => number;
   log: (line: string) => void;
@@ -67,16 +74,8 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   bindings: fleet.bindings,
 });
 
-const needAcceptance = (deps: DispatchDependencies) =>
-  deps.acceptance
-    ? Effect.succeed(deps.acceptance)
-    : Effect.fail(
-        refuse(
-          "acceptance-credentials-missing",
-          "POOL_ACCEPTANCE_KEY, POOL_ACCEPTANCE_POOL or POOL_APP_SIGNING_KEY is unset.",
-          "Give the production-release environment the acceptance secrets.",
-        ),
-      );
+const needAcceptance = ({ acceptance }: DispatchDependencies) =>
+  acceptance instanceof FleetLaneRefused ? Effect.fail(acceptance) : Effect.succeed(acceptance);
 
 const program = (input: DispatchInput, deps: DispatchDependencies) =>
   Effect.gen(function* () {
@@ -158,7 +157,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       );
     if (mode === "accept") return { ...evidence, acceptance: yield* accept() };
     if (mode === "crash-cell") {
-      const catalog = yield* call(() => acceptance.client.modelCatalog(acceptance.apiKey));
+      const catalog = yield* call(() => acceptance.client.modelCatalog(acceptance.credential));
       const model = acceptance.model ?? (catalog.ids.length === 1 ? catalog.ids[0]! : undefined);
       if (!model)
         return yield* Effect.fail(
@@ -177,11 +176,11 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           // Every fifth request is a streamed turn, so inference is proven, not only routing.
           request: (index) =>
             index % 5 === 0
-              ? acceptance.client.sendTurn(acceptance.apiKey, model, {
+              ? acceptance.client.sendTurn(acceptance.credential, model, {
                   id: crypto.randomUUID(),
                   expectedRecords: 1,
                 })
-              : acceptance.client.modelCatalog(acceptance.apiKey),
+              : acceptance.client.modelCatalog(acceptance.credential),
           sleep: deps.sleep,
           now: deps.now,
         }),
@@ -199,7 +198,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         evidence.configure = configured;
         evidence.ready = yield* waitForReadyCell({
           controller: access,
-          demand: () => acceptance.client.modelCatalog(acceptance.apiKey),
+          demand: () => acceptance.client.modelCatalog(acceptance.credential),
           sleep: deps.sleep,
           now: deps.now,
           boundMs: deps.readyBoundMs,
