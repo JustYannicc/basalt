@@ -47,6 +47,9 @@ interface StubStorage {
 }
 
 test("the scheduled Worker keeps its passive probe and reports unavailable history separately without warming or repair", async (t) => {
+  // The test owns its clock: a minute off the quarter hour, where no fallback reports on its own.
+  const now = Date.parse("2026-11-23T05:07:00Z");
+  t.mock.method(Date, "now", () => now);
   const f = await fixture();
   f.home.addFile("auth-a");
   f.home.addGroup("fixture-pool", 1, ["auth-a"]);
