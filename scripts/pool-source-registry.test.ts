@@ -566,6 +566,14 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /provider-time, high-backoff, floor, open-window and usage-payload regressions/,
         );
+      } else if (patch.identity === "cliproxy-node-tunnel-initial-list-test") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0768-node-tunnel-initial-list-test.patch");
+        assert.match(patch.retirement.requires, /changes only tests/);
+        assert.match(
+          patch.retirement.requires,
+          /either the initial list or the next server_online/,
+        );
       } else if (patch.identity === "cliproxy-node-websocket-idle-eof-test") {
         assert.equal(name, "node");
         assert.equal(patch.file, "0766-node-websocket-idle-eof-test.patch");
