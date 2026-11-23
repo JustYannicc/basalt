@@ -4,6 +4,7 @@ import type { OverviewApiPrice } from "../../apps/pool/overview-contract.ts";
 import { digest } from "../../src/pool/backend-users.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolPersonalUsageSeries, poolUsageSeries } from "../../src/pool/model-history/series.ts";
+import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import {
   seriesDimensions,
   type PoolUsageSeriesInput,
@@ -58,7 +59,19 @@ const priceTable = async (targets: readonly { provider: string; model: string }[
  * sub-microsecond times. Half of it predates the v16 trigger, as production's history does, and
  * more arrives after the pool is ready, merged by the trigger into groups that already exist.
  */
-async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
+async function history(
+  f: Parameters<Parameters<typeof seriesFixture>[0]>[0],
+  /** A request table at the base schema: no app attribution column, as before migration v2. */
+  base = false,
+) {
+  if (base) {
+    await f.db.query(
+      "DELETE FROM basalt_model_history_migrations WHERE name='model_request_history_v2_app_attribution'",
+    );
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests DROP COLUMN app_id, DROP COLUMN requirement",
+    );
+  }
   const { visible, hidden, authority } = await accountAuthority();
   const home = await digest("home-local-v1");
   const gateway = await digest("pool-gateway-v1");
@@ -68,7 +81,7 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
   const insert = (from: number, to: number, target: string, salt = "") =>
     f.db.query(
       `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,person,
-        account,app_id,attribution,provider,model,service_tier,api_type,input_tokens,output_tokens,
+        account,${base ? "" : "app_id,"}attribution,provider,model,service_tier,api_type,input_tokens,output_tokens,
         cache_read_tokens,cache_write_tokens,reasoning_tokens,total_tokens,token_quality,failed,
         status_code,cost,currency,cost_basis,price_version,price_snapshot)
       SELECT encode(sha256(convert_to('people-'||$10||$11||'-'||n,'UTF8')),'hex'),src,
@@ -79,7 +92,7 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
           WHEN src=$4 THEN repeat('d',64)
           WHEN n%6=0 THEN $5 WHEN n%6=1 THEN $6 WHEN n%6=2 THEN repeat('c',64)
           WHEN n%6=3 THEN NULL ELSE $5 END,
-        (ARRAY[NULL,'fixture-app-a','fixture-app-b'])[1+n%3],
+        ${base ? "" : "(ARRAY[NULL,'fixture-app-a','fixture-app-b'])[1+n%3],"}
         CASE WHEN src=$3 THEN 'import-owner'
           ELSE (ARRAY['charge-snapshot','key-at-capture','unknown','key-at-capture'])[1+n%4] END,
         (ARRAY['fixture-lab','fixture-lab','other-lab',NULL,'fixture-lab'])[1+n%5],
@@ -304,5 +317,60 @@ test("on the rollup, a price tier its bands cannot separate makes that pair's es
         JSON.stringify(value, (key, field) => (key === "apiEstimate" ? undefined : field)),
       );
     assert.deepEqual(counts(rolled), counts(raw));
+  });
+});
+
+test("on a request table at the base schema, with no app column, the series and the summary from v16 equal raw rows", async () => {
+  await seriesFixture(async (f) => {
+    const { authority, poolId } = await history(f, true);
+    // Every row of such a table has no app: the rollup keys it as a row whose app is unknown.
+    assert.deepEqual(
+      (await f.db.query("SELECT DISTINCT app_id FROM basalt_model_usage_people_hourly")).rows,
+      [{ app_id: null }],
+    );
+    for (const range of ranges)
+      for (const by of [["app"], ["app", "person", "model"], [...seriesDimensions]] as const) {
+        const [raw, rolled] = await both(f, poolId, (db) =>
+          pages((after) =>
+            poolUsageSeries(
+              db,
+              { pool, ...range, bucket: "hour", by: [...by], ...(after ? { after } : {}) },
+              authority,
+              "owned",
+              priceTable,
+            ),
+          ),
+        );
+        assert.deepEqual(rolled, raw, JSON.stringify({ range, by }));
+      }
+    // The summary names the rollup it reads in its coverage statement, its fourth.
+    const to = ranges[1]!.to;
+    const summary = async (ready: boolean) => {
+      await f.db.query("DELETE FROM basalt_model_usage_people_ready");
+      if (ready)
+        await f.db.query(
+          "INSERT INTO basalt_model_usage_people_ready (pool,through) VALUES ($1,'2026-04-02T00:00:00Z')",
+          [poolId],
+        );
+      const statements: string[] = [];
+      const read = await poolUsageSummary(
+        {
+          query: (text, values) => {
+            statements.push(text);
+            return f.db.query(text, values);
+          },
+        },
+        { pool, from: ranges[1]!.from, to, by: "model", authority },
+        priceTable,
+        Date.parse(to),
+      );
+      assert.equal(statements[3]!.includes("basalt_model_usage_people_hourly"), ready);
+      return JSON.parse(
+        JSON.stringify(read, (key, value) =>
+          key === "capturedAt" || key === "asOf" ? "read time" : value,
+        ),
+      );
+    };
+    assert.deepEqual(await summary(true), await summary(false));
   });
 });

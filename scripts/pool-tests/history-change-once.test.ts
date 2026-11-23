@@ -278,7 +278,9 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   // resolves once, plus the two commit notifications. The 5000-row chunk resolves once.
   // Every heads index write (a first registration here, non-HOT projection updates in production)
   // evaluated the SQL hash as its own statement; projection itself is unchanged. Each history insert
-  // statement also runs the usage rollup's statement trigger once: one pool lock, one grouped upsert.
+  // statement also runs each usage rollup's statement trigger once: one pool lock and one grouped
+  // upsert per rollup, whatever its row count. While v15 and v16 both run that is two of each; the
+  // counts drop by two when v15 is removed (#1820).
   const measured = (version: Version) => {
     const { request, projection, registration, bulk } = counts[version]!;
     return { request, projection, registration, bulk };
@@ -286,8 +288,8 @@ test("one model request and one bulk import chunk run far fewer trigger statemen
   assert.deepEqual(
     { v11: measured("v11"), v12: measured("v12") },
     {
-      v11: { request: 36, projection: 11, registration: 4, bulk: 35003 },
-      v12: { request: 11, projection: 11, registration: 2, bulk: 6 },
+      v11: { request: 38, projection: 11, registration: 4, bulk: 35005 },
+      v12: { request: 13, projection: 11, registration: 2, bulk: 8 },
     },
   );
 });

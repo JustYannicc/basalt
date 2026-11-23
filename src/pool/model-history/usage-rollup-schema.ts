@@ -146,7 +146,9 @@ export function usageRollupProjection(
         THEN 'inconsistent' ELSE 'priced' END`,
     context_band: `coalesce(${band},0)`,
     person: "s.person",
-    app_id: "s.app_id",
+    // A request table at the base schema has no app column. Read by name from the row, the app of
+    // such a row is NULL, as for a row whose app is unknown, and the trigger runs there as v15's does.
+    app_id: "(to_jsonb(s)->>'app_id')::varchar(256)",
   };
   return `SELECT ${keys.map((key) => `${keyExpressions[key]} AS ${key}`).join(",")},
       ${values.map(([name, , aggregate]) => `${aggregate} AS ${name}`).join(",")}
