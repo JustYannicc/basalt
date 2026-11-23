@@ -11,7 +11,7 @@ import {
   usageRollupTargets,
   type UsageRollupTarget,
 } from "../../src/pool/model-history/usage-rollup-targets.ts";
-import { countedSince } from "./capture-hours-fixture.ts";
+import { fillByTicks, hourMs } from "./capture-hours-fixture.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -123,7 +123,7 @@ async function backfill(db: HistoryDatabase, target: UsageRollupTarget) {
     "2026-01-10T00:00:00Z",
   ]);
   // Ready on v16, the summary compares the pool's stored capture counts: its own tick fills them.
-  if (target === "v16") await countedSince(db, poolId, "2025-10-01T00:00:00Z");
+  if (target === "v16") await fillByTicks(db, sinceFixture());
 }
 
 /** Both summaries, counting the statements the second one ran. */
@@ -303,3 +303,11 @@ test("a pool whose v16 window is past the group bound keeps reading v15 instead 
     assert.deepEqual(data(read.model), data(raw.model));
   });
 });
+
+/**
+ * The lookback that reaches the fixture's January 2026 window: past the 400 days a real tick counts
+ * once enough time has passed, so the test widens it to cover the hours the summary reads.
+ */
+function sinceFixture() {
+  return Math.ceil((Date.now() - Date.parse("2025-09-01T00:00:00Z")) / hourMs);
+}

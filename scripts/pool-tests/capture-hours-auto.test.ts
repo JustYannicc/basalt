@@ -11,24 +11,24 @@ import { countHourStatement } from "../../src/pool/model-history/capture-hours-c
 import { captureHoursLockClass } from "../../src/pool/model-history/capture-hours-schema.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
-import { at, captureFixture, hourKey, memoryStorage } from "./capture-hours-fixture.ts";
+import { at, captureFixture, lookbackHours, memoryStorage } from "./capture-hours-fixture.ts";
+import { planCaptureHours } from "../../src/pool/model-history/capture-hours-plan.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryPrices } from "./usage-summary-fixture.ts";
 
 const minute = 60_000;
 type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 
-/** Every whole hour from the pool's first to the settle horizon has a settled count. */
+/** The pool's hours over the fixture's lookback, and how many of them have a settled count. */
 async function counted(f: Fixture, pool: string) {
   const row = (
     await f.db.query(
-      `SELECT count(*)::int AS hours,
-        (SELECT count(*)::int FROM basalt_model_capture_hours s WHERE s.pool=$1
-          AND s.checked_at >= s.hour + interval '2 hours') AS settled
-      FROM generate_series($2::timestamptz,
-        date_trunc('hour',now() - interval '2 hours','UTC') - interval '1 hour',
-        interval '1 hour') h`,
-      [pool, at(0)],
+      `SELECT count(*)::int AS hours, count(s.hour)::int AS settled
+      FROM generate_series(date_trunc('hour',now() - interval '2 hours','UTC') - $2 * interval '1 hour',
+        date_trunc('hour',now() - interval '2 hours','UTC') - interval '1 hour', interval '1 hour') h(at)
+      LEFT JOIN basalt_model_capture_hours s ON s.pool=$1 AND s.hour=h.at
+        AND s.checked_at >= s.hour + interval '2 hours'`,
+      [pool, lookbackHours],
     )
   ).rows[0]!;
   return { hours: Number(row.hours), settled: Number(row.settled) };
@@ -81,7 +81,7 @@ test("a pool is counted to its settle horizon by ticks alone, each session withi
     for (; ticks < 100; ticks++) {
       state = await captureHoursTick(storage, (work) => work(f.db), {
         now: () => (clock += 1),
-        bounds: { sessionMs: 20 },
+        bounds: { sessionMs: 20, lookbackHours },
       });
       for (const session of state.sessions ?? [])
         assert.ok(session.ms <= 20 + 3, `a session took ${session.ms} ms of a 20 ms budget`);
@@ -90,7 +90,7 @@ test("a pool is counted to its settle horizon by ticks alone, each session withi
     }
     assert.ok(ticks > 2, `it took ${ticks} ticks`);
     const done = await counted(f, c.poolId);
-    assert.ok(done.hours > 40);
+    assert.equal(done.hours, lookbackHours);
     assert.deepEqual(done, { hours: done.hours, settled: done.hours }, "fully counted");
     assert.equal(state.totalPendingHours, 0);
     assert.equal(state.pools, 0);
@@ -107,7 +107,7 @@ test("the hourly ceiling holds over any sliding hour, across ticks", async () =>
     const start = Date.parse("2026-02-01T00:00:00Z");
     let clock = start;
     const now = () => (clock += 1);
-    const bounds = { hourMs: 30, sessionMs: 20 };
+    const bounds = { hourMs: 30, sessionMs: 20, lookbackHours };
     const first = await captureHoursTick(storage, (work) => work(f.db), { now, bounds });
     const spent = (state: CaptureHoursAutoState, from: number) =>
       (state.sessions ?? []).filter((s) => s.at >= from).reduce((sum, s) => sum + s.ms, 0);
@@ -135,12 +135,20 @@ test("a code handover ends the tick at the next hour boundary, with every counte
         return result;
       },
     };
+    // The three hours before the settle horizon, as the database computes it.
+    const end = (
+      await f.db.query("SELECT date_trunc('hour',now() - interval '2 hours','UTC') AS at")
+    ).rows[0]!.at as Date;
+    const newest = [1, 2, 3].map((n) =>
+      new Date(end.getTime() - n * 3_600_000).toISOString().replace(".000Z", "Z"),
+    );
     const state = await captureHoursTick(memoryStorage(), (work) => work(db), {
       stopped: () => commits >= 3,
+      bounds: { lookbackHours },
     });
     assert.equal(state.lastStop, "handover");
-    assert.equal(Object.keys(await c.stored()).length, 3);
-    assert.deepEqual(Object.keys(await c.stored()), [hourKey(0), hourKey(1), hourKey(2)]);
+    // The newest hours come first, so the overview's usual windows are proven first.
+    assert.deepEqual(Object.keys(await c.stored()), [...newest].reverse());
     // No transaction is left open behind it.
     await f.db.query("BEGIN");
     await f.db.query("ROLLBACK");
@@ -154,7 +162,10 @@ test("a count past its own limit is slow: only its pool waits, three in a row is
     await c.native(at(0, minute));
     await c.native(at(1, minute), true);
     await c.ready();
-    const slowHour = hourKey(0);
+    // Newest first: the pool's first count is the hour before the settle horizon.
+    const slowHour = (await planCaptureHours(f.db, lookbackHours))!.pools.find(
+      (item) => item.pool === c.poolId,
+    )!.hours[0]!;
     const cost = { ms: 5_000 };
     const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
     const storage = memoryStorage();
@@ -162,11 +173,11 @@ test("a count past its own limit is slow: only its pool waits, three in a row is
       captureHoursTick(
         storage,
         (work) => work(timed(f.db, clock, { pool: c.poolId, hour: slowHour, cost })),
-        { now: () => clock.at },
+        { now: () => clock.at, bounds: { lookbackHours } },
       );
     const first = await tick();
     const other = await counted(f, c.otherId);
-    assert.equal(other.settled, other.hours - 1, "the other pool went on in the same tick");
+    assert.equal(other.settled, other.hours, "the other pool went on in the same tick");
     assert.equal(first.lastStop, "slow");
     assert.equal(first.pausedUntil, undefined, "a slow count never pauses the tick");
     assert.deepEqual(first.slow, [
@@ -221,7 +232,7 @@ test("a count the session's budget cuts short of its own limit is a budget stop,
     const state = await captureHoursTick(
       memoryStorage(),
       (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 700 } })),
-      { now: () => clock.at, bounds: { sessions: 1, sessionMs: 500 } },
+      { now: () => clock.at, bounds: { sessions: 1, sessionMs: 500, lookbackHours } },
     );
     assert.equal(state.lastStop, "budget");
     assert.equal(state.pausedUntil, undefined);
@@ -247,7 +258,11 @@ test("a pool another session holds is a lock stop: the tick never waits, pauses 
       ]);
       let clock = Date.parse("2026-02-01T00:00:00Z");
       const storage = memoryStorage();
-      const tick = () => captureHoursTick(storage, (work) => work(f.db), { now: () => clock });
+      const tick = () =>
+        captureHoursTick(storage, (work) => work(f.db), {
+          now: () => clock,
+          bounds: { lookbackHours },
+        });
       const started = performance.now();
       const first = await tick();
       assert.ok(performance.now() - started < 1_500, "it never queues behind the holder");
@@ -309,7 +324,7 @@ test("a failing count is an error stop that pauses the tick; a tick failing befo
     const failing = await captureHoursTick(
       storage,
       (work) => work(timed(f.db, clock, undefined, c.poolId)),
-      { now: () => clock.at },
+      { now: () => clock.at, bounds: { lookbackHours } },
     );
     assert.equal(failing.lastStop, "error");
     assert.deepEqual(failing.repeat, { pool: c.poolId, reason: "error", count: 1 });
@@ -329,6 +344,7 @@ test("a failing count is an error stop that pauses the tick; a tick failing befo
     clock.at += 61 * minute;
     const recovered = await captureHoursTick(storage, (work) => work(f.db), {
       now: () => clock.at,
+      bounds: { lookbackHours },
     });
     assert.deepEqual(captureHoursStuckPools(recovered), []);
     assert.equal(recovered.lastStop, "complete");
@@ -348,15 +364,17 @@ test("once nothing is pending, each tick recounts the settled hours counted long
       [at(0), at(30)],
     );
     const before = await f.db.query(
-      "SELECT hour,checked_at FROM basalt_model_capture_hours WHERE hour < $1 ORDER BY hour",
-      [at(30)],
+      "SELECT hour,checked_at FROM basalt_model_capture_hours WHERE hour >= $2 AND hour < $1 ORDER BY hour",
+      [at(30), at(0)],
     );
-    const state = await captureHoursTick(c.storage, (work) => work(f.db));
+    const state = await captureHoursTick(c.storage, (work) => work(f.db), {
+      bounds: { lookbackHours },
+    });
     assert.equal(state.lastStop, "complete");
     assert.equal(state.stalestCheckedAt, at(3));
     const after = await f.db.query(
-      "SELECT hour,checked_at FROM basalt_model_capture_hours WHERE hour < $1 ORDER BY hour",
-      [at(30)],
+      "SELECT hour,checked_at FROM basalt_model_capture_hours WHERE hour >= $2 AND hour < $1 ORDER BY hour",
+      [at(30), at(0)],
     );
     const moved = after.rows.map(
       (row, n) =>
@@ -367,7 +385,9 @@ test("once nothing is pending, each tick recounts the settled hours counted long
       Array.from({ length: 30 }, (_, n) => n < 24),
       "the 24 counted longest ago, and only those",
     );
-    const next = await captureHoursTick(c.storage, (work) => work(f.db));
+    const next = await captureHoursTick(c.storage, (work) => work(f.db), {
+      bounds: { lookbackHours },
+    });
     assert.equal(next.stalestCheckedAt, at(27));
   });
 });

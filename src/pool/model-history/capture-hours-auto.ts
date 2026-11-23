@@ -1,6 +1,7 @@
 import type { HistoryDatabase } from "./schema.ts";
 import { captureHoursCountLimitMs, countCaptureHour } from "./capture-hours-count.ts";
 import {
+  captureHoursLookbackHours,
   countedHours,
   planCaptureHours,
   stalestCapture,
@@ -12,8 +13,8 @@ export { captureHoursInspect } from "./capture-hours-inspect.ts";
 /**
  * The pool counts each of its settled hours' Home usage rows itself: each model-history pass ends,
  * after the usage rollup's tick, with one tick of at most two bounded sessions of its own, each
- * counting pending hours oldest first, one short transaction per hour, then recounting the hours
- * counted longest ago. Its state is stored apart from the rollup's.
+ * counting pending hours of the last 400 days newest first, one short transaction per hour, then
+ * recounting the hours counted longest ago. Its state is stored apart from the rollup's.
  */
 export const captureHoursAutoKey = "capture-hours-auto-v1";
 
@@ -33,6 +34,8 @@ export interface CaptureHoursAutoBounds {
   readonly countLimitMs: number;
   /** Settled hours recounted per tick, the ones counted longest ago, once nothing is pending. */
   readonly recount: number;
+  /** The hours before the settle horizon each pool's counts cover. */
+  readonly lookbackHours: number;
 }
 export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   sessions: 2,
@@ -44,6 +47,7 @@ export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   failingAfter: 6,
   countLimitMs: captureHoursCountLimitMs,
   recount: 24,
+  lookbackHours: captureHoursLookbackHours,
 };
 
 export type CaptureHoursAutoStop =
@@ -181,7 +185,7 @@ export async function captureHoursTick(
     let stopHour: string | undefined;
     try {
       stop = await session(async (db) => {
-        const plan = await planCaptureHours(db);
+        const plan = await planCaptureHours(db, bounds.lookbackHours);
         if (!plan) return "not_applied";
         const { pools, plannedAt } = plan;
         // The tick reached its database and plan, so it is no longer failing as a whole.

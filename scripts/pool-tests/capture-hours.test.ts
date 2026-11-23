@@ -1,15 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { digest } from "../../src/pool/backend-users.ts";
+import { timestamp } from "../../src/pool/model-history/record.ts";
 import { homeCaptureCoverage } from "../../src/pool/model-history/capture-coverage.ts";
 import {
   countCaptureHour,
   countHourStatement,
 } from "../../src/pool/model-history/capture-hours-count.ts";
-import { planCaptureHours } from "../../src/pool/model-history/capture-hours-plan.ts";
+import {
+  captureHoursLookbackHours,
+  planCaptureHours,
+} from "../../src/pool/model-history/capture-hours-plan.ts";
 import { poolUsernamePattern } from "../../src/pool/model-history/capture-population.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
-import { at, captureFixture, hourKey, recording } from "./capture-hours-fixture.ts";
+import { at, captureFixture, hourKey, lookbackHours, recording } from "./capture-hours-fixture.ts";
 import { seriesFixture } from "./series-fixture.ts";
 
 const lots = () => 60_000;
@@ -103,7 +107,7 @@ test("a count taken before its hour settled is uncounted: unproven to the summar
     const read = await c.coverage(at(0), at(24));
     assert.deepEqual([...read.incomplete!], [hourKey(2)]);
     assert.equal(read.ranges, undefined);
-    const plan = await planCaptureHours(f.db);
+    const plan = await planCaptureHours(f.db, lookbackHours);
     assert.deepEqual(
       plan?.pools.map((item) => [item.pool, item.pending, item.hours]),
       [[c.poolId, 1, [hourKey(2)]]],
@@ -350,5 +354,81 @@ test("without v17, or for a pool not ready on v16, the capture check reads every
       0,
       "no stored hour is read before v17",
     );
+  });
+});
+
+/** The settle horizon as the database computes it, as an ISO time to the millisecond. */
+async function horizon(db: HistoryDatabase) {
+  const row = await db.query("SELECT date_trunc('hour',now() - interval '2 hours','UTC') AS at");
+  return (row.rows[0]!.at as Date).getTime();
+}
+
+test("every pool ready on v16 is counted over the 400 days before the settle horizon, newest first", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, 60_000));
+    await c.ready();
+    const end = await horizon(f.db);
+    const plan = (await planCaptureHours(f.db))!.pools;
+    assert.equal(captureHoursLookbackHours, 9_600);
+    assert.deepEqual(
+      plan.map((item) => [item.pool, item.pending, item.hours.length]),
+      [[c.poolId, 9_600, 2_000]],
+      "400 days of hours, whatever the pool's first request, listed 2,000 at a time",
+    );
+    const hour = (n: number) => new Date(end - n * 3_600_000).toISOString().replace(".000Z", "Z");
+    assert.deepEqual(plan[0]!.hours.slice(0, 3), [hour(1), hour(2), hour(3)], "newest first");
+    assert.equal(plan[0]!.hours.at(-1), hour(2_000));
+  });
+});
+
+test("a pool with only imported rows is counted, and its counted hours read complete", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    const imported = await digest("fixture-import");
+    for (const hour of [0, 5, 30])
+      await f.insert({
+        source: imported,
+        attribution: "import-owner",
+        account: `i:${"e".repeat(62)}`,
+        timestamp: timestamp(at(hour, 60_000)),
+        provider: "fixture-lab",
+        model: "fixture-model-0",
+      });
+    await c.ready();
+    assert.equal(
+      (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_people_ready")).rows[0]!
+        .n,
+      1,
+      "the imports-only pool is ready on v16",
+    );
+    await c.fill();
+    const stored = await c.stored();
+    assert.equal(Object.keys(stored).length, lookbackHours);
+    assert.ok(
+      Object.values(stored).every((n) => n === 0),
+      "no Home usage: every count is 0",
+    );
+    const read = await c.coverage(at(0), at(36));
+    assert.deepEqual([...read.incomplete!], [], "counts 0 equal the rollup's 0 Home requests");
+    assert.equal(read.ranges, undefined);
+  });
+});
+
+test("hours of a window older than the lookback stay unproven, never complete", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, 60_000));
+    await c.ready();
+    await c.fill();
+    const first = (await horizon(f.db)) - lookbackHours * 3_600_000;
+    const before = (n: number) => new Date(first - n * 3_600_000).toISOString();
+    const read = await c.coverage(before(4), at(24));
+    assert.deepEqual(
+      [...read.incomplete!].sort(),
+      [4, 3, 2, 1].map((n) => before(n).replace(".000Z", "Z")),
+      "the four hours before the lookback, and only those",
+    );
+    assert.equal(read.ranges, undefined, "and none of them is read row by row");
   });
 });

@@ -1,4 +1,3 @@
-import { digest } from "../backend-users.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import {
   captureSettledAfter,
@@ -14,40 +13,44 @@ const listedHours = 2_000;
 
 export interface CaptureHoursPool {
   readonly pool: string;
-  /** The pool's pending hours before the settle horizon, oldest first, at most `listedHours`. */
+  /** The pool's pending hours before the settle horizon, newest first, at most `listedHours`. */
   readonly hours: readonly string[];
   readonly pending: number;
 }
 
+/** How far back from the settle horizon the tick counts: 400 days. Older hours stay unproven. */
+export const captureHoursLookbackHours = 400 * 24;
+
 /**
- * The pools to count: each pool ready on v16 that has native rows, from the hour of its first
- * native group up to the settle horizon. A pending hour has no count, or one taken before it
- * settled. Reads v16's ready table, the first of each pool's native groups by its pool-hour index,
+ * The pools to count: every pool ready on v16, imports-only ones included, over the `lookback`
+ * hours before the settle horizon. A pending hour has no count, or one taken before it settled;
+ * the newest come first, so the overview's usual windows are proven first. Reads v16's ready table
  * and the counts' primary key. Undefined while v16 or v17 is not applied.
  */
-export async function planCaptureHours(db: HistoryDatabase) {
+export async function planCaptureHours(
+  db: HistoryDatabase,
+  lookback: number = captureHoursLookbackHours,
+) {
+  if (!Number.isSafeInteger(lookback) || lookback < 1) throw new Error("Invalid lookback");
   const applied = await db.query(
     "SELECT count(*)::int AS n FROM basalt_model_history_migrations WHERE name=ANY($1::text[])",
     [[historyUsagePeopleRollupVersion, historyCaptureHoursVersion]],
   );
   if (Number(applied.rows[0]?.n) !== 2) return undefined;
-  const pending = (h: string) => `FROM generate_series(p.first, b.horizon - interval '1 hour',
-      interval '1 hour') AS ${h}(at)
+  const pending = (h: string) => `FROM generate_series(b.horizon - interval '1 hour', b.first,
+      interval '-1 hour') AS ${h}(at)
     WHERE NOT EXISTS (SELECT 1 FROM basalt_model_capture_hours s
       WHERE s.pool=p.pool AND s.hour=${h}.at AND ${captureSettledAfter("s")})`;
   const rows = (
     await db.query(
-      `WITH b AS MATERIALIZED (SELECT ${captureSettleHorizon} AS horizon), p AS MATERIALIZED (
-        SELECT r.pool, (SELECT min(h.hour) FROM basalt_model_usage_people_hourly h
-          WHERE h.pool=r.pool AND h.source=$1::character(64)) AS first
-        FROM basalt_model_usage_people_ready r
-      )
+      `WITH b AS MATERIALIZED (SELECT horizon, horizon - $1::int * interval '1 hour' AS first
+        FROM (SELECT ${captureSettleHorizon} AS horizon) h)
       SELECT p.pool, to_char(now() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS planned_at,
         (SELECT count(*) ${pending("g")})::int AS pending,
-        ARRAY(SELECT ${iso("x.at")} FROM (SELECT g.at ${pending("g")} ORDER BY g.at
-          LIMIT ${listedHours}) x ORDER BY x.at) AS hours
-      FROM p CROSS JOIN b WHERE p.first IS NOT NULL ORDER BY p.pool`,
-      [await digest("home-local-v1")],
+        ARRAY(SELECT ${iso("x.at")} FROM (SELECT g.at ${pending("g")} ORDER BY g.at DESC
+          LIMIT ${listedHours}) x ORDER BY x.at DESC) AS hours
+      FROM basalt_model_usage_people_ready p CROSS JOIN b ORDER BY p.pool`,
+      [lookback],
     )
   ).rows;
   return {

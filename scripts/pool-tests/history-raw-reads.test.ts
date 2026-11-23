@@ -14,7 +14,8 @@ import {
   runUsageRollup,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
-import { countedSince } from "./capture-hours-fixture.ts";
+import { fillByTicks } from "./capture-hours-fixture.ts";
+import { captureHoursLookbackHours } from "../../src/pool/model-history/capture-hours-plan.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -215,9 +216,8 @@ test("the summary finds the capture cursor's request, and the captured Home usag
       assert.ok(run < 50, "the backfill finishes");
       if ((await runUsageRollup(f.db, backfill, 60_000)).status === "complete") break;
     }
-    // Counted by its own tick, and its window's earlier hours counted empty, as a pool whose
-    // history spans its window is.
-    await countedSince(f.db, (await digest(pool)).slice(0, 16), "2026-07-01T00:00:00Z");
+    // Counted by its own tick over its 400 days, which span the summary's window.
+    await fillByTicks(f.db, captureHoursLookbackHours);
     const read = recording(f.db);
     const to = "2026-11-23T20:00:00Z";
     await poolUsageSummary(

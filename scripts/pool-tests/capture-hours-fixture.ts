@@ -96,13 +96,7 @@ export async function captureFixture(f: Fixture) {
     throw new Error("the v16 backfill did not finish");
   };
   const storage = memoryStorage();
-  const fill = async () => {
-    for (let tick = 0; tick < 20; tick++) {
-      const state = await captureHoursTick(storage, (work) => work(f.db));
-      if (state.lastStop === "complete" && state.totalPendingHours === 0) return state;
-    }
-    throw new Error("the tick did not fill the pool");
-  };
+  const fill = (lookback = lookbackHours) => fillByTicks(f.db, lookback, storage);
   const coverage = async (from: string, to: string) => {
     const read = recording(f.db);
     const result = await homeCaptureCoverage(read.db, poolId, fixture.source, from, to, true);
@@ -133,23 +127,20 @@ export async function captureFixture(f: Fixture) {
   };
 }
 
-/**
- * Fills a pool's counts by its own tick, and counts its hours from `since` up to its first native
- * hour as empty, as a pool whose history spans its window has them.
- */
-export async function countedSince(db: HistoryDatabase, poolId: string, since: string) {
-  const storage = memoryStorage();
-  for (let tick = 0; ; tick++) {
-    if (tick >= 20) throw new Error("the counts did not fill");
-    const state = await captureHoursTick(storage, (work) => work(db));
-    if (state.lastStop === "complete" && state.totalPendingHours === 0) break;
+/** The fixture's lookback: three days, which covers its hours, so a fill takes few counts. */
+export const lookbackHours = 72;
+
+/** Every ready pool's counts over `lookback` hours, by ticks alone. */
+export async function fillByTicks(
+  db: HistoryDatabase,
+  lookback: number,
+  storage = memoryStorage(),
+) {
+  for (let tick = 0; tick < 200; tick++) {
+    const state = await captureHoursTick(storage, (work) => work(db), {
+      bounds: { lookbackHours: lookback, hourMs: Number.POSITIVE_INFINITY },
+    });
+    if (state.lastStop === "complete" && state.totalPendingHours === 0) return state;
   }
-  await db.query(
-    `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,checked_at)
-    SELECT $1, h, 0, h + interval '3 hours' FROM generate_series($2::timestamptz,
-      (SELECT min(hour) FROM basalt_model_capture_hours WHERE pool=$1) - interval '1 hour',
-      interval '1 hour') h
-    ON CONFLICT DO NOTHING`,
-    [poolId, since],
-  );
+  throw new Error("the tick did not fill the counts");
 }
