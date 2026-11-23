@@ -4,6 +4,8 @@ import type { HistoryDatabase } from "./schema.ts";
 import { maxSummaryRollupGroups } from "./summary-rollup-query.ts";
 import {
   recomputeUsageRollupHour,
+  usageRollupAttemptMarginMs,
+  usageRollupMinReadMs,
   usageRollupReadLimitMs,
   type UsageRollupSlowPhase,
 } from "./usage-rollup-hour.ts";
@@ -26,6 +28,8 @@ export const usageRollupWalPerCall = 32 * 1024 * 1024;
  * still slow then, it stops the call, naming it.
  */
 export const usageRollupHourLimitMs = 150;
+/** The most slow hours a call reports, and a caller keeps, per pool. */
+export const usageRollupSlowHoursKept = 24;
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -105,11 +109,18 @@ export function approvedUsageRollupPlan(raw: unknown): UsageRollupPlan {
  * already recomputed is skipped, so a stopped or failed run resumes where it left off; a pool is
  * marked ready only after its last hour. An hour too slow three times in a row is deferred and the
  * pool goes on; once its other hours are done, each deferred hour gets one more full try, so an hour
- * that was only cold finishes in the same call. Returns counts only.
+ * that was only cold finishes in the same call. Hours a pool's earlier calls found slow are tried
+ * last, once, after every other pending hour. An hour or attempt starts only when the budget left
+ * covers its worst case, except the call's first. Returns counts only.
  */
 export async function runUsageRollup(
   db: HistoryDatabase,
-  plan: UsageRollupPlan,
+  plan: {
+    readonly pools: readonly (UsageRollupPlan["pools"][number] & {
+      /** Hours earlier calls found slow: tried last, once each. */
+      readonly slowHours?: readonly string[];
+    })[];
+  },
   budgetMs = 12_000,
   now: () => number = () => performance.now(),
   walBudgetBytes = usageRollupWalPerCall,
@@ -148,6 +159,12 @@ export async function runUsageRollup(
   let complete = true;
   // Hours this call recomputed across every pool: only the call's first hour skips the WAL check.
   let callHours = 0;
+  // Whether any attempt started: the call's first always does, so every call gets an hour through.
+  let attempted = false;
+  const left = () => budgetMs - (now() - started);
+  const worst = usageRollupMinReadMs + hourLimitMs + usageRollupAttemptMarginMs;
+  // Pending hours with a slow attempt, or known slow, still left when the call ended.
+  let slowLeft: string[] = [];
   for (const item of plan.pools) {
     const pending = (
       await db.query(
@@ -160,10 +177,12 @@ export async function runUsageRollup(
     ).rows.map((row) => new Date(row.at as string | Date).toISOString());
     let recomputedHours = 0,
       groups = 0;
+    const known = new Set(item.slowHours ?? []);
+    const recomputed = new Set<string>();
     const slowHours = new Map<string, { phase: UsageRollupSlowPhase; readMs: number }>();
     /** One hour's full try; "end" once the call must stop, with `stop` saying why. */
     const attempt = async (at: string): Promise<"next" | "slow" | "end"> => {
-      if (stopped() || now() - started >= budgetMs) {
+      if (stopped() || (attempted && left() < worst)) {
         stop = "budget";
         return "end";
       }
@@ -178,8 +197,15 @@ export async function runUsageRollup(
         at,
         { hourLimitMs, readLimitMs },
         now,
+        { left, stopped, first: !attempted },
       );
+      attempted = true;
       maxHoldMs = Math.max(maxHoldMs, hour.heldMs);
+      if (hour.kind === "budget") {
+        if (hour.slow) slowHours.set(at, hour.slow);
+        stop = "budget";
+        return "end";
+      }
       if (hour.kind === "lock") {
         stop = "lock";
         return "end";
@@ -189,6 +215,7 @@ export async function runUsageRollup(
         return "slow";
       }
       if (hour.kind === "done" || hour.committed) {
+        recomputed.add(at);
         groups += hour.groups;
         recomputedHours++;
         callHours++;
@@ -202,7 +229,7 @@ export async function runUsageRollup(
     };
     let ended = false;
     const deferred: string[] = [];
-    for (const at of pending) {
+    for (const at of pending.filter((hour) => !known.has(hour))) {
       const next = await attempt(at);
       if (next === "end") {
         ended = true;
@@ -210,8 +237,9 @@ export async function runUsageRollup(
       }
       if (next === "slow") deferred.push(at);
     }
+    const last = [...new Set([...deferred, ...pending.filter((hour) => known.has(hour))])].sort();
     const stillSlow: string[] = [];
-    for (const at of ended ? [] : deferred) {
+    for (const at of ended ? [] : last) {
       const next = await attempt(at);
       if (next === "end") {
         ended = true;
@@ -224,6 +252,19 @@ export async function runUsageRollup(
       stop = "slow_hour";
       slowHour = stillSlow[0]!;
       slow = slowHours.get(slowHour);
+    }
+    slowLeft = [...new Set([...slowHours.keys(), ...pending.filter((hour) => known.has(hour))])]
+      .filter((hour) => !recomputed.has(hour))
+      .sort()
+      .slice(0, usageRollupSlowHoursKept);
+    // A budget that ran out with slow hours still left names the first one this call measured, so
+    // a call that got nothing past them reads as slow, not as an ordinary budget.
+    if ((stop === "budget" || stop === "wal") && !slowHour) {
+      const named = slowLeft.find((hour) => slowHours.has(hour));
+      if (named) {
+        slowHour = named;
+        slow = slowHours.get(named);
+      }
     }
     const remainingHours = pending.length - recomputedHours;
     let groupsInWindow: number | undefined;
@@ -265,6 +306,8 @@ export async function runUsageRollup(
     status: complete ? ("complete" as const) : ("progress" as const),
     ...(complete ? {} : { stopped: stop ?? "budget" }),
     ...(slowHour ? { slowHour } : {}),
+    // Every pending hour of the last pool this call found slow or was told is, for its next call.
+    ...(slowLeft.length ? { slowHours: slowLeft } : {}),
     // Where the named slow hour was cancelled, and how long its last warming read ran.
     ...(slow ? { slowPhase: slow.phase, slowReadMs: Math.round(slow.readMs * 10) / 10 } : {}),
     maxHoldMs: Math.round(maxHoldMs),

@@ -22,6 +22,23 @@ export const usageRollupReadLimitMs = 2_000;
  */
 export const usageRollupHoldLimitMs = 350;
 
+/** The shortest a warming read may be given; an attempt that cannot give it this much waits. */
+export const usageRollupMinReadMs = 50;
+/** Round trips and the commit around an attempt's two statements. */
+export const usageRollupAttemptMarginMs = 50;
+
+/**
+ * What one call has left, and whether it must end: an attempt starts only when what is left covers
+ * its worst case (the shortest read, the hour limit and the margin), except the call's very first,
+ * and its read gets what is left after the recompute's share, up to the read limit.
+ */
+export interface UsageRollupAttemptBudget {
+  readonly left: () => number;
+  readonly stopped: () => boolean;
+  /** True for the call's first attempt, which always starts, so every call gets an hour through. */
+  readonly first: boolean;
+}
+
 /** Where a slow attempt was cancelled: warming the rows, or recomputing them under the lock. */
 export type UsageRollupSlowPhase = "read" | "recompute";
 
@@ -33,7 +50,13 @@ export type UsageRollupHourOutcome =
   /** Three attempts in a row were cancelled; `readMs` is the last warming read's server time. */
   | { kind: "slow"; phase: UsageRollupSlowPhase; readMs: number; heldMs: number }
   /** Five lock refusals in a row: writers hold the pool. */
-  | { kind: "lock"; heldMs: number };
+  | { kind: "lock"; heldMs: number }
+  /** The call's budget or a handover ended the try; `slow` if an attempt was cancelled first. */
+  | {
+      kind: "budget";
+      slow?: { phase: UsageRollupSlowPhase; readMs: number };
+      heldMs: number;
+    };
 
 /**
  * The Postgres error code behind a failed statement. The bounded session the operator runs in
@@ -87,14 +110,28 @@ export async function recomputeUsageRollupHour(
   at: string,
   limits: { hourLimitMs: number; readLimitMs: number },
   now: () => number,
+  budget: UsageRollupAttemptBudget,
 ): Promise<UsageRollupHourOutcome> {
   let slowAttempts = 0,
     refused = 0,
     maxHoldMs = 0,
     readMs = 0;
+  let slow: { phase: UsageRollupSlowPhase; readMs: number } | undefined;
   // A refusal comes right after a read that finished, so its retry starts on warm pages.
   let warm = true;
-  for (;;) {
+  for (let attempt = 0; ; attempt++) {
+    // A draining handover starts no read: its lock on the table could hold a migration's ALTER.
+    if (budget.stopped()) return { kind: "budget", ...(slow ? { slow } : {}), heldMs: maxHoldMs };
+    const reading = Math.min(
+      limits.readLimitMs,
+      Math.max(
+        usageRollupMinReadMs,
+        Math.floor(budget.left() - limits.hourLimitMs - usageRollupAttemptMarginMs),
+      ),
+    );
+    const worst = usageRollupMinReadMs + limits.hourLimitMs + usageRollupAttemptMarginMs;
+    if (!(budget.first && attempt === 0) && budget.left() < worst)
+      return { kind: "budget", ...(slow ? { slow } : {}), heldMs: maxHoldMs };
     let holdStarted: number | undefined;
     await db.query("BEGIN");
     try {
@@ -103,7 +140,7 @@ export async function recomputeUsageRollupHour(
       await db.query(
         `SELECT set_config('statement_timeout',$1,true),set_config('TimeZone','UTC',true),
           set_config('synchronous_commit','off',true)`,
-        [`${warm ? limits.readLimitMs : limits.hourLimitMs}ms`],
+        [`${warm ? reading : limits.hourLimitMs}ms`],
       );
       if (warm) {
         const read = await db.query(prewarm, [pool, at, `${limits.hourLimitMs}ms`]);
@@ -157,7 +194,8 @@ export async function recomputeUsageRollupHour(
       }
       if (code !== "57014") throw error;
       const phase: UsageRollupSlowPhase = holdStarted === undefined ? "read" : "recompute";
-      if (phase === "read") readMs = limits.readLimitMs;
+      if (phase === "read") readMs = reading;
+      slow = { phase, readMs };
       // Pages a cancelled read reached stay cached, so the next attempt's read gets further.
       warm = true;
       if (++slowAttempts >= 3) return { kind: "slow", phase, readMs, heldMs: maxHoldMs };

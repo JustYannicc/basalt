@@ -12,9 +12,15 @@ import {
 import {
   planUsageRollup,
   runUsageRollup,
+  usageRollupHourLimitMs,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-inspect.ts";
-import { prewarmUsageRollupHour } from "../../src/pool/model-history/usage-rollup-hour.ts";
+import {
+  prewarmUsageRollupHour,
+  usageRollupAttemptMarginMs,
+  usageRollupMinReadMs,
+  usageRollupReadLimitMs,
+} from "../../src/pool/model-history/usage-rollup-hour.ts";
 import { usageRollupLockClass } from "../../src/pool/model-history/usage-rollup-schema.ts";
 import { seriesFixture } from "./series-fixture.ts";
 
@@ -62,10 +68,16 @@ async function preexisting(f: Fixture, ...batches: object[][]) {
  * Test-only: the recompute of one pool's hour sleeps past the hour limit on its first row, for the
  * first `attempts` attempts. A sequence is not rolled back by the cancel, so it counts attempts.
  */
-async function slowHour(db: HistoryDatabase, pool: string, at: string, attempts: number) {
+async function slowHour(
+  db: HistoryDatabase,
+  pool: string,
+  at: string | readonly string[],
+  attempts: number,
+) {
+  const hours = (typeof at === "string" ? [at] : at).map((hour) => `'${hour}'`).join(",");
   await db.query("CREATE SEQUENCE slow_hour_fixture_attempts");
   await db.query(`CREATE FUNCTION slow_hour_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-      IF NEW.pool = '${pool}' AND NEW.hour = '${at}'::timestamptz
+      IF NEW.pool = '${pool}' AND NEW.hour = ANY(ARRAY[${hours}]::timestamptz[])
         AND nextval('slow_hour_fixture_attempts') <= ${attempts} THEN
         PERFORM pg_sleep(0.3);
       END IF;
@@ -121,7 +133,13 @@ test("a dense first hour stalls only its own pool: the rest of it and other pool
     assert.ok(!(await ready(f.db, a)));
     assert.equal(first.pausedUntil, undefined, "nothing pauses the tick");
     assert.deepEqual(first.slow, [
-      { pool: a, hour: dense, count: 1, until: new Date(clock + 10 * minute).toISOString() },
+      {
+        pool: a,
+        hour: dense,
+        count: 1,
+        until: new Date(clock + 10 * minute).toISOString(),
+        hours: [dense],
+      },
     ]);
     clock += 5 * minute;
     const waiting = await tick();
@@ -155,6 +173,11 @@ test("a dense first hour stalls only its own pool: the rest of it and other pool
     const retried = await tick();
     assert.equal(retried.slow?.[0]?.count, 4, "the retry ran");
     assert.deepEqual(usageRollupStuckPools(retried), [a]);
+    assert.equal(
+      stuckLog.mock.calls.filter((call) => call.arguments[0] === "POOL_USAGE_ROLLUP_STUCK").length,
+      1,
+      "loud once when it became stuck, not at every retry",
+    );
     // The hour fits now: the next pass after the wait finishes the pool and clears it.
     await fits();
     clock += 10 * minute + 1_000;
@@ -379,5 +402,168 @@ test("the total of pending hours covers every pool not ready, and only those", a
     const after = storage.state()!;
     assert.equal(after.totalPendingHours, await left(), "a ready pool counts no longer");
     assert.equal(usageRollupInspect(after).totalPendingHours, after.totalPendingHours);
+    // The total is a diagnostic: a read of it that fails keeps the last one and fails nothing.
+    const failing: HistoryDatabase = {
+      query: async (text: string, values?: unknown[]) => {
+        if (text.includes("p.since")) throw new Error("canceling statement due to user request");
+        return f.db.query(text, values);
+      },
+    };
+    clock += 5 * minute;
+    const kept = await usageRollupTick(storage, (work) => work(failing), {
+      now,
+      bounds: { sessionMs: 3 },
+    });
+    assert.notEqual(kept.lastStop, "error");
+    assert.equal(kept.pausedUntil, undefined);
+    assert.equal(kept.totalPendingHours, after.totalPendingHours);
+  });
+});
+
+/** One attempt's worst case: the longest read, the hour limit and the margin. */
+const attemptWorstMs = usageRollupReadLimitMs + usageRollupHourLimitMs + usageRollupAttemptMarginMs;
+/** The least budget an attempt other than a call's first starts with. */
+const leastAttemptMs = usageRollupMinReadMs + usageRollupHourLimitMs + usageRollupAttemptMarginMs;
+
+/**
+ * The test's clock, as production spends it: a dense hour's warming read takes 1.9 s, as a cold one
+ * does there, but never more than the limit it was given, past which it is cancelled; a cancelled
+ * recompute takes its whole hour limit.
+ */
+function timed(db: HistoryDatabase, pool: string, dense: readonly string[], clock: { at: number }) {
+  let limit = Number.POSITIVE_INFINITY;
+  return {
+    query: async (text: string, values?: unknown[]) => {
+      if (text.includes("set_config('synchronous_commit'"))
+        limit = Number.parseInt(String(values![0]));
+      if (
+        text.includes("hour_limit") &&
+        values![0] === pool &&
+        dense.includes(String(values![1]))
+      ) {
+        clock.at += Math.min(1_900, limit);
+        if (limit < 1_900)
+          throw Object.assign(new Error("canceling statement due to statement timeout"), {
+            code: "57014",
+          });
+      }
+      try {
+        return await db.query(text, values);
+      } catch (error) {
+        if (text.includes("pg_try_advisory_xact_lock")) clock.at += usageRollupHourLimitMs;
+        throw error;
+      }
+    },
+  } satisfies HistoryDatabase;
+}
+
+test("dense hours at a pool's head never loop silently on its budget: its light hours commit, other pools go on, and it is loud until they fit", async (t) => {
+  const stuckLog = t.mock.method(console, "error", () => {});
+  const denseHours = [dense, "2026-01-01T01:00:00.000Z", "2026-01-01T02:00:00.000Z"];
+  // Ticks until the other pool is ready, and the end state, with or without the dense hours.
+  const scenario = async (withDense: boolean) => {
+    let ticks = 0;
+    let after: UsageRollupAutoState | undefined;
+    await seriesFixture(async (f) => {
+      const [a, b] = [String((await f.row()).pool), second].sort() as [string, string];
+      await preexisting(f, rows(6, 3, a), rows(3, 2, b));
+      await firstPending(f.db, a);
+      const fits = withDense ? await slowHour(f.db, a, denseHours, 1_000_000) : async () => {};
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      let heavy = withDense ? denseHours : [];
+      const storage = memoryStorage();
+      const tick = () =>
+        usageRollupTick(storage, (work) => work(timed(f.db, a, heavy, clock)), {
+          now: () => clock.at,
+        });
+      const first = await tick();
+      ticks++;
+      if (withDense) {
+        const wait = first.slow?.find((entry) => entry.pool === a);
+        assert.equal(wait?.count, 1, "a budget spent on dense hours alone is a slow stop");
+        assert.equal(wait?.until, new Date(clock.at + 10 * minute).toISOString());
+        assert.equal(first.pausedUntil, undefined);
+      }
+      for (; ticks < 12 && !(await ready(f.db, b)); ticks++) {
+        clock.at += 10 * minute + 1_000;
+        await tick();
+      }
+      if (!withDense) return;
+      // While they stay dense, every light hour commits and the pool is stuck, loud, naming one.
+      for (let i = 0; i < 12 && !usageRollupStuckPools(storage.state()!).includes(a); i++) {
+        clock.at += 10 * minute + 1_000;
+        await tick();
+      }
+      assert.equal(await marked(f.db, a), 48 - denseHours.length, "every light hour committed");
+      const stuck = storage.state()!.stuck?.find((entry) => entry.pool === a);
+      assert.equal(stuck?.reason, "slow");
+      assert.ok(denseHours.includes(stuck!.hour!), `stuck on ${stuck?.hour}`);
+      assert.ok(
+        stuckLog.mock.calls.some((call) => call.arguments[0] === "POOL_USAGE_ROLLUP_STUCK"),
+      );
+      // Once they fit, ticks alone finish the pool and clear it.
+      await fits();
+      heavy = [];
+      for (let i = 0; i < 6 && !(await ready(f.db, a)); i++) {
+        clock.at += 10 * minute + 1_000;
+        await tick();
+      }
+      assert.ok(await ready(f.db, a), "ready once its hours fit");
+      after = storage.state();
+      assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+    });
+    return { ticks, after };
+  };
+  const without = await scenario(false);
+  const dense3 = await scenario(true);
+  assert.ok(
+    dense3.ticks <= without.ticks,
+    `the other pool took ${dense3.ticks} ticks, ${without.ticks} without the dense hours`,
+  );
+  assert.deepEqual(usageRollupStuckPools(dense3.after!), []);
+  assert.deepEqual(dense3.after!.slow, []);
+});
+
+test("a call over slow warming reads ends within its budget and one attempt's worst case, and so does the hourly ceiling", async () => {
+  await seriesFixture(async (f) => {
+    const pool = String((await f.row()).pool);
+    await preexisting(f, rows(6, 3));
+    const denseHours = Array.from({ length: 6 }, (_, i) =>
+      new Date(Date.parse(dense) + i * hour).toISOString(),
+    );
+    await slowHour(f.db, pool, denseHours, 1_000_000);
+    const plan = { pools: [{ pool, from: dense, to: "2026-01-01T06:00:00.000Z", days: 0 }] };
+    // Budgets that end between attempts and between hours, and one smaller than any attempt: a
+    // call ends within its budget, and only a budget below one attempt's least is passed, by at most
+    // one attempt's worst case.
+    for (const budgetMs of [4_110, 4_400, 6_200, 12_000, 100]) {
+      const clock = { at: 0 };
+      const result = await runUsageRollup(
+        timed(f.db, pool, denseHours, clock),
+        plan,
+        budgetMs,
+        () => clock.at,
+      );
+      assert.equal(result.stopped, "budget", JSON.stringify(result));
+      const bound = budgetMs < leastAttemptMs ? budgetMs + attemptWorstMs : budgetMs;
+      assert.ok(clock.at <= bound, `a ${budgetMs} ms call took ${clock.at} ms`);
+      assert.ok(result.slowHours?.length, "it says which hours were slow");
+    }
+    // The hourly ceiling: 299 s of the 300 s spent, so the session gets 1 s and one attempt over it.
+    const storage = memoryStorage();
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    await storage.put(usageRollupAutoKey, {
+      sessions: [{ at: clock.at - 10 * minute, ms: 299_000, walBytes: 0 }],
+    });
+    const state = await usageRollupTick(
+      storage,
+      (work) => work(timed(f.db, pool, denseHours, clock)),
+      {
+        now: () => clock.at,
+        plan: async () => ({ plan, digest: "", ready: [], recomputedHours: {} }),
+      },
+    );
+    const spent = (state.sessions ?? []).reduce((sum, entry) => sum + entry.ms, 0);
+    assert.ok(spent <= 300_000, `the hour spent ${spent} ms`);
   });
 });

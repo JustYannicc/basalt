@@ -209,7 +209,16 @@ test("a slow hour makes only its pool wait ten minutes, never the tick; three ti
     assert.equal(slow.lastHour, "2025-12-31T00:00:00.000Z", "the pool's first pending hour");
     assert.equal(slow.lastHourPhase, "recompute");
     assert.deepEqual(slow.slow, [
-      { pool, hour: slow.lastHour, count: 1, until: new Date(clock + 600_000).toISOString() },
+      {
+        pool,
+        hour: slow.lastHour,
+        count: 1,
+        until: new Date(clock + 600_000).toISOString(),
+        // Every hour is slow: the first 24 are kept for the next call to try last.
+        hours: Array.from({ length: 24 }, (_, i) =>
+          new Date(Date.parse("2025-12-31T00:00:00Z") + i * hour).toISOString(),
+        ),
+      },
     ]);
     clock += 300_000;
     const waiting = await tick();
@@ -614,6 +623,7 @@ test("a state stored before slow waits existed keeps working, and its slow-stuck
       hour: slowHour.slowHour,
       count: 1,
       until: new Date(at + 10 * 60_000).toISOString(),
+      hours: [slowHour.slowHour],
     },
   ]);
   assert.deepEqual(usageRollupStuckPools(state), [other, second].sort(), "still loud meanwhile");
