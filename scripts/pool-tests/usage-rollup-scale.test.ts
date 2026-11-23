@@ -16,7 +16,7 @@ import {
   insertBulkRequests,
 } from "../../src/pool/model-history/bulk-store.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
-import { pool, seriesFixture } from "./series-fixture.ts";
+import { pool, v15Fixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
 const prices: readonly OverviewApiPrice[] = [
@@ -90,7 +90,7 @@ const generated = (
 
 async function scaleCase(shape: Shape) {
   const { rows } = shape;
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const fixture = await summaryFixture(f);
     const poolId = (await digest(pool)).slice(0, 16);
     const sources = {
@@ -369,7 +369,7 @@ test(
   async () => {
     // Each run gets its own empty schema, and only the import's transactions are timed.
     const rate = (label: string, trigger: boolean) =>
-      seriesFixture(async (f) => {
+      v15Fixture(async (f) => {
         if (!trigger)
           await f.db.query(
             "ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup",
