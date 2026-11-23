@@ -170,6 +170,15 @@ export class HealthLeaseElapsed extends SlotRefused {
     this.leaseMs = leaseMs;
   }
 }
+/**
+ * The container's own monitor recorded that it exited: not a flag that may be stale, but the
+ * platform's report of the end. It refuses like any stopped container, and says why.
+ */
+export class ContainerEnded extends SlotRefused {
+  constructor() {
+    super("unhealthy");
+  }
+}
 export const sameTarget = (left: SlotTarget, right: SlotTarget) =>
   JSON.stringify(Schema.decodeUnknownSync(SlotTarget)(left)) ===
   JSON.stringify(Schema.decodeUnknownSync(SlotTarget)(right));

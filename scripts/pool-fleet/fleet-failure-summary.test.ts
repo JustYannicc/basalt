@@ -97,6 +97,7 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
       since: new Date(lease.at).toISOString(),
       failed: read(refused),
       reads: [read(lease), read(refused)],
+      policyOwed: 0,
     });
     assert.equal(fleet.rows[0]?.failure, null);
     assert.deepEqual(fleet.rows[1]?.failure, {

@@ -12,6 +12,7 @@ import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime, rememberRuntimeFailure } from "../runtime-route-diagnostic.ts";
 import { RuntimeHealthRefusalLog } from "./health-refusal-log.ts";
 import {
+  ContainerEnded,
   SlotIdentity,
   SlotRefused,
   sameControllerCode,
@@ -50,7 +51,7 @@ import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
-import { lastContainerEnd, markStopSent } from "./container-end.ts";
+import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
@@ -376,6 +377,9 @@ export class RuntimeEndpoint {
       const read = await runtimeReadStep(trace, "identity", () => this.store.read(identity));
       record = read.record;
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+      // A stopped container whose own monitor recorded the exit says so, so it leaves at once.
+      if (!this.ctx.container?.running && endedForGood(await this.lastEnd()))
+        throw new ContainerEnded();
       const observed = await this.channel.health(read.configuration, signal, trace);
       status = observed;
       this.resumeAdvert = observed.resume;

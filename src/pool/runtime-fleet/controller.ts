@@ -33,7 +33,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
-import { failureRead } from "./failure-record.ts";
+import { failureBeforeSend, failureRead, readSuspect } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
@@ -528,24 +528,40 @@ export class RuntimeFleet {
         try {
           await cell.install(policy);
         } catch (error) {
-          // A draining runtime that can't return to ready takes no new call, so its refusal settles.
-          if (row.phase === "draining" && row.redrawn !== true) return;
-          // A starting runtime could still be admitted under its old policy, and a refusal from the
-          // runtime's policy layer (cause "control"), such as an older revision racing a newer one,
-          // is what the root answers too: both hold acknowledgement.
-          if (
-            !row.identity ||
-            (row.phase !== "ready" && row.phase !== "draining") ||
-            runtimeFailureCause(error) === "control"
-          )
-            throw error;
-          // A serving runtime that failed leaves the selection: it takes no call under the old policy.
-          await this.failures.refused(row.identity);
+          await this.installFailed(row, policy, error);
+          return;
         }
+        if (row.identity && readSuspect(row.suspect)?.policyOwed?.includes(policy.pool))
+          await this.failures.installed(row.identity, policy.pool, policy.revision).catch(() => {});
       }),
     );
     const failure = settled.find((result) => result.status === "rejected");
     if (failure) throw failure.reason;
+  }
+  private async installFailed(row: FleetRow, policy: NativeMembershipPolicy, error: unknown) {
+    // A draining runtime that can't return to ready takes no new call, so its refusal settles.
+    if (row.phase === "draining" && row.redrawn !== true) return;
+    // A starting runtime could still be admitted under its old policy, and a refusal from the
+    // runtime's policy layer (cause "control"), such as an older revision racing a newer one,
+    // is what the root answers too: both hold acknowledgement.
+    if (
+      !row.identity ||
+      (row.phase !== "ready" && row.phase !== "draining") ||
+      runtimeFailureCause(error) === "control"
+    )
+      throw error;
+    // A refused or late readiness read means the install could not be made or was not proven to
+    // land, not that the cell refused the policy: it takes no call until this revision is installed.
+    const read = failureRead(error, "endpoint_health", this.deps.now());
+    if (row.phase === "ready" && failureBeforeSend(read)) {
+      await this.failures.missed(row.identity, read, {
+        path: "install",
+        owe: { pool: policy.pool, revision: policy.revision },
+      });
+      return;
+    }
+    // A serving runtime that failed leaves the selection: it takes no call under the old policy.
+    await this.failures.refused(row.identity);
   }
   abortPool(pool: string) {
     for (const { cell } of this.cells.values()) cell.abortPool(pool);
@@ -617,7 +633,7 @@ export class RuntimeFleet {
             return;
           }
           if (row.suspect !== undefined || this.failures.fenced(identity))
-            await this.failures.recovered(identity, readAt).catch(() => {});
+            await this.failures.recovered(identity, readAt, row.suspect).catch(() => {});
           // A failed distance write is not a failed runtime.
           await this.deps.state.observeDistance(identity, database ?? undefined).catch(() => {});
         }),

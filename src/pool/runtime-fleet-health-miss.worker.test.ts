@@ -55,6 +55,12 @@ async function readyCell(context: TestContext) {
     refuse: () => {
       cell.hooks.health = async () => new Response(null, { status: 503 });
     },
+    /** Killed under the fleet: the container's own monitor sees the exit. */
+    kill: () => cell.ctx.container.signal(9),
+    /** The monitor settles with no exit while the process runs on, so `running` reads false (#1814). */
+    loseMonitor: () => cell.loseMonitor(new Error("Network connection lost.")),
+    /** `running` reads false with the monitor still pending: nothing recorded. */
+    stopReading: () => cell.crash(),
     answer: () => {
       cell.hooks.health = healthy;
     },
@@ -106,3 +112,40 @@ test("a cell whose readiness refuses twice, 6 s apart, is quarantined with both 
   assert.equal(left?.reason, "runtime_failed");
   assert.deepEqual(readFailure(left?.failure), failure);
 });
+
+test("a cell killed under the fleet is quarantined on the first read, from the exit its monitor recorded", async (context) => {
+  const c = await readyCell(context);
+  c.kill();
+  await c.f.settle();
+  await c.pass();
+  // One pass quarantines it. The fixture lists the stopped instance at once, so the reclaim may also
+  // finish in that pass; the provider lists it inactive only about 10 s later.
+  const inspected = await c.inspect();
+  const row = inspected.resources.find((value) => value.target.slotId === c.slotId);
+  const left = inspected.recentEnds?.find((entry) => entry.slotId === c.slotId);
+  assert.ok(row?.phase === "quarantined" || left?.left === "quarantined", "a recorded exit waited");
+  const failure = readFailure(row?.failure ?? left?.failure);
+  assert.equal(failure?.rule, "evidence");
+  assert.equal(failure?.reads[0]?.ended, true);
+});
+
+for (const [name, stop] of [
+  ["whose monitor settled with no exit", "loseMonitor"],
+  ["whose running flag reads false with nothing recorded", "stopReading"],
+] as const)
+  test(`a cell ${name} is only fenced on the first read: the running flag alone never removes it`, async (context) => {
+    const c = await readyCell(context);
+    c[stop]();
+    await c.f.settle();
+    await c.pass();
+    const inspected = await c.inspect();
+    const row = inspected.resources.find((value) => value.target.slotId === c.slotId);
+    assert.equal(row?.phase, "ready", "a stopped flag alone quarantined the cell");
+    const suspect = readSuspect(row?.suspect);
+    assert.ok(suspect, "the cell was not fenced");
+    assert.notEqual(suspect.reads[0]?.ended, true);
+    assert.equal(
+      inspected.recentEnds?.find((entry) => entry.slotId === c.slotId),
+      undefined,
+    );
+  });

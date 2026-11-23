@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import {
+  runtimeFailureCause,
   runtimeFailureDiagnostic,
   runtimeReasons,
   runtimeSteps,
@@ -18,6 +19,8 @@ export const FleetFailureRead = Schema.Struct({
   cause: Schema.Literals([...runtimeReasons, "lease_elapsed"]),
   roundTripMs: Schema.optional(Schema.Number),
   leaseLeftMs: Schema.optional(Schema.Number),
+  // The cell's own monitor had recorded the container's exit: hard evidence, never a transient.
+  ended: Schema.optional(Schema.Literal(true)),
 });
 export type FleetFailureRead = typeof FleetFailureRead.Type;
 /**
@@ -25,7 +28,7 @@ export type FleetFailureRead = typeof FleetFailureRead.Type;
  * reads far enough apart, or no good read for too long), and every read that counted.
  */
 export const FleetFailure = Schema.Struct({
-  path: Schema.Literals(["forward", "stream", "health"]),
+  path: Schema.Literals(["forward", "stream", "health", "install"]),
   rule: Schema.Literals(["evidence", "failed_twice", "unproven"]),
   reads: Schema.Array(FleetFailureRead),
 });
@@ -38,6 +41,10 @@ export const FleetSuspect = Schema.Struct({
   since: Schema.Number,
   failed: Schema.optional(FleetFailureRead),
   reads: Schema.Array(FleetFailureRead),
+  // Pools whose current policy could not be installed on the cell: it serves no call until each is.
+  policyOwed: Schema.optional(Schema.Array(Schema.String)),
+  // The revision owed for each such pool: only an install of it or a newer one settles the debt.
+  owedRevision: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
 });
 export type FleetSuspect = typeof FleetSuspect.Type;
 
@@ -75,23 +82,55 @@ const lateCauses = new Set<string>([
 export function nextSuspect(
   current: FleetSuspect | undefined,
   read: FleetFailureRead,
+  options: { path?: "health" | "install"; owe?: { pool: string; revision: number } } = {},
 ): { suspect: FleetSuspect } | { quarantine: FleetFailure } {
+  const path = options.path ?? "health";
   const counted = !lateCauses.has(read.cause);
   const since = current?.since ?? read.at;
   const reads = [...(current?.reads ?? []), read].slice(-keptReads);
   const failed = current?.failed;
   if (counted && failed && read.at - failed.at >= failedApartMs)
-    return { quarantine: { path: "health", rule: "failed_twice", reads: [failed, read] } };
+    return { quarantine: { path, rule: "failed_twice", reads: [failed, read] } };
   if (read.at - since >= unprovenMs)
     return {
       quarantine: {
-        path: "health",
+        path,
         rule: "unproven",
         reads: failed && !reads.includes(failed) ? [failed, ...reads] : reads,
       },
     };
   const first = failed ?? (counted ? read : undefined);
-  return { suspect: { since, ...(first ? { failed: first } : {}), reads } };
+  const owe = options.owe;
+  const owed = [...new Set([...(current?.policyOwed ?? []), ...(owe ? [owe.pool] : [])])];
+  const revisions = {
+    ...current?.owedRevision,
+    ...(owe ? { [owe.pool]: Math.max(owe.revision, current?.owedRevision?.[owe.pool] ?? 0) } : {}),
+  };
+  return {
+    suspect: {
+      since,
+      ...(first ? { failed: first } : {}),
+      reads,
+      ...(owed.length ? { policyOwed: owed, owedRevision: revisions } : {}),
+    },
+  };
+}
+
+/**
+ * The same suspect record once an install of `revision` for `pool` reached the cell, or nothing
+ * when the cell owes a newer one: an older install landing late never settles a newer debt.
+ */
+export function policyInstalled(
+  current: FleetSuspect,
+  pool: string,
+  revision: number,
+): FleetSuspect | undefined {
+  if (!current.policyOwed?.includes(pool)) return undefined;
+  if (revision < (current.owedRevision?.[pool] ?? 0)) return undefined;
+  const { policyOwed, owedRevision, ...rest } = current;
+  const owed = (policyOwed ?? []).filter((value) => value !== pool);
+  const { [pool]: _settled, ...revisions } = owedRevision ?? {};
+  return owed.length ? { ...rest, policyOwed: owed, owedRevision: revisions } : rest;
 }
 
 export function failureRead(
@@ -114,6 +153,7 @@ export function failureRead(
     step: diagnostic.runtimeStep,
     cause: diagnostic.runtimeReason,
     ...(roundTripMs === undefined ? {} : { roundTripMs: Math.round(roundTripMs) }),
+    ...(runtimeFailureCause(error) === "container_ended" ? { ended: true as const } : {}),
   };
 }
 
@@ -128,9 +168,10 @@ export function failureIgnored(read: FleetFailureRead) {
   );
 }
 
-/** A read that reached another process or launch than the row's: never a transient. */
+/** Hard evidence, never a transient: a read that reached another process or launch, or a recorded exit. */
 export function failureMismatch(read: FleetFailureRead) {
   return (
+    read.ended === true ||
     read.cause === "slot_identity" ||
     read.cause === "fleet_identity" ||
     read.cause === "protection_boot_changed"

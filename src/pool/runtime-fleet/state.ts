@@ -480,20 +480,25 @@ export class RuntimeFleetState {
    */
   suspect(
     identity: SlotIdentity,
-    decide: (current: unknown) => { suspect: unknown } | { quarantine: FleetFailure },
+    decide: (
+      current: unknown,
+    ) => { suspect: unknown } | { quarantine: FleetFailure } | { unchanged: true },
   ) {
-    return this.change<"suspect" | "quarantined" | "gone">(async (rows, transaction) => {
-      const row = rows.find((value) => sameIdentity(value.identity, identity));
-      if (row?.phase === "quarantined") return "quarantined";
-      if (!row || row.phase !== "ready") return "gone";
-      const next = decide(row.suspect);
-      if ("quarantine" in next) {
-        await this.quarantineRow(rows, transaction, identity, "runtime_failed", next.quarantine);
-        return "quarantined";
-      }
-      rows[rows.indexOf(row)] = { ...row, suspect: next.suspect };
-      return "suspect";
-    });
+    return this.change<"suspect" | "quarantined" | "gone" | "unchanged">(
+      async (rows, transaction) => {
+        const row = rows.find((value) => sameIdentity(value.identity, identity));
+        if (row?.phase === "quarantined") return "quarantined";
+        if (!row || row.phase !== "ready") return "gone";
+        const next = decide(row.suspect);
+        if ("unchanged" in next) return "unchanged";
+        if ("quarantine" in next) {
+          await this.quarantineRow(rows, transaction, identity, "runtime_failed", next.quarantine);
+          return "quarantined";
+        }
+        rows[rows.indexOf(row)] = { ...row, suspect: next.suspect };
+        return "suspect";
+      },
+    );
   }
   /**
    * A good read: true when the row is ready and takes calls again. `clears` sees the row's suspect
