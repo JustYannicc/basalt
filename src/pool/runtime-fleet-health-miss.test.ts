@@ -3,7 +3,11 @@ import { test, type TestContext } from "node:test";
 import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { failureFleetFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-failure-fixture.ts";
 import { HealthLeaseElapsed, SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
-import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import {
+  rememberRuntimeFailure,
+  retainRuntimeFailure,
+  runtimeFailureHeaders,
+} from "./runtime-route-diagnostic.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
 import { FleetFailures } from "./runtime-fleet/failures.ts";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
@@ -404,4 +408,40 @@ test("the endpoint's keep-alive failing before a send is forward evidence, not a
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
   assert.equal(readFailure(row?.failure)?.rule, "evidence");
+});
+
+test("a lapsed policy lease as production logs it, endpoint_identity with slot_unhealthy, is a miss on both paths", async (context) => {
+  // Home answered its readiness read, but the policy lease in the answer had run out: the endpoint
+  // refuses with SlotRefused("unhealthy") under endpoint_identity, and the transport carries it on.
+  const remote = () => {
+    const local = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_identity", local);
+    return retainRuntimeFailure(
+      new Response(null, {
+        status: 409,
+        headers: runtimeFailureHeaders(local, "endpoint_identity"),
+      }),
+      new SlotRefused("uncertain"),
+    );
+  };
+  const s = await suspectFleet(context);
+  await s.read(0, async () => {
+    throw remote();
+  });
+  const suspect = await s.row();
+  assert.equal(suspect?.phase, "ready", "the upkeep read quarantined the cell at once");
+  assert.deepEqual(
+    [readSuspect(suspect?.suspect)?.failed?.step, readSuspect(suspect?.suspect)?.failed?.cause],
+    ["endpoint_identity", "slot_unhealthy"],
+  );
+  context.mock.restoreAll();
+  const t = await suspectFleet(context);
+  t.f.cell(t.cell).forward = async () => {
+    const error = remote();
+    rememberRuntimeFailure("slot_health", error);
+    throw error;
+  };
+  await assert.rejects(t.f.forward(undefined, t.fleet));
+  assert.equal((await t.row())?.phase, "ready", "the router's read quarantined the cell at once");
+  assert.ok(readSuspect((await t.row())?.suspect));
 });
