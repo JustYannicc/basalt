@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { generationName } from "../upstream-dependencies.ts";
 
 export const toolchains = {
   "ubuntu-24.04-bun-1.4.2": { runner: "ubuntu-24.04", bun: "1.4.2", checkout: "candidate" },
@@ -49,6 +50,12 @@ export function frameworkPreparation(source: string) {
 
 export function pinnedPreparation(source: string, input: RebuildInput) {
   const entry = 'const entry = join(upstreamCache(), "prepared", pin, key);';
+  // Since #1811 a generation is named by its dependency key, so nothing is left to pin.
+  if (source.split("const id = generationName(key);").length === 2) {
+    if (input.uuid)
+      throw new Error("this source names its generation by its key; no generation UUID applies");
+    return source;
+  }
   const id = "const id = randomUUID();";
   if (
     !input.uuid ||
@@ -93,8 +100,22 @@ export function pinPreparation(root: string, input: RebuildInput) {
 export function verifyGeneration(root: string, input: RebuildInput, home: string, pin: string) {
   const file = join(root, ".upstream/.basalt-dependencies.json");
   if (!input.uuid) {
-    if (existsSync(file))
+    if (!existsSync(file)) return;
+    // A key-named generation needs no logged UUID; anything else is a direct install that chose one.
+    const named: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (
+      typeof named !== "object" ||
+      named === null ||
+      typeof (named as { key?: unknown }).key !== "string" ||
+      typeof (named as { store?: unknown }).store !== "string" ||
+      basename((named as { store: string }).store) !==
+        generationName((named as { key: string }).key)
+    )
       throw new Error("direct-install source unexpectedly selected a generation");
+    const { key, store } = named as { key: string; store: string };
+    const expected = join(home, ".cache/basalt/upstream/prepared", pin, key, "generations");
+    if (realpathSync(store) !== join(expected, generationName(key)))
+      throw new Error("prepared generation location differs");
     return;
   }
   const record: unknown = JSON.parse(readFileSync(file, "utf8"));

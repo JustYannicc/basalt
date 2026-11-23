@@ -42,7 +42,12 @@ test("the hosted compiler selects its configured patched framework without npm",
       },
     }),
   );
-  assert.equal(await Effect.runPromise((dependencies as { framework: Effect.Effect<boolean, unknown> }).framework), true);
+  assert.equal(
+    await Effect.runPromise(
+      (dependencies as { framework: Effect.Effect<boolean, unknown> }).framework,
+    ),
+    true,
+  );
   assert.equal(reads, 1);
   // framework.release returns this shared host version.
   const { appsVersion } = await load("packages/app-templates/src/implementation/files.ts");
@@ -108,5 +113,27 @@ test(
         assert.deepEqual(body, { ok: true, value: caller });
       }
     }
+  },
+);
+
+test(
+  "the built framework carries no random dependency-store name",
+  {
+    skip:
+      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
+        ? "npm run build runs this against its framework assets"
+        : false,
+  },
+  () => {
+    // The framework's chunks name the dependency store's path. A random store name changed the
+    // compiler's assets on every fresh store, and its Worker with them (#1811).
+    const framework = readFileSync(
+      resolve(upstream, ".local/basalt-framework/framework.json"),
+      "utf8",
+    );
+    const random = framework.match(
+      /generations\/[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}/u,
+    );
+    assert.equal(random, null, `a random store name reached the framework: ${random?.[0]}`);
   },
 );

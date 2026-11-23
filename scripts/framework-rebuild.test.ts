@@ -14,6 +14,7 @@ import {
   verifyGeneration,
 } from "./framework-rebuild/input.ts";
 import { frameworkHashes, hashManifest, moduleMapSha256 } from "./framework-rebuild/manifest.ts";
+import { generationName } from "./upstream-dependencies.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 
@@ -288,4 +289,37 @@ test("workflow dispatch has four inputs, no credentials and uploads only the has
     (step: { uses?: string }) => step.uses === "actions/upload-artifact@v4",
   );
   assert.equal(upload.with.path, "${{ runner.temp }}/framework-rebuild-hashes/hash-manifest.json");
+});
+
+test("a source that names its generation by its key rebuilds without a logged UUID", () => {
+  const named = helper.replace("const id = randomUUID();", "const id = generationName(key);");
+  const direct = rebuildInput({
+    ...environment,
+    REBUILD_GENERATION_UUID: "",
+    REBUILD_DEPENDENCY_KEY: "",
+  });
+  assert.equal(pinnedPreparation(named, direct), named);
+  assert.throws(() => pinnedPreparation(named, input), /names its generation by its key/u);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "framework-named-generation-")));
+  try {
+    const store = join(
+      root,
+      ".cache/basalt/upstream/prepared/pin",
+      key,
+      "generations",
+      generationName(key),
+    );
+    mkdirSync(store, { recursive: true });
+    mkdirSync(join(root, ".upstream"));
+    const record = join(root, ".upstream/.basalt-dependencies.json");
+    writeFileSync(record, JSON.stringify({ key, store }));
+    verifyGeneration(root, direct, root, "pin");
+    // Any other name is a generation the source did not name.
+    const other = join(store, "..", uuid);
+    mkdirSync(other);
+    writeFileSync(record, JSON.stringify({ key, store: other }));
+    assert.throws(() => verifyGeneration(root, direct, root, "pin"), /unexpectedly selected/u);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

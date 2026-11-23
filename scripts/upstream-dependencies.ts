@@ -67,6 +67,14 @@ function readyGeneration(store: string, key: string) {
   return { store: realpathSync(store), trees };
 }
 
+/**
+ * A generation is named by its dependency key, never by a random id. Builds resolve dependencies
+ * through the store's real path, and the apps framework's output carries it, so a random name made
+ * every fresh store build different bytes and redeployed Workers whose source had not changed
+ * (#1811). One key always installs one set of packages, so one name per key loses nothing.
+ */
+export const generationName = (key: string) => digest(`dependency-generation:${key}`).slice(0, 32);
+
 function publishedGeneration(entry: string, key: string) {
   const pointer = join(entry, "current");
   try {
@@ -79,6 +87,18 @@ function publishedGeneration(entry: string, key: string) {
     if ((error as NodeJS.ErrnoException).code === "EINVAL") return;
     throw error;
   }
+}
+
+/** Point the key at its named generation when that is ready but no longer published. */
+function adoptGeneration(entry: string, key: string) {
+  const store = join(entry, "generations", generationName(key));
+  if (!existsSync(store)) return;
+  const ready = readyGeneration(store, key);
+  if (!ready) return;
+  const pointer = join(entry, `.current-${randomUUID()}`);
+  symlinkSync(join("generations", generationName(key)), pointer);
+  renameSync(pointer, join(entry, "current"));
+  return ready;
 }
 
 function readonlyTree(path: string) {
@@ -111,7 +131,8 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
   const entry = join(upstreamCache(), "prepared", pin, key);
   const prepared = await withCacheLock(`${entry}.lock`, async () => {
     let generation = await withDependencyStoreLock(() => {
-      const found = publishedGeneration(entry, key);
+      // A ready generation can outlive its pointer; its name says which key it holds.
+      const found = publishedGeneration(entry, key) ?? adoptGeneration(entry, key);
       if (found) rememberDependencyConsumer(root, found.store, true);
       return found;
     });
@@ -119,7 +140,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
     try {
       if (generation === undefined) {
         if (cacheHitOnly) throw new Error(`Refusing a new dependency generation for key ${key}`);
-        const id = randomUUID();
+        const id = generationName(key);
         attempt = await createInstallAttempt(entry);
         for (const file of files) {
           mkdirSync(dirname(join(attempt, file)), { recursive: true });
@@ -157,8 +178,11 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
         generation = await withDependencyStoreLock(() => {
           const store = join(entry, "generations", id);
           mkdirSync(dirname(store), { recursive: true });
+          // Only a broken generation can hold the name here: a ready one was adopted above. It
+          // moves aside under a name the collector removes once no consumer protects it.
+          if (existsSync(store)) renameSync(store, `${store}.replaced-${randomUUID()}`);
           renameSync(completed, store);
-          const pointer = join(entry, `.current-${id}`);
+          const pointer = join(entry, `.current-${randomUUID()}`);
           symlinkSync(join("generations", id), pointer);
           renameSync(pointer, join(entry, "current"));
           const published = { store: realpathSync(store), trees };
