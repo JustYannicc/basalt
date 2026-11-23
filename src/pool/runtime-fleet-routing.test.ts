@@ -88,6 +88,7 @@ function fixture(
         calls.retires++;
         retired = true;
         if (retirementLost) throw new Error("lost retirement acknowledgement");
+        return true;
       },
       retired: async () => retired,
       failed: async () => false,

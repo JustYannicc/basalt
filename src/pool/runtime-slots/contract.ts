@@ -137,6 +137,8 @@ export const RuntimeRetirementObservation = Schema.Struct({
   retired: Schema.Boolean,
   running: Schema.Boolean,
   retireNotStarted: Schema.optional(Schema.Literal(true)),
+  /** The retiring latch is set and the container still runs: its stop hasn't ended yet. */
+  stopping: Schema.optional(Schema.Literal(true)),
   provider: Schema.optional(
     Schema.Struct({
       accountId: Identifier,

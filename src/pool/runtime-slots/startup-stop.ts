@@ -4,6 +4,7 @@ import { SlotRefused, sameTarget } from "./contract.ts";
 import { isLaunchAuthorization } from "./admission-proof.ts";
 import type { RuntimeWitnessStore } from "./witness-store.ts";
 import type { ControllerState } from "./runtime-state.ts";
+import { stopGracefully } from "./forced-stop.ts";
 import {
   StartupStopIntent,
   StartupStopRecord,
@@ -73,7 +74,7 @@ export class RuntimeStartupStop {
     const work = (async () => {
       const monitor = this.ctx.container!.monitor();
       void monitor.catch(() => {});
-      await this.ctx.container!.destroy();
+      await stopGracefully(this.ctx.container!);
       await monitor.catch((error) => {
         if (!(error instanceof Error) || !Schema.is(Schema.Struct({ exitCode: Schema.Int }))(error))
           throw error;

@@ -84,7 +84,8 @@ export interface FleetCell {
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   /** The cell's own stream count, read without draining it; without it a ready count stays as is. */
   activity?(identity: SlotIdentity): Promise<CellCount>;
-  retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<void>;
+  /** Whether the cell is proven gone; false while its stop is still under way. */
+  retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
   failed(identity: SlotIdentity, active: number): Promise<boolean>;
   /**
@@ -721,7 +722,7 @@ export class RuntimeFleet {
           )
         : row.active;
     if (active !== 0 || actual.active !== 0) return;
-    await cell.retire(identity, () => this.deps.state.beginRetirement(identity));
+    if (!(await cell.retire(identity, () => this.deps.state.beginRetirement(identity)))) return;
     this.cells.delete(row.target.slotId);
     await this.deps.state.retired(identity);
     this.atCapacity = false;

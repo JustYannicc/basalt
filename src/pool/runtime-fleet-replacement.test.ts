@@ -59,6 +59,7 @@ async function fixture() {
       retire: async (_identity, begin) => {
         await begin();
         retires++;
+        return true;
       },
       retired: async () => true,
       failed: async () => false,
