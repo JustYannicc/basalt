@@ -11,6 +11,8 @@ export const launchGenerationHeader = "X-Signalbox-Launch-Generation";
 export const launchTokenHashHeader = "X-Signalbox-Launch-Token-Sha256";
 /** A refusal's body is read only for its signals; a larger one is dropped unparsed. */
 export const refusalBodyBytes = 16 * 1024;
+/** How long a refusal waits for its body's signals: a refusal still arrives when it did without them. */
+export const refusalBodyMs = 250;
 
 /** Start the remaining lease at request dispatch, so transport delay cannot extend it. */
 export async function readRuntimeHealth(
@@ -114,8 +116,9 @@ async function healthResponse(
     const received = response;
     // Only a refusal's body, read just for the signals it may carry, is capped.
     const limit = received.ok ? undefined : refusalBodyBytes;
+    // A refusal's body is read only for its signals, so it is no phase of the read.
     const body: Promise<unknown> = runtimeReadStep(
-      trace,
+      received.ok ? trace : undefined,
       "health_body",
       () =>
         Promise.race([
@@ -154,9 +157,16 @@ async function healthResponse(
       8318,
     );
     if (!received.ok) {
-      // Inside the same deadline, and whatever the body does the refusal stays this refusal; the
-      // catch below cancels whatever is left of it.
-      const signals = await body.then(readySignals, () => undefined);
+      // Whatever the body does the refusal stays this refusal, and it waits at most refusalBodyMs
+      // for the signals; the catch below cancels whatever is left of the body.
+      let late: ReturnType<typeof setTimeout> | undefined;
+      const signals = await Promise.race([
+        body.then(readySignals, () => undefined),
+        new Promise<undefined>((resolve) => {
+          late = setTimeout(resolve, refusalBodyMs, undefined);
+        }),
+      ]);
+      clearTimeout(late);
       throw withReadySignals(new PoolRuntimeUnhealthy(), signals);
     }
     const status = await body;

@@ -5,9 +5,9 @@ import { NativeStreams } from "./native-streams.ts";
 import { RuntimeProtection, type ProtectionDiagnostic } from "./runtime-protection.ts";
 import {
   policyHealthHeader,
-  policyHealthLeaseMs,
   readRuntimeHealth,
   refusalBodyBytes,
+  refusalBodyMs,
 } from "./runtime-health.ts";
 import { runtimeReadySignals } from "./runtime-ready-signals.ts";
 
@@ -418,7 +418,7 @@ test("a refusing answer is still the same refusal, now carrying its signals when
     assert.equal(await refusal(response), undefined);
 });
 
-test("a refusing answer whose body never ends refuses as itself, inside the lease deadline", async () => {
+test("a refusing answer whose body never ends refuses as itself once its short body wait is over", async () => {
   let cancelled = false;
   const started = performance.now();
   const error = await read(
@@ -443,6 +443,6 @@ test("a refusing answer whose body never ends refuses as itself, inside the leas
   const elapsed = performance.now() - started;
   assert.ok(error instanceof PoolRuntimeUnhealthy, String(error));
   assert.equal(runtimeReadySignals(error), undefined);
-  assert.ok(elapsed < policyHealthLeaseMs + 400, `refused after ${Math.round(elapsed)} ms`);
+  assert.ok(elapsed < refusalBodyMs + 300, `refused after ${Math.round(elapsed)} ms`);
   assert.ok(cancelled, "the unfinished body was left open");
 });
