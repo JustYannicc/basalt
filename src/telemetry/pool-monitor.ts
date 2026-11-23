@@ -38,7 +38,10 @@ const reasons = new Set([
   "collection_unavailable",
   "failing_now",
   "usage_rollup_stuck",
+  "capture_hours_stuck",
 ]);
+/** The history reasons that name a pool, by its own 16-hex history id; never an outage. */
+const historyStuck = new Set(["usage_rollup_stuck", "capture_hours_stuck"]);
 
 /**
  * The opening check-in defines the monitor; who is notified, and how, stays in Sentry's alert rules.
@@ -90,8 +93,8 @@ export async function capturePoolMonitor(
     failure.backendStatus <= 599
       ? { backend_status: failure.backendStatus }
       : {}),
-    // Only a usage rollup failure names a pool, by its own 16-hex history id.
-    ...(failure.reason === "usage_rollup_stuck" &&
+    // Only a stuck history tick names a pool, by its own 16-hex history id.
+    ...(historyStuck.has(failure.reason) &&
     typeof failure.pool === "string" &&
     /^[0-9a-f]{16}$/.test(failure.pool)
       ? { pool: failure.pool }
@@ -123,6 +126,8 @@ export async function capturePoolMonitor(
       events.push(report("pool_request_failing_now", [failure]));
     else if (failure.reason === "usage_rollup_stuck")
       events.push(report("pool_usage_rollup_stuck", [failure]));
+    else if (failure.reason === "capture_hours_stuck")
+      events.push(report("pool_capture_hours_stuck", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
   }
   // Unknown outcomes are a recording defect even when the objective is decided without them.
@@ -173,7 +178,7 @@ export async function capturePoolMonitor(
           pool_probe: { check_in_id: receipt.id, failures, runtime },
           ...(input.reliability
             ? { request_reliability: reliabilityContext(input.reliability) }
-            : reliability.some((failure) => failure.reason !== "usage_rollup_stuck")
+            : reliability.some((failure) => !historyStuck.has(failure.reason))
               ? { request_reliability: { target: 99, state: "unavailable" } }
               : {}),
         },

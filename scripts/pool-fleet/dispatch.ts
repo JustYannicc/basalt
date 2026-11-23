@@ -12,6 +12,7 @@ import {
   shortHash,
   takeBookmark,
   UsageRollup,
+  CaptureHours,
   type ControllerAccess,
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
@@ -243,6 +244,10 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           // it, pending hours and any stuck pool, by its 16-hex history id only.
           usageRollup: Option.getOrNull(
             Schema.decodeUnknownOption(Schema.NullOr(UsageRollup))(view.usageRollup ?? null),
+          ),
+          // The pool's own capture-hour counts: the same, and absent on a pool before them.
+          captureHours: Option.getOrNull(
+            Schema.decodeUnknownOption(Schema.NullOr(CaptureHours))(view.captureHours ?? null),
           ),
         };
       });

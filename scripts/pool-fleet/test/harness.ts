@@ -81,6 +81,8 @@ export interface HarnessOptions {
   usageAccount?: string;
   /** What the controller's inspect reports for the pool's own usage rollup backfill. */
   usageRollup?: unknown;
+  /** What the controller's inspect reports for the pool's own capture-hour counts. */
+  captureHours?: unknown;
 }
 
 export async function harness(options: HarnessOptions = {}) {
@@ -297,6 +299,7 @@ export async function harness(options: HarnessOptions = {}) {
             bookmarks,
             undefined,
             options.usageRollup === undefined ? undefined : async () => options.usageRollup,
+            options.captureHours === undefined ? undefined : async () => options.captureHours,
           );
         },
       },

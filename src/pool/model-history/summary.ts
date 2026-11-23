@@ -150,6 +150,7 @@ export async function poolUsageSummary(
     );
     const incidentTo = timestamp(new Date(now).toISOString());
     const captureTo = [input.to, incidentTo].sort().at(-1)!;
+    // Both of its statements, the stored hours' comparison and the rows it leaves, are this step.
     mark("capture");
     const capture = await homeCaptureCoverage(
       db,
@@ -157,6 +158,7 @@ export async function poolUsageSummary(
       selection.homeSource,
       readFrom,
       captureTo,
+      true,
     );
     const series: PoolUsageSeriesResult = {
       from: readFrom,
