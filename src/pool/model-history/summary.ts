@@ -150,7 +150,8 @@ export async function poolUsageSummary(
     );
     const incidentTo = timestamp(new Date(now).toISOString());
     const captureTo = [input.to, incidentTo].sort().at(-1)!;
-    // Both of its statements, the stored hours' comparison and the rows it leaves, are this step.
+    // Both of its statements, the stored hours' comparison and the rows it leaves, are this step. A
+    // pool read from v16 is ready on it, so its stored counts can stand in for the per-row check.
     mark("capture");
     const capture = await homeCaptureCoverage(
       db,
@@ -158,7 +159,7 @@ export async function poolUsageSummary(
       selection.homeSource,
       readFrom,
       captureTo,
-      true,
+      rolled && target === "v16",
     );
     const series: PoolUsageSeriesResult = {
       from: readFrom,

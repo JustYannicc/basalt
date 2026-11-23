@@ -132,3 +132,24 @@ export async function captureFixture(f: Fixture) {
     stored,
   };
 }
+
+/**
+ * Fills a pool's counts by its own tick, and counts its hours from `since` up to its first native
+ * hour as empty, as a pool whose history spans its window has them.
+ */
+export async function countedSince(db: HistoryDatabase, poolId: string, since: string) {
+  const storage = memoryStorage();
+  for (let tick = 0; ; tick++) {
+    if (tick >= 20) throw new Error("the counts did not fill");
+    const state = await captureHoursTick(storage, (work) => work(db));
+    if (state.lastStop === "complete" && state.totalPendingHours === 0) break;
+  }
+  await db.query(
+    `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,checked_at)
+    SELECT $1, h, 0, h + interval '3 hours' FROM generate_series($2::timestamptz,
+      (SELECT min(hour) FROM basalt_model_capture_hours WHERE pool=$1) - interval '1 hour',
+      interval '1 hour') h
+    ON CONFLICT DO NOTHING`,
+    [poolId, since],
+  );
+}

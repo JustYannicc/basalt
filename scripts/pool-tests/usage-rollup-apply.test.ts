@@ -21,6 +21,7 @@ import {
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import { usageRollupLockClass } from "../../src/pool/model-history/usage-rollup-schema.ts";
+import { countedSince } from "./capture-hours-fixture.ts";
 import { pool as poolName, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -388,6 +389,8 @@ test("a pool becomes ready on v16 by ticks alone, and then its summary and serie
     }
     assert.ok(await ready(f.db, pool), "ready on v16 by ticks alone");
     assert.equal(storage.state()!.rollup, "v16");
+    // Ready on v16, the summary compares the pool's stored capture counts: its own tick fills them.
+    await countedSince(f.db, pool, "2025-10-01T00:00:00Z");
     const after = await read(f.db);
     assert.deepEqual(after.rolled, [true, true], "ready: the v16 rollup");
     assert.deepEqual(after.summary, before.summary);

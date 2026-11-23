@@ -11,6 +11,7 @@ import {
   usageRollupTargets,
   type UsageRollupTarget,
 } from "../../src/pool/model-history/usage-rollup-targets.ts";
+import { countedSince } from "./capture-hours-fixture.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -121,6 +122,8 @@ async function backfill(db: HistoryDatabase, target: UsageRollupTarget) {
     poolId,
     "2026-01-10T00:00:00Z",
   ]);
+  // Ready on v16, the summary compares the pool's stored capture counts: its own tick fills them.
+  if (target === "v16") await countedSince(db, poolId, "2025-10-01T00:00:00Z");
 }
 
 /** Both summaries, counting the statements the second one ran. */

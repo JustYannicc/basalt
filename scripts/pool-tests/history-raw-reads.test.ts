@@ -6,7 +6,6 @@ import { digest } from "../../src/pool/backend-users.ts";
 import { handleModelHistory } from "../../src/pool/model-history/http.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { homeCaptureCoverage } from "../../src/pool/model-history/capture-coverage.ts";
-import { captureHoursTick } from "../../src/pool/model-history/capture-hours-auto.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
@@ -15,6 +14,7 @@ import {
   runUsageRollup,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
+import { countedSince } from "./capture-hours-fixture.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -217,23 +217,7 @@ test("the summary finds the capture cursor's request, and the captured Home usag
     }
     // Counted by its own tick, and its window's earlier hours counted empty, as a pool whose
     // history spans its window is.
-    const storage = new Map<string, unknown>();
-    const tickStorage = {
-      get: async <T>(key: string) => storage.get(key) as T | undefined,
-      put: async (key: string, value: unknown) => void storage.set(key, value),
-    };
-    for (let tick = 0; ; tick++) {
-      assert.ok(tick < 20, "the counts fill");
-      if ((await captureHoursTick(tickStorage, (work) => work(f.db))).lastStop === "complete")
-        break;
-    }
-    await f.db.query(
-      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,checked_at)
-      SELECT $1, h, 0, h + interval '3 hours' FROM generate_series('2026-07-01T00:00:00Z'::timestamptz,
-        date_trunc('hour',$2::timestamptz) - interval '1 hour', interval '1 hour') h
-      ON CONFLICT DO NOTHING`,
-      [(await digest(pool)).slice(0, 16), first],
-    );
+    await countedSince(f.db, (await digest(pool)).slice(0, 16), "2026-07-01T00:00:00Z");
     const read = recording(f.db);
     const to = "2026-11-23T20:00:00Z";
     await poolUsageSummary(
@@ -250,7 +234,8 @@ test("the summary finds the capture cursor's request, and the captured Home usag
       (entry) => entry.step === "capture" && entry.text.includes("FROM usage u"),
     );
     const counts = read.seen.find(
-      (entry) => entry.step === "capture" && entry.text.includes("basalt_model_capture_hours"),
+      (entry) =>
+        entry.step === "capture" && entry.text.includes("JOIN basalt_model_capture_hours s"),
     );
     assert.ok(state && capture && counts, "the summary ran its capture state and capture coverage");
     // The stored hours' comparison reads no request row at all.
