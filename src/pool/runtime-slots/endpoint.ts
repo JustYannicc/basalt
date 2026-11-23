@@ -18,6 +18,7 @@ import {
   sameIdentity,
   sameTarget,
   type ControllerCode,
+  type RuntimeRetirementObservation,
   type SlotTarget,
 } from "./contract.ts";
 import {
@@ -49,6 +50,7 @@ import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
+import { lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
@@ -190,7 +192,15 @@ export class RuntimeEndpoint {
     return this.serialize(() => this.maintenance.alarm());
   }
   failed(identity: SlotIdentity, signal: AbortSignal) {
-    return this.serialize(() => this.maintenance.failed(identity, signal));
+    return this.serialize(async () => {
+      const failed = await this.maintenance.failed(identity, signal);
+      const end = await this.lastEnd();
+      return end ? { ...failed, end } : failed;
+    });
+  }
+  /** How this object's container last ended, once it has; a boot found gone ends here. */
+  private lastEnd() {
+    return lastContainerEnd(this.ctx);
   }
   private bound(target: SlotTarget) {
     const applicationId =
@@ -401,11 +411,13 @@ export class RuntimeEndpoint {
   async recoveryWitness(target: SlotTarget) {
     this.bound(target);
     const { record } = await this.store.read(target);
+    const end = await this.lastEnd();
     return {
       authorization: record.authorization,
       running: this.ctx.container!.running,
       identity: record.identity,
       witness: record.witness,
+      ...(end ? { end } : {}),
     };
   }
   attest(envelope: string) {
@@ -607,6 +619,7 @@ export class RuntimeEndpoint {
       // whole grace. The retirement read sees the stop end.
       await trace.run("monitor_attach", async () => this.retirementMonitor.start(identity));
       await this.store.stopSent(target, Date.now());
+      await markStopSent(this.ctx);
       await trace.run(
         "stop",
         () => stopGracefully(this.ctx.container!, () => (began = true)),
@@ -626,10 +639,13 @@ export class RuntimeEndpoint {
       work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
   }
-  async retirement(identity: SlotIdentity, signal?: AbortSignal) {
+  async retirement(
+    identity: SlotIdentity,
+    signal?: AbortSignal,
+  ): Promise<RuntimeRetirementObservation> {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
     this.bound(identity);
-    return observeRuntimeRetirement(
+    const observed = await observeRuntimeRetirement(
       identity,
       this.ctx.container!,
       this.store,
@@ -638,5 +654,7 @@ export class RuntimeEndpoint {
       this.retirementMonitor,
       signal,
     );
+    const end = observed.running ? undefined : await this.lastEnd();
+    return end ? { ...observed, end } : observed;
   }
 }

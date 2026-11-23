@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readEnd } from "./runtime-slots/container-end.ts";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 import { Schema } from "effect";
@@ -135,12 +136,14 @@ test("a reconstructed endpoint waits for the actual response body before destroy
   });
   await reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000));
   assert.equal(f.calls.destroy, 1);
-  assert.deepEqual(await reconstructed.retirement(identity), {
+  const { end, ...retired } = await reconstructed.retirement(identity);
+  assert.deepEqual(retired, {
     identity,
     retired: true,
     running: false,
     provider: f.grant.proof.provider,
   });
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
   await assert.rejects(f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)));
   assert.equal(f.calls.destroy, 1);
 });

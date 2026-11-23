@@ -397,13 +397,13 @@ test("reconstructing a running or stopped object without a request leaves comput
   let writes = 0,
     starts = 0,
     destroys = 0;
-  // With no runtime selected, reconstruction arms no upkeep alarm, writes nothing and touches no
-  // compute.
+  // With no runtime selected, reconstruction arms no upkeep alarm, touches no compute and writes
+  // nothing but the record of a running container's boot.
   const values = new Map<string, unknown>();
   const storage: StubStorage = {
     get: async (key: string) => values.get(key),
     put: async (key: string, value: unknown) => {
-      if (key !== "pool-alarm-v1:deadlines") writes++;
+      if (key !== "pool-alarm-v1:deadlines" && key !== "runtime-container-end-v1") writes++;
       values.set(key, value);
     },
     transaction: async (work) => work(storage),

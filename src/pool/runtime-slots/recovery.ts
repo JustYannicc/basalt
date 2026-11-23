@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { RuntimeEnd, readEnd } from "./container-end.ts";
 import {
   AdmissionProof,
   StartupWitness,
@@ -33,13 +34,27 @@ import { RuntimeForcedRestart } from "./forced-restart.ts";
 import { recoveryWarmMs } from "./forced-restart-timing.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
+/**
+ * How the primary a recovery replaced had ended, kept by the commit that ends its recovery, where
+ * the controller inspect reads it; the completion record is cleared once that recovery finishes.
+ */
+const primaryEndKey = "runtime-slots-v1:primary-last-end";
 const Completion = Schema.Struct({ identity: SlotIdentity, fingerprint: Schema.String });
 const Retained = Schema.Struct({
   authorization: AdmissionProof,
   identity: Schema.optional(SlotIdentity),
   witness: Schema.optional(StartupWitness),
   running: Schema.Boolean,
+  // Read with `readEnd`: an end this code can't read is dropped, never a failed recovery.
+  end: Schema.optional(Schema.Unknown),
 });
+const PrimaryEnd = Schema.Struct({ previous: SlotIdentity, end: RuntimeEnd });
+const isPrimaryEnd = Schema.is(PrimaryEnd);
+/** How the last primary a recovery replaced had ended, for the controller inspect. */
+export async function primaryLastEnd(storage: { get(key: string): Promise<unknown> }) {
+  const value = await storage.get(primaryEndKey);
+  return isPrimaryEnd(value) ? value : null;
+}
 interface Dependencies {
   storage: RuntimeSlotStorage;
   driver: BoundSlotDriver;
@@ -355,6 +370,8 @@ export class RuntimeSlotRecovery {
         identity: health.identity,
         fingerprint: original.configurationFingerprint,
       });
+      const previousEnd = readEnd(retained.end);
+      if (previousEnd) await transaction.put(primaryEndKey, { previous, end: previousEnd });
     });
     await this.finish(health.identity, original.configurationFingerprint, signal);
   }

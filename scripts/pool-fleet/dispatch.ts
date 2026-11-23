@@ -1,6 +1,6 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Effect, Result } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import type { PoolAccess } from "../pool-acceptance/types.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
@@ -11,9 +11,11 @@ import {
   inspectFleet,
   shortHash,
   takeBookmark,
+  UsageRollup,
   type ControllerAccess,
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
+import { readEnd, type RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
 
@@ -56,6 +58,23 @@ export interface DispatchDependencies {
 const call = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
 
+/** How a runtime container ended, as closed values: exit code, cause, and whether we stopped it. */
+const endSummary = (end: RuntimeEnd) => ({
+  at: new Date(end.at).toISOString(),
+  exitCode: end.exitCode,
+  cause: end.cause,
+  seen: end.seen,
+  stopSent: end.stopSent === true,
+});
+/** A kept end as closed values, or nothing when this lane can't read it. */
+const keptEnd = (value: unknown, id: (value: Record<string, unknown>) => unknown) => {
+  if (typeof value !== "object" || value === null) return null;
+  const kept = value as Record<string, unknown>;
+  const end = readEnd(kept.end);
+  const key = id(kept);
+  return end && typeof key === "string" ? { key: shortHash(key), ...endSummary(end) } : null;
+};
+
 const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   permission: fleet.permission
     ? {
@@ -77,6 +96,11 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
     boot: row.identity ? shortHash(row.identity.bootId) : null,
   })),
   bindings: fleet.bindings,
+  // Each kept end of a cell that left, newest first; the key is its slot's short hash.
+  recentEnds: (fleet.recentEnds ?? []).flatMap((value) => {
+    const kept = keptEnd(value, (entry) => entry.slotId);
+    return kept ? [kept] : [];
+  }),
 });
 
 const needAcceptance = ({ acceptance }: DispatchDependencies) =>
@@ -143,6 +167,12 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           policyDigest: view.digest,
+          // How the primary a recovery last replaced had ended; the key is its boot's short hash.
+          lastEnd: keptEnd(view.lastEnd, (entry) =>
+            typeof entry.previous === "object" && entry.previous !== null
+              ? (entry.previous as Record<string, unknown>).bootId
+              : undefined,
+          ),
           // The pool's expiry alert refused by Sentry (spent quota, a rate limit) or, with no
           // lastStatus, never reaching it.
           alertDelivery: view.alertDelivery
@@ -152,6 +182,11 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           fleet: fleetSummary(fleet),
+          // The pool's own usage rollup backfill: its last tick, stop, pause, pending hours and
+          // any stuck pool, by its 16-hex history id only.
+          usageRollup: Option.getOrNull(
+            Schema.decodeUnknownOption(Schema.NullOr(UsageRollup))(view.usageRollup ?? null),
+          ),
         };
       });
     if (mode === "inspect") {
