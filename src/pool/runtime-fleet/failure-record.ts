@@ -69,5 +69,14 @@ export function failureIgnored(read: FleetFailureRead) {
 
 /** A read that reached another process or launch than the row's: never a transient. */
 export function failureMismatch(read: FleetFailureRead) {
-  return read.cause === "slot_identity" || read.cause === "fleet_identity";
+  return (
+    read.cause === "slot_identity" ||
+    read.cause === "fleet_identity" ||
+    read.cause === "protection_boot_changed"
+  );
+}
+
+/** The router's own health and lease checks before a send: nothing was sent, so it is a health read. */
+export function failureBeforeSend(read: FleetFailureRead) {
+  return read.step === "slot_health" || read.step === "slot_protection";
 }

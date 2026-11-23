@@ -28,6 +28,11 @@ async function readyCell(context: TestContext) {
   assert.ok(row);
   const cell = f.instances.get(row.target.instanceId)!.fixture;
   const healthy = cell.hooks.health;
+  const served: string[] = [];
+  f.onModel(async (instance) => {
+    served.push(instance.target.instanceId);
+    return new Response("served");
+  });
   const inspect = async () => (await f.send("fleet-inspect")) as Inspected;
   const pass = async () => {
     await f.upkeep();
@@ -40,6 +45,8 @@ async function readyCell(context: TestContext) {
     slotId: row.target.slotId,
     inspect,
     pass,
+    served,
+    instanceId: row.target.instanceId,
     refuse: () => {
       cell.hooks.health = async () => new Response(null, { status: 503 });
     },
@@ -56,6 +63,12 @@ test("a cell whose readiness refuses once is fenced, read again and serves on", 
   const suspect = (await c.inspect()).resources.find((row) => row.target.slotId === c.slotId);
   assert.equal(suspect?.phase, "ready", "one refused readiness read quarantined the cell");
   assert.ok(readFailureRead(suspect?.miss), "the miss is not readable in the fleet inspect");
+  // A model call during the miss goes anywhere but the fenced cell.
+  const response = await c.f.model();
+  assert.equal(response.status, 200);
+  await response.body?.cancel();
+  assert.ok(c.served.length > 0);
+  assert.ok(!c.served.includes(c.instanceId), "a call reached the fenced cell");
   c.answer();
   await c.pass();
   const after = await c.inspect();

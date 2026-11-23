@@ -295,8 +295,11 @@ test(
     const [previous] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const dead = f.instances.get(previous!.target.instanceId)!;
     dead.fixture.crash();
-    await f.upkeep();
-    await f.settle();
+    // The first failed read only fences the stopped cell; the next pass's read quarantines it.
+    for (let pass = 0; pass < 2; pass++) {
+      await f.upkeep();
+      await f.settle();
+    }
     const next = await f.resourcesWhen(
       (rows) =>
         rows.length === 1 &&

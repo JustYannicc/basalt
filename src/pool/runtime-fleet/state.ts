@@ -540,7 +540,8 @@ export class RuntimeFleetState {
     return this.change((rows) => {
       const row = this.row(rows, target);
       if (row.phase !== phase || row.phaseAt !== phaseAt) return false;
-      rows[rows.indexOf(row)] = { ...row, phase: "quarantined", reason };
+      const { miss: _miss, ...rest } = row;
+      rows[rows.indexOf(row)] = { ...rest, phase: "quarantined", reason };
       return true;
     });
   }

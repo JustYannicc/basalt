@@ -665,6 +665,8 @@ export class RuntimeFleet {
     if (!identity) return;
     if (row.phase === "ready") {
       const active = await this.reconcileReady(cell, row, identity, now);
+      // A suspect cell's next read decides first: a dead one must quarantine, not stall in a drain.
+      if (!this.serves(row)) return;
       if (!enabled || (await this.idle({ ...row, active }, identity, rows, now)))
         await this.drain(identity);
     } else if (row.phase === "draining") {

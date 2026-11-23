@@ -18,10 +18,10 @@ test("a health refusal fences the exact runtime before eleven new requests and s
     throw error;
   };
   await assert.rejects(f.forward(), /unhealthy/);
-  assert.equal(
-    (await f.state.inspect()).find((row) => row.target.slotId === dead.slotId)?.phase,
-    "quarantined",
-  );
+  // A refusal before the send is one health sample: the runtime is fenced, not yet quarantined.
+  const fenced = (await f.state.inspect()).find((row) => row.target.slotId === dead.slotId);
+  assert.equal(fenced?.phase, "ready");
+  assert.ok(fenced?.miss, "the refused runtime is not fenced in its durable row");
   const reconstructed = f.createFleet();
   for (let index = 0; index < 11; index++)
     assert.equal(await (await f.forward(undefined, reconstructed)).text(), "terminal");
@@ -60,13 +60,13 @@ test("recent demand protects a surviving idle sibling when the first ready sibli
       pending.push(work);
     },
   });
-  // The failed read fences the first sibling; idle and taking no call, it leaves the ordinary way.
+  // The first failed read fences the sibling; the second in a row quarantines it.
   for (let pass = 0; pass < 2; pass++) {
     await fleet.upkeep();
     await Promise.all(pending);
   }
   const rows = await f.state.inspect();
-  assert.notEqual(rows.find((row) => row.target.slotId === dead.slotId)?.phase, "ready");
+  assert.equal(rows.find((row) => row.target.slotId === dead.slotId)?.phase, "quarantined");
   assert.equal(rows.find((row) => row.target.slotId === healthy.slotId)?.phase, "ready");
 });
 

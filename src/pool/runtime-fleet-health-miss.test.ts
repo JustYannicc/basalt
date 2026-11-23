@@ -3,6 +3,7 @@ import { test, type TestContext } from "node:test";
 import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { failureFleetFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-failure-fixture.ts";
 import { HealthLeaseElapsed, SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
+import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { readFailure, readFailureRead } from "./runtime-fleet/failure-record.ts";
@@ -211,4 +212,57 @@ test("a failed forward still quarantines at once, recorded as the forward path",
   assert.equal(row?.phase, "quarantined");
   assert.equal(readFailure(row?.failure)?.path, "forward");
   assert.equal(readFailure(row?.failure)?.reads[0]?.cause, "transport");
+});
+
+test("a refusal by the router's own health read before the send is a miss too, and a second in a row quarantines", async (context) => {
+  const s = await suspectFleet(context);
+  s.f.cell(s.cell).forward = async () => {
+    const error = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("slot_health", error);
+    throw error;
+  };
+  await assert.rejects(s.f.forward(undefined, s.fleet), /unhealthy/);
+  const suspect = await s.row();
+  assert.equal(suspect?.phase, "ready", "one refused read before the send quarantined the cell");
+  assert.equal(readFailureRead(suspect?.miss)?.step, "slot_health");
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
+  s.answer(refuse());
+  await s.pass();
+  const row = await s.row();
+  assert.equal(row?.phase, "quarantined");
+  assert.deepEqual(
+    readFailure(row?.failure)?.reads.map((read) => read.step),
+    ["slot_health", "endpoint_health"],
+  );
+});
+
+test("a good health read never lifts the fence of a quarantine whose write failed", async (context) => {
+  const s = await suspectFleet(context);
+  s.f.cell(s.cell).forward = async (_request, _port, _pool, before) => {
+    before();
+    throw new Error("runtime transport failed");
+  };
+  const write = context.mock.method(s.f.state, "quarantine", async () => {
+    throw new Error("storage unavailable");
+  });
+  await assert.rejects(s.f.forward(undefined, s.fleet), /runtime transport failed/);
+  write.mock.restore();
+  assert.equal((await s.row())?.phase, "ready");
+  s.answer(async () => undefined);
+  await s.pass();
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
+  assert.deepEqual(s.f.sends, []);
+});
+
+test("a suspect cell is read again before anything retires it, so a dead idle one quarantines", async (context) => {
+  let now = 0;
+  context.mock.method(Date, "now", () => now);
+  const s = await suspectFleet(context);
+  // Idle past the fleet's idle time, with the root serving: an ordinary cell would retire now.
+  now = 60_001;
+  s.answer(refuse());
+  await s.pass();
+  assert.equal((await s.row())?.phase, "ready");
+  await s.pass();
+  assert.equal((await s.row())?.phase, "quarantined");
 });

@@ -1,6 +1,7 @@
 import { executionKey, type SlotIdentity } from "../runtime-slots/contract.ts";
 import { FleetRefused, type QuarantineReason, type RuntimeFleetState } from "./state.ts";
 import {
+  failureBeforeSend,
   failureIgnored,
   failureMismatch,
   failureRead,
@@ -17,7 +18,9 @@ export class FleetFenced extends FleetRefused {
 
 /** Failure fencing denies unsent calls locally before committing the durable selection fence. */
 export class FleetFailures {
+  // Quarantines, final for this isolate, and failed health reads, which a good read clears.
   private blocked = new Set<string>();
+  private suspect = new Set<string>();
   private pending = new Map<string, Promise<void>>();
   private state: RuntimeFleetState;
   private changed: () => void;
@@ -28,10 +31,11 @@ export class FleetFailures {
     this.now = now;
   }
   assertAvailable(identity: SlotIdentity) {
-    if (this.blocked.has(executionKey(identity))) throw new FleetFenced();
+    if (this.fenced(identity)) throw new FleetFenced();
   }
   fenced(identity: SlotIdentity) {
-    return this.blocked.has(executionKey(identity));
+    const key = executionKey(identity);
+    return this.blocked.has(key) || this.suspect.has(key);
   }
   /** A real request failed on the runtime, before or during its answer: evidence, so it quarantines. */
   async failed(
@@ -43,6 +47,10 @@ export class FleetFailures {
     if (signal.aborted || error instanceof FleetFenced) return;
     const read = failureRead(error, "fleet_forward", this.now());
     if (failureIgnored(read)) return;
+    if (failureBeforeSend(read)) {
+      await this.missed(identity, read);
+      return;
+    }
     return this.quarantine(identity, "runtime_failed", { path, reads: [read] });
   }
   /**
@@ -57,18 +65,22 @@ export class FleetFailures {
       return "quarantined" as const;
     }
     const key = executionKey(identity);
-    this.blocked.add(key);
+    this.suspect.add(key);
     const outcome = await this.state.miss(identity, read);
-    if (outcome === "quarantined") this.changed();
+    if (outcome === "quarantined") {
+      this.blocked.add(key);
+      this.suspect.delete(key);
+      this.changed();
+    }
     // A row that no longer serves takes no call anyway; its durable phase governs from here.
-    if (outcome === "gone") this.blocked.delete(key);
+    if (outcome === "gone" && !this.pending.has(key)) this.suspect.delete(key);
     return outcome;
   }
-  /** A good read after a miss: the runtime takes calls again, unless a failure quarantines it. */
+  /** A good read after a miss lifts only the miss's own fence; a quarantine's stays. */
   async recovered(identity: SlotIdentity) {
     const key = executionKey(identity);
     if (this.pending.has(key)) return;
-    if ((await this.state.clearMiss(identity)) && !this.pending.has(key)) this.blocked.delete(key);
+    if ((await this.state.clearMiss(identity)) && !this.pending.has(key)) this.suspect.delete(key);
   }
   /** A runtime that refused a membership policy takes no new call under its old one. */
   refused(identity: SlotIdentity) {
