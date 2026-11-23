@@ -148,6 +148,17 @@ export function usageRollupProjection(rows: string) {
 }
 
 /**
+ * One pool's base rows whose exact time falls in [from, to), as the recompute reads them: the
+ * indexed time narrows the scan, the exact time decides the hour. A read-only prewarm passes the
+ * same bounds, so it touches exactly the rows the recompute will.
+ */
+export const usageRollupBaseRows = (pool: string, from: string, to: string) =>
+  `(SELECT * FROM basalt_model_requests r WHERE r.pool=${pool}
+        AND r.timestamp >= ${from} - interval '1 second' AND r.timestamp < ${to} + interval '1 second'
+        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' >= ${from}
+        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' < ${to})`;
+
+/**
  * One lock per pool. A bulk insert can span thousands of hours, and a lock per hour would exhaust
  * the shared lock table; a recompute holds the pool's writers only for one hour's recompute.
  */
@@ -203,10 +214,7 @@ export const historyUsageRollupStatements = [
       PERFORM pg_advisory_xact_lock(${poolLock("target_pool")});
       DELETE FROM basalt_model_usage_hourly
         WHERE pool=target_pool AND hour >= from_hour AND hour < to_hour;
-      ${upsert(`(SELECT * FROM basalt_model_requests r WHERE r.pool=target_pool
-        AND r.timestamp >= from_hour - interval '1 second' AND r.timestamp < to_hour + interval '1 second'
-        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' >= from_hour
-        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' < to_hour)`)};
+      ${upsert(usageRollupBaseRows("target_pool", "from_hour", "to_hour"))};
       GET DIAGNOSTICS written = ROW_COUNT;
       INSERT INTO basalt_model_usage_hours AS d (pool,hour)
         SELECT target_pool,h.at FROM generate_series(from_hour, to_hour - interval '1 hour',

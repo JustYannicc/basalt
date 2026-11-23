@@ -29,8 +29,12 @@ test("the controller's inspect carries the usage rollup's stored state without a
     lastTickAt: "2026-11-23T09:30:00.000Z",
     lastStop: "budget",
     pausedUntil: null,
+    lastHour: null,
+    lastHourPhase: null,
+    lastHourReadMs: null,
     pools: 1,
     pendingHours: 2_832,
+    totalPendingHours: null,
     stuck: [
       { pool: "0123456789abcdef", reason: "slow", hour: null, retryAt: "2026-11-24T09:30:00.000Z" },
     ],

@@ -502,7 +502,12 @@ test("a cancelled attempt's hold ends at its error, not at the rollback's return
     await f.db.query(
       "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
     );
-    const { plan } = await planUsageRollup(f.db);
+    const { plan: planned } = await planUsageRollup(f.db);
+    // One hour, so its six cancels (three, then three more on its retry) fit the call's budget.
+    const at = "2026-01-01T00:00:00.000Z";
+    const plan = {
+      pools: [{ pool: planned.pools[0]!.pool, from: at, to: "2026-01-01T01:00:00.000Z", days: 0 }],
+    };
     let clock = 0;
     // A rollback that takes a second: Postgres released the lock at the error, before it.
     const slowRollback = {
@@ -512,7 +517,7 @@ test("a cancelled attempt's hold ends at its error, not at the rollback's return
       },
     };
     const result = await runUsageRollup(slowRollback, plan, 60_000, () => clock, undefined, 1);
-    assert.equal(result.stopped, "slow_hour", "three cancels, none read as a long hold");
+    assert.equal(result.stopped, "slow_hour", "every cancel, none read as a long hold");
     assert.ok(result.maxHoldMs < usageRollupHoldLimitMs);
   });
 });

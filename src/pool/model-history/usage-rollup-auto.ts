@@ -3,8 +3,11 @@ import {
   planUsageRollup,
   runUsageRollup,
   usageRollupHourLimitMs,
+  usageRollupReadLimitMs,
   usageRollupWalPerCall,
+  type UsageRollupPlan,
 } from "./usage-rollup-backfill.ts";
+import type { UsageRollupSlowPhase } from "./usage-rollup-hour.ts";
 
 /**
  * The pool backfills its own usage rollup: each model-history pass ends with one tick of at most
@@ -19,15 +22,24 @@ export interface UsageRollupAutoBounds {
   /** Backfill time and write-ahead log in any 60 minutes of wall time, across ticks. */
   readonly hourMs: number;
   readonly hourWalBytes: number;
-  /** After any stop other than its own time or WAL budget, the next tick waits this long. */
+  /** After a lock, an error or a long hold, the next tick waits this long. */
   readonly pauseMs: number;
-  /** The same pool stopping slow on the same hour this many times in a row is stuck. */
+  /**
+   * A pool that stopped on a slow hour waits this long; meanwhile the tick goes on with the other
+   * pools, so one dense hour never delays them.
+   */
+  readonly slowPauseMs: number;
+  /**
+   * The same pool stopping slow on the same hour this many times is stuck, and keeps being retried
+   * after each slow wait until the hour fits.
+   */
   readonly slowAfter: number;
   /** The same pool stopping on a lock or an error this many times in a row is stuck. */
   readonly failingAfter: number;
-  /** A stuck pool is tried once more after this long; until then the tick skips it. */
+  /** A pool stuck on a lock, an error or a long hold is tried once more after this long. */
   readonly retryStuckMs: number;
   readonly hourLimitMs: number;
+  readonly readLimitMs: number;
 }
 export const usageRollupAutoBounds: UsageRollupAutoBounds = {
   sessions: 2,
@@ -36,10 +48,12 @@ export const usageRollupAutoBounds: UsageRollupAutoBounds = {
   hourMs: 300_000,
   hourWalBytes: 256 * 1024 * 1024,
   pauseMs: 3_600_000,
+  slowPauseMs: 600_000,
   slowAfter: 3,
   failingAfter: 6,
   retryStuckMs: 86_400_000,
   hourLimitMs: usageRollupHourLimitMs,
+  readLimitMs: usageRollupReadLimitMs,
 };
 
 export type UsageRollupAutoStop =
@@ -54,6 +68,8 @@ export type UsageRollupAutoStop =
   | "handover"
   | "not_applied"
   | "stuck"
+  /** Every pool left is in its slow wait. */
+  | "waiting"
   | "ready";
 
 type StuckReason = "slow" | "lock" | "error";
@@ -65,13 +81,26 @@ export interface UsageRollupStuck {
   readonly retryAt: string;
 }
 
+export interface UsageRollupSlowWait {
+  readonly pool: string;
+  readonly hour: string;
+  /** Slow stops on this hour since the pool last got past it. */
+  readonly count: number;
+  readonly until: string;
+}
+
 export interface UsageRollupAutoState {
   readonly lastTickAt?: string;
   readonly lastStop?: UsageRollupAutoStop;
   readonly lastHour?: string;
+  /** For a slow hour: where its last attempt was cancelled, and its last warming read's time. */
+  readonly lastHourPhase?: UsageRollupSlowPhase;
+  readonly lastHourReadMs?: number;
   /** Pools not ready yet, and the hours left in the pool the last session worked on. */
   readonly pools?: number;
   readonly pendingHours?: number;
+  /** The hours left across every pool not ready yet. */
+  readonly totalPendingHours?: number;
   readonly pausedUntil?: string;
   /** Pools the tick skips until their hour is done, their pool is ready, or their retry is due. */
   readonly stuck?: readonly UsageRollupStuck[];
@@ -81,6 +110,8 @@ export interface UsageRollupAutoState {
     readonly hour?: string;
     readonly count: number;
   };
+  /** Pools waiting after a slow hour, until that hour is done or their pool is ready. */
+  readonly slow?: readonly UsageRollupSlowWait[];
   /** The sessions of the last 60 minutes, for the sliding hourly ceilings. */
   readonly sessions?: readonly {
     readonly at: number;
@@ -96,31 +127,59 @@ interface AutoStorage {
 
 type Session = <T>(work: (db: HistoryDatabase) => Promise<T>) => Promise<T>;
 
+interface Held {
+  stuck: readonly UsageRollupStuck[];
+  slow: readonly UsageRollupSlowWait[];
+  totalPendingHours?: number;
+}
 type Outcome =
-  | { kind: "not_applied" | "ready" | "stuck"; stuck: readonly UsageRollupStuck[] }
-  | {
+  | ({ kind: "not_applied" | "ready" | "stuck" | "waiting" } & Held)
+  | ({
       kind: "ran";
       pool: string;
       pools: number;
-      stuck: readonly UsageRollupStuck[];
       result: Awaited<ReturnType<typeof runUsageRollup>>;
-    };
+    } & Held);
 
 const notApplied = "The usage rollup migration is not applied";
 const hourMs = 3_600_000;
 
-/** Stuck entries whose pool became ready, or whose hour is now done, are cleared. */
-async function unresolved(db: HistoryDatabase, stuck: readonly UsageRollupStuck[]) {
-  if (!stuck.length) return stuck;
+/** Stuck and slow entries whose pool became ready, or whose hour is now done, are cleared. */
+async function unresolved(
+  db: HistoryDatabase,
+  stuck: readonly UsageRollupStuck[],
+  slow: readonly UsageRollupSlowWait[],
+) {
+  const entries = [...stuck, ...slow];
+  if (!entries.length) return { stuck, slow };
   const done = await db.query(
     `SELECT s.pool, s.hour FROM jsonb_to_recordset($1::jsonb) AS s(pool text, hour text)
     WHERE EXISTS (SELECT 1 FROM basalt_model_usage_ready r WHERE r.pool=s.pool)
       OR (s.hour IS NOT NULL AND EXISTS (SELECT 1 FROM basalt_model_usage_hours h
         WHERE h.pool=s.pool AND h.hour=s.hour::timestamptz))`,
-    [JSON.stringify(stuck.map(({ pool, hour }) => ({ pool, hour: hour ?? null })))],
+    [JSON.stringify(entries.map(({ pool, hour }) => ({ pool, hour: hour ?? null })))],
   );
   const cleared = new Set(done.rows.map((row) => `${String(row.pool)}|${row.hour ?? ""}`));
-  return stuck.filter((entry) => !cleared.has(`${entry.pool}|${entry.hour ?? ""}`));
+  const open = (entry: { pool: string; hour?: string }) =>
+    !cleared.has(`${entry.pool}|${entry.hour ?? ""}`);
+  return { stuck: stuck.filter(open), slow: slow.filter(open) };
+}
+
+/** The hours left across the plan's pools, in one read of the done-markers' primary key. */
+async function pendingAcross(db: HistoryDatabase, plan: UsageRollupPlan) {
+  if (!plan.pools.length) return 0;
+  const total = await db.query(
+    `SELECT coalesce(sum(greatest(p.days * 24 - (SELECT count(*) FROM basalt_model_usage_hours h
+        WHERE h.pool=p.pool AND h.hour >= p.since AND h.hour < p.until), 0)), 0)::int AS n
+    FROM jsonb_to_recordset($1::jsonb) AS p(pool text, since timestamptz, until timestamptz,
+      days int)`,
+    [
+      JSON.stringify(
+        plan.pools.map(({ pool, from, to, days }) => ({ pool, since: from, until: to, days })),
+      ),
+    ],
+  );
+  return Number(total.rows[0]?.n ?? 0);
 }
 
 /** One tick. Returns the state it stored; never throws for a backfill failure, only logs it. */
@@ -160,15 +219,14 @@ export async function usageRollupTick(
     pool: string,
     reason: StuckReason,
     hour: string | undefined,
+    retryAt = new Date(now() + bounds.retryStuckMs).toISOString(),
   ) => [
     ...list.filter((entry) => entry.pool !== pool),
-    {
-      pool,
-      reason,
-      ...(hour ? { hour } : {}),
-      retryAt: new Date(now() + bounds.retryStuckMs).toISOString(),
-    },
+    { pool, reason, ...(hour ? { hour } : {}), retryAt },
   ];
+  // A pool stuck on a slow hour is retried after each slow wait; every other stuck pool, daily.
+  const daily = (entry: UsageRollupStuck) => !(entry.reason === "slow" && entry.hour);
+  const noSlowHour = { lastHour: undefined, lastHourPhase: undefined, lastHourReadMs: undefined };
   for (let index = 0; index < bounds.sessions; index++) {
     if (stopped()) {
       await save({ ...state, lastStop: "handover" });
@@ -187,22 +245,37 @@ export async function usageRollupTick(
     let outcome: Outcome;
     try {
       outcome = await session(async (db): Promise<Outcome> => {
-        const stuck = await unresolved(db, stuckBefore);
+        const { stuck, slow } = await unresolved(db, stuckBefore, state.slow ?? []);
         let planned: Awaited<ReturnType<typeof planUsageRollup>>;
         try {
           planned = await plan(db);
         } catch (error) {
           if (error instanceof Error && error.message === notApplied)
-            return { kind: "not_applied", stuck };
+            return { kind: "not_applied", stuck, slow };
           throw error;
         }
-        // One pool at a time: the first that is neither ready nor stuck, or whose retry is due.
-        const skipped = new Set(
-          stuck.filter((entry) => Date.parse(entry.retryAt) > now()).map((entry) => entry.pool),
+        // One pool at a time: the first that is neither ready, stuck nor waiting after a slow
+        // hour, or whose retry is due. A pool stuck on a slow hour is retried after each slow
+        // wait, however far out a stored retry says.
+        const waiting = new Set(
+          slow.filter((entry) => Date.parse(entry.until) > now()).map((entry) => entry.pool),
         );
+        const skipped = new Set([
+          ...waiting,
+          ...stuck
+            .filter((entry) => daily(entry) && Date.parse(entry.retryAt) > now())
+            .map((entry) => entry.pool),
+        ]);
         const open = planned.plan.pools.filter((item) => !skipped.has(item.pool));
         const next = open[0];
-        if (!next) return { kind: stuck.some((entry) => entry.pool) ? "stuck" : "ready", stuck };
+        if (!next) {
+          const kind = stuck.some((entry) => entry.pool)
+            ? "stuck"
+            : waiting.size
+              ? "waiting"
+              : "ready";
+          return { kind, stuck, slow, totalPendingHours: await pendingAcross(db, planned.plan) };
+        }
         working = next.pool;
         const result = await run(
           db,
@@ -212,8 +285,18 @@ export async function usageRollupTick(
           Math.min(bounds.sessionWalBytes, walLeft, usageRollupWalPerCall),
           bounds.hourLimitMs,
           stopped,
+          bounds.readLimitMs,
         );
-        return { kind: "ran", pool: next.pool, pools: open.length, stuck, result };
+        const totalPendingHours = await pendingAcross(db, planned.plan);
+        return {
+          kind: "ran",
+          pool: next.pool,
+          pools: open.length,
+          stuck,
+          slow,
+          result,
+          totalPendingHours,
+        };
       });
     } catch (error) {
       console.error("POOL_USAGE_ROLLUP_TICK_FAILED", {
@@ -224,14 +307,14 @@ export async function usageRollupTick(
       const pool = working ?? "";
       const same = state.repeat?.reason === "error" && state.repeat.pool === pool;
       const count = same ? state.repeat!.count + 1 : 1;
-      const retried = stuckBefore.some((entry) => entry.pool === pool);
+      const retried = stuckBefore.some((entry) => daily(entry) && entry.pool === pool);
       const stuck = retried || count >= bounds.failingAfter;
       if (stuck) console.error("POOL_USAGE_ROLLUP_STUCK", { reason: "error" });
       await save({
         ...state,
         sessions: [...recent, spent],
         lastStop: "error",
-        lastHour: undefined,
+        ...noSlowHour,
         repeat: { pool, reason: "error", count },
         ...(stuck ? { stuck: stuckWith(stuckBefore, pool, "error", undefined) } : {}),
         pausedUntil: pause(),
@@ -248,13 +331,17 @@ export async function usageRollupTick(
       ...state,
       sessions: [...recent, spent],
       stuck: outcome.stuck.filter((entry) => entry.pool !== ""),
+      slow: outcome.slow,
       repeat: state.repeat?.pool === "" ? undefined : state.repeat,
+      totalPendingHours: outcome.totalPendingHours ?? state.totalPendingHours,
     };
     if (outcome.kind !== "ran") {
+      // A pool stuck or waiting is held up by the slow hour the state still names.
+      const held = outcome.kind === "stuck" || outcome.kind === "waiting";
       await save({
         ...base,
         lastStop: outcome.kind,
-        lastHour: undefined,
+        ...(held ? {} : noSlowHour),
         pools: 0,
         pendingHours: 0,
       });
@@ -269,8 +356,9 @@ export async function usageRollupTick(
     // Only hours recomputed count as progress: a stop before the first hour (a handover, a
     // budget the hour's ceiling cut to nothing) neither clears the pool nor resets its count.
     const progressed = (result.pools[0]?.recomputedHours ?? 0) > 0;
+    // A pool stuck on a slow hour stays stuck until that hour is done, whatever else it got through.
     const cleared = progressed
-      ? (ran.stuck ?? []).filter((entry) => entry.pool !== outcome.pool)
+      ? (ran.stuck ?? []).filter((entry) => entry.pool !== outcome.pool || !daily(entry))
       : ran.stuck;
     const repeat = progressed && ran.repeat?.pool === outcome.pool ? undefined : ran.repeat;
     if (result.status === "complete") {
@@ -278,10 +366,11 @@ export async function usageRollupTick(
       await save({
         ...ran,
         lastStop: "complete",
-        lastHour: undefined,
+        ...noSlowHour,
         pools: outcome.pools - 1,
         repeat,
-        stuck: cleared,
+        stuck: (ran.stuck ?? []).filter((entry) => entry.pool !== outcome.pool),
+        slow: (ran.slow ?? []).filter((entry) => entry.pool !== outcome.pool),
       });
       break;
     }
@@ -290,31 +379,55 @@ export async function usageRollupTick(
       await save({
         ...ran,
         lastStop: stopped() ? "handover" : halted,
-        lastHour: undefined,
+        ...noSlowHour,
         repeat,
         stuck: cleared,
       });
       continue;
     }
+    if (halted === "slow_hour" && result.slowHour) {
+      // Only this pool waits, and only for the slow wait; the next session takes the next pool.
+      const hour = result.slowHour;
+      const before = (ran.slow ?? []).find((entry) => entry.pool === outcome.pool);
+      const count = before?.hour === hour ? before.count + 1 : 1;
+      const until = new Date(now() + bounds.slowPauseMs).toISOString();
+      const stuck = count >= bounds.slowAfter;
+      if (stuck) console.error("POOL_USAGE_ROLLUP_STUCK", { reason: "slow", hour });
+      await save({
+        ...ran,
+        lastStop: halted,
+        lastHour: hour,
+        lastHourPhase: result.slowPhase,
+        lastHourReadMs: result.slowReadMs,
+        repeat,
+        slow: [
+          ...(ran.slow ?? []).filter((entry) => entry.pool !== outcome.pool),
+          { pool: outcome.pool, hour, count, until },
+        ],
+        stuck: stuck ? stuckWith(cleared ?? [], outcome.pool, "slow", hour, until) : cleared,
+      });
+      continue;
+    }
     const reason: StuckReason = halted === "lock" ? "lock" : "slow";
-    // A slow hour is never done, so it comes back; a hold past the limit may have committed its
-    // hour, so it counts for the pool whichever hour it was.
-    const hour = halted === "slow_hour" ? result.slowHour : undefined;
+    // A hold past the limit may have committed its hour, so it counts for the pool whichever
+    // hour it was.
     const same =
       state.repeat?.pool === outcome.pool &&
       state.repeat.reason === reason &&
-      state.repeat.hour === hour;
+      state.repeat.hour === undefined;
     const count = same ? state.repeat!.count + 1 : 1;
     // A stuck pool whose daily retry fails again is stuck again at once.
-    const retried = (ran.stuck ?? []).some((entry) => entry.pool === outcome.pool);
+    const retried = (ran.stuck ?? []).some((entry) => daily(entry) && entry.pool === outcome.pool);
     const stuck = retried || count >= (reason === "slow" ? bounds.slowAfter : bounds.failingAfter);
-    if (stuck) console.error("POOL_USAGE_ROLLUP_STUCK", { reason, ...(hour ? { hour } : {}) });
+    if (stuck) console.error("POOL_USAGE_ROLLUP_STUCK", { reason });
     await save({
       ...ran,
       lastStop: halted,
       lastHour: result.slowHour,
-      repeat: { pool: outcome.pool, reason, ...(hour ? { hour } : {}), count },
-      ...(stuck ? { stuck: stuckWith(ran.stuck ?? [], outcome.pool, reason, hour) } : {}),
+      lastHourPhase: undefined,
+      lastHourReadMs: undefined,
+      repeat: { pool: outcome.pool, reason, count },
+      ...(stuck ? { stuck: stuckWith(ran.stuck ?? [], outcome.pool, reason, undefined) } : {}),
       pausedUntil: pause(),
     });
     break;
@@ -329,58 +442,3 @@ export async function usageRollupAutoState(storage: AutoStorage) {
 /** The pools whose rollup is stuck, which the minute check reports as a reliability reason. */
 export const usageRollupStuckPools = (state: UsageRollupAutoState) =>
   [...new Set((state.stuck ?? []).map((entry) => entry.pool))].sort();
-
-const hex16 = /^[0-9a-f]{16}$/;
-// Only a strict UTC timestamp passes: a lenient date parse would let free text through.
-const isoPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/u;
-const iso = (value: unknown) =>
-  typeof value === "string" && isoPattern.test(value) && !Number.isNaN(Date.parse(value))
-    ? value
-    : null;
-const count = (value: unknown) =>
-  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-const stopNames = {
-  complete: true,
-  budget: true,
-  wal: true,
-  lock: true,
-  slow_hour: true,
-  slow_hold: true,
-  ceiling: true,
-  error: true,
-  handover: true,
-  not_applied: true,
-  stuck: true,
-  ready: true,
-} satisfies Record<UsageRollupAutoStop, true>;
-const stops = new Set<string>(Object.keys(stopNames));
-const reasonNames = { slow: true, lock: true, error: true } satisfies Record<StuckReason, true>;
-const reasons = new Set<string>(Object.keys(reasonNames));
-
-/**
- * The backfill's state as the fleet lane's inspect shows it: only what the object already stores,
- * closed and with 16-hex history pool ids only, so reading it touches no database.
- */
-export function usageRollupInspect(state: UsageRollupAutoState) {
-  return {
-    lastTickAt: iso(state.lastTickAt),
-    lastStop:
-      typeof state.lastStop === "string" && stops.has(state.lastStop) ? state.lastStop : null,
-    pausedUntil: iso(state.pausedUntil),
-    pools: count(state.pools),
-    pendingHours: count(state.pendingHours),
-    stuck: (Array.isArray(state.stuck) ? state.stuck : []).flatMap((entry) =>
-      typeof entry?.pool === "string" && (entry.pool === "" || hex16.test(entry.pool))
-        ? [
-            {
-              // A tick stuck before it reached any pool names none.
-              pool: entry.pool === "" ? null : entry.pool,
-              reason: reasons.has(entry.reason) ? entry.reason : null,
-              hour: iso(entry.hour),
-              retryAt: iso(entry.retryAt),
-            },
-          ]
-        : [],
-    ),
-  };
-}

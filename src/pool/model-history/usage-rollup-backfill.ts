@@ -2,7 +2,14 @@ import { digest } from "../backend-users.ts";
 import { HistoryInputError, historyObject, invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { maxSummaryRollupGroups } from "./summary-rollup-query.ts";
-import { historyUsageRollupVersion, usageRollupLockClass } from "./usage-rollup-schema.ts";
+import {
+  recomputeUsageRollupHour,
+  usageRollupReadLimitMs,
+  type UsageRollupSlowPhase,
+} from "./usage-rollup-hour.ts";
+import { historyUsageRollupVersion } from "./usage-rollup-schema.ts";
+
+export { usageRollupHoldLimitMs, usageRollupReadLimitMs } from "./usage-rollup-hour.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
 export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
@@ -15,33 +22,10 @@ export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
  * How long one hour's recompute may run once the backfill holds the pool. There is no raise: an
- * hour slower three times in a row stops the run, naming it, for a person.
+ * hour slower three times in a row is set aside and tried once more after the pool's other hours;
+ * still slow then, it stops the call, naming it.
  */
 export const usageRollupHourLimitMs = 150;
-/**
- * The longest the backfill may hold the pool. A committed hour's hold is measured on the server
- * from taking the lock to the end of the recompute, plus the commit's round trip timed by the
- * caller. Postgres releases the lock when a cancelled recompute fails, so a cancelled attempt's
- * hold is timed by the caller from sending the statement until its error arrives, which includes
- * both legs of that round trip. The hold is normally the recompute, one round trip and a commit
- * that does not wait for the WAL flush; a hold over this ends the call, naming the hour, and the
- * run stops there for a person. It bounds how often a hold runs long, not how long one lasts on a
- * stalled disk.
- */
-export const usageRollupHoldLimitMs = 350;
-
-/**
- * The Postgres error code behind a failed statement. The bounded session the operator runs in
- * rethrows Postgres's own statement cancel as a history timeout carrying the driver's error as its
- * cause, so a code read only from the error itself would never see a cancel there.
- */
-function postgresCode(error: unknown): unknown {
-  const code = (value: unknown) =>
-    typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
-  const cause =
-    typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
-  return code(error) === "57014" || code(cause) === undefined ? code(error) : code(cause);
-}
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -119,7 +103,9 @@ export function approvedUsageRollupPlan(raw: unknown): UsageRollupPlan {
 /**
  * Recomputes the plan's hours, one hour per transaction, until the time budget runs out. An hour
  * already recomputed is skipped, so a stopped or failed run resumes where it left off; a pool is
- * marked ready only after its last hour. Returns counts only.
+ * marked ready only after its last hour. An hour too slow three times in a row is deferred and the
+ * pool goes on; once its other hours are done, each deferred hour gets one more full try, so an hour
+ * that was only cold finishes in the same call. Returns counts only.
  */
 export async function runUsageRollup(
   db: HistoryDatabase,
@@ -130,6 +116,7 @@ export async function runUsageRollup(
   hourLimitMs = usageRollupHourLimitMs,
   /** True once the caller must end: the call stops at the next hour boundary, like its budget. */
   stopped: () => boolean = () => false,
+  readLimitMs = usageRollupReadLimitMs,
 ) {
   const started = now();
   // The write-ahead log this call adds, measured on the server before every hour it starts. The
@@ -148,6 +135,7 @@ export async function runUsageRollup(
     );
   let stop: "budget" | "wal" | "lock" | "slow_hour" | "slow_hold" | undefined;
   let slowHour: string | undefined;
+  let slow: { phase: UsageRollupSlowPhase; readMs: number } | undefined;
   let maxHoldMs = 0;
   const pools: {
     pool: string;
@@ -172,96 +160,70 @@ export async function runUsageRollup(
     ).rows.map((row) => new Date(row.at as string | Date).toISOString());
     let recomputedHours = 0,
       groups = 0;
-    hours: for (const at of pending) {
+    const slowHours = new Map<string, { phase: UsageRollupSlowPhase; readMs: number }>();
+    /** One hour's full try; "end" once the call must stop, with `stop` saying why. */
+    const attempt = async (at: string): Promise<"next" | "slow" | "end"> => {
       if (stopped() || now() - started >= budgetMs) {
         stop = "budget";
-        break;
+        return "end";
       }
       // Every call gets one hour through; the hour that crosses the budget is its last.
       if (callHours > 0 && (await walWritten()) >= walBudgetBytes) {
         stop = "wal";
+        return "end";
+      }
+      const hour = await recomputeUsageRollupHour(
+        db,
+        item.pool,
+        at,
+        { hourLimitMs, readLimitMs },
+        now,
+      );
+      maxHoldMs = Math.max(maxHoldMs, hour.heldMs);
+      if (hour.kind === "lock") {
+        stop = "lock";
+        return "end";
+      }
+      if (hour.kind === "slow") {
+        slowHours.set(at, { phase: hour.phase, readMs: hour.readMs });
+        return "slow";
+      }
+      if (hour.kind === "done" || hour.committed) {
+        groups += hour.groups;
+        recomputedHours++;
+        callHours++;
+      }
+      if (hour.kind === "slow_hold") {
+        stop = "slow_hold";
+        slowHour = at;
+        return "end";
+      }
+      return "next";
+    };
+    let ended = false;
+    const deferred: string[] = [];
+    for (const at of pending) {
+      const next = await attempt(at);
+      if (next === "end") {
+        ended = true;
         break;
       }
-      // A cold cache can make one attempt slow; three in a row mean the hour itself is too dense.
-      // A writer holding the pool makes the backfill step aside; five refusals in a row stop it.
-      let slowAttempts = 0,
-        refused = 0;
-      for (;;) {
-        let holdStarted: number | undefined;
-        await db.query("BEGIN");
-        try {
-          // The hour's recompute and its marker commit together, so a commit that skips the WAL
-          // flush can lose only whole hours to a crash, and the next run recomputes them.
-          await db.query(
-            `SELECT set_config('statement_timeout',$1,true),set_config('TimeZone','UTC',true),
-              set_config('synchronous_commit','off',true)`,
-            [`${hourLimitMs}ms`],
-          );
-          // A try-lock never queues, so no writer ever waits behind a backfill that is itself
-          // waiting. Taking it in the recompute's own statement leaves one round trip in the hold.
-          // Each fenced subquery runs before the one around it, so the server's times bracket the
-          // hold from the lock to the end of the recompute.
-          holdStarted = now();
-          const written = await db.query(
-            `SELECT r.groups, extract(epoch FROM clock_timestamp() - r.locked_at) * 1000 AS held_ms
-            FROM (
-              SELECT l.locked_at, CASE WHEN l.locked THEN basalt_model_usage_recompute(
-                $1,$2::timestamptz,$2::timestamptz + interval '1 hour') END AS groups
-              FROM (
-                SELECT pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1)) AS locked,
-                  clock_timestamp() AS locked_at
-                OFFSET 0
-              ) l
-              OFFSET 0
-            ) r`,
-            [item.pool, at],
-          );
-          if (written.rows[0]?.groups === null || written.rows[0]?.groups === undefined) {
-            await db.query("ROLLBACK");
-            if (++refused >= 5) {
-              stop = "lock";
-              break hours;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 50));
-            continue;
-          }
-          const commitStarted = now();
-          await db.query("COMMIT");
-          const held = Number(written.rows[0].held_ms) + (now() - commitStarted);
-          maxHoldMs = Math.max(maxHoldMs, held);
-          groups += Number(written.rows[0].groups);
-          recomputedHours++;
-          callHours++;
-          if (held > usageRollupHoldLimitMs) {
-            stop = "slow_hold";
-            slowHour = at;
-            break hours;
-          }
-          break;
-        } catch (error) {
-          const failedAt = now();
-          await db.query("ROLLBACK").catch(() => {});
-          const code = postgresCode(error);
-          // A cancelled recompute holds the pool until Postgres acts on the cancel, which can be
-          // well past the hour limit; that hold counts like any other.
-          if (holdStarted !== undefined) {
-            const held = failedAt - holdStarted;
-            maxHoldMs = Math.max(maxHoldMs, held);
-            if (code === "57014" && held > usageRollupHoldLimitMs) {
-              stop = "slow_hold";
-              slowHour = at;
-              break hours;
-            }
-          }
-          if (code === "57014" && ++slowAttempts < 3) continue;
-          if (code === "57014") {
-            stop = "slow_hour";
-            slowHour = at;
-            break hours;
-          }
-          throw error;
-        }
+      if (next === "slow") deferred.push(at);
+    }
+    const stillSlow: string[] = [];
+    for (const at of ended ? [] : deferred) {
+      const next = await attempt(at);
+      if (next === "end") {
+        ended = true;
+        break;
       }
+      if (next === "slow") stillSlow.push(at);
+    }
+    // Only hours slow on both tries are left: the call stops on the first of them, naming it.
+    if (!ended && stillSlow.length) {
+      stop = "slow_hour";
+      slowHour = stillSlow[0]!;
+      slow = slowHours.get(slowHour);
     }
     const remainingHours = pending.length - recomputedHours;
     let groupsInWindow: number | undefined;
@@ -303,6 +265,8 @@ export async function runUsageRollup(
     status: complete ? ("complete" as const) : ("progress" as const),
     ...(complete ? {} : { stopped: stop ?? "budget" }),
     ...(slowHour ? { slowHour } : {}),
+    // Where the named slow hour was cancelled, and how long its last warming read ran.
+    ...(slow ? { slowPhase: slow.phase, slowReadMs: Math.round(slow.readMs * 10) / 10 } : {}),
     maxHoldMs: Math.round(maxHoldMs),
     walBytes: await walWritten(),
     pools,

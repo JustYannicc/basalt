@@ -4,10 +4,10 @@ import { historyImportCompletionPath } from "./model-history/import-completion-c
 import { historyUsageRollupPath } from "./model-history/usage-rollup-backfill.ts";
 import {
   usageRollupAutoState,
-  usageRollupInspect,
   usageRollupStuckPools,
   usageRollupTick,
 } from "./model-history/usage-rollup-auto.ts";
+import { usageRollupInspect } from "./model-history/usage-rollup-inspect.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";

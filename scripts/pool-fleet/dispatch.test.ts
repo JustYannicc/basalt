@@ -8,7 +8,7 @@ import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
 import { refuse } from "./errors.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import { accountId, colours, harness } from "./test/harness.ts";
-import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
+import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-inspect.ts";
 
 const go = "coordinator-2026-11-18-fleet-proof";
 const dispatch = (mode: string, extra: Partial<DispatchInput> = {}): DispatchInput => ({
@@ -376,9 +376,13 @@ test("the inspect lane shows the pool's own usage rollup backfill as one closed 
   // The producer's own projection, through the consumer's decode, as production sends it.
   const usageRollup = usageRollupInspect({
     lastTickAt: "2026-11-23T09:30:00.000Z",
-    lastStop: "budget",
+    lastStop: "slow_hour",
+    lastHour: "2026-08-01T03:00:00.000Z",
+    lastHourPhase: "recompute",
+    lastHourReadMs: 412.3,
     pools: 1,
     pendingHours: 2_832,
+    totalPendingHours: 3_104,
     stuck: [
       {
         pool: "0123456789abcdef",
@@ -389,8 +393,18 @@ test("the inspect lane shows the pool's own usage rollup backfill as one closed 
       { pool: "", reason: "error", retryAt: "2026-11-24T09:30:00.000Z" },
     ],
   });
+  // A pool still on the code before the slow hour's fields reports without them.
+  const {
+    lastHour: _hour,
+    lastHourPhase: _phase,
+    lastHourReadMs: _readMs,
+    totalPendingHours: _total,
+    ...older
+  } = usageRollup;
   for (const [reported, expected] of [
     [usageRollup, usageRollup],
+    [older, older],
+    [{ ...usageRollup, lastHourPhase: "drop table" }, null],
     [undefined, null],
     // A shape this lane doesn't know is dropped, and the lane still answers.
     [{ lastStop: 7 }, null],
