@@ -62,9 +62,34 @@ function envelope(
   return combine(parts);
 }
 
-async function postEnvelope(env: SentryEnv, body: Uint8Array): Promise<boolean> {
+/** Sentry's answer to one envelope. A refusal keeps its status and the wait Sentry asked for. */
+export interface Delivery {
+  readonly delivered: boolean;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+}
+
+const maxRetryAfterMs = 24 * 3_600_000;
+
+/**
+ * Sentry's rate-limit header names a wait per category; a bare 429 falls back to Retry-After, then
+ * to the 60 s Sentry's SDKs assume. A refusal for spent quota is a 429 too.
+ */
+function retryAfterMs(response: Response): number | undefined {
+  const limits = response.headers.get("x-sentry-rate-limits");
+  const seconds = limits
+    ? Math.max(...limits.split(",").map((limit) => Number(limit.trim().split(":")[0])))
+    : response.status === 429
+      ? Number(response.headers.get("retry-after") ?? 60)
+      : Number.NaN;
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.min(seconds * 1000, maxRetryAfterMs)
+    : undefined;
+}
+
+async function postEnvelope(env: SentryEnv, body: Uint8Array): Promise<Delivery> {
   const target = sentryEnvelopeTarget(env);
-  if (!target) return false;
+  if (!target) return { delivered: false };
   try {
     const response = await fetch(target.url, {
       method: "POST",
@@ -77,20 +102,26 @@ async function postEnvelope(env: SentryEnv, body: Uint8Array): Promise<boolean> 
       signal: AbortSignal.timeout(timeoutMs),
     });
     await response.body?.cancel().catch(() => undefined);
-    return response.status >= 200 && response.status < 300;
+    if (response.status >= 200 && response.status < 300) return { delivered: true };
+    const wait = retryAfterMs(response);
+    return { delivered: false, status: response.status, ...(wait ? { retryAfterMs: wait } : {}) };
   } catch {
-    return false;
+    return { delivered: false };
   }
 }
 
-export async function sendEnvelope(
-  env: SentryEnv,
-  input: {
-    id: string;
-    type: "event" | "feedback" | "check_in";
-    payload: Record<string, unknown>;
-    attachments?: readonly Attachment[];
-  },
-): Promise<boolean> {
+type EnvelopeInput = {
+  id: string;
+  type: "event" | "feedback" | "check_in";
+  payload: Record<string, unknown>;
+  attachments?: readonly Attachment[];
+};
+
+export async function sendEnvelope(env: SentryEnv, input: EnvelopeInput): Promise<boolean> {
+  return (await deliverEnvelope(env, input)).delivered;
+}
+
+/** For a sender that must not resend into a refusal: what Sentry answered, not just whether. */
+export function deliverEnvelope(env: SentryEnv, input: EnvelopeInput): Promise<Delivery> {
   return postEnvelope(env, envelope(input.id, input.type, input.payload, input.attachments));
 }

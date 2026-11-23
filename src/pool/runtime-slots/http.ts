@@ -59,6 +59,8 @@ export async function handleRuntimeHandoff(
   fleet?: HandoffFleet,
   probe?: RuntimeCandidateProbe,
   bookmarks?: Pick<StorageBookmarks, "read" | "restore">,
+  /** While Sentry refuses the pool's expiry alert: since when and its last status. */
+  alertDelivery?: () => Promise<{ refusedSince: number; lastStatus?: number } | undefined>,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
@@ -165,7 +167,11 @@ export async function handleRuntimeHandoff(
         result = await fleet.replace(value.operationId, value.identity);
         break;
       case "inspect":
-        result = { ...(await handoff.slots.inspect()), recovery: await handoff.recoveryState() };
+        result = {
+          ...(await handoff.slots.inspect()),
+          recovery: await handoff.recoveryState(),
+          alertDelivery: (await alertDelivery?.()) ?? null,
+        };
         break;
       case "recovery-reset":
         result = await handoff.resetRecovery();

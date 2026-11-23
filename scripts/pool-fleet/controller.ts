@@ -48,7 +48,15 @@ const Selection = Schema.Struct({
   draining: Schema.optional(Schema.Unknown),
 });
 const Inspect = Schema.Struct({
-  result: Schema.Struct({ selection: Schema.optional(Selection), digest: Schema.String }),
+  result: Schema.Struct({
+    selection: Schema.optional(Selection),
+    digest: Schema.String,
+    alertDelivery: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({ refusedSince: Schema.Number, lastStatus: Schema.optional(Schema.Number) }),
+      ),
+    ),
+  }),
 });
 const Row = Schema.Struct({
   target: SlotTarget,

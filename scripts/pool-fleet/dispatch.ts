@@ -141,6 +141,13 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           policyDigest: view.digest,
+          // Sentry refusing the pool's expiry alert, for spent quota or a rate limit.
+          alertDelivery: view.alertDelivery
+            ? {
+                refusedSince: new Date(view.alertDelivery.refusedSince).toISOString(),
+                lastStatus: view.alertDelivery.lastStatus ?? null,
+              }
+            : null,
           fleet: fleetSummary(fleet),
         };
       });
