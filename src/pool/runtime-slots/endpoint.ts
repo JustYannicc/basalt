@@ -18,6 +18,7 @@ import {
   sameIdentity,
   sameTarget,
   type ControllerCode,
+  type RuntimeRetirementObservation,
   type SlotTarget,
 } from "./contract.ts";
 import {
@@ -638,7 +639,10 @@ export class RuntimeEndpoint {
       work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
   }
-  async retirement(identity: SlotIdentity, signal?: AbortSignal) {
+  async retirement(
+    identity: SlotIdentity,
+    signal?: AbortSignal,
+  ): Promise<RuntimeRetirementObservation> {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
     this.bound(identity);
     const observed = await observeRuntimeRetirement(
