@@ -16,6 +16,11 @@ import {
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
 import { readEnd, type RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
+import {
+  readFailure,
+  readSuspect,
+  type FleetFailureRead,
+} from "../../src/pool/runtime-fleet/failure-record.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
 
@@ -75,6 +80,50 @@ const keptEnd = (value: unknown, id: (value: Record<string, unknown>) => unknown
   return end && typeof key === "string" ? { key: shortHash(key), ...endSummary(end) } : null;
 };
 
+/** A recorded time, or nothing when it is out of range: another version's value never fails the lane. */
+const iso = (at: number) => {
+  const date = new Date(at);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
+/** One failed read or call, as closed values: where, why, the round trip and the lease left. */
+const readSummary = (read: FleetFailureRead) => ({
+  at: iso(read.at),
+  step: read.step,
+  cause: read.cause,
+  roundTripMs: read.roundTripMs ?? null,
+  leaseLeftMs: read.leaseLeftMs ?? null,
+});
+const suspectSummary = (value: unknown) => {
+  const suspect = readSuspect(value);
+  return suspect
+    ? {
+        since: iso(suspect.since),
+        failed: suspect.failed ? readSummary(suspect.failed) : null,
+        reads: suspect.reads.map(readSummary),
+      }
+    : null;
+};
+const failureSummary = (value: unknown) => {
+  const failure = readFailure(value);
+  return failure
+    ? { path: failure.path, rule: failure.rule, reads: failure.reads.map(readSummary) }
+    : null;
+};
+/** A cell that left: how its container ended, if recorded, and for a quarantine why. */
+const leftSummary = (value: unknown) => {
+  if (typeof value !== "object" || value === null) return null;
+  const kept = value as Record<string, unknown>;
+  if (typeof kept.slotId !== "string") return null;
+  const end = readEnd(kept.end);
+  return {
+    key: shortHash(kept.slotId),
+    end: end ? endSummary(end) : null,
+    left: kept.left === "quarantined" || kept.left === "retired" ? kept.left : null,
+    reason: typeof kept.reason === "string" ? kept.reason : null,
+    failure: failureSummary(kept.failure),
+  };
+};
+
 const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   permission: fleet.permission
     ? {
@@ -94,11 +143,14 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
     inPhaseMs: row.inPhaseMs ?? null,
     applicationId: row.target.applicationId,
     boot: row.identity ? shortHash(row.identity.bootId) : null,
+    // Its reads since the last good one were not good: it takes no new call meanwhile.
+    suspect: suspectSummary(row.suspect),
+    failure: failureSummary(row.failure),
   })),
   bindings: fleet.bindings,
-  // Each kept end of a cell that left, newest first; the key is its slot's short hash.
+  // Each cell that left, newest first; the key is its slot's short hash.
   recentEnds: (fleet.recentEnds ?? []).flatMap((value) => {
-    const kept = keptEnd(value, (entry) => entry.slotId);
+    const kept = leftSummary(value);
     return kept ? [kept] : [];
   }),
 });

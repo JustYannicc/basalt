@@ -91,6 +91,9 @@ const Row = Schema.Struct({
   active: Schema.Number,
   reason: Schema.optional(Schema.String),
   inPhaseMs: Schema.optional(Schema.Number),
+  // Read leniently with the fleet's closed checks, so another version's values are dropped.
+  suspect: Schema.optional(Schema.Unknown),
+  failure: Schema.optional(Schema.Unknown),
 });
 export const Permission = Schema.Struct({
   operationId: Schema.String,

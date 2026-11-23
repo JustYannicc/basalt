@@ -219,6 +219,7 @@ export async function harness(options: HarnessOptions = {}) {
         permission: await configuration.inspect(operationId),
         resources: await state.inspect(),
         bindings,
+        recentEnds: await state.recentEnds(),
       };
     },
     crash: async (command) => {
