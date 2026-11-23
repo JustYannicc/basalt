@@ -11,12 +11,36 @@ import {
   reliabilityFailure,
   reliabilitySessionFailed,
 } from "./model-history/reliability-read-failure.ts";
+import type { AvailabilitySignatures, EpisodeReport } from "./availability-episode.ts";
+
+/** What makes one check's failures the same as the next one's: guard and reason, not their detail. */
+function signatures(result: ProbeResult): AvailabilitySignatures {
+  const availability = result.failures.filter((failure) => failure.guard !== "request_reliability");
+  const failed = !result.ok || availability.length > 0;
+  return {
+    availability: failed
+      ? availability
+          .map((failure) => `${failure.guard}:${failure.reason}`)
+          .sort()
+          .join(" ") || "runtime:unknown"
+      : null,
+    reliability: [
+      ...new Set(
+        result.failures
+          .filter((failure) => failure.guard === "request_reliability")
+          .map((failure) => failure.reason),
+      ),
+    ].sort(),
+  };
+}
 
 export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
   probe: (pool: string) => Promise<ProbeResult>,
   reliability?: (pool: string) => Promise<PoolReliabilitySlo>,
   release?: string,
+  /** Which of this check's failures start an episode; unreachable, every failure is reported. */
+  episodes?: (next: AvailabilitySignatures) => Promise<EpisodeReport>,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
   const receipt = await startPoolMonitor(env, availabilityCron);
@@ -61,6 +85,9 @@ export async function runAvailabilityProbe(
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
-  if (!(await capturePoolMonitor(env, receipt, { ...result, release })))
+  const report = await episodes?.(signatures(result)).catch(() => undefined);
+  if (
+    !(await capturePoolMonitor(env, receipt, { ...result, release, ...(report ? { report } : {}) }))
+  )
     throw new Error("Pool availability alert delivery failed");
 }

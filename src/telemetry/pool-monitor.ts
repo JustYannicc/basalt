@@ -72,6 +72,8 @@ export async function capturePoolMonitor(
     reliability?: PoolReliabilitySlo;
     release?: string;
     runtime?: ProbeRuntimeIdentity;
+    /** Which failures start an episode; without it every failure is reported, as each minute was. */
+    report?: { readonly availability: boolean; readonly reliability: readonly string[] };
   },
 ): Promise<boolean> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
@@ -99,13 +101,17 @@ export async function capturePoolMonitor(
     },
   });
   const events = [];
-  if (!ok) events.push(report("pool_availability_failure", availability));
-  for (const failure of reliability)
+  if (!ok && (input.report?.availability ?? true))
+    events.push(report("pool_availability_failure", availability));
+  for (const failure of reliability) {
+    // A reason that was already failing a minute ago belongs to the episode it started then.
+    if (input.report && !input.report.reliability.includes(failure.reason)) continue;
     if (failure.reason === "below_target")
       events.push(report("pool_request_success_below_target", [failure]));
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
+  }
   // Unknown outcomes are a recording defect even when the objective is decided without them.
   const unknown = input.reliability && unknownWindows(input.reliability);
   if (unknown) console.warn("POOL_REQUEST_OUTCOMES_UNKNOWN", unknown);
