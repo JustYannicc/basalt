@@ -5,13 +5,21 @@ import { createHash } from "node:crypto";
  * again before it applies, and an unchanged commit can plan differently five minutes later, so the
  * deploy compares its own plan with the one approved and refuses on any difference before it writes.
  *
- * The digest covers the commit, whether the fleet's classes are declared, every changed row as
- * production.ts prints it (name, type, action), and the Workers it re-points forward, which are
- * writes the rows don't show. Rows are sorted, so the plan's own order never matters.
+ * The digest covers the commit, whether the fleet's classes are declared, and every write the plan
+ * prints: each changed resource row and stack action as production.ts prints them, the Durable
+ * Object classes it creates, and the Workers it re-points forward. Each is sorted, so the plan's own
+ * order never matters.
  */
 export interface PlanRow {
   readonly fqn: string;
   readonly resourceType: string;
+  readonly action: string;
+  readonly bindings?: readonly { readonly action: string }[];
+}
+
+export interface PlanAction {
+  readonly fqn: string;
+  readonly actionType: string;
   readonly action: string;
 }
 
@@ -19,16 +27,31 @@ export interface PlanReading {
   readonly candidate: string;
   readonly declared: boolean;
   readonly rows: readonly PlanRow[];
+  readonly actions: readonly PlanAction[];
+  readonly created: readonly string[];
   readonly forward: readonly string[];
 }
 
-/** The plan as the digest reads it: the changed rows, then the re-points, each sorted. */
-export const planLines = ({ rows, forward }: Pick<PlanReading, "rows" | "forward">) => [
-  ...rows
-    .filter((row) => row.action !== "noop")
-    .map((row) => `${row.fqn} ${row.resourceType} ${row.action}`)
-    .sort(),
-  ...[...forward].sort().map((fqn) => `${fqn} re-point forward`),
+/**
+ * A resource row as the plan prints it, or nothing when it changes nothing. A noop row whose
+ * bindings change still writes, as the repository's own changed-row reading counts it.
+ */
+export const rowLine = (row: PlanRow) => {
+  const bindings = (row.bindings ?? []).some((binding) => binding.action !== "noop");
+  if (row.action !== "noop") return `${row.fqn} ${row.resourceType} ${row.action}`;
+  return bindings ? `${row.fqn} ${row.resourceType} noop, bindings changed` : undefined;
+};
+
+/** A stack action as the plan prints it, or nothing when it does not run. */
+export const actionLine = (action: PlanAction) =>
+  action.action === "noop" ? undefined : `${action.fqn} ${action.actionType} ${action.action}`;
+
+/** The plan as the digest reads it: rows, actions, created classes, then re-points, each sorted. */
+export const planLines = (plan: Omit<PlanReading, "candidate" | "declared">) => [
+  ...plan.rows.flatMap((row) => rowLine(row) ?? []).sort(),
+  ...plan.actions.flatMap((action) => actionLine(action) ?? []).sort(),
+  ...[...plan.created].sort().map((name) => `${name} class created`),
+  ...[...plan.forward].sort().map((fqn) => `${fqn} re-point forward`),
 ];
 
 export const planDigest = (plan: PlanReading) =>
@@ -61,15 +84,14 @@ export function deployApproval(
 
 /**
  * Why this deploy's plan is not the approved one, or nothing when it is. A digest cannot be read
- * back, so the approved rows are the ones the plan-only run printed beside its digest.
+ * back, so the approved lines are the ones its plan-only run printed above its digest.
  */
 export function planDifference(approved: string, plan: PlanReading) {
   const digest = planDigest(plan);
   if (digest === approved) return undefined;
-  const lines = planLines(plan);
   return [
     `This plan (${digest}) is not the approved plan (${approved}); nothing applied.`,
-    `This plan's rows: ${lines.join("; ") || "none"}.`,
-    "The approved rows are the ones its plan-only run printed above its digest. Read this plan, then deploy with its digest.",
+    `This plan, sorted: ${planLines(plan).join("; ") || "nothing"}.`,
+    "The approved plan is the one its plan-only run printed above its digest. Read this plan, then deploy with its digest.",
   ].join(" ");
 }

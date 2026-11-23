@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { deployApproval, planDifference, planDigest, type PlanReading } from "./approved-plan.ts";
 
 const candidate = "8e1331df0acaabf3f581fc81f8f75313523d6052";
-// Tonight's plan-only of that commit, as production.ts printed it.
+// A plan-only of that commit, shortened; the noop row is in the plan but not printed.
 const approvedPlan: PlanReading = {
   candidate,
   declared: true,
@@ -14,6 +14,8 @@ const approvedPlan: PlanReading = {
     { fqn: "PoolBackendBudget", resourceType: "Command.Exec", action: "update" },
     { fqn: "Router", resourceType: "Cloudflare.Worker", action: "noop" },
   ],
+  actions: [{ fqn: "ResumeAppDomains", actionType: "Command.Action", action: "noop" }],
+  created: [],
   forward: [],
 };
 const approved = planDigest(approvedPlan);
@@ -65,16 +67,30 @@ test("an extra row, a missing row and a changed action each refuse, and name thi
   assert.match(planDifference(approved, changed)!, /PoolWorker Cloudflare\.Worker replace/u);
 });
 
-test("another commit, the fleet switch or a forward re-point is another plan", () => {
-  for (const plan of [
-    { ...approvedPlan, candidate: "0".repeat(40) },
-    { ...approvedPlan, declared: false },
-    { ...approvedPlan, forward: ["Router"] },
-  ])
-    assert.ok(planDifference(approved, plan));
+test("every write the plan prints is part of it: actions, bindings, classes and re-points", () => {
+  for (const [name, plan] of [
+    ["another commit", { ...approvedPlan, candidate: "0".repeat(40) }],
+    ["the fleet switch", { ...approvedPlan, declared: false }],
+    ["a forward re-point", { ...approvedPlan, forward: ["Router"] }],
+    ["a created class", { ...approvedPlan, created: ["PoolWorker: PoolRuntimeBlue"] }],
+    [
+      "an action that runs",
+      { ...approvedPlan, actions: [{ ...approvedPlan.actions[0]!, action: "run" }] },
+    ],
+    [
+      "a noop row whose binding changes",
+      {
+        ...approvedPlan,
+        rows: approvedPlan.rows.map((row) =>
+          row.fqn === "Router" ? { ...row, bindings: [{ action: "update" }] } : row,
+        ),
+      },
+    ],
+  ] as const)
+    assert.ok(planDifference(approved, plan), name);
 });
 
-test("a deploy without an approved digest refuses before anything runs; plan-only needs none", () => {
+test("a deploy without a well-formed approved digest is refused; plan-only needs none", () => {
   for (const value of [undefined, "", "  ", "not-a-digest", approved.slice(1)]) {
     const approval = deployApproval("deploy", value);
     assert.equal(approval.approved, undefined);
