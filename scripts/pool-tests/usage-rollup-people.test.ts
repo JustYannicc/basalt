@@ -144,7 +144,8 @@ test("once v16 is applied the operator's dry run plans v16 and its apply makes t
       409,
     );
     assert.equal(
-      (await post({ go: true, plan: { ...dry.plan, rollup: "unknown" }, digest: dry.digest })).status,
+      (await post({ go: true, plan: { ...dry.plan, rollup: "unknown" }, digest: dry.digest }))
+        .status,
       400,
     );
     const applied = (await (
