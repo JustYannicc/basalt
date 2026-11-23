@@ -8,6 +8,7 @@ const receipt = async (response: Response) =>
   Schema.decodeUnknownSync(Schema.Struct({ result: StartupAbortReceipt }))(await response.json())
     .result;
 import { handoffWorker } from "../../scripts/pool-tests/runtime-handoff-worker.ts";
+import { listStoppedAsInactive } from "../../scripts/pool-tests/runtime-provider-fixture.ts";
 
 test("an operator abort settles an unknown candidate start without promoting or destroying the healthy active runtime", async (context) => {
   const f = await handoffWorker();
@@ -169,4 +170,17 @@ test("an abort before the physical start fences a late startup continuation with
   assert.equal(f.candidate.calls.destroy, 0);
   assert.equal((await f.inspect()).selection.candidate, undefined);
   assert.equal((await f.command("stage", { proof: grant.envelope })).status, 409);
+});
+
+test("an aborted start the provider still lists as inactive completes on the endpoint's stopped record", async (context) => {
+  const f = await handoffWorker();
+  context.after(f.cleanup);
+  context.after(listStoppedAsInactive(f.candidate));
+  const grant = await f.startGrant();
+  assert.equal((await f.stage(grant.envelope)).status, 200);
+  const aborted = await f.command("startup-abort", { intent: await abortIntent(f, grant.proof) });
+  assert.equal(aborted.status, 200, await aborted.clone().text());
+  assert.equal((await receipt(aborted)).status, "aborted");
+  assert.equal(f.candidate.calls.destroy, 1);
+  assert.equal((await f.inspect()).selection.candidate, undefined);
 });
