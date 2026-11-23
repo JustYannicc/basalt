@@ -6,10 +6,15 @@ import { HealthLeaseElapsed, SlotRefused, type SlotIdentity } from "./runtime-sl
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
-import { readFailure, readFailureRead } from "./runtime-fleet/failure-record.ts";
+import { readFailure, readSuspect } from "./runtime-fleet/failure-record.ts";
 
-/** One ready cell whose health reads the test answers, and a fleet that may not start another. */
+/**
+ * One ready cell whose health reads the test answers, on a clock the test moves, and a fleet that
+ * may not start another cell.
+ */
 async function suspectFleet(context: TestContext) {
+  let clock = 0;
+  context.mock.method(Date, "now", () => clock);
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "warn", () => {});
   const f = await fixture(2),
@@ -53,25 +58,33 @@ async function suspectFleet(context: TestContext) {
     cell,
     fleet,
     create,
-    pass,
     row,
     starts: () => starts,
-    answer: (next: () => Promise<unknown>) => {
-      health = next;
+    /** One upkeep pass at `at` ms, answering this cell's health read with `answer`. */
+    read: async (at: number, answer: () => Promise<unknown>) => {
+      clock = at;
+      health = answer;
+      await pass();
     },
   };
 }
-const refuse = () => async () => {
+const refuse = async () => {
   throw new SlotRefused("unhealthy");
 };
+const timeout = async () => {
+  throw new DOMException("The operation timed out.", "TimeoutError");
+};
+const late = async () => {
+  throw new HealthLeaseElapsed(1_612, 1_500);
+};
+const good = async () => undefined;
 
 test("one failed health read fences a ready cell without quarantining it, and the next good read lets it serve", async (context) => {
   const s = await suspectFleet(context);
-  s.answer(refuse());
-  await s.pass();
+  await s.read(0, refuse);
   const suspect = await s.row();
   assert.equal(suspect?.phase, "ready", "one failed read quarantined the cell");
-  assert.equal(readFailureRead(suspect?.miss)?.cause, "slot_unhealthy");
+  assert.equal(readSuspect(suspect?.suspect)?.failed?.cause, "slot_unhealthy");
   // Nothing reaches the cell while it is suspect: every call goes to the root.
   for (let index = 0; index < 3; index++)
     assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
@@ -80,11 +93,10 @@ test("one failed health read fences a ready cell without quarantining it, and th
   assert.deepEqual(s.f.sends, []);
   assert.equal(s.starts(), 0, "a suspect cell started another");
   assert.deepEqual(await s.f.state.recentEnds(), []);
-  s.answer(async () => undefined);
-  await s.pass();
+  await s.read(2_000, good);
   const cleared = await s.row();
   assert.equal(cleared?.phase, "ready");
-  assert.equal(cleared?.miss, undefined);
+  assert.equal(cleared?.suspect, undefined);
   assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "terminal");
   assert.deepEqual(s.f.sends, [s.cell.instanceId]);
 });
@@ -103,8 +115,7 @@ test("a call reserved before the miss is refused at dispatch and counts as no fa
   };
   const earlier = assert.rejects(s.f.forward(undefined, s.fleet), /uncertain/);
   await entered.promise;
-  s.answer(refuse());
-  await s.pass();
+  await s.read(0, refuse);
   release.resolve();
   await earlier;
   const row = await s.row();
@@ -113,27 +124,32 @@ test("a call reserved before the miss is refused at dispatch and counts as no fa
   assert.deepEqual(s.f.sends, []);
 });
 
-test("two failed health reads in a row quarantine the cell with both causes, and its recent entry says why", async (context) => {
+test("two failed reads 2 s apart do not quarantine; the same two 6 s apart do, with both causes", async (context) => {
+  const near = await suspectFleet(context);
+  await near.read(0, refuse);
+  await near.read(2_000, timeout);
+  assert.equal((await near.row())?.phase, "ready", "two reads 2 s apart quarantined the cell");
+  context.mock.restoreAll();
   const s = await suspectFleet(context);
-  s.answer(refuse());
-  await s.pass();
-  s.answer(async () => {
-    throw new DOMException("The operation timed out.", "TimeoutError");
-  });
-  await s.pass();
+  await s.read(0, refuse);
+  await s.read(6_000, timeout);
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
   assert.equal(row?.reason, "runtime_failed");
   const failure = readFailure(row?.failure);
   assert.equal(failure?.path, "health");
+  assert.equal(failure?.rule, "failed_twice");
   assert.deepEqual(
-    failure?.reads.map((read) => read.cause),
-    ["slot_unhealthy", "timeout"],
+    failure?.reads.map((read) => [read.at, read.cause]),
+    [
+      [0, "slot_unhealthy"],
+      [6_000, "timeout"],
+    ],
   );
   assert.equal(typeof failure?.reads[1]?.roundTripMs, "number");
   // The process is gone: the next pass reclaims the row, with no recorded end.
   s.f.stop();
-  await s.pass();
+  await s.read(8_000, good);
   const [left] = await s.f.state.recentEnds();
   assert.equal(left?.slotId, s.cell.slotId);
   assert.equal(left?.end, null);
@@ -144,19 +160,19 @@ test("two failed health reads in a row quarantine the cell with both causes, and
 
 test("a read that reached another process quarantines the cell on the first read", async (context) => {
   const s = await suspectFleet(context);
-  s.answer(async () => {
+  await s.read(0, async () => {
     throw new SlotRefused("identity");
   });
-  await s.pass();
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
+  assert.equal(readFailure(row?.failure)?.rule, "evidence");
   assert.deepEqual(
     readFailure(row?.failure)?.reads.map((read) => read.cause),
     ["slot_identity"],
   );
 });
 
-test("a health answer slower than the lease it reported is one miss, named as such", async (context) => {
+test("the transport names a health answer slower than the lease it reported", async (context) => {
   const identity: SlotIdentity = {
     format: "pool-runtime-slot-v1",
     controllerId: "controller",
@@ -171,6 +187,7 @@ test("a health answer slower than the lease it reported is one miss, named as su
   };
   let clock = 1_000;
   context.mock.method(performance, "now", () => clock);
+  context.mock.method(console, "error", () => {});
   const driver = new BoundSlotDriver(() => ({
     fetch: async () => {
       clock += 1_612;
@@ -181,16 +198,19 @@ test("a health answer slower than the lease it reported is one miss, named as su
   assert.ok(error instanceof HealthLeaseElapsed, String(error));
   assert.equal(error.roundTripMs, 1_612);
   assert.equal(error.leaseMs, 1_500);
-  context.mock.restoreAll();
+});
+
+test("a cell answering late for 10 s fences, then answers on time and serves again, with nothing recorded", async (context) => {
   const s = await suspectFleet(context);
-  s.answer(async () => {
-    throw error;
-  });
-  await s.pass();
-  const row = await s.row();
-  assert.equal(row?.phase, "ready");
+  for (let at = 0; at <= 10_000; at += 2_000) {
+    await s.read(at, late);
+    assert.equal((await s.row())?.phase, "ready", `a late answer at ${at} ms quarantined the cell`);
+    assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
+  }
+  const suspect = readSuspect((await s.row())?.suspect);
+  assert.equal(suspect?.failed, undefined, "a late answer counted as a failed read");
   assert.deepEqual(
-    { ...readFailureRead(row?.miss), at: 0 },
+    { ...suspect?.reads.at(-1), at: 0 },
     {
       at: 0,
       step: "endpoint_health",
@@ -199,6 +219,40 @@ test("a health answer slower than the lease it reported is one miss, named as su
       leaseLeftMs: -112,
     },
   );
+  await s.read(12_000, good);
+  assert.equal((await s.row())?.suspect, undefined);
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "terminal");
+  assert.deepEqual(await s.f.state.recentEnds(), []);
+});
+
+test("a cell answering late for 30 s is quarantined as unproven, with the reads it had", async (context) => {
+  const s = await suspectFleet(context);
+  for (let at = 0; at < 30_000; at += 2_000) await s.read(at, late);
+  assert.equal((await s.row())?.phase, "ready");
+  await s.read(30_000, late);
+  const row = await s.row();
+  assert.equal(row?.phase, "quarantined");
+  const failure = readFailure(row?.failure);
+  assert.equal(failure?.rule, "unproven");
+  assert.ok(failure && failure.reads.length > 0);
+  assert.ok(failure?.reads.every((read) => read.cause === "lease_elapsed"));
+});
+
+test("late answers never shorten the path to the two-miss quarantine", async (context) => {
+  const s = await suspectFleet(context);
+  // A failed read, then a late answer 6 s on: the late one is no second failure.
+  await s.read(0, refuse);
+  await s.read(6_000, late);
+  assert.equal((await s.row())?.phase, "ready");
+  context.mock.restoreAll();
+  const t = await suspectFleet(context);
+  // Late answers first, then two failed reads 2 s apart: the 6 s run from the first failure.
+  await t.read(0, late);
+  await t.read(2_000, refuse);
+  await t.read(4_000, refuse);
+  assert.equal((await t.row())?.phase, "ready");
+  await t.read(8_000, refuse);
+  assert.equal(readFailure((await t.row())?.failure)?.rule, "failed_twice");
 });
 
 test("a failed forward still quarantines at once, recorded as the forward path", async (context) => {
@@ -211,10 +265,11 @@ test("a failed forward still quarantines at once, recorded as the forward path",
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
   assert.equal(readFailure(row?.failure)?.path, "forward");
+  assert.equal(readFailure(row?.failure)?.rule, "evidence");
   assert.equal(readFailure(row?.failure)?.reads[0]?.cause, "transport");
 });
 
-test("a refusal by the router's own health read before the send is a miss too, and a second in a row quarantines", async (context) => {
+test("a refusal by the router's own health read before the send is a miss too", async (context) => {
   const s = await suspectFleet(context);
   s.f.cell(s.cell).forward = async () => {
     const error = new SlotRefused("unhealthy");
@@ -224,10 +279,9 @@ test("a refusal by the router's own health read before the send is a miss too, a
   await assert.rejects(s.f.forward(undefined, s.fleet), /unhealthy/);
   const suspect = await s.row();
   assert.equal(suspect?.phase, "ready", "one refused read before the send quarantined the cell");
-  assert.equal(readFailureRead(suspect?.miss)?.step, "slot_health");
+  assert.equal(readSuspect(suspect?.suspect)?.failed?.step, "slot_health");
   assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
-  s.answer(refuse());
-  await s.pass();
+  await s.read(6_000, refuse);
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
   assert.deepEqual(
@@ -248,21 +302,16 @@ test("a good health read never lifts the fence of a quarantine whose write faile
   await assert.rejects(s.f.forward(undefined, s.fleet), /runtime transport failed/);
   write.mock.restore();
   assert.equal((await s.row())?.phase, "ready");
-  s.answer(async () => undefined);
-  await s.pass();
+  await s.read(2_000, good);
   assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
   assert.deepEqual(s.f.sends, []);
 });
 
 test("a suspect cell is read again before anything retires it, so a dead idle one quarantines", async (context) => {
-  let now = 0;
-  context.mock.method(Date, "now", () => now);
   const s = await suspectFleet(context);
   // Idle past the fleet's idle time, with the root serving: an ordinary cell would retire now.
-  now = 60_001;
-  s.answer(refuse());
-  await s.pass();
+  await s.read(60_001, refuse);
   assert.equal((await s.row())?.phase, "ready");
-  await s.pass();
+  await s.read(66_001, refuse);
   assert.equal((await s.row())?.phase, "quarantined");
 });

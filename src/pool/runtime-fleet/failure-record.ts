@@ -20,18 +20,64 @@ export const FleetFailureRead = Schema.Struct({
   leaseLeftMs: Schema.optional(Schema.Number),
 });
 export type FleetFailureRead = typeof FleetFailureRead.Type;
-/** Why a cell was quarantined: the path that saw it, and every read that counted. */
+/**
+ * Why a cell was quarantined: the path that saw it, the rule that fired (hard evidence, two failed
+ * reads far enough apart, or no good read for too long), and every read that counted.
+ */
 export const FleetFailure = Schema.Struct({
   path: Schema.Literals(["forward", "stream", "health"]),
+  rule: Schema.Literals(["evidence", "failed_twice", "unproven"]),
   reads: Schema.Array(FleetFailureRead),
 });
 export type FleetFailure = typeof FleetFailure.Type;
+/**
+ * A ready cell whose last read was not good: fenced until a good read. `since` is its first such
+ * read, `failed` the first that counted as a failure, `reads` the latest few.
+ */
+export const FleetSuspect = Schema.Struct({
+  since: Schema.Number,
+  failed: Schema.optional(FleetFailureRead),
+  reads: Schema.Array(FleetFailureRead),
+});
+export type FleetSuspect = typeof FleetSuspect.Type;
 
 const isRead = Schema.is(FleetFailureRead);
 const isFailure = Schema.is(FleetFailure);
+const isSuspect = Schema.is(FleetSuspect);
 /** Rows carry these opaquely, so a value from another version is dropped, never a failed decode. */
 export const readFailureRead = (value: unknown) => (isRead(value) ? value : undefined);
 export const readFailure = (value: unknown) => (isFailure(value) ? value : undefined);
+export const readSuspect = (value: unknown) => (isSuspect(value) ? value : undefined);
+
+/** A second failed read counts only this long after the first: #1441's refusal lasts 2 to 4 s. */
+export const failedApartMs = 6_000;
+/** A ready cell with no good read for this long is quarantined, however its reads failed. */
+export const unprovenMs = 30_000;
+const keptReads = 4;
+
+/**
+ * The fleet's rule for a read that is not good, on a cell that may already be suspect:
+ * - any read that is not good fences the cell until the next good read;
+ * - hard evidence quarantines at once (handled by the caller), and two failed reads at least
+ *   `failedApartMs` apart quarantine;
+ * - `unprovenMs` without a good read quarantines.
+ * A late answer (`lease_elapsed`) fences but never counts as a failed read.
+ */
+export function nextSuspect(
+  current: FleetSuspect | undefined,
+  read: FleetFailureRead,
+): { suspect: FleetSuspect } | { quarantine: FleetFailure } {
+  const counted = read.cause !== "lease_elapsed";
+  const since = current?.since ?? read.at;
+  const reads = [...(current?.reads ?? []), read].slice(-keptReads);
+  const failed = current?.failed;
+  if (counted && failed && read.at - failed.at >= failedApartMs)
+    return { quarantine: { path: "health", rule: "failed_twice", reads: [failed, read] } };
+  if (read.at - since >= unprovenMs)
+    return { quarantine: { path: "health", rule: "unproven", reads } };
+  const first = failed ?? (counted ? read : undefined);
+  return { suspect: { since, ...(first ? { failed: first } : {}), reads } };
+}
 
 export function failureRead(
   error: unknown,

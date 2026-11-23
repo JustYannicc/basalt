@@ -338,7 +338,7 @@ export class RuntimeFleet {
   }
   /** A ready row takes calls unless a failed health read fences it, here or in its durable row. */
   private serves(row: FleetRow) {
-    return row.miss === undefined && !(row.identity && this.failures.fenced(row.identity));
+    return row.suspect === undefined && !(row.identity && this.failures.fenced(row.identity));
   }
   private placement() {
     return { comfortable: this.deps.targetActive, primary: this.primaryPlace };
@@ -615,7 +615,7 @@ export class RuntimeFleet {
             trace.event(outcome === "quarantined" ? "quarantined" : "health_miss", fields);
             return;
           }
-          if (row.miss !== undefined || this.failures.fenced(identity))
+          if (row.suspect !== undefined || this.failures.fenced(identity))
             await this.failures.recovered(identity).catch(() => {});
           // A failed distance write is not a failed runtime.
           await this.deps.state.observeDistance(identity, database ?? undefined).catch(() => {});

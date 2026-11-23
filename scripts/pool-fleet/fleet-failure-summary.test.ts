@@ -28,7 +28,8 @@ const lease = {
   leaseLeftMs: -112,
 };
 const timeout = { ...lease, at: lease.at + 5_000, cause: "timeout", roundTripMs: 2_001 };
-const failure = { path: "health", reads: [lease, timeout] };
+const failure = { path: "health", rule: "failed_twice", reads: [lease, timeout] };
+const suspect = { since: lease.at, reads: [lease] };
 
 test("the inspect lane prints a cell's failed read, its quarantine, and why each recent cell left", async () => {
   const lane = await harness({ startCell: false });
@@ -40,7 +41,7 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
         phase: "ready",
         active: 0,
         lastUsedAt: 0,
-        miss: lease,
+        suspect,
       },
       {
         target: target(2),
@@ -69,7 +70,7 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
     const result = await runPoolFleet(dispatch, lane.deps());
     assert.equal(result.ok, true, JSON.stringify(result));
     const fleet = (result as { result: { fleet: Record<string, unknown> } }).result.fleet as {
-      rows: { miss: unknown; failure: unknown }[];
+      rows: { suspect: unknown; failure: unknown }[];
       recentEnds: { key: string; left: unknown; reason: unknown; failure: unknown; end: unknown }[];
     };
     const read = (value: typeof lease) => ({
@@ -79,10 +80,15 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
       roundTripMs: value.roundTripMs,
       leaseLeftMs: value.leaseLeftMs,
     });
-    assert.deepEqual(fleet.rows[0]?.miss, read(lease));
+    assert.deepEqual(fleet.rows[0]?.suspect, {
+      since: new Date(lease.at).toISOString(),
+      failed: null,
+      reads: [read(lease)],
+    });
     assert.equal(fleet.rows[0]?.failure, null);
     assert.deepEqual(fleet.rows[1]?.failure, {
       path: "health",
+      rule: "failed_twice",
       reads: [read(lease), read(timeout)],
     });
     assert.deepEqual(fleet.recentEnds[0], {
@@ -90,7 +96,7 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
       end: null,
       left: "quarantined",
       reason: "runtime_failed",
-      failure: { path: "health", reads: [read(lease), read(timeout)] },
+      failure: { path: "health", rule: "failed_twice", reads: [read(lease), read(timeout)] },
     });
     assert.equal(fleet.recentEnds[1]?.left, null);
     assert.equal((fleet.recentEnds[1]?.end as { stopSent?: unknown })?.stopSent, true);

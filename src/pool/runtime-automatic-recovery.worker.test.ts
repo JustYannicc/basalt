@@ -277,6 +277,8 @@ test(
   "periodic supervision replaces a stopped sibling without a discovering model request",
   { timeout: 15_000 },
   async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     await f.bootstrap();
@@ -295,8 +297,9 @@ test(
     const [previous] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const dead = f.instances.get(previous!.target.instanceId)!;
     dead.fixture.crash();
-    // The first failed read only fences the stopped cell; the next pass's read quarantines it.
+    // The first failed read only fences the stopped cell; one 6 s later quarantines it.
     for (let pass = 0; pass < 2; pass++) {
+      now += 6_000;
       await f.upkeep();
       await f.settle();
     }

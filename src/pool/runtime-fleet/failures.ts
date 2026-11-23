@@ -5,6 +5,8 @@ import {
   failureIgnored,
   failureMismatch,
   failureRead,
+  nextSuspect,
+  readSuspect,
   type FleetFailure,
   type FleetFailureRead,
 } from "./failure-record.ts";
@@ -51,22 +53,28 @@ export class FleetFailures {
       await this.missed(identity, read);
       return;
     }
-    return this.quarantine(identity, "runtime_failed", { path, reads: [read] });
+    return this.quarantine(identity, "runtime_failed", { path, rule: "evidence", reads: [read] });
   }
   /**
-   * A failed health read is one sample of what may be a transient. It fences the runtime here at
-   * once and in the durable row, so no new call reaches it; the next pass reads it again. A second
-   * failed read in a row, or a read that reached another process, quarantines it.
+   * A health read that was not good is one sample of what may be a transient. It fences the runtime
+   * here at once and in the durable row, so no new call reaches it, and `nextSuspect` decides the
+   * rest; a read that reached another process quarantines it at once.
    */
   async missed(identity: SlotIdentity, read: FleetFailureRead) {
     if (failureIgnored(read)) return "ignored" as const;
     if (failureMismatch(read)) {
-      await this.quarantine(identity, "runtime_failed", { path: "health", reads: [read] });
+      await this.quarantine(identity, "runtime_failed", {
+        path: "health",
+        rule: "evidence",
+        reads: [read],
+      });
       return "quarantined" as const;
     }
     const key = executionKey(identity);
     this.suspect.add(key);
-    const outcome = await this.state.miss(identity, read);
+    const outcome = await this.state.suspect(identity, (current) =>
+      nextSuspect(readSuspect(current), read),
+    );
     if (outcome === "quarantined") {
       this.blocked.add(key);
       this.suspect.delete(key);
@@ -76,11 +84,12 @@ export class FleetFailures {
     if (outcome === "gone" && !this.pending.has(key)) this.suspect.delete(key);
     return outcome;
   }
-  /** A good read after a miss lifts only the miss's own fence; a quarantine's stays. */
+  /** A good read lifts only a suspect's own fence; a quarantine's stays. */
   async recovered(identity: SlotIdentity) {
     const key = executionKey(identity);
     if (this.pending.has(key)) return;
-    if ((await this.state.clearMiss(identity)) && !this.pending.has(key)) this.suspect.delete(key);
+    if ((await this.state.clearSuspect(identity)) && !this.pending.has(key))
+      this.suspect.delete(key);
   }
   /** A runtime that refused a membership policy takes no new call under its old one. */
   refused(identity: SlotIdentity) {

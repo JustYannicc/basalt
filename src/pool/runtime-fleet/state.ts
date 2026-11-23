@@ -7,7 +7,7 @@ import { runtimeCellKey } from "./cell-state.ts";
 import { RuntimeDistance, distanceClass, type DistanceClass } from "../runtime-distance.ts";
 import { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import { logQuarantine, type PhaseBound } from "./phase-bounds.ts";
-import type { FleetFailure, FleetFailureRead } from "./failure-record.ts";
+import type { FleetFailure } from "./failure-record.ts";
 
 const Count = Schema.Number.check(
   Schema.isInt(),
@@ -48,9 +48,9 @@ const Row = Schema.Struct({
   reason: Schema.optional(Schema.Literals(quarantineReasons)),
   // How the cell's container ended, copied when the row leaves; opaque, so it never fails a decode.
   end: Schema.optional(Schema.Unknown),
-  // A failed health read the next pass decides: the row takes no new call until a good read clears
-  // it, and a second in a row quarantines it. Opaque like `failure`, read with a closed check.
-  miss: Schema.optional(Schema.Unknown),
+  // The row's reads since its last good one were not good: it takes no new call until a good read
+  // clears this. Opaque like `failure`; the fleet's failures read it with a closed check.
+  suspect: Schema.optional(Schema.Unknown),
   // Why the fleet quarantined it: the path that saw the failure and every read that counted.
   failure: Schema.optional(Schema.Unknown),
 });
@@ -382,7 +382,7 @@ export class RuntimeFleetState {
     placement?: FleetPlacement,
     fenced?: (identity: SlotIdentity) => boolean,
   ): Promise<RuntimeReservation | PrimaryReservation>;
-  /** `fenced` is the controller's local fence, for a miss not yet in the durable row. */
+  /** `fenced` is the controller's local fence, for a read not yet in the durable row. */
   async acquire(
     capacity: number,
     primary?: PrimaryRoute,
@@ -400,7 +400,7 @@ export class RuntimeFleetState {
         .filter(
           (row) =>
             row.phase === "ready" &&
-            row.miss === undefined &&
+            row.suspect === undefined &&
             !(row.identity && fenced?.(row.identity)) &&
             row.active < capacity,
         )
@@ -475,31 +475,32 @@ export class RuntimeFleetState {
     });
   }
   /**
-   * A ready row's failed health read. The first fences the row until the next pass decides; a
-   * second in a row quarantines it with both reads. Returns what the row became.
+   * A ready row's read that was not good, decided in one transaction: `decide` sees the row's
+   * current suspect record and returns the next one, or the failure to quarantine it with.
    */
-  miss(identity: SlotIdentity, read: FleetFailureRead) {
+  suspect(
+    identity: SlotIdentity,
+    decide: (current: unknown) => { suspect: unknown } | { quarantine: FleetFailure },
+  ) {
     return this.change<"suspect" | "quarantined" | "gone">(async (rows, transaction) => {
       const row = rows.find((value) => sameIdentity(value.identity, identity));
       if (row?.phase === "quarantined") return "quarantined";
       if (!row || row.phase !== "ready") return "gone";
-      if (row.miss === undefined) {
-        rows[rows.indexOf(row)] = { ...row, miss: read };
-        return "suspect";
+      const next = decide(row.suspect);
+      if ("quarantine" in next) {
+        await this.quarantineRow(rows, transaction, identity, "runtime_failed", next.quarantine);
+        return "quarantined";
       }
-      await this.quarantineRow(rows, transaction, identity, "runtime_failed", {
-        path: "health",
-        reads: [row.miss as FleetFailureRead, read],
-      });
-      return "quarantined";
+      rows[rows.indexOf(row)] = { ...row, suspect: next.suspect };
+      return "suspect";
     });
   }
   /** A good read: true when the row is ready and takes calls again. */
-  clearMiss(identity: SlotIdentity) {
+  clearSuspect(identity: SlotIdentity) {
     return this.change((rows) => {
       const row = rows.find((value) => sameIdentity(value.identity, identity));
       if (!row || row.phase !== "ready") return false;
-      const { miss: _miss, ...rest } = row;
+      const { suspect: _suspect, ...rest } = row;
       rows[rows.indexOf(row)] = rest;
       return true;
     });
@@ -523,7 +524,7 @@ export class RuntimeFleetState {
       if (demand >= this.maximum) throw new FleetRefused("uncertain");
       await transaction.put(replacementKey, demand + 1);
     }
-    const { miss: _miss, ...rest } = row;
+    const { suspect: _suspect, ...rest } = row;
     rows[rows.indexOf(row)] = {
       ...rest,
       phase: "quarantined",
@@ -540,7 +541,7 @@ export class RuntimeFleetState {
     return this.change((rows) => {
       const row = this.row(rows, target);
       if (row.phase !== phase || row.phaseAt !== phaseAt) return false;
-      const { miss: _miss, ...rest } = row;
+      const { suspect: _suspect, ...rest } = row;
       rows[rows.indexOf(row)] = { ...rest, phase: "quarantined", reason };
       return true;
     });

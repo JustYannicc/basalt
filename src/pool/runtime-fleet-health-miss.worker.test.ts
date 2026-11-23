@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { readFailure, readFailureRead } from "./runtime-fleet/failure-record.ts";
+import { readFailure, readSuspect } from "./runtime-fleet/failure-record.ts";
 
 interface Inspected {
-  resources: { phase: string; target: { slotId: string }; miss?: unknown; failure?: unknown }[];
+  resources: { phase: string; target: { slotId: string }; suspect?: unknown; failure?: unknown }[];
   recentEnds?: { slotId: string; left?: string; reason?: string | null; failure?: unknown }[];
 }
 
@@ -13,6 +13,8 @@ async function readyCell(context: TestContext) {
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "warn", () => {});
   context.mock.method(console, "error", () => {});
+  let now = Date.now();
+  context.mock.method(Date, "now", () => now);
   const f = await fleetWorkerFixture();
   context.after(f.cleanup);
   await f.bootstrap();
@@ -47,6 +49,9 @@ async function readyCell(context: TestContext) {
     pass,
     served,
     instanceId: row.target.instanceId,
+    advance: (ms: number) => {
+      now += ms;
+    },
     refuse: () => {
       cell.hooks.health = async () => new Response(null, { status: 503 });
     },
@@ -62,7 +67,7 @@ test("a cell whose readiness refuses once is fenced, read again and serves on", 
   await c.pass();
   const suspect = (await c.inspect()).resources.find((row) => row.target.slotId === c.slotId);
   assert.equal(suspect?.phase, "ready", "one refused readiness read quarantined the cell");
-  assert.ok(readFailureRead(suspect?.miss), "the miss is not readable in the fleet inspect");
+  assert.ok(readSuspect(suspect?.suspect), "the suspect cell is not readable in the fleet inspect");
   // A model call during the miss goes anywhere but the fenced cell.
   const response = await c.f.model();
   assert.equal(response.status, 200);
@@ -74,7 +79,7 @@ test("a cell whose readiness refuses once is fenced, read again and serves on", 
   const after = await c.inspect();
   const row = after.resources.find((value) => value.target.slotId === c.slotId);
   assert.equal(row?.phase, "ready");
-  assert.equal(row?.miss, undefined);
+  assert.equal(row?.suspect, undefined);
   assert.deepEqual(after.recentEnds ?? [], []);
 });
 
@@ -82,6 +87,8 @@ test("a cell whose readiness refuses twice in a row is quarantined with both rea
   const c = await readyCell(context);
   c.refuse();
   await c.pass();
+  // Two failed reads count only 6 s apart.
+  c.advance(6_000);
   await c.pass();
   const quarantined = (await c.inspect()).resources.find((row) => row.target.slotId === c.slotId);
   assert.equal(quarantined?.phase, "quarantined");

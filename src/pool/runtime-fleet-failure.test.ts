@@ -21,7 +21,7 @@ test("a health refusal fences the exact runtime before eleven new requests and s
   // A refusal before the send is one health sample: the runtime is fenced, not yet quarantined.
   const fenced = (await f.state.inspect()).find((row) => row.target.slotId === dead.slotId);
   assert.equal(fenced?.phase, "ready");
-  assert.ok(fenced?.miss, "the refused runtime is not fenced in its durable row");
+  assert.ok(fenced?.suspect, "the refused runtime is not fenced in its durable row");
   const reconstructed = f.createFleet();
   for (let index = 0; index < 11; index++)
     assert.equal(await (await f.forward(undefined, reconstructed)).text(), "terminal");
@@ -60,10 +60,11 @@ test("recent demand protects a surviving idle sibling when the first ready sibli
       pending.push(work);
     },
   });
-  // The first failed read fences the sibling; the second in a row quarantines it.
+  // The first failed read fences the sibling; a second one 6 s later quarantines it.
   for (let pass = 0; pass < 2; pass++) {
     await fleet.upkeep();
     await Promise.all(pending);
+    now += 6_000;
   }
   const rows = await f.state.inspect();
   assert.equal(rows.find((row) => row.target.slotId === dead.slotId)?.phase, "quarantined");

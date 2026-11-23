@@ -18,7 +18,7 @@ import { crashReadyCell } from "./crash-cell.ts";
 import { readEnd, type RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
 import {
   readFailure,
-  readFailureRead,
+  readSuspect,
   type FleetFailureRead,
 } from "../../src/pool/runtime-fleet/failure-record.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
@@ -88,13 +88,21 @@ const readSummary = (read: FleetFailureRead) => ({
   roundTripMs: read.roundTripMs ?? null,
   leaseLeftMs: read.leaseLeftMs ?? null,
 });
-const missSummary = (value: unknown) => {
-  const read = readFailureRead(value);
-  return read ? readSummary(read) : null;
+const suspectSummary = (value: unknown) => {
+  const suspect = readSuspect(value);
+  return suspect
+    ? {
+        since: new Date(suspect.since).toISOString(),
+        failed: suspect.failed ? readSummary(suspect.failed) : null,
+        reads: suspect.reads.map(readSummary),
+      }
+    : null;
 };
 const failureSummary = (value: unknown) => {
   const failure = readFailure(value);
-  return failure ? { path: failure.path, reads: failure.reads.map(readSummary) } : null;
+  return failure
+    ? { path: failure.path, rule: failure.rule, reads: failure.reads.map(readSummary) }
+    : null;
 };
 /** A cell that left: how its container ended, if recorded, and for a quarantine why. */
 const leftSummary = (value: unknown) => {
@@ -130,8 +138,8 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
     inPhaseMs: row.inPhaseMs ?? null,
     applicationId: row.target.applicationId,
     boot: row.identity ? shortHash(row.identity.bootId) : null,
-    // A failed health read the next pass decides; the cell takes no new call meanwhile.
-    miss: missSummary(row.miss),
+    // Its reads since the last good one were not good: it takes no new call meanwhile.
+    suspect: suspectSummary(row.suspect),
     failure: failureSummary(row.failure),
   })),
   bindings: fleet.bindings,
