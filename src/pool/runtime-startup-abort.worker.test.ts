@@ -174,8 +174,12 @@ test("an abort before the physical start fences a late startup continuation with
 
 test("an aborted start the provider still lists as inactive completes on the endpoint's stopped record", async (context) => {
   const f = await handoffWorker();
-  context.after(f.cleanup);
-  context.after(listStoppedAsInactive(f.candidate));
+  const restore = listStoppedAsInactive(f.candidate);
+  // The listing wraps the fixture's fetch, so it is put back first.
+  context.after(async () => {
+    restore();
+    await f.cleanup();
+  });
   const grant = await f.startGrant();
   assert.equal((await f.stage(grant.envelope)).status, 200);
   const aborted = await f.command("startup-abort", { intent: await abortIntent(f, grant.proof) });

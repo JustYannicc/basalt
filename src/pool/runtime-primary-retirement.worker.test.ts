@@ -92,8 +92,12 @@ test("native retirement retains primary capacity until current provider absence 
 
 test("a destroyed primary the provider still lists as inactive retires on the endpoint's stopped report", async (context) => {
   const f = await promoted();
-  context.after(f.cleanup);
-  context.after(listStoppedAsInactive(f.old));
+  const restore = listStoppedAsInactive(f.old);
+  // The listing wraps the fixture's fetch, so it is put back first.
+  context.after(async () => {
+    restore();
+    await f.cleanup();
+  });
   const result = await f.command("drain", { operationId: "primary-listed-inactive" });
   assert.equal(result.status, 200, await result.clone().text());
   assert.equal(f.old.calls.destroy, 1);

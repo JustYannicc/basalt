@@ -33,12 +33,18 @@ async function listed(state: string) {
       }),
     () => f.now,
   );
+  const applicationConfigDigest = runtimeApplicationConfigDigest(decodeProviderApplication(f.raw));
+  // A retirement read carries only these; the boot's own target names the application.
+  const retirement = {
+    accountId: f.manifest.provider.accountId,
+    namespaceId: f.manifest.provider.namespaceId,
+    applicationConfigDigest,
+  };
   const provider = {
-    ...f.manifest.provider,
+    ...retirement,
     applicationId: f.raw.id,
     applicationVersion: "1",
     imageDigest: f.manifest.target.imageDigest,
-    applicationConfigDigest: runtimeApplicationConfigDigest(decodeProviderApplication(f.raw)),
     observationDigest: "8".repeat(64),
     observedAt: f.now,
   };
@@ -54,7 +60,7 @@ async function listed(state: string) {
     status,
     destroySent: true,
   });
-  return { reader, provider, identity, stop };
+  return { reader, retirement, identity, stop };
 }
 
 const refused = (error: unknown) => error instanceof SlotRefused && error.reason === "uncertain";
@@ -65,7 +71,7 @@ test("a retired primary its driver reports stopped is absent while the provider 
     identity: f.identity,
     retired: true,
     running: false,
-    provider: f.provider,
+    provider: f.retirement,
   });
 });
 
@@ -82,7 +88,7 @@ test("without the driver's stopped report an inactive listing proves no absence 
     { retired: true, running: true },
   ])
     await assert.rejects(
-      absent("absent", { identity: f.identity, ...report, provider: f.provider }),
+      absent("absent", { identity: f.identity, ...report, provider: f.retirement }),
       refused,
     );
   await assert.rejects(startupAbortProvider(f.reader)(f.stop("pending")), refused);
@@ -96,7 +102,7 @@ test("with the driver's stopped report a stopped or running listing is still pre
         identity: f.identity,
         retired: true,
         running: false,
-        provider: f.provider,
+        provider: f.retirement,
       }),
       refused,
     );
