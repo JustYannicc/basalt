@@ -3,6 +3,10 @@ import type { SentryEnv } from "./sentry-target.ts";
 import type { PoolReliabilitySlo, UnknownOutcomes } from "../../apps/pool/reliability-contract.ts";
 import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
+/** A reliability failure's episode key: its reason, and the pool it names when it names one. */
+export const reliabilityKey = (failure: { reason: string; pool?: string }) =>
+  failure.pool ? `${failure.reason}:${failure.pool}` : failure.reason;
+
 const guards = new Set([
   "configuration",
   "runtime",
@@ -33,6 +37,7 @@ const reasons = new Set([
   "below_target",
   "collection_unavailable",
   "failing_now",
+  "usage_rollup_stuck",
 ]);
 
 /**
@@ -68,7 +73,7 @@ export async function capturePoolMonitor(
   receipt: Awaited<ReturnType<typeof startPoolMonitor>>,
   input: {
     ok: boolean;
-    failures: readonly { guard: string; reason: string; backendStatus?: number }[];
+    failures: readonly { guard: string; reason: string; backendStatus?: number; pool?: string }[];
     reliability?: PoolReliabilitySlo;
     release?: string;
     runtime?: ProbeRuntimeIdentity;
@@ -84,6 +89,12 @@ export async function capturePoolMonitor(
     failure.backendStatus >= 100 &&
     failure.backendStatus <= 599
       ? { backend_status: failure.backendStatus }
+      : {}),
+    // Only a usage rollup failure names a pool, by its own 16-hex history id.
+    ...(failure.reason === "usage_rollup_stuck" &&
+    typeof failure.pool === "string" &&
+    /^[0-9a-f]{16}$/.test(failure.pool)
+      ? { pool: failure.pool }
       : {}),
   }));
   // Request history measures a separate objective; missing history is not a pool outage.
@@ -105,11 +116,13 @@ export async function capturePoolMonitor(
     events.push(report("pool_availability_failure", availability));
   for (const failure of reliability) {
     // A reason that was already failing a minute ago belongs to the episode it started then.
-    if (input.report && !input.report.reliability.includes(failure.reason)) continue;
+    if (input.report && !input.report.reliability.includes(reliabilityKey(failure))) continue;
     if (failure.reason === "below_target")
       events.push(report("pool_request_success_below_target", [failure]));
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
+    else if (failure.reason === "usage_rollup_stuck")
+      events.push(report("pool_usage_rollup_stuck", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
   }
   // Unknown outcomes are a recording defect even when the objective is decided without them.
@@ -150,6 +163,7 @@ export async function capturePoolMonitor(
           error_code: errorCode,
           guard: diagnostics[0]?.guard ?? "runtime",
           reason: diagnostics[0]?.reason ?? "unknown",
+          ...(diagnostics[0]?.pool ? { rollup_pool: diagnostics[0].pool } : {}),
           probe_origin: "availability_cron",
           runtime_source: runtime.source,
           application_version: runtime.application_version,
@@ -159,7 +173,7 @@ export async function capturePoolMonitor(
           pool_probe: { check_in_id: receipt.id, failures, runtime },
           ...(input.reliability
             ? { request_reliability: reliabilityContext(input.reliability) }
-            : reliability.length
+            : reliability.some((failure) => failure.reason !== "usage_rollup_stuck")
               ? { request_reliability: { target: 99, state: "unavailable" } }
               : {}),
         },
