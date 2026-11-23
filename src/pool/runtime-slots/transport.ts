@@ -10,6 +10,7 @@ import {
   SlotIdentity,
   SlotTarget,
   SlotRefused,
+  HealthLeaseElapsed,
   RuntimeRetirementObservation,
   sameTarget,
   sameIdentity,
@@ -97,7 +98,9 @@ export class BoundSlotDriver implements SlotDriver {
     try {
       const health = Schema.decodeUnknownSync(Health)(await response.json());
       const policyLeaseUntil = requestedAt + health.leaseMs;
-      if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
+      const roundTripMs = performance.now() - requestedAt;
+      if (policyLeaseUntil <= performance.now())
+        throw new HealthLeaseElapsed(Math.round(roundTripMs), health.leaseMs);
       return { identity: health.identity, policyLeaseUntil, ...distance(health.database) };
     } catch (error) {
       failEndpointResponse(response, error);

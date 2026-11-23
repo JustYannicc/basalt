@@ -33,6 +33,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
+import { failureRead } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
@@ -171,12 +172,16 @@ export class RuntimeFleet {
     )
       throw new Error("Invalid runtime fleet policy");
     this.deps = deps;
-    this.failures = new FleetFailures(deps.state, () => {
-      this.atCapacity = false;
-      this.nextGrowthCheck = 0;
-      this.deps.changed?.();
-      this.grow();
-    });
+    this.failures = new FleetFailures(
+      deps.state,
+      () => {
+        this.atCapacity = false;
+        this.nextGrowthCheck = 0;
+        this.deps.changed?.();
+        this.grow();
+      },
+      () => deps.now(),
+    );
     this.rootFallback = new RootFallback(() => deps.now());
   }
   refreshPolicy() {
@@ -324,8 +329,16 @@ export class RuntimeFleet {
       return true;
     const rows = await this.deps.state.inspect();
     return rows.some(
-      (row) => row.phase === "ready" && row.identity && !sameIdentity(row.identity, identity),
+      (row) =>
+        row.phase === "ready" &&
+        this.serves(row) &&
+        row.identity &&
+        !sameIdentity(row.identity, identity),
     );
+  }
+  /** A ready row takes calls unless a failed health read fences it, here or in its durable row. */
+  private serves(row: FleetRow) {
+    return row.miss === undefined && !(row.identity && this.failures.fenced(row.identity));
   }
   private placement() {
     return { comfortable: this.deps.targetActive, primary: this.primaryPlace };
@@ -378,10 +391,16 @@ export class RuntimeFleet {
   ) {
     let acquired;
     try {
+      const fenced = (identity: SlotIdentity) => this.failures.fenced(identity);
       acquired = await this.dispatches.acquire(() =>
         this.deps.primary && !this.primaryFailed && this.deps.primaryAvailable?.() !== false
-          ? this.deps.state.acquire(Number.MAX_SAFE_INTEGER, this.deps.primary, this.placement())
-          : this.deps.state.acquire(Number.MAX_SAFE_INTEGER, undefined, this.placement()),
+          ? this.deps.state.acquire(
+              Number.MAX_SAFE_INTEGER,
+              this.deps.primary,
+              this.placement(),
+              fenced,
+            )
+          : this.deps.state.acquire(Number.MAX_SAFE_INTEGER, undefined, this.placement(), fenced),
       );
     } catch (error) {
       if (!(error instanceof FleetRefused) || error.reason !== "capacity")
@@ -456,7 +475,7 @@ export class RuntimeFleet {
         failed: (error) =>
           marked
             ? markedCut(reservation.identity, error, request.signal)
-            : this.failures.failed(reservation.identity, error, request.signal),
+            : this.failures.failed(reservation.identity, error, request.signal, "stream"),
         release: () => {
           this.deps.defer(reservation.release().then(() => this.deps.changed?.()));
           return true;
@@ -473,7 +492,7 @@ export class RuntimeFleet {
       }
       if (reservation.kind === "runtime") {
         try {
-          await this.failures.failed(reservation.identity, error, request.signal);
+          await this.failures.failed(reservation.identity, error, request.signal, "forward");
         } catch {
           throw error;
         }
@@ -573,24 +592,33 @@ export class RuntimeFleet {
       rows
         .filter((row) => row.phase === "ready" && row.identity)
         .map(async (row) => {
+          const identity = row.identity!;
           let database;
+          const began = performance.now();
           try {
-            database = await this.cell(row.target).healthy?.(row.identity!);
+            database = await this.cell(row.target).healthy?.(identity);
           } catch (error) {
-            const fields = { ordinal: row.target.homePeerOrdinal };
-            await trace
-              .run(
-                "quarantined",
-                () => this.failures.failed(row.identity!, error, new AbortController().signal),
-                fields,
-              )
-              .catch(() => {});
+            // One failed read fences the cell until the next pass; two in a row quarantine it.
+            const read = failureRead(
+              error,
+              "endpoint_health",
+              this.deps.now(),
+              performance.now() - began,
+            );
+            const fields = {
+              ordinal: row.target.homePeerOrdinal,
+              cause: read.cause,
+              ...(read.roundTripMs === undefined ? {} : { roundTripMs: read.roundTripMs }),
+              ...(read.leaseLeftMs === undefined ? {} : { leaseLeftMs: read.leaseLeftMs }),
+            };
+            const outcome = await this.failures.missed(identity, read).catch(() => "unknown");
+            trace.event(outcome === "quarantined" ? "quarantined" : "health_miss", fields);
             return;
           }
+          if (row.miss !== undefined || this.failures.fenced(identity))
+            await this.failures.recovered(identity).catch(() => {});
           // A failed distance write is not a failed runtime.
-          await this.deps.state
-            .observeDistance(row.identity!, database ?? undefined)
-            .catch(() => {});
+          await this.deps.state.observeDistance(identity, database ?? undefined).catch(() => {});
         }),
     );
     const root = await primary;
@@ -720,7 +748,8 @@ export class RuntimeFleet {
   ) {
     if (row.active !== 0 || now - row.lastUsedAt < this.deps.idleMilliseconds) return false;
     if (await this.deps.keepReady?.(identity)) return false;
-    const first = rows.find((value) => value.phase === "ready")?.identity;
+    // A suspect row takes no call, so recent demand is protected on the first one that does.
+    const first = rows.find((value) => value.phase === "ready" && this.serves(value))?.identity;
     if (now < ((await this.deps.recentDemandUntil?.()) ?? 0) && sameIdentity(first, identity))
       return false;
     // The last runtime that can take a call stays while the root can't take it.
