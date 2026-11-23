@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureError, sendFeedback, validSentryDsn, type SentryEnv } from "./sentry.ts";
+import { deliverEnvelope } from "./sentry-envelope.ts";
 
 const env: SentryEnv = {
   SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456",
@@ -204,4 +205,29 @@ test("captureError sends only a fixed code, template, and opaque account id", as
   assert.deepEqual(event.user, { id: "acct_3" });
   assert.equal("exception" in event, false);
   assert.doesNotMatch(new TextDecoder().decode(sent), /private exception|code=private|secret/);
+});
+
+test("a refused envelope keeps Sentry's status and the wait its rate-limit headers ask for", async () => {
+  const answer = (status: number, headers: Record<string, string> = {}) =>
+    withFetch(
+      async () => new Response(null, { status, headers }),
+      () => deliverEnvelope(env, { id: "a".repeat(32), type: "event", payload: {} }),
+    );
+  const refused = (status: number, retryAfterMs?: number) => ({
+    delivered: false,
+    status,
+    ...(retryAfterMs ? { retryAfterMs } : {}),
+  });
+  assert.deepEqual(await answer(200), { delivered: true });
+  assert.deepEqual(
+    await answer(429, { "x-sentry-rate-limits": "60:error:organization:usage_exceeded, 3600::key" }),
+    refused(429, 3_600_000),
+  );
+  assert.deepEqual(await answer(429, { "retry-after": "120" }), refused(429, 120_000));
+  assert.deepEqual(await answer(429), refused(429, 60_000), "a bare 429 waits as Sentry's SDKs do");
+  assert.deepEqual(await answer(503), refused(503));
+  assert.deepEqual(
+    await answer(429, { "x-sentry-rate-limits": "9999999::organization" }),
+    refused(429, 86_400_000),
+  );
 });
