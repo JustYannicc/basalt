@@ -886,6 +886,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.fleet,
         this.candidateProbe,
         this.bookmarks,
+        () => this.allowances.alertDelivery(),
       );
     } finally {
       this.handoffsInFlight--;
