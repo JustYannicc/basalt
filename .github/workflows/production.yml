@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      approved_plan:
+        description: For deploy, the plan digest a plan-only run of this commit printed; the deploy refuses when its own plan differs
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -37,6 +42,7 @@ jobs:
       deployment: false
     env:
       BASALT_RELEASE_CANDIDATE: ${{ inputs.candidate }}
+      BASALT_APPROVED_PLAN: ${{ inputs.approved_plan }}
       POOL_ROOT_PIN: ${{ vars.POOL_ROOT_PIN }}
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
       ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}

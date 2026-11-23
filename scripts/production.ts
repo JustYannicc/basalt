@@ -209,6 +209,10 @@ async function main() {
   });
   const mode = positionals[0];
   if (mode !== "plan" && mode !== "deploy") throw new Refused("Usage: production.ts plan|deploy");
+  const { deployApproval, planDifference, planDigest } = await import("./release/approved-plan.ts");
+  // A deploy applies only the plan someone read: without its digest it stops before anything runs.
+  const approval = deployApproval(mode, process.env.BASALT_APPROVED_PLAN);
+  if (approval.refusal) throw new Refused(approval.refusal);
   const candidate = process.env.BASALT_RELEASE_CANDIDATE ?? "";
   const model = process.env.POOL_ACCEPTANCE_MODEL ?? "";
   if (mode === "deploy" && !model)
@@ -361,8 +365,18 @@ async function main() {
         return yield* refuse(
           `The plan's fleet classes (${fleet.join(", ") || "none"}) do not match the switch`,
         );
+      const reading = {
+        candidate,
+        declared,
+        rows: snapshot.resources,
+        forward: forward.map(({ fqn }) => fqn),
+      };
+      yield* print(`Plan digest: ${planDigest(reading)}`);
       const serving: { fqn: string; script: string; version: string }[] = [];
       if (mode === "plan") return { serving, applied: false, creating: created.length > 0 };
+      // Nothing has been written yet: the backup, the re-points and the apply all come after this.
+      const difference = planDifference(approval.approved!, reading);
+      if (difference) return yield* refuse(difference);
       for (const fqn of [...uploads, ...forward.map((worker) => worker.fqn)]) {
         const script = String(snapshot.native.resources[fqn]!.state?.attr?.workerName ?? "");
         serving.push({ fqn, script, version: yield* servingVersion(at(script)) });
