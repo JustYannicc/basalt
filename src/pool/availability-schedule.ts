@@ -11,12 +11,43 @@ import {
   reliabilityFailure,
   reliabilitySessionFailed,
 } from "./model-history/reliability-read-failure.ts";
+import { episodeAfter, episodeReport, type AvailabilityEpisode } from "./availability-episode.ts";
+
+/** The pool's memory of the episode it reported, read and written within the run's own bounds. */
+export interface EpisodeMemory {
+  read(): Promise<AvailabilityEpisode | undefined>;
+  write(episode: AvailabilityEpisode): Promise<void>;
+}
+const episodeBudgetMs = 5_000;
+
+/** What makes one check's failures the same as the next one's: guard and reason, not their detail. */
+function signatures(result: ProbeResult): Omit<AvailabilityEpisode, "pool"> {
+  const availability = result.failures.filter((failure) => failure.guard !== "request_reliability");
+  const failed = !result.ok || availability.length > 0;
+  return {
+    availability: failed
+      ? availability
+          .map((failure) => `${failure.guard}:${failure.reason}`)
+          .sort()
+          .join(" ") || "runtime:unknown"
+      : null,
+    reliability: [
+      ...new Set(
+        result.failures
+          .filter((failure) => failure.guard === "request_reliability")
+          .map((failure) => failure.reason),
+      ),
+    ].sort(),
+  };
+}
 
 export async function runAvailabilityProbe(
   env: SentryEnv & { POOL_AVAILABILITY_TARGET?: string },
   probe: (pool: string) => Promise<ProbeResult>,
   reliability?: (pool: string) => Promise<PoolReliabilitySlo>,
   release?: string,
+  /** Which failures were already reported; without it every failing run is reported. */
+  episodes?: EpisodeMemory,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
   const receipt = await startPoolMonitor(env, availabilityCron);
@@ -61,6 +92,24 @@ export async function runAvailabilityProbe(
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
-  if (!(await capturePoolMonitor(env, receipt, { ...result, release })))
-    throw new Error("Pool availability alert delivery failed");
+  const next = { pool: target, ...signatures(result) };
+  const reported = episodes
+    ? await awaitProbe(() => episodes.read(), AbortSignal.timeout(episodeBudgetMs)).catch(
+        () => "unreachable" as const,
+      )
+    : undefined;
+  if (reported === "unreachable") console.error("POOL_AVAILABILITY_EPISODE_UNREACHABLE");
+  const report = episodes ? episodeReport(reported, next, Date.now()) : undefined;
+  const { delivered, eventsDelivered } = await capturePoolMonitor(env, receipt, {
+    ...result,
+    release,
+    ...(report ? { report } : {}),
+  });
+  // Recorded after sending, so a start whose events Sentry refused is tried again next minute.
+  if (episodes && report && reported !== "unreachable")
+    await awaitProbe(
+      () => episodes.write(episodeAfter(reported, next, report, eventsDelivered)),
+      AbortSignal.timeout(episodeBudgetMs),
+    ).catch(() => console.error("POOL_AVAILABILITY_EPISODE_UNRECORDED"));
+  if (!delivered) throw new Error("Pool availability alert delivery failed");
 }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureError, sendFeedback, validSentryDsn, type SentryEnv } from "./sentry.ts";
+import { deliverEnvelope } from "./sentry-envelope.ts";
 
 const env: SentryEnv = {
   SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456",
@@ -19,7 +20,10 @@ function line(bytes: Uint8Array, offset: number): { value: string; next: number 
   return { value: new TextDecoder().decode(bytes.subarray(offset, end)), next: end + 1 };
 }
 
-function parseEnvelope(bytes: Uint8Array): { header: Record<string, unknown>; items: EnvelopeItem[] } {
+function parseEnvelope(bytes: Uint8Array): {
+  header: Record<string, unknown>;
+  items: EnvelopeItem[];
+} {
   const envelopeHeader = line(bytes, 0);
   const header = JSON.parse(envelopeHeader.value) as Record<string, unknown>;
   const items: EnvelopeItem[] = [];
@@ -64,43 +68,50 @@ test("Sentry DSNs require HTTPS, one password-free EU project path, and no query
     "https://fixture@o123.ingest.de.sentry.io/456#fragment",
     "https://fixture@o123.ingest.de.sentry.io/456/789",
     "https://fixture@not-sentry.example/456",
-  ]) assert.equal(validSentryDsn(dsn), false, dsn);
+  ])
+    assert.equal(validSentryDsn(dsn), false, dsn);
   assert.equal(validSentryDsn("   "), false, "blank optional values disable Sentry");
 });
 
 test("feedback uses a feedback envelope, a route template, fixed error codes, and UTF-8 byte lengths", async () => {
   const calls: { url: string; headers: Headers; envelope: Uint8Array }[] = [];
-  await withFetch(async (input, init) => {
-    calls.push({
-      url: String(input),
-      headers: new Headers(init?.headers),
-      envelope: await bytesFrom(init?.body),
-    });
-    return new Response(null, { status: 202 });
-  }, async () => {
-    const accepted = await sendFeedback(env, {
-      accountId: "acct_42",
-      message: "The export failed 🌱\nPlease fix it.",
-      page: "/v1/models?prompt=private#fragment",
-      errors: [
-        { code: "stack_trace" },
-        { code: "unhandled_rejection" },
-        { code: "http_503" },
-        { code: "email@example.test" },
-      ],
-      screenshot: {
-        type: "image/png",
-        data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]).toString("base64"),
-        name: "private-user-name.png",
-      },
-    });
-    assert.equal(accepted, true);
-  });
+  await withFetch(
+    async (input, init) => {
+      calls.push({
+        url: String(input),
+        headers: new Headers(init?.headers),
+        envelope: await bytesFrom(init?.body),
+      });
+      return new Response(null, { status: 202 });
+    },
+    async () => {
+      const accepted = await sendFeedback(env, {
+        accountId: "acct_42",
+        message: "The export failed 🌱\nPlease fix it.",
+        page: "/v1/models?prompt=private#fragment",
+        errors: [
+          { code: "stack_trace" },
+          { code: "unhandled_rejection" },
+          { code: "http_503" },
+          { code: "email@example.test" },
+        ],
+        screenshot: {
+          type: "image/png",
+          data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]).toString("base64"),
+          name: "private-user-name.png",
+        },
+      });
+      assert.equal(accepted, true);
+    },
+  );
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.url, "https://o123.ingest.de.sentry.io/api/456/envelope/");
   assert.equal(calls[0]!.headers.get("content-type"), "application/x-sentry-envelope");
-  assert.equal(calls[0]!.headers.get("x-sentry-auth"), "Sentry sentry_version=7, sentry_client=basalt/1, sentry_key=fixture_public_key");
+  assert.equal(
+    calls[0]!.headers.get("x-sentry-auth"),
+    "Sentry sentry_version=7, sentry_client=basalt/1, sentry_key=fixture_public_key",
+  );
   const parsed = parseEnvelope(calls[0]!.envelope);
   assert.equal(parsed.items.length, 2);
   assert.equal(parsed.items[0]!.header.type, "feedback");
@@ -113,7 +124,10 @@ test("feedback uses a feedback envelope, a route template, fixed error codes, an
   assert.equal(parsed.header.event_id, feedback.event_id);
   assert.equal(feedback.contexts.feedback.message, "The export failed 🌱\nPlease fix it.");
   assert.equal(feedback.contexts.feedback.url, "/v1/:operation");
-  assert.deepEqual(feedback.contexts.basalt.recent_error_codes, ["unhandled_rejection", "http_503"]);
+  assert.deepEqual(feedback.contexts.basalt.recent_error_codes, [
+    "unhandled_rejection",
+    "http_503",
+  ]);
   assert.deepEqual(feedback.user, { id: "acct_42" });
   assert.equal("contact_email" in feedback.contexts.feedback, false);
 
@@ -124,27 +138,68 @@ test("feedback uses a feedback envelope, a route template, fixed error codes, an
   assert.equal(attachment.header.length, attachment.payload.byteLength);
   assert.deepEqual([...attachment.payload], [137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
   const wireText = new TextDecoder().decode(calls[0]!.envelope);
-  assert.doesNotMatch(wireText, /private-user-name|prompt=private|fragment|email@example|stack_trace/);
-  assert.equal(calls[0]!.envelope.includes(0), false, "binary data remains valid UTF-8 for this fixture");
+  assert.doesNotMatch(
+    wireText,
+    /private-user-name|prompt=private|fragment|email@example|stack_trace/,
+  );
+  assert.equal(
+    calls[0]!.envelope.includes(0),
+    false,
+    "binary data remains valid UTF-8 for this fixture",
+  );
 });
 
 test("invalid DSN, account, message, and screenshot fail closed without sending", async () => {
   let calls = 0;
-  await withFetch(async () => { calls++; return new Response(null, { status: 204 }); }, async () => {
-    assert.equal(await sendFeedback({ SENTRY_DSN: "" }, { accountId: "acct_1", message: "text", page: "/" }), false);
-    assert.equal(await sendFeedback({ SENTRY_DSN: "https://bad@example.invalid/2" }, { accountId: "acct_1", message: "text", page: "/" }), false);
-    assert.equal(await sendFeedback(env, { accountId: "person@example.test", message: "text", page: "/" }), false);
-    assert.equal(await sendFeedback(env, { accountId: "acct_1", message: "  ", page: "/" }), false);
-    assert.equal(await sendFeedback(env, { accountId: "acct_1", message: "x".repeat(4097), page: "/" }), false);
-    assert.equal(await sendFeedback(env, {
-      accountId: "acct_1", message: "text", page: "/",
-      screenshot: { type: "image/jpeg", data: "iVBORw==", name: "wrong.jpg" },
-    }), false);
-    assert.equal(await sendFeedback(env, {
-      accountId: "acct_1", message: "text", page: "/",
-      screenshot: { type: "image/png", data: "not base64", name: "bad.png" },
-    }), false);
-  });
+  await withFetch(
+    async () => {
+      calls++;
+      return new Response(null, { status: 204 });
+    },
+    async () => {
+      assert.equal(
+        await sendFeedback({ SENTRY_DSN: "" }, { accountId: "acct_1", message: "text", page: "/" }),
+        false,
+      );
+      assert.equal(
+        await sendFeedback(
+          { SENTRY_DSN: "https://bad@example.invalid/2" },
+          { accountId: "acct_1", message: "text", page: "/" },
+        ),
+        false,
+      );
+      assert.equal(
+        await sendFeedback(env, { accountId: "person@example.test", message: "text", page: "/" }),
+        false,
+      );
+      assert.equal(
+        await sendFeedback(env, { accountId: "acct_1", message: "  ", page: "/" }),
+        false,
+      );
+      assert.equal(
+        await sendFeedback(env, { accountId: "acct_1", message: "x".repeat(4097), page: "/" }),
+        false,
+      );
+      assert.equal(
+        await sendFeedback(env, {
+          accountId: "acct_1",
+          message: "text",
+          page: "/",
+          screenshot: { type: "image/jpeg", data: "iVBORw==", name: "wrong.jpg" },
+        }),
+        false,
+      );
+      assert.equal(
+        await sendFeedback(env, {
+          accountId: "acct_1",
+          message: "text",
+          page: "/",
+          screenshot: { type: "image/png", data: "not base64", name: "bad.png" },
+        }),
+        false,
+      );
+    },
+  );
   assert.equal(calls, 0);
 });
 
@@ -154,49 +209,102 @@ test("screenshots accept exactly 2 MiB and reject any larger decoded image", asy
   atLimit.set([137, 80, 78, 71, 13, 10, 26, 10]);
   const aboveLimit = new Uint8Array(2 * 1024 * 1024 + 1);
   aboveLimit.set([137, 80, 78, 71, 13, 10, 26, 10]);
-  await withFetch(async () => { calls++; return new Response(null, { status: 204 }); }, async () => {
-    assert.equal(await sendFeedback(env, {
-      accountId: "acct_1", message: "text", page: "/",
-      screenshot: { type: "image/png", data: Buffer.from(atLimit).toString("base64"), name: "limit.png" },
-    }), true);
-    assert.equal(await sendFeedback(env, {
-      accountId: "acct_1", message: "text", page: "/",
-      screenshot: { type: "image/png", data: Buffer.from(aboveLimit).toString("base64"), name: "above.png" },
-    }), false);
-  });
+  await withFetch(
+    async () => {
+      calls++;
+      return new Response(null, { status: 204 });
+    },
+    async () => {
+      assert.equal(
+        await sendFeedback(env, {
+          accountId: "acct_1",
+          message: "text",
+          page: "/",
+          screenshot: {
+            type: "image/png",
+            data: Buffer.from(atLimit).toString("base64"),
+            name: "limit.png",
+          },
+        }),
+        true,
+      );
+      assert.equal(
+        await sendFeedback(env, {
+          accountId: "acct_1",
+          message: "text",
+          page: "/",
+          screenshot: {
+            type: "image/png",
+            data: Buffer.from(aboveLimit).toString("base64"),
+            name: "above.png",
+          },
+        }),
+        false,
+      );
+    },
+  );
   assert.equal(calls, 1);
 });
 
 test("sendFeedback is true only for a 2xx acknowledgement and swallows transport failures", async () => {
-  await withFetch(async () => new Response(null, { status: 503 }), async () => {
-    assert.equal(await sendFeedback(env, { accountId: "acct_1", message: "text", page: "/" }), false);
-  });
-  await withFetch(async () => { throw new Error("private network detail"); }, async () => {
-    assert.equal(await sendFeedback(env, { accountId: "acct_1", message: "text", page: "/" }), false);
-    await assert.doesNotReject(captureError(env, "router_failure", "/", "acct_1"));
-  });
-  await withFetch(async (_input, init) => {
-    assert.equal(init?.redirect, "manual");
-    return new Response(null, { status: 302, headers: { Location: "https://redirect.fixture/" } });
-  }, async () => {
-    assert.equal(await sendFeedback(env, { accountId: "acct_1", message: "text", page: "/" }), false);
-  });
+  await withFetch(
+    async () => new Response(null, { status: 503 }),
+    async () => {
+      assert.equal(
+        await sendFeedback(env, { accountId: "acct_1", message: "text", page: "/" }),
+        false,
+      );
+    },
+  );
+  await withFetch(
+    async () => {
+      throw new Error("private network detail");
+    },
+    async () => {
+      assert.equal(
+        await sendFeedback(env, { accountId: "acct_1", message: "text", page: "/" }),
+        false,
+      );
+      await assert.doesNotReject(captureError(env, "router_failure", "/", "acct_1"));
+    },
+  );
+  await withFetch(
+    async (_input, init) => {
+      assert.equal(init?.redirect, "manual");
+      return new Response(null, {
+        status: 302,
+        headers: { Location: "https://redirect.fixture/" },
+      });
+    },
+    async () => {
+      assert.equal(
+        await sendFeedback(env, { accountId: "acct_1", message: "text", page: "/" }),
+        false,
+      );
+    },
+  );
 });
 
 test("captureError sends only a fixed code, template, and opaque account id", async () => {
   let sent: Uint8Array | undefined;
-  await withFetch(async (_input, init) => {
-    sent = await bytesFrom(init?.body);
-    return new Response(null, { status: 200 });
-  }, async () => {
-    await captureError(env, "http_503", "/api/auth/callback?code=private#secret", "acct_3");
-    await captureError(env, "Error: private exception", "/", "acct_3");
-  });
+  await withFetch(
+    async (_input, init) => {
+      sent = await bytesFrom(init?.body);
+      return new Response(null, { status: 200 });
+    },
+    async () => {
+      await captureError(env, "http_503", "/api/auth/callback?code=private#secret", "acct_3");
+      await captureError(env, "Error: private exception", "/", "acct_3");
+    },
+  );
   assert.ok(sent);
   const parsed = parseEnvelope(sent);
   assert.equal(parsed.items.length, 1, "unknown error descriptions are not sent");
   assert.equal(parsed.items[0]!.header.type, "event");
-  const event = JSON.parse(new TextDecoder().decode(parsed.items[0]!.payload)) as Record<string, unknown>;
+  const event = JSON.parse(new TextDecoder().decode(parsed.items[0]!.payload)) as Record<
+    string,
+    unknown
+  >;
   assert.equal(parsed.header.event_id, event.event_id);
   assert.equal(event.message, "http_503");
   assert.deepEqual(event.fingerprint, ["basalt", "http_503"]);
@@ -204,4 +312,42 @@ test("captureError sends only a fixed code, template, and opaque account id", as
   assert.deepEqual(event.user, { id: "acct_3" });
   assert.equal("exception" in event, false);
   assert.doesNotMatch(new TextDecoder().decode(sent), /private exception|code=private|secret/);
+});
+
+test("a refused envelope keeps Sentry's status and the wait its rate-limit headers ask for", async () => {
+  const answer = (status: number, headers: Record<string, string> = {}) =>
+    withFetch(
+      async () => new Response(null, { status, headers }),
+      () => deliverEnvelope(env, { id: "a".repeat(32), type: "event", payload: {} }),
+    );
+  const refused = (status: number, retryAfterMs?: number) => ({
+    delivered: false,
+    status,
+    ...(retryAfterMs ? { retryAfterMs } : {}),
+  });
+  assert.deepEqual(await answer(200), { delivered: true });
+  assert.deepEqual(
+    await answer(429, {
+      "x-sentry-rate-limits": "60:error:organization:usage_exceeded, 3600::key",
+    }),
+    refused(429, 3_600_000),
+  );
+  assert.deepEqual(await answer(429, { "retry-after": "120" }), refused(429, 120_000));
+  assert.deepEqual(await answer(429), refused(429, 60_000), "a bare 429 waits as Sentry's SDKs do");
+  assert.deepEqual(await answer(503), refused(503));
+  assert.deepEqual(
+    await answer(429, {
+      "x-sentry-rate-limits": "86400:transaction:organization, 60:error:organization",
+    }),
+    refused(429, 60_000),
+    "only the error category's wait applies to an error event",
+  );
+  assert.deepEqual(
+    await answer(429, { "x-sentry-rate-limits": "abc::key, 3600::organization" }),
+    refused(429, 3_600_000),
+  );
+  assert.deepEqual(
+    await answer(429, { "x-sentry-rate-limits": "9999999::organization" }),
+    refused(429, 86_400_000),
+  );
 });

@@ -72,8 +72,10 @@ export async function capturePoolMonitor(
     reliability?: PoolReliabilitySlo;
     release?: string;
     runtime?: ProbeRuntimeIdentity;
+    /** Which failures start an episode; without it every failure is reported, as each minute was. */
+    report?: { readonly availability: boolean; readonly reliability: readonly string[] };
   },
-): Promise<boolean> {
+): Promise<{ delivered: boolean; eventsDelivered: boolean }> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
     guard: guards.has(failure.guard) ? failure.guard : "runtime",
     reason: reasons.has(failure.reason) ? failure.reason : "unknown",
@@ -99,13 +101,17 @@ export async function capturePoolMonitor(
     },
   });
   const events = [];
-  if (!ok) events.push(report("pool_availability_failure", availability));
-  for (const failure of reliability)
+  if (!ok && (input.report?.availability ?? true))
+    events.push(report("pool_availability_failure", availability));
+  for (const failure of reliability) {
+    // A reason that was already failing a minute ago belongs to the episode it started then.
+    if (input.report && !input.report.reliability.includes(failure.reason)) continue;
     if (failure.reason === "below_target")
       events.push(report("pool_request_success_below_target", [failure]));
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
+  }
   // Unknown outcomes are a recording defect even when the objective is decided without them.
   const unknown = input.reliability && unknownWindows(input.reliability);
   if (unknown) console.warn("POOL_REQUEST_OUTCOMES_UNKNOWN", unknown);
@@ -119,8 +125,11 @@ export async function capturePoolMonitor(
       reason: context?.reason ?? "collection_unavailable",
     });
   }
-  const results = await Promise.all([check, ...events]);
-  return receipt.accepted && results.every(Boolean);
+  const [checked, ...sent] = await Promise.all([check, ...events]);
+  // Whether the error events got through apart from the check-ins: an episode's start is recorded
+  // as reported on that alone.
+  const eventsDelivered = sent.every(Boolean);
+  return { delivered: receipt.accepted && checked && eventsDelivered, eventsDelivered };
 
   function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
