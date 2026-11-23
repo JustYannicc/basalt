@@ -117,7 +117,10 @@ test("initial, refresh and model summary reads stay within the populated real-Po
         assert.ok(source && "completion" in source);
         assert.deepEqual(source.completion, proof.completion);
       }
-      const selects = statements.filter(({ text }) => /^\s*(WITH|SELECT)\b/i.test(text)).length;
+      // Session settings are a SELECT of set_config, not a history read.
+      const selects = statements.filter(
+        ({ text }) => /^\s*(WITH|SELECT)\b/i.test(text) && !/^\s*SELECT set_config\(/i.test(text),
+      ).length;
       const priced = statements.filter(({ text }) => /\bpriced\s+AS\s*\(/i.test(text));
       assert.ok(selects <= 10, `${action} used ${selects} history SELECTs`);
       assert.ok(statements.length <= 15, `${action} used ${statements.length} SQL statements`);

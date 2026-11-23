@@ -49,7 +49,13 @@ type Plan = {
 };
 type Snapshot = {
   summary: Record<string, number>;
-  resources: { fqn: string; resourceType: string; action: string }[];
+  resources: {
+    fqn: string;
+    resourceType: string;
+    action: string;
+    bindings?: { action: string }[];
+  }[];
+  actions?: { fqn: string; actionType: string; action: string }[];
   native: Plan;
 };
 
@@ -209,6 +215,11 @@ async function main() {
   });
   const mode = positionals[0];
   if (mode !== "plan" && mode !== "deploy") throw new Refused("Usage: production.ts plan|deploy");
+  const { actionLine, deployApproval, planDifference, planDigest, rowLine } =
+    await import("./release/approved-plan.ts");
+  // A deploy applies only the plan someone read: without its digest it stops before anything runs.
+  const approval = deployApproval(mode, process.env.BASALT_APPROVED_PLAN);
+  if (approval.refusal) throw new Refused(approval.refusal);
   const candidate = process.env.BASALT_RELEASE_CANDIDATE ?? "";
   const model = process.env.POOL_ACCEPTANCE_MODEL ?? "";
   if (mode === "deploy" && !model)
@@ -313,8 +324,12 @@ async function main() {
       yield* print(
         `Plan of ${candidate}, fleet classes ${declared ? "declared" : "absent"}: ${JSON.stringify(snapshot.summary)}`,
       );
-      for (const row of snapshot.resources)
-        if (row.action !== "noop") yield* print(`- ${row.fqn} ${row.resourceType} ${row.action}`);
+      // Stack actions run during the apply too, so they are rows the plan shows and the digest covers.
+      for (const line of [
+        ...snapshot.resources.map(rowLine),
+        ...(snapshot.actions ?? []).map(actionLine),
+      ])
+        if (line) yield* print(`- ${line}`);
       yield* print(
         `Creates Durable Object classes (cannot be rolled back): ${created.join(", ") || "none"}`,
       );
@@ -361,8 +376,20 @@ async function main() {
         return yield* refuse(
           `The plan's fleet classes (${fleet.join(", ") || "none"}) do not match the switch`,
         );
+      const reading = {
+        candidate,
+        declared,
+        rows: snapshot.resources,
+        actions: snapshot.actions ?? [],
+        created,
+        forward: forward.map(({ fqn }) => fqn),
+      };
+      yield* print(`Plan digest: ${planDigest(reading)}`);
       const serving: { fqn: string; script: string; version: string }[] = [];
       if (mode === "plan") return { serving, applied: false, creating: created.length > 0 };
+      // Nothing has been written yet: the backup, the re-points and the apply all come after this.
+      const difference = planDifference(approval.approved!, reading);
+      if (difference) return yield* refuse(difference);
       for (const fqn of [...uploads, ...forward.map((worker) => worker.fqn)]) {
         const script = String(snapshot.native.resources[fqn]!.state?.attr?.workerName ?? "");
         serving.push({ fqn, script, version: yield* servingVersion(at(script)) });
