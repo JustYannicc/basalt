@@ -93,7 +93,10 @@ export async function runAvailabilityProbe(
       const stuck = usageRollupStuck
         ? await awaitProbe(usageRollupStuck, signal).catch(() => "unread" as const)
         : [];
-      if (stuck === "unread") rollupUnread = true;
+      if (stuck === "unread") {
+        rollupUnread = true;
+        console.error("POOL_USAGE_ROLLUP_STATE_UNREAD");
+      }
       // On the reliability side, so the check-in stays ok while the pool serves. Only the pool's
       // own 16-hex history id travels, so each stuck pool is its own episode.
       else
@@ -104,12 +107,16 @@ export async function runAvailabilityProbe(
               reason: "usage_rollup_stuck",
               pool,
             });
+          // A tick that fails before it reaches any pool is stuck as a whole, named by no pool.
+          else if (pool === "")
+            result.failures.push({ guard: "request_reliability", reason: "usage_rollup_stuck" });
     }
   } catch {
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
-  let next = { pool: target, ...signatures(result) };
+  // The monitor reports the first eight failures; an episode records only those it reports.
+  let next = { pool: target, ...signatures({ ...result, failures: result.failures.slice(0, 8) }) };
   const reported = episodes
     ? await awaitProbe(() => episodes.read(), AbortSignal.timeout(episodeBudgetMs)).catch(
         () => "unreachable" as const,

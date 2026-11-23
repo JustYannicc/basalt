@@ -219,7 +219,7 @@ test("a slow stop pauses for an hour and resumes by itself; a slow hour three ti
     const skipped = await tick();
     assert.equal(
       skipped.lastStop,
-      "ready",
+      "stuck",
       "a stuck pool is skipped, not retried, until its retry",
     );
     assert.equal(await marked(f.db, pool), 0);
@@ -417,4 +417,156 @@ test("a session killed mid-tick, as by a reset, loses and double-counts nothing"
     assert.ok(await ready(f.db, pool));
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });
+});
+
+/** A tick with a scripted plan and backfill, and no database: each call returns the next step. */
+function scripted(pools: string[]) {
+  const storage = memoryStorage();
+  let clock = Date.parse("2026-02-01T10:20:00Z");
+  const db: HistoryDatabase = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const plan = async () => ({
+    plan: { pools: pools.map((pool) => ({ pool, from: "", to: "", days: 1 })) },
+    digest: "",
+    ready: [],
+    recomputedHours: {},
+  });
+  const ran: string[] = [];
+  const tick = (
+    step: (pool: string) => Partial<Awaited<ReturnType<typeof runUsageRollup>>> | "throw",
+    options: { fail?: boolean } = {},
+  ) =>
+    usageRollupTick(
+      storage,
+      (work) => {
+        if (options.fail) throw new Error("connection refused");
+        return work(db);
+      },
+      {
+        now: () => clock,
+        plan,
+        bounds: { sessions: 1 },
+        run: (async (_db, target) => {
+          const pool = target.pools[0]!.pool;
+          ran.push(pool);
+          const next = step(pool);
+          if (next === "throw") throw new Error("permission denied");
+          return {
+            status: "progress",
+            stopped: "budget",
+            maxHoldMs: 10,
+            walBytes: 0,
+            pools: [{ pool, recomputedHours: 1, groups: 1, remainingHours: 5 }],
+            ...next,
+          };
+        }) as typeof runUsageRollup,
+      },
+    );
+  return { storage, tick, ran, advance: (ms: number) => (clock += ms) };
+}
+const slowHour = { stopped: "slow_hour" as const, slowHour: "2026-01-01T03:00:00.000Z" };
+
+test("the ceiling slides: spent 50 minutes ago, across a clock hour, it still holds", async () => {
+  const { storage, tick, ran, advance } = scripted([second]);
+  // 10:30 used the whole hour's time; at 11:20 a fixed clock hour would have started afresh.
+  await storage.put(usageRollupAutoKey, {
+    sessions: [{ at: Date.parse("2026-02-01T10:30:00Z"), ms: 300_000, walBytes: 0 }],
+  });
+  advance(60 * 60_000);
+  const state = await tick(() => ({}));
+  assert.equal(state.lastStop, "ceiling");
+  assert.deepEqual(ran, [], "nothing runs within 60 minutes of the spent session");
+});
+
+test("six lock stops in a row on a pool are stuck", async () => {
+  const { tick, storage, advance } = scripted([second]);
+  for (let i = 0; i < 6; i++) {
+    await tick(() => ({ stopped: "lock" }));
+    advance(hour + 60_000);
+  }
+  assert.deepEqual(
+    storage.state()!.stuck?.map((entry) => entry.reason),
+    ["lock"],
+  );
+});
+
+test("a stuck pool's daily retry that fails again is stuck again at once, whatever ran between", async () => {
+  const other = "fedcba9876543210";
+  const { tick, storage, advance, ran } = scripted([second, other]);
+  for (let i = 0; i < 3; i++) {
+    await tick((pool) => (pool === second ? slowHour : {}));
+    advance(hour + 60_000);
+  }
+  assert.deepEqual(usageRollupStuckPools(storage.state()!), [second]);
+  // The other pool backfills meanwhile, then loses its lock once: its own count replaces the
+  // stuck pool's, so only being stuck already can make the failed retry stick again at once.
+  await tick(() => ({}));
+  assert.equal(ran.at(-1), other);
+  advance(5 * 60_000);
+  await tick(() => ({ stopped: "lock" }));
+  assert.equal(storage.state()!.repeat?.pool, other);
+  advance(24 * hour + 60_000);
+  ran.length = 0;
+  const retried = await tick((pool) => (pool === second ? slowHour : {}));
+  assert.deepEqual(ran, [second], "the retry is due");
+  assert.equal(retried.lastStop, "slow_hour");
+  assert.ok(
+    Date.parse(retried.stuck!.find((entry) => entry.pool === second)!.retryAt) > advance(0) + hour,
+    "stuck again after one failed retry, with a new retry a day out",
+  );
+  advance(hour + 60_000);
+  ran.length = 0;
+  await tick(() => ({}));
+  assert.deepEqual(ran, [other], "and skipped again, not retried every hour");
+});
+
+test("a stop before any hour neither clears a stuck pool nor resets its count", async () => {
+  const { tick, storage, advance } = scripted([second]);
+  for (let i = 0; i < 3; i++) {
+    await tick(() => slowHour);
+    advance(hour + 60_000);
+  }
+  advance(24 * hour);
+  // The retry is due, but a handover stops it before its first hour: nothing recomputed.
+  await tick((pool) => ({ pools: [{ pool, recomputedHours: 0, groups: 0, remainingHours: 5 }] }));
+  assert.deepEqual(usageRollupStuckPools(storage.state()!), [second], "still stuck");
+  // Real progress clears it.
+  advance(5 * 60_000);
+  await tick(() => ({}));
+  assert.deepEqual(usageRollupStuckPools(storage.state()!), []);
+});
+
+test("a tick that fails before reaching any pool is stuck as a whole after six, then clears", async (t) => {
+  t.mock.method(console, "error", () => {});
+  const { tick, storage, advance } = scripted([second]);
+  for (let i = 0; i < 6; i++) {
+    await tick(() => ({}), { fail: true });
+    advance(hour + 60_000);
+  }
+  assert.deepEqual(usageRollupStuckPools(storage.state()!), [""], "the tick itself is stuck");
+  await tick(() => ({}));
+  assert.deepEqual(
+    usageRollupStuckPools(storage.state()!),
+    [],
+    "a session that reaches the plan clears it",
+  );
+});
+
+test("only stuck pools left reads as stuck, not ready", async () => {
+  const { tick, advance } = scripted([second]);
+  for (let i = 0; i < 3; i++) {
+    await tick(() => slowHour);
+    advance(hour + 60_000);
+  }
+  const state = await tick(() => ({}));
+  assert.equal(state.lastStop, "stuck");
+});
+
+test("holds past the limit on three different hours in a row are stuck for the pool", async () => {
+  const { tick, storage, advance } = scripted([second]);
+  for (let i = 0; i < 3; i++) {
+    // Each hold committed its hour, so the next one lands on a new hour.
+    await tick(() => ({ stopped: "slow_hold", slowHour: `2026-01-01T0${i}:00:00.000Z` }));
+    advance(hour + 60_000);
+  }
+  assert.deepEqual(usageRollupStuckPools(storage.state()!), [second]);
 });

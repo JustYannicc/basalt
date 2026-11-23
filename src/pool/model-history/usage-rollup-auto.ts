@@ -53,10 +53,12 @@ export type UsageRollupAutoStop =
   | "error"
   | "handover"
   | "not_applied"
+  | "stuck"
   | "ready";
 
 type StuckReason = "slow" | "lock" | "error";
 export interface UsageRollupStuck {
+  /** A pool's own 16-hex history id, or "" for a tick that fails before it reaches any pool. */
   readonly pool: string;
   readonly reason: StuckReason;
   readonly hour?: string;
@@ -95,7 +97,7 @@ interface AutoStorage {
 type Session = <T>(work: (db: HistoryDatabase) => Promise<T>) => Promise<T>;
 
 type Outcome =
-  | { kind: "not_applied" | "ready"; stuck: readonly UsageRollupStuck[] }
+  | { kind: "not_applied" | "ready" | "stuck"; stuck: readonly UsageRollupStuck[] }
   | {
       kind: "ran";
       pool: string;
@@ -200,7 +202,7 @@ export async function usageRollupTick(
         );
         const open = planned.plan.pools.filter((item) => !skipped.has(item.pool));
         const next = open[0];
-        if (!next) return { kind: "ready", stuck };
+        if (!next) return { kind: stuck.some((entry) => entry.pool) ? "stuck" : "ready", stuck };
         working = next.pool;
         const result = await run(
           db,
@@ -218,17 +220,20 @@ export async function usageRollupTick(
         failure: error instanceof Error ? error.name : "unknown",
       });
       const spent = { at, ms: now() - at, walBytes: 0 };
-      const same = state.repeat?.reason === "error" && state.repeat.pool === (working ?? "");
+      // A failure before any pool is chosen (the connection, the plan) counts against the tick.
+      const pool = working ?? "";
+      const same = state.repeat?.reason === "error" && state.repeat.pool === pool;
       const count = same ? state.repeat!.count + 1 : 1;
-      const stuck = working !== undefined && count >= bounds.failingAfter;
+      const retried = stuckBefore.some((entry) => entry.pool === pool);
+      const stuck = retried || count >= bounds.failingAfter;
       if (stuck) console.error("POOL_USAGE_ROLLUP_STUCK", { reason: "error" });
       await save({
         ...state,
         sessions: [...recent, spent],
         lastStop: "error",
         lastHour: undefined,
-        repeat: { pool: working ?? "", reason: "error", count },
-        ...(stuck ? { stuck: stuckWith(stuckBefore, working!, "error", undefined) } : {}),
+        repeat: { pool, reason: "error", count },
+        ...(stuck ? { stuck: stuckWith(stuckBefore, pool, "error", undefined) } : {}),
         pausedUntil: pause(),
       });
       break;
@@ -238,7 +243,13 @@ export async function usageRollupTick(
       ms: now() - at,
       walBytes: outcome.kind === "ran" ? Math.max(0, outcome.result.walBytes) : 0,
     };
-    const base = { ...state, sessions: [...recent, spent], stuck: outcome.stuck };
+    // The session reached the database and its plan, so the tick itself is no longer failing.
+    const base = {
+      ...state,
+      sessions: [...recent, spent],
+      stuck: outcome.stuck.filter((entry) => entry.pool !== ""),
+      repeat: state.repeat?.pool === "" ? undefined : state.repeat,
+    };
     if (outcome.kind !== "ran") {
       await save({
         ...base,
@@ -255,7 +266,13 @@ export async function usageRollupTick(
       pools: outcome.pools,
       pendingHours: result.pools[0]?.remainingHours ?? 0,
     };
-    const cleared = (ran.stuck ?? []).filter((entry) => entry.pool !== outcome.pool);
+    // Only hours recomputed count as progress: a stop before the first hour (a handover, a
+    // budget the hour's ceiling cut to nothing) neither clears the pool nor resets its count.
+    const progressed = (result.pools[0]?.recomputedHours ?? 0) > 0;
+    const cleared = progressed
+      ? (ran.stuck ?? []).filter((entry) => entry.pool !== outcome.pool)
+      : ran.stuck;
+    const repeat = progressed && ran.repeat?.pool === outcome.pool ? undefined : ran.repeat;
     if (result.status === "complete") {
       // The next pool starts on a later tick, so two pools never share one.
       await save({
@@ -263,7 +280,7 @@ export async function usageRollupTick(
         lastStop: "complete",
         lastHour: undefined,
         pools: outcome.pools - 1,
-        repeat: undefined,
+        repeat,
         stuck: cleared,
       });
       break;
@@ -274,24 +291,28 @@ export async function usageRollupTick(
         ...ran,
         lastStop: stopped() ? "handover" : halted,
         lastHour: undefined,
-        repeat: undefined,
+        repeat,
         stuck: cleared,
       });
       continue;
     }
     const reason: StuckReason = halted === "lock" ? "lock" : "slow";
-    const hour = reason === "slow" ? result.slowHour : undefined;
+    // A slow hour is never done, so it comes back; a hold past the limit may have committed its
+    // hour, so it counts for the pool whichever hour it was.
+    const hour = halted === "slow_hour" ? result.slowHour : undefined;
     const same =
       state.repeat?.pool === outcome.pool &&
       state.repeat.reason === reason &&
       state.repeat.hour === hour;
     const count = same ? state.repeat!.count + 1 : 1;
-    const stuck = count >= (reason === "slow" ? bounds.slowAfter : bounds.failingAfter);
+    // A stuck pool whose daily retry fails again is stuck again at once.
+    const retried = (ran.stuck ?? []).some((entry) => entry.pool === outcome.pool);
+    const stuck = retried || count >= (reason === "slow" ? bounds.slowAfter : bounds.failingAfter);
     if (stuck) console.error("POOL_USAGE_ROLLUP_STUCK", { reason, ...(hour ? { hour } : {}) });
     await save({
       ...ran,
       lastStop: halted,
-      lastHour: hour,
+      lastHour: result.slowHour,
       repeat: { pool: outcome.pool, reason, ...(hour ? { hour } : {}), count },
       ...(stuck ? { stuck: stuckWith(ran.stuck ?? [], outcome.pool, reason, hour) } : {}),
       pausedUntil: pause(),

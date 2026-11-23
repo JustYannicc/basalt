@@ -726,3 +726,28 @@ test("a stuck usage rollup is one event per pool's episode, names the pool and k
   assert.equal(stuckEvent?.payload.contexts.request_reliability, undefined);
   assertNoPrivateDiagnostics(messages);
 });
+
+test("a usage rollup stuck before reaching any pool is reported without a pool, check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  await runAvailabilityProbe(
+    env,
+    async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+    undefined,
+    undefined,
+    undefined,
+    async () => [""],
+  );
+  const checkIn = messages.find(
+    (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+  );
+  assert.equal(checkIn?.payload.status, "ok");
+  const events = messages.filter((item) => item.type === "event");
+  assert.deepEqual(
+    events.map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]),
+    [["pool_usage_rollup_stuck", undefined]],
+  );
+});
