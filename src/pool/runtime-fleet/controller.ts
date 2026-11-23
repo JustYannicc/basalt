@@ -532,7 +532,7 @@ export class RuntimeFleet {
           return;
         }
         if (row.identity && readSuspect(row.suspect)?.policyOwed?.includes(policy.pool))
-          await this.failures.installed(row.identity, policy.pool).catch(() => {});
+          await this.failures.installed(row.identity, policy.pool, policy.revision).catch(() => {});
       }),
     );
     const failure = settled.find((result) => result.status === "rejected");
@@ -550,11 +550,14 @@ export class RuntimeFleet {
       runtimeFailureCause(error) === "control"
     )
       throw error;
-    // A refused or late readiness read means the install could not be made, not that the cell
-    // refused the policy: the cell takes no call until that pool's current policy is installed.
+    // A refused or late readiness read means the install could not be made or was not proven to
+    // land, not that the cell refused the policy: it takes no call until this revision is installed.
     const read = failureRead(error, "endpoint_health", this.deps.now());
     if (row.phase === "ready" && failureBeforeSend(read)) {
-      await this.failures.missed(row.identity, read, { path: "install", owe: policy.pool });
+      await this.failures.missed(row.identity, read, {
+        path: "install",
+        owe: { pool: policy.pool, revision: policy.revision },
+      });
       return;
     }
     // A serving runtime that failed leaves the selection: it takes no call under the old policy.
@@ -630,7 +633,7 @@ export class RuntimeFleet {
             return;
           }
           if (row.suspect !== undefined || this.failures.fenced(identity))
-            await this.failures.recovered(identity, readAt).catch(() => {});
+            await this.failures.recovered(identity, readAt, row.suspect).catch(() => {});
           // A failed distance write is not a failed runtime.
           await this.deps.state.observeDistance(identity, database ?? undefined).catch(() => {});
         }),

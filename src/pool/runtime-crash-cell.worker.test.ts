@@ -156,9 +156,13 @@ test(
     await f.upkeep();
     await f.settle();
     const rows = await new RuntimeFleetState(f.old.storage, 4).inspect();
+    // Fenced by its first failed read, the killed boot takes no call; the 6 s rule then removes it.
     assert.ok(
       !rows.some(
-        (row) => row.phase === "ready" && row.identity?.bootId === command.identity.bootId,
+        (row) =>
+          row.phase === "ready" &&
+          row.suspect === undefined &&
+          row.identity?.bootId === command.identity.bootId,
       ),
       "supervision must stop routing to the killed boot",
     );

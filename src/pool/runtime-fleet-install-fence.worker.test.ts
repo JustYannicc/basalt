@@ -7,7 +7,7 @@ interface Inspected {
   resources: { phase: string; reason?: string; target: { slotId: string }; suspect?: unknown }[];
 }
 
-test("a readiness refusal during the Home pass's install fences the cell instead of quarantining it, and it serves again once the install lands", async (context) => {
+test("a readiness refusal during the Home pass's install fences the cell instead of quarantining it, takes no call meanwhile, and is no longer fenced once the install lands", async (context) => {
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "warn", () => {});
   context.mock.method(console, "error", () => {});
@@ -28,6 +28,11 @@ test("a readiness refusal during the Home pass's install fences the cell instead
   assert.ok(ready);
   const cell = f.instances.get(ready.target.instanceId)!.fixture;
   const healthy = cell.hooks.health;
+  const served: string[] = [];
+  f.onModel(async (instance) => {
+    served.push(instance.target.instanceId);
+    return new Response("served");
+  });
   const row = async () =>
     ((await f.send("fleet-inspect")) as Inspected).resources.find(
       (value) => value.target.slotId === ready.target.slotId,
@@ -43,9 +48,13 @@ test("a readiness refusal during the Home pass's install fences the cell instead
   const fenced = await row();
   assert.equal(fenced?.phase, "ready", `the refused install removed the cell (${fenced?.reason})`);
   assert.ok(readSuspect(fenced?.suspect)?.policyOwed?.length, "the cell owes no policy");
+  const during = await f.model();
+  assert.equal(during.status, 200);
+  await during.body?.cancel();
+  assert.ok(!served.includes(ready.target.instanceId), "a call reached the fenced cell");
   cell.hooks.health = healthy;
   for (let index = 0; index < 3 && (await row())?.suspect !== undefined; index++) await pass();
-  const served = await row();
-  assert.equal(served?.phase, "ready");
-  assert.equal(served?.suspect, undefined, "the cell never served again after the install landed");
+  const after = await row();
+  assert.equal(after?.phase, "ready");
+  assert.equal(after?.suspect, undefined, "the cell stayed fenced after the install landed");
 });

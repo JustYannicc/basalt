@@ -40,6 +40,8 @@ export const FleetSuspect = Schema.Struct({
   reads: Schema.Array(FleetFailureRead),
   // Pools whose current policy could not be installed on the cell: it serves no call until each is.
   policyOwed: Schema.optional(Schema.Array(Schema.String)),
+  // The revision owed for each such pool: only an install of it or a newer one settles the debt.
+  owedRevision: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
 });
 export type FleetSuspect = typeof FleetSuspect.Type;
 
@@ -77,7 +79,7 @@ const lateCauses = new Set<string>([
 export function nextSuspect(
   current: FleetSuspect | undefined,
   read: FleetFailureRead,
-  options: { path?: "health" | "install"; owe?: string } = {},
+  options: { path?: "health" | "install"; owe?: { pool: string; revision: number } } = {},
 ): { suspect: FleetSuspect } | { quarantine: FleetFailure } {
   const path = options.path ?? "health";
   const counted = !lateCauses.has(read.cause);
@@ -95,24 +97,37 @@ export function nextSuspect(
       },
     };
   const first = failed ?? (counted ? read : undefined);
-  const owed = [
-    ...new Set([...(current?.policyOwed ?? []), ...(options.owe ? [options.owe] : [])]),
-  ];
+  const owe = options.owe;
+  const owed = [...new Set([...(current?.policyOwed ?? []), ...(owe ? [owe.pool] : [])])];
+  const revisions = {
+    ...current?.owedRevision,
+    ...(owe ? { [owe.pool]: Math.max(owe.revision, current?.owedRevision?.[owe.pool] ?? 0) } : {}),
+  };
   return {
     suspect: {
       since,
       ...(first ? { failed: first } : {}),
       reads,
-      ...(owed.length ? { policyOwed: owed } : {}),
+      ...(owed.length ? { policyOwed: owed, owedRevision: revisions } : {}),
     },
   };
 }
 
-/** The same suspect record once `pool`'s current policy reached the cell. */
-export function policyInstalled(current: FleetSuspect, pool: string): FleetSuspect {
-  const { policyOwed, ...rest } = current;
+/**
+ * The same suspect record once an install of `revision` for `pool` reached the cell, or nothing
+ * when the cell owes a newer one: an older install landing late never settles a newer debt.
+ */
+export function policyInstalled(
+  current: FleetSuspect,
+  pool: string,
+  revision: number,
+): FleetSuspect | undefined {
+  if (!current.policyOwed?.includes(pool)) return undefined;
+  if (revision < (current.owedRevision?.[pool] ?? 0)) return undefined;
+  const { policyOwed, owedRevision, ...rest } = current;
   const owed = (policyOwed ?? []).filter((value) => value !== pool);
-  return owed.length ? { ...rest, policyOwed: owed } : rest;
+  const { [pool]: _settled, ...revisions } = owedRevision ?? {};
+  return owed.length ? { ...rest, policyOwed: owed, owedRevision: revisions } : rest;
 }
 
 export function failureRead(

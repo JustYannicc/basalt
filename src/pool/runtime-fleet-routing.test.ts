@@ -1,3 +1,4 @@
+import { readSuspect } from "./runtime-fleet/failure-record.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
@@ -352,7 +353,11 @@ test("a ready row whose readiness refuses the install is fenced until the policy
   // The install could not be made: the row stays, fenced, owing the pool's current policy.
   const row = (await f.state.inspect()).find((value) => value.identity?.slotId === identity.slotId);
   assert.equal(row?.phase, "ready");
-  assert.ok(row?.suspect, "the row that could not take the policy is not fenced");
+  assert.deepEqual(
+    readSuspect(row?.suspect)?.policyOwed,
+    [membership().pool],
+    "the row that could not take the policy owes none",
+  );
   await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
   assert.equal(served, 0);
 });

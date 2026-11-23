@@ -76,10 +76,14 @@ async function installFleet(context: TestContext) {
     create,
     row: async () => (await f.state.inspect()).find((value) => value.target.slotId === cell.slotId),
     /** The membership install at `at` ms, answered by `answer`. */
-    install: async (at: number, answer: () => Promise<void>) => {
+    install: async (
+      at: number,
+      answer: () => Promise<void>,
+      which: Partial<NativeMembershipPolicy> = {},
+    ) => {
       clock = at;
       install = answer;
-      const result = await fleet.install(policy).then(
+      const result = await fleet.install({ ...policy, ...which }).then(
         () => "acknowledged",
         (error: Error) => error,
       );
@@ -172,4 +176,27 @@ test("an install that fails for another reason still quarantines as policy_refus
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
   assert.equal(row?.reason, "policy_refused");
+});
+
+test("an older revision that lands late never settles a newer revision the cell owes", async (context) => {
+  const s = await installFleet(context);
+  await s.install(0, refuse, { revision: 8 });
+  // Revision 7, sent before 8, lands after it: the cell still lacks revision 8.
+  await s.install(1_000, lands, { revision: 7 });
+  await s.pass(2_000);
+  assert.deepEqual(readSuspect((await s.row())?.suspect)?.policyOwed, [policy.pool]);
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
+  await s.install(3_000, lands, { revision: 8 });
+  await s.pass(4_000);
+  assert.equal((await s.row())?.suspect, undefined);
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "terminal");
+});
+
+test("another pool's install landing never settles the pool the cell owes", async (context) => {
+  const s = await installFleet(context);
+  await s.install(0, refuse, { pool: "pool-a" });
+  await s.install(1_000, lands, { pool: "pool-b" });
+  await s.pass(2_000);
+  assert.deepEqual(readSuspect((await s.row())?.suspect)?.policyOwed, ["pool-a"]);
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
 });

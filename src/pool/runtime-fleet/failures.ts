@@ -68,7 +68,7 @@ export class FleetFailures {
   async missed(
     identity: SlotIdentity,
     read: FleetFailureRead,
-    options: { path?: "health" | "install"; owe?: string } = {},
+    options: { path?: "health" | "install"; owe?: { pool: string; revision: number } } = {},
   ) {
     if (failureIgnored(read)) return "ignored" as const;
     if (failureMismatch(read)) {
@@ -101,7 +101,7 @@ export class FleetFailures {
    * A good read that began at `readAt` lifts only a suspect's own fence, never a quarantine's, and
    * never one a later read set.
    */
-  async recovered(identity: SlotIdentity, readAt: number) {
+  async recovered(identity: SlotIdentity, readAt: number, snapshot?: unknown) {
     const key = executionKey(identity);
     const newer = () => (this.lastMiss.get(key) ?? -Infinity) >= readAt;
     if (this.pending.has(key) || newer()) return;
@@ -117,6 +117,8 @@ export class FleetFailures {
       return;
     }
     // Good reads but no install that lands: the same 30 s bound as any other proof that never comes.
+    const owing = readSuspect(snapshot);
+    if (!owing?.policyOwed?.length || readAt - owing.since < unprovenMs) return;
     const outcome = await this.state.suspect(identity, (current) => {
       const suspect = readSuspect(current);
       return suspect?.policyOwed?.length && readAt - suspect.since >= unprovenMs
@@ -130,13 +132,12 @@ export class FleetFailures {
       this.changed();
     }
   }
-  /** `pool`'s current policy reached the cell: it no longer owes it. */
-  async installed(identity: SlotIdentity, pool: string) {
+  /** An install of `revision` for `pool` reached the cell: it no longer owes that or older. */
+  async installed(identity: SlotIdentity, pool: string, revision: number) {
     await this.state.suspect(identity, (current) => {
       const suspect = readSuspect(current);
-      return suspect?.policyOwed?.includes(pool)
-        ? { suspect: policyInstalled(suspect, pool) }
-        : { unchanged: true };
+      const next = suspect && policyInstalled(suspect, pool, revision);
+      return next ? { suspect: next } : { unchanged: true };
     });
   }
   /** A runtime that refused a membership policy takes no new call under its old one. */
