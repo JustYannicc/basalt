@@ -1,6 +1,6 @@
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { Effect, Result } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import type { PoolAccess } from "../pool-acceptance/types.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
@@ -11,6 +11,7 @@ import {
   inspectFleet,
   shortHash,
   takeBookmark,
+  UsageRollup,
   type ControllerAccess,
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
@@ -181,6 +182,11 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           fleet: fleetSummary(fleet),
+          // The pool's own usage rollup backfill: its last tick, stop, pause, pending hours and
+          // any stuck pool, by its 16-hex history id only.
+          usageRollup: Option.getOrNull(
+            Schema.decodeUnknownOption(Schema.NullOr(UsageRollup))(view.usageRollup ?? null),
+          ),
         };
       });
     if (mode === "inspect") {

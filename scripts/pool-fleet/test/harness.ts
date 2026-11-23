@@ -79,6 +79,8 @@ export interface HarnessOptions {
   deviceOnly?: boolean;
   /** The account the pool's usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
+  /** What the controller's inspect reports for the pool's own usage rollup backfill. */
+  usageRollup?: unknown;
 }
 
 export async function harness(options: HarnessOptions = {}) {
@@ -292,6 +294,8 @@ export async function harness(options: HarnessOptions = {}) {
             fleet,
             undefined,
             bookmarks,
+            undefined,
+            options.usageRollup === undefined ? undefined : async () => options.usageRollup,
           );
         },
       },

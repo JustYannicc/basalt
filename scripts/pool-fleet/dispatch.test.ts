@@ -8,6 +8,7 @@ import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
 import { refuse } from "./errors.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import { accountId, colours, harness } from "./test/harness.ts";
+import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
 
 const go = "coordinator-2026-11-18-fleet-proof";
 const dispatch = (mode: string, extra: Partial<DispatchInput> = {}): DispatchInput => ({
@@ -368,5 +369,43 @@ test("inspect says which acceptance the lane would run, and names no id", async 
     );
   } finally {
     await lane.close();
+  }
+});
+
+test("the inspect lane shows the pool's own usage rollup backfill as one closed object", async () => {
+  // The producer's own projection, through the consumer's decode, as production sends it.
+  const usageRollup = usageRollupInspect({
+    lastTickAt: "2026-11-23T09:30:00.000Z",
+    lastStop: "budget",
+    pools: 1,
+    pendingHours: 2_832,
+    stuck: [
+      {
+        pool: "0123456789abcdef",
+        reason: "slow",
+        hour: "2026-08-01T03:00:00.000Z",
+        retryAt: "2026-11-24T09:30:00.000Z",
+      },
+      { pool: "", reason: "error", retryAt: "2026-11-24T09:30:00.000Z" },
+    ],
+  });
+  for (const [reported, expected] of [
+    [usageRollup, usageRollup],
+    [undefined, null],
+    // A shape this lane doesn't know is dropped, and the lane still answers.
+    [{ lastStop: 7 }, null],
+  ] as const) {
+    const lane = await harness(reported === undefined ? {} : { usageRollup: reported });
+    try {
+      const result = await runPoolFleet(dispatch("inspect"), lane.deps());
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(
+        "result" in result && (result.result as { usageRollup?: unknown }).usageRollup,
+        expected,
+      );
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(accountId));
+    } finally {
+      await lane.close();
+    }
   }
 });

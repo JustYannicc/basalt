@@ -47,6 +47,22 @@ const Selection = Schema.Struct({
   candidate: Schema.optional(Schema.Unknown),
   draining: Schema.optional(Schema.Unknown),
 });
+/** The pool's own usage rollup backfill, closed: no name, host or account id ever travels. */
+export const UsageRollup = Schema.Struct({
+  lastTickAt: Schema.NullOr(Schema.String),
+  lastStop: Schema.NullOr(Schema.String),
+  pausedUntil: Schema.NullOr(Schema.String),
+  pools: Schema.NullOr(Schema.Number),
+  pendingHours: Schema.NullOr(Schema.Number),
+  stuck: Schema.Array(
+    Schema.Struct({
+      pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
+      reason: Schema.NullOr(Schema.Literals(["slow", "lock", "error"])),
+      hour: Schema.NullOr(Schema.String),
+      retryAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
 const Inspect = Schema.Struct({
   result: Schema.Struct({
     selection: Schema.optional(Selection),
@@ -57,6 +73,8 @@ const Inspect = Schema.Struct({
       ),
     ),
     lastEnd: Schema.optional(Schema.Unknown),
+    // Decoded apart, leniently: a diagnostic must never block the fleet lane's other modes.
+    usageRollup: Schema.optional(Schema.Unknown),
   }),
 });
 const Row = Schema.Struct({

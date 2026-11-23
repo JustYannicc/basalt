@@ -4,6 +4,7 @@ import { historyImportCompletionPath } from "./model-history/import-completion-c
 import { historyUsageRollupPath } from "./model-history/usage-rollup-backfill.ts";
 import {
   usageRollupAutoState,
+  usageRollupInspect,
   usageRollupStuckPools,
   usageRollupTick,
 } from "./model-history/usage-rollup-auto.ts";
@@ -912,6 +913,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.candidateProbe,
         this.bookmarks,
         () => this.allowances.alertDelivery(),
+        () => this.usageRollupAutoState().then(usageRollupInspect),
       );
     } finally {
       this.handoffsInFlight--;
