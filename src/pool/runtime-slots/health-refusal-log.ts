@@ -1,5 +1,6 @@
 import { runtimeFailureCode, runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
 import type { PoolStatus } from "../lifecycle.ts";
+import { runtimeReadySignals } from "../runtime-ready-signals.ts";
 import type { SlotIdentity } from "./contract.ts";
 import type { WitnessRecord } from "./witness-store.ts";
 
@@ -9,7 +10,9 @@ const keptKeys = 8;
 /**
  * One closed line per distinct health refusal, and at most one a minute for each while it repeats,
  * even when callers alternate between them. It says what the endpoint saw: its record, the
- * container, and the readiness answer, never a value from either.
+ * container, and the readiness answer, never a value from either. The answer's own signals appear
+ * only as the Worker decoded them, and stay out of the repeat key with the lease, so a moving count
+ * never defeats the throttle.
  */
 export class RuntimeHealthRefusalLog {
   private logged = new Map<string, number>();
@@ -21,6 +24,7 @@ export class RuntimeHealthRefusalLog {
     status?: PoolStatus,
   ) {
     const witness = record?.witness;
+    const ready = runtimeReadySignals(error) ?? status?.ready;
     const fields = {
       slot: identity.slotId,
       code: runtimeFailureCode(runtimeFailureDiagnostic(error, "endpoint_identity")),
@@ -42,8 +46,9 @@ export class RuntimeHealthRefusalLog {
       ...(status?.policyLeaseUntil
         ? { leaseMs: Math.round(status.policyLeaseUntil - performance.now()) }
         : {}),
+      ...(ready ? { ready } : {}),
     };
-    const key = JSON.stringify({ ...fields, leaseMs: undefined });
+    const key = JSON.stringify({ ...fields, leaseMs: undefined, ready: undefined });
     const now = Date.now();
     const at = this.logged.get(key);
     if (at !== undefined && now - at < repeatMs) return;

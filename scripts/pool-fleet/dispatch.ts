@@ -21,6 +21,7 @@ import {
   readSuspect,
   type FleetFailureRead,
 } from "../../src/pool/runtime-fleet/failure-record.ts";
+import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
 
@@ -85,6 +86,18 @@ const iso = (at: number) => {
   const date = new Date(at);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
+/** The cell's own readiness record behind a read, decoded again so only closed values print. */
+const readySummary = (value: unknown) => {
+  const ready = decodeReadySignals(value);
+  return ready
+    ? {
+        lastLapse: ready.lastLapse ?? null,
+        lastFlip: ready.lastFlip ?? null,
+        lapses: ready.lapses ?? null,
+        flips: ready.flips ?? null,
+      }
+    : null;
+};
 /** One failed read or call, as closed values: where, why, the round trip and the lease left. */
 const readSummary = (read: FleetFailureRead) => ({
   at: iso(read.at),
@@ -92,6 +105,7 @@ const readSummary = (read: FleetFailureRead) => ({
   cause: read.cause,
   roundTripMs: read.roundTripMs ?? null,
   leaseLeftMs: read.leaseLeftMs ?? null,
+  ready: readySummary(read.ready),
 });
 const suspectSummary = (value: unknown) => {
   const suspect = readSuspect(value);

@@ -3,7 +3,13 @@ import { test } from "node:test";
 import { PoolRuntimeUnhealthy, type PoolStatus } from "./lifecycle.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { RuntimeProtection, type ProtectionDiagnostic } from "./runtime-protection.ts";
-import { policyHealthHeader, readRuntimeHealth } from "./runtime-health.ts";
+import {
+  policyHealthHeader,
+  policyHealthLeaseMs,
+  readRuntimeHealth,
+  refusalBodyBytes,
+} from "./runtime-health.ts";
+import { runtimeReadySignals } from "./runtime-ready-signals.ts";
 
 class Clock {
   time = 0;
@@ -349,4 +355,94 @@ test("transport delay consumes the container lease rather than extending it", as
     );
     assert.equal(invalid.policyLeaseUntil, undefined);
   }
+});
+
+const at = "2026-11-23T12:24:04.512Z";
+const signals = {
+  last_lapse: { step: "home_plugins", ms: 1_900, at },
+  last_flip: { to: "refusing", reason: "degraded", prior_ms: 300_000, at },
+  lapses: 5,
+  flips: 1,
+};
+const decodedSignals = {
+  lastLapse: { step: "home_plugins", ms: 1_900, at },
+  lastFlip: { to: "refusing", reason: "degraded", priorMs: 300_000, at },
+  lapses: 5,
+  flips: 1,
+};
+const answering = (response: () => Response) => ({ fetch: async () => response() });
+const read = (readiness: ReturnType<typeof answering>) =>
+  readRuntimeHealth(readiness, "fixture", new AbortController().signal);
+const identity = { boot_id: "boot", started_at: "2026-11-23T12:00:00Z" };
+
+test("a ready answer carries its signals on the status, and an older image's carries none", async () => {
+  const ready = await read(
+    answering(() =>
+      Response.json({ ...identity, ...signals }, { headers: { [policyHealthHeader]: "1000" } }),
+    ),
+  );
+  assert.deepEqual(ready.ready, decodedSignals);
+  const older = await read(
+    answering(() => Response.json(identity, { headers: { [policyHealthHeader]: "1000" } })),
+  );
+  assert.equal("ready" in older, false);
+});
+
+test("a refusing answer is still the same refusal, now carrying its signals when it has any", async () => {
+  const refusal = async (response: () => Response) => {
+    const error = await read(answering(response)).then(
+      () => assert.fail("a refusing answer was read as ready"),
+      (error: unknown) => error,
+    );
+    assert.ok(error instanceof PoolRuntimeUnhealthy, String(error));
+    return runtimeReadySignals(error);
+  };
+  assert.deepEqual(
+    await refusal(() =>
+      Response.json({ ...identity, refusal: "degraded", ...signals }, { status: 503 }),
+    ),
+    decodedSignals,
+  );
+  // An older image, an empty, unparsable or oversized body: the refusal alone.
+  for (const response of [
+    () => Response.json({ ...identity, refusal: "policy_unproven" }, { status: 503 }),
+    () => new Response(null, { status: 503 }),
+    () => new Response("", { status: 503 }),
+    () => new Response(`{"last_lapse":`, { status: 503 }),
+    () =>
+      Response.json(
+        { ...identity, ...signals, padding: "x".repeat(refusalBodyBytes) },
+        { status: 503 },
+      ),
+  ])
+    assert.equal(await refusal(response), undefined);
+});
+
+test("a refusing answer whose body never ends refuses as itself, inside the lease deadline", async () => {
+  let cancelled = false;
+  const started = performance.now();
+  const error = await read(
+    answering(
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(JSON.stringify(signals).slice(0, 40)));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 503 },
+        ),
+    ),
+  ).then(
+    () => assert.fail("a refusing answer was read as ready"),
+    (error: unknown) => error,
+  );
+  const elapsed = performance.now() - started;
+  assert.ok(error instanceof PoolRuntimeUnhealthy, String(error));
+  assert.equal(runtimeReadySignals(error), undefined);
+  assert.ok(elapsed < policyHealthLeaseMs + 400, `refused after ${Math.round(elapsed)} ms`);
+  assert.ok(cancelled, "the unfinished body was left open");
 });
