@@ -338,7 +338,7 @@ test("a retiring row is never asked for a policy, so its refusal cannot hold the
   assert.equal(f.calls.installs, 0);
 });
 
-test("a ready row whose runtime fails the install leaves the selection, and the fan-out still resolves", async () => {
+test("a ready row whose readiness refuses the install is fenced until the policy lands, and the fan-out still resolves", async () => {
   const f = fixture();
   const identity = await f.add();
   refusing(f, identity);
@@ -349,10 +349,10 @@ test("a ready row whose runtime fails the install leaves the selection, and the 
   };
   await f.fleet.install(membership());
   assert.equal(f.calls.installs, 1);
-  assert.equal(
-    (await f.state.inspect()).find((row) => row.identity?.slotId === identity.slotId)?.phase,
-    "quarantined",
-  );
+  // The install could not be made: the row stays, fenced, owing the pool's current policy.
+  const row = (await f.state.inspect()).find((value) => value.identity?.slotId === identity.slotId);
+  assert.equal(row?.phase, "ready");
+  assert.ok(row?.suspect, "the row that could not take the policy is not fenced");
   await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
   assert.equal(served, 0);
 });

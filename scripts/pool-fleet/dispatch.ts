@@ -100,6 +100,8 @@ const suspectSummary = (value: unknown) => {
         since: iso(suspect.since),
         failed: suspect.failed ? readSummary(suspect.failed) : null,
         reads: suspect.reads.map(readSummary),
+        // How many pools' current policy the cell still lacks; it serves none until this is 0.
+        policyOwed: suspect.policyOwed?.length ?? 0,
       }
     : null;
 };

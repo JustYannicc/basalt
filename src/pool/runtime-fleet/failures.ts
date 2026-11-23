@@ -6,7 +6,9 @@ import {
   failureMismatch,
   failureRead,
   nextSuspect,
+  policyInstalled,
   readSuspect,
+  unprovenMs,
   type FleetFailure,
   type FleetFailureRead,
 } from "./failure-record.ts";
@@ -63,11 +65,15 @@ export class FleetFailures {
    * here at once and in the durable row, so no new call reaches it, and `nextSuspect` decides the
    * rest; a read that reached another process quarantines it at once.
    */
-  async missed(identity: SlotIdentity, read: FleetFailureRead) {
+  async missed(
+    identity: SlotIdentity,
+    read: FleetFailureRead,
+    options: { path?: "health" | "install"; owe?: string } = {},
+  ) {
     if (failureIgnored(read)) return "ignored" as const;
     if (failureMismatch(read)) {
       await this.quarantine(identity, "runtime_failed", {
-        path: "health",
+        path: options.path ?? "health",
         rule: "evidence",
         reads: [read],
       });
@@ -78,7 +84,7 @@ export class FleetFailures {
     this.suspect.add(key);
     this.lastMiss.set(key, Math.max(read.at, this.lastMiss.get(key) ?? read.at));
     const outcome = await this.state.suspect(identity, (current) =>
-      nextSuspect(readSuspect(current), read),
+      nextSuspect(readSuspect(current), read, options),
     );
     if (outcome === "quarantined") {
       this.blocked.add(key);
@@ -100,13 +106,38 @@ export class FleetFailures {
     const newer = () => (this.lastMiss.get(key) ?? -Infinity) >= readAt;
     if (this.pending.has(key) || newer()) return;
     const cleared = await this.state.clearSuspect(identity, (current) => {
-      const last = readSuspect(current)?.reads.at(-1)?.at;
-      return last === undefined || last < readAt;
+      const suspect = readSuspect(current);
+      const last = suspect?.reads.at(-1)?.at;
+      // A cell still owing a pool's current policy serves again only once that policy is installed.
+      return (last === undefined || last < readAt) && !suspect?.policyOwed?.length;
     });
     if (cleared && !this.pending.has(key) && !newer()) {
       this.suspect.delete(key);
       this.lastMiss.delete(key);
+      return;
     }
+    // Good reads but no install that lands: the same 30 s bound as any other proof that never comes.
+    const outcome = await this.state.suspect(identity, (current) => {
+      const suspect = readSuspect(current);
+      return suspect?.policyOwed?.length && readAt - suspect.since >= unprovenMs
+        ? { quarantine: { path: "install", rule: "unproven", reads: suspect.reads } }
+        : { unchanged: true };
+    });
+    if (outcome === "quarantined") {
+      this.blocked.add(key);
+      this.suspect.delete(key);
+      this.lastMiss.delete(key);
+      this.changed();
+    }
+  }
+  /** `pool`'s current policy reached the cell: it no longer owes it. */
+  async installed(identity: SlotIdentity, pool: string) {
+    await this.state.suspect(identity, (current) => {
+      const suspect = readSuspect(current);
+      return suspect?.policyOwed?.includes(pool)
+        ? { suspect: policyInstalled(suspect, pool) }
+        : { unchanged: true };
+    });
   }
   /** A runtime that refused a membership policy takes no new call under its old one. */
   refused(identity: SlotIdentity) {

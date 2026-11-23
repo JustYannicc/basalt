@@ -25,7 +25,7 @@ export type FleetFailureRead = typeof FleetFailureRead.Type;
  * reads far enough apart, or no good read for too long), and every read that counted.
  */
 export const FleetFailure = Schema.Struct({
-  path: Schema.Literals(["forward", "stream", "health"]),
+  path: Schema.Literals(["forward", "stream", "health", "install"]),
   rule: Schema.Literals(["evidence", "failed_twice", "unproven"]),
   reads: Schema.Array(FleetFailureRead),
 });
@@ -38,6 +38,8 @@ export const FleetSuspect = Schema.Struct({
   since: Schema.Number,
   failed: Schema.optional(FleetFailureRead),
   reads: Schema.Array(FleetFailureRead),
+  // Pools whose current policy could not be installed on the cell: it serves no call until each is.
+  policyOwed: Schema.optional(Schema.Array(Schema.String)),
 });
 export type FleetSuspect = typeof FleetSuspect.Type;
 
@@ -75,23 +77,42 @@ const lateCauses = new Set<string>([
 export function nextSuspect(
   current: FleetSuspect | undefined,
   read: FleetFailureRead,
+  options: { path?: "health" | "install"; owe?: string } = {},
 ): { suspect: FleetSuspect } | { quarantine: FleetFailure } {
+  const path = options.path ?? "health";
   const counted = !lateCauses.has(read.cause);
   const since = current?.since ?? read.at;
   const reads = [...(current?.reads ?? []), read].slice(-keptReads);
   const failed = current?.failed;
   if (counted && failed && read.at - failed.at >= failedApartMs)
-    return { quarantine: { path: "health", rule: "failed_twice", reads: [failed, read] } };
+    return { quarantine: { path, rule: "failed_twice", reads: [failed, read] } };
   if (read.at - since >= unprovenMs)
     return {
       quarantine: {
-        path: "health",
+        path,
         rule: "unproven",
         reads: failed && !reads.includes(failed) ? [failed, ...reads] : reads,
       },
     };
   const first = failed ?? (counted ? read : undefined);
-  return { suspect: { since, ...(first ? { failed: first } : {}), reads } };
+  const owed = [
+    ...new Set([...(current?.policyOwed ?? []), ...(options.owe ? [options.owe] : [])]),
+  ];
+  return {
+    suspect: {
+      since,
+      ...(first ? { failed: first } : {}),
+      reads,
+      ...(owed.length ? { policyOwed: owed } : {}),
+    },
+  };
+}
+
+/** The same suspect record once `pool`'s current policy reached the cell. */
+export function policyInstalled(current: FleetSuspect, pool: string): FleetSuspect {
+  const { policyOwed, ...rest } = current;
+  const owed = (policyOwed ?? []).filter((value) => value !== pool);
+  return owed.length ? { ...rest, policyOwed: owed } : rest;
 }
 
 export function failureRead(
