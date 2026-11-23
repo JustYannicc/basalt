@@ -3,7 +3,9 @@ import {
   rememberRuntimeFailure,
   runtimeFailureCause,
   runtimeFailureDiagnostic,
+  runtimeRouteDiagnostic,
 } from "../runtime-route-diagnostic.ts";
+import { errorClass } from "../pending-failure.ts";
 import type { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
@@ -74,6 +76,11 @@ export interface CellCount {
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
   observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
+  /**
+   * False only when no start for this target can have reached a container: its durable
+   * first-start intent is absent. Without it, every failed start is treated as possibly sent.
+   */
+  sent?(target: SlotTarget): Promise<boolean>;
   selected(): Promise<SlotIdentity | undefined>;
   healthy?(identity: SlotIdentity): Promise<RuntimeDistance | undefined | void>;
   forward(
@@ -135,6 +142,22 @@ function markedCut(identity: SlotIdentity, error: unknown, signal: AbortSignal) 
       kind: runtimeFailureDiagnostic(error, "fleet_forward").runtimeReason,
     }),
   );
+}
+
+/**
+ * Why growth was refused, as closed values only, never message text: the runtime's step, reason
+ * and cause when the error carries them, a local refusal's own reason, and the error's class.
+ */
+function growthRefusal(error: unknown) {
+  const diagnostic = runtimeRouteDiagnostic(error);
+  return {
+    step: diagnostic?.runtimeStep ?? null,
+    reason:
+      diagnostic?.runtimeReason ??
+      (error instanceof SlotRefused || error instanceof FleetRefused ? error.reason : null),
+    cause: runtimeFailureCause(error) ?? null,
+    error: error instanceof FleetRefused ? "FleetRefused" : errorClass(error),
+  };
 }
 
 /** The concurrency target triggers growth; it never becomes another fixed inference cap. */
@@ -221,16 +244,12 @@ export class RuntimeFleet {
             this.growthRefusal = undefined;
           },
           (error: unknown) => {
-            // Growth retries on every request and alarm, so a refusal logs once until it changes.
-            const reason =
-              error instanceof SlotRefused || error instanceof FleetRefused
-                ? error.reason
-                : error instanceof Error
-                  ? error.name
-                  : "unknown";
-            if (reason !== this.growthRefusal)
-              console.warn("POOL_FLEET_GROWTH_REFUSED", { reason });
-            this.growthRefusal = reason;
+            // Growth retries on every request and alarm, so a refusal logs once until any of its
+            // fields changes.
+            const refusal = growthRefusal(error);
+            const key = JSON.stringify(refusal);
+            if (key !== this.growthRefusal) console.warn("POOL_FLEET_GROWTH_REFUSED", refusal);
+            this.growthRefusal = key;
           },
         ),
       );
@@ -270,13 +289,42 @@ export class RuntimeFleet {
   }
   private async start(target: SlotTarget) {
     await this.deps.state.dispatch(target);
+    const began = performance.now();
+    let cell: FleetCell | undefined;
     try {
-      const cell = this.cell(target);
+      cell = this.cell(target);
       await this.admit(cell, await cell.start(target));
     } catch (error) {
-      await this.deps.state.uncertain(target);
+      if (cell && (await this.refusedUnsent(cell, target, error)))
+        await this.startRefused(target, error, began);
+      else await this.deps.state.uncertain(target);
       throw error;
     }
+  }
+  /**
+   * The endpoint refused this start before its first-start intent was written, so nothing reached
+   * a container and the same object would refuse a retry. A local failure before any send, such as
+   * an absent provider secret, carries no remote diagnostic and retries the same slot instead. A
+   * planned replacement's record follows its new row by target, so that row keeps the same path.
+   */
+  private async refusedUnsent(cell: FleetCell, target: SlotTarget, error: unknown) {
+    if (runtimeRouteDiagnostic(error) === undefined) return false;
+    const row = (await this.deps.state.inspect()).find((value) => sameTarget(value.target, target));
+    return row !== undefined && row.replaces === undefined && (await cell.sent?.(target)) === false;
+  }
+  /**
+   * A start the endpoint refused before anything was sent leaves at once with the refusal, rather
+   * than holding growth for the whole start bound. The remote step and reason win over the
+   * admission step.
+   */
+  private startRefused(target: SlotTarget, error: unknown, began: number) {
+    const read = failureRead(
+      error,
+      "endpoint_admission",
+      this.deps.now(),
+      performance.now() - began,
+    );
+    return this.deps.state.startRefused(target, { path: "start", rule: "evidence", reads: [read] });
   }
   /**
    * Reads a started cell's distance before it can take a request. A far cell is redrawn only while
@@ -674,7 +722,16 @@ export class RuntimeFleet {
     if (row.phase === "warming" || row.phase === "uncertain") {
       // Past its bound a start is no longer observed: it holds its place until abandon() proves it.
       if (pastBound(row, now)) return this.exceed(row, "start_unproven");
-      const observed = await cell.observe(row.target, enabled);
+      const began = performance.now();
+      let observed;
+      try {
+        observed = await cell.observe(row.target, enabled);
+      } catch (error) {
+        // The observation retries an unsent start, which can be refused just as growth's was.
+        if (!row.identity && (await this.refusedUnsent(cell, row.target, error)))
+          await this.startRefused(row.target, error, began);
+        throw error;
+      }
       if (observed) await this.admit(cell, observed);
       return;
     }

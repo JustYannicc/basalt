@@ -82,6 +82,18 @@ export class FleetHandoffCell implements FleetCell {
     await this.deps.handoff.slots.firstStart.observe();
     return this.activate(target);
   }
+  async sent(target: SlotTarget) {
+    // A start still under way here may yet write its intent and send.
+    if (this.starting) return true;
+    try {
+      const initial = await this.deps.handoff.slots.firstStart.inspect();
+      // The durable first-start intent commits before the compute start is sent.
+      return initial !== undefined && sameTarget(initial.target, target);
+    } catch {
+      // An unreadable intent proves nothing, so the start is treated as one that may have run.
+      return true;
+    }
+  }
   async healthy(identity: SlotIdentity) {
     const health = await this.deps.driver.health(identity, AbortSignal.timeout(2_000));
     if (!sameIdentity(health.identity, identity)) throw new SlotRefused("identity");

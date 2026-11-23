@@ -25,10 +25,12 @@ export const FleetFailureRead = Schema.Struct({
 export type FleetFailureRead = typeof FleetFailureRead.Type;
 /**
  * Why a cell was quarantined: the path that saw it, the rule that fired (hard evidence, two failed
- * reads far enough apart, or no good read for too long), and every read that counted.
+ * reads far enough apart, or no good read for too long), and every read that counted. Rows and
+ * recent ends store it opaquely, so a path an older reader lacks is dropped there, never a failed
+ * decode; `start` is a start its endpoint refused before the first-start intent was written.
  */
 export const FleetFailure = Schema.Struct({
-  path: Schema.Literals(["forward", "stream", "health", "install"]),
+  path: Schema.Literals(["forward", "stream", "health", "install", "start"]),
   rule: Schema.Literals(["evidence", "failed_twice", "unproven"]),
   reads: Schema.Array(FleetFailureRead),
 });

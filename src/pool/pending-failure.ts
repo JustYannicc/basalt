@@ -6,7 +6,8 @@ import { ControlFailure, poolFailureDiagnostic } from "./json.ts";
 import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
 import { SlotRefused } from "./runtime-slots/contract.ts";
 
-function errorClass(error: unknown) {
+/** A closed class name, decided by type rather than read off the error, so minifying keeps it. */
+export function errorClass(error: unknown) {
   if (error instanceof SlotRefused) return "SlotRefused";
   if (error instanceof RemoteRuntimeDefect) return "RemoteRuntimeDefect";
   if (error instanceof ProviderObservationRefused) return "ProviderObservationRefused";
