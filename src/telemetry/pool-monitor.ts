@@ -75,7 +75,7 @@ export async function capturePoolMonitor(
     /** Which failures start an episode; without it every failure is reported, as each minute was. */
     report?: { readonly availability: boolean; readonly reliability: readonly string[] };
   },
-): Promise<boolean> {
+): Promise<{ delivered: boolean; eventsDelivered: boolean }> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
     guard: guards.has(failure.guard) ? failure.guard : "runtime",
     reason: reasons.has(failure.reason) ? failure.reason : "unknown",
@@ -125,8 +125,11 @@ export async function capturePoolMonitor(
       reason: context?.reason ?? "collection_unavailable",
     });
   }
-  const results = await Promise.all([check, ...events]);
-  return receipt.accepted && results.every(Boolean);
+  const [checked, ...sent] = await Promise.all([check, ...events]);
+  // Whether the error events got through apart from the check-ins: an episode's start is recorded
+  // as reported on that alone.
+  const eventsDelivered = sent.every(Boolean);
+  return { delivered: receipt.accepted && checked && eventsDelivered, eventsDelivered };
 
   function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();

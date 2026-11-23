@@ -547,11 +547,11 @@ test("a session failure the read already logged is not logged again by the check
 
 function episodeFixture(t: TestContext) {
   const messages: ReturnType<typeof unpack>[] = [];
-  let refuse = false;
+  let refused: "event" | "check_in" | undefined;
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
     const message = unpack(init);
     messages.push(message);
-    return new Response(null, { status: refuse && message.type === "event" ? 429 : 202 });
+    return new Response(null, { status: message.type === refused ? 429 : 202 });
   });
   t.mock.method(console, "error", () => {});
   const stored = new Map<string, unknown>();
@@ -580,7 +580,7 @@ function episodeFixture(t: TestContext) {
       .filter((item) => item.type === "event")
       .map((item) => item.payload.tags.error_code);
   };
-  return { messages, minute, refuse: (value: boolean) => (refuse = value) };
+  return { messages, minute, refuse: (type?: "event" | "check_in") => (refused = type) };
 }
 const overdue: ProbeFailure = { guard: "membership", reason: "renewal_overdue" };
 const unavailable: ProbeFailure = { guard: "runtime", reason: "unavailable" };
@@ -611,17 +611,24 @@ test("a failing reliability reason is reported once, and again once it has stopp
 
 test("an episode start whose events Sentry refused is sent again the next minute", async (t) => {
   const { minute, refuse } = episodeFixture(t);
-  refuse(true);
+  refuse("event");
   assert.deepEqual(await minute([overdue], { reliabilityFails: true }), [
     "pool_availability_failure",
     "pool_request_reliability_unavailable",
   ]);
-  refuse(false);
+  refuse();
   assert.deepEqual(await minute([overdue], { reliabilityFails: true }), [
     "pool_availability_failure",
     "pool_request_reliability_unavailable",
   ]);
   assert.deepEqual(await minute([overdue], { reliabilityFails: true }), []);
+});
+
+test("a refused check-in alone does not send an accepted episode start again", async (t) => {
+  const { minute, refuse } = episodeFixture(t);
+  refuse("check_in");
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"]);
+  assert.deepEqual(await minute([overdue]), []);
 });
 
 test("another pool's same failure is its own episode", async (t) => {

@@ -100,7 +100,7 @@ export async function runAvailabilityProbe(
     : undefined;
   if (reported === "unreachable") console.error("POOL_AVAILABILITY_EPISODE_UNREACHABLE");
   const report = episodes ? episodeReport(reported, next, Date.now()) : undefined;
-  const delivered = await capturePoolMonitor(env, receipt, {
+  const { delivered, eventsDelivered } = await capturePoolMonitor(env, receipt, {
     ...result,
     release,
     ...(report ? { report } : {}),
@@ -108,7 +108,7 @@ export async function runAvailabilityProbe(
   // Recorded after sending, so a start whose events Sentry refused is tried again next minute.
   if (episodes && report && reported !== "unreachable")
     await awaitProbe(
-      () => episodes.write(episodeAfter(reported, next, report, delivered)),
+      () => episodes.write(episodeAfter(reported, next, report, eventsDelivered)),
       AbortSignal.timeout(episodeBudgetMs),
     ).catch(() => console.error("POOL_AVAILABILITY_EPISODE_UNRECORDED"));
   if (!delivered) throw new Error("Pool availability alert delivery failed");

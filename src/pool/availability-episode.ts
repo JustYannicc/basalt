@@ -26,7 +26,9 @@ const isEpisode = Schema.is(Episode);
  * episode starts when the set differs from the one reported and ends with the first run whose set
  * differs again, a passing run included; a reliability reason's starts when it starts failing and
  * ends with the first run without it. A run whose memory can't be read reports on the quarter hour
- * only: the check-in still carries every minute, and the monitor opens its own incident on it.
+ * only. An availability failure still errors every minute's check-in, on which the monitor opens its
+ * own incident; a reliability failure never reaches the check-in, so between quarter hours it shows
+ * only in the log line.
  */
 export function episodeReport(
   reported: AvailabilityEpisode | undefined | "unreachable",
