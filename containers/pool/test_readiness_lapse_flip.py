@@ -7,10 +7,19 @@ import threading
 import unittest
 from unittest.mock import patch
 
+from . import policy_monitor
 from . import readiness as readiness_module
-from .readiness import FLIP_LINE, LAPSE_LINE, POLICY_HEALTH_LEASE_NS, Readiness
+from .readiness import (
+    FLIP_LINE,
+    LAPSE_LINE,
+    LAPSE_STEPS,
+    POLICY_HEALTH_LEASE_NS,
+    POLICY_PLUGIN_ID,
+    Readiness,
+)
 
 INSTANCE = "a" * 32
+TOKEN_SENTINEL = "private-token-sentinel"
 MS = 1_000_000
 
 
@@ -190,6 +199,66 @@ class LapseFlipTests(unittest.TestCase):
             self.readiness.begin_recovery()
         self.assertTrue(held)
         self.assertFalse(any(held))
+
+
+class LapseFlipPrivacyTests(unittest.TestCase):
+    """The records stay closed whatever Home's and the plugin's answers to the probe carry."""
+
+    def test_lapse_and_flip_records_never_carry_the_probe_answers(self) -> None:
+        secret = "planted-probe-secret-" + TOKEN_SENTINEL
+        now = [10_000_000_000]
+        lines: list[str] = []
+        state = Readiness(secret, lambda: now[0])
+        home_answer = {
+            "plugins_enabled": True,
+            "plugins": [
+                {
+                    "id": POLICY_PLUGIN_ID,
+                    "registered": True,
+                    "enabled": True,
+                    "effective_enabled": True,
+                    "note": secret,
+                }
+            ],
+            "error": secret,
+        }
+        calls = iter([True, False])
+
+        def plugin_answer(_path: str, body: dict[str, str], **_kwargs: object) -> tuple[int, dict[str, object]]:
+            if next(calls):
+                return 200, {"ok": True, "nonce": body["nonce"], "instance": "a" * 32, "error": secret}
+            return 0, {"error": secret, "address": "10.0.0.9:8329"}
+
+        with (
+            patch.object(readiness_module, "emit", lambda line, err=False: lines.append(line)),
+            patch.object(policy_monitor, "request_json", lambda *_a, **_k: (200, home_answer)),
+            patch.object(policy_monitor, "native_policy_request", plugin_answer),
+        ):
+            self.assertTrue(state.refresh_policy_lease("a" * 32))
+            state.set_ready(True, audit_revision=state.service_audit_revision())
+            now[0] += 300_000_000
+            # The first probe never sees its log line and the second loses the plugin.
+            self.assertEqual(policy_monitor.probe_home_policy(secret, state)[0], "missed")
+            self.assertEqual(policy_monitor.probe_home_policy(secret, state)[0], "missed")
+            state.note_node_audit(False, 2_000)
+            now[0] += 2_000_000_000
+            _ready, payload, _lease = state.readiness_response()
+        self.assertIn("last_lapse", payload)
+        self.assertIn("last_flip", payload)
+        rendered = json.dumps(payload) + "\n".join(lines)
+        for leaked in (secret, TOKEN_SENTINEL, "10.0.0.9", "8329", "note", "error"):
+            self.assertNotIn(leaked, rendered)
+        for line in lines:
+            name, _space, body = line.partition(" ")
+            self.assertIn(name, {"POOL_READINESS_LAPSE", "POOL_READINESS_FLIP"})
+            fields = json.loads(body)
+            if name == "POOL_READINESS_LAPSE":
+                self.assertEqual(set(fields), {"step", "ms"})
+                self.assertIn(fields["step"], LAPSE_STEPS)
+            else:
+                self.assertEqual(set(fields), {"to", "reason", "prior_ms"})
+                self.assertIn(fields["reason"], {"restored", "policy_fused", "policy_unproven", "degraded"})
+            self.assertTrue(all(isinstance(value, (str, int)) for value in fields.values()))
 
 
 if __name__ == "__main__":
