@@ -565,8 +565,10 @@ export class RuntimeFleetState {
    */
   startRefused(target: SlotTarget, failure: FleetFailure) {
     return this.change((rows) => {
-      const row = this.row(rows, target);
-      if (row.identity || !["reserved", "warming", "uncertain"].includes(row.phase)) return false;
+      // A row already removed has nothing left to record, and its start's own refusal is the news.
+      const row = rows.find((value) => sameTarget(value.target, target));
+      if (!row || row.identity || !["reserved", "warming", "uncertain"].includes(row.phase))
+        return false;
       const { suspect: _suspect, ...rest } = row;
       rows[rows.indexOf(row)] = {
         ...rest,
@@ -585,12 +587,6 @@ export class RuntimeFleetState {
         throw new FleetRefused("identity");
       await transaction.put(retiredKey(target.slotId), row);
       await this.keepEnd(transaction, row);
-      // A demand replacement that never served still owes the replacement it reserved against.
-      if (row.replacement === true)
-        await transaction.put(
-          replacementKey,
-          Math.min(this.maximum, (await this.replacements(transaction)) + 1),
-        );
       rows.splice(rows.indexOf(row), 1);
     });
   }

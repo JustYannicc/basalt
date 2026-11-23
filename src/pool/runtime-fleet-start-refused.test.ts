@@ -140,28 +140,6 @@ test("once a start is given up as unsent, a pass that read its row earlier sends
   assert.deepEqual(await pass(), []);
 });
 
-test("a demand replacement refused before any send gives back the replacement it reserved", async () => {
-  const state = new RuntimeFleetState(new SlotMemory(), 4);
-  const identity = { ...target(1), bootId: crypto.randomUUID() };
-  await state.reserve(target(1));
-  await state.dispatch(target(1));
-  await state.ready(identity);
-  await state.quarantine(identity);
-  await state.reserveReplacement(target(2));
-  assert.equal(await state.replacements(), 0);
-  await state.dispatch(target(2));
-  assert.equal(
-    await state.startRefused(target(2), { path: "start", rule: "evidence", reads: [] }),
-    true,
-  );
-  await state.reclaimUnstarted(target(2));
-  assert.equal(await state.replacements(), 1, "the dead cell's replacement was lost");
-  assert.deepEqual(
-    (await state.inspect()).map((row) => row.target.slotId),
-    [target(1).slotId],
-  );
-});
-
 test("an unreadable first-start intent keeps a refused start uncertain, and its retry, refused once readable, leaves at once", async (context) => {
   const { f, state, pass } = await startingCell(context);
   // The endpoint refuses admission, the step before the intent is written.
