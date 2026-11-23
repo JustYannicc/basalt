@@ -4,6 +4,8 @@ import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { failureFleetFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-failure-fixture.ts";
 import { HealthLeaseElapsed, SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import { ProtectionRefusal } from "./runtime-protection.ts";
+import { FleetFailures } from "./runtime-fleet/failures.ts";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { readFailure, readSuspect } from "./runtime-fleet/failure-record.ts";
@@ -253,6 +255,48 @@ test("late answers never shorten the path to the two-miss quarantine", async (co
   assert.equal((await t.row())?.phase, "ready");
   await t.read(8_000, refuse);
   assert.equal(readFailure((await t.row())?.failure)?.rule, "failed_twice");
+  context.mock.restoreAll();
+  const u = await suspectFleet(context);
+  // A late answer opens the episode, but the 6 s count from the first failure, not from it.
+  await u.read(0, late);
+  await u.read(2_000, refuse);
+  await u.read(6_000, refuse);
+  assert.equal((await u.row())?.phase, "ready", "the 6 s ran from the late answer");
+  await u.read(8_000, refuse);
+  assert.equal((await u.row())?.phase, "quarantined");
+});
+
+test("a lease too short for the router's own check fences, but never counts as a failed read", async (context) => {
+  const s = await suspectFleet(context);
+  s.f.cell(s.cell).forward = async () => {
+    const error = new ProtectionRefusal("lease_too_short");
+    rememberRuntimeFailure("slot_protection", error);
+    throw error;
+  };
+  await assert.rejects(s.f.forward(undefined, s.fleet));
+  const suspect = readSuspect((await s.row())?.suspect);
+  assert.equal(suspect?.reads.at(-1)?.cause, "protection_lease_too_short");
+  assert.equal(suspect?.failed, undefined, "a short lease counted as a failed read");
+  // One counted failure 6 s on is still only one.
+  await s.read(6_000, refuse);
+  assert.equal((await s.row())?.phase, "ready");
+});
+
+test("a good read that began before a newer failure never lifts that failure's fence", async (context) => {
+  const s = await suspectFleet(context);
+  const failures = new FleetFailures(s.f.state, () => {}, Date.now);
+  const read = (at: number) => ({
+    at,
+    step: "endpoint_health" as const,
+    cause: "slot_unhealthy" as const,
+  });
+  await failures.missed(s.cell, read(1_500));
+  await failures.recovered(s.cell, 1_000);
+  assert.ok(readSuspect((await s.row())?.suspect), "an older good read cleared the newer failure");
+  assert.equal(failures.fenced(s.cell), true);
+  await failures.recovered(s.cell, 2_000);
+  assert.equal((await s.row())?.suspect, undefined);
+  assert.equal(failures.fenced(s.cell), false);
 });
 
 test("a failed forward still quarantines at once, recorded as the forward path", async (context) => {
@@ -269,7 +313,20 @@ test("a failed forward still quarantines at once, recorded as the forward path",
   assert.equal(readFailure(row?.failure)?.reads[0]?.cause, "transport");
 });
 
-test("a refusal by the router's own health read before the send is a miss too", async (context) => {
+test("a refusal by a health read before the send, the router's or the endpoint's, is a miss too", async (context) => {
+  const endpoint = await suspectFleet(context);
+  endpoint.f.cell(endpoint.cell).forward = async () => {
+    const error = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_health", error);
+    throw error;
+  };
+  await assert.rejects(endpoint.f.forward(undefined, endpoint.fleet), /unhealthy/);
+  assert.equal(
+    (await endpoint.row())?.phase,
+    "ready",
+    "the endpoint's refusal quarantined the cell",
+  );
+  context.mock.restoreAll();
   const s = await suspectFleet(context);
   s.f.cell(s.cell).forward = async () => {
     const error = new SlotRefused("unhealthy");

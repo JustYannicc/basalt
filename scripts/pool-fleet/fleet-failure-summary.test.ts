@@ -27,9 +27,16 @@ const lease = {
   roundTripMs: 1_612,
   leaseLeftMs: -112,
 };
-const timeout = { ...lease, at: lease.at + 5_000, cause: "timeout", roundTripMs: 2_001 };
-const failure = { path: "health", rule: "failed_twice", reads: [lease, timeout] };
-const suspect = { since: lease.at, reads: [lease] };
+const refused = {
+  at: lease.at + 2_000,
+  step: "endpoint_health",
+  cause: "slot_unhealthy",
+  roundTripMs: 40,
+};
+const timeout = { ...refused, at: refused.at + 6_000, cause: "timeout", roundTripMs: 2_001 };
+// As the rule writes them: a late answer opens the episode, two failures 6 s apart end it.
+const suspect = { since: lease.at, failed: refused, reads: [lease, refused] };
+const failure = { path: "health", rule: "failed_twice", reads: [refused, timeout] };
 
 test("the inspect lane prints a cell's failed read, its quarantine, and why each recent cell left", async () => {
   const lane = await harness({ startCell: false });
@@ -73,30 +80,36 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
       rows: { suspect: unknown; failure: unknown }[];
       recentEnds: { key: string; left: unknown; reason: unknown; failure: unknown; end: unknown }[];
     };
-    const read = (value: typeof lease) => ({
+    const read = (value: {
+      at: number;
+      step: string;
+      cause: string;
+      roundTripMs: number;
+      leaseLeftMs?: number;
+    }) => ({
       at: new Date(value.at).toISOString(),
       step: value.step,
       cause: value.cause,
       roundTripMs: value.roundTripMs,
-      leaseLeftMs: value.leaseLeftMs,
+      leaseLeftMs: value.leaseLeftMs ?? null,
     });
     assert.deepEqual(fleet.rows[0]?.suspect, {
       since: new Date(lease.at).toISOString(),
-      failed: null,
-      reads: [read(lease)],
+      failed: read(refused),
+      reads: [read(lease), read(refused)],
     });
     assert.equal(fleet.rows[0]?.failure, null);
     assert.deepEqual(fleet.rows[1]?.failure, {
       path: "health",
       rule: "failed_twice",
-      reads: [read(lease), read(timeout)],
+      reads: [read(refused), read(timeout)],
     });
     assert.deepEqual(fleet.recentEnds[0], {
       key: fleet.recentEnds[0]?.key,
       end: null,
       left: "quarantined",
       reason: "runtime_failed",
-      failure: { path: "health", rule: "failed_twice", reads: [read(lease), read(timeout)] },
+      failure: { path: "health", rule: "failed_twice", reads: [read(refused), read(timeout)] },
     });
     assert.equal(fleet.recentEnds[1]?.left, null);
     assert.equal((fleet.recentEnds[1]?.end as { stopSent?: unknown })?.stopSent, true);

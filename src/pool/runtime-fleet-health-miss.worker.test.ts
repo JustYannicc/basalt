@@ -83,7 +83,7 @@ test("a cell whose readiness refuses once is fenced, read again and serves on", 
   assert.deepEqual(after.recentEnds ?? [], []);
 });
 
-test("a cell whose readiness refuses twice in a row is quarantined with both reads, and they stay readable after it leaves", async (context) => {
+test("a cell whose readiness refuses twice, 6 s apart, is quarantined with both reads, and they stay readable after it leaves", async (context) => {
   const c = await readyCell(context);
   c.refuse();
   await c.pass();
@@ -94,6 +94,7 @@ test("a cell whose readiness refuses twice in a row is quarantined with both rea
   assert.equal(quarantined?.phase, "quarantined");
   const failure = readFailure(quarantined?.failure);
   assert.equal(failure?.path, "health");
+  assert.equal(failure?.rule, "failed_twice");
   assert.equal(failure?.reads.length, 2);
   // The cell still runs: the reclaim drains and stops it, as on the first life after the release.
   c.answer();

@@ -23,6 +23,8 @@ export class FleetFailures {
   // Quarantines, final for this isolate, and failed health reads, which a good read clears.
   private blocked = new Set<string>();
   private suspect = new Set<string>();
+  // Bumped by every read that is not good, so an older good read never lifts a newer fence.
+  private generations = new Map<string, number>();
   private pending = new Map<string, Promise<void>>();
   private state: RuntimeFleetState;
   private changed: () => void;
@@ -71,7 +73,9 @@ export class FleetFailures {
       return "quarantined" as const;
     }
     const key = executionKey(identity);
+    const wasSuspect = this.suspect.has(key);
     this.suspect.add(key);
+    this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
     const outcome = await this.state.suspect(identity, (current) =>
       nextSuspect(readSuspect(current), read),
     );
@@ -81,14 +85,23 @@ export class FleetFailures {
       this.changed();
     }
     // A row that no longer serves takes no call anyway; its durable phase governs from here.
-    if (outcome === "gone" && !this.pending.has(key)) this.suspect.delete(key);
+    // A fence held before this read stays until a good read lifts it.
+    if (outcome === "gone" && !wasSuspect && !this.pending.has(key)) this.suspect.delete(key);
     return outcome;
   }
-  /** A good read lifts only a suspect's own fence; a quarantine's stays. */
-  async recovered(identity: SlotIdentity) {
+  /**
+   * A good read that began at `readAt` lifts only a suspect's own fence, never a quarantine's, and
+   * never one a later read set.
+   */
+  async recovered(identity: SlotIdentity, readAt: number) {
     const key = executionKey(identity);
     if (this.pending.has(key)) return;
-    if ((await this.state.clearSuspect(identity)) && !this.pending.has(key))
+    const generation = this.generations.get(key);
+    const cleared = await this.state.clearSuspect(identity, (current) => {
+      const last = readSuspect(current)?.reads.at(-1)?.at;
+      return last === undefined || last <= readAt;
+    });
+    if (cleared && !this.pending.has(key) && this.generations.get(key) === generation)
       this.suspect.delete(key);
   }
   /** A runtime that refused a membership policy takes no new call under its old one. */

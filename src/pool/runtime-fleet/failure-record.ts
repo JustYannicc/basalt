@@ -54,6 +54,15 @@ export const failedApartMs = 6_000;
 /** A ready cell with no good read for this long is quarantined, however its reads failed. */
 export const unprovenMs = 30_000;
 const keptReads = 4;
+/**
+ * An answer that came back too late for the lease it carried, on either path: it fences, but
+ * says only that the controller can't prove the lease now, so it never counts as a failed read.
+ */
+const lateCauses = new Set<string>([
+  "lease_elapsed",
+  "protection_lease_too_short",
+  "protection_lease_expired",
+]);
 
 /**
  * The fleet's rule for a read that is not good, on a cell that may already be suspect:
@@ -67,14 +76,20 @@ export function nextSuspect(
   current: FleetSuspect | undefined,
   read: FleetFailureRead,
 ): { suspect: FleetSuspect } | { quarantine: FleetFailure } {
-  const counted = read.cause !== "lease_elapsed";
+  const counted = !lateCauses.has(read.cause);
   const since = current?.since ?? read.at;
   const reads = [...(current?.reads ?? []), read].slice(-keptReads);
   const failed = current?.failed;
   if (counted && failed && read.at - failed.at >= failedApartMs)
     return { quarantine: { path: "health", rule: "failed_twice", reads: [failed, read] } };
   if (read.at - since >= unprovenMs)
-    return { quarantine: { path: "health", rule: "unproven", reads } };
+    return {
+      quarantine: {
+        path: "health",
+        rule: "unproven",
+        reads: failed && !reads.includes(failed) ? [failed, ...reads] : reads,
+      },
+    };
   const first = failed ?? (counted ? read : undefined);
   return { suspect: { since, ...(first ? { failed: first } : {}), reads } };
 }
@@ -122,7 +137,16 @@ export function failureMismatch(read: FleetFailureRead) {
   );
 }
 
-/** The router's own health and lease checks before a send: nothing was sent, so it is a health read. */
+/**
+ * Health and lease checks before any byte reached the container: the router's own, and the
+ * endpoint's last readiness read before its send. Nothing was sent, so each is a health read.
+ */
+const beforeSend = new Set<string>([
+  "slot_health",
+  "slot_protection",
+  "endpoint_health",
+  "endpoint_identity",
+]);
 export function failureBeforeSend(read: FleetFailureRead) {
-  return read.step === "slot_health" || read.step === "slot_protection";
+  return beforeSend.has(read.step);
 }

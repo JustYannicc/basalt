@@ -594,6 +594,7 @@ export class RuntimeFleet {
         .map(async (row) => {
           const identity = row.identity!;
           let database;
+          const readAt = this.deps.now();
           const began = performance.now();
           try {
             database = await this.cell(row.target).healthy?.(identity);
@@ -616,7 +617,7 @@ export class RuntimeFleet {
             return;
           }
           if (row.suspect !== undefined || this.failures.fenced(identity))
-            await this.failures.recovered(identity).catch(() => {});
+            await this.failures.recovered(identity, readAt).catch(() => {});
           // A failed distance write is not a failed runtime.
           await this.deps.state.observeDistance(identity, database ?? undefined).catch(() => {});
         }),

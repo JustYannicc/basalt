@@ -80,9 +80,14 @@ const keptEnd = (value: unknown, id: (value: Record<string, unknown>) => unknown
   return end && typeof key === "string" ? { key: shortHash(key), ...endSummary(end) } : null;
 };
 
+/** A recorded time, or nothing when it is out of range: another version's value never fails the lane. */
+const iso = (at: number) => {
+  const date = new Date(at);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
 /** One failed read or call, as closed values: where, why, the round trip and the lease left. */
 const readSummary = (read: FleetFailureRead) => ({
-  at: new Date(read.at).toISOString(),
+  at: iso(read.at),
   step: read.step,
   cause: read.cause,
   roundTripMs: read.roundTripMs ?? null,
@@ -92,7 +97,7 @@ const suspectSummary = (value: unknown) => {
   const suspect = readSuspect(value);
   return suspect
     ? {
-        since: new Date(suspect.since).toISOString(),
+        since: iso(suspect.since),
         failed: suspect.failed ? readSummary(suspect.failed) : null,
         reads: suspect.reads.map(readSummary),
       }

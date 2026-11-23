@@ -495,11 +495,15 @@ export class RuntimeFleetState {
       return "suspect";
     });
   }
-  /** A good read: true when the row is ready and takes calls again. */
-  clearSuspect(identity: SlotIdentity) {
+  /**
+   * A good read: true when the row is ready and takes calls again. `clears` sees the row's suspect
+   * record, so a failure recorded after the good read began keeps the row fenced.
+   */
+  clearSuspect(identity: SlotIdentity, clears: (current: unknown) => boolean = () => true) {
     return this.change((rows) => {
       const row = rows.find((value) => sameIdentity(value.identity, identity));
       if (!row || row.phase !== "ready") return false;
+      if (row.suspect !== undefined && !clears(row.suspect)) return false;
       const { suspect: _suspect, ...rest } = row;
       rows[rows.indexOf(row)] = rest;
       return true;
