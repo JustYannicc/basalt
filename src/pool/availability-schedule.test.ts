@@ -651,3 +651,103 @@ test("with its memory unreachable, a failing run reports on the quarter hour onl
   assert.deepEqual(reported, [1, 16], "03:15 and 03:30 only");
   assert.equal(messages.filter((item) => item.payload.status === "error").length, 31);
 });
+
+test("a stuck usage rollup is one event per pool's episode, names the pool and keeps the check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => void errors.push(args));
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const first = "0123456789abcdef";
+  const second = "fedcba9876543210";
+  const minute = async (stuck: () => Promise<readonly string[]>) => {
+    const before = messages.length;
+    await runAvailabilityProbe(
+      env,
+      async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+      undefined,
+      undefined,
+      memory,
+      stuck,
+    );
+    const sent = messages.slice(before);
+    const checkIn = sent.find(
+      (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+    );
+    assert.equal(checkIn?.payload.status, "ok", "the check-in stays ok");
+    const events = sent.filter((item) => item.type === "event");
+    for (const event of events)
+      assert.deepEqual(
+        event.payload.contexts.pool_probe.failures.filter(
+          (failure: { guard: string }) => failure.guard !== "request_reliability",
+        ),
+        [],
+        "no availability failure",
+      );
+    return events.map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]);
+  };
+  const event = (pool: string) => ["pool_usage_rollup_stuck", pool];
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "one event, naming the pool");
+  assert.deepEqual(await minute(async () => [first]), [], "the same episode a minute later");
+  assert.deepEqual(
+    await minute(async () => {
+      throw new Error("state unreadable");
+    }),
+    [],
+    "an unreadable state keeps the episode instead of ending it",
+  );
+  assert.deepEqual(await minute(async () => [first]), [], "still the same episode");
+  assert.deepEqual(
+    await minute(async () => [first, second]),
+    [event(second)],
+    "a second pool's stuck rollup is its own episode",
+  );
+  assert.deepEqual(await minute(async () => []), [], "cleared: the episodes end");
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "stuck again is a new one");
+  assert.equal(
+    errors.some(([line]) => line === "POOL_AVAILABILITY_FAILURE"),
+    false,
+    "the availability failures list stays empty",
+  );
+  // The event carries the closed reason and the pool's own 16-hex id, nothing else of the pool's.
+  const stuckEvent = messages.find(
+    (item) => item.payload.tags?.error_code === "pool_usage_rollup_stuck",
+  );
+  assert.deepEqual(stuckEvent?.payload.contexts.pool_probe.failures, [
+    { guard: "request_reliability", reason: "usage_rollup_stuck", pool: first },
+  ]);
+  assert.equal(stuckEvent?.payload.contexts.request_reliability, undefined);
+  assertNoPrivateDiagnostics(messages);
+});
+
+test("a usage rollup stuck before reaching any pool is reported without a pool, check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  await runAvailabilityProbe(
+    env,
+    async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+    undefined,
+    undefined,
+    undefined,
+    async () => [""],
+  );
+  const checkIn = messages.find(
+    (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+  );
+  assert.equal(checkIn?.payload.status, "ok");
+  const events = messages.filter((item) => item.type === "event");
+  assert.deepEqual(
+    events.map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]),
+    [["pool_usage_rollup_stuck", undefined]],
+  );
+});

@@ -25,7 +25,10 @@ import {
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";
 import { historyBulkSchemaVersion } from "../../src/pool/model-history/bulk-schema.ts";
-import { historyImportCompletionVersion } from "../../src/pool/model-history/import-completion-schema.ts";
+import {
+  historyImportCompletionVersion,
+  historyImportReconcileVersion,
+} from "../../src/pool/model-history/import-completion-schema.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { homeMetadataFixture, historyMemoryOwnerFixture } from "./history-fixture.ts";
 
@@ -89,6 +92,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
         historyChangeOnceVersion,
+        historyImportReconcileVersion,
         historySchemaVersion,
       ].sort(),
     );

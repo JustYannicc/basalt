@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      approved_plan:
+        description: For deploy, the plan digest a plan-only run of this commit printed; the deploy refuses when its own plan differs
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -37,6 +42,7 @@ jobs:
       deployment: false
     env:
       BASALT_RELEASE_CANDIDATE: ${{ inputs.candidate }}
+      BASALT_APPROVED_PLAN: ${{ inputs.approved_plan }}
       POOL_ROOT_PIN: ${{ vars.POOL_ROOT_PIN }}
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
       ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
@@ -53,6 +59,11 @@ jobs:
         run: |
           [ "$(git rev-parse HEAD)" = "$BASALT_RELEASE_CANDIDATE" ] || { echo "::error::candidate is not a full sha"; exit 1; }
           git merge-base --is-ancestor HEAD origin/main || { echo "::error::candidate is not on main"; exit 1; }
+      # Before the build: scripts/production.ts makes the same check before anything is written.
+      - name: A deploy names the plan it applies
+        if: inputs.mode == 'deploy'
+        run: |
+          printf '%s' "$BASALT_APPROVED_PLAN" | grep -Eiq '^ *[a-f0-9]{64} *$' || { echo "::error::a deploy needs approved_plan, the plan digest a plan-only run of this commit printed"; exit 1; }
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
