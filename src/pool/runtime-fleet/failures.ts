@@ -23,8 +23,9 @@ export class FleetFailures {
   // Quarantines, final for this isolate, and failed health reads, which a good read clears.
   private blocked = new Set<string>();
   private suspect = new Set<string>();
-  // Bumped by every read that is not good, so an older good read never lifts a newer fence.
-  private generations = new Map<string, number>();
+  // When each runtime's latest read that was not good was taken, so a good read that began
+  // earlier never lifts its fence, even when that read's own durable write was rolled back.
+  private lastMiss = new Map<string, number>();
   private pending = new Map<string, Promise<void>>();
   private state: RuntimeFleetState;
   private changed: () => void;
@@ -75,13 +76,14 @@ export class FleetFailures {
     const key = executionKey(identity);
     const wasSuspect = this.suspect.has(key);
     this.suspect.add(key);
-    this.generations.set(key, (this.generations.get(key) ?? 0) + 1);
+    this.lastMiss.set(key, Math.max(read.at, this.lastMiss.get(key) ?? read.at));
     const outcome = await this.state.suspect(identity, (current) =>
       nextSuspect(readSuspect(current), read),
     );
     if (outcome === "quarantined") {
       this.blocked.add(key);
       this.suspect.delete(key);
+      this.lastMiss.delete(key);
       this.changed();
     }
     // A row that no longer serves takes no call anyway; its durable phase governs from here.
@@ -95,14 +97,16 @@ export class FleetFailures {
    */
   async recovered(identity: SlotIdentity, readAt: number) {
     const key = executionKey(identity);
-    if (this.pending.has(key)) return;
-    const generation = this.generations.get(key);
+    const newer = () => (this.lastMiss.get(key) ?? -Infinity) >= readAt;
+    if (this.pending.has(key) || newer()) return;
     const cleared = await this.state.clearSuspect(identity, (current) => {
       const last = readSuspect(current)?.reads.at(-1)?.at;
-      return last === undefined || last <= readAt;
+      return last === undefined || last < readAt;
     });
-    if (cleared && !this.pending.has(key) && this.generations.get(key) === generation)
+    if (cleared && !this.pending.has(key) && !newer()) {
       this.suspect.delete(key);
+      this.lastMiss.delete(key);
+    }
   }
   /** A runtime that refused a membership policy takes no new call under its old one. */
   refused(identity: SlotIdentity) {

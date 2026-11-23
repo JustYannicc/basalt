@@ -372,3 +372,36 @@ test("a suspect cell is read again before anything retires it, so a dead idle on
   await s.read(66_001, refuse);
   assert.equal((await s.row())?.phase, "quarantined");
 });
+
+test("a good read never lifts a newer miss's fence, even when that miss's own write was refused", async (context) => {
+  const s = await suspectFleet(context);
+  const failures = new FleetFailures(s.f.state, () => {}, Date.now);
+  const read = (at: number) => ({
+    at,
+    step: "endpoint_health" as const,
+    cause: "slot_unhealthy" as const,
+  });
+  await failures.missed(s.cell, read(0));
+  // The second miss would quarantine, but its write is refused, as at the replacement cap.
+  const write = context.mock.method(s.f.state, "suspect", async () => {
+    throw new Error("quarantine refused");
+  });
+  await failures.missed(s.cell, read(8_000)).catch(() => {});
+  write.mock.restore();
+  await failures.recovered(s.cell, 7_000);
+  assert.equal(failures.fenced(s.cell), true, "an older good read lifted the newer miss");
+  assert.ok(readSuspect((await s.row())?.suspect));
+});
+
+test("the endpoint's keep-alive failing before a send is forward evidence, not a health read", async (context) => {
+  const s = await suspectFleet(context);
+  s.f.cell(s.cell).forward = async () => {
+    const error = new Error("setInactivityTimeout failed");
+    rememberRuntimeFailure("endpoint_health", error);
+    throw error;
+  };
+  await assert.rejects(s.f.forward(undefined, s.fleet), /setInactivityTimeout failed/);
+  const row = await s.row();
+  assert.equal(row?.phase, "quarantined");
+  assert.equal(readFailure(row?.failure)?.rule, "evidence");
+});

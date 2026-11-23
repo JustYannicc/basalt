@@ -141,12 +141,19 @@ export function failureMismatch(read: FleetFailureRead) {
  * Health and lease checks before any byte reached the container: the router's own, and the
  * endpoint's last readiness read before its send. Nothing was sent, so each is a health read.
  */
-const beforeSend = new Set<string>([
-  "slot_health",
-  "slot_protection",
-  "endpoint_health",
-  "endpoint_identity",
+const routerChecks = new Set<string>(["slot_health", "slot_protection"]);
+const endpointChecks = new Set<string>(["endpoint_health", "endpoint_identity"]);
+// The endpoint's keep-alive shares its step; only a readiness answer is a health read there.
+const healthCauses = new Set<string>([
+  "slot_unhealthy",
+  "unhealthy",
+  "timeout",
+  "lease_elapsed",
+  "protection_lease_too_short",
+  "protection_lease_expired",
 ]);
 export function failureBeforeSend(read: FleetFailureRead) {
-  return beforeSend.has(read.step);
+  return (
+    routerChecks.has(read.step) || (endpointChecks.has(read.step) && healthCauses.has(read.cause))
+  );
 }

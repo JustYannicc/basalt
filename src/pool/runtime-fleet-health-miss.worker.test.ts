@@ -74,6 +74,8 @@ test("a cell whose readiness refuses once is fenced, read again and serves on", 
   await response.body?.cancel();
   assert.ok(c.served.length > 0);
   assert.ok(!c.served.includes(c.instanceId), "a call reached the fenced cell");
+  // The next pass, 2 s on: a good read taken at the miss's own instant lifts nothing.
+  c.advance(2_000);
   c.answer();
   await c.pass();
   const after = await c.inspect();
