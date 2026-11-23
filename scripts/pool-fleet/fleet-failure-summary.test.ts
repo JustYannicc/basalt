@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runPoolFleet, type DispatchInput } from "./dispatch.ts";
+import { shortHash } from "./controller.ts";
 import { colours, harness } from "./test/harness.ts";
 
 const dispatch: DispatchInput = {
@@ -52,7 +53,7 @@ const timeout = { ...unsignalled, at: refused.at + 6_000, cause: "timeout", roun
 const suspect = { since: lease.at, failed: refused, reads: [lease, refused] };
 const failure = { path: "health", rule: "failed_twice", reads: [refused, timeout] };
 
-test("the inspect lane prints a cell's failed read, its quarantine, and why each recent cell left", async () => {
+test("the inspect lane prints each row's slot key and ordinal, its failed read, its quarantine, and why each recent cell left", async () => {
   const lane = await harness({ startCell: false });
   try {
     lane.storage.values.set("runtime-fleet-v1:resources", [
@@ -91,7 +92,7 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
     const result = await runPoolFleet(dispatch, lane.deps());
     assert.equal(result.ok, true, JSON.stringify(result));
     const fleet = (result as { result: { fleet: Record<string, unknown> } }).result.fleet as {
-      rows: { suspect: unknown; failure: unknown }[];
+      rows: { key: unknown; ordinal: unknown; suspect: unknown; failure: unknown }[];
       recentEnds: { key: string; left: unknown; reason: unknown; failure: unknown; end: unknown }[];
     };
     const read = (value: {
@@ -109,6 +110,15 @@ test("the inspect lane prints a cell's failed read, its quarantine, and why each
       leaseLeftMs: value.leaseLeftMs ?? null,
       ready: value.ready ? printedReady : null,
     });
+    // The same key a recent end carries, so a row and its later leave can be matched.
+    assert.deepEqual(
+      fleet.rows.map((row) => [row.key, row.ordinal]),
+      [
+        [shortHash(target(1).slotId), 1],
+        [shortHash(target(2).slotId), 2],
+      ],
+    );
+    assert.equal(fleet.recentEnds[0]?.key, shortHash(target(3).slotId));
     assert.deepEqual(fleet.rows[0]?.suspect, {
       since: new Date(lease.at).toISOString(),
       failed: read(refused),

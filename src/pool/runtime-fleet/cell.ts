@@ -82,6 +82,24 @@ export class FleetHandoffCell implements FleetCell {
     await this.deps.handoff.slots.firstStart.observe();
     return this.activate(target);
   }
+  /**
+   * True when no start can have reached a container: none is under way and no first-start intent
+   * exists, which commits before any compute start is sent. From then on this cell starts nothing
+   * more, so a pass that read the row before it left can't send the start given up here.
+   */
+  async unsent() {
+    if (this.starting) return false;
+    let initial;
+    try {
+      initial = await this.deps.handoff.slots.firstStart.inspect();
+    } catch {
+      // An unreadable intent proves nothing, so the start is treated as one that may have run.
+      return false;
+    }
+    if (initial !== undefined || this.starting) return false;
+    this.abandoned = true;
+    return true;
+  }
   async healthy(identity: SlotIdentity) {
     const health = await this.deps.driver.health(identity, AbortSignal.timeout(2_000));
     if (!sameIdentity(health.identity, identity)) throw new SlotRefused("identity");

@@ -224,13 +224,31 @@ test(
             db_rtt_ms?: number;
             resume?: string;
             refresh_in_flight?: number;
+            lapses?: number;
+            flips?: number;
+            last_lapse?: Record<string, unknown>;
+            last_flip?: Record<string, unknown>;
           };
           // The resume layer starts with the runtime and is advertised once its own probe passes.
           if (status.resume !== "v1") return;
           // Home's refresh count rides /ready only while the liveness check's reading is fresh.
-          const { refresh_in_flight: refreshInFlight, ...stable } = status;
+          const {
+            refresh_in_flight: refreshInFlight,
+            lapses,
+            flips,
+            last_lapse: lastLapse,
+            last_flip: lastFlip,
+            ...stable
+          } = status;
           if (refreshInFlight !== undefined)
             assert.ok(Number.isInteger(refreshInFlight) && refreshInFlight >= 0);
+          // The readiness records are closed: two counters and the last of each.
+          for (const count of [lapses, flips])
+            if (count !== undefined) assert.ok(Number.isInteger(count) && count >= 1);
+          if (lastLapse !== undefined)
+            assert.deepEqual(Object.keys(lastLapse).sort(), ["at", "ms", "step"]);
+          if (lastFlip !== undefined)
+            assert.deepEqual(Object.keys(lastFlip).sort(), ["at", "prior_ms", "reason", "to"]);
           // Home measures its distance over its own database pool before the node starts.
           assert.deepEqual(Object.keys(stable).sort(), [
             "boot_id",

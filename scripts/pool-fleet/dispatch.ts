@@ -153,6 +153,9 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   inForce: fleet.inForce ?? null,
   notInForce: fleet.notInForce ?? null,
   rows: fleet.resources.map((row) => ({
+    // The same short hash its recent end carries once it leaves, so the two can be matched.
+    key: shortHash(row.target.slotId),
+    ordinal: row.target.homePeerOrdinal ?? null,
     phase: row.phase,
     active: row.active,
     reason: row.reason ?? null,

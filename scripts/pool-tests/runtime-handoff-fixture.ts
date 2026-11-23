@@ -13,7 +13,11 @@ import {
   runtimeConfiguration,
   type StartupOptions,
 } from "../../src/pool/runtime-slots/configuration.ts";
-import type { SlotIdentity, SlotTarget } from "../../src/pool/runtime-slots/contract.ts";
+import type {
+  ControllerCode,
+  SlotIdentity,
+  SlotTarget,
+} from "../../src/pool/runtime-slots/contract.ts";
 import { launchTokenHash } from "../../src/pool/launch-ledger.ts";
 import {
   launchGenerationHeader,
@@ -78,6 +82,8 @@ export async function handoffRuntime(
     role?: "legacy" | "runtime";
     home?: Awaited<ReturnType<typeof fixture>>["home"];
     endpoint?: EndpointOptions;
+    /** The endpoint's code; an object on another Worker version runs code the controller lacks. */
+    code?: ControllerCode;
   } = {},
 ) {
   const home = options.home ?? (await fixture()).home;
@@ -299,7 +305,7 @@ export async function handoffRuntime(
     ctx,
     env,
     options.role ?? "runtime",
-    runtimeFixtureCode,
+    options.code ?? runtimeFixtureCode,
     nativeResponse,
     { controlPair: nativeControlPair, ownStorage: storage, ...options.endpoint },
   );

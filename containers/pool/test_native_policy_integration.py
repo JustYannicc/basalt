@@ -19,6 +19,26 @@ import unittest
 from typing import Any, cast
 from unittest.mock import patch
 
+
+# The readiness answer's closed records: absent until the first lapse or flip since start.
+READINESS_RECORDS = {
+    "lapses": int,
+    "flips": int,
+    "last_lapse": {"step", "ms", "at"},
+    "last_flip": {"to", "reason", "prior_ms", "at"},
+}
+
+
+def assert_ready_payload_keys(test: unittest.TestCase, payload: dict, base: set) -> None:
+    test.assertTrue(base <= set(payload), payload)
+    for key in set(payload) - base:
+        test.assertIn(key, READINESS_RECORDS, payload)
+        shape = READINESS_RECORDS[key]
+        if shape is int:
+            test.assertIs(type(payload[key]), int)
+        else:
+            test.assertEqual(set(payload[key]), shape)
+
 try:
     from . import child_signals, policy_monitor, pool_contract, readiness, supervisor
     from .test_native_policy_observation import run_monitor_until_policy_lease
@@ -179,7 +199,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 monitor = PolicyHealthMonitor(ready, MANAGEMENT_KEY)
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 503, "readiness must fail closed before the first policy lease")
-                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state", "refusal"})
+                assert_ready_payload_keys(self, payload, {"boot_id", "started_at", "db_rtt_state", "refusal"})
                 self.assertEqual(payload["refusal"], "policy_unproven")
                 self.assertIsNone(lease)
 
@@ -194,7 +214,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 print(f"native-policy production startup probe states={startup_states}")
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 200)
-                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state"})
+                assert_ready_payload_keys(self, payload, {"boot_id", "started_at", "db_rtt_state"})
                 self.assertIsNotNone(lease)
                 self.assertGreater(int(lease or "0"), 0)
 
@@ -265,7 +285,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 503)
                 self.assertIsNone(lease)
-                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state", "refusal"})
+                assert_ready_payload_keys(self, payload, {"boot_id", "started_at", "db_rtt_state", "refusal"})
                 self.assertEqual(payload["refusal"], "policy_fused")
                 self.assertEqual(monitor.check_once(), "unavailable")
 
@@ -278,7 +298,7 @@ class NativePolicyProductionIntegrationTests(unittest.TestCase):
                 status, payload, lease = ready_request(ready_host, ready_port)
                 self.assertEqual(status, 503, "a recovered policy lease cannot restore the service audit")
                 self.assertIsNone(lease)
-                self.assertEqual(set(payload), {"boot_id", "started_at", "db_rtt_state", "refusal"})
+                assert_ready_payload_keys(self, payload, {"boot_id", "started_at", "db_rtt_state", "refusal"})
                 self.assertEqual(payload["refusal"], "degraded")
                 ready.set_ready(True, audit_revision=startup_audit_revision)
                 self.assertEqual(ready_request(ready_host, ready_port)[0], 503)
