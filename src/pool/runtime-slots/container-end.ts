@@ -114,7 +114,8 @@ export class ContainerEnds {
   }
   /** In an object's constructor: a container still running gets a monitor from this instance. */
   async constructed() {
-    if (!this.container.running) return;
+    // Nothing to record without a monitor to hear the end.
+    if (!this.container.running || typeof this.container.monitor !== "function") return;
     let record = await this.read();
     if (!record || record.current.end) {
       // Started by code from before this record: the boot it last recorded has ended.
@@ -152,14 +153,19 @@ export class ContainerEnds {
   }
   private watch(startedAt: number) {
     if (watching.get(this.container) === startedAt) return;
+    let monitor: Promise<void>;
+    try {
+      monitor = this.container.monitor();
+    } catch {
+      return;
+    }
     watching.set(this.container, startedAt);
-    void this.container
-      .monitor()
+    void monitor
       .then(
         () => this.settle(startedAt, { resolved: true }),
         (error: unknown) => this.settle(startedAt, { error }),
       )
-      .catch(() => {});
+      .catch(() => console.error("POOL_CONTAINER_END_UNRECORDED"));
   }
   private async settle(
     startedAt: number,
@@ -185,9 +191,29 @@ export function watchRunningContainer(ctx: {
     ctx.waitUntil(new ContainerEnds(ctx.storage, ctx.container).constructed().catch(() => {}));
 }
 
-/** Before a stop of ours on this object's container, so its end never reads as a crash. */
-export function markStopSent(ctx: { storage: Storage; container?: Container }) {
-  return ctx.container
-    ? new ContainerEnds(ctx.storage, ctx.container).stopSent()
-    : Promise.resolve();
+/**
+ * Before a stop of ours on this object's container, so its end never reads as a crash. The record
+ * is a diagnostic: its failure never holds a stop.
+ */
+export async function markStopSent(ctx: { storage: Storage; container?: Container }) {
+  if (!ctx.container) return;
+  await new ContainerEnds(ctx.storage, ctx.container)
+    .stopSent()
+    .catch(() => console.error("POOL_CONTAINER_END_UNRECORDED"));
+}
+
+/** Right after `container.start()`; its failure never fails the start. */
+export async function recordStart(ctx: { storage: Storage }, container: Container) {
+  await new ContainerEnds(ctx.storage, container)
+    .started()
+    .catch(() => console.error("POOL_CONTAINER_END_UNRECORDED"));
+}
+
+/** How this object's container last ended, once it has; unreadable, nothing. */
+export async function lastContainerEnd(ctx: { storage: Storage; container?: Container }) {
+  if (!ctx.container) return undefined;
+  return new ContainerEnds(ctx.storage, ctx.container)
+    .observe()
+    .then((record) => record?.current.end)
+    .catch(() => undefined);
 }

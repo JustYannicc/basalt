@@ -49,7 +49,7 @@ import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
-import { ContainerEnds, markStopSent } from "./container-end.ts";
+import { lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
@@ -198,9 +198,8 @@ export class RuntimeEndpoint {
     });
   }
   /** How this object's container last ended, once it has; a boot found gone ends here. */
-  private async lastEnd() {
-    if (!this.ctx.container) return undefined;
-    return (await new ContainerEnds(this.ctx.storage, this.ctx.container).observe())?.current.end;
+  private lastEnd() {
+    return lastContainerEnd(this.ctx);
   }
   private bound(target: SlotTarget) {
     const applicationId =
