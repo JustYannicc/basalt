@@ -489,6 +489,15 @@
             "mode": "manual",
             "requires": "Carry 0766 changes only a test. Upstream's TestResponsesWebsocketIdleUpstreamEOFIsSilent sends a continuation right after the upstream closes an idle socket and accepted only previous_response_not_found; when the node has not yet seen that EOF the continuation goes to the dead socket and is correctly reported upstream_websocket_lost. Retire when the pinned node's idle-EOF test accepts either refusal, or waits until the node has seen the EOF, and passes 50 race runs of its package in a row."
           }
+        },
+        {
+          "identity": "cliproxy-node-tunnel-initial-list-test",
+          "file": "0768-node-tunnel-initial-list-test.patch",
+          "sha256": "a9ed6fd93609490d58dc37a195fd4f98bf4716fcba53ef6a8c5083b5d0b3d38e",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0768 changes only tests. Upstream's TestServerWebsocketTunnel_EndToEndAndTenantIsolation dials a server and then a client and expected the server in the client's initial server_list, and TestServerWebsocketTunnel_HotReloadRevokesRemovedKeyOnly sends the client's first data frame without waiting for the server, but a dial returns at the websocket upgrade, before the hub commits the peer, so the client can commit first and correctly learn the server from the next server_online instead. Retire when the pinned node's tests accept the server in either the initial list or the next server_online, or wait until the hub has committed it, and pass 50 race runs of their package in a row."
+          }
         }
       ]
     }
