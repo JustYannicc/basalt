@@ -27,6 +27,9 @@ POLICY_INSTANCE_ID = re.compile(r"^[A-Za-z0-9_-]{32}$")
 MAX_POLICY_INSTALL_BYTES = 1 << 20
 
 
+REFRESH_READING_MAX_AGE_NS = 3_000_000_000
+
+
 class Readiness:
     def __init__(
         self,
@@ -61,16 +64,20 @@ class Readiness:
         self._key = management_key.encode("utf-8")
         self._monotonic_ns = monotonic_ns
         self._services_ready = False
+        self._resume_available = False
         self._database_distance: dict[str, object] = {"db_rtt_state": "pending"}
         location = os.environ.get("CLOUDFLARE_LOCATION", "").strip().lower()
         self._location = location if re.fullmatch(r"[a-z]{3}[0-9]{2}", location) else None
         self._service_audit_revision = 0
         self._policy_observations_enabled = True
+        self._diagnostics: Callable[[int], dict[str, object]] | None = None
+        self._refresh_in_flight: tuple[int, int] | None = None
         self._policy_healthy = False
         self._policy_deadline_ns = 0
         self._policy_instance_id: str | None = None
         self._fused_instance_id: str | None = None
         self._fused_instance_pending = False
+        self._fuse_seen = False
         self._lock = threading.RLock()
         self._probe_condition = threading.Condition(self._lock)
         self._observed_policy_probes: OrderedDict[str, None] = OrderedDict()
@@ -80,6 +87,10 @@ class Readiness:
             self._services_ready = value and (
                 audit_revision is None or audit_revision == self._service_audit_revision
             )
+
+    def set_resume_available(self, value: bool) -> None:
+        with self._lock:
+            self._resume_available = value
 
     def set_database_distance(self, rtt_ms: int | None) -> None:
         """Home's measured distance to the database; None records a failed measurement."""
@@ -148,6 +159,7 @@ class Readiness:
                 return
             self._fused_instance_id = self._policy_instance_id
             self._fused_instance_pending = self._policy_instance_id is None
+            self._fuse_seen = True
             self._policy_healthy = False
             self._invalidate_service_audit()
             self._policy_deadline_ns = 0
@@ -200,6 +212,11 @@ class Readiness:
         with self._lock:
             return self._fused_instance_pending or self._fused_instance_id is not None
 
+    def fuse_seen(self) -> bool:
+        """Whether any fuse was reported for this Home process, even one a newer instance cleared."""
+        with self._lock:
+            return self._fuse_seen
+
     def begin_recovery(self) -> None:
         with self._lock:
             if self.policy_fused():
@@ -224,6 +241,27 @@ class Readiness:
             self._observed_policy_probes.clear()
             self._probe_condition.notify_all()
 
+    def set_diagnostics(self, provider: Callable[[int], dict[str, object]]) -> None:
+        self._diagnostics = provider
+
+    def diagnostics(self, after: int) -> dict[str, object] | None:
+        provider = self._diagnostics
+        return None if provider is None else provider(after)
+
+    def note_refresh_in_flight(self, count: int | None) -> None:
+        """Home's count of refreshes it has started and not yet written back; None is unknown."""
+        with self._lock:
+            self._refresh_in_flight = None if count is None else (count, self._monotonic_ns())
+
+    def _refresh_diagnostics(self) -> dict[str, object]:
+        # A reading older than the liveness check's period plus a second is unknown, not quiet.
+        if self._refresh_in_flight is None:
+            return {}
+        count, observed_ns = self._refresh_in_flight
+        if self._monotonic_ns() - observed_ns > REFRESH_READING_MAX_AGE_NS:
+            return {}
+        return {"refresh_in_flight": count}
+
     def snapshot(self) -> tuple[bool, dict[str, object]]:
         ready, payload, _ = self.readiness_response()
         return ready, payload
@@ -244,6 +282,15 @@ class Readiness:
             payload.update(self._database_distance)
             if self._location is not None:
                 payload["location"] = self._location
+            payload.update(self._refresh_diagnostics())
+            if self._resume_available:
+                payload["resume"] = "v1"
+            if not ready:
+                # Closed and ordered: a fused or unproven policy outranks unhealthy services.
+                fused = self._fused_instance_pending or self._fused_instance_id is not None
+                payload["refusal"] = (
+                    "policy_fused" if fused else "policy_unproven" if not policy_live else "degraded"
+                )
             return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:
@@ -261,6 +308,10 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
     readiness: Readiness | None = None
 
     def do_GET(self) -> None:
+        path, _, query = self.path.partition("?")
+        if path == "/diagnostics":
+            self._diagnostics(query)
+            return
         if self.path != "/ready":
             self._send(404, {"error": "not_found"})
             return
@@ -277,6 +328,24 @@ class ReadyHandler(http.server.BaseHTTPRequestHandler):
             else None
         )
         self._send(200 if ready else 503, payload, headers)
+
+    def _diagnostics(self, query: str) -> None:
+        readiness = self.readiness
+        if readiness is None or not readiness.authorized(self.headers.get("Authorization", "")):
+            self._send(401, {"error": "unauthorized"})
+            return
+        after = 0
+        if query:
+            match = re.fullmatch(r"after=(0|[1-9][0-9]{0,15})", query)
+            if match is None:
+                self._send(400, {"error": "invalid_query"})
+                return
+            after = int(match.group(1))
+        payload = readiness.diagnostics(after)
+        if payload is None:
+            self._send(503, {"error": "diagnostics_unavailable"})
+            return
+        self._send(200, payload)
 
     def do_POST(self) -> None:
         if self.path not in ("/native-policy", "/native-policy/check"):

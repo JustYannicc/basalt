@@ -120,6 +120,11 @@
       "packages": ["alchemy"],
       "upstream": "https://github.com/alchemy-run/alchemy/pull/3265",
       "owner": "release owner"
+    },
+    "0767-alchemy-container-publication-repository": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/issues/3653",
+      "owner": "release owner"
     }
   }
 }

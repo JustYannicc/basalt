@@ -37,7 +37,7 @@ export class RuntimeStartupStop {
     if (record.status === "aborted") return record;
     if (this.ctx.container!.running) return record;
     const next = { ...record, status: "aborted" as const };
-    await this.ctx.storage.put(startupStopKey(intent.target), next);
+    await this.store.end(() => this.ctx.storage.put(startupStopKey(intent.target), next));
     return next;
   }
   async abort(value: StartupStopIntent, signal: AbortSignal) {
@@ -66,6 +66,8 @@ export class RuntimeStartupStop {
       if (await transaction.get(startupStopKey(intent.target))) throw new SlotRefused("uncertain");
       await transaction.put(startupStopKey(intent.target), record);
     });
+    // The pending record already ends the slot, whether or not its stop ever completes.
+    await this.store.dropIfEnded(intent.target);
     if (!this.ctx.container!.running) return this.inspect(intent);
     await this.ctx.storage.put(startupStopKey(intent.target), { ...record, destroySent: true });
     const work = (async () => {

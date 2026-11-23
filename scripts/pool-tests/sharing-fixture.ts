@@ -172,6 +172,8 @@ export class SharingFixture {
   slowFinished = false;
   home = "";
   node = "";
+  resume = "";
+  readiness = "";
   readonly managementKey = "fixture-management-key";
 
   constructor(options: SharingFixtureOptions = {}) {
@@ -326,6 +328,8 @@ export class SharingFixture {
       "256m",
       ...(process.platform === "linux" ? ["--add-host", "host.docker.internal:host-gateway"] : []),
       "--publish",
+      "127.0.0.1::8316",
+      "--publish",
       "127.0.0.1::8317",
       "--publish",
       "127.0.0.1::8318",
@@ -346,7 +350,8 @@ export class SharingFixture {
     this.stage("pool readiness started");
     this.home = this.origin(container, 8327);
     this.node = this.origin(container, 8317);
-    const readiness = this.origin(container, 8318);
+    this.resume = this.origin(container, 8316);
+    const readiness = (this.readiness = this.origin(container, 8318));
     await until(
       async () =>
         (
@@ -382,7 +387,8 @@ export class SharingFixture {
     docker([...this.runArgs, image], this.operationTimeoutMs);
     this.home = this.origin(container, 8327);
     this.node = this.origin(container, 8317);
-    const readiness = this.origin(container, 8318);
+    this.resume = this.origin(container, 8316);
+    const readiness = (this.readiness = this.origin(container, 8318));
     await until(
       async () =>
         (
@@ -442,13 +448,15 @@ export class SharingFixture {
     session: string,
     slow: boolean | "fail" = false,
     model = "fixture-model",
+    via: { origin?: string; headers?: Record<string, string> } = {},
   ): Promise<Response> {
-    return fetch(`${this.node}/v1/chat/completions`, {
+    return fetch(`${via.origin ?? this.node}/v1/chat/completions`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,
         "Content-Type": "application/json",
         "X-Session-ID": session,
+        ...via.headers,
       },
       body: JSON.stringify({
         model,
@@ -472,6 +480,32 @@ export class SharingFixture {
   }
   finishStream() {
     this.release();
+  }
+  /** The container's readiness payload, read as the controller reads it. */
+  async ready(): Promise<{ ok: boolean; body: Record<string, unknown> }> {
+    const response = await fetch(`${this.readiness}/ready`, {
+      headers: { Authorization: `Bearer ${this.managementKey}` },
+      signal: AbortSignal.timeout(3_000),
+    });
+    return { ok: response.ok, body: (await response.json()) as Record<string, unknown> };
+  }
+  /** Kills only the resume layer inside this fixture's own container. */
+  killResumeLayer(): void {
+    docker(
+      [
+        "exec",
+        `${this.name}-pool`,
+        "python3",
+        "-c",
+        "import os,pathlib,signal\n" +
+          "for d in pathlib.Path('/proc').iterdir():\n" +
+          " if d.name.isdigit():\n" +
+          "  try: argv=(d/'cmdline').read_bytes().split(b'\\0')\n" +
+          "  except OSError: continue\n" +
+          "  if argv[0]==b'/usr/local/bin/pool-resume': os.kill(int(d.name),signal.SIGKILL)\n",
+      ],
+      this.operationTimeoutMs,
+    );
   }
   async close(): Promise<void> {
     this.release();
