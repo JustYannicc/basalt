@@ -22,7 +22,7 @@ export type HistoryPrices = (
 export const historyStatementLimitMs = 5_000;
 
 type HistoryWatch = {
-  diagnostics?: HistorySeriesDiagnostics;
+  diagnostics?: HistorySeriesDiagnostics | undefined;
   mark: (step: HistoryReadStep) => void;
 };
 
@@ -52,7 +52,7 @@ function boundedRead<T>(
         throw error;
       }
     },
-    { diagnostics: watch?.diagnostics },
+    watch?.diagnostics ? { diagnostics: watch.diagnostics } : {},
   );
 }
 
