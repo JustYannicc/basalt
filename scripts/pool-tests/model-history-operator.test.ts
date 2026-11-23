@@ -124,15 +124,18 @@ test("the private schema operator reads catalogs and counts and has no schema ap
     try {
       await worker.ready;
       const publicPool = await worker.getWorker("pool");
-      for (const path of [
+      // Every operation the history operator handles. The private entrypoint routes each one and
+      // the public Worker refuses each one; an operation added to one list and not the other
+      // shows here.
+      const operationPaths = [
         historySchemaCatalogPath,
         historyJournalActivationPath,
-        removedSchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
         historyImportCompletionPath,
         historyUsageRollupPath,
-      ]) {
+      ];
+      for (const path of [...operationPaths, removedSchemaApplyPath]) {
         const response = await publicPool.fetch(`http://pool${path}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -164,6 +167,15 @@ test("the private schema operator reads catalogs and counts and has no schema ap
       const backfill = await operator.fetch(`http://operator${historyBackfillPath}`);
       assert.equal(backfill.status, 200, await backfill.clone().text());
       assert.equal((await backfill.json()).writes, false);
+      // Before v15 is applied the usage rollup's dry run refuses with the handler's own 503.
+      const rollup = await operator.fetch(`http://operator${historyUsageRollupPath}`);
+      assert.equal(rollup.status, 503, "the private operator reaches the usage rollup's handler");
+      await rollup.body?.cancel();
+      for (const path of operationPaths) {
+        const routed = await operator.fetch(`http://operator${path}`);
+        assert.notEqual(routed.status, 404, `the private operator routes ${path}`);
+        await routed.body?.cancel();
+      }
     } finally {
       await worker.dispose();
     }
