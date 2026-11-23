@@ -156,6 +156,17 @@ export function usageRollupProjection(
 }
 
 /**
+ * One pool's base rows whose exact time falls in [from, to), as the recompute reads them: the
+ * indexed time narrows the scan, the exact time decides the hour. The v16 apply's read passes the
+ * same bounds, so it aggregates exactly the rows a recompute of that hour would.
+ */
+export const usageRollupBaseRows = (pool: string, from: string, to: string) =>
+  `(SELECT * FROM basalt_model_requests r WHERE r.pool=${pool}
+        AND r.timestamp >= ${from} - interval '1 second' AND r.timestamp < ${to} + interval '1 second'
+        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' >= ${from}
+        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' < ${to})`;
+
+/**
  * One lock per pool. A bulk insert can span thousands of hours, and a lock per hour would exhaust
  * the shared lock table; a recompute holds the pool's writers only for one hour's recompute.
  */
@@ -169,7 +180,57 @@ export interface UsageRollupNames {
   /** The trigger and its function. */
   readonly rollup: string;
   readonly recompute: string;
+  /** The apply function, for a rollup whose backfill writes an hour it read outside the lock. */
+  readonly apply?: string;
 }
+
+/**
+ * Writes one pool-hour's aggregate that the backfill read outside the lock, if nothing landed in
+ * that hour since: it compares the trigger-kept request count with the count the read saw in the
+ * same snapshot as its rows. Equal, it replaces the hour's groups with `rows` and marks the hour;
+ * different, it changes nothing and returns -1, so the backfill reads again. NULL means another
+ * session holds the pool: it takes the pool's lock with a try-lock, so it never queues.
+ *
+ * Why an equal count means the read is still exact. Request rows are append only: the
+ * no_rewrite and no_truncate triggers refuse UPDATE, DELETE and TRUNCATE, and no code path does
+ * either (those triggers do not fire in replica mode, which only an import's insert uses). Every
+ * insert into the request table, COPY and ON CONFLICT DO NOTHING included, runs this rollup's
+ * statement trigger, enabled ALWAYS so replica mode too, which upserts exactly the statement's
+ * inserted rows, grouped by the same projection that keys the read's rows, under the pool's
+ * shared lock held until its transaction ends; nothing writes a partition directly, which would
+ * skip it. Each row adds at least one request to its hour's groups. So, between the read's snapshot and this
+ * function's count, the hour's count moves exactly when a transaction committed rows into that
+ * hour, or when a recompute or apply rewrote it, which raises the count to the base rows' own
+ * whenever the read saw it short. Holding the pool exclusively, no insert's trigger has upserted
+ * without committing; one whose rows are in the table but whose trigger waits for the lock was
+ * not committed at the read either, so its rows are in neither, and its trigger merges them on
+ * top once this commits.
+ */
+const applyStatement = (names: UsageRollupNames & { readonly apply: string }) =>
+  `CREATE FUNCTION ${names.apply}(target_pool varchar, at_hour timestamptz, seen bigint,
+      rows jsonb) RETURNS bigint LANGUAGE plpgsql AS $$ DECLARE written bigint; BEGIN
+      IF at_hour IS NULL OR at_hour <> date_trunc('hour',at_hour,'UTC') OR seen IS NULL
+        OR rows IS NULL OR jsonb_typeof(rows) <> 'array' THEN
+        RAISE EXCEPTION 'basalt_usage_rollup: apply takes one whole hour, its count and its rows'
+          USING ERRCODE = '22023';
+      END IF;
+      IF NOT pg_try_advisory_xact_lock(${poolLock("target_pool")}) THEN RETURN NULL; END IF;
+      IF (SELECT coalesce(sum(h.requests),0) FROM ${names.hourly} h
+        WHERE h.pool=target_pool AND h.hour=at_hour) IS DISTINCT FROM seen THEN
+        RETURN -1;
+      END IF;
+      DELETE FROM ${names.hourly} WHERE pool=target_pool AND hour=at_hour;
+      INSERT INTO ${names.hourly} SELECT g.* FROM jsonb_populate_recordset(NULL::${names.hourly}, rows) g
+        WHERE g.pool=target_pool AND g.hour=at_hour;
+      GET DIAGNOSTICS written = ROW_COUNT;
+      IF written <> jsonb_array_length(rows) THEN
+        RAISE EXCEPTION 'basalt_usage_rollup: apply rows must all be its own pool-hour'
+          USING ERRCODE = '22023';
+      END IF;
+      INSERT INTO ${names.hours} AS d (pool,hour) VALUES (target_pool,at_hour)
+        ON CONFLICT (pool,hour) DO UPDATE SET recomputed_at=CURRENT_TIMESTAMP;
+      RETURN written;
+    END $$`;
 
 /**
  * One rollup's tables, trigger function, recompute function and trigger, keyed by `keys`, whose
@@ -227,10 +288,7 @@ export function usageRollupStatements(
       PERFORM pg_advisory_xact_lock(${poolLock("target_pool")});
       DELETE FROM ${names.hourly}
         WHERE pool=target_pool AND hour >= from_hour AND hour < to_hour;
-      ${upsert(`(SELECT * FROM basalt_model_requests r WHERE r.pool=target_pool
-        AND r.timestamp >= from_hour - interval '1 second' AND r.timestamp < to_hour + interval '1 second'
-        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' >= from_hour
-        AND date_trunc('hour',left(r.timestamp_exact,19)::timestamp) AT TIME ZONE 'UTC' < to_hour)`)};
+      ${upsert(usageRollupBaseRows("target_pool", "from_hour", "to_hour"))};
       GET DIAGNOSTICS written = ROW_COUNT;
       INSERT INTO ${names.hours} AS d (pool,hour)
         SELECT target_pool,h.at FROM generate_series(from_hour, to_hour - interval '1 hour',
@@ -238,6 +296,7 @@ export function usageRollupStatements(
         ON CONFLICT (pool,hour) DO UPDATE SET recomputed_at=CURRENT_TIMESTAMP;
       RETURN written;
     END $$`,
+    ...(names.apply ? [applyStatement({ ...names, apply: names.apply })] : []),
     `CREATE TRIGGER ${names.rollup} AFTER INSERT ON basalt_model_requests
     REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT
     EXECUTE FUNCTION ${names.rollup}()`,

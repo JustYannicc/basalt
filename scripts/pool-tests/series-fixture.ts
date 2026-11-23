@@ -124,7 +124,8 @@ export async function accountAuthority() {
 export async function withoutPeopleRollup(db: HistoryDatabase) {
   await db.query("DROP TRIGGER basalt_model_usage_people_rollup ON basalt_model_requests");
   await db.query(`DROP FUNCTION basalt_model_usage_people_rollup(),
-    basalt_model_usage_people_recompute(varchar,timestamptz,timestamptz)`);
+    basalt_model_usage_people_recompute(varchar,timestamptz,timestamptz),
+    basalt_model_usage_people_apply(varchar,timestamptz,bigint,jsonb)`);
   await db.query(`DROP TABLE basalt_model_usage_people_hourly, basalt_model_usage_people_hours,
     basalt_model_usage_people_ready`);
   await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [

@@ -375,10 +375,15 @@ test("inspect says which acceptance the lane would run, and names no id", async 
 test("the inspect lane shows the pool's own usage rollup backfill as one closed object", async () => {
   // The producer's own projection, through the consumer's decode, as production sends it.
   const usageRollup = usageRollupInspect({
+    rollup: "v16",
     lastTickAt: "2026-11-23T09:30:00.000Z",
-    lastStop: "budget",
+    lastStop: "slow_read",
+    lastHour: "2026-08-01T03:00:00.000Z",
+    lastHourPhase: "read",
+    lastHourReadMs: 5_000,
     pools: 1,
     pendingHours: 2_832,
+    totalPendingHours: 3_104,
     stuck: [
       {
         pool: "0123456789abcdef",
@@ -389,12 +394,26 @@ test("the inspect lane shows the pool's own usage rollup backfill as one closed 
       { pool: "", reason: "error", retryAt: "2026-11-24T09:30:00.000Z" },
     ],
   });
+  // A pool still on the code before the slow hour's readings reports without them.
+  const {
+    lastHour: _hour,
+    lastHourPhase: _phase,
+    lastHourReadMs: _readMs,
+    totalPendingHours: _total,
+    ...older
+  } = usageRollup;
   for (const [reported, expected] of [
     [usageRollup, usageRollup],
-    // The active rollup is a closed name: v16 passes, an unknown one drops the field.
+    [older, older],
     [
-      { ...usageRollup, rollup: "v16" },
-      { ...usageRollup, rollup: "v16" },
+      { ...usageRollup, lastHourPhase: "apply" },
+      { ...usageRollup, lastHourPhase: "apply" },
+    ],
+    [{ ...usageRollup, lastHourPhase: "drop table" }, null],
+    // The active rollup is a closed name: v15 and v16 pass, an unknown one drops the field.
+    [
+      { ...usageRollup, rollup: "v15" },
+      { ...usageRollup, rollup: "v15" },
     ],
     [{ ...usageRollup, rollup: "unknown" }, null],
     [undefined, null],

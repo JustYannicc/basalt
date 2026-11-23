@@ -12,13 +12,14 @@ export const historyUsagePeopleRollupVersion = "model_request_history_v16_usage_
  */
 export const usagePeopleRollupKeys = [...usageRollupKeys, "person", "app_id"] as const;
 
-export const usagePeopleRollupNames: UsageRollupNames = {
+export const usagePeopleRollupNames = {
   hourly: "basalt_model_usage_people_hourly",
   hours: "basalt_model_usage_people_hours",
   ready: "basalt_model_usage_people_ready",
   rollup: "basalt_model_usage_people_rollup",
   recompute: "basalt_model_usage_people_recompute",
-};
+  apply: "basalt_model_usage_people_apply",
+} as const satisfies UsageRollupNames;
 
 /**
  * Additive only: new tables, functions and a trigger beside v15's, which keeps running. The
