@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { SlotRefused, sameIdentity, type SlotIdentity } from "./contract.ts";
+import { markStopSent } from "./container-end.ts";
 import type { RuntimeWitnessStore, WitnessRecord } from "./witness-store.ts";
 import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
@@ -125,6 +126,7 @@ export class RuntimeForcedStop {
   private async signal(container: NonNullable<ControllerState["container"]>): Promise<StopPath> {
     // Without SIGTERM the single root's Home, the elected master, would be killed mid-refresh.
     if (!container.signal) return "no_signal";
+    await markStopSent(this.deps.ctx);
     try {
       await signalStop(container);
       // The stopped container is restarted in place, so a clean exit is left as it is.

@@ -56,6 +56,7 @@ const Inspect = Schema.Struct({
         Schema.Struct({ refusedSince: Schema.Number, lastStatus: Schema.optional(Schema.Number) }),
       ),
     ),
+    lastEnd: Schema.optional(Schema.Unknown),
   }),
 });
 const Row = Schema.Struct({
@@ -85,6 +86,7 @@ const FleetInspect = Schema.Struct({
         imageInput: Schema.String,
       }),
     ),
+    recentEnds: Schema.optional(Schema.Array(Schema.Unknown)),
   }),
 });
 export type FleetRow = typeof Row.Type;

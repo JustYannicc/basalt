@@ -273,6 +273,8 @@ export async function harness(options: HarnessOptions = {}) {
     databasePool: () => null,
     // `inspect` reports the forced-restart clock and `recovery-reset` clears it; this double's is clean.
     recoveryState: async () => ({ restarts: [] }),
+    // `inspect` reports how the last replaced primary ended; this double replaced none.
+    primaryEnd: async () => null,
     resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
   const connect: PoolOperationsTarget["connect"] = async () => ({
