@@ -5,6 +5,8 @@ import { callerHeader } from "../../apps/pool/contract.ts";
 import { digest } from "../../src/pool/backend-users.ts";
 import { handleModelHistory } from "../../src/pool/model-history/http.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
+import { homeCaptureCoverage } from "../../src/pool/model-history/capture-coverage.ts";
+import { timestamp } from "../../src/pool/model-history/record.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import {
@@ -23,7 +25,6 @@ type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
  * cursor on the newest one. Plans are asserted, not times: a whole-pool read that takes 10 s on a
  * small instance takes well under a second here.
  */
-/** Keyed as every writer keys a request: the digest of its source and record. */
 const rows = 20_000;
 const native = 40;
 // Ten days, so a test can backfill the pool's rollup to ready quickly; the reads' plans depend on
@@ -35,6 +36,7 @@ async function history(f: Fixture) {
   const fixture = await summaryFixture(f);
   const poolId = (await digest(pool)).slice(0, 16);
   await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER USER");
+  // Keyed as every writer keys a request: the id is the digest of its source and record.
   await f.db.query(
     `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,account,
       provider,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,
@@ -241,6 +243,10 @@ test("the summary finds the capture cursor's request, and the captured Home usag
       assert.equal(found.removed, 0, `${name} filtered ${found.removed} request rows`);
       assert.equal(found.seqScan, false, `${name} scans no partition whole`);
       assert.ok(found.read <= native + 16, `${name} read ${found.read} request rows`);
+      // Each Home usage row's request is one partition's primary key, never a probe of every
+      // partition by record.
+      if (name === "capture coverage")
+        assert.deepEqual([...found.indexes], ["basalt_model_requests_pkey"]);
     }
   });
 });
@@ -311,5 +317,74 @@ test("a history read Postgres cancels answers 503 and logs one closed POOL_USAGE
       [],
     );
     assert.ok(fields.elapsedMs < 6_000, `cancelled after ${fields.elapsedMs} ms`);
+  });
+});
+
+test("the capture check counts an hour captured only when its usage row's request is keyed by its source and record", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await summaryFixture(f);
+    const poolId = (await digest(pool)).slice(0, 16);
+    const other = "b".repeat(64);
+    const hex = (text: string) => digest(text);
+    const at = (hour: number) => new Date(Date.parse("2026-11-20T00:00:00Z") + hour * 3_600_000);
+    const cases = [
+      "keyed by its source and record",
+      "another id",
+      "another pool",
+      "another source column",
+      "another record column",
+      "another source inside the id",
+      "no request",
+    ];
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER USER");
+    for (const [hour, kind] of cases.entries()) {
+      const usage = 5_000 + hour;
+      await f.db.query("INSERT INTO usage (id,timestamp,api_key) VALUES ($1,$2,$3)", [
+        usage,
+        at(hour).toISOString(),
+        fixture.fingerprint,
+      ]);
+      if (kind === "no request") continue;
+      const record = await hex(JSON.stringify(["usage", String(usage)]));
+      const keyed = await hex(JSON.stringify([fixture.source, record]));
+      const row = {
+        id:
+          kind === "another id"
+            ? await hex(`another-${usage}`)
+            : kind === "another source inside the id"
+              ? await hex(JSON.stringify([other, record]))
+              : keyed,
+        pool: kind === "another pool" ? "f".repeat(16) : poolId,
+        source: kind === "another source column" ? other : fixture.source,
+        record: kind === "another record column" ? await hex(`another-record-${usage}`) : record,
+      };
+      await f.db.query(
+        `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,
+          provider,model,token_quality,failed,cost_basis,ingested_at,attribution)
+        VALUES ($1,$2,$3,$4,$5,$6,'fixture-lab','fixture-model','complete',false,'unpriced',$4,'key-at-capture')`,
+        [
+          row.id,
+          row.source,
+          row.record,
+          at(hour).toISOString(),
+          timestamp(at(hour).toISOString()),
+          row.pool,
+        ],
+      );
+    }
+    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER USER");
+    const coverage = await homeCaptureCoverage(
+      f.db,
+      poolId,
+      fixture.source,
+      at(0).toISOString(),
+      at(cases.length).toISOString(),
+    );
+    const hour = (index: number) => at(index).toISOString().replace(".000Z", "Z");
+    assert.deepEqual(
+      [...(coverage.incompleteHours ?? [])].sort(),
+      cases.slice(1).map((_, index) => hour(index + 1)),
+      "only the request keyed by its source and record counts its hour as captured",
+    );
   });
 });
