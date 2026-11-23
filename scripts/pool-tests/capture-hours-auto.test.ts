@@ -127,11 +127,14 @@ test("a code handover ends the tick at the next hour boundary, with every counte
     const c = await captureFixture(f);
     await c.native(at(0, minute));
     await c.ready();
-    let commits = 0;
+    // Hours committed: a COMMIT right after a count, never a read's.
+    let commits = 0,
+      counting = false;
     const db: HistoryDatabase = {
       query: async (text, values) => {
         const result = await f.db.query(text, values);
-        if (text === "COMMIT") commits++;
+        if (text === "COMMIT" && counting) commits++;
+        counting = text === countHourStatement;
         return result;
       },
     };
@@ -351,44 +354,80 @@ test("a failing count is an error stop that pauses the tick; a tick failing befo
   });
 });
 
-test("once nothing is pending, each tick recounts the settled hours counted longest ago", async () => {
+/** Every hour's count time, by hour, oldest hour first. */
+async function checkedAt(f: Fixture, pool: string) {
+  return (
+    await f.db.query(
+      "SELECT hour, checked_at FROM basalt_model_capture_hours WHERE pool=$1 ORDER BY hour",
+      [pool],
+    )
+  ).rows.map((row) => [(row.hour as Date).toISOString(), (row.checked_at as Date).getTime()]);
+}
+
+/** Every count settled long ago, the oldest hour counted longest ago. */
+const aged = (f: Fixture) =>
+  f.db.query("UPDATE basalt_model_capture_hours SET checked_at=hour + interval '3 hours'");
+
+test("once nothing is pending, the recount takes the hours before the horizon first, then the stalest, for as long as the session lasts", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, minute));
     await c.ready();
     await c.fill();
-    // Thirty hours counted long ago, though each once it settled: three hours after it began.
-    await f.db.query(
-      `UPDATE basalt_model_capture_hours SET checked_at=hour + interval '3 hours'
-      WHERE hour >= $1 AND hour < $2`,
-      [at(0), at(30)],
+    await aged(f);
+    const before = await checkedAt(f, c.poolId);
+    assert.equal(before.length, lookbackHours);
+    // Each count costs 10 ms of a 100 ms session: about ten hours.
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const db: HistoryDatabase = {
+      query: (text, values) => {
+        if (text === countHourStatement) clock.at += 10;
+        return f.db.query(text, values);
+      },
+    };
+    const state = await captureHoursTick(c.storage, (work) => work(db), {
+      now: () => clock.at,
+      bounds: { lookbackHours, sessions: 1, sessionMs: 100 },
+    });
+    assert.equal(state.lastStop, "complete");
+    const after = await checkedAt(f, c.poolId);
+    const moved = after.map(([, at], n) => at !== before[n]![1]);
+    const count = moved.filter(Boolean).length;
+    assert.ok(count >= 5 && count <= 11, `${count} hours recounted in a 100 ms session`);
+    // The newest hours, and only those, though every older one was counted longer ago.
+    assert.deepEqual(
+      moved,
+      Array.from({ length: lookbackHours }, (_, n) => n >= lookbackHours - count),
     );
-    const before = await f.db.query(
-      "SELECT hour,checked_at FROM basalt_model_capture_hours WHERE hour >= $2 AND hour < $1 ORDER BY hour",
-      [at(30), at(0)],
-    );
+  });
+});
+
+test("with the session to spare, the recount takes every settled hour, far past the old fixed 24", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    await c.fill();
+    await aged(f);
+    const before = await checkedAt(f, c.poolId);
     const state = await captureHoursTick(c.storage, (work) => work(f.db), {
       bounds: { lookbackHours },
     });
     assert.equal(state.lastStop, "complete");
-    assert.equal(state.stalestCheckedAt, at(3));
-    const after = await f.db.query(
-      "SELECT hour,checked_at FROM basalt_model_capture_hours WHERE hour >= $2 AND hour < $1 ORDER BY hour",
-      [at(30), at(0)],
+    // Read at the plan: the oldest settled count before this tick's recount.
+    assert.equal(
+      state.stalestCheckedAt,
+      new Date(Date.parse(String(before[0]![0])) + 3 * 3_600_000).toISOString(),
     );
-    const moved = after.rows.map(
-      (row, n) =>
-        (row.checked_at as Date).getTime() !== (before.rows[n]!.checked_at as Date).getTime(),
-    );
-    assert.deepEqual(
-      moved,
-      Array.from({ length: 30 }, (_, n) => n < 24),
-      "the 24 counted longest ago, and only those",
+    const after = await checkedAt(f, c.poolId);
+    assert.ok(
+      after.every(([, at], n) => at !== before[n]![1]),
+      "every hour was recounted",
     );
     const next = await captureHoursTick(c.storage, (work) => work(f.db), {
       bounds: { lookbackHours },
     });
-    assert.equal(next.stalestCheckedAt, at(27));
+    assert.ok(Date.parse(next.stalestCheckedAt!) > Date.parse(state.stalestCheckedAt!));
   });
 });
 
@@ -403,5 +442,39 @@ test("the tick waits while v17 is not applied", async () => {
     const state = await captureHoursTick(memoryStorage(), (work) => work(f.db));
     assert.equal(state.lastStop, "not_applied");
     assert.deepEqual(await c.stored(), {});
+  });
+});
+
+test("the tick's plan and recount reads each run under a timeout of at most 1 s", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    await c.fill();
+    await aged(f);
+    let limit: number | undefined;
+    const reads: { text: string; limit?: number }[] = [];
+    const db: HistoryDatabase = {
+      query: (text, values) => {
+        if (text.startsWith("BEGIN")) limit = undefined;
+        if (text.startsWith("SELECT set_config('statement_timeout'"))
+          limit = Number.parseInt(String(values![0]));
+        if (/basalt_model_capture_hours s|basalt_model_usage_people_ready p/.test(text))
+          reads.push({ text, limit });
+        return f.db.query(text, values);
+      },
+    };
+    await captureHoursTick(c.storage, (work) => work(db), { bounds: { lookbackHours } });
+    const kinds = ["usage_people_ready p", "min(s.checked_at)", "recent) b"];
+    for (const kind of kinds)
+      assert.ok(
+        reads.some((read) => read.text.includes(kind)),
+        `the tick read ${kind}`,
+      );
+    for (const read of reads.filter((entry) => entry.text !== countHourStatement))
+      assert.ok(
+        read.limit !== undefined && read.limit <= 1_000,
+        `${read.text.slice(0, 60)}: ${read.limit}`,
+      );
   });
 });

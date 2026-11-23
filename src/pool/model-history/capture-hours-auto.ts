@@ -2,10 +2,11 @@ import type { HistoryDatabase } from "./schema.ts";
 import { captureHoursCountLimitMs, countCaptureHour } from "./capture-hours-count.ts";
 import {
   captureHoursLookbackHours,
+  boundedRead,
   countedHours,
   planCaptureHours,
+  recountHours,
   stalestCapture,
-  stalestHours,
 } from "./capture-hours-plan.ts";
 
 export { captureHoursInspect } from "./capture-hours-inspect.ts";
@@ -32,7 +33,10 @@ export interface CaptureHoursAutoBounds {
   /** The same pool stopping on a lock or an error this many times in a row is stuck. */
   readonly failingAfter: number;
   readonly countLimitMs: number;
-  /** Settled hours recounted per tick, the ones counted longest ago, once nothing is pending. */
+  /**
+   * The most settled hours a tick recounts once nothing is pending: the 48 before the settle horizon,
+   * where late rows land, then the ones counted longest ago, for as long as the session lasts.
+   */
   readonly recount: number;
   /** The hours before the settle horizon each pool's counts cover. */
   readonly lookbackHours: number;
@@ -46,7 +50,7 @@ export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   slowAfter: 3,
   failingAfter: 6,
   countLimitMs: captureHoursCountLimitMs,
-  recount: 24,
+  recount: 2_000,
   lookbackHours: captureHoursLookbackHours,
 };
 
@@ -85,6 +89,8 @@ export interface CaptureHoursAutoState {
   /** The hour that last stopped a session, until it is counted, with its count's time limit. */
   readonly lastHour?: string;
   readonly lastHourReadMs?: number;
+  /** The pool `lastHour` belongs to: another pool counting the same hour never clears it. */
+  readonly lastHourPool?: string;
   /** Pools with pending hours, the hours left in the last pool worked on, and across pools. */
   readonly pools?: number;
   readonly pendingHours?: number;
@@ -155,7 +161,7 @@ export async function captureHoursTick(
     await save({
       ...base,
       lastStop: reason,
-      ...(hour ? { lastHour: hour, lastHourReadMs: undefined } : {}),
+      ...(hour ? { lastHour: hour, lastHourReadMs: undefined, lastHourPool: pool } : {}),
       repeat: { pool, reason, count },
       ...(stuck
         ? { stuck: stuckWith(base.stuck ?? [], { pool, reason, retryAt: pausedUntil }) }
@@ -185,11 +191,15 @@ export async function captureHoursTick(
     let stopHour: string | undefined;
     try {
       stop = await session(async (db) => {
-        const plan = await planCaptureHours(db, bounds.lookbackHours);
+        // Each read runs under 1 s, and never past what the session has left.
+        const read = <T>(work: () => Promise<T>) => boundedRead(db, left, work);
+        const plan = await read(() => planCaptureHours(db, bounds.lookbackHours));
         if (!plan) return "not_applied";
         const { pools, plannedAt } = plan;
         // The tick reached its database and plan, so it is no longer failing as a whole.
-        const done = await countedHours(db, [...(next.stuck ?? []), ...(next.slow ?? [])]);
+        const done = await read(() =>
+          countedHours(db, [...(next.stuck ?? []), ...(next.slow ?? [])]),
+        );
         const open = (entry: { pool: string; hour?: string }) =>
           !entry.hour || !done.has(`${entry.pool}|${entry.hour}`);
         next = {
@@ -198,7 +208,7 @@ export async function captureHoursTick(
           slow: (next.slow ?? []).filter(open),
           repeat: next.repeat?.pool === "" ? undefined : next.repeat,
           stalestCheckedAt:
-            (await stalestCapture(db).catch(() => undefined)) ?? next.stalestCheckedAt,
+            (await read(() => stalestCapture(db)).catch(() => undefined)) ?? next.stalestCheckedAt,
         };
         const pending = new Map(pools.map((pool) => [pool.pool, pool.pending]));
         const tally = () => {
@@ -240,6 +250,7 @@ export async function captureHoursTick(
               ...next,
               lastHour: hour,
               lastHourReadMs: result.readMs,
+              lastHourPool: pool,
               slow: [
                 ...(next.slow ?? []).filter((entry) => entry.pool !== pool),
                 { pool, hour, count: repeats, until },
@@ -264,7 +275,9 @@ export async function captureHoursTick(
           next = {
             ...next,
             // The hour that last stopped a session is named until it is counted.
-            ...(next.lastHour === hour ? { lastHour: undefined, lastHourReadMs: undefined } : {}),
+            ...(next.lastHour === hour && next.lastHourPool === pool
+              ? { lastHour: undefined, lastHourReadMs: undefined, lastHourPool: undefined }
+              : {}),
             stuck: (next.stuck ?? []).filter(cleared),
             slow: (next.slow ?? []).filter(cleared),
             repeat: next.repeat?.pool === pool ? undefined : next.repeat,
@@ -288,12 +301,16 @@ export async function captureHoursTick(
           return "budget";
         if (!recounted) {
           const pools = [...pending.keys()].filter((pool) => !held.has(pool));
-          for (const entry of await stalestHours(db, pools, bounds.recount, plannedAt)) {
+          // As many as the session's rest allows; a budget stop ends the recount, not the tick.
+          recounted = true;
+          for (const entry of await read(() =>
+            recountHours(db, pools, bounds.recount, plannedAt),
+          )) {
             if (waiting().has(entry.pool)) continue;
             const stop = await count(entry.pool, entry.hour);
+            if (stop === "budget") break;
             if (stop && stop !== "next") return stop;
           }
-          recounted = true;
         }
         if ([...pending].some(([pool, n]) => n > 0 && held.has(pool)))
           return slowed ? "slow" : "waiting";

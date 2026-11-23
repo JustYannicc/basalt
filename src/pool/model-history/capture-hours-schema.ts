@@ -8,14 +8,17 @@ export const captureHoursLockClass = 1416;
 
 /**
  * Additive only: one table the pool's own tick fills with the number of Home usage rows each of a
- * pool's hours holds, and when it counted them. No trigger, and nothing on Home's tables: a count
- * is a read of Home's usage, stored here, which the summary compares with the hour's captured
- * requests instead of probing every usage row of its window.
+ * pool's hours holds, how many of them had no request when it counted, and when it counted them.
+ * No trigger, and nothing on Home's tables: a count is a read of Home's usage, stored here, which
+ * the summary compares with the hour's captured requests instead of probing every usage row of its
+ * window. The count is today's population, which can shrink (a key rebound, a person deleted), so
+ * an equal count alone never proves an hour: its rows' own probe must have found none missing.
  */
 export const historyCaptureHoursStatements = [
   `CREATE TABLE basalt_model_capture_hours (
     pool varchar(16) NOT NULL, hour timestamptz NOT NULL, usage_requests integer NOT NULL,
-    checked_at timestamptz NOT NULL, PRIMARY KEY (pool, hour))`,
+    uncaptured_requests integer NOT NULL, checked_at timestamptz NOT NULL,
+    PRIMARY KEY (pool, hour))`,
 ];
 
 /**

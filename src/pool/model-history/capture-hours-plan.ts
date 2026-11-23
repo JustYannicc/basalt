@@ -18,7 +18,11 @@ export interface CaptureHoursPool {
   readonly pending: number;
 }
 
-/** How far back from the settle horizon the tick counts: 400 days. Older hours stay unproven. */
+/**
+ * How far back from the settle horizon the tick counts: 400 days. An hour never counted inside it
+ * stays unproven; one counted while inside it keeps its stored count, which the summary still
+ * compares, since nothing prunes it.
+ */
 export const captureHoursLookbackHours = 400 * 24;
 
 /**
@@ -75,10 +79,11 @@ export async function stalestCapture(db: HistoryDatabase) {
 }
 
 /**
- * The settled hours of `pools` counted longest ago and before `before`, for the rolling recount, so
- * an hour this tick just counted is never counted again in it.
+ * The settled hours of `pools` to recount, counted before `before` so an hour this tick just counted
+ * is never counted again in it: first the 48 before the settle horizon, newest first, where rows that
+ * land late belong, then the ones counted longest ago.
  */
-export async function stalestHours(
+export async function recountHours(
   db: HistoryDatabase,
   pools: readonly string[],
   limit: number,
@@ -88,11 +93,37 @@ export async function stalestHours(
   return (
     await db.query(
       `SELECT s.pool, ${iso("s.hour")} AS hour FROM basalt_model_capture_hours s
+        CROSS JOIN (SELECT ${captureSettleHorizon} - interval '48 hours' AS recent) b
       WHERE s.pool=ANY($1::text[]) AND ${captureSettledAfter("s")} AND s.checked_at < $3::timestamptz
-      ORDER BY s.checked_at, s.pool, s.hour LIMIT $2`,
+      ORDER BY s.hour >= b.recent DESC, CASE WHEN s.hour >= b.recent THEN s.hour END DESC,
+        s.checked_at, s.pool, s.hour
+      LIMIT $2`,
       [pools, limit, before],
     )
   ).rows.map((row) => ({ pool: String(row.pool), hour: String(row.hour) }));
+}
+
+/** How long one of the tick's reads may run: 1 s, never past what the session has left. */
+export const captureHoursReadLimitMs = 1_000;
+
+/** `work`'s reads in one read-only transaction, each statement under the read limit. */
+export async function boundedRead<T>(
+  db: HistoryDatabase,
+  left: () => number,
+  work: () => Promise<T>,
+): Promise<T> {
+  await db.query("BEGIN TRANSACTION READ ONLY");
+  try {
+    await db.query("SELECT set_config('statement_timeout',$1,true)", [
+      `${Math.max(50, Math.min(captureHoursReadLimitMs, Math.floor(left())))}ms`,
+    ]);
+    const result = await work();
+    await db.query("COMMIT");
+    return result;
+  } catch (error) {
+    await db.query("ROLLBACK").catch(() => {});
+    throw error;
+  }
 }
 
 /** Which of `entries` name an hour that now has a settled count. */

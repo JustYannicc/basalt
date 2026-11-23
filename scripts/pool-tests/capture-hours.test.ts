@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { digest } from "../../src/pool/backend-users.ts";
+import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import { homeCaptureCoverage } from "../../src/pool/model-history/capture-coverage.ts";
 import {
@@ -14,9 +14,10 @@ import {
 import { poolUsernamePattern } from "../../src/pool/model-history/capture-population.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { at, captureFixture, hourKey, lookbackHours, recording } from "./capture-hours-fixture.ts";
-import { seriesFixture } from "./series-fixture.ts";
+import { pool, seriesFixture } from "./series-fixture.ts";
 
 const lots = () => 60_000;
+type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 
 test("an hour whose stored count equals its captured requests reads complete without a per-row check", async () => {
   await seriesFixture(async (f) => {
@@ -300,6 +301,7 @@ test("plans: a count reads one hour of usage through its time index, and the sum
       c.poolId,
       at(10),
       poolUsernamePattern(c.poolId),
+      c.source,
     ]);
     assert.equal(count.reads.usage, 50, "one hour's usage rows");
     assert.ok(count.indexes.has("fixture_usage_time"), [...count.indexes].join(" "));
@@ -430,5 +432,150 @@ test("hours of a window older than the lookback stay unproven, never complete", 
       "the four hours before the lookback, and only those",
     );
     assert.equal(read.ranges, undefined, "and none of them is read row by row");
+  });
+});
+
+/** One hour's stored count and how many of its rows had no request. */
+async function storedHour(db: HistoryDatabase, pool: string, hour: string) {
+  const row = (
+    await db.query(
+      "SELECT usage_requests, uncaptured_requests FROM basalt_model_capture_hours WHERE pool=$1 AND hour=$2",
+      [pool, hour],
+    )
+  ).rows[0];
+  return row && { usage: Number(row.usage_requests), uncaptured: Number(row.uncaptured_requests) };
+}
+
+test("a captured hour whose every usage row has its request, with equal counts, reads complete without a row check", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(5, 60_000));
+    await c.native(at(5, 120_000));
+    await c.ready();
+    await c.fill();
+    assert.deepEqual(await storedHour(f.db, c.poolId, at(5)), { usage: 2, uncaptured: 0 });
+    const read = await c.coverage(at(0), at(24));
+    assert.deepEqual([...read.incomplete!], []);
+    assert.equal(read.ranges, undefined);
+  });
+});
+
+/**
+ * Row A is captured; row M, charged to the pool's user, never was. Once `shrink` takes A out of
+ * the pool's population and the hour is recounted, its count equals its captured requests, so
+ * only M's own probe keeps the hour from reading complete.
+ */
+async function shrunk(
+  f: Fixture,
+  shrink: () => Promise<void>,
+  /** Another of the pool's users, made once Home's tables exist; row A is on its key. */
+  owner?: () => Promise<string>,
+) {
+  const c = await captureFixture(f);
+  const key = await owner?.();
+  await c.native(at(0, 60_000));
+  if (key) {
+    // Captured, on a key of another of the pool's users.
+    const id = await c.usage(at(5, 60_000), key);
+    await f.insert({
+      source: c.source,
+      timestamp: timestamp(at(5, 60_000)),
+      sourceRecord: await digest(JSON.stringify(["usage", String(id)])),
+    });
+  } else await c.native(at(5, 60_000));
+  const charged = await c.usage(at(5, 120_000), "not-a-key");
+  await f.db.query("INSERT INTO billing_charge (id,usage_id,user_id) VALUES ($1,$2,7)", [
+    String(charged),
+    charged,
+  ]);
+  await c.ready();
+  await c.fill();
+  assert.deepEqual(await storedHour(f.db, c.poolId, at(5)), { usage: 2, uncaptured: 1 });
+  await shrink();
+  assert.equal((await countCaptureHour(f.db, c.poolId, at(5), lots)).kind, "done");
+  assert.deepEqual(
+    await storedHour(f.db, c.poolId, at(5)),
+    { usage: 1, uncaptured: 1 },
+    "the count now equals the hour's one captured request",
+  );
+  const read = await c.coverage(at(0), at(24));
+  assert.ok(
+    read.ranges?.some((range) => range.f === at(5).replace("Z", "000Z")),
+    "its never-captured row sends the hour to the row check",
+  );
+  assert.ok(read.incomplete!.has(hourKey(5)), "and it reads incomplete");
+}
+
+test("a key rebound to another pool's user shrinks the count, and the hour's uncaptured row still reads it incomplete", async () => {
+  await seriesFixture(async (f) => {
+    await shrunk(f, async () => {
+      await f.db.query("UPDATE api_key SET user_id=8 WHERE id=9");
+    });
+  });
+});
+
+test("a deleted person shrinks the count, and the hour's uncaptured row still reads it incomplete", async () => {
+  await seriesFixture(async (f) => {
+    await shrunk(
+      f,
+      async () => {
+        await f.db.query('DELETE FROM "user" WHERE id=12');
+      },
+      async () => {
+        const key = `sha256:${"c".repeat(64)}`;
+        await f.db.query('INSERT INTO "user" VALUES (12,$1)', [
+          await backendUserName("fixture-person-2", pool),
+        ]);
+        await f.db.query(
+          "INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES (13,$1,12)",
+          [key],
+        );
+        return key;
+      },
+    );
+  });
+});
+
+test("past 800 incomplete hours the check names none, on the per-row path and the counted one", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    // Not ready on v16: the per-row path. One usage row without its request an hour.
+    for (let n = 0; n < 800; n++) await c.usage(at(-800 + n, 60_000));
+    const rows = await homeCaptureCoverage(f.db, c.poolId, c.source, at(-799), at(0), true);
+    assert.equal(rows.incompleteHours?.size, 799);
+    const over = await homeCaptureCoverage(f.db, c.poolId, c.source, at(-800), at(0), true);
+    assert.equal(over.incompleteHours, null, "800 missing hours are past the bound");
+    await f.db.query("DELETE FROM usage");
+    // Ready and counted over the lookback: hours before it are unproven.
+    await c.native(at(0, 60_000));
+    await c.ready();
+    await c.fill();
+    const first = (await horizon(f.db)) - lookbackHours * 3_600_000;
+    const from = (n: number) => new Date(first - n * 3_600_000).toISOString();
+    const under = await c.coverage(from(799), at(24));
+    assert.equal(under.incomplete?.size, 799);
+    assert.equal((await c.coverage(from(800), at(24))).incomplete, null);
+  });
+});
+
+test("a count taken at exactly two hours past its hour is settled; a microsecond earlier it is not", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, 60_000));
+    await c.ready();
+    await c.fill();
+    await f.db.query(
+      "UPDATE basalt_model_capture_hours SET checked_at=hour + interval '2 hours' WHERE hour=$1",
+      [at(2)],
+    );
+    await f.db.query(
+      `UPDATE basalt_model_capture_hours SET checked_at=hour + interval '2 hours' - interval '1 microsecond'
+      WHERE hour=$1`,
+      [at(3)],
+    );
+    const read = await c.coverage(at(0), at(24));
+    assert.deepEqual([...read.incomplete!], [hourKey(3)]);
+    const plan = await planCaptureHours(f.db, lookbackHours);
+    assert.deepEqual(plan?.pools[0]?.hours, [hourKey(3)]);
   });
 });

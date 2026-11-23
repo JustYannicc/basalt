@@ -33,8 +33,9 @@ const windowStatement = `SELECT DISTINCT to_char(${usageHour},'YYYY-MM-DD"T"HH24
 
 /**
  * One statement over the window's whole hours before the settle horizon, for a pool ready on v16:
- * an hour whose settled count equals the requests v16 holds for the Home source is complete; one
- * without a settled count is unproven; one whose counts differ is checked row by row, with the tail
+ * an hour whose settled count found every usage row's request and equals the requests v16 holds for
+ * the Home source is complete; one without a settled count is unproven; one whose count found a row
+ * without its request, or whose counts differ, is checked row by row, with the tail
  * since the horizon and the hours a bound cuts. Its `bounds` row says whether the pool is ready.
  * $1 pool, $2 from, $3 to, $4 Home source.
  */
@@ -50,7 +51,7 @@ export const capturedHoursStatement = `WITH w AS MATERIALIZED (
       w.whole_to - interval '1 hour', interval '1 hour') AS h(at)
     WHERE w.ready AND w.whole_from < w.whole_to
   ), stored AS (
-    SELECT s.hour, s.usage_requests FROM w JOIN basalt_model_capture_hours s
+    SELECT s.hour, s.usage_requests, s.uncaptured_requests FROM w JOIN basalt_model_capture_hours s
       ON s.pool=$1 AND s.hour >= w.whole_from AND s.hour < w.whole_to
     WHERE w.ready AND ${captureSettledAfter("s")}
   ), captured AS (
@@ -60,7 +61,8 @@ export const capturedHoursStatement = `WITH w AS MATERIALIZED (
     GROUP BY p.hour
   ), judged AS MATERIALIZED (
     SELECT h.at, CASE WHEN s.hour IS NULL THEN 'unproven'
-        WHEN s.usage_requests <> coalesce(c.n,0) THEN 'check' END AS kind
+        WHEN s.uncaptured_requests <> 0 OR s.usage_requests <> coalesce(c.n,0) THEN 'check'
+        END AS kind
     FROM hours h LEFT JOIN stored s ON s.hour=h.at LEFT JOIN captured c ON c.hour=h.at
   )
   SELECT 'bounds' AS kind, w.ready, NULL::text AS hour, NULL::text AS f, NULL::text AS t FROM w
