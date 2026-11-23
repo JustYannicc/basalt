@@ -935,17 +935,23 @@ test("growth logs its refusal once per change of reason, and again after a launc
     if (next && next !== "ok") throw new SlotRefused(next);
     return reserve(...args);
   });
-  f.pressure(3);
-  for (const at of [300, 500, 700, 900]) {
+  const pass = async (at: number, pressure: number) => {
+    f.pressure(pressure);
     f.advance(at);
     await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
     await f.settle();
-  }
+  };
+  for (const at of [300, 500, 700, 900]) await pass(at, 3);
+  // A pass that ends with nothing to do clears the refusal too, so the same reason logs again.
+  await pass(1100, 0);
+  script.push("identity");
+  await pass(1300, 3);
   assert.deepEqual(
     log.mock.calls.map((call) => call.arguments),
     [
       ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
       ["POOL_FLEET_GROWTH_REFUSED", { reason: "selection" }],
+      ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
       ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
     ],
   );

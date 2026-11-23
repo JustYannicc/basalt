@@ -139,11 +139,36 @@ test("a permission committed under the last code launches and inspects in force 
   const f = await fixture();
   await f.worker(before).configure("enable", f.configuration);
   const deployed = f.worker(after);
-  await deployed.state.reserve(f.launch());
+  // Growth's own target and the reservation's permission, as a launch under the next code runs them.
+  const target = await deployed["target"]([]);
+  await deployed.state.reserve(target);
   assert.equal((await deployed.state.inspect()).length, 1, "the launch reserved its row");
   const view = await deployed.inspect();
   assert.equal(view.inForce, true);
   assert.equal(view.notInForce, undefined);
+});
+
+test("a crash cell under the next code passes the permission and stops at its own row", async () => {
+  const f = await fixture();
+  await f.worker(before).configure("enable", f.configuration);
+  const deployed = f.worker(after);
+  const target = f.launch();
+  await deployed.state.reserve(target);
+  const at = Date.now();
+  // The row is only reserved, so the command refuses it as unhealthy, past the permission check.
+  await assert.rejects(
+    deployed.crash({
+      controllerCode: after,
+      action: "runtime-crash",
+      identity: { ...target, bootId: "22222222-2222-2222-2222-222222222222" },
+      nonce: "crash-1",
+      operator: "release-owner",
+      at,
+      expiresAt: at + 20_000,
+      kind: "cell",
+    }),
+    /unhealthy/,
+  );
 });
 
 test("a primary promotion under the next code keeps the permission", async () => {

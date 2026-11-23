@@ -25,9 +25,11 @@ export const FleetApplication = Schema.Struct({
 });
 export type FleetApplication = typeof FleetApplication.Type;
 export const FleetConfiguration = Schema.Struct({
-  // A permission outlives the Worker code that committed it (#1802). Change this format whenever a
-  // field's meaning changes, so a permission committed under the old meaning no longer decodes,
-  // and falls out of force instead of authorizing launches it was never signed for.
+  // A permission outlives the Worker code that committed it (#1802), so later code reads one it did
+  // not commit. A change to a field's meaning, or a new field a launch must honour, therefore needs a
+  // new format here, and the new code must read the old format as not in force. Changing the
+  // literal alone makes the stored record unreadable, and every fleet read with it, model calls
+  // included, refuses.
   format: Schema.Literal("pool-runtime-fleet-v1"),
   controllerCode: ControllerCode,
   controllerId: Identifier,
@@ -117,7 +119,10 @@ export class RuntimeFleetConfiguration {
     )
       throw new SlotRefused("identity");
   }
-  /** Whether a stored permission authorizes launches here, by the checks every launch makes. */
+  /**
+   * Whether a stored permission authorizes launches here, by the permission checks every launch
+   * makes. A launch can still be refused for room or for its own target.
+   */
   standing(record: FleetConfigurationRecord | undefined) {
     if (!record?.enabled) return { inForce: false, notInForce: "disabled" } as const;
     try {

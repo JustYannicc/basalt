@@ -208,13 +208,23 @@ export class RuntimeFleet {
         this.deps.changed?.();
       });
       this.deps.defer(
-        this.growing.catch((error: unknown) => {
-          // Growth retries on every request and alarm, so a refusal logs once until it changes.
-          const reason =
-            error instanceof SlotRefused || error instanceof FleetRefused ? error.reason : "failed";
-          if (reason !== this.growthRefusal) console.warn("POOL_FLEET_GROWTH_REFUSED", { reason });
-          this.growthRefusal = reason;
-        }),
+        this.growing.then(
+          () => {
+            this.growthRefusal = undefined;
+          },
+          (error: unknown) => {
+            // Growth retries on every request and alarm, so a refusal logs once until it changes.
+            const reason =
+              error instanceof SlotRefused || error instanceof FleetRefused
+                ? error.reason
+                : error instanceof Error
+                  ? error.name
+                  : "unknown";
+            if (reason !== this.growthRefusal)
+              console.warn("POOL_FLEET_GROWTH_REFUSED", { reason });
+            this.growthRefusal = reason;
+          },
+        ),
       );
     }
   }
