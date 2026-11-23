@@ -25,13 +25,15 @@ export function readEnd(value: unknown): RuntimeEnd | undefined {
   return isRuntimeEnd(value) ? value : undefined;
 }
 /**
- * An end the platform's monitor reported as an exit of this boot: hard evidence that it no longer
- * runs. `unknown` (a monitor that settled with no exit) and `found_stopped` (only the flag) are not.
+ * An end the platform's monitor reported as an exit of this boot that no stop of ours explains:
+ * hard evidence that it no longer runs. `unknown` (a monitor that settled with no exit),
+ * `found_stopped` (only the flag) and an end after our own stop are not.
  */
 export function endedForGood(end: RuntimeEnd | undefined) {
   return (
     end !== undefined &&
     end.seen === "monitor" &&
+    end.stopSent !== true &&
     (end.cause === "exit" || end.cause === "signal" || end.cause === "rollout")
   );
 }
@@ -204,8 +206,9 @@ export class ContainerEnds {
     outcome: { readonly resolved: true } | { readonly error: unknown },
   ) {
     if (watching.get(this.container) === startedAt) watching.delete(this.container);
-    // A rejection that is no exit records `unknown`, whatever `running` reads: the monitor only
-    // writes this record, and no start, stop or recovery reads its outcome.
+    // A rejection that is no exit records `unknown`, whatever `running` reads. The monitor only
+    // writes this record; no start, stop or recovery decides from it, only a fleet cell's health
+    // read does, through `endedForGood`.
     const record = await this.read();
     if (!record || record.current.startedAt !== startedAt || record.current.end) return;
     const at = this.now();

@@ -4,6 +4,7 @@ import {
   ContainerEnds,
   classifyEnd,
   containerEndSettled,
+  endedForGood,
   readEnd,
 } from "./runtime-slots/container-end.ts";
 import { RuntimeRetirementObservation } from "./runtime-slots/contract.ts";
@@ -99,6 +100,25 @@ test("each way a container ends is recorded as its own closed cause, never its m
     assert.deepEqual(end, { at: 5, exitCode, cause, seen: "monitor" });
     assert.doesNotMatch(JSON.stringify(end), /exited with|signalled|try again|provided|lost/iu);
   }
+});
+
+test("only an exit the monitor saw, with no stop of ours behind it, is hard evidence of an end", () => {
+  const end = { at: 5, exitCode: 137, seen: "monitor" } as const;
+  const cases: [Parameters<typeof endedForGood>[0], boolean][] = [
+    [{ ...end, cause: "exit" }, true],
+    [{ ...end, cause: "signal" }, true],
+    [{ ...end, cause: "rollout" }, true],
+    // A monitor that settled with no exit, or a container that never ran.
+    [{ ...end, exitCode: null, cause: "unknown" }, false],
+    [{ ...end, exitCode: null, cause: "no_instance" }, false],
+    // Only the platform's running flag, with nothing handed over.
+    [{ ...end, exitCode: null, cause: "unknown", seen: "found_stopped" }, false],
+    // Our own stop ends the container too.
+    [{ ...end, cause: "exit", stopSent: true }, false],
+    [undefined, false],
+  ];
+  for (const [value, ended] of cases)
+    assert.equal(endedForGood(value), ended, JSON.stringify(value));
 });
 
 test("a kill after the start is recorded with its exit code and no stop of ours", async () => {
