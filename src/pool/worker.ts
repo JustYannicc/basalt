@@ -70,7 +70,7 @@ import { probePool, type ProbeRuntimeIdentity } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { availabilityRuntime } from "./availability-runtime.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
-import { AvailabilityEpisodes, type AvailabilitySignatures } from "./availability-episode.ts";
+import { AvailabilityEpisodes, type AvailabilityEpisode } from "./availability-episode.ts";
 import { observeAutomaticPool } from "./automatic-observation.ts";
 import { automaticRecoveryAuthority } from "./automatic-authority.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
@@ -664,9 +664,12 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
-  /** Which of the minute check's failures start an episode, so a continuing one is reported once. */
-  availabilityEpisode(next: AvailabilitySignatures) {
-    return new AvailabilityEpisodes(this.ctx.storage).open(next);
+  /** The minute check's failures already reported, so a continuing one is reported once. */
+  availabilityEpisode() {
+    return new AvailabilityEpisodes(this.ctx.storage).read();
+  }
+  recordAvailabilityEpisode(episode: AvailabilityEpisode) {
+    return new AvailabilityEpisodes(this.ctx.storage).write(episode);
   }
   /** The minute check-in's request reliability, computed once per five-minute capture. */
   async reliabilitySlo(pool: string) {
@@ -1374,7 +1377,10 @@ export default {
         (pool) => singleton(env).availabilityProbe(pool, true),
         (pool) => singleton(env).reliabilitySlo(pool),
         productionOpsRelease,
-        (next) => singleton(env).availabilityEpisode(next),
+        {
+          read: () => singleton(env).availabilityEpisode(),
+          write: (episode) => singleton(env).recordAvailabilityEpisode(episode),
+        },
       );
       return;
     }

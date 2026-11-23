@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
-import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { runAvailabilityProbe, type EpisodeMemory } from "./availability-schedule.ts";
 import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
 import { availabilityCron } from "./availability-config.ts";
 import { AvailabilityEpisodes } from "./availability-episode.ts";
@@ -545,51 +545,102 @@ test("a session failure the read already logged is not logged again by the check
   );
 });
 
-test("a failure that continues is reported once per episode, and again after a passing check", async (t) => {
+function episodeFixture(t: TestContext) {
   const messages: ReturnType<typeof unpack>[] = [];
+  let refuse = false;
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
-    messages.push(unpack(init));
-    return new Response(null, { status: 202 });
+    const message = unpack(init);
+    messages.push(message);
+    return new Response(null, { status: refuse && message.type === "event" ? 429 : 202 });
   });
-  const stored = new Map<string, unknown>();
-  const memory = {
-    get: async (key: string) => structuredClone(stored.get(key)),
-    put: async (key: string, value: unknown) => void stored.set(key, structuredClone(value)),
-  };
-  const episodes = (next: Parameters<AvailabilityEpisodes["open"]>[0]) =>
-    new AvailabilityEpisodes(memory).open(next);
-  const failing =
-    (...failures: ProbeFailure[]) =>
-    async (): Promise<ProbeResult> => ({
-      ok: failures.length === 0,
-      failures,
-    });
-  const reliabilityDown = async (): Promise<PoolReliabilitySlo> => {
-    throw new Error("history read failed");
-  };
   t.mock.method(console, "error", () => {});
-  const minute = async (probe: ReturnType<typeof failing>) => {
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const minute = async (
+    failures: ProbeFailure[],
+    options: { reliabilityFails?: boolean; episodes?: EpisodeMemory; pool?: string } = {},
+  ) => {
     const before = messages.length;
-    await runAvailabilityProbe(env, probe, reliabilityDown, undefined, episodes);
+    await runAvailabilityProbe(
+      { ...env, POOL_AVAILABILITY_TARGET: options.pool ?? env.POOL_AVAILABILITY_TARGET },
+      async (): Promise<ProbeResult> => ({ ok: failures.length === 0, failures }),
+      options.reliabilityFails
+        ? async (): Promise<PoolReliabilitySlo> => {
+            throw new Error("history read failed");
+          }
+        : undefined,
+      undefined,
+      options.episodes ?? memory,
+    ).catch(() => {});
     return messages
       .slice(before)
       .filter((item) => item.type === "event")
       .map((item) => item.payload.tags.error_code);
   };
-  const overdue: ProbeFailure = { guard: "membership", reason: "renewal_overdue" };
-  assert.deepEqual(await minute(failing(overdue)), [
-    "pool_availability_failure",
-    "pool_request_reliability_unavailable",
-  ]);
+  return { messages, minute, refuse: (value: boolean) => (refuse = value) };
+}
+const overdue: ProbeFailure = { guard: "membership", reason: "renewal_overdue" };
+const unavailable: ProbeFailure = { guard: "runtime", reason: "unavailable" };
+
+test("a failure that continues is reported once, until a passing run ends its episode", async (t) => {
+  const { messages, minute } = episodeFixture(t);
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"]);
   // The same failure a minute later is the same episode: 2 events a minute drained the quota.
-  assert.deepEqual(await minute(failing(overdue)), []);
+  assert.deepEqual(await minute([overdue]), []);
+  assert.deepEqual(await minute([]), []);
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"], "the pass ended it");
   assert.deepEqual(
-    await minute(failing(overdue, { guard: "runtime", reason: "unavailable" })),
+    await minute([overdue, unavailable]),
     ["pool_availability_failure"],
     "a changed set of failures starts a new episode",
   );
-  assert.deepEqual(await minute(failing()), [], "a passing check ends the availability episode");
-  assert.deepEqual(await minute(failing(overdue)), ["pool_availability_failure"]);
-  // Every minute still carries its own check-in.
   assert.equal(messages.filter((item) => item.payload.status === "error").length, 4);
+});
+
+test("a failing reliability reason is reported once, and again once it has stopped", async (t) => {
+  const { minute } = episodeFixture(t);
+  const reliable = ["pool_request_reliability_unavailable"];
+  assert.deepEqual(await minute([], { reliabilityFails: true }), reliable);
+  assert.deepEqual(await minute([], { reliabilityFails: true }), []);
+  assert.deepEqual(await minute([]), []);
+  assert.deepEqual(await minute([], { reliabilityFails: true }), reliable);
+});
+
+test("an episode start whose events Sentry refused is sent again the next minute", async (t) => {
+  const { minute, refuse } = episodeFixture(t);
+  refuse(true);
+  assert.deepEqual(await minute([overdue], { reliabilityFails: true }), [
+    "pool_availability_failure",
+    "pool_request_reliability_unavailable",
+  ]);
+  refuse(false);
+  assert.deepEqual(await minute([overdue], { reliabilityFails: true }), [
+    "pool_availability_failure",
+    "pool_request_reliability_unavailable",
+  ]);
+  assert.deepEqual(await minute([overdue], { reliabilityFails: true }), []);
+});
+
+test("another pool's same failure is its own episode", async (t) => {
+  const { minute } = episodeFixture(t);
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"]);
+  assert.deepEqual(await minute([overdue], { pool: "other-pool" }), ["pool_availability_failure"]);
+});
+
+test("with its memory unreachable, a failing run reports on the quarter hour only", async (t) => {
+  const { messages, minute } = episodeFixture(t);
+  const unreachable: EpisodeMemory = {
+    read: () => Promise.reject(new Error("pool object unavailable")),
+    write: () => Promise.reject(new Error("pool object unavailable")),
+  };
+  let clock = Date.parse("2026-11-23T03:14:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const reported: number[] = [];
+  for (let i = 0; i < 31; i++, clock += 60_000)
+    if ((await minute([unavailable], { episodes: unreachable })).length) reported.push(i);
+  assert.deepEqual(reported, [1, 16], "03:15 and 03:30 only");
+  assert.equal(messages.filter((item) => item.payload.status === "error").length, 31);
 });
