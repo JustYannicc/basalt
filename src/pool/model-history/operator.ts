@@ -14,6 +14,7 @@ import {
   timestamp,
 } from "./record.ts";
 import { handleTrafficOperation, historyTrafficPath } from "./traffic.ts";
+import { handleUsageRollupOperation, historyUsageRollupPath } from "./usage-rollup-backfill.ts";
 import {
   activateModelHistoryJournal,
   historyJournalActivationMigration,
@@ -217,11 +218,18 @@ export async function handleModelHistoryOperation(
   const backfill = path === historyBackfillPath;
   const traffic = path === historyTrafficPath;
   const completion = path === historyImportCompletionPath;
+  const rollup = path === historyUsageRollupPath;
   if (activation && request.method !== "GET" && request.method !== "POST")
     return new Response(null, { status: 405 });
-  if (!read && !apply && !backfill && !traffic && !completion && !activation)
+  if (!read && !apply && !backfill && !traffic && !completion && !activation && !rollup)
     return new Response(null, { status: 404 });
   try {
+    if (rollup)
+      return await withHistoryDatabase(
+        connectionString,
+        (db) => handleUsageRollupOperation(request, db),
+        { totalTimeoutMs: 20_000 },
+      );
     if (completion)
       return await withHistoryDatabase(connectionString, (db) =>
         handleImportCompletion(request, db),

@@ -1,6 +1,7 @@
 import peerProgram from "./home-peer-program.json" with { type: "json" };
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
+import { historyUsageRollupPath } from "./model-history/usage-rollup-backfill.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -1336,6 +1337,7 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         historyBackfillPath,
         historyTrafficPath,
         historyImportCompletionPath,
+        historyUsageRollupPath,
       ].includes(path)
     )
       return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
