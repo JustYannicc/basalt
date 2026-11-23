@@ -566,6 +566,23 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /provider-time, high-backoff, floor, open-window and usage-payload regressions/,
         );
+      } else if (patch.identity === "cliproxy-node-websocket-idle-eof-test") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0766-node-websocket-idle-eof-test.patch");
+        assert.match(patch.retirement.requires, /changes only a test/);
+        assert.match(
+          patch.retirement.requires,
+          /accepts either refusal, or waits until the node has seen the EOF/,
+        );
+      } else if (patch.identity === "cliproxy-node-websocket-terminal-frame") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0765-node-websocket-terminal-frame.patch");
+        assert.match(patch.retirement.requires, /still cut off a blocked one/);
+        assert.match(patch.retirement.requires, /never closes the socket under a terminal frame/);
+        assert.match(
+          patch.retirement.requires,
+          /finishing-writer, replay-close, teardown and blocked-writer regressions/,
+        );
       } else if (patch.identity === "cliproxy-node-provider-retry-time") {
         assert.equal(name, "node");
         assert.equal(patch.file, "0764-node-provider-retry-time.patch");

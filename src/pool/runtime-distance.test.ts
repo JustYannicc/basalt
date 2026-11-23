@@ -222,6 +222,7 @@ function redrawFleet(draws: object[], serving: boolean) {
           retire: async (identity, begin) => {
             await begin();
             retired.push(identity.slotId);
+            return true;
           },
           retired: async () => true,
           failed: async () => false,

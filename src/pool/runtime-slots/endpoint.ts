@@ -47,7 +47,7 @@ import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
-import { RuntimeForcedStop } from "./forced-stop.ts";
+import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -595,23 +595,35 @@ export class RuntimeEndpoint {
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
-    return this.serialize(async () => {
+    let began = false;
+    const work = this.serialize(async () => {
       const { record } = await trace.run("witness_read", () => this.store.read(target));
       await trace.run("health", () => this.health(identity, signal), undefined, signal);
       signal.throwIfAborted();
       if (!sameTarget(target, identity)) throw new SlotRefused("identity");
       await trace.run("activity_retire", () => this.activity.retire(identity));
-      signal.throwIfAborted();
+      // From the retiring latch on, the stop no longer follows its caller's 2 s budget: the latch
+      // refuses every later drain and retire, and Home's drain of claimed refreshes may take the
+      // whole grace. The retirement read sees the stop end.
+      await trace.run("monitor_attach", async () => this.retirementMonitor.start(identity));
+      await this.store.stopSent(target, Date.now());
       await trace.run(
-        "monitor_attach",
-        async () => this.retirementMonitor.start(identity),
-        undefined,
-        signal,
+        "stop",
+        () => stopGracefully(this.ctx.container!, () => (began = true)),
+        (stopped) => ({ stopped }),
       );
-      await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
       await trace.run("retired_record", () =>
         this.store.retire(target, { ...record, retired: true }),
       );
+    });
+    this.ctx.waitUntil(work.catch(() => {}));
+    // A caller that stops waiting once the stop began has done its part; the retirement read sees
+    // the stop end, so a stop longer than the caller's budget is no failure.
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => (began ? resolve() : reject(signal.reason));
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
   }
   async retirement(identity: SlotIdentity, signal?: AbortSignal) {

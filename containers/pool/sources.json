@@ -471,6 +471,24 @@
             "mode": "manual",
             "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
           }
+        },
+        {
+          "identity": "cliproxy-node-websocket-terminal-frame",
+          "file": "0765-node-websocket-terminal-frame.patch",
+          "sha256": "dcddbb9e4a9b78c92dbd4b41a404bb33c09a5e408002c37f466f4a7e16ae9784",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0765 keeps a Responses websocket's terminal frame from being dropped. Its close used to take the write lock only if it was free at that instant and otherwise closed the socket bare, so a terminal error or the 1012 replay close that landed while a ping or the previous frame's write still held the lock reached the client as a 1006 with no reason. Retire when the pinned node's terminal closes wait a bounded time for a finishing write and still cut off a blocked one, the session's own teardown never closes the socket under a terminal frame already being written, and the node passes the finishing-writer, replay-close, teardown and blocked-writer regressions and upstream's committed-429 websocket test in 50 race runs in a row."
+          }
+        },
+        {
+          "identity": "cliproxy-node-websocket-idle-eof-test",
+          "file": "0766-node-websocket-idle-eof-test.patch",
+          "sha256": "273b6b3027599166b3ac726b3edb0d8db1c627418a4004bd66e57329de511d45",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0766 changes only a test. Upstream's TestResponsesWebsocketIdleUpstreamEOFIsSilent sends a continuation right after the upstream closes an idle socket and accepted only previous_response_not_found; when the node has not yet seen that EOF the continuation goes to the dead socket and is correctly reported upstream_websocket_lost. Retire when the pinned node's idle-EOF test accepts either refusal, or waits until the node has seen the EOF, and passes 50 race runs of its package in a row."
+          }
         }
       ]
     }

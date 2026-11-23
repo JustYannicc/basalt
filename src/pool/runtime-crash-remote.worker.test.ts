@@ -58,7 +58,8 @@ test(
     });
     assert.equal(response.status, 200, await response.clone().text());
     assert.deepEqual(primary.calls.signals, [9]);
-    assert.deepEqual(f.old.calls.signals, []);
+    // The old root's own retirement at the handoff stopped it gracefully; the crash never reached it.
+    assert.deepEqual(f.old.calls.signals, [15]);
     assert.equal(await f.old.storage.get(crashAuditKey(nonce)), undefined);
     assert.ok(await primary.storage.get(crashAuditKey(nonce)));
     const inspection = await f.command("runtime-crash-inspect", { identity, nonce });
