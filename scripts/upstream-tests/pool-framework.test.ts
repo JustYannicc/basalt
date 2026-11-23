@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { poolFrameworkVersion } from "../pool-app-bundle.ts";
+import { generationName } from "../upstream-dependencies.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
@@ -117,7 +118,7 @@ test(
 );
 
 test(
-  "the built framework carries no random dependency-store name",
+  "every dependency-store path in the built framework carries the key's own name",
   {
     skip:
       process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
@@ -125,19 +126,19 @@ test(
         : false,
   },
   () => {
-    // The framework's chunks name the dependency store's path. A random store name changed the
-    // compiler's assets on every fresh store, and its Worker with them (#1811).
+    // The framework's chunks name the dependency store's path, and the compiler serves them, so a
+    // store under any other name (a random one) changes its Worker with no source change (#1811).
+    const { key } = JSON.parse(
+      readFileSync(resolve(upstream, ".basalt-dependencies.json"), "utf8"),
+    );
     const framework = readFileSync(
       resolve(upstream, ".local/basalt-framework/framework.json"),
       "utf8",
     );
-    const random = framework.match(
-      /generations\/[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}/u,
-    );
-    assert.equal(
-      random,
-      null,
-      `a random store name reached the framework (${random?.[0]}): a broken generation still holds the key's name until the collector frees it`,
+    const names = new Set([...framework.matchAll(/generations\/([^/"\\]+)/gu)].map((m) => m[1]));
+    assert.deepEqual(
+      [...names].filter((name) => name !== generationName(key)),
+      [],
     );
   },
 );

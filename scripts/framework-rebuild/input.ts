@@ -51,7 +51,7 @@ export function frameworkPreparation(source: string) {
 export function pinnedPreparation(source: string, input: RebuildInput) {
   const entry = 'const entry = join(upstreamCache(), "prepared", pin, key);';
   // Since #1811 a generation is named by its dependency key, so nothing is left to pin.
-  if (source.split("const id = generationName(key);").length === 2) {
+  if (source.includes("export const generationName = ")) {
     if (input.uuid)
       throw new Error("this source names its generation by its key; no generation UUID applies");
     return source;

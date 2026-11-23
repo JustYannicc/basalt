@@ -18,11 +18,11 @@ import {
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { withCacheLock } from "./upstream-cache.ts";
-import { installUpstreamDependencies } from "./upstream-dependencies.ts";
+import { generationName, installUpstreamDependencies } from "./upstream-dependencies.ts";
 import {
   collectUpstreamDependencies,
   createInstallAttempt,
@@ -374,4 +374,34 @@ test("legacy sibling attempts retain their parent key's live PID-only lock", asy
   await collectUpstreamDependencies("current");
   assert.equal(existsSync(attempt), false);
   assert.equal(existsSync(legacy.entry), false);
+});
+
+// #1811: one key, one store path. A store under any other name gives way once the name is free.
+test("a store under another name gives way to the key's own name once that name is free", async (t) => {
+  const { consumer } = packageFixture(t);
+  const first = await installUpstreamDependencies(consumer, "current");
+  const entry = dirname(dirname(first.store));
+  assert.equal(basename(first.store), generationName(basename(entry)));
+  const publish = (name: string) => {
+    fs.rmSync(join(entry, "current"));
+    fs.symlinkSync(join("generations", name), join(entry, "current"));
+  };
+  // As a store prepared before #1811 was published: under a random name.
+  const random = join(entry, "generations", randomUUID());
+  fs.renameSync(first.store, random);
+  publish(basename(random));
+  const replaced = await installUpstreamDependencies(consumer, "current");
+  assert.equal(replaced.store, first.store, "the key is installed under its own name");
+  assert.match(
+    fs.readFileSync(join(consumer, "node_modules/is-number/index.js"), "utf8"),
+    /module.exports/,
+  );
+  // While a broken generation holds the name, a ready store beside it stays in use: no install.
+  const fallback = `${first.store}-${randomUUID()}`;
+  fs.renameSync(first.store, fallback);
+  fs.mkdirSync(first.store);
+  publish(basename(fallback));
+  const kept = await installUpstreamDependencies(consumer, "current");
+  assert.equal(kept.store, fallback);
+  assert.deepEqual(fs.readdirSync(join(entry, "attempts")), [], "nothing was installed");
 });

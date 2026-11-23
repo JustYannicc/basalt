@@ -101,6 +101,21 @@ function adoptGeneration(entry: string, key: string) {
   return ready;
 }
 
+/**
+ * The generation a prepare uses. A published one under the key's name is used as it is; a ready one
+ * under that name is adopted. A published store under any other name (a random one prepared before
+ * #1811, or a fallback beside a broken named one) is kept only while that name is still taken, or
+ * when the prepare may not install; once the name is free, the key installs under it.
+ */
+function keyedGeneration(entry: string, key: string, cacheHitOnly: boolean) {
+  const published = publishedGeneration(entry, key);
+  if (published && basename(published.store) === generationName(key)) return published;
+  const adopted = adoptGeneration(entry, key);
+  if (adopted) return adopted;
+  if (cacheHitOnly || existsSync(join(entry, "generations", generationName(key)))) return published;
+  return undefined;
+}
+
 function readonlyTree(path: string) {
   for (const entry of readdirSync(path, { withFileTypes: true })) {
     const child = join(path, entry.name);
@@ -131,8 +146,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
   const entry = join(upstreamCache(), "prepared", pin, key);
   const prepared = await withCacheLock(`${entry}.lock`, async () => {
     let generation = await withDependencyStoreLock(() => {
-      // A ready generation can outlive its pointer; its name says which key it holds.
-      const found = publishedGeneration(entry, key) ?? adoptGeneration(entry, key);
+      const found = keyedGeneration(entry, key, cacheHitOnly);
       if (found) rememberDependencyConsumer(root, found.store, true);
       return found;
     });
@@ -178,7 +192,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
           const named = join(entry, "generations", generationName(key));
           // A ready generation under the key's name was adopted above, so one there now is broken,
           // and a checkout may still run from it. The new one takes another name until the
-          // collector frees the key's own, which the next install then uses again.
+          // collector frees the key's own; the first prepare after that installs under it.
           const id = existsSync(named) ? `${basename(named)}-${randomUUID()}` : basename(named);
           const store = join(entry, "generations", id);
           mkdirSync(dirname(store), { recursive: true });

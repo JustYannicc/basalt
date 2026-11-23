@@ -292,7 +292,8 @@ test("workflow dispatch has four inputs, no credentials and uploads only the has
 });
 
 test("a source that names its generation by its key rebuilds without a logged UUID", () => {
-  const named = helper.replace("const id = randomUUID();", "const id = generationName(key);");
+  // The real helper, so a change to how it names generations cannot pass on a stand-in.
+  const named = readFileSync(new URL("./upstream-dependencies.ts", import.meta.url), "utf8");
   const direct = rebuildInput({
     ...environment,
     REBUILD_GENERATION_UUID: "",
