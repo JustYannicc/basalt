@@ -122,11 +122,14 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   let alarm: number | null = null;
   let deadlines: unknown;
   let episode: unknown;
+  let containerEnd: unknown;
   const object = new PoolContainer(
     {
       id: { toString: () => "a".repeat(64) },
       container: {
         running: true,
+        // As in production, a running container's monitor settles only when the container ends.
+        monitor: () => new Promise<void>(() => {}),
         setInactivityTimeout: async () => {},
         start: () => assert.fail("probe warmed compute"),
         destroy: () => assert.fail("probe destroyed compute"),
@@ -164,10 +167,16 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
                 ? deadlines
                 : key === "pool-availability-episode-v1"
                   ? structuredClone(episode)
-                  : undefined,
+                  : key === "runtime-container-end-v1"
+                    ? structuredClone(containerEnd)
+                    : undefined,
           put: async (key: string, value: unknown) => {
             if (key === "pool-availability-episode-v1") {
               episode = structuredClone(value);
+              return;
+            }
+            if (key === "runtime-container-end-v1") {
+              containerEnd = structuredClone(value);
               return;
             }
             assert.equal(key, "pool-alarm-v1:deadlines", "probe wrote storage");
@@ -193,6 +202,11 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
     episode,
     { pool: state.pool, availability: null, reliability: ["collection_unavailable"] },
     "the run remembers the failure it reported",
+  );
+  assert.deepEqual(
+    containerEnd,
+    { current: { startedAt: now } },
+    "the object re-attaches to the container it finds running",
   );
   assert.equal(probeTarget, state.pool);
   assert.ok(f.home.calls.some((call) => call.path.endsWith("/quota/credentials/auth-a")));

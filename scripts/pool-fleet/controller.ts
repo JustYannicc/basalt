@@ -72,6 +72,7 @@ const Inspect = Schema.Struct({
         Schema.Struct({ refusedSince: Schema.Number, lastStatus: Schema.optional(Schema.Number) }),
       ),
     ),
+    lastEnd: Schema.optional(Schema.Unknown),
     // Decoded apart, leniently: a diagnostic must never block the fleet lane's other modes.
     usageRollup: Schema.optional(Schema.Unknown),
   }),
@@ -103,6 +104,7 @@ const FleetInspect = Schema.Struct({
         imageInput: Schema.String,
       }),
     ),
+    recentEnds: Schema.optional(Schema.Array(Schema.Unknown)),
   }),
 });
 export type FleetRow = typeof Row.Type;

@@ -5,6 +5,7 @@ import { isLaunchAuthorization } from "./admission-proof.ts";
 import type { RuntimeWitnessStore } from "./witness-store.ts";
 import type { ControllerState } from "./runtime-state.ts";
 import { stopGracefully } from "./forced-stop.ts";
+import { markStopSent } from "./container-end.ts";
 import {
   StartupStopIntent,
   StartupStopRecord,
@@ -74,6 +75,7 @@ export class RuntimeStartupStop {
     const work = (async () => {
       const monitor = this.ctx.container!.monitor();
       void monitor.catch(() => {});
+      await markStopSent(this.ctx);
       await stopGracefully(this.ctx.container!);
       await monitor.catch((error) => {
         if (!(error instanceof Error) || !Schema.is(Schema.Struct({ exitCode: Schema.Int }))(error))
