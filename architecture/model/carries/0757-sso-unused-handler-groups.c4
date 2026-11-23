@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A route group's handlers defined at the top level of a module another Worker imports for something else are marked pure, so a Worker that serves no route of the group leaves them out, and with them the API definition and every contract it names. The billing and organization handler groups are such groups: the sign-in Worker imports billing and organization code but serves neither group, and leaving them out removed about 211 KB from its upload while every other Worker's upload stayed byte-identical. The build fails when the sign-in Worker's upload contains the hosted, cloud or app-management API definition again."
+    }
+  }
+}

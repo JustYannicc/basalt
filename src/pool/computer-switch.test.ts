@@ -169,7 +169,7 @@ test("switch refuses unavailable pools, other people's computers and unclaimed c
   assert.equal(f.server.calls.filter((call) => call.method === "PATCH").length, 0);
 });
 
-test("removal finds a key from an interrupted mint before it was acknowledged", async () => {
+test("a key an interrupted mint made before it was acknowledged leaves no row and upkeep revokes it", async () => {
   const f = fixture();
   const intent = await f.intent();
   f.server.mintReplyFailure = true;
@@ -179,11 +179,10 @@ test("removal finds a key from an interrupted mint before it was acknowledged", 
     toolsToken: "fake-tools-key",
   });
   assert.equal(minted.status, 503);
+  assert.deepEqual(await f.registry(), {});
   assert.equal(f.server.keys.length, 1);
-  const response = await f.access({ action: "audience", pools: [{ ...pool, users: [owner] }] });
-  assert.equal(response.status, 200, await response.clone().text());
+  await f.expire();
   assert.equal(f.server.keys.length, 0);
-  assert.equal(Object.values(await f.registry())[0]!.state, "removed");
 });
 
 test("removal also revokes a key whose switch took effect but its response failed", async () => {

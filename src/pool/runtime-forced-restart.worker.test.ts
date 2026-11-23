@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
-import { leakedStreamsMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import {
+  forcedRestartBudgetMs,
+  leakedStreamsMs,
+  unservingBoundMs,
+} from "./runtime-slots/forced-restart-timing.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 
@@ -253,7 +257,8 @@ test(
     advance(unservingBoundMs);
     await pass(f);
     assert.deepEqual(f.old.calls.signals, [15]);
-    for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 2_000) {
+    // Past the whole restart budget, which follows the stop grace.
+    for (let elapsed = 0; elapsed <= forcedRestartBudgetMs + 6_000; elapsed += 2_000) {
       await pass(f);
       advance(2_000);
     }
@@ -274,7 +279,7 @@ test(
     };
     await pass(f);
     advance(unservingBoundMs);
-    for (let elapsed = 0; elapsed <= 6 * 60_000; elapsed += 30_000) {
+    for (let elapsed = 0; elapsed <= forcedRestartBudgetMs + 30_000; elapsed += 30_000) {
       await pass(f);
       advance(30_000);
     }

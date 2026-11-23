@@ -509,6 +509,33 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
         );
+      } else if (patch.identity === "cliproxy-home-oauth-session-proxy") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0758-home-oauth-session-proxy.patch");
+        assert.match(patch.retirement.requires, /optional proxy_url on \/oauth\/auth-url/);
+        assert.match(patch.retirement.requires, /never through Home's own proxy or direct/);
+        assert.match(
+          patch.retirement.requires,
+          /through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-safe-stop") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0695-home-safe-stop.patch");
+        assert.match(patch.retirement.requires, /never cancels a claimed provider refresh call/);
+        assert.match(patch.retirement.requires, /refresh_in_flight on its database-free \/healthz/);
+        assert.match(
+          patch.retirement.requires,
+          /cancelled-caller, drain, refused-while-draining and rejection-line regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-scheduler-fail-closed") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0694-home-scheduler-fail-closed.patch");
+        assert.match(patch.retirement.requires, /scheduler-required/);
+        assert.match(patch.retirement.requires, /never falling back to the built-in selector/);
+        assert.match(
+          patch.retirement.requires,
+          /fused, fused-during-pick, never-loaded and unchanged-veto regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-coordination-pool") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0691-home-coordination-pool.patch");

@@ -16,8 +16,11 @@ export async function fixture(
   control?: (request: Request) => Promise<Response>,
   signingKey = "ab".repeat(32),
   database?: DatabaseSync,
-  /** Adds organizations, as every host has, so a device can be approved for a team's tools. */
-  { organizations = false }: { organizations?: boolean } = {},
+  /**
+   * `organizations` adds teams, as every host has, so a device can be approved for a team's tools.
+   * `poolOrigin` sends the host's pool calls to a running pool over HTTP instead of `control`.
+   */
+  { organizations = false, poolOrigin }: { organizations?: boolean; poolOrigin?: string } = {},
 ) {
   const key = Option.some(Redacted.make(signingKey));
   const db: Record<string, Record<string, unknown>[]> = {
@@ -44,6 +47,7 @@ export async function fixture(
       resourceOrigins: { api: [origin], mcp: [origin] },
       oauthRedirectUri: Option.none(),
       nativeSigningKey: key,
+      ...(poolOrigin === undefined ? {} : { nativePoolOrigin: Option.some(poolOrigin) }),
     },
     [],
   );
@@ -165,6 +169,9 @@ export async function fixture(
     userId: signupUser.id as string,
     raw: (path: string, init: RequestInit) =>
       auth.handler(new Request(`${origin}/api/auth${path}`, init)),
+    /** The host's auth routes and the signed-in browser's cookie, as a setup host calls them. */
+    handler: (request: Request) => auth.handler(request),
+    cookies,
     user_code,
     device_code,
     client_id,

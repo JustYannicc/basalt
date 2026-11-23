@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The end-to-end proofs read the product's log as records whichever shape a host printed: one JSON record on a line, as self-host and the runtime adapters' own JSON writers write them, or a hosted Effect line as the local runtime prints its structured object, a JavaScript literal on one line or in a block from an opening to a closing brace, collected per adapter name because adapters interleave their lines. A record keeps its message, its parts, its annotations, its timestamp and its text as written, so a line reader still sees a record that carries no message, such as a JSON line an adapter writes directly; a printed record that is not plain data, or one still being written, stays as its lines. Data step summaries, log messages, a request's native log barrier, refused production operations, the pool migration inventory, compiler phases and runner progress are read through this one reader, so a hosted logging change can't hide them from the proofs, and a reader that finds no report says how many log lines it read and how many naming its report it could not decode."
+    }
+  }
+}
