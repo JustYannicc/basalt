@@ -317,7 +317,8 @@ export const maxSummaryRollupGroups = 200_000;
 /**
  * The summary's first statement. A pool whose rollup is ready reads its targets from the rollup,
  * behind a bounded count of its window's groups; any other pool keeps the raw read behind its
- * bounded window count. A pool ready on v16 reads v16, else one ready on v15 reads v15. A rollup
+ * bounded window count. A pool ready on v16 reads v16 while its window fits the bound, else one
+ * ready on v15 reads v15. A rollup
  * whose tables do not exist yet is never named. One row says which ran, its rollup in `provider`.
  */
 export function summaryModeTargets(
@@ -336,11 +337,19 @@ export function summaryModeTargets(
     ...(peopleTables ? ["v16" as const] : []),
     ...(rollupTables ? ["v15" as const] : []),
   ];
+  // v16 multiplies v15's groups by the people and apps behind them, so a window v15 can serve may
+  // be past the bound on v16: then the pool keeps reading v15 rather than refusing.
+  const fits = (target: "v15" | "v16") =>
+    target === "v16" && present.includes("v15")
+      ? ` AND (SELECT count(*) FROM (SELECT 1 FROM ${usageRollupTargets.v16.hourly} g WHERE g.pool=$1
+          AND g.hour >= '${window.from}'::timestamptz AND g.hour < '${window.to}'::timestamptz
+          LIMIT ${rollupGroups + 1}) f) <= ${rollupGroups}`
+      : "";
   const choice = present.length
     ? `CASE ${present
         .map(
           (target) =>
-            `WHEN EXISTS (SELECT 1 FROM ${usageRollupTargets[target].ready} WHERE pool=$1) THEN '${target}'`,
+            `WHEN EXISTS (SELECT 1 FROM ${usageRollupTargets[target].ready} WHERE pool=$1)${fits(target)} THEN '${target}'`,
         )
         .join(" ")} END`
     : "NULL::text";

@@ -25,6 +25,7 @@ import { summaryHourly } from "./summary-hourly.ts";
 import { summaryIncidents } from "./summary-incidents.ts";
 import { summaryKnownDays } from "./summary-known-days.ts";
 import {
+  maxSummaryRollupGroups,
   rollupCoverageQuery,
   rollupDailyQuery,
   rollupSupportedPrices,
@@ -51,6 +52,7 @@ export async function poolUsageSummary(
   /** Labels the statements that follow, so a failure names its step rather than an ordinal. */
   mark: (step: HistoryReadStep) => void = () => {},
   windowRows = maxSummaryWindowRows,
+  rollupGroups = maxSummaryRollupGroups,
 ): Promise<PoolUsageSummaryResult> {
   const parsed = summaryInput(raw);
   const value = historyObject(raw);
@@ -74,7 +76,7 @@ export async function poolUsageSummary(
       windowRows,
       boundaries,
       settings?.rollup_tables === true,
-      undefined,
+      rollupGroups,
       settings?.people_tables === true,
     );
     mark("targets");

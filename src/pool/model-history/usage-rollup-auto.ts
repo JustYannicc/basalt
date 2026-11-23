@@ -271,7 +271,11 @@ export async function usageRollupTick(
       break;
     }
     if (outcome.kind === "switch") {
-      await storage.put(autoKeys[outcome.rollup], { rollup: outcome.rollup });
+      // The hourly ceilings hold across the switch: v15's sessions of the last hour still count.
+      await storage.put(autoKeys[outcome.rollup], {
+        rollup: outcome.rollup,
+        sessions: (state.sessions ?? []).filter((entry) => at - entry.at < hourMs),
+      });
       return usageRollupTick(storage, session, { ...options, switched: true });
     }
     const spent = {

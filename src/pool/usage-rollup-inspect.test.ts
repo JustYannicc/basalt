@@ -88,5 +88,5 @@ test("the usage rollup's inspect is closed: stored fields only, 16-hex pool ids 
   });
   // The rollup is closed too: only v16 reads as v16, anything else as the v15 it predates.
   assert.equal(usageRollupInspect({ rollup: "v16" }).rollup, "v16");
-  assert.equal(usageRollupInspect({ rollup: "v17" } as never).rollup, "v15");
+  assert.equal(usageRollupInspect({ rollup: "unknown" } as never).rollup, "v15");
 });

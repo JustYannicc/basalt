@@ -396,7 +396,7 @@ test("the inspect lane shows the pool's own usage rollup backfill as one closed 
       { ...usageRollup, rollup: "v16" },
       { ...usageRollup, rollup: "v16" },
     ],
-    [{ ...usageRollup, rollup: "v17" }, null],
+    [{ ...usageRollup, rollup: "unknown" }, null],
     [undefined, null],
     // A shape this lane doesn't know is dropped, and the lane still answers.
     [{ lastStop: 7 }, null],

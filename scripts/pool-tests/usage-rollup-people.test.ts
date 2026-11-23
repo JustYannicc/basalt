@@ -144,7 +144,7 @@ test("once v16 is applied the operator's dry run plans v16 and its apply makes t
       409,
     );
     assert.equal(
-      (await post({ go: true, plan: { ...dry.plan, rollup: "v17" }, digest: dry.digest })).status,
+      (await post({ go: true, plan: { ...dry.plan, rollup: "unknown" }, digest: dry.digest })).status,
       400,
     );
     const applied = (await (
@@ -245,5 +245,100 @@ test("a writer waits for a v16 recompute of its pool, and either rollup's recomp
       await other.query("ROLLBACK").catch(() => {});
       await other.end();
     }
+  });
+});
+
+test("the v16 trigger's merges equal a recompute of the same hours, column by column", async () => {
+  await seriesFixture(async (f) => {
+    const poolId = String((await f.row()).pool);
+    // Several insert statements into the same hours: the trigger merges each into existing groups.
+    for (let i = 0; i < 4; i++) await f.insert(...rows(3, 5));
+    const all = `SELECT * FROM basalt_model_usage_people_hourly ORDER BY ${[
+      "pool",
+      "hour",
+      "source",
+      "account",
+      "attribution",
+      "provider",
+      "model",
+      "person",
+      "app_id",
+      "service_tier",
+      "api_type",
+      "token_quality",
+      "failed",
+      "limited",
+      "cost_basis",
+      "currency",
+      "price_class",
+      "context_band",
+    ]
+      .map((key) => `${key} NULLS FIRST`)
+      .join(",")}`;
+    const merged = (await f.db.query(all)).rows;
+    assert.ok(merged.length > 0);
+    await f.db.query(
+      "SELECT basalt_model_usage_people_recompute($1,'2026-01-01T00:00:00Z','2026-01-01T03:00:00Z')",
+      [poolId],
+    );
+    assert.deepEqual((await f.db.query(all)).rows, merged, "every sum, count and time column");
+  });
+});
+
+test("the switch to v16 keeps the hourly ceilings: v15's sessions of the last hour still count", async () => {
+  await seriesFixture(async (f) => {
+    await disabled(f.db, () => f.insert(...rows(6, 3)));
+    const stored = new Map<string, unknown>();
+    const storage = {
+      get: async <T>(key: string) => structuredClone(stored.get(key)) as T | undefined,
+      put: async (key: string, value: unknown) => void stored.set(key, structuredClone(value)),
+    };
+    const clock = Date.parse("2026-02-01T00:00:00Z");
+    // v15 spent half the hour's time fifty minutes ago, then v16 was applied.
+    const spent = { at: clock - 50 * 60_000, ms: 150_000, walBytes: 0 };
+    await storage.put(usageRollupAutoKey, { lastStop: "budget", sessions: [spent] });
+    const first = await usageRollupTick(storage, (work) => work(f.db), { now: () => clock });
+    assert.equal(first.rollup, "v16");
+    assert.deepEqual(first.sessions?.[0], spent, "v15's session counts against v16's hour");
+  });
+});
+
+test("v16 behind an open insert gives up within its lock timeout, leaves nothing, and applies on a rerun", async () => {
+  await seriesFixture(async (f) => {
+    await withoutPeopleRollup(f.db);
+    const writer = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
+    await writer.connect();
+    try {
+      await writer.query(`SET search_path TO ${f.schema}`);
+      // An insert transaction left open holds the request table against the trigger's DDL.
+      await writer.query("BEGIN");
+      await writer.query(
+        `INSERT INTO basalt_model_requests SELECT * FROM basalt_model_requests WHERE false`,
+      );
+      await writer.query("LOCK TABLE basalt_model_requests IN ROW EXCLUSIVE MODE");
+      const started = performance.now();
+      await assert.rejects(migrateModelHistory(f.db), (error: { code?: string }) => {
+        assert.equal(error.code, "55P03", "a lock timeout, not a stall");
+        return true;
+      });
+      assert.ok(performance.now() - started < 3_000, "it gives up inside its lock timeout");
+      const left = await f.db.query(
+        `SELECT to_regclass('basalt_model_usage_people_hourly') AS hourly,
+          (SELECT count(*)::int FROM pg_trigger WHERE tgname='basalt_model_usage_people_rollup') AS triggers,
+          (SELECT count(*)::int FROM basalt_model_history_migrations
+            WHERE name='model_request_history_v16_usage_rollup_people') AS recorded`,
+      );
+      assert.deepEqual(left.rows[0], { hourly: null, triggers: 0, recorded: 0 }, "nothing left");
+      await writer.query("COMMIT");
+    } finally {
+      await writer.query("ROLLBACK").catch(() => {});
+      await writer.end();
+    }
+    await migrateModelHistory(f.db);
+    const applied = await f.db.query(
+      `SELECT count(*)::int AS n FROM basalt_model_history_migrations
+        WHERE name='model_request_history_v16_usage_rollup_people'`,
+    );
+    assert.equal(applied.rows[0]!.n, 1, "the rerun applies it");
   });
 });

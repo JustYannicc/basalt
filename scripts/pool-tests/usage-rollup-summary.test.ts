@@ -89,13 +89,21 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
   return fixture;
 }
 
-async function summary(db: HistoryDatabase, authority: unknown, by: "provider" | "model") {
+async function summary(
+  db: HistoryDatabase,
+  authority: unknown,
+  by: "provider" | "model",
+  rollupGroups?: number,
+) {
   const to = "2026-01-09T13:37:12.000000123Z";
   return poolUsageSummary(
     db,
     { pool, from: "2026-01-02T23:00:00Z", to, by, authority },
     async () => ({ prices, issues: [] }),
     Date.parse(to),
+    undefined,
+    undefined,
+    rollupGroups,
   );
 }
 
@@ -116,7 +124,7 @@ async function backfill(db: HistoryDatabase, target: UsageRollupTarget) {
 }
 
 /** Both summaries, counting the statements the second one ran. */
-async function summaries(db: HistoryDatabase, authority: unknown) {
+async function summaries(db: HistoryDatabase, authority: unknown, rollupGroups?: number) {
   const statements: string[] = [];
   const counted: HistoryDatabase = {
     query: (text, values) => {
@@ -125,8 +133,8 @@ async function summaries(db: HistoryDatabase, authority: unknown) {
     },
   };
   return {
-    provider: await summary(counted, authority, "provider"),
-    model: await summary(counted, authority, "model"),
+    provider: await summary(counted, authority, "provider", rollupGroups),
+    model: await summary(counted, authority, "model", rollupGroups),
     statements,
   };
 }
@@ -255,5 +263,40 @@ test("an unseparated price tier on a ready pool keeps the rollup read and marks 
     const first = (await f.db.query(bounded.text, bounded.values)).rows;
     assert.ok(first.some((row) => row.kind === "over" && Number(row.window_rows) === 2));
     assert.equal(first.filter((row) => row.kind === "target").length, 0);
+  });
+});
+
+test("a pool whose v16 window is past the group bound keeps reading v15 instead of refusing", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await history(f);
+    // Twenty people behind one provider, model and hour: one v15 group, twenty v16 groups.
+    await f.insert(
+      ...(await Promise.all(
+        Array.from({ length: 20 }, async (_, i) => ({
+          timestamp: timestamp("2026-01-05T10:15:00Z"),
+          provider: "fixture-lab",
+          model: "fixture-model-wide",
+          person: await digest(`fixture-person-${i}`),
+          inputTokens: "100",
+          outputTokens: "10",
+          totalTokens: "110",
+          tokenQuality: "complete" as const,
+        })),
+      )),
+    );
+    const raw = await summaries(f.db, fixture.authority);
+    await backfill(f.db, "v15");
+    await backfill(f.db, "v16");
+    const groups = async (table: string) =>
+      Number((await f.db.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0]!.n);
+    const v15 = await groups("basalt_model_usage_hourly");
+    const v16 = await groups("basalt_model_usage_people_hourly");
+    assert.ok(v16 > v15, `people and apps widen the groups: ${v16} against ${v15}`);
+    // A bound v15's window fits and v16's does not.
+    const read = await summaries(f.db, fixture.authority, v15);
+    assert.ok(!read.statements[3]!.includes("basalt_model_usage_people_hourly"), "still v15");
+    assert.ok(read.statements[3]!.includes("basalt_model_usage_hourly"));
+    assert.deepEqual(data(read.provider), data(raw.provider));
+    assert.deepEqual(data(read.model), data(raw.model));
   });
 });

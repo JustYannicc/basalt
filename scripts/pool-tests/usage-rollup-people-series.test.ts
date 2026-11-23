@@ -55,7 +55,8 @@ const priceTable = async (targets: readonly { provider: string; model: string }[
  * History in every shape the series groups, maps, redacts and prices differently: native, gateway
  * and imported sources, owner imports, people, apps, accounts mapped, hidden, unmapped and absent,
  * every token quality and API type, failures and limits, every cost basis, over a DST change, at
- * sub-microsecond times. Half of it predates the v16 trigger, as production's history does.
+ * sub-microsecond times. Half of it predates the v16 trigger, as production's history does, and
+ * more arrives after the pool is ready, merged by the trigger into groups that already exist.
  */
 async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
   const { visible, hidden, authority } = await accountAuthority();
@@ -64,14 +65,14 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
   const imported = await digest("fixture-import");
   const foreign = await digest("fixture-other-import");
   const poolId = (await digest(pool)).slice(0, 16);
-  const insert = (from: number, to: number, target: string) =>
+  const insert = (from: number, to: number, target: string, salt = "") =>
     f.db.query(
       `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,person,
         account,app_id,attribution,provider,model,service_tier,api_type,input_tokens,output_tokens,
         cache_read_tokens,cache_write_tokens,reasoning_tokens,total_tokens,token_quality,failed,
         status_code,cost,currency,cost_basis,price_version,price_snapshot)
-      SELECT encode(sha256(convert_to('people-'||$10||'-'||n,'UTF8')),'hex'),src,
-        encode(sha256(convert_to('record-'||$10||'-'||n,'UTF8')),'hex'),at,
+      SELECT encode(sha256(convert_to('people-'||$10||$11||'-'||n,'UTF8')),'hex'),src,
+        encode(sha256(convert_to('record-'||$10||$11||'-'||n,'UTF8')),'hex'),at,
         to_char(at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US')||lpad((n%1000)::text,3,'0')||'Z',
         $10,CASE WHEN n%7=0 THEN NULL ELSE ($9::text[])[1+n%6] END,
         CASE WHEN src=$3 THEN 'i:'||repeat(CASE WHEN n%2=0 THEN 'e' ELSE 'f' END,62)
@@ -104,7 +105,7 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
       CROSS JOIN LATERAL (SELECT (ARRAY[$7,$7,$8,$3,$4])[1+n%5]::char(64) AS src,
         '2026-03-27T00:00:00Z'::timestamptz + interval '1 second'*(n*103)
           + interval '1 microsecond'*((n*7919)%1000000) AS at) x`,
-      [from, to, imported, foreign, visible, hidden, home, gateway, persons, target],
+      [from, to, imported, foreign, visible, hidden, home, gateway, persons, target, salt],
     );
   // History before the v16 trigger existed, then history it saw, and another pool's beside it.
   await f.db.query(
@@ -123,6 +124,9 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
     assert.ok(run < 20, "the backfill finishes");
     if ((await runUsageRollup(f.db, plan, 60_000)).status === "complete") break;
   }
+  // After the pool is ready, the trigger alone merges new rows into hours the backfill already
+  // recomputed, which is what a ready pool reads from then on.
+  await insert(1, 1_500, poolId, ":after-ready");
   await f.db.query("ANALYZE basalt_model_requests");
   return { authority, poolId, home, gateway };
 }
