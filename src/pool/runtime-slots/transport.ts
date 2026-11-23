@@ -229,7 +229,11 @@ export class BoundSlotDriver implements SlotDriver {
   async failed(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "failed", { identity }, signal);
     return Schema.decodeUnknownSync(
-      Schema.Struct({ identity: SlotIdentity, stopped: Schema.Boolean }),
+      Schema.Struct({
+        identity: SlotIdentity,
+        stopped: Schema.Boolean,
+        end: Schema.optional(Schema.Unknown),
+      }),
     )(await retirementBody(response, signal));
   }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {

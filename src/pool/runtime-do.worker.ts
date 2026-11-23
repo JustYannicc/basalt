@@ -8,6 +8,7 @@ import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import type { HomePeerSource } from "./runtime-slots/peer-access.ts";
 import type { SlotTarget } from "./runtime-slots/contract.ts";
 import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
+import { watchRunningContainer } from "./runtime-slots/container-end.ts";
 
 /** Code only. The admitted release path must separately create and bind this class. */
 export class PoolRuntime extends DurableObject<EndpointEnvironment> {
@@ -34,6 +35,7 @@ export class PoolRuntime extends DurableObject<EndpointEnvironment> {
       },
     );
     ctx.waitUntil(this.peers.restore().catch(() => {}));
+    watchRunningContainer(ctx);
   }
   fetch(request: Request) {
     if (new URL(request.url).pathname.startsWith(`${homePeerPath}/`))

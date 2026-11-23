@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readEnd } from "./runtime-slots/container-end.ts";
 import { test, type TestContext } from "node:test";
 import { Schema } from "effect";
 import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
@@ -113,12 +114,9 @@ test("a stop longer than its caller's budget answers it without failing, and the
   graceOver();
   await f.settle();
   assert.equal(f.calls.destroy, 1);
-  assert.deepEqual(await f.endpoint.retirement(identity), {
-    identity,
-    retired: true,
-    running: false,
-    provider,
-  });
+  const { end, ...retired } = await f.endpoint.retirement(identity);
+  assert.deepEqual(retired, { identity, retired: true, running: false, provider });
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
 });
 
 test("a monitor() rejection that is no exit keeps the stop to the grace", async (context) => {
@@ -199,12 +197,9 @@ test("a caller that gives up right after the retiring latch still gets its cell 
   await f.settle();
   assert.deepEqual(f.calls.signals, [15], "the latch held a live container that nothing signals");
   assert.equal(f.calls.destroy, 1);
-  assert.deepEqual(await f.endpoint.retirement(identity), {
-    identity,
-    retired: true,
-    running: false,
-    provider,
-  });
+  const { end, ...retired } = await f.endpoint.retirement(identity);
+  assert.deepEqual(retired, { identity, retired: true, running: false, provider });
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
 });
 
 test("an aborted start sends SIGTERM before any destroy", async (context) => {

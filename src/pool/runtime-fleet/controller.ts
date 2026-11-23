@@ -4,6 +4,7 @@ import {
   runtimeFailureCause,
   runtimeFailureDiagnostic,
 } from "../runtime-route-diagnostic.ts";
+import type { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import {
@@ -89,6 +90,8 @@ export interface FleetCell {
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
   failed(identity: SlotIdentity, active: number): Promise<boolean>;
+  /** How the cell's container ended, as its last retirement or failure read said. */
+  lastEnd?(identity: SlotIdentity): RuntimeEnd | undefined;
   /**
    * True only once no instance can run for a start that never served: nothing was ever sent, or the
    * provider proves the instance absent. Without it, such a row holds its place.
@@ -662,7 +665,8 @@ export class RuntimeFleet {
       ? await cell.failed(row.identity, row.active)
       : ((await cell.abandon?.(row.target)) ?? false);
     if (!absent) return;
-    if (row.identity) await this.deps.state.reclaimQuarantined(row.identity);
+    if (row.identity)
+      await this.deps.state.reclaimQuarantined(row.identity, cell.lastEnd?.(row.identity));
     else await this.deps.state.reclaimUnstarted(row.target);
     this.cells.delete(row.target.slotId);
     this.reported.delete(row.target.slotId);
@@ -745,7 +749,7 @@ export class RuntimeFleet {
     if (active !== 0 || actual.active !== 0) return;
     if (!(await cell.retire(identity, () => this.deps.state.beginRetirement(identity)))) return;
     this.cells.delete(row.target.slotId);
-    await this.deps.state.retired(identity);
+    await this.deps.state.retired(identity, cell.lastEnd?.(identity));
     this.atCapacity = false;
   }
   /**
@@ -772,7 +776,7 @@ export class RuntimeFleet {
         (await cell.retired(identity, true))
       ) {
         this.cells.delete(row.target.slotId);
-        await this.deps.state.retired(identity);
+        await this.deps.state.retired(identity, cell.lastEnd?.(identity));
         this.atCapacity = false;
         return;
       }

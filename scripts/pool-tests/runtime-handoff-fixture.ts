@@ -88,6 +88,7 @@ export async function handoffRuntime(
   const storage = options.storage ?? new RuntimeSqlite();
   const background: Promise<unknown>[] = [];
   const stops = new Set<() => void>();
+  const losses = new Set<(error: unknown) => void>();
   const calls = {
     signals: [] as number[],
     start: 0,
@@ -197,7 +198,11 @@ export async function handoffRuntime(
         bootId = crypto.randomUUID();
       },
       async monitor() {
-        if (running) await new Promise<void>((resolve) => stops.add(resolve));
+        if (running)
+          await new Promise<void>((resolve, reject) => {
+            stops.add(resolve);
+            losses.add(reject);
+          });
       },
       async destroy() {
         // Like the platform, which sends nothing for a container that isn't running.
@@ -331,6 +336,17 @@ export async function handoffRuntime(
     signingKey,
     crash: () => {
       running = false;
+    },
+    /**
+     * Every held monitor rejects with an error that is no exit while the container process runs on.
+     * Like the platform's runtime, whose own monitor sets `running` false on any settle, `running`
+     * reads false after it unless a test holds it true to isolate the monitor's outcome.
+     */
+    loseMonitor: (error: unknown, { runningStays = false } = {}) => {
+      if (!runningStays) running = false;
+      for (const lose of losses) lose(error);
+      losses.clear();
+      stops.clear();
     },
     // The same container process reads as running again: same boot, same launch settings.
     revive: () => {
