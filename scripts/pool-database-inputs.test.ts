@@ -12,6 +12,7 @@ import {
   poolDatabaseCommandSources,
   poolDatabaseInputs,
 } from "../src/pool/model-history/sources.ts";
+import { importSpecifiers } from "./pool-history/import-specifiers.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const lockfile = "../.upstream/bun.lock";
@@ -25,9 +26,7 @@ test("the pool database command's key is every file the command runs", () => {
     const file = pending.pop()!;
     if (seen.has(file)) continue;
     seen.add(file);
-    for (const [, specifier] of readFileSync(file, "utf8").matchAll(
-      /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/gu,
-    )) {
+    for (const specifier of importSpecifiers(readFileSync(file, "utf8"))) {
       if (!/^\.{1,2}\//u.test(specifier!)) continue;
       const target = resolve(dirname(file), specifier!);
       assert.ok(existsSync(target), `${relative(root, file)} imports ${specifier}`);

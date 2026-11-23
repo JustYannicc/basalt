@@ -48,6 +48,8 @@ const reasons = [
   "transport",
   "unknown",
 ] as const;
+export const runtimeSteps = steps;
+export const runtimeReasons = reasons;
 // A separate header, so callers on an older release still recognize every reason value.
 const causes = [
   "startup_deadline",

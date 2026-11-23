@@ -157,6 +157,19 @@ export class SlotRefused extends Error {
     this.reason = reason;
   }
 }
+/**
+ * A health answer that came back after the policy lease it reported had run out: the round trip,
+ * not the runtime, was slower than the lease. It carries both, so the miss can say so.
+ */
+export class HealthLeaseElapsed extends SlotRefused {
+  readonly roundTripMs: number;
+  readonly leaseMs: number;
+  constructor(roundTripMs: number, leaseMs: number) {
+    super("unhealthy");
+    this.roundTripMs = roundTripMs;
+    this.leaseMs = leaseMs;
+  }
+}
 export const sameTarget = (left: SlotTarget, right: SlotTarget) =>
   JSON.stringify(Schema.decodeUnknownSync(SlotTarget)(left)) ===
   JSON.stringify(Schema.decodeUnknownSync(SlotTarget)(right));

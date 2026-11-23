@@ -277,6 +277,8 @@ test(
   "periodic supervision replaces a stopped sibling without a discovering model request",
   { timeout: 15_000 },
   async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     await f.bootstrap();
@@ -294,9 +296,24 @@ test(
     await f.settle();
     const [previous] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const dead = f.instances.get(previous!.target.instanceId)!;
-    dead.fixture.crash();
+    // Settle the membership pass first, so the fleet's own health reads decide.
     await f.upkeep();
     await f.settle();
+    dead.fixture.crash();
+    // The first failed read only fences the stopped cell; one 6 s later quarantines it.
+    await f.upkeep();
+    await f.settle();
+    now += 6_000;
+    await f.upkeep();
+    await f.settle();
+    const ended = (await f.send("fleet-inspect")) as {
+      recentEnds?: { slotId: string; failure?: { rule?: string } }[];
+      resources: { target: { slotId: string }; failure?: { rule?: string } }[];
+    };
+    const record =
+      ended.resources.find((row) => row.target.slotId === previous!.target.slotId)?.failure ??
+      ended.recentEnds?.find((entry) => entry.slotId === previous!.target.slotId)?.failure;
+    assert.equal(record?.rule, "failed_twice", JSON.stringify(record));
     const next = await f.resourcesWhen(
       (rows) =>
         rows.length === 1 &&

@@ -52,6 +52,7 @@ test("an existing v6 bulk import journal upgrades through the current schema wit
         "model_request_history_v12_change_feed_once_per_transaction",
         "model_request_history_v13_import_reconcile",
         "model_request_history_v15_usage_rollup",
+        "model_request_history_v16_usage_rollup_people",
       ].sort(),
     );
     assert.deepEqual((await db.query("SELECT id,total_rows FROM basalt_model_import_jobs")).rows, [

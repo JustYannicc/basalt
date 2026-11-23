@@ -7,6 +7,10 @@ import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import { summarySelection } from "../../src/pool/model-history/summary-query.ts";
 import { summaryModeTargets } from "../../src/pool/model-history/summary-rollup-query.ts";
+import {
+  usageRollupTargets,
+  type UsageRollupTarget,
+} from "../../src/pool/model-history/usage-rollup-targets.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -85,60 +89,105 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
   return fixture;
 }
 
-async function summary(db: HistoryDatabase, authority: unknown, by: "provider" | "model") {
+async function summary(
+  db: HistoryDatabase,
+  authority: unknown,
+  by: "provider" | "model",
+  rollupGroups?: number,
+) {
   const to = "2026-01-09T13:37:12.000000123Z";
   return poolUsageSummary(
     db,
     { pool, from: "2026-01-02T23:00:00Z", to, by, authority },
     async () => ({ prices, issues: [] }),
     Date.parse(to),
+    undefined,
+    undefined,
+    rollupGroups,
   );
 }
 
-test("a summary read from the rollup is identical to the same summary read from raw rows", async () => {
+/** Recomputes the fixture's days into one rollup and marks the pool ready on it. */
+async function backfill(db: HistoryDatabase, target: UsageRollupTarget) {
+  const poolId = (await digest(pool)).slice(0, 16);
+  const rollup = usageRollupTargets[target];
+  for (let day = 0; day < 10; day++)
+    await db.query(`SELECT ${rollup.recompute}($1,$2::timestamptz,$3::timestamptz)`, [
+      poolId,
+      new Date(Date.UTC(2025, 11, 31 + day)).toISOString(),
+      new Date(Date.UTC(2025, 11, 32 + day)).toISOString(),
+    ]);
+  await db.query(`INSERT INTO ${rollup.ready} (pool,through) VALUES ($1,$2)`, [
+    poolId,
+    "2026-01-10T00:00:00Z",
+  ]);
+}
+
+/** Both summaries, counting the statements the second one ran. */
+async function summaries(db: HistoryDatabase, authority: unknown, rollupGroups?: number) {
+  const statements: string[] = [];
+  const counted: HistoryDatabase = {
+    query: (text, values) => {
+      statements.push(text);
+      return db.query(text, values);
+    },
+  };
+  return {
+    provider: await summary(counted, authority, "provider", rollupGroups),
+    model: await summary(counted, authority, "model", rollupGroups),
+    statements,
+  };
+}
+
+// Only the reads' own transaction times may differ; every usage figure must not.
+const data = (value: unknown) =>
+  JSON.parse(
+    JSON.stringify(value, (key, field) =>
+      key === "capturedAt" || key === "asOf" ? "read time" : field,
+    ),
+  );
+
+for (const target of ["v15", "v16"] as const)
+  test(`a summary read from the ${target} rollup is identical to the same summary read from raw rows`, async () => {
+    await seriesFixture(async (f) => {
+      const fixture = await history(f);
+      const raw = await summaries(f.db, fixture.authority);
+      await backfill(f.db, target);
+      const rolled = await summaries(f.db, fixture.authority);
+      // The coverage statement names the rollup only on the rollup path.
+      assert.ok(
+        rolled.statements[3]!.includes(usageRollupTargets[target].hourly),
+        "the second read uses the rollup",
+      );
+      assert.ok(!raw.statements[3]!.includes("basalt_model_usage"), "the first read is raw");
+      assert.deepEqual(data(rolled.provider), data(raw.provider));
+      assert.deepEqual(data(rolled.model), data(raw.model));
+      assert.ok(raw.provider.daily.length > 0 && raw.model.models?.status === "available");
+    });
+  });
+
+test("a pool ready on v15 keeps reading v15 until its v16 backfill is complete, then reads v16", async () => {
   await seriesFixture(async (f) => {
     const fixture = await history(f);
-    const raw = {
-      provider: await summary(f.db, fixture.authority, "provider"),
-      model: await summary(f.db, fixture.authority, "model"),
-    };
+    const raw = await summaries(f.db, fixture.authority);
+    await backfill(f.db, "v15");
+    // v16's hours are recomputed, but the pool is not ready on v16 until its backfill finishes.
     const poolId = (await digest(pool)).slice(0, 16);
-    for (let day = 0; day < 10; day++)
-      await f.db.query("SELECT basalt_model_usage_recompute($1,$2::timestamptz,$3::timestamptz)", [
-        poolId,
-        new Date(Date.UTC(2025, 11, 31 + day)).toISOString(),
-        new Date(Date.UTC(2025, 11, 32 + day)).toISOString(),
-      ]);
-    await f.db.query("INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2)", [
-      poolId,
-      "2026-01-10T00:00:00Z",
-    ]);
-    const statements: string[] = [];
-    const counted: HistoryDatabase = {
-      query: (text, values) => {
-        statements.push(text);
-        return f.db.query(text, values);
-      },
-    };
-    const rolled = {
-      provider: await summary(counted, fixture.authority, "provider"),
-      model: await summary(counted, fixture.authority, "model"),
-    };
-    // The coverage statement names the rollup only on the rollup path.
-    assert.ok(
-      statements[3]!.includes("basalt_model_usage_hourly"),
-      "the second read uses the rollup",
+    await f.db.query(
+      "SELECT basalt_model_usage_people_recompute($1,'2026-01-03T00:00:00Z','2026-01-04T00:00:00Z')",
+      [poolId],
     );
-    // Only the reads' own transaction times may differ; every usage figure must not.
-    const data = (value: unknown) =>
-      JSON.parse(
-        JSON.stringify(value, (key, field) =>
-          key === "capturedAt" || key === "asOf" ? "read time" : field,
-        ),
-      );
-    assert.deepEqual(data(rolled.provider), data(raw.provider));
-    assert.deepEqual(data(rolled.model), data(raw.model));
-    assert.ok(raw.provider.daily.length > 0 && raw.model.models?.status === "available");
+    const before = await summaries(f.db, fixture.authority);
+    assert.ok(before.statements[3]!.includes("basalt_model_usage_hourly"), "still v15");
+    assert.ok(!before.statements[3]!.includes("basalt_model_usage_people_hourly"));
+    await f.db.query("DELETE FROM basalt_model_usage_people_hours");
+    await backfill(f.db, "v16");
+    const after = await summaries(f.db, fixture.authority);
+    assert.ok(after.statements[3]!.includes("basalt_model_usage_people_hourly"), "now v16");
+    for (const read of [before, after]) {
+      assert.deepEqual(data(read.provider), data(raw.provider));
+      assert.deepEqual(data(read.model), data(raw.model));
+    }
   });
 });
 
@@ -214,5 +263,40 @@ test("an unseparated price tier on a ready pool keeps the rollup read and marks 
     const first = (await f.db.query(bounded.text, bounded.values)).rows;
     assert.ok(first.some((row) => row.kind === "over" && Number(row.window_rows) === 2));
     assert.equal(first.filter((row) => row.kind === "target").length, 0);
+  });
+});
+
+test("a pool whose v16 window is past the group bound keeps reading v15 instead of refusing", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await history(f);
+    // Twenty people behind one provider, model and hour: one v15 group, twenty v16 groups.
+    await f.insert(
+      ...(await Promise.all(
+        Array.from({ length: 20 }, async (_, i) => ({
+          timestamp: timestamp("2026-01-05T10:15:00Z"),
+          provider: "fixture-lab",
+          model: "fixture-model-wide",
+          person: await digest(`fixture-person-${i}`),
+          inputTokens: "100",
+          outputTokens: "10",
+          totalTokens: "110",
+          tokenQuality: "complete" as const,
+        })),
+      )),
+    );
+    const raw = await summaries(f.db, fixture.authority);
+    await backfill(f.db, "v15");
+    await backfill(f.db, "v16");
+    const groups = async (table: string) =>
+      Number((await f.db.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0]!.n);
+    const v15 = await groups("basalt_model_usage_hourly");
+    const v16 = await groups("basalt_model_usage_people_hourly");
+    assert.ok(v16 > v15, `people and apps widen the groups: ${v16} against ${v15}`);
+    // A bound v15's window fits and v16's does not.
+    const read = await summaries(f.db, fixture.authority, v15);
+    assert.ok(!read.statements[3]!.includes("basalt_model_usage_people_hourly"), "still v15");
+    assert.ok(read.statements[3]!.includes("basalt_model_usage_hourly"));
+    assert.deepEqual(data(read.provider), data(raw.provider));
+    assert.deepEqual(data(read.model), data(raw.model));
   });
 });

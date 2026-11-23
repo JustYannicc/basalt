@@ -14,7 +14,7 @@ import {
   usageRollupHoldLimitMs,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { insertRequests } from "../../src/pool/model-history/store.ts";
-import { seriesFixture } from "./series-fixture.ts";
+import { seriesFixture, v15Fixture } from "./series-fixture.ts";
 
 /** The raw answer the rollup must reproduce exactly: one group per pool, UTC hour, source and model. */
 const raw = `SELECT pool,date_trunc('hour',timestamp) AS hour,source,provider,model,
@@ -155,7 +155,7 @@ test("one insert statement spanning thousands of hours keeps the rollup without 
 });
 
 test("the operator endpoint dry-runs without writes, refuses a changed plan, and applies to ready", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(30, 2));
     await f.db.query(
@@ -216,7 +216,7 @@ test("the operator endpoint dry-runs without writes, refuses a changed plan, and
 });
 
 test("the backfill stops at its write-ahead-log budget, yields to a writer holding the pool, and resumes", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(6, 2));
     await f.db.query(
@@ -270,7 +270,7 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
 });
 
 test("writers on the 500 ms lock timeout never fail while the backfill runs between them", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     for (let hour = 0; hour < 48; hour += 8)
       await f.insert(...rows(8, 20, new Date(Date.UTC(2026, 0, 1, hour)).toISOString()));
@@ -341,7 +341,7 @@ test("writers on the 500 ms lock timeout never fail while the backfill runs betw
 });
 
 test("a recompute cancelled inside the operator's bounded session is retried and stops as slow_hour", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(6, 2));
     await f.db.query(
@@ -370,7 +370,7 @@ test("a recompute cancelled inside the operator's bounded session is retried and
 });
 
 test("a hold past its limit on a pool's last hour ends the call before the next pool", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const first = String((await f.row()).pool);
     const second = "0123456789abcdef";
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
@@ -409,7 +409,7 @@ test("a hold past its limit on a pool's last hour ends the call before the next 
 });
 
 test("an import written in replica mode keeps the rollup, racing a backfill without a deadlock", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const trigger = await f.db.query(
       `SELECT tgenabled FROM pg_trigger WHERE tgname='basalt_model_usage_rollup'
         AND tgrelid=to_regclass('basalt_model_requests')`,
@@ -471,7 +471,7 @@ test("an import written in replica mode keeps the rollup, racing a backfill with
 });
 
 test("the write-ahead-log check covers every hour after the call's first, across pools", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const first = String((await f.row()).pool);
     const second = "0123456789abcdef";
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
@@ -496,7 +496,7 @@ test("the write-ahead-log check covers every hour after the call's first, across
 });
 
 test("a cancelled attempt's hold ends at its error, not at the rollback's return", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(6, 2));
     await f.db.query(
@@ -518,7 +518,7 @@ test("a cancelled attempt's hold ends at its error, not at the rollback's return
 });
 
 test("a cancelled attempt that held past the limit stops as slow_hold inside the bounded session", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(6, 2));
     await f.db.query(
