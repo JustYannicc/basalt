@@ -194,6 +194,10 @@ export async function recomputeUsageRollupHour(
       }
       if (code !== "57014") throw error;
       const phase: UsageRollupSlowPhase = holdStarted === undefined ? "read" : "recompute";
+      // A read the budget cut short of its own limit says nothing about the hour: the call just
+      // ran out of time, so it ends as a budget stop and the hour is not counted as slow.
+      if (phase === "read" && reading < limits.readLimitMs)
+        return { kind: "budget", ...(slow ? { slow } : {}), heldMs: maxHoldMs };
       if (phase === "read") readMs = reading;
       slow = { phase, readMs };
       // Pages a cancelled read reached stay cached, so the next attempt's read gets further.

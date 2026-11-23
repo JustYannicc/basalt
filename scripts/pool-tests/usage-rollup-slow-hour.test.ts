@@ -547,7 +547,9 @@ test("a call over slow warming reads ends within its budget and one attempt's wo
       assert.equal(result.stopped, "budget", JSON.stringify(result));
       const bound = budgetMs < leastAttemptMs ? budgetMs + attemptWorstMs : budgetMs;
       assert.ok(clock.at <= bound, `a ${budgetMs} ms call took ${clock.at} ms`);
-      assert.ok(result.slowHours?.length, "it says which hours were slow");
+      // A call whose only read the budget cut short learned nothing about the hour.
+      if (budgetMs < leastAttemptMs) assert.equal(result.slowHours?.length ?? 0, 0);
+      else assert.ok(result.slowHours?.length, `a ${budgetMs} ms call says which hours were slow`);
     }
     // The hourly ceiling: 299 s of the 300 s spent, so the session gets 1 s and one attempt over it.
     const storage = memoryStorage();
@@ -565,5 +567,45 @@ test("a call over slow warming reads ends within its budget and one attempt's wo
     );
     const spent = (state.sessions ?? []).reduce((sum, entry) => sum + entry.ms, 0);
     assert.ok(spent <= 300_000, `the hour spent ${spent} ms`);
+  });
+});
+
+test("a read the hourly ceiling cuts short is a budget stop: a healthy hour is never counted slow", async () => {
+  await seriesFixture(async (f) => {
+    await f.row();
+    await preexisting(f, rows(6, 3));
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    let limit = Infinity;
+    // Every hour's warming read costs 900 ms, well inside its own 2 s limit; past a shorter limit
+    // it is cancelled.
+    const db: HistoryDatabase = {
+      query: async (text: string, values?: unknown[]) => {
+        if (text.includes("set_config('synchronous_commit'"))
+          limit = Number.parseInt(String(values![0]));
+        if (text.includes("hour_limit")) {
+          clock.at += Math.min(900, limit);
+          if (limit < 900)
+            throw Object.assign(new Error("canceling statement due to statement timeout"), {
+              code: "57014",
+            });
+        }
+        return f.db.query(text, values);
+      },
+    };
+    const stored = new Map<string, unknown>();
+    // 299.5 s of the hourly 300 s is already spent, so the session has 500 ms.
+    stored.set(usageRollupAutoKey, {
+      sessions: [{ at: clock.at - 10 * minute, ms: 299_500, walBytes: 0 }],
+    });
+    const storage = {
+      get: async <T>(key: string) => structuredClone(stored.get(key)) as T | undefined,
+      put: async (key: string, value: unknown) => void stored.set(key, structuredClone(value)),
+    };
+    const state = await usageRollupTick(storage, (work) => work(db), { now: () => clock.at });
+    assert.equal(state.lastStop, "budget");
+    assert.equal(state.lastHour, undefined);
+    assert.equal(state.pausedUntil, undefined);
+    assert.deepEqual(state.slow ?? [], []);
+    assert.deepEqual(usageRollupStuckPools(state), []);
   });
 });
