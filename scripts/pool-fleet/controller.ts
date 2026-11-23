@@ -75,6 +75,8 @@ export const Permission = Schema.Struct({
 const FleetInspect = Schema.Struct({
   result: Schema.Struct({
     permission: Schema.optional(Schema.NullOr(Permission)),
+    inForce: Schema.optional(Schema.Boolean),
+    notInForce: Schema.optional(Schema.String),
     resources: Schema.Array(Row),
     bindings: Schema.Array(
       Schema.Struct({
