@@ -49,15 +49,16 @@ test("a cell we retire ends with our stop mark, never as a crash", async (contex
   assert.equal(end?.stopSent, true, "a stop we sent read as a crash");
 });
 
-test("a monitor that rejects with no exit while the primary is healthy records unknown and starts, stops or recovers nothing", async (context) => {
+test("a monitor's outcome alone decides nothing: with running held true, a rejection with no exit records unknown and nothing starts, stops or recovers", async (context) => {
   quiet(context);
   const f = await fleetWorkerFixture();
   context.after(f.cleanup);
   await f.bootstrap();
   const primary = f.old.identity();
   const before = { ...f.old.calls, signals: [...f.old.calls.signals] };
-  // The monitor's transport is lost; the container runs on and answers its health reads.
-  f.old.loseMonitor(new Error("Network connection lost."));
+  // The monitor's transport is lost; the container runs on and answers its health reads. `running`
+  // is held true, which the platform never does, so only the monitor's outcome could act.
+  f.old.loseMonitor(new Error("Network connection lost."), { runningStays: true });
   for (let pass = 0; pass < 3; pass++) {
     await f.upkeep();
     await f.settle();
@@ -77,4 +78,34 @@ test("a monitor that rejects with no exit while the primary is healthy records u
   const { at, ...end } = record?.current.end ?? { at: undefined };
   assert.equal(typeof at, "number");
   assert.deepEqual(end, { exitCode: null, cause: "unknown", seen: "monitor" });
+});
+
+test("a lost monitor reads running false as on the platform, and upkeep decides the same with the end watch as without it", async (context) => {
+  quiet(context);
+  const passes = async (lose: (f: Awaited<ReturnType<typeof fleetWorkerFixture>>) => void) => {
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    await f.bootstrap();
+    const primary = f.old.identity();
+    const before = { ...f.old.calls, signals: [...f.old.calls.signals] };
+    lose(f);
+    for (let pass = 0; pass < 3; pass++) {
+      await f.upkeep();
+      await f.settle();
+    }
+    const inspected = (await f.send("inspect")) as {
+      selection: { active: { identity: { bootId: string } } };
+    };
+    return {
+      recovered: inspected.selection.active.identity.bootId !== primary.bootId,
+      starts: f.old.calls.start - before.start,
+      destroys: f.old.calls.destroy - before.destroy,
+      signals: f.old.calls.signals.slice(before.signals.length),
+    };
+  };
+  // The end watch hears the rejection and writes its record ...
+  const watched = await passes((f) => f.old.loseMonitor(new Error("Network connection lost.")));
+  // ... or never settles: the same platform state with nothing from the watch.
+  const unwatched = await passes((f) => f.old.crash());
+  assert.deepEqual(watched, unwatched);
 });

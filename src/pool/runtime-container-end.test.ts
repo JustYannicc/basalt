@@ -218,17 +218,22 @@ test("a container gone with no monitor outcome reads as found stopped, and the n
   assert.equal(record?.current.end, undefined);
 });
 
-test("a monitor that rejects with no exit while the container runs records unknown, never a crash", async () => {
+test("a monitor that rejects with no exit records unknown, never a crash", async () => {
   const process = containerProcess();
   const view = process.view();
   const ends = new ContainerEnds(memory(), view, () => 7_000);
   process.start();
   await ends.started();
-  // The transport to the monitor is lost; the container keeps running.
+  // The transport to the monitor is lost. As on the platform, `running` reads false once it settles.
+  let up = true;
   const live = {
-    ...view,
-    running: true,
-    monitor: () => Promise.reject(new Error("transport lost")),
+    get running() {
+      return up;
+    },
+    monitor: () => {
+      up = false;
+      return Promise.reject(new Error("transport lost"));
+    },
   };
   const lost = new ContainerEnds(memory(), live, () => 7_000);
   await lost.constructed();

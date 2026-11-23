@@ -154,7 +154,8 @@ export class ContainerEnds {
   async observe() {
     const pending = this.container.running ? undefined : settling.get(this.container);
     if (pending)
-      await Promise.race([pending, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+      // Two storage operations normally; short, since the reads that call this have a 2 s budget.
+      await Promise.race([pending, new Promise((resolve) => setTimeout(resolve, 250))]);
     const record = await this.read();
     if (
       !record ||
@@ -192,7 +193,7 @@ export class ContainerEnds {
     outcome: { readonly resolved: true } | { readonly error: unknown },
   ) {
     if (watching.get(this.container) === startedAt) watching.delete(this.container);
-    // A rejection that is no exit records `unknown` even with the container up: the monitor only
+    // A rejection that is no exit records `unknown`, whatever `running` reads: the monitor only
     // writes this record, and no start, stop or recovery reads its outcome.
     const record = await this.read();
     if (!record || record.current.startedAt !== startedAt || record.current.end) return;

@@ -337,8 +337,13 @@ export async function handoffRuntime(
     crash: () => {
       running = false;
     },
-    /** Every held monitor rejects with an error that is no exit; the container runs on. */
-    loseMonitor: (error: unknown) => {
+    /**
+     * Every held monitor rejects with an error that is no exit while the container process runs on.
+     * Like the platform's runtime, whose own monitor sets `running` false on any settle, `running`
+     * reads false after it unless a test holds it true to isolate the monitor's outcome.
+     */
+    loseMonitor: (error: unknown, { runningStays = false } = {}) => {
+      if (!runningStays) running = false;
       for (const lose of losses) lose(error);
       losses.clear();
       stops.clear();
