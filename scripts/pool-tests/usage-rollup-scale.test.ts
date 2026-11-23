@@ -367,13 +367,18 @@ test(
   "import rows per second in replica mode, with and without the rollup trigger",
   { skip: !importRows && "set POOL_TEST_ROLLUP_IMPORT_RATE to measure" },
   async () => {
-    await seriesFixture(async (f) => {
-      const rate = async (label: string, offset: number) => {
-        const started = performance.now();
+    // Each run gets its own empty schema, and only the import's transactions are timed.
+    const rate = (label: string, trigger: boolean) =>
+      seriesFixture(async (f) => {
+        if (!trigger)
+          await f.db.query(
+            "ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup",
+          );
+        let inserting = 0;
         for (let at = 0; at < importRows; at += historyBulkBatchSize) {
           const records = await Promise.all(
             Array.from({ length: Math.min(historyBulkBatchSize, importRows - at) }, (_, i) => {
-              const n = offset + at + i;
+              const n = at + i;
               return f.row({
                 timestamp: timestamp(
                   new Date(
@@ -389,11 +394,13 @@ test(
               });
             }),
           );
+          const started = performance.now();
           await f.db.query("BEGIN; SET LOCAL session_replication_role = replica");
           await insertBulkRequests(f.db, records);
           await f.db.query("COMMIT");
+          inserting += performance.now() - started;
         }
-        const seconds = (performance.now() - started) / 1_000;
+        const seconds = inserting / 1_000;
         console.info(
           "ROLLUP_IMPORT_RATE",
           JSON.stringify({
@@ -403,15 +410,8 @@ test(
             rowsPerSecond: Math.round(importRows / seconds),
           }),
         );
-      };
-      await rate("trigger-always", 0);
-      await f.db.query(
-        "ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup",
-      );
-      await rate("trigger-off", importRows);
-      await f.db.query(
-        "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
-      );
-    });
+      });
+    await rate("trigger-off", false);
+    await rate("trigger-always", true);
   },
 );

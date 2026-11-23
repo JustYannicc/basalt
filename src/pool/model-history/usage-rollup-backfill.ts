@@ -158,7 +158,7 @@ export async function runUsageRollup(
   let complete = true;
   // Hours this call recomputed across every pool: only the call's first hour skips the WAL check.
   let callHours = 0;
-  for (const [index, item] of plan.pools.entries()) {
+  for (const item of plan.pools) {
     const pending = (
       await db.query(
         `SELECT h.at FROM generate_series($2::timestamptz,$3::timestamptz-interval '1 hour',
@@ -291,9 +291,9 @@ export async function runUsageRollup(
     });
     if (!complete) break;
     // A hold past the limit ends the call even when it finished its pool, so no later pool's
-    // writers wait behind the next one; the run stops there for a person.
+    // writers wait behind the next one; the call reports progress, and the run stops for a person.
     if (stop === "slow_hold") {
-      if (index < plan.pools.length - 1) complete = false;
+      complete = false;
       break;
     }
   }

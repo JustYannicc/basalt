@@ -456,9 +456,103 @@ test("an import written in replica mode keeps the rollup, racing a backfill with
         complete = (await runUsageRollup(f.db, plan, 200)).status === "complete";
       await imports;
       assert.ok(complete, "the backfill finished beside the import");
+      // Once the pool is ready no backfill recomputes it, so only the trigger can count this batch.
+      const after = await Promise.all(
+        rows(2, 3, "2026-01-01T05:10:00Z").map((row) => f.row({ ...row, model: "after-ready" })),
+      );
+      await importer.query("BEGIN; SET LOCAL session_replication_role = replica");
+      await insertBulkRequests(importer, after);
+      await importer.query("COMMIT");
     } finally {
       await importer.end();
     }
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("the write-ahead-log check covers every hour after the call's first, across pools", async () => {
+  await seriesFixture(async (f) => {
+    const first = String((await f.row()).pool);
+    const second = "0123456789abcdef";
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(1, 2), ...rows(2, 2).map((row) => ({ ...row, pool: second })));
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
+    const at = "2026-01-01T00:00:00.000Z";
+    const plan = {
+      pools: [
+        { pool: first, from: at, to: "2026-01-01T01:00:00.000Z", days: 0 },
+        { pool: second, from: at, to: "2026-01-01T02:00:00.000Z", days: 0 },
+      ],
+    };
+    // A one-byte budget: the call's first hour runs, then the next pool's first hour is checked.
+    const capped = await runUsageRollup(f.db, plan, 60_000, undefined, 1);
+    assert.equal(capped.status, "progress");
+    assert.equal(capped.stopped, "wal");
+    assert.equal(capped.pools[0]!.recomputedHours, 1);
+    assert.equal(capped.pools[1]!.recomputedHours, 0, "the second pool's first hour is checked");
+  });
+});
+
+test("a cancelled attempt's hold ends at its error, not at the rollback's return", async () => {
+  await seriesFixture(async (f) => {
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(6, 2));
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
+    const { plan } = await planUsageRollup(f.db);
+    let clock = 0;
+    // A rollback that takes a second: Postgres released the lock at the error, before it.
+    const slowRollback = {
+      query: async (text: string, values?: unknown[]) => {
+        if (text === "ROLLBACK") clock += 1_000;
+        return f.db.query(text, values);
+      },
+    };
+    const result = await runUsageRollup(slowRollback, plan, 60_000, () => clock, undefined, 1);
+    assert.equal(result.stopped, "slow_hour", "three cancels, none read as a long hold");
+    assert.ok(result.maxHoldMs < usageRollupHoldLimitMs);
+  });
+});
+
+test("a cancelled attempt that held past the limit stops as slow_hold inside the bounded session", async () => {
+  await seriesFixture(async (f) => {
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(6, 2));
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
+    const { plan } = await planUsageRollup(f.db);
+    let clock = 0;
+    const result = await withHistoryDatabase(
+      process.env.POOL_TEST_ADMIN_URL,
+      (db) =>
+        runUsageRollup(
+          {
+            // The lock-and-recompute statement is cancelled after the caller saw 400 ms pass.
+            query: async (text: string, values?: unknown[]) => {
+              if (text.includes("pg_try_advisory_xact_lock")) clock += usageRollupHoldLimitMs + 50;
+              return db.query(text, values);
+            },
+          },
+          plan,
+          60_000,
+          () => clock,
+          undefined,
+          1,
+        ),
+      {
+        createClient: async (connectionString) =>
+          new pg.Client({
+            connectionString,
+            options: `-c search_path=${f.schema}`,
+          }) as unknown as HistoryDatabaseClient,
+      },
+    );
+    assert.equal(result.stopped, "slow_hold");
+    assert.equal(typeof result.slowHour, "string");
+    assert.equal(result.pools[0]!.recomputedHours, 0);
   });
 });
