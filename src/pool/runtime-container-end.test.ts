@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ContainerEnds, classifyEnd } from "./runtime-slots/container-end.ts";
+import {
+  ContainerEnds,
+  classifyEnd,
+  containerEndSettled,
+  readEnd,
+} from "./runtime-slots/container-end.ts";
+import { RuntimeRetirementObservation } from "./runtime-slots/contract.ts";
+import { Schema } from "effect";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 
@@ -55,7 +62,6 @@ function memory() {
     put: async (key: string, value: unknown) => void values.set(key, structuredClone(value)),
   };
 }
-const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 test("each way a container ends is recorded as its own closed cause, never its message", () => {
   const cases: [Parameters<typeof classifyEnd>[0], string, number | null][] = [
@@ -98,11 +104,12 @@ test("each way a container ends is recorded as its own closed cause, never its m
 test("a kill after the start is recorded with its exit code and no stop of ours", async () => {
   const process = containerProcess();
   const storage = memory();
-  const ends = new ContainerEnds(storage, process.view(), () => 1_000);
+  const view = process.view();
+  const ends = new ContainerEnds(storage, view, () => 1_000);
   process.start();
   await ends.started();
   process.end({ error: exit(137) });
-  await settled();
+  await containerEndSettled(view);
   const record = await ends.observe();
   assert.deepEqual(record?.current.end, {
     at: 1_000,
@@ -114,14 +121,54 @@ test("a kill after the start is recorded with its exit code and no stop of ours"
 
 test("a stop we sent is never recorded as a crash, though the platform reads it as a kill", async () => {
   const process = containerProcess();
-  const ends = new ContainerEnds(memory(), process.view(), () => 2_000);
+  const view = process.view();
+  const ends = new ContainerEnds(memory(), view, () => 2_000);
   process.start();
   await ends.started();
   await ends.stopSent();
   // destroy() hands the monitor the same 137 a kill does.
   process.end({ error: exit(137) });
-  await settled();
+  await containerEndSettled(view);
   assert.equal((await ends.observe())?.current.end?.stopSent, true);
+});
+
+test("a stop mark from an attempt that sent nothing doesn't make a later crash ours", async () => {
+  const process = containerProcess();
+  const view = process.view();
+  let clock = 10_000;
+  const ends = new ContainerEnds(memory(), view, () => clock);
+  process.start();
+  await ends.started();
+  // A stop marked, then refused before any signal; the container runs on and later dies itself.
+  await ends.stopSent();
+  clock += 3_600_000;
+  process.end({ error: exit(1) });
+  await containerEndSettled(view);
+  const end = (await ends.observe())?.current.end;
+  assert.equal(end?.exitCode, 1);
+  assert.equal(end?.stopSent, undefined);
+});
+
+test("an end from another version is dropped on the decision paths, never a failed decode", () => {
+  const future = { at: 1, exitCode: null, cause: "oom", seen: "monitor" };
+  assert.equal(readEnd(future), undefined);
+  const observed = Schema.decodeUnknownSync(RuntimeRetirementObservation)({
+    identity: {
+      format: "pool-runtime-slot-v1",
+      controllerId: "controller",
+      slotId: "slot",
+      applicationId: "blue",
+      applicationVersion: "1",
+      instanceId: "instance",
+      imageDigest: `sha256:${"a".repeat(64)}`,
+      imageInput: "image",
+      bootId: "boot",
+    },
+    retired: true,
+    running: false,
+    end: future,
+  });
+  assert.equal(readEnd(observed.end), undefined);
 });
 
 test("an instance constructed while the container runs re-attaches, and hears the exit after a switch", async () => {
@@ -132,10 +179,11 @@ test("an instance constructed while the container runs re-attaches, and hears th
   await new ContainerEnds(storage, before, () => 3_000).started();
   // A new code version: the old instance goes, its monitor with it; the container keeps running.
   process.forget(before);
-  const after = new ContainerEnds(storage, process.view(), () => 4_000);
+  const view = process.view();
+  const after = new ContainerEnds(storage, view, () => 4_000);
   await after.constructed();
   process.end({ error: exit(137) });
-  await settled();
+  await containerEndSettled(view);
   const record = await after.observe();
   assert.equal(record?.current.startedAt, 3_000, "the boot started before the switch");
   assert.deepEqual(record?.current.end, {
@@ -184,7 +232,7 @@ test("a monitor that rejects while the container still runs records no end", asy
   };
   const lost = new ContainerEnds(memory(), live, () => 7_000);
   await lost.constructed();
-  await settled();
+  await containerEndSettled(live);
   assert.equal((await lost.observe())?.current.end, undefined);
 });
 

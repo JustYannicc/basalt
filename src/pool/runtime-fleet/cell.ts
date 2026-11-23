@@ -1,5 +1,5 @@
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
-import type { RuntimeEnd } from "../runtime-slots/container-end.ts";
+import { readEnd, type RuntimeEnd } from "../runtime-slots/container-end.ts";
 import { awaitProbe } from "../availability.ts";
 import {
   SlotRefused,
@@ -211,7 +211,8 @@ export class FleetHandoffCell implements FleetCell {
       actual = await this.deps.driver.retirement(identity, AbortSignal.timeout(2_000));
     }
     if (!sameIdentity(actual.identity, identity) || !actual.retired || actual.running) return false;
-    if (actual.end) this.ends.set(identity.slotId, actual.end);
+    const end = readEnd(actual.end);
+    if (end) this.ends.set(identity.slotId, end);
     const observation = AbortSignal.timeout(15_000);
     return trace.run(
       "provider_absent",
@@ -240,7 +241,8 @@ export class FleetHandoffCell implements FleetCell {
     }
     if (actual?.stopped) {
       if (!sameIdentity(actual.identity, identity)) return false;
-      if (actual.end) this.ends.set(identity.slotId, actual.end);
+      const end = readEnd(actual.end);
+      if (end) this.ends.set(identity.slotId, end);
       return this.deps.provider.absent(this.deps.application, identity.instanceId, undefined, {
         driverStopped: true,
       });

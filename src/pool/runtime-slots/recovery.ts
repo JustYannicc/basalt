@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { RuntimeEnd } from "./container-end.ts";
+import { RuntimeEnd, readEnd } from "./container-end.ts";
 import {
   AdmissionProof,
   StartupWitness,
@@ -35,21 +35,18 @@ import { recoveryWarmMs } from "./forced-restart-timing.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
 /**
- * How the primary a recovery replaced had ended. The completion record is cleared once its
- * recovery finishes, so the same commit keeps the end here too, where the controller inspect reads it.
+ * How the primary a recovery replaced had ended, kept by the commit that ends its recovery, where
+ * the controller inspect reads it; the completion record is cleared once that recovery finishes.
  */
 const primaryEndKey = "runtime-slots-v1:primary-last-end";
-const Completion = Schema.Struct({
-  identity: SlotIdentity,
-  fingerprint: Schema.String,
-  previousEnd: Schema.optional(RuntimeEnd),
-});
+const Completion = Schema.Struct({ identity: SlotIdentity, fingerprint: Schema.String });
 const Retained = Schema.Struct({
   authorization: AdmissionProof,
   identity: Schema.optional(SlotIdentity),
   witness: Schema.optional(StartupWitness),
   running: Schema.Boolean,
-  end: Schema.optional(RuntimeEnd),
+  // Read with `readEnd`: an end this code can't read is dropped, never a failed recovery.
+  end: Schema.optional(Schema.Unknown),
 });
 const PrimaryEnd = Schema.Struct({ previous: SlotIdentity, end: RuntimeEnd });
 const isPrimaryEnd = Schema.is(PrimaryEnd);
@@ -372,9 +369,9 @@ export class RuntimeSlotRecovery {
       await transaction.put(completionKey, {
         identity: health.identity,
         fingerprint: original.configurationFingerprint,
-        ...(retained.end ? { previousEnd: retained.end } : {}),
       });
-      if (retained.end) await transaction.put(primaryEndKey, { previous, end: retained.end });
+      const previousEnd = readEnd(retained.end);
+      if (previousEnd) await transaction.put(primaryEndKey, { previous, end: previousEnd });
     });
     await this.finish(health.identity, original.configurationFingerprint, signal);
   }

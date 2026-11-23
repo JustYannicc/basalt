@@ -14,7 +14,7 @@ import {
   type ControllerAccess,
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
-import type { RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
+import { readEnd, type RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
 
@@ -65,6 +65,14 @@ const endSummary = (end: RuntimeEnd) => ({
   seen: end.seen,
   stopSent: end.stopSent === true,
 });
+/** A kept end as closed values, or nothing when this lane can't read it. */
+const keptEnd = (value: unknown, id: (value: Record<string, unknown>) => unknown) => {
+  if (typeof value !== "object" || value === null) return null;
+  const kept = value as Record<string, unknown>;
+  const end = readEnd(kept.end);
+  const key = id(kept);
+  return end && typeof key === "string" ? { key: shortHash(key), ...endSummary(end) } : null;
+};
 
 const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   permission: fleet.permission
@@ -83,13 +91,13 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
     inPhaseMs: row.inPhaseMs ?? null,
     applicationId: row.target.applicationId,
     boot: row.identity ? shortHash(row.identity.bootId) : null,
-    end: row.end ? endSummary(row.end) : null,
   })),
   bindings: fleet.bindings,
-  recentEnds: (fleet.recentEnds ?? []).map(({ slotId, end }) => ({
-    slot: shortHash(slotId),
-    ...endSummary(end),
-  })),
+  // Each kept end of a cell that left, newest first; the key is its slot's short hash.
+  recentEnds: (fleet.recentEnds ?? []).flatMap((value) => {
+    const kept = keptEnd(value, (entry) => entry.slotId);
+    return kept ? [kept] : [];
+  }),
 });
 
 const needAcceptance = ({ acceptance }: DispatchDependencies) =>
@@ -156,9 +164,12 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           policyDigest: view.digest,
-          lastEnd: view.lastEnd
-            ? { boot: shortHash(view.lastEnd.previous.bootId), ...endSummary(view.lastEnd.end) }
-            : null,
+          // How the primary a recovery last replaced had ended; the key is its boot's short hash.
+          lastEnd: keptEnd(view.lastEnd, (entry) =>
+            typeof entry.previous === "object" && entry.previous !== null
+              ? (entry.previous as Record<string, unknown>).bootId
+              : undefined,
+          ),
           // The pool's expiry alert refused by Sentry (spent quota, a rate limit) or, with no
           // lastStatus, never reaching it.
           alertDelivery: view.alertDelivery

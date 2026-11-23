@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readEnd } from "./runtime-slots/container-end.ts";
 import { test, type TestContext } from "node:test";
 import { Schema } from "effect";
 import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
@@ -115,7 +116,7 @@ test("a stop longer than its caller's budget answers it without failing, and the
   assert.equal(f.calls.destroy, 1);
   const { end, ...retired } = await f.endpoint.retirement(identity);
   assert.deepEqual(retired, { identity, retired: true, running: false, provider });
-  assert.equal(end?.stopSent, true, "a stop we sent read as a crash");
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
 });
 
 test("a monitor() rejection that is no exit keeps the stop to the grace", async (context) => {
@@ -198,7 +199,7 @@ test("a caller that gives up right after the retiring latch still gets its cell 
   assert.equal(f.calls.destroy, 1);
   const { end, ...retired } = await f.endpoint.retirement(identity);
   assert.deepEqual(retired, { identity, retired: true, running: false, provider });
-  assert.equal(end?.stopSent, true, "a stop we sent read as a crash");
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
 });
 
 test("an aborted start sends SIGTERM before any destroy", async (context) => {

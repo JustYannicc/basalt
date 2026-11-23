@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { forcedStopGraceMs } from "./forced-restart-timing.ts";
 
 /**
  * How a runtime container last ended, as closed values only: never the platform's message text.
@@ -15,6 +16,16 @@ export const RuntimeEnd = Schema.Struct({
   stopSent: Schema.optional(Schema.Literal(true)),
 });
 export type RuntimeEnd = typeof RuntimeEnd.Type;
+const isRuntimeEnd = Schema.is(RuntimeEnd);
+/**
+ * Decision paths carry the end as an opaque value and read it here: a cause this code doesn't know
+ * yet, from another version during a deploy, is dropped instead of failing the decision.
+ */
+export function readEnd(value: unknown): RuntimeEnd | undefined {
+  return isRuntimeEnd(value) ? value : undefined;
+}
+/** A stop of ours ends the container within its grace and destroy; a later end is the boot's own. */
+const stopSentMs = forcedStopGraceMs + 30_000;
 
 const key = "runtime-container-end-v1";
 const Boot = Schema.Struct({
@@ -38,6 +49,9 @@ interface Storage {
 
 /** The boot each container's monitor watches in this isolate, so one instance attaches once. */
 const watching = new WeakMap<object, number>();
+/** The write a settled monitor is making, so a read right after a stop waits for it. */
+const settling = new WeakMap<object, Promise<void>>();
+const knownEnd = /exited with unexpected exit code|runtime signalled the container to exit/u;
 
 /** What a settled monitor handed over. A rejection that isn't an exit leaves the cause unknown. */
 export function classifyEnd(
@@ -49,7 +63,7 @@ export function classifyEnd(
   if ("resolved" in outcome) return { at, exitCode: 0, cause: "exit", seen: "monitor", ...mark };
   const error = outcome.error;
   const message = error instanceof Error ? error.message.toLowerCase() : "";
-  const trailing = /:\s*(-?\d+)\s*$/u.exec(message);
+  const trailing = knownEnd.test(message) ? /:\s*(-?\d+)\s*$/u.exec(message) : null;
   const exitCode =
     error instanceof Error && hasExitCode(error)
       ? error.exitCode
@@ -101,7 +115,9 @@ export class ContainerEnds {
       exitCode: null,
       cause: "unknown",
       seen: "found_stopped",
-      ...(boot.stopSentAt !== undefined ? { stopSent: true as const } : {}),
+      ...(boot.stopSentAt !== undefined && this.now() - boot.stopSentAt <= stopSentMs
+        ? { stopSent: true as const }
+        : {}),
     };
   }
   /** Right after `container.start()`: the boot before ends here at the latest. */
@@ -136,6 +152,9 @@ export class ContainerEnds {
   }
   /** The record, with a boot found gone and no outcome from this instance's monitor ended. */
   async observe() {
+    const pending = this.container.running ? undefined : settling.get(this.container);
+    if (pending)
+      await Promise.race([pending, new Promise((resolve) => setTimeout(resolve, 1_000))]);
     const record = await this.read();
     if (
       !record ||
@@ -160,12 +179,13 @@ export class ContainerEnds {
       return;
     }
     watching.set(this.container, startedAt);
-    void monitor
+    const settled = monitor
       .then(
         () => this.settle(startedAt, { resolved: true }),
         (error: unknown) => this.settle(startedAt, { error }),
       )
       .catch(() => console.error("POOL_CONTAINER_END_UNRECORDED"));
+    settling.set(this.container, settled);
   }
   private async settle(
     startedAt: number,
@@ -176,7 +196,10 @@ export class ContainerEnds {
     if (this.container.running) return;
     const record = await this.read();
     if (!record || record.current.startedAt !== startedAt || record.current.end) return;
-    const end = classifyEnd(outcome, this.now(), record.current.stopSentAt !== undefined);
+    const at = this.now();
+    const ours =
+      record.current.stopSentAt !== undefined && at - record.current.stopSentAt <= stopSentMs;
+    const end = classifyEnd(outcome, at, ours);
     await this.storage.put(key, { ...record, current: { ...record.current, end } });
   }
 }
@@ -216,4 +239,9 @@ export async function lastContainerEnd(ctx: { storage: Storage; container?: Cont
     .observe()
     .then((record) => record?.current.end)
     .catch(() => undefined);
+}
+
+/** The write a settled monitor makes for this container, for tests that read right after an end. */
+export function containerEndSettled(container: object) {
+  return settling.get(container) ?? Promise.resolve();
 }

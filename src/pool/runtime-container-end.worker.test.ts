@@ -8,11 +8,6 @@ function quiet(context: TestContext) {
   context.mock.method(console, "error", () => {});
   context.mock.method(console, "warn", () => {});
 }
-const withoutTime = (end: { at: number } | undefined) => {
-  if (!end) return end;
-  const { at: _at, ...rest } = end;
-  return rest;
-};
 
 test("the primary a recovery replaced keeps how it ended, and the controller inspect returns it", async (context) => {
   quiet(context);
@@ -32,11 +27,13 @@ test("the primary a recovery replaced keeps how it ended, and the controller ins
   };
   assert.notEqual(inspected.selection.active.identity.bootId, previous.bootId, "recovered");
   assert.equal(inspected.lastEnd?.previous.bootId, previous.bootId);
-  assert.deepEqual(withoutTime(inspected.lastEnd?.end), {
-    exitCode: 0,
-    cause: "exit",
-    seen: "monitor",
-  });
+  // The fixture's kill resolves the monitor, the platform's rejects with 137; the unit tests pin that.
+  const end = inspected.lastEnd?.end as
+    | { cause?: string; seen?: string; stopSent?: true }
+    | undefined;
+  assert.equal(end?.cause, "exit");
+  assert.equal(end?.seen, "monitor");
+  assert.equal(end?.stopSent, undefined, "a kill we didn't send read as our stop");
 });
 
 test("a cell we retire ends with our stop mark, never as a crash", async (context) => {
@@ -47,10 +44,7 @@ test("a cell we retire ends with our stop mark, never as a crash", async (contex
   assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
   assert.equal(await f.cell.retire(selected, async () => {}), true);
   await f.settle();
-  assert.deepEqual(withoutTime(f.cell.lastEnd(selected)), {
-    exitCode: 0,
-    cause: "exit",
-    seen: "monitor",
-    stopSent: true,
-  });
+  const end = f.cell.lastEnd(selected);
+  assert.equal(end?.seen, "monitor");
+  assert.equal(end?.stopSent, true, "a stop we sent read as a crash");
 });

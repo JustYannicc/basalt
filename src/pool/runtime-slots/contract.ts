@@ -1,5 +1,4 @@
 import { Schema } from "effect";
-import { RuntimeEnd } from "./container-end.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import type { RuntimeDistance } from "../runtime-distance.ts";
 
@@ -140,8 +139,8 @@ export const RuntimeRetirementObservation = Schema.Struct({
   retireNotStarted: Schema.optional(Schema.Literal(true)),
   /** The retiring latch is set and the container still runs: its stop hasn't ended yet. */
   stopping: Schema.optional(Schema.Literal(true)),
-  /** How this object's container last ended, once it has. */
-  end: Schema.optional(RuntimeEnd),
+  /** How this object's container last ended, once it has; read it with `readEnd`. */
+  end: Schema.optional(Schema.Unknown),
   provider: Schema.optional(
     Schema.Struct({
       accountId: Identifier,

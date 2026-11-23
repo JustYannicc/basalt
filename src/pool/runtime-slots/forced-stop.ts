@@ -72,7 +72,6 @@ export class RuntimeForcedStop {
     );
     if (recent.length >= forcedStopsPerHour) return { stopped: false, hard: false, limited: true };
     await ctx.storage.put(stopsKey, [...recent, now]);
-    await markStopSent(ctx);
     const path = await this.signal(container);
     console.error(
       "POOL_RUNTIME_FORCED_STOP",
@@ -127,6 +126,7 @@ export class RuntimeForcedStop {
   private async signal(container: NonNullable<ControllerState["container"]>): Promise<StopPath> {
     // Without SIGTERM the single root's Home, the elected master, would be killed mid-refresh.
     if (!container.signal) return "no_signal";
+    await markStopSent(this.deps.ctx);
     try {
       await signalStop(container);
       // The stopped container is restarted in place, so a clean exit is left as it is.

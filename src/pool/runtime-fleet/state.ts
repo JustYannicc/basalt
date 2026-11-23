@@ -45,8 +45,8 @@ const Row = Schema.Struct({
   phaseAt: Schema.optional(Count),
   // Why a quarantined row holds its place; rows quarantined before this existed carry none.
   reason: Schema.optional(Schema.Literals(quarantineReasons)),
-  // How the cell's container ended, copied when the row leaves.
-  end: Schema.optional(RuntimeEnd),
+  // How the cell's container ended, copied when the row leaves; opaque, so it never fails a decode.
+  end: Schema.optional(Schema.Unknown),
 });
 type Row = typeof Row.Type;
 export type FleetRow = Row;
@@ -59,8 +59,9 @@ const retiredKey = (slot: string) => `runtime-fleet-v1:retired:${slot}`;
 /** The ends of the cells that left last, newest first, which the fleet inspect returns. */
 const recentEndsKey = "runtime-fleet-v1:recent-ends";
 const recentEnds = 8;
-const RecentEnd = Schema.Struct({ slotId: Schema.String, end: RuntimeEnd });
-const RecentEnds = Schema.Array(RecentEnd);
+const isRecentEnd = Schema.is(Schema.Struct({ slotId: Schema.String, end: RuntimeEnd }));
+/** The kept ends this code can read; anything else is dropped, never a failed retirement. */
+const readRecentEnds = (value: unknown) => (Array.isArray(value) ? value.filter(isRecentEnd) : []);
 interface RuntimeReservation {
   kind: "runtime";
   identity: SlotIdentity;
@@ -511,14 +512,14 @@ export class RuntimeFleetState {
   }
   private async keepEnd(transaction: SlotStorage, identity: SlotIdentity, end?: RuntimeEnd) {
     if (!end) return;
-    const kept = Schema.decodeUnknownSync(RecentEnds)((await transaction.get(recentEndsKey)) ?? []);
+    const kept = readRecentEnds(await transaction.get(recentEndsKey));
     await transaction.put(
       recentEndsKey,
       [{ slotId: identity.slotId, end }, ...kept].slice(0, recentEnds),
     );
   }
   async recentEnds(storage: SlotStorage = this.storage) {
-    return Schema.decodeUnknownSync(RecentEnds)((await storage.get(recentEndsKey)) ?? []);
+    return readRecentEnds(await storage.get(recentEndsKey));
   }
   async released(identity: SlotIdentity) {
     const value = await this.storage.get(retiredKey(identity.slotId));

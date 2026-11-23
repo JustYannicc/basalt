@@ -1,5 +1,4 @@
 import { runtimeInput } from "./input.ts";
-import { RuntimeEnd } from "./container-end.ts";
 import { remoteRuntimeDefect, runtimeErrorResponse } from "./request-error.ts";
 import { EndpointTrace, failEndpointResponse } from "../runtime-fleet/endpoint-trace.ts";
 import { homeResponse } from "../home-response.ts";
@@ -233,7 +232,7 @@ export class BoundSlotDriver implements SlotDriver {
       Schema.Struct({
         identity: SlotIdentity,
         stopped: Schema.Boolean,
-        end: Schema.optional(RuntimeEnd),
+        end: Schema.optional(Schema.Unknown),
       }),
     )(await retirementBody(response, signal));
   }

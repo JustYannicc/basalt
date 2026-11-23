@@ -162,7 +162,7 @@ export class RuntimeHandoff {
   }
   /** How the last primary a recovery replaced had ended. */
   primaryEnd() {
-    return this.storage.transact((_, transaction) => primaryLastEnd(transaction));
+    return primaryLastEnd(this.ctx.storage);
   }
   resetRecovery() {
     return new UnservingClock(this.storage).reset();

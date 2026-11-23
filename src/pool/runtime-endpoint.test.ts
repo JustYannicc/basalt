@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readEnd } from "./runtime-slots/container-end.ts";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 import { Schema } from "effect";
@@ -142,7 +143,7 @@ test("a reconstructed endpoint waits for the actual response body before destroy
     running: false,
     provider: f.grant.proof.provider,
   });
-  assert.equal(end?.stopSent, true, "a stop we sent read as a crash");
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
   await assert.rejects(f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)));
   assert.equal(f.calls.destroy, 1);
 });

@@ -72,10 +72,10 @@ export class RuntimeStartupStop {
     await this.store.dropIfEnded(intent.target);
     if (!this.ctx.container!.running) return this.inspect(intent);
     await this.ctx.storage.put(startupStopKey(intent.target), { ...record, destroySent: true });
-    await markStopSent(this.ctx);
     const work = (async () => {
       const monitor = this.ctx.container!.monitor();
       void monitor.catch(() => {});
+      await markStopSent(this.ctx);
       await stopGracefully(this.ctx.container!);
       await monitor.catch((error) => {
         if (!(error instanceof Error) || !Schema.is(Schema.Struct({ exitCode: Schema.Int }))(error))
