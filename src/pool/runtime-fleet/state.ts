@@ -585,6 +585,12 @@ export class RuntimeFleetState {
         throw new FleetRefused("identity");
       await transaction.put(retiredKey(target.slotId), row);
       await this.keepEnd(transaction, row);
+      // A demand replacement that never served still owes the replacement it reserved against.
+      if (row.replacement === true)
+        await transaction.put(
+          replacementKey,
+          Math.min(this.maximum, (await this.replacements(transaction)) + 1),
+        );
       rows.splice(rows.indexOf(row), 1);
     });
   }

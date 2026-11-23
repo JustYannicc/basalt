@@ -4,7 +4,7 @@ import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-stor
 import { fleetCellFixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { FleetAdmission } from "./runtime-fleet/admission.ts";
-import { RuntimeFleetState } from "./runtime-fleet/state.ts";
+import { RuntimeFleetState, type FleetRow } from "./runtime-fleet/state.ts";
 import { readFailure } from "./runtime-fleet/failure-record.ts";
 import { SlotFirstStart } from "./runtime-slots/first-start.ts";
 import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
@@ -70,13 +70,12 @@ async function startingCell(context: TestContext, previous?: SlotIdentity) {
     while (pending.length) await Promise.allSettled(pending.splice(0));
     return state.inspect();
   };
-  return { f, state, pass };
+  return { f, state, fleet, pass };
 }
 
-test("a start still under way counts as sent before its first-start intent is written", async (context) => {
+test("a start still under way, or one whose first-start intent was written, counts as sent", async (context) => {
   const f = await fleetCellFixture();
   context.after(f.cleanup);
-  assert.equal(await f.cell.sent(f.target), false);
   const held = deferred();
   const envelope = FleetAdmission.prototype.envelope;
   context.mock.method(
@@ -88,10 +87,10 @@ test("a start still under way counts as sent before its first-start intent is wr
     },
   );
   const starting = f.cell.start(f.target);
-  assert.equal(await f.cell.sent(f.target), true, "a start that may yet send counted as unsent");
+  assert.equal(await f.cell.unsent(), false, "a start that may yet send counted as unsent");
   held.resolve();
   await starting;
-  assert.equal(await f.cell.sent(f.target), true);
+  assert.equal(await f.cell.unsent(), false, "a written intent counted as unsent");
 });
 
 test("a start the endpoint refused after its first-start intent was written still goes uncertain", async (context) => {
@@ -112,6 +111,55 @@ test("a planned replacement's start the endpoint refused stays uncertain, since 
   const [row] = await pass();
   assert.equal(row?.phase, "uncertain", "a planned replacement's row left before its record moved");
   assert.equal(row?.failure, undefined);
+});
+
+test("once a start is given up as unsent, a pass that read its row earlier sends nothing, and the row still leaves", async (context) => {
+  const { f, state, fleet, pass } = await startingCell(context);
+  f.transport.refuse["/admit"] = "identity";
+  // Another pass reads the row as warming while growth's start is under way.
+  let earlier: FleetRow | undefined;
+  const dispatch = state.dispatch.bind(state);
+  context.mock.method(state, "dispatch", async (value: SlotTarget) => {
+    await dispatch(value);
+    earlier = (await state.inspect()).find((row) => row.target.slotId === value.slotId);
+  });
+  // Both steps run inside one controller, interleaved as their awaits allow.
+  const steps = fleet as unknown as {
+    start(target: SlotTarget): Promise<void>;
+    upkeepRow(row: FleetRow, rows: readonly FleetRow[]): Promise<void>;
+  };
+  await assert.rejects(steps.start(f.target));
+  assert.equal((await state.inspect())[0]?.phase, "quarantined");
+  assert.ok(earlier);
+  assert.equal(earlier.phase, "warming");
+  // The object admits now: it switched to this code, or its first answer was a passing defect.
+  delete f.transport.refuse["/admit"];
+  await assert.rejects(steps.upkeepRow(earlier, [earlier]));
+  assert.equal(f.calls.start, 0, "a start given up as unsent was sent anyway");
+  assert.equal(f.ctx.container.running, false);
+  assert.deepEqual(await pass(), []);
+});
+
+test("a demand replacement refused before any send gives back the replacement it reserved", async () => {
+  const state = new RuntimeFleetState(new SlotMemory(), 4);
+  const identity = { ...target(1), bootId: crypto.randomUUID() };
+  await state.reserve(target(1));
+  await state.dispatch(target(1));
+  await state.ready(identity);
+  await state.quarantine(identity);
+  await state.reserveReplacement(target(2));
+  assert.equal(await state.replacements(), 0);
+  await state.dispatch(target(2));
+  assert.equal(
+    await state.startRefused(target(2), { path: "start", rule: "evidence", reads: [] }),
+    true,
+  );
+  await state.reclaimUnstarted(target(2));
+  assert.equal(await state.replacements(), 1, "the dead cell's replacement was lost");
+  assert.deepEqual(
+    (await state.inspect()).map((row) => row.target.slotId),
+    [target(1).slotId],
+  );
 });
 
 test("an unreadable first-start intent keeps a refused start uncertain, and its retry, refused once readable, leaves at once", async (context) => {

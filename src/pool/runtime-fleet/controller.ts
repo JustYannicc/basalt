@@ -77,10 +77,10 @@ export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
   observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
   /**
-   * False only when no start for this target can have reached a container: its durable
-   * first-start intent is absent. Without it, every failed start is treated as possibly sent.
+   * True only when no start for this slot can have reached a container, and then the cell starts
+   * nothing more. Without it, every failed start is treated as possibly sent.
    */
-  sent?(target: SlotTarget): Promise<boolean>;
+  unsent?(): Promise<boolean>;
   selected(): Promise<SlotIdentity | undefined>;
   healthy?(identity: SlotIdentity): Promise<RuntimeDistance | undefined | void>;
   forward(
@@ -302,15 +302,16 @@ export class RuntimeFleet {
     }
   }
   /**
-   * The endpoint refused this start before its first-start intent was written, so nothing reached
-   * a container and the same object would refuse a retry. A local failure before any send, such as
-   * an absent provider secret, carries no remote diagnostic and retries the same slot instead. A
-   * planned replacement's record follows its new row by target, so that row keeps the same path.
+   * The endpoint answered this start with a refusal before its first-start intent was written, so
+   * nothing reached a container and a fresh slot does all a retry could. A local failure before
+   * any send, such as an absent provider secret, carries no remote diagnostic and retries the same
+   * slot instead. A planned replacement's record follows its new row by target, so that row keeps
+   * the same path.
    */
   private async refusedUnsent(cell: FleetCell, target: SlotTarget, error: unknown) {
     if (runtimeRouteDiagnostic(error) === undefined) return false;
     const row = (await this.deps.state.inspect()).find((value) => sameTarget(value.target, target));
-    return row !== undefined && row.replaces === undefined && (await cell.sent?.(target)) === false;
+    return row !== undefined && row.replaces === undefined && (await cell.unsent?.()) === true;
   }
   /**
    * A start the endpoint refused before anything was sent leaves at once with the refusal, rather

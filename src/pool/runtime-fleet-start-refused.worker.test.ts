@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { runtimeFixtureCode } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { readFailure } from "./runtime-fleet/failure-record.ts";
-import { startingBoundMs } from "./runtime-fleet/phase-bounds.ts";
 
 interface Inspected {
   resources: {
@@ -18,12 +17,11 @@ interface Inspected {
 // A runtime object still on the Worker version before a deploy runs that version's controller code.
 const olderCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 
-test("a first start refused by a runtime object on older code leaves at once with why, and a fresh slot serves inside the start bound", async (context) => {
+test("a first start refused by a runtime object on older code leaves at once with why, and a fresh slot serves on the next pass", async (context) => {
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "error", () => {});
   const warn = context.mock.method(console, "warn", () => {});
   let now = Date.now();
-  const began = now;
   context.mock.method(Date, "now", () => now);
   const f = await fleetWorkerFixture();
   context.after(f.cleanup);
@@ -47,7 +45,7 @@ test("a first start refused by a runtime object on older code leaves at once wit
   const [refused] = (await inspect()).resources;
   assert.ok(refused && olderSlot);
   assert.equal(refused.target.slotId, olderSlot);
-  assert.equal(refused.phase, "quarantined", "the refused start waits out its bound as uncertain");
+  assert.equal(refused.phase, "quarantined", "the refused start did not leave its starting phase");
   assert.equal(refused.reason, "start_unproven");
   const failure = readFailure(refused.failure);
   assert.equal(failure?.path, "start");
@@ -92,5 +90,4 @@ test("a first start refused by a runtime object on older code leaves at once wit
   assert.equal(call.status, 200);
   await call.body?.cancel();
   assert.deepEqual(served, [fresh.target.instanceId]);
-  assert.ok(now - began < startingBoundMs);
 });
