@@ -5,6 +5,7 @@ import { runAvailabilityProbe } from "./availability-schedule.ts";
 import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
 import { availabilityCron } from "./availability-config.ts";
 import { AvailabilityEpisodes } from "./availability-episode.ts";
+import type { ProbeFailure, ProbeResult } from "./availability.ts";
 
 const env = {
   POOL_AVAILABILITY_TARGET: "fixture-pool",
@@ -558,8 +559,8 @@ test("a failure that continues is reported once per episode, and again after a p
   const episodes = (next: Parameters<AvailabilityEpisodes["open"]>[0]) =>
     new AvailabilityEpisodes(memory).open(next);
   const failing =
-    (...failures: { guard: string; reason: string }[]) =>
-    async () => ({
+    (...failures: ProbeFailure[]) =>
+    async (): Promise<ProbeResult> => ({
       ok: failures.length === 0,
       failures,
     });
@@ -575,7 +576,7 @@ test("a failure that continues is reported once per episode, and again after a p
       .filter((item) => item.type === "event")
       .map((item) => item.payload.tags.error_code);
   };
-  const overdue = { guard: "membership", reason: "renewal_overdue" };
+  const overdue: ProbeFailure = { guard: "membership", reason: "renewal_overdue" };
   assert.deepEqual(await minute(failing(overdue)), [
     "pool_availability_failure",
     "pool_request_reliability_unavailable",
