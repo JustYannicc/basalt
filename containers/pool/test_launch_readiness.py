@@ -96,3 +96,57 @@ class LaunchReadinessTests(unittest.TestCase):
         self.assertNotEqual(ready.generation(), before)
         self.assertEqual(ready.launch_headers(), headers)
         self.assertFalse(ready.snapshot()[0])
+
+
+class ReadinessRefusalTests(unittest.TestCase):
+    """The 503 body names one closed reason; a fused or unproven policy outranks unhealthy services."""
+
+    def readiness(self) -> tuple[Readiness, list[int]]:
+        clock = [1_000_000_000]
+        return Readiness("fixture-management-key", monotonic_ns=lambda: clock[0]), clock
+
+    def test_reasons_in_order(self) -> None:
+        ready, _ = self.readiness()
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_unproven")
+        ready.enable_policy_observations()
+        self.assertTrue(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "degraded")
+        ready.set_ready(True, audit_revision=ready.service_audit_revision())
+        healthy, payload = ready.snapshot()
+        self.assertTrue(healthy)
+        self.assertNotIn("refusal", payload)
+        ready.note_policy_fused(ready.policy_observation_generation())
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+
+    def test_a_fuse_before_the_first_lease_latches_onto_the_next_instance(self) -> None:
+        ready, _ = self.readiness()
+        ready.enable_policy_observations()
+        ready.note_policy_fused(ready.policy_observation_generation())
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        # The first instance seen after the fuse is the fused one: its probes cannot clear it.
+        self.assertFalse(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        self.assertFalse(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        # A newly loaded instance proves the veto again; services still need their audit.
+        self.assertTrue(ready.refresh_policy_lease("b" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "degraded")
+
+    def test_a_fused_instance_stays_fused_until_another_instance_loads(self) -> None:
+        ready, _ = self.readiness()
+        ready.enable_policy_observations()
+        self.assertTrue(ready.refresh_policy_lease("a" * 32))
+        ready.set_ready(True, audit_revision=ready.service_audit_revision())
+        ready.note_policy_fused(ready.policy_observation_generation())
+        self.assertFalse(ready.refresh_policy_lease("a" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_fused")
+        self.assertTrue(ready.refresh_policy_lease("b" * 32))
+        self.assertEqual(ready.snapshot()[1]["refusal"], "degraded")
+
+    def test_an_expired_lease_is_unproven_even_with_healthy_services(self) -> None:
+        ready, clock = self.readiness()
+        ready.enable_policy_observations()
+        self.assertTrue(ready.refresh_policy_lease("a" * 32))
+        ready.set_ready(True, audit_revision=ready.service_audit_revision())
+        clock[0] += 2_000_000_000
+        self.assertEqual(ready.snapshot()[1]["refusal"], "policy_unproven")

@@ -36,7 +36,7 @@ import {
   RuntimeConfiguration,
   type RuntimeEnvironment,
 } from "./configuration.ts";
-import type { ControllerState } from "./runtime-state.ts";
+import type { ControllerState, OwnedRuntimeStorage } from "./runtime-state.ts";
 import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
@@ -66,6 +66,8 @@ const crashHealthTimeoutMs = 1_000;
 const homeManagementPort = 8327;
 export interface EndpointOptions {
   controlPair?: RuntimeControlPair;
+  /** The hosting runtime object's own storage, so an ended slot drops the alarm its start armed. */
+  ownStorage?: OwnedRuntimeStorage;
   beforeStart?(witness: StartupWitness): Promise<void>;
   beforeBootstrap?(identity: SlotIdentity): Promise<void>;
 }
@@ -103,7 +105,12 @@ export class RuntimeEndpoint {
     this.env = env;
     this.role = role;
     this.code = code;
-    this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
+    // The legacy endpoint shares its object's alarm with the pool's own deadlines.
+    this.store = new RuntimeWitnessStore(
+      ctx.storage,
+      env.POOL_DEPLOYMENT_KEY ?? "",
+      role === "runtime" ? options.ownStorage : undefined,
+    );
     this.startupStop = new RuntimeStartupStop(ctx, this.store);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
@@ -602,7 +609,9 @@ export class RuntimeEndpoint {
         signal,
       );
       await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
-      await trace.run("retired_record", () => this.store.put(target, { ...record, retired: true }));
+      await trace.run("retired_record", () =>
+        this.store.retire(target, { ...record, retired: true }),
+      );
     });
   }
   async retirement(identity: SlotIdentity, signal?: AbortSignal) {
