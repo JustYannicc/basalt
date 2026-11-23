@@ -654,3 +654,48 @@ test("the v16 span ends at the hour after the trigger's install hour: that hour 
     assert.deepEqual((await f.db.query(people)).rows, (await f.db.query(raw)).rows);
   });
 });
+
+test("an apply that keeps running past its limit with a short hold names its hour as slow, not an error", async () => {
+  await seriesFixture(async (f) => {
+    const pool = String((await f.row()).pool);
+    await preexisting(f, hours(0, 3, 4));
+    // Test-only: writing the second hour's groups sleeps past the apply's limit, so every apply
+    // of that hour is cancelled while its hold stays short of the hold limit.
+    await f.db
+      .query(`CREATE FUNCTION slow_apply_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+        IF NEW.pool = '${pool}' AND NEW.hour = '${at(1)}'::timestamptz THEN
+          PERFORM pg_sleep(0.2);
+        END IF;
+        RETURN NEW;
+      END $$`);
+    await f.db
+      .query(`CREATE TRIGGER slow_apply_fixture BEFORE INSERT ON basalt_model_usage_people_hourly
+      FOR EACH ROW EXECUTE FUNCTION slow_apply_fixture()`);
+    const { plan } = await planUsageRollup(f.db);
+    const result = await runUsageRollup(f.db, plan, 60_000);
+    assert.equal(result.stopped, "slow_hour", JSON.stringify(result));
+    assert.equal(result.slowHour, at(1));
+    assert.equal(
+      result.pools[0]!.recomputedHours,
+      (Date.parse(at(1)) - Date.parse(plan.pools[0]!.from)) / hour,
+      "every hour before it committed",
+    );
+    await f.db.query("DROP TRIGGER slow_apply_fixture ON basalt_model_usage_people_hourly");
+    const rerun = await runUsageRollup(f.db, (await planUsageRollup(f.db)).plan, 60_000);
+    assert.equal(rerun.status, "complete", JSON.stringify(rerun));
+    assert.deepEqual((await f.db.query(people)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("the span end's margin: an install late in its hour ends the span an hour later", async () => {
+  await seriesFixture(async (f) => {
+    await f.row();
+    await f.db.query(
+      "UPDATE basalt_model_history_migrations SET completed_at='2026-01-01T03:57:00Z' WHERE name=$1",
+      [historyUsagePeopleRollupVersion],
+    );
+    await preexisting(f, hours(0, 4, 2));
+    const { plan } = await planUsageRollup(f.db);
+    assert.equal(plan.pools[0]!.to, at(5), "03:57 plus the margin is in the 04:00 hour");
+  });
+});

@@ -254,9 +254,10 @@ export async function runUsageRollup(
           callHours++;
         }
         if (hour.kind === "done") continue;
-        stop = hour.kind;
+        // An apply that keeps running past its limit is the hour itself being slow under the lock.
+        stop = hour.kind === "slow_apply" ? "slow_hour" : hour.kind;
         if (hour.kind !== "budget" && hour.kind !== "lock") slowHour = at;
-        if (hour.kind === "slow_read" || hour.kind === "changing")
+        if (hour.kind === "slow_read" || hour.kind === "changing" || hour.kind === "slow_apply")
           slow = { phase: hour.kind === "slow_read" ? "read" : "apply", readMs: hour.readMs };
         break;
       }

@@ -16,6 +16,8 @@ const marginMs = 50;
 const refusalsAllowed = 5;
 /** Rows landing in the hour between its read and its apply; this many in a row end the hour. */
 const changesAllowed = 5;
+/** An apply cancelled at its limit with a short hold: this many in a row name the hour as slow. */
+const cancelsAllowed = 3;
 
 /**
  * The Postgres error code behind a failed statement. The bounded session the operator runs in
@@ -68,13 +70,6 @@ const applyStatement = `SELECT r.groups, extract(epoch FROM clock_timestamp() - 
     OFFSET 0
   ) r`;
 
-/** The read alone, in its caller's transaction: the groups and count the apply would compare. */
-export async function readUsagePeopleRollupHour(db: HistoryDatabase, pool: string, at: string) {
-  const limit = (await db.query("SELECT current_setting('statement_timeout') AS v")).rows[0]?.v;
-  const row = (await db.query(readStatement, [pool, at, String(limit)])).rows[0];
-  return { rows: JSON.parse(String(row?.rows)) as unknown[], seen: String(row?.seen) };
-}
-
 export type UsageRollupApplyOutcome =
   /** The hour committed; `heldMs` is the longest hold of any attempt. */
   | { kind: "done"; groups: number; heldMs: number }
@@ -82,6 +77,8 @@ export type UsageRollupApplyOutcome =
   | { kind: "slow_hold"; committed: boolean; groups: number; heldMs: number }
   /** The read ran out its own limit, not the call's budget; `readMs` is that limit. */
   | { kind: "slow_read"; readMs: number; heldMs: number }
+  /** The apply itself kept running past its limit, though its hold stayed short. */
+  | { kind: "slow_apply"; readMs: number; heldMs: number }
   /** Writers kept the pool (`lock`), or rows kept landing in the hour (`changing`). */
   | { kind: "lock" | "changing"; readMs: number; heldMs: number }
   /** The call's budget or a handover ended the hour before it committed. */
@@ -103,6 +100,7 @@ export async function applyUsagePeopleRollupHour(
 ): Promise<UsageRollupApplyOutcome> {
   let refused = 0,
     changed = 0,
+    cancelled = 0,
     maxHoldMs = 0,
     readMs = 0;
   let read: { rows: string; seen: string } | undefined;
@@ -144,6 +142,8 @@ export async function applyUsagePeopleRollupHour(
         await db.query("ROLLBACK");
         const held = Number(written.rows[0]!.held_ms) + (now() - rollbackStarted);
         maxHoldMs = Math.max(maxHoldMs, held);
+        if (held > limits.holdLimitMs)
+          return { kind: "slow_hold", committed: false, groups: 0, heldMs: maxHoldMs };
         read = undefined;
         if (++changed >= changesAllowed) return { kind: "changing", readMs, heldMs: maxHoldMs };
         continue;
@@ -161,12 +161,15 @@ export async function applyUsagePeopleRollupHour(
       const code = postgresCode(error);
       if (holdStarted !== undefined) {
         // A cancelled apply holds the pool until Postgres acts on the cancel; that hold counts
-        // like any other. Under the limit it is a failure like any other.
+        // like any other. Under the limit it is retried with the same read, which the count still
+        // guards, and repeated cancels name the hour as slow rather than failing the call.
         const held = failedAt - holdStarted;
         maxHoldMs = Math.max(maxHoldMs, held);
-        if (code === "57014" && held > limits.holdLimitMs)
+        if (code !== "57014") throw error;
+        if (held > limits.holdLimitMs)
           return { kind: "slow_hold", committed: false, groups: 0, heldMs: maxHoldMs };
-        throw error;
+        if (++cancelled >= cancelsAllowed) return { kind: "slow_apply", readMs, heldMs: maxHoldMs };
+        continue;
       }
       if (code !== "57014") throw error;
       // A read the budget cut short of its own limit says nothing about the hour.
