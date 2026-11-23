@@ -5,6 +5,7 @@ import { physicalPrimaryTargets, sameGeneration, selectedPrimary } from "./physi
 import { slotFirstStartKey } from "../runtime-slots/storage.ts";
 import { runtimeCellKey } from "./cell-state.ts";
 import { RuntimeDistance, distanceClass, type DistanceClass } from "../runtime-distance.ts";
+import { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import { logQuarantine, type PhaseBound } from "./phase-bounds.ts";
 
 const Count = Schema.Number.check(
@@ -44,6 +45,8 @@ const Row = Schema.Struct({
   phaseAt: Schema.optional(Count),
   // Why a quarantined row holds its place; rows quarantined before this existed carry none.
   reason: Schema.optional(Schema.Literals(quarantineReasons)),
+  // How the cell's container ended, copied when the row leaves.
+  end: Schema.optional(RuntimeEnd),
 });
 type Row = typeof Row.Type;
 export type FleetRow = Row;
@@ -53,6 +56,11 @@ const key = "runtime-fleet-v1:resources";
 const primaryKey = "runtime-fleet-v1:primary-active";
 const replacementKey = "runtime-fleet-v1:replacement-demand";
 const retiredKey = (slot: string) => `runtime-fleet-v1:retired:${slot}`;
+/** The ends of the cells that left last, newest first, which the fleet inspect returns. */
+const recentEndsKey = "runtime-fleet-v1:recent-ends";
+const recentEnds = 8;
+const RecentEnd = Schema.Struct({ slotId: Schema.String, end: RuntimeEnd });
+const RecentEnds = Schema.Array(RecentEnd);
 interface RuntimeReservation {
   kind: "runtime";
   identity: SlotIdentity;
@@ -490,15 +498,27 @@ export class RuntimeFleetState {
       return true;
     });
   }
-  reclaimQuarantined(identity: SlotIdentity) {
+  reclaimQuarantined(identity: SlotIdentity, end?: RuntimeEnd) {
     return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
       if (!sameIdentity(row.identity, identity) || row.phase !== "quarantined")
         throw new FleetRefused("identity");
       // Process absence releases compute capacity, not the retained request outcome or count.
-      await transaction.put(retiredKey(identity.slotId), row);
+      await transaction.put(retiredKey(identity.slotId), end ? { ...row, end } : row);
+      await this.keepEnd(transaction, identity, end);
       rows.splice(rows.indexOf(row), 1);
     });
+  }
+  private async keepEnd(transaction: SlotStorage, identity: SlotIdentity, end?: RuntimeEnd) {
+    if (!end) return;
+    const kept = Schema.decodeUnknownSync(RecentEnds)((await transaction.get(recentEndsKey)) ?? []);
+    await transaction.put(
+      recentEndsKey,
+      [{ slotId: identity.slotId, end }, ...kept].slice(0, recentEnds),
+    );
+  }
+  async recentEnds(storage: SlotStorage = this.storage) {
+    return Schema.decodeUnknownSync(RecentEnds)((await storage.get(recentEndsKey)) ?? []);
   }
   async released(identity: SlotIdentity) {
     const value = await this.storage.get(retiredKey(identity.slotId));
@@ -533,12 +553,17 @@ export class RuntimeFleetState {
       rows[rows.indexOf(row)] = { ...row, phase: "retiring" };
     });
   }
-  retired(identity: SlotIdentity) {
+  retired(identity: SlotIdentity, end?: RuntimeEnd) {
     return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
       if (!sameIdentity(row.identity, identity) || row.phase !== "retiring" || row.active !== 0)
         throw new FleetRefused("draining");
-      await transaction.put(retiredKey(row.target.slotId), { ...row, phase: "retired" });
+      await transaction.put(retiredKey(row.target.slotId), {
+        ...row,
+        phase: "retired",
+        ...(end ? { end } : {}),
+      });
+      await this.keepEnd(transaction, identity, end);
       rows.splice(rows.indexOf(row), 1);
     });
   }

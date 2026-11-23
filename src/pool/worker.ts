@@ -70,6 +70,7 @@ import { probePool, type ProbeRuntimeIdentity } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { availabilityRuntime } from "./availability-runtime.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { watchRunningContainer } from "./runtime-slots/container-end.ts";
 import { AvailabilityEpisodes, type AvailabilityEpisode } from "./availability-episode.ts";
 import { observeAutomaticPool } from "./automatic-observation.ts";
 import { automaticRecoveryAuthority } from "./automatic-authority.ts";
@@ -225,6 +226,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       construction: ++controllerConstructions,
       containerRunning: ctx.container?.running ?? null,
     });
+    watchRunningContainer(ctx);
     this.bookmarks = new StorageBookmarks({
       storage: ctx.storage,
       port: {

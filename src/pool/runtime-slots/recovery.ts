@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { RuntimeEnd } from "./container-end.ts";
 import {
   AdmissionProof,
   StartupWitness,
@@ -33,13 +34,30 @@ import { RuntimeForcedRestart } from "./forced-restart.ts";
 import { recoveryWarmMs } from "./forced-restart-timing.ts";
 
 const completionKey = "runtime-slots-v1:recovery-completion";
-const Completion = Schema.Struct({ identity: SlotIdentity, fingerprint: Schema.String });
+/**
+ * How the primary a recovery replaced had ended. The completion record is cleared once its
+ * recovery finishes, so the same commit keeps the end here too, where the controller inspect reads it.
+ */
+const primaryEndKey = "runtime-slots-v1:primary-last-end";
+const Completion = Schema.Struct({
+  identity: SlotIdentity,
+  fingerprint: Schema.String,
+  previousEnd: Schema.optional(RuntimeEnd),
+});
 const Retained = Schema.Struct({
   authorization: AdmissionProof,
   identity: Schema.optional(SlotIdentity),
   witness: Schema.optional(StartupWitness),
   running: Schema.Boolean,
+  end: Schema.optional(RuntimeEnd),
 });
+const PrimaryEnd = Schema.Struct({ previous: SlotIdentity, end: RuntimeEnd });
+const isPrimaryEnd = Schema.is(PrimaryEnd);
+/** How the last primary a recovery replaced had ended, for the controller inspect. */
+export async function primaryLastEnd(storage: { get(key: string): Promise<unknown> }) {
+  const value = await storage.get(primaryEndKey);
+  return isPrimaryEnd(value) ? value : null;
+}
 interface Dependencies {
   storage: RuntimeSlotStorage;
   driver: BoundSlotDriver;
@@ -354,7 +372,9 @@ export class RuntimeSlotRecovery {
       await transaction.put(completionKey, {
         identity: health.identity,
         fingerprint: original.configurationFingerprint,
+        ...(retained.end ? { previousEnd: retained.end } : {}),
       });
+      if (retained.end) await transaction.put(primaryEndKey, { previous, end: retained.end });
     });
     await this.finish(health.identity, original.configurationFingerprint, signal);
   }

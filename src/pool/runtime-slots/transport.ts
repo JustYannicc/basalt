@@ -1,4 +1,5 @@
 import { runtimeInput } from "./input.ts";
+import { RuntimeEnd } from "./container-end.ts";
 import { remoteRuntimeDefect, runtimeErrorResponse } from "./request-error.ts";
 import { EndpointTrace, failEndpointResponse } from "../runtime-fleet/endpoint-trace.ts";
 import { homeResponse } from "../home-response.ts";
@@ -229,7 +230,11 @@ export class BoundSlotDriver implements SlotDriver {
   async failed(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "failed", { identity }, signal);
     return Schema.decodeUnknownSync(
-      Schema.Struct({ identity: SlotIdentity, stopped: Schema.Boolean }),
+      Schema.Struct({
+        identity: SlotIdentity,
+        stopped: Schema.Boolean,
+        end: Schema.optional(RuntimeEnd),
+      }),
     )(await retirementBody(response, signal));
   }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {

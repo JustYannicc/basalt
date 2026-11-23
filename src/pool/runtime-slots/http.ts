@@ -170,6 +170,7 @@ export async function handleRuntimeHandoff(
         result = {
           ...(await handoff.slots.inspect()),
           recovery: await handoff.recoveryState(),
+          lastEnd: await handoff.primaryEnd().catch(() => null),
           // A diagnostic: its read failing must not fail the inspect release flows rely on.
           alertDelivery: (await alertDelivery?.().catch(() => undefined)) ?? null,
         };

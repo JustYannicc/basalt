@@ -4,6 +4,7 @@ import {
   type StartupOptions,
 } from "./runtime-slots/configuration.ts";
 import type { RuntimeState } from "./runtime-slots/runtime-state.ts";
+import { ContainerEnds, markStopSent } from "./runtime-slots/container-end.ts";
 import { PoolLifecycle } from "./lifecycle.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { poolDatabase } from "./database-settings.ts";
@@ -74,8 +75,13 @@ export async function createPoolLifecycle(
         if (record) await launch?.beforeStart?.(record, options);
         launch?.assertStart?.();
         container.start(options);
+        // The one attach site for the root and for cells: every boot gets a monitor.
+        await new ContainerEnds(ctx.storage, container).started();
       },
-      stop: () => container.destroy(),
+      stop: async () => {
+        await markStopSent(ctx);
+        await container.destroy();
+      },
       keepAlive: (duration) => container.setInactivityTimeout(duration),
       status: () =>
         readRuntimeHealth(

@@ -5,6 +5,7 @@ import { Schema } from "effect";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
+import { RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
 import { currentCrashCommand } from "../../src/pool/runtime-crash-contract.ts";
 import {
   SlotIdentity,
@@ -56,6 +57,9 @@ const Inspect = Schema.Struct({
         Schema.Struct({ refusedSince: Schema.Number, lastStatus: Schema.optional(Schema.Number) }),
       ),
     ),
+    lastEnd: Schema.optional(
+      Schema.NullOr(Schema.Struct({ previous: SlotIdentity, end: RuntimeEnd })),
+    ),
   }),
 });
 const Row = Schema.Struct({
@@ -65,6 +69,7 @@ const Row = Schema.Struct({
   active: Schema.Number,
   reason: Schema.optional(Schema.String),
   inPhaseMs: Schema.optional(Schema.Number),
+  end: Schema.optional(RuntimeEnd),
 });
 export const Permission = Schema.Struct({
   operationId: Schema.String,
@@ -82,6 +87,9 @@ const FleetInspect = Schema.Struct({
         applicationId: Schema.String,
         imageInput: Schema.String,
       }),
+    ),
+    recentEnds: Schema.optional(
+      Schema.Array(Schema.Struct({ slotId: Schema.String, end: RuntimeEnd })),
     ),
   }),
 });

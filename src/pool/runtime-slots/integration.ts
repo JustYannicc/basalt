@@ -1,4 +1,4 @@
-import { RuntimeSlotRecovery } from "./recovery.ts";
+import { RuntimeSlotRecovery, primaryLastEnd } from "./recovery.ts";
 import { UnservingClock } from "./unserving-clock.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
@@ -159,6 +159,10 @@ export class RuntimeHandoff {
   /** The forced-restart clock, readable while the runtime refuses: "needs a person" shows here. */
   recoveryState() {
     return new UnservingClock(this.storage).inspect();
+  }
+  /** How the last primary a recovery replaced had ended. */
+  primaryEnd() {
+    return this.storage.transact((_, transaction) => primaryLastEnd(transaction));
   }
   resetRecovery() {
     return new UnservingClock(this.storage).reset();

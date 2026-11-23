@@ -14,6 +14,7 @@ import {
   type ControllerAccess,
 } from "./controller.ts";
 import { crashReadyCell } from "./crash-cell.ts";
+import type { RuntimeEnd } from "../../src/pool/runtime-slots/container-end.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
 
@@ -56,6 +57,15 @@ export interface DispatchDependencies {
 const call = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
 
+/** How a runtime container ended, as closed values: exit code, cause, and whether we stopped it. */
+const endSummary = (end: RuntimeEnd) => ({
+  at: new Date(end.at).toISOString(),
+  exitCode: end.exitCode,
+  cause: end.cause,
+  seen: end.seen,
+  stopSent: end.stopSent === true,
+});
+
 const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
   permission: fleet.permission
     ? {
@@ -73,8 +83,13 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
     inPhaseMs: row.inPhaseMs ?? null,
     applicationId: row.target.applicationId,
     boot: row.identity ? shortHash(row.identity.bootId) : null,
+    end: row.end ? endSummary(row.end) : null,
   })),
   bindings: fleet.bindings,
+  recentEnds: (fleet.recentEnds ?? []).map(({ slotId, end }) => ({
+    slot: shortHash(slotId),
+    ...endSummary(end),
+  })),
 });
 
 const needAcceptance = ({ acceptance }: DispatchDependencies) =>
@@ -141,6 +156,9 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           policyDigest: view.digest,
+          lastEnd: view.lastEnd
+            ? { boot: shortHash(view.lastEnd.previous.bootId), ...endSummary(view.lastEnd.end) }
+            : null,
           // The pool's expiry alert refused by Sentry (spent quota, a rate limit) or, with no
           // lastStatus, never reaching it.
           alertDelivery: view.alertDelivery

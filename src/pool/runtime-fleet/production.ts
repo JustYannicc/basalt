@@ -318,6 +318,7 @@ export class PoolRuntimeFleet {
       bindings: this.deps
         .namespaces()
         .map(({ color, applicationId, imageInput }) => ({ color, applicationId, imageInput })),
+      recentEnds: await this.state.recentEnds(),
     };
   }
   async primaryTarget(operationId: string, applicationId: string): Promise<SlotTarget> {
