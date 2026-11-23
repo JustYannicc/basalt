@@ -18,10 +18,12 @@ export const usageRollupWalPerCall = 32 * 1024 * 1024;
  */
 export const usageRollupHourLimitMs = 150;
 /**
- * The longest the backfill may hold the pool, measured from sending the statement that takes the
- * lock until its commit returns, which bounds the hold on the server. A writer arriving meanwhile
- * waits at most this, inside its own 500 ms lock timeout. The hold is the recompute, one round trip
- * and a commit that does not wait for the WAL flush; a hold over this stops the run, naming the hour.
+ * The longest the backfill may hold the pool. The hold is measured on the server from taking the
+ * lock to the end of the recompute, plus the commit's round trip timed by the caller, so a slow
+ * caller does not inflate it. A recompute cancelled at its timeout returns no server time, so its
+ * hold is timed by the caller until the rollback returns. The hold is normally the recompute, one
+ * round trip and a commit that does not wait for the WAL flush; a hold over this stops the run,
+ * naming the hour. It bounds how often a hold runs long, not how long one lasts on a stalled disk.
  */
 export const usageRollupHoldLimitMs = 350;
 
@@ -177,11 +179,21 @@ export async function runUsageRollup(
           );
           // A try-lock never queues, so no writer ever waits behind a backfill that is itself
           // waiting. Taking it in the recompute's own statement leaves one round trip in the hold.
+          // Each fenced subquery runs before the one around it, so the server's times bracket the
+          // hold from the lock to the end of the recompute.
           holdStarted = now();
           const written = await db.query(
-            `SELECT CASE WHEN pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1))
-              THEN basalt_model_usage_recompute($1,$2::timestamptz,$2::timestamptz + interval '1 hour')
-              END AS groups`,
+            `SELECT r.groups, extract(epoch FROM clock_timestamp() - r.locked_at) * 1000 AS held_ms
+            FROM (
+              SELECT l.locked_at, CASE WHEN l.locked THEN basalt_model_usage_recompute(
+                $1,$2::timestamptz,$2::timestamptz + interval '1 hour') END AS groups
+              FROM (
+                SELECT pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1)) AS locked,
+                  clock_timestamp() AS locked_at
+                OFFSET 0
+              ) l
+              OFFSET 0
+            ) r`,
             [item.pool, at],
           );
           if (written.rows[0]?.groups === null || written.rows[0]?.groups === undefined) {
@@ -193,8 +205,9 @@ export async function runUsageRollup(
             await new Promise((resolve) => setTimeout(resolve, 50));
             continue;
           }
+          const commitStarted = now();
           await db.query("COMMIT");
-          const held = now() - holdStarted;
+          const held = Number(written.rows[0].held_ms) + (now() - commitStarted);
           maxHoldMs = Math.max(maxHoldMs, held);
           groups += Number(written.rows[0].groups);
           recomputedHours++;
