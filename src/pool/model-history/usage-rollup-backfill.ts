@@ -2,7 +2,21 @@ import { digest } from "../backend-users.ts";
 import { HistoryInputError, historyObject, invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { maxSummaryRollupGroups } from "./summary-rollup-query.ts";
-import { historyUsageRollupVersion, usageRollupLockClass } from "./usage-rollup-schema.ts";
+import {
+  applyUsagePeopleRollupHour,
+  postgresCode,
+  usageRollupReadLimitMs,
+} from "./usage-rollup-apply.ts";
+import { historyUsagePeopleRollupVersion } from "./usage-rollup-people-schema.ts";
+import { usageRollupLockClass } from "./usage-rollup-schema.ts";
+import {
+  activeUsageRollupTarget,
+  isUsageRollupTarget,
+  usageRollupTargets,
+  type UsageRollupTarget,
+} from "./usage-rollup-targets.ts";
+
+export { usageRollupReadLimitMs } from "./usage-rollup-apply.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
 export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
@@ -14,8 +28,8 @@ export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
  */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
- * How long one hour's recompute may run once the backfill holds the pool. There is no raise: an
- * hour slower three times in a row stops the run, naming it, for a person.
+ * How long one hour's recompute (v15) or apply (v16) may run once the backfill holds the pool.
+ * There is no raise: a v15 hour slower three times in a row stops the run, naming it, for a person.
  */
 export const usageRollupHourLimitMs = 150;
 /**
@@ -30,35 +44,55 @@ export const usageRollupHourLimitMs = 150;
  */
 export const usageRollupHoldLimitMs = 350;
 
+const day = 86_400_000;
+const hour = 3_600_000;
+const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
+const wholeHour = (at: number) => new Date(Math.floor(at / hour) * hour).toISOString();
 /**
- * The Postgres error code behind a failed statement. The bounded session the operator runs in
- * rethrows Postgres's own statement cancel as a history timeout carrying the driver's error as its
- * cause, so a code read only from the error itself would never see a cancel there.
+ * The v16 step's record holds its transaction's start; the trigger took hold later in that
+ * transaction, and a capture's clock can run a little ahead of the database's. Rows written before
+ * the trigger can carry a time this far past the record, so the span covers it.
  */
-function postgresCode(error: unknown): unknown {
-  const code = (value: unknown) =>
-    typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
-  const cause =
-    typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
-  return code(error) === "57014" || code(cause) === undefined ? code(error) : code(cause);
+const installMarginMs = 5 * 60_000;
+
+/**
+ * Where a v16 backfill ends: the start of the hour after the one v16's trigger was installed in,
+ * from the migration's own record. Every row of a later hour was written through the trigger, so
+ * those hours are complete without the backfill, which never works on the live hour.
+ */
+async function usagePeopleRollupThrough(db: HistoryDatabase) {
+  const installed = (
+    await db.query("SELECT completed_at FROM basalt_model_history_migrations WHERE name=$1", [
+      historyUsagePeopleRollupVersion,
+    ])
+  ).rows[0]?.completed_at;
+  const at = installed instanceof Date ? installed.getTime() : Date.parse(String(installed ?? ""));
+  if (!Number.isFinite(at)) throw new Error("The usage rollup migration records no install time");
+  return Date.parse(wholeHour(at + installMarginMs)) + hour;
 }
 
-const day = 86_400_000;
-const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
-
 export interface UsageRollupPlan {
+  /** The rollup the plan recomputes; a plan without one predates v16 and means v15. */
+  readonly rollup?: UsageRollupTarget;
+  /**
+   * Each pool's span: from a midnight to a midnight on v15; on v16 it ends at the hour after the
+   * trigger's install hour once that comes first, so `days` can be fractional there.
+   */
   readonly pools: readonly { pool: string; from: string; to: string; days: number }[];
 }
 
 /**
  * Each pool's whole UTC days that may hold rows written before the rollup's trigger existed. Reads
  * only the pool-time index's ends and the rollup's own small tables; never a usage row's values.
+ * Without a target it plans the newest rollup this database applied.
  */
-export async function planUsageRollup(db: HistoryDatabase) {
-  const ready = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
-    historyUsageRollupVersion,
-  ]);
-  if (!ready.rows.length) throw new Error("The usage rollup migration is not applied");
+export async function planUsageRollup(db: HistoryDatabase, target?: UsageRollupTarget) {
+  const active = await activeUsageRollupTarget(db);
+  const rollup = target ?? active;
+  if (!rollup || (rollup === "v16" && active !== "v16"))
+    throw new Error("The usage rollup migration is not applied");
+  const names = usageRollupTargets[rollup];
+  const through = rollup === "v16" ? await usagePeopleRollupThrough(db) : Infinity;
   const pools = (
     await db.query(`WITH RECURSIVE p AS (
         SELECT min(pool) AS pool FROM basalt_model_requests
@@ -67,17 +101,21 @@ export async function planUsageRollup(db: HistoryDatabase) {
       ) SELECT p.pool,
         (SELECT min(r.timestamp) FROM basalt_model_requests r WHERE r.pool=p.pool) AS first_at,
         (SELECT max(r.timestamp) FROM basalt_model_requests r WHERE r.pool=p.pool) AS last_at,
-        EXISTS (SELECT 1 FROM basalt_model_usage_ready d WHERE d.pool=p.pool) AS ready,
-        (SELECT count(*) FROM basalt_model_usage_hours h WHERE h.pool=p.pool)::int AS hours
+        EXISTS (SELECT 1 FROM ${names.ready} d WHERE d.pool=p.pool) AS ready,
+        (SELECT count(*) FROM ${names.hours} h WHERE h.pool=p.pool)::int AS hours
       FROM p WHERE p.pool IS NOT NULL ORDER BY p.pool`)
   ).rows;
   const plan: UsageRollupPlan = {
+    rollup,
     pools: pools
       .filter((row) => row.ready !== true)
       .map((row) => {
         // The indexed time is rounded to microseconds; start a day early so no first row is missed.
-        const from = midnight(new Date(row.first_at as string | Date).getTime() - day);
-        const to = midnight(new Date(row.last_at as string | Date).getTime() + day);
+        const natural = midnight(new Date(row.last_at as string | Date).getTime() + day);
+        const to = Date.parse(natural) > through ? new Date(through).toISOString() : natural;
+        // A pool whose rows all came after that still spans the hours before it on its day, empty.
+        const first = midnight(new Date(row.first_at as string | Date).getTime() - day);
+        const from = first < to ? first : midnight(Date.parse(to) - hour);
         return {
           pool: String(row.pool),
           from,
@@ -97,16 +135,20 @@ export async function planUsageRollup(db: HistoryDatabase) {
 export function approvedUsageRollupPlan(raw: unknown): UsageRollupPlan {
   const value = historyObject(raw);
   if (!Array.isArray(value.pools) || value.pools.length > 1_000) return invalidHistory();
+  if (value.rollup !== undefined && !isUsageRollupTarget(value.rollup)) return invalidHistory();
   return {
+    ...(value.rollup === undefined ? {} : { rollup: value.rollup }),
     pools: value.pools.map((item) => {
       const pool = historyObject(item);
       const from = String(pool.from),
         to = String(pool.to);
+      // Only a v16 plan's span can end inside a day, at its install's next hour.
+      const end = value.rollup === "v16" ? wholeHour : midnight;
       if (
         typeof pool.pool !== "string" ||
         !/^[0-9a-f]{16}$/.test(pool.pool) ||
         midnight(Date.parse(from)) !== from ||
-        midnight(Date.parse(to)) !== to ||
+        end(Date.parse(to)) !== to ||
         to <= from ||
         pool.days !== (Date.parse(to) - Date.parse(from)) / day
       )
@@ -119,7 +161,8 @@ export function approvedUsageRollupPlan(raw: unknown): UsageRollupPlan {
 /**
  * Recomputes the plan's hours, one hour per transaction, until the time budget runs out. An hour
  * already recomputed is skipped, so a stopped or failed run resumes where it left off; a pool is
- * marked ready only after its last hour. Returns counts only.
+ * marked ready only after its last hour. On v16 every hour goes through the apply: read outside
+ * the lock, then written under it only if nothing landed in the hour since. Returns counts only.
  */
 export async function runUsageRollup(
   db: HistoryDatabase,
@@ -130,8 +173,11 @@ export async function runUsageRollup(
   hourLimitMs = usageRollupHourLimitMs,
   /** True once the caller must end: the call stops at the next hour boundary, like its budget. */
   stopped: () => boolean = () => false,
+  readLimitMs = usageRollupReadLimitMs,
 ) {
   const started = now();
+  const rollup = plan.rollup ?? "v15";
+  const names = usageRollupTargets[rollup];
   // The write-ahead log this call adds, measured on the server before every hour it starts. The
   // insert position counts WAL a commit that skipped the flush has not written out yet.
   const walStart = String(
@@ -146,8 +192,18 @@ export async function runUsageRollup(
         )
       ).rows[0]?.bytes ?? 0,
     );
-  let stop: "budget" | "wal" | "lock" | "slow_hour" | "slow_hold" | undefined;
+  let stop:
+    | "budget"
+    | "wal"
+    | "lock"
+    | "slow_hour"
+    | "slow_hold"
+    | "slow_read"
+    | "changing"
+    | undefined;
   let slowHour: string | undefined;
+  // For a v16 hour that stopped the call: whether its read ran out or its apply kept refusing.
+  let slow: { phase: "read" | "apply"; readMs: number } | undefined;
   let maxHoldMs = 0;
   const pools: {
     pool: string;
@@ -165,7 +221,7 @@ export async function runUsageRollup(
       await db.query(
         `SELECT h.at FROM generate_series($2::timestamptz,$3::timestamptz-interval '1 hour',
           interval '1 hour') AS h(at)
-        WHERE NOT EXISTS (SELECT 1 FROM basalt_model_usage_hours d WHERE d.pool=$1 AND d.hour=h.at)
+        WHERE NOT EXISTS (SELECT 1 FROM ${names.hours} d WHERE d.pool=$1 AND d.hour=h.at)
         ORDER BY h.at`,
         [item.pool, item.from, item.to],
       )
@@ -180,6 +236,29 @@ export async function runUsageRollup(
       // Every call gets one hour through; the hour that crosses the budget is its last.
       if (callHours > 0 && (await walWritten()) >= walBudgetBytes) {
         stop = "wal";
+        break;
+      }
+      if (rollup === "v16") {
+        const hour = await applyUsagePeopleRollupHour(
+          db,
+          item.pool,
+          at,
+          { applyLimitMs: hourLimitMs, readLimitMs, holdLimitMs: usageRollupHoldLimitMs },
+          now,
+          { left: () => budgetMs - (now() - started), stopped },
+        );
+        maxHoldMs = Math.max(maxHoldMs, hour.heldMs);
+        if (hour.kind === "done" || (hour.kind === "slow_hold" && hour.committed)) {
+          groups += hour.groups;
+          recomputedHours++;
+          callHours++;
+        }
+        if (hour.kind === "done") continue;
+        // An apply that keeps running past its limit is the hour itself being slow under the lock.
+        stop = hour.kind === "slow_apply" ? "slow_hour" : hour.kind;
+        if (hour.kind !== "budget" && hour.kind !== "lock") slowHour = at;
+        if (hour.kind === "slow_read" || hour.kind === "changing" || hour.kind === "slow_apply")
+          slow = { phase: hour.kind === "slow_read" ? "read" : "apply", readMs: hour.readMs };
         break;
       }
       // A cold cache can make one attempt slow; three in a row mean the hour itself is too dense.
@@ -205,7 +284,7 @@ export async function runUsageRollup(
           const written = await db.query(
             `SELECT r.groups, extract(epoch FROM clock_timestamp() - r.locked_at) * 1000 AS held_ms
             FROM (
-              SELECT l.locked_at, CASE WHEN l.locked THEN basalt_model_usage_recompute(
+              SELECT l.locked_at, CASE WHEN l.locked THEN ${names.recompute}(
                 $1,$2::timestamptz,$2::timestamptz + interval '1 hour') END AS groups
               FROM (
                 SELECT pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1)) AS locked,
@@ -267,7 +346,7 @@ export async function runUsageRollup(
     let groupsInWindow: number | undefined;
     if (remainingHours === 0) {
       await db.query(
-        `INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2::timestamptz)
+        `INSERT INTO ${names.ready} (pool,through) VALUES ($1,$2::timestamptz)
         ON CONFLICT (pool) DO NOTHING`,
         [item.pool, item.to],
       );
@@ -275,7 +354,7 @@ export async function runUsageRollup(
       groupsInWindow = Number(
         (
           await db.query(
-            `SELECT count(*)::int AS n FROM (SELECT 1 FROM basalt_model_usage_hourly
+            `SELECT count(*)::int AS n FROM (SELECT 1 FROM ${names.hourly}
               WHERE pool=$1 AND hour >= now() - interval '14 weeks' LIMIT $2) g`,
             [item.pool, maxSummaryRollupGroups + 1],
           )
@@ -303,6 +382,7 @@ export async function runUsageRollup(
     status: complete ? ("complete" as const) : ("progress" as const),
     ...(complete ? {} : { stopped: stop ?? "budget" }),
     ...(slowHour ? { slowHour } : {}),
+    ...(slow ? { slowPhase: slow.phase, slowReadMs: Math.round(slow.readMs * 10) / 10 } : {}),
     maxHoldMs: Math.round(maxHoldMs),
     walBytes: await walWritten(),
     pools,

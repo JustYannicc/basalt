@@ -236,8 +236,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           fleet: fleetSummary(fleet),
-          // The pool's own usage rollup backfill: its last tick, stop, pause, pending hours and
-          // any stuck pool, by its 16-hex history id only.
+          // The pool's own usage rollup backfill: its last tick, stop, pause, the hour that stopped
+          // it, pending hours and any stuck pool, by its 16-hex history id only.
           usageRollup: Option.getOrNull(
             Schema.decodeUnknownOption(Schema.NullOr(UsageRollup))(view.usageRollup ?? null),
           ),

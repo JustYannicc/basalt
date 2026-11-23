@@ -49,11 +49,18 @@ const Selection = Schema.Struct({
 });
 /** The pool's own usage rollup backfill, closed: no name, host or account id ever travels. */
 export const UsageRollup = Schema.Struct({
+  /** The rollup the pool backfills now: v15, or v16 once its migration is applied. */
+  rollup: Schema.Literals(["v15", "v16"]),
   lastTickAt: Schema.NullOr(Schema.String),
   lastStop: Schema.NullOr(Schema.String),
   pausedUntil: Schema.NullOr(Schema.String),
+  // Added later: a pool on older code leaves them out, and the rest still prints.
+  lastHour: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHourPhase: Schema.optional(Schema.NullOr(Schema.Literals(["read", "apply"]))),
+  lastHourReadMs: Schema.optional(Schema.NullOr(Schema.Number)),
   pools: Schema.NullOr(Schema.Number),
   pendingHours: Schema.NullOr(Schema.Number),
+  totalPendingHours: Schema.optional(Schema.NullOr(Schema.Number)),
   stuck: Schema.Array(
     Schema.Struct({
       pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
