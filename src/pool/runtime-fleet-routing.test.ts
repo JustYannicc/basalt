@@ -5,7 +5,8 @@ import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-stor
 import { SlotRefused, type SlotIdentity, type SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 import { ControlFailure } from "./json.ts";
-import { RuntimeFleetState } from "./runtime-fleet/state.ts";
+import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
+import { PoolStartupDeadline } from "./lifecycle.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
 import type { PrimaryRoute } from "./runtime-fleet/state.ts";
 import { fleetRouting } from "./runtime-fleet/production.ts";
@@ -952,14 +953,78 @@ test("growth logs its refusal once per change of reason, and again after a launc
   await pass(1100, 0);
   script.push("identity");
   await pass(1300, 3);
+  // A local refusal carries no runtime step or cause: its own reason and class say why.
+  const local = (reason: SlotRefused["reason"]) => [
+    "POOL_FLEET_GROWTH_REFUSED",
+    { step: null, reason, cause: null, error: "SlotRefused" },
+  ];
   assert.deepEqual(
     log.mock.calls.map((call) => call.arguments),
-    [
-      ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
-      ["POOL_FLEET_GROWTH_REFUSED", { reason: "selection" }],
-      ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
-      ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
-    ],
+    [local("identity"), local("selection"), local("identity"), local("identity")],
   );
   assert.equal(f.calls.starts, 1);
+});
+
+test("growth logs the runtime's step, reason and cause with the error's class, and again when any of them changes", async (context) => {
+  const f = fixture(3, 1);
+  const log = context.mock.method(console, "warn", () => {});
+  // As the slot transport keeps a refusal's closed fields from the endpoint's answer.
+  const answered = (
+    error: Error,
+    ...sources: [Error, "endpoint_route" | "endpoint_admission"][]
+  ) => {
+    const headers = new Headers();
+    for (const [source, step] of sources)
+      for (const [name, value] of Object.entries(runtimeFailureHeaders(source, step)))
+        headers.set(name, value);
+    return retainRuntimeFailure(new Response(null, { status: 409, headers }), error);
+  };
+  const identity = new SlotRefused("identity");
+  const script = [
+    answered(new SlotRefused("uncertain"), [identity, "endpoint_route"]),
+    answered(new SlotRefused("uncertain"), [identity, "endpoint_route"]),
+    // The deadline gives the cause; the identity refusal's step and reason override its own.
+    answered(
+      new SlotRefused("uncertain"),
+      [new PoolStartupDeadline(), "endpoint_route"],
+      [identity, "endpoint_route"],
+    ),
+    answered(
+      new FleetRefused("uncertain"),
+      [new PoolStartupDeadline(), "endpoint_route"],
+      [identity, "endpoint_route"],
+    ),
+    answered(
+      new FleetRefused("uncertain"),
+      [new PoolStartupDeadline(), "endpoint_admission"],
+      [identity, "endpoint_admission"],
+    ),
+    new TypeError("synthetic refusal text that never reaches a log"),
+  ];
+  context.mock.method(f.state, "reserve", async () => {
+    throw script.shift();
+  });
+  for (let pass = 1; pass <= 6; pass++) {
+    f.pressure(3);
+    f.advance(200 * (pass + 1));
+    await f.fleet.upkeep();
+    await f.settle();
+  }
+  const fields = (step: string, cause: string | null, error: string) => ({
+    step,
+    reason: "slot_identity",
+    cause,
+    error,
+  });
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments[1]),
+    [
+      fields("endpoint_route", null, "SlotRefused"),
+      fields("endpoint_route", "startup_deadline", "SlotRefused"),
+      fields("endpoint_route", "startup_deadline", "FleetRefused"),
+      fields("endpoint_admission", "startup_deadline", "FleetRefused"),
+      { step: null, reason: null, cause: null, error: "Error" },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(log.mock.calls), /synthetic refusal text/u);
 });

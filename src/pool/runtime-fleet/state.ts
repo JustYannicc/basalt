@@ -353,6 +353,7 @@ export class RuntimeFleetState {
         (await transaction.get(runtimeCellKey(row.target.slotId, slotFirstStartKey))) === undefined
       ) {
         await transaction.put(retiredKey(row.target.slotId), { ...row, phase: "retired" });
+        await this.keepEnd(transaction, row);
       } else retained.push(row.phase === "ready" ? { ...row, phase: "draining" } : row);
     }
     this.stamp(retained, new Map(rows.map((row) => [row.target.slotId, row.phase])));
@@ -364,6 +365,7 @@ export class RuntimeFleetState {
       if (row.phase !== "reserved" || row.identity || row.active !== 0)
         throw new FleetRefused("uncertain");
       await transaction.put(retiredKey(target.slotId), { ...row, phase: "retired" });
+      await this.keepEnd(transaction, row);
       rows.splice(rows.indexOf(row), 1);
     });
   }
@@ -555,6 +557,28 @@ export class RuntimeFleetState {
       return true;
     });
   }
+  /**
+   * A start refused before its durable first-start intent was written reached no container, so
+   * waiting out its bound proves nothing more: it leaves its starting phase at once, with the
+   * refusal. Like a bound it adds no replacement demand and still holds its place until the cell's
+   * abandon proves nothing runs. False when the row already left its starting phases.
+   */
+  startRefused(target: SlotTarget, failure: FleetFailure) {
+    return this.change((rows) => {
+      // A row already removed has nothing left to record, and its start's own refusal is the news.
+      const row = rows.find((value) => sameTarget(value.target, target));
+      if (!row || row.identity || !["reserved", "warming", "uncertain"].includes(row.phase))
+        return false;
+      const { suspect: _suspect, ...rest } = row;
+      rows[rows.indexOf(row)] = {
+        ...rest,
+        phase: "quarantined",
+        reason: "start_unproven",
+        failure,
+      };
+      return true;
+    });
+  }
   /** A start that never served frees its place once its cell proved the instance gone. */
   reclaimUnstarted(target: SlotTarget) {
     return this.change(async (rows, transaction) => {
@@ -562,6 +586,7 @@ export class RuntimeFleetState {
       if (row.phase !== "quarantined" || row.identity || row.active !== 0)
         throw new FleetRefused("identity");
       await transaction.put(retiredKey(target.slotId), row);
+      await this.keepEnd(transaction, row);
       rows.splice(rows.indexOf(row), 1);
     });
   }
@@ -597,7 +622,7 @@ export class RuntimeFleetState {
       rows.splice(rows.indexOf(row), 1);
     });
   }
-  /** Every cell that leaves, with or without a recorded end, and for a quarantine why. */
+  /** Every row that leaves, with or without a recorded end, and for a quarantine why. */
   private async keepEnd(transaction: SlotStorage, row: Row, end?: RuntimeEnd) {
     const kept = readRecentEnds(await transaction.get(recentEndsKey));
     const entry = {

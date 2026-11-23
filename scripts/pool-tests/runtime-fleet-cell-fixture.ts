@@ -7,6 +7,8 @@ import { RuntimeProviderReader } from "../../src/pool/runtime-provider/read.ts";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
+import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
+import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 
 export async function fleetCellFixture(
   staleFailure: "flagged" | "plain" | "overloaded" | "non-error" | "http" = "flagged",
@@ -78,6 +80,8 @@ export async function fleetCellFixture(
     disconnected: 0,
     failHealth: false,
     modelStubs,
+    // A control path the endpoint refuses, answered as its own refusals are.
+    refuse: {} as Record<string, SlotRefused["reason"]>,
   };
   const makeCell = () =>
     boundFleetCell({
@@ -108,6 +112,11 @@ export async function fleetCellFixture(
                 Object.assign(error, { disconnected: true, retryable: true });
               if (staleFailure === "overloaded") Object.assign(error, { overloaded: true });
               throw error;
+            }
+            const refused = transport.refuse[new URL(request.url).pathname];
+            if (refused) {
+              await request.text();
+              return runtimeErrorResponse(new SlotRefused(refused), "endpoint");
             }
             if (request.headers.has("X-Signalbox-Runtime-Identity"))
               transport.modelStubs.push(stub);
