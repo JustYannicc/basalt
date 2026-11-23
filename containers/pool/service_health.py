@@ -21,10 +21,12 @@ class ServiceHealth:
         fast_check: Callable[[str], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         observe: Callable[[int | None], None] | None = None,
+        on_audit: Callable[[bool, int], None] | None = None,
     ) -> None:
         # Construction follows the generation's successful startup contract.
         self._key = key
         self._observe = observe
+        self._on_audit = on_audit
         self._node_id = node_id
         self._full_check = full_check
         self._fast_check = fast_check
@@ -80,6 +82,7 @@ class ServiceHealth:
 
     def _audit(self, epoch: int, deadline: float) -> None:
         error = None
+        started = self._clock()
         try:
             healthy = (
                 self._full_check(self._key, self._node_id)
@@ -100,3 +103,5 @@ class ServiceHealth:
             self._full_ok = healthy
             self._next_audit = now + (self.AUDIT_INTERVAL if healthy else 2)
             self._valid_until = self._next_audit + self.AUDIT_BUDGET
+        if self._on_audit is not None:
+            self._on_audit(healthy, int((now - started) * 1000))
