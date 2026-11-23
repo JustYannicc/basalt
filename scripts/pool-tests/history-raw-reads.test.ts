@@ -7,6 +7,10 @@ import { handleModelHistory } from "../../src/pool/model-history/http.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { readRequests } from "../../src/pool/model-history/store.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
+import {
+  planUsageRollup,
+  runUsageRollup,
+} from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
@@ -19,9 +23,12 @@ type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
  * cursor on the newest one. Plans are asserted, not times: a whole-pool read that takes 10 s on a
  * small instance takes well under a second here.
  */
+/** Keyed as every writer keys a request: the digest of its source and record. */
 const rows = 20_000;
 const native = 40;
-const first = "2026-05-05T11:00:00Z",
+// Ten days, so a test can backfill the pool's rollup to ready quickly; the reads' plans depend on
+// how many rows the pool holds, not on how many days they span.
+const first = "2026-11-13T19:00:00Z",
   last = "2026-11-23T19:00:00Z";
 
 async function history(f: Fixture) {
@@ -32,7 +39,7 @@ async function history(f: Fixture) {
     `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,account,
       provider,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,total_tokens,
       token_quality,failed,status_code,cost_basis,ingested_at,attribution)
-    SELECT encode(sha256(convert_to('raw-read-'||n,'UTF8')),'hex'), $1,
+    SELECT encode(sha256(convert_to('["'||$1::text||'","'||encode(sha256(convert_to('["usage","'||n||'"]','UTF8')),'hex')||'"]','UTF8')),'hex'), $1,
       encode(sha256(convert_to('["usage","'||n||'"]','UTF8')),'hex'), at,
       to_char(at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US')||'000Z', $2, $3,
       'fixture-lab', 'fixture-model-'||(n%3), 1000, 10, 0, 0, 1010, 'complete', false, 200,
@@ -121,6 +128,49 @@ test("the request history reads each page through the pool's time index, never t
   });
 });
 
+test("a member's request history reads only that member's rows, through the person index", async () => {
+  await seriesFixture(async (f) => {
+    const { poolId } = await history(f);
+    const member = await digest("fixture-member");
+    // A few of the pool's requests are the member's; a member with none reads nothing.
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER USER");
+    await f.db.query(
+      `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,person,
+        provider,model,token_quality,failed,cost_basis,ingested_at,attribution)
+      SELECT encode(sha256(convert_to('member-'||n,'UTF8')),'hex'), repeat('e',64),
+        encode(sha256(convert_to('member-record-'||n,'UTF8')),'hex'), at,
+        to_char(at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US')||'000Z', $1, $2,
+        'fixture-lab', 'fixture-model', 'complete', false, 'unpriced', at, 'key-at-capture'
+      FROM generate_series(1,30) n
+      CROSS JOIN LATERAL (SELECT '2026-08-01T00:00:00Z'::timestamptz + n * interval '1 day' AS at) x`,
+      [poolId, member],
+    );
+    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER USER");
+    await f.db.query("ANALYZE basalt_model_requests");
+    const read = recording(f.db);
+    for (const person of [member, await digest("fixture-nobody")]) {
+      await readRequests(read.db, {
+        pool: poolId,
+        person,
+        from: "1970-01-01T00:00:00.000Z",
+        to: last,
+      });
+    }
+    const pages = read.seen.filter((entry) => entry.text.includes("page_timestamp"));
+    assert.equal(pages.length, 2);
+    for (const entry of pages) {
+      const found = await plan(f.db, entry.text, entry.values);
+      assert.equal(found.seqScan, false, "no partition is scanned whole");
+      assert.equal(
+        found.removed,
+        0,
+        `the person is an index condition, ${found.removed} rows dropped`,
+      );
+      assert.deepEqual([...found.indexes], ["basalt_model_requests_pool_person_timestamp_id_idx"]);
+    }
+  });
+});
+
 test("the request history's pages follow their own cursor when requests share a microsecond", async () => {
   await seriesFixture(async (f) => {
     const { fixture, poolId } = await history(f);
@@ -156,6 +206,12 @@ test("the request history's pages follow their own cursor when requests share a 
 test("the summary finds the capture cursor's request, and the captured Home usage, by record through the index", async () => {
   await seriesFixture(async (f) => {
     const { fixture } = await history(f);
+    // Ready on the v16 rollup, as production's pool is, so the summary runs the statements it does.
+    const { plan: backfill } = await planUsageRollup(f.db);
+    for (let run = 0; ; run++) {
+      assert.ok(run < 50, "the backfill finishes");
+      if ((await runUsageRollup(f.db, backfill, 60_000)).status === "complete") break;
+    }
     const read = recording(f.db);
     const to = "2026-11-23T20:00:00Z";
     await poolUsageSummary(
@@ -172,6 +228,10 @@ test("the summary finds the capture cursor's request, and the captured Home usag
       (entry) => entry.step === "capture" && entry.text.includes("FROM usage u"),
     );
     assert.ok(state && capture, "the summary ran its capture state and capture coverage");
+    assert.ok(
+      read.seen.some((entry) => entry.text.includes("basalt_model_usage_people_hourly")),
+      "the summary read the v16 rollup",
+    );
     for (const [name, entry] of [
       ["capture state", state],
       ["capture coverage", capture],
