@@ -139,11 +139,11 @@ test("a permission committed under the last code launches and inspects in force 
   const f = await fixture();
   await f.worker(before).configure("enable", f.configuration);
   const deployed = f.worker(after);
+  await deployed.state.reserve(f.launch());
+  assert.equal((await deployed.state.inspect()).length, 1, "the launch reserved its row");
   const view = await deployed.inspect();
   assert.equal(view.inForce, true);
   assert.equal(view.notInForce, undefined);
-  await deployed.state.reserve(f.launch());
-  assert.equal((await deployed.state.inspect()).length, 1, "the launch reserved its row");
 });
 
 test("a primary promotion under the next code keeps the permission", async () => {
