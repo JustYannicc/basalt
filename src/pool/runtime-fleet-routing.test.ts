@@ -917,3 +917,31 @@ test("a root call that fails after its send keeps its token spent", async (conte
   );
   await f.settle();
 });
+
+test("growth logs its refusal once per change of reason, and again after a launch", async (context) => {
+  const f = fixture(3, 1);
+  const log = context.mock.method(console, "warn", () => {});
+  // Each growth reserves once and stops at the first refusal; "ok" lets one launch through.
+  const script: (SlotRefused["reason"] | "ok")[] = ["identity", "identity", "selection", "ok", "identity"];
+  const reserve = f.state.reserve.bind(f.state);
+  context.mock.method(f.state, "reserve", async (...args: Parameters<typeof f.state.reserve>) => {
+    const next = script.shift();
+    if (next && next !== "ok") throw new SlotRefused(next);
+    return reserve(...args);
+  });
+  f.pressure(3);
+  for (const at of [300, 500, 700, 900]) {
+    f.advance(at);
+    await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
+    await f.settle();
+  }
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments),
+    [
+      ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
+      ["POOL_FLEET_GROWTH_REFUSED", { reason: "selection" }],
+      ["POOL_FLEET_GROWTH_REFUSED", { reason: "identity" }],
+    ],
+  );
+  assert.equal(f.calls.starts, 1);
+});
