@@ -651,3 +651,56 @@ test("with its memory unreachable, a failing run reports on the quarter hour onl
   assert.deepEqual(reported, [1, 16], "03:15 and 03:30 only");
   assert.equal(messages.filter((item) => item.payload.status === "error").length, 31);
 });
+
+test("a stuck usage rollup sends one event per episode and keeps the check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => void errors.push(args));
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const minute = async () => {
+    const before = messages.length;
+    await runAvailabilityProbe(
+      env,
+      async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+      undefined,
+      undefined,
+      memory,
+      async () => ({ stuck: { pool: "0123456789abcdef", hour: "2026-01-01T00:00:00.000Z" } }),
+    );
+    return messages.slice(before);
+  };
+  for (const [index, sent] of [await minute(), await minute(), await minute()].entries()) {
+    const checkIn = sent.find(
+      (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+    );
+    assert.equal(checkIn?.payload.status, "ok", `the check-in stays ok on minute ${index + 1}`);
+    const events = sent.filter((item) => item.type === "event");
+    assert.deepEqual(
+      events.map((item) => item.payload.tags.error_code),
+      index === 0 ? ["pool_usage_rollup_stuck"] : [],
+      "exactly one event for the episode",
+    );
+    for (const event of events)
+      assert.deepEqual(
+        event.payload.contexts.pool_probe.failures.filter(
+          (failure: { guard: string }) => failure.guard !== "request_reliability",
+        ),
+        [],
+        "no availability failure",
+      );
+  }
+  assert.equal(
+    errors.some(([line]) => line === "POOL_AVAILABILITY_FAILURE"),
+    false,
+    "the availability failures list stays empty",
+  );
+  assertNoPrivateDiagnostics(messages);
+});

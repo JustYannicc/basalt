@@ -48,6 +48,8 @@ export async function runAvailabilityProbe(
   release?: string,
   /** Which failures were already reported; without it every failing run is reported. */
   episodes?: EpisodeMemory,
+  /** The pool's own usage rollup backfill; a stuck one is a history problem, never an outage. */
+  usageRollup?: () => Promise<{ readonly stuck?: unknown }>,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
   const receipt = await startPoolMonitor(env, availabilityCron);
@@ -87,6 +89,12 @@ export async function runAvailabilityProbe(
         result.failures.push({ guard: "request_reliability", reason: "failing_now" });
       if (measured === null || (measured && notifyCollectionUnavailable(measured)))
         result.failures.push({ guard: "request_reliability", reason: "collection_unavailable" });
+      const rollup = usageRollup
+        ? await awaitProbe(usageRollup, signal).catch(() => undefined)
+        : undefined;
+      // On the reliability side, so the check-in stays ok while the pool serves.
+      if (rollup?.stuck)
+        result.failures.push({ guard: "request_reliability", reason: "usage_rollup_stuck" });
     }
   } catch {
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };

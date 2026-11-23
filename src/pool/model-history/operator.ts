@@ -210,6 +210,8 @@ async function handleBackfillOperation(request: Request, db: HistoryDatabase) {
 export async function handleModelHistoryOperation(
   request: Request,
   connectionString: string | undefined,
+  /** The pool's own usage rollup backfill, shown beside the usage rollup's dry run. */
+  usageRollupAutomatic?: () => Promise<unknown>,
 ): Promise<Response> {
   const path = new URL(request.url).pathname;
   const read = path === historySchemaCatalogPath && request.method === "GET";
@@ -227,7 +229,7 @@ export async function handleModelHistoryOperation(
     if (rollup)
       return await withHistoryDatabase(
         connectionString,
-        (db) => handleUsageRollupOperation(request, db),
+        (db) => handleUsageRollupOperation(request, db, usageRollupAutomatic),
         { totalTimeoutMs: 20_000 },
       );
     if (completion)

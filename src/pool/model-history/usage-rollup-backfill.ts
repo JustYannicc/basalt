@@ -307,14 +307,24 @@ export async function runUsageRollup(
   };
 }
 
-export async function handleUsageRollupOperation(request: Request, db: HistoryDatabase) {
+export async function handleUsageRollupOperation(
+  request: Request,
+  db: HistoryDatabase,
+  automatic?: () => Promise<unknown>,
+) {
   const headers = { "Cache-Control": "no-store" };
   if (request.method === "GET") {
     const planned = await planUsageRollup(db);
     // The apply measures its write-ahead log; a role that cannot read it fails here, before writes.
     await db.query("SELECT pg_current_wal_insert_lsn()");
     return Response.json(
-      { status: "dry-run", version: historyUsageRollupBackfillVersion, ...planned, writes: false },
+      {
+        status: "dry-run",
+        version: historyUsageRollupBackfillVersion,
+        ...planned,
+        ...(automatic ? { automatic: await automatic() } : {}),
+        writes: false,
+      },
       { headers },
     );
   }

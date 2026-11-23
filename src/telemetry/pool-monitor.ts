@@ -33,6 +33,7 @@ const reasons = new Set([
   "below_target",
   "collection_unavailable",
   "failing_now",
+  "usage_rollup_stuck",
 ]);
 
 /**
@@ -110,6 +111,8 @@ export async function capturePoolMonitor(
       events.push(report("pool_request_success_below_target", [failure]));
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
+    else if (failure.reason === "usage_rollup_stuck")
+      events.push(report("pool_usage_rollup_stuck", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
   }
   // Unknown outcomes are a recording defect even when the objective is decided without them.

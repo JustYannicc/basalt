@@ -2,6 +2,7 @@ import peerProgram from "./home-peer-program.json" with { type: "json" };
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
 import { historyUsageRollupPath } from "./model-history/usage-rollup-backfill.ts";
+import { usageRollupAutoState, usageRollupTick } from "./model-history/usage-rollup-auto.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -665,6 +666,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
+  /** Where the pool's own usage rollup backfill is: its last tick, stop, pause and stuck hour. */
+  usageRollupAutoState() {
+    return usageRollupAutoState(this.ctx.storage);
+  }
   /** The minute check's failures already reported, so a continuing one is reported once. */
   availabilityEpisode() {
     return new AvailabilityEpisodes(this.ctx.storage).read();
@@ -823,6 +828,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
                   now,
                 ),
               ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
+            // Last, and only after a capture that committed: the pool backfills its own usage
+            // rollup in bounded sessions, so nothing above waits behind it.
+            await usageRollupTick(this.ctx.storage, (work) =>
+              withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
+                totalTimeoutMs: 20_000,
+              }),
+            ).catch(() => console.error("POOL_USAGE_ROLLUP_TICK_PENDING"));
           }),
         );
       } catch {
@@ -1340,7 +1352,11 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         historyUsageRollupPath,
       ].includes(path)
     )
-      return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
+      return handleModelHistoryOperation(
+        request,
+        this.env.POOL_AUTH_DATABASE?.connectionString,
+        () => singleton(this.env).usageRollupAutoState(),
+      );
     if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
       let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
@@ -1384,6 +1400,7 @@ export default {
           read: () => singleton(env).availabilityEpisode(),
           write: (episode) => singleton(env).recordAvailabilityEpisode(episode),
         },
+        () => singleton(env).usageRollupAutoState(),
       );
       return;
     }

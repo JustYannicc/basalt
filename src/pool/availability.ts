@@ -28,6 +28,7 @@ export interface ProbeFailure {
     | "failing_now"
     | "below_target"
     | "collection_unavailable"
+    | "usage_rollup_stuck"
     | PoolFailureDiagnostic["failure"];
   backendStatus?: number;
 }
