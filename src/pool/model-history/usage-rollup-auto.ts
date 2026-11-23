@@ -329,3 +329,51 @@ export async function usageRollupAutoState(storage: AutoStorage) {
 /** The pools whose rollup is stuck, which the minute check reports as a reliability reason. */
 export const usageRollupStuckPools = (state: UsageRollupAutoState) =>
   [...new Set((state.stuck ?? []).map((entry) => entry.pool))].sort();
+
+const hex16 = /^[0-9a-f]{16}$/;
+const iso = (value: unknown) =>
+  typeof value === "string" && !Number.isNaN(Date.parse(value)) ? value : null;
+const count = (value: unknown) =>
+  typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+const stops = new Set<string>([
+  "complete",
+  "budget",
+  "wal",
+  "lock",
+  "slow_hour",
+  "slow_hold",
+  "ceiling",
+  "error",
+  "handover",
+  "not_applied",
+  "stuck",
+  "ready",
+]);
+
+/**
+ * The backfill's state as the fleet lane's inspect shows it: only what the object already stores,
+ * closed and with 16-hex history pool ids only, so reading it touches no database.
+ */
+export function usageRollupInspect(state: UsageRollupAutoState) {
+  return {
+    lastTickAt: iso(state.lastTickAt),
+    lastStop:
+      typeof state.lastStop === "string" && stops.has(state.lastStop) ? state.lastStop : null,
+    pausedUntil: iso(state.pausedUntil),
+    pools: count(state.pools),
+    pendingHours: count(state.pendingHours),
+    stuck: (state.stuck ?? []).flatMap((entry) =>
+      entry.pool === "" || hex16.test(entry.pool)
+        ? [
+            {
+              // A tick stuck before it reached any pool names none.
+              pool: entry.pool === "" ? null : entry.pool,
+              reason: ["slow", "lock", "error"].includes(entry.reason) ? entry.reason : "error",
+              hour: iso(entry.hour),
+              retryAt: iso(entry.retryAt),
+            },
+          ]
+        : [],
+    ),
+  };
+}

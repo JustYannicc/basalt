@@ -47,6 +47,22 @@ const Selection = Schema.Struct({
   candidate: Schema.optional(Schema.Unknown),
   draining: Schema.optional(Schema.Unknown),
 });
+/** The pool's own usage rollup backfill, closed: no name, host or account id ever travels. */
+const UsageRollup = Schema.Struct({
+  lastTickAt: Schema.NullOr(Schema.String),
+  lastStop: Schema.NullOr(Schema.String),
+  pausedUntil: Schema.NullOr(Schema.String),
+  pools: Schema.NullOr(Schema.Number),
+  pendingHours: Schema.NullOr(Schema.Number),
+  stuck: Schema.Array(
+    Schema.Struct({
+      pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
+      reason: Schema.Literals(["slow", "lock", "error"]),
+      hour: Schema.NullOr(Schema.String),
+      retryAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
 const Inspect = Schema.Struct({
   result: Schema.Struct({
     selection: Schema.optional(Selection),
@@ -56,6 +72,7 @@ const Inspect = Schema.Struct({
         Schema.Struct({ refusedSince: Schema.Number, lastStatus: Schema.optional(Schema.Number) }),
       ),
     ),
+    usageRollup: Schema.optional(Schema.NullOr(UsageRollup)),
   }),
 });
 const Row = Schema.Struct({

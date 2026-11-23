@@ -61,6 +61,8 @@ export async function handleRuntimeHandoff(
   bookmarks?: Pick<StorageBookmarks, "read" | "restore">,
   /** While Sentry refuses the pool's expiry alert: since when and its last status. */
   alertDelivery?: () => Promise<{ refusedSince: number; lastStatus?: number } | undefined>,
+  /** The pool's own usage rollup backfill, from the object's storage alone. */
+  usageRollup?: () => Promise<unknown>,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
@@ -172,6 +174,8 @@ export async function handleRuntimeHandoff(
           recovery: await handoff.recoveryState(),
           // A diagnostic: its read failing must not fail the inspect release flows rely on.
           alertDelivery: (await alertDelivery?.().catch(() => undefined)) ?? null,
+          // So is the backfill's state, which a blind monitor would otherwise keep from everyone.
+          usageRollup: (await usageRollup?.().catch(() => undefined)) ?? null,
         };
         break;
       case "recovery-reset":
