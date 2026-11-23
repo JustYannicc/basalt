@@ -1,7 +1,7 @@
 model {
   extend basalt.pool {
     metadata {
-      constraint "Once a UTC day after the allowance refresh, the pool reports each plan whose last usable row expires within 7 days as its own error event on the existing monitoring path, naming only public plan identities. A day counts only after delivery."
+      constraint "Once a UTC day after the allowance refresh, the pool reports each plan whose last usable row expires within 7 days as its own error event on the existing monitoring path, naming only public plan identities. A day counts only after delivery. A refused delivery waits for the retry time Sentry names for error events, in its rate-limit header or Retry-After, and at least 30 minutes, before the report is sent or the registry read again; the alert's own record keeps when refusals began and Sentry's last status, which the controller inspect returns."
     }
   }
 }

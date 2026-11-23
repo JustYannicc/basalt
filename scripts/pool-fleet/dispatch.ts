@@ -141,7 +141,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               }
             : null,
           policyDigest: view.digest,
-          // Sentry refusing the pool's expiry alert, for spent quota or a rate limit.
+          // The pool's expiry alert refused by Sentry (spent quota, a rate limit) or, with no
+          // lastStatus, never reaching it.
           alertDelivery: view.alertDelivery
             ? {
                 refusedSince: new Date(view.alertDelivery.refusedSince).toISOString(),

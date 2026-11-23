@@ -98,3 +98,46 @@ test("an expiry report Sentry refuses for spent quota is not resent on the next 
   await pass();
   assert.equal(sent.mock.callCount(), 4, "a delivered report waits for the next day");
 });
+
+test("a refused expiry report waits as long as Sentry asked, past the registry's own 30 min", async (context) => {
+  let clock = Date.parse("2026-11-22T15:00:00Z");
+  const registry = new PlanAllowances(new Memory(), {
+    now: () => clock,
+    seed: {
+      entries: [
+        {
+          vendor: "anthropic",
+          plan: "max_5x",
+          windowSeconds: 604_800,
+          full: 5,
+          unit: { id: "claude-pro-equivalent", label: "Pro-eq" },
+          kind: "vendor" as const,
+          verification: "verified" as const,
+          sources: ["https://example.test/allowances.json"],
+          checkedAt: Date.parse("2026-11-13T00:00:00Z"),
+          fetchedAt: Date.parse("2026-11-13T00:00:00Z"),
+          expiresAt: Date.parse("2026-11-27T00:00:00Z"),
+          revision: "max_5x",
+        },
+      ],
+    },
+  });
+  const sent = context.mock.method(
+    globalThis,
+    "fetch",
+    async () =>
+      new Response(null, {
+        status: 429,
+        headers: { "x-sentry-rate-limits": "7200:error:organization:usage_exceeded" },
+      }),
+  );
+  const env = { SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456" };
+  const pass = () => registry.reportExpiring((rows) => captureAllowanceExpiry(env, rows));
+  await pass();
+  clock = Date.parse("2026-11-22T15:31:00Z");
+  await pass();
+  assert.equal(sent.mock.callCount(), 1, "sent again before Sentry's two-hour wait was over");
+  clock = Date.parse("2026-11-22T17:01:00Z");
+  await pass();
+  assert.equal(sent.mock.callCount(), 2);
+});
