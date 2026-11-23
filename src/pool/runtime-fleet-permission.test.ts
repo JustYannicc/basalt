@@ -148,26 +148,29 @@ test("a permission committed under the last code launches and inspects in force 
   assert.equal(view.notInForce, undefined);
 });
 
-test("a crash cell under the next code passes the permission and stops at its own row", async () => {
+test("a crash cell under the next code passes the permission and reaches its own row", async () => {
   const f = await fixture();
   await f.worker(before).configure("enable", f.configuration);
   const deployed = f.worker(after);
   const target = f.launch();
+  const identity = { ...target, bootId: "22222222-2222-2222-2222-222222222222" };
   await deployed.state.reserve(target);
+  await deployed.state.dispatch(target);
+  await deployed.state.redraw(identity, undefined);
   const at = Date.now();
-  // The row is only reserved, so the command refuses it as unhealthy, past the permission check.
+  // The row is draining, so the command refuses it as draining, past the permission check.
   await assert.rejects(
     deployed.crash({
       controllerCode: after,
       action: "runtime-crash",
-      identity: { ...target, bootId: "22222222-2222-2222-2222-222222222222" },
+      identity,
       nonce: "crash-1",
       operator: "release-owner",
       at,
       expiresAt: at + 20_000,
       kind: "cell",
     }),
-    /unhealthy/,
+    /draining/,
   );
 });
 

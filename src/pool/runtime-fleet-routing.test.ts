@@ -935,10 +935,11 @@ test("growth logs its refusal once per change of reason, and again after a launc
     if (next && next !== "ok") throw new SlotRefused(next);
     return reserve(...args);
   });
+  // Upkeep runs growth; a request would route to the launched cell, whose body stays open.
   const pass = async (at: number, pressure: number) => {
     f.pressure(pressure);
     f.advance(at);
-    await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
+    await f.fleet.upkeep();
     await f.settle();
   };
   for (const at of [300, 500, 700, 900]) await pass(at, 3);
