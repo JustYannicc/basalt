@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { deferred } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { failureFleetFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-failure-fixture.ts";
-import { HealthLeaseElapsed, SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
+import {
+  ContainerEnded,
+  HealthLeaseElapsed,
+  SlotRefused,
+  type SlotIdentity,
+} from "./runtime-slots/contract.ts";
 import {
   rememberRuntimeFailure,
   retainRuntimeFailure,
@@ -444,4 +449,35 @@ test("a lapsed policy lease as production logs it, endpoint_identity with slot_u
   await assert.rejects(t.f.forward(undefined, t.fleet));
   assert.equal((await t.row())?.phase, "ready", "the router's read quarantined the cell at once");
   assert.ok(readSuspect((await t.row())?.suspect));
+});
+
+test("a stopped container whose own monitor recorded its exit quarantines at once, on both paths", async (context) => {
+  const remote = () => {
+    const local = new ContainerEnded();
+    rememberRuntimeFailure("endpoint_identity", local);
+    return retainRuntimeFailure(
+      new Response(null, {
+        status: 409,
+        headers: runtimeFailureHeaders(local, "endpoint_identity"),
+      }),
+      new SlotRefused("uncertain"),
+    );
+  };
+  const s = await suspectFleet(context);
+  await s.read(0, async () => {
+    throw remote();
+  });
+  const row = await s.row();
+  assert.equal(row?.phase, "quarantined", "a recorded exit waited for the 6 s rule");
+  assert.equal(readFailure(row?.failure)?.rule, "evidence");
+  assert.equal(readFailure(row?.failure)?.reads[0]?.ended, true);
+  context.mock.restoreAll();
+  const t = await suspectFleet(context);
+  t.f.cell(t.cell).forward = async () => {
+    const error = remote();
+    rememberRuntimeFailure("slot_health", error);
+    throw error;
+  };
+  await assert.rejects(t.f.forward(undefined, t.fleet));
+  assert.equal((await t.row())?.phase, "quarantined");
 });

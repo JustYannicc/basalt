@@ -1,4 +1,4 @@
-import { SlotRefused } from "./runtime-slots/contract.ts";
+import { ContainerEnded, SlotRefused } from "./runtime-slots/contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
 import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "./lifecycle.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
@@ -53,6 +53,8 @@ export const runtimeReasons = reasons;
 // A separate header, so callers on an older release still recognize every reason value.
 const causes = [
   "startup_deadline",
+  // The container's monitor recorded its exit: hard evidence, where "not running" alone is not.
+  "container_ended",
   "control",
   "dependency_storage",
   "dependency_membership",
@@ -88,6 +90,7 @@ export function runtimeFailureCause(error: unknown) {
 }
 function cause(error: unknown): (typeof causes)[number] | undefined {
   if (error instanceof PoolStartupDeadline) return "startup_deadline";
+  if (error instanceof ContainerEnded) return "container_ended";
   if (error instanceof ControlFailure) return "control";
   if (error instanceof PoolDependencyFailure) return `dependency_${error.dependency}`;
   return object(error) ? observedCauses.get(error) : undefined;

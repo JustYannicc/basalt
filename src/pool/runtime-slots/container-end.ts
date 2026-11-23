@@ -24,6 +24,17 @@ const isRuntimeEnd = Schema.is(RuntimeEnd);
 export function readEnd(value: unknown): RuntimeEnd | undefined {
   return isRuntimeEnd(value) ? value : undefined;
 }
+/**
+ * An end the platform's monitor reported as an exit of this boot: hard evidence that it no longer
+ * runs. `unknown` (a monitor that settled with no exit) and `found_stopped` (only the flag) are not.
+ */
+export function endedForGood(end: RuntimeEnd | undefined) {
+  return (
+    end !== undefined &&
+    end.seen === "monitor" &&
+    (end.cause === "exit" || end.cause === "signal" || end.cause === "rollout")
+  );
+}
 /** A stop of ours ends the container within its grace and destroy; a later end is the boot's own. */
 const stopSentMs = forcedStopGraceMs + 30_000;
 

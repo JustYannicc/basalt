@@ -55,6 +55,8 @@ async function readyCell(context: TestContext) {
     refuse: () => {
       cell.hooks.health = async () => new Response(null, { status: 503 });
     },
+    /** Killed under the fleet: the container's own monitor sees the exit. */
+    kill: () => cell.ctx.container.signal(9),
     answer: () => {
       cell.hooks.health = healthy;
     },
@@ -105,4 +107,19 @@ test("a cell whose readiness refuses twice, 6 s apart, is quarantined with both 
   assert.equal(left?.left, "quarantined");
   assert.equal(left?.reason, "runtime_failed");
   assert.deepEqual(readFailure(left?.failure), failure);
+});
+
+test("a cell killed under the fleet is quarantined on the first read, from the exit its monitor recorded", async (context) => {
+  const c = await readyCell(context);
+  c.kill();
+  await c.f.settle();
+  await c.pass();
+  // One pass: the recorded exit quarantines it, and its stopped instance is reclaimed at once.
+  const inspected = await c.inspect();
+  const row = inspected.resources.find((value) => value.target.slotId === c.slotId);
+  const left = inspected.recentEnds?.find((entry) => entry.slotId === c.slotId);
+  assert.ok(row?.phase === "quarantined" || left?.left === "quarantined", "a recorded exit waited");
+  const failure = readFailure(row?.failure ?? left?.failure);
+  assert.equal(failure?.rule, "evidence");
+  assert.equal(failure?.reads[0]?.ended, true);
 });

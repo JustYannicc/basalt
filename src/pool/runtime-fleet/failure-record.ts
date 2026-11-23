@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import {
+  runtimeFailureCause,
   runtimeFailureDiagnostic,
   runtimeReasons,
   runtimeSteps,
@@ -18,6 +19,8 @@ export const FleetFailureRead = Schema.Struct({
   cause: Schema.Literals([...runtimeReasons, "lease_elapsed"]),
   roundTripMs: Schema.optional(Schema.Number),
   leaseLeftMs: Schema.optional(Schema.Number),
+  // The cell's own monitor had recorded the container's exit: hard evidence, never a transient.
+  ended: Schema.optional(Schema.Literal(true)),
 });
 export type FleetFailureRead = typeof FleetFailureRead.Type;
 /**
@@ -150,6 +153,7 @@ export function failureRead(
     step: diagnostic.runtimeStep,
     cause: diagnostic.runtimeReason,
     ...(roundTripMs === undefined ? {} : { roundTripMs: Math.round(roundTripMs) }),
+    ...(runtimeFailureCause(error) === "container_ended" ? { ended: true as const } : {}),
   };
 }
 
@@ -164,9 +168,10 @@ export function failureIgnored(read: FleetFailureRead) {
   );
 }
 
-/** A read that reached another process or launch than the row's: never a transient. */
+/** Hard evidence, never a transient: a read that reached another process or launch, or a recorded exit. */
 export function failureMismatch(read: FleetFailureRead) {
   return (
+    read.ended === true ||
     read.cause === "slot_identity" ||
     read.cause === "fleet_identity" ||
     read.cause === "protection_boot_changed"
