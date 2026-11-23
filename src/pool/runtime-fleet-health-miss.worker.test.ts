@@ -52,8 +52,10 @@ async function readyCell(context: TestContext) {
     advance: (ms: number) => {
       now += ms;
     },
-    refuse: () => {
-      cell.hooks.health = async () => new Response(null, { status: 503 });
+    /** Refuses readiness, with the body a container's refusal carries when one is given. */
+    refuse: (body?: object) => {
+      cell.hooks.health = async () =>
+        body ? Response.json(body, { status: 503 }) : new Response(null, { status: 503 });
     },
     /** Killed under the fleet: the container's own monitor sees the exit. */
     kill: () => cell.ctx.container.signal(9),
@@ -89,6 +91,28 @@ test("a cell whose readiness refuses once is fenced, read again and serves on", 
   assert.equal(row?.phase, "ready");
   assert.equal(row?.suspect, undefined);
   assert.deepEqual(after.recentEnds ?? [], []);
+});
+
+test("a cell's refusal carries its readiness signals into the fleet's recorded read, as closed values only", async (context) => {
+  const c = await readyCell(context);
+  const at = "2026-11-23T12:24:04.512Z";
+  const planted = "planted-container-text";
+  c.refuse({
+    boot_id: planted,
+    refusal: "degraded",
+    last_lapse: { step: "node_audit", ms: 3_100, at, note: planted },
+    last_flip: { to: "refusing", reason: planted, prior_ms: 90_000, at },
+    lapses: 7,
+  });
+  await c.pass();
+  const inspected = await c.inspect();
+  const row = inspected.resources.find((value) => value.target.slotId === c.slotId);
+  assert.deepEqual(readSuspect(row?.suspect)?.reads[0]?.ready, {
+    lastLapse: { step: "node_audit", ms: 3_100, at },
+    lastFlip: { to: "refusing", reason: null, priorMs: 90_000, at },
+    lapses: 7,
+  });
+  assert.doesNotMatch(JSON.stringify(inspected), new RegExp(planted));
 });
 
 test("a cell whose readiness refuses twice, 6 s apart, is quarantined with both reads, and they stay readable after it leaves", async (context) => {

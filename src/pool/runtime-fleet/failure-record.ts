@@ -7,6 +7,7 @@ import {
   type RuntimeRouteDiagnostic,
 } from "../runtime-route-diagnostic.ts";
 import { HealthLeaseElapsed } from "../runtime-slots/contract.ts";
+import { runtimeReadySignals } from "../runtime-ready-signals.ts";
 
 /**
  * One failed read or call against a cell, as closed values only: where it failed and why. A health
@@ -21,6 +22,10 @@ export const FleetFailureRead = Schema.Struct({
   leaseLeftMs: Schema.optional(Schema.Number),
   // The cell's own monitor had recorded the container's exit: hard evidence, never a transient.
   ended: Schema.optional(Schema.Literal(true)),
+  // What the cell's readiness answer said about its own recent lapses and flips, when it carried it.
+  // Stored opaquely and decoded where it is printed: a value a later version adds must never make
+  // an older reader drop the read, which decides the fence.
+  ready: Schema.optional(Schema.Unknown),
 });
 export type FleetFailureRead = typeof FleetFailureRead.Type;
 /**
@@ -150,12 +155,14 @@ export function failureRead(
       roundTripMs: error.roundTripMs,
       leaseLeftMs: error.leaseMs - error.roundTripMs,
     };
+  const ready = runtimeReadySignals(error);
   return {
     at,
     step: diagnostic.runtimeStep,
     cause: diagnostic.runtimeReason,
     ...(roundTripMs === undefined ? {} : { roundTripMs: Math.round(roundTripMs) }),
     ...(runtimeFailureCause(error) === "container_ended" ? { ended: true as const } : {}),
+    ...(ready ? { ready } : {}),
   };
 }
 

@@ -28,13 +28,27 @@ const lease = {
   roundTripMs: 1_612,
   leaseLeftMs: -112,
 };
+const signalledAt = "2026-11-23T12:24:05.512Z";
 const refused = {
   at: lease.at + 2_000,
   step: "endpoint_health",
   cause: "slot_unhealthy",
   roundTripMs: 40,
+  // A key no decoder writes, as a row from a damaged store could hold: it never prints.
+  ready: {
+    lastLapse: { step: "plugin_probe", ms: 2_100, at: signalledAt, note: "planted-row-text" },
+    lapses: 4,
+  },
 };
-const timeout = { ...refused, at: refused.at + 6_000, cause: "timeout", roundTripMs: 2_001 };
+// What the lane prints for it: every field, null where the read had none.
+const printedReady = {
+  lastLapse: { step: "plugin_probe", ms: 2_100, at: signalledAt },
+  lastFlip: null,
+  lapses: 4,
+  flips: null,
+};
+const { ready: _signals, ...unsignalled } = refused;
+const timeout = { ...unsignalled, at: refused.at + 6_000, cause: "timeout", roundTripMs: 2_001 };
 // As the rule writes them: a late answer opens the episode, two failures 6 s apart end it.
 const suspect = { since: lease.at, failed: refused, reads: [lease, refused] };
 const failure = { path: "health", rule: "failed_twice", reads: [refused, timeout] };
@@ -87,12 +101,14 @@ test("the inspect lane prints each row's slot key and ordinal, its failed read, 
       cause: string;
       roundTripMs: number;
       leaseLeftMs?: number;
+      ready?: unknown;
     }) => ({
       at: new Date(value.at).toISOString(),
       step: value.step,
       cause: value.cause,
       roundTripMs: value.roundTripMs,
       leaseLeftMs: value.leaseLeftMs ?? null,
+      ready: value.ready ? printedReady : null,
     });
     // The same key a recent end carries, so a row and its later leave can be matched.
     assert.deepEqual(
@@ -124,8 +140,9 @@ test("the inspect lane prints each row's slot key and ordinal, its failed read, 
     });
     assert.equal(fleet.recentEnds[1]?.left, null);
     assert.equal((fleet.recentEnds[1]?.end as { stopSent?: unknown })?.stopSent, true);
-    // Slots print as short hashes only.
+    // Slots print as short hashes only, and a read's signals as closed values only.
     assert.doesNotMatch(JSON.stringify(result), /runtime-cell-secret/u);
+    assert.doesNotMatch(JSON.stringify(result), /planted-row-text/u);
   } finally {
     await lane.close();
   }
