@@ -128,6 +128,8 @@ export async function runUsageRollup(
   now: () => number = () => performance.now(),
   walBudgetBytes = usageRollupWalPerCall,
   hourLimitMs = usageRollupHourLimitMs,
+  /** True once the caller must end: the call stops at the next hour boundary, like its budget. */
+  stopped: () => boolean = () => false,
 ) {
   const started = now();
   // The write-ahead log this call adds, measured on the server before every hour it starts. The
@@ -171,7 +173,7 @@ export async function runUsageRollup(
     let recomputedHours = 0,
       groups = 0;
     hours: for (const at of pending) {
-      if (now() - started >= budgetMs) {
+      if (stopped() || now() - started >= budgetMs) {
         stop = "budget";
         break;
       }
@@ -322,7 +324,8 @@ export async function handleUsageRollupOperation(
         status: "dry-run",
         version: historyUsageRollupBackfillVersion,
         ...planned,
-        ...(automatic ? { automatic: await automatic() } : {}),
+        // The manual way to look must not depend on the object's state answering.
+        ...(automatic ? { automatic: await automatic().catch(() => null) } : {}),
         writes: false,
       },
       { headers },

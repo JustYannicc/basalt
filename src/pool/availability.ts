@@ -31,6 +31,8 @@ export interface ProbeFailure {
     | "usage_rollup_stuck"
     | PoolFailureDiagnostic["failure"];
   backendStatus?: number;
+  /** The history pool a usage rollup failure names: its own 16-hex id, never a name or host. */
+  pool?: string;
 }
 export interface ProbeResult {
   ok: boolean;

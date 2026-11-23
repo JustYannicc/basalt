@@ -2,7 +2,11 @@ import peerProgram from "./home-peer-program.json" with { type: "json" };
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
 import { historyUsageRollupPath } from "./model-history/usage-rollup-backfill.ts";
-import { usageRollupAutoState, usageRollupTick } from "./model-history/usage-rollup-auto.ts";
+import {
+  usageRollupAutoState,
+  usageRollupStuckPools,
+  usageRollupTick,
+} from "./model-history/usage-rollup-auto.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -829,11 +833,17 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
                 ),
               ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
             // Last, and only after a capture that committed: the pool backfills its own usage
-            // rollup in bounded sessions, so nothing above waits behind it.
-            await usageRollupTick(this.ctx.storage, (work) =>
-              withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
-                totalTimeoutMs: 20_000,
-              }),
+            // rollup in bounded sessions, so nothing above waits behind it. It runs within this
+            // Home pass, which the alarm keeps alive through waitUntil (up to 15 minutes in a
+            // Durable Object). A code handover ends it after the hour in flight, so the handover
+            // waits for one hour's recompute, never the whole tick.
+            await usageRollupTick(
+              this.ctx.storage,
+              (work) =>
+                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
+                  totalTimeoutMs: 20_000,
+                }),
+              { stopped: () => this.handover.draining },
             ).catch(() => console.error("POOL_USAGE_ROLLUP_TICK_PENDING"));
           }),
         );
@@ -1400,7 +1410,7 @@ export default {
           read: () => singleton(env).availabilityEpisode(),
           write: (episode) => singleton(env).recordAvailabilityEpisode(episode),
         },
-        () => singleton(env).usageRollupAutoState(),
+        () => singleton(env).usageRollupAutoState().then(usageRollupStuckPools),
       );
       return;
     }
