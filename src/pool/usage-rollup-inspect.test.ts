@@ -27,6 +27,7 @@ test("the usage rollup's inspect is closed: stored fields only, 16-hex pool ids 
     host: "private-host.invalid",
   } as unknown as UsageRollupAutoState;
   assert.deepEqual(usageRollupInspect(state), {
+    rollup: "v15",
     lastTickAt: "2026-11-23T09:30:00.000Z",
     lastStop: "budget",
     pausedUntil: "2026-11-23T10:30:00.000Z",
@@ -54,6 +55,7 @@ test("the usage rollup's inspect is closed: stored fields only, 16-hex pool ids 
       ],
     } as never),
     {
+      rollup: "v15",
       lastTickAt: null,
       lastStop: null,
       pausedUntil: null,
@@ -66,6 +68,7 @@ test("the usage rollup's inspect is closed: stored fields only, 16-hex pool ids 
   assert.deepEqual(
     usageRollupInspect({ lastStop: "drop table", pools: -1, pendingHours: 1.5 } as never),
     {
+      rollup: "v15",
       lastTickAt: null,
       lastStop: null,
       pausedUntil: null,
@@ -75,6 +78,7 @@ test("the usage rollup's inspect is closed: stored fields only, 16-hex pool ids 
     },
   );
   assert.deepEqual(usageRollupInspect({}), {
+    rollup: "v15",
     lastTickAt: null,
     lastStop: null,
     pausedUntil: null,
@@ -82,4 +86,7 @@ test("the usage rollup's inspect is closed: stored fields only, 16-hex pool ids 
     pendingHours: null,
     stuck: [],
   });
+  // The rollup is closed too: only v16 reads as v16, anything else as the v15 it predates.
+  assert.equal(usageRollupInspect({ rollup: "v16" }).rollup, "v16");
+  assert.equal(usageRollupInspect({ rollup: "v17" } as never).rollup, "v15");
 });

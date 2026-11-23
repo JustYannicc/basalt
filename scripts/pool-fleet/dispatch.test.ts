@@ -391,6 +391,12 @@ test("the inspect lane shows the pool's own usage rollup backfill as one closed 
   });
   for (const [reported, expected] of [
     [usageRollup, usageRollup],
+    // The active rollup is a closed name: v16 passes, an unknown one drops the field.
+    [
+      { ...usageRollup, rollup: "v16" },
+      { ...usageRollup, rollup: "v16" },
+    ],
+    [{ ...usageRollup, rollup: "v17" }, null],
     [undefined, null],
     // A shape this lane doesn't know is dropped, and the lane still answers.
     [{ lastStop: 7 }, null],

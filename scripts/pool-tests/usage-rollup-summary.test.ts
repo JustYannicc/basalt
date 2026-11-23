@@ -7,6 +7,10 @@ import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import { summarySelection } from "../../src/pool/model-history/summary-query.ts";
 import { summaryModeTargets } from "../../src/pool/model-history/summary-rollup-query.ts";
+import {
+  usageRollupTargets,
+  type UsageRollupTarget,
+} from "../../src/pool/model-history/usage-rollup-targets.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -95,50 +99,87 @@ async function summary(db: HistoryDatabase, authority: unknown, by: "provider" |
   );
 }
 
-test("a summary read from the rollup is identical to the same summary read from raw rows", async () => {
+/** Recomputes the fixture's days into one rollup and marks the pool ready on it. */
+async function backfill(db: HistoryDatabase, target: UsageRollupTarget) {
+  const poolId = (await digest(pool)).slice(0, 16);
+  const rollup = usageRollupTargets[target];
+  for (let day = 0; day < 10; day++)
+    await db.query(`SELECT ${rollup.recompute}($1,$2::timestamptz,$3::timestamptz)`, [
+      poolId,
+      new Date(Date.UTC(2025, 11, 31 + day)).toISOString(),
+      new Date(Date.UTC(2025, 11, 32 + day)).toISOString(),
+    ]);
+  await db.query(`INSERT INTO ${rollup.ready} (pool,through) VALUES ($1,$2)`, [
+    poolId,
+    "2026-01-10T00:00:00Z",
+  ]);
+}
+
+/** Both summaries, counting the statements the second one ran. */
+async function summaries(db: HistoryDatabase, authority: unknown) {
+  const statements: string[] = [];
+  const counted: HistoryDatabase = {
+    query: (text, values) => {
+      statements.push(text);
+      return db.query(text, values);
+    },
+  };
+  return {
+    provider: await summary(counted, authority, "provider"),
+    model: await summary(counted, authority, "model"),
+    statements,
+  };
+}
+
+// Only the reads' own transaction times may differ; every usage figure must not.
+const data = (value: unknown) =>
+  JSON.parse(
+    JSON.stringify(value, (key, field) =>
+      key === "capturedAt" || key === "asOf" ? "read time" : field,
+    ),
+  );
+
+for (const target of ["v15", "v16"] as const)
+  test(`a summary read from the ${target} rollup is identical to the same summary read from raw rows`, async () => {
+    await seriesFixture(async (f) => {
+      const fixture = await history(f);
+      const raw = await summaries(f.db, fixture.authority);
+      await backfill(f.db, target);
+      const rolled = await summaries(f.db, fixture.authority);
+      // The coverage statement names the rollup only on the rollup path.
+      assert.ok(
+        rolled.statements[3]!.includes(usageRollupTargets[target].hourly),
+        "the second read uses the rollup",
+      );
+      assert.ok(!raw.statements[3]!.includes("basalt_model_usage"), "the first read is raw");
+      assert.deepEqual(data(rolled.provider), data(raw.provider));
+      assert.deepEqual(data(rolled.model), data(raw.model));
+      assert.ok(raw.provider.daily.length > 0 && raw.model.models?.status === "available");
+    });
+  });
+
+test("a pool ready on v15 keeps reading v15 until its v16 backfill is complete, then reads v16", async () => {
   await seriesFixture(async (f) => {
     const fixture = await history(f);
-    const raw = {
-      provider: await summary(f.db, fixture.authority, "provider"),
-      model: await summary(f.db, fixture.authority, "model"),
-    };
+    const raw = await summaries(f.db, fixture.authority);
+    await backfill(f.db, "v15");
+    // v16's hours are recomputed, but the pool is not ready on v16 until its backfill finishes.
     const poolId = (await digest(pool)).slice(0, 16);
-    for (let day = 0; day < 10; day++)
-      await f.db.query("SELECT basalt_model_usage_recompute($1,$2::timestamptz,$3::timestamptz)", [
-        poolId,
-        new Date(Date.UTC(2025, 11, 31 + day)).toISOString(),
-        new Date(Date.UTC(2025, 11, 32 + day)).toISOString(),
-      ]);
-    await f.db.query("INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2)", [
-      poolId,
-      "2026-01-10T00:00:00Z",
-    ]);
-    const statements: string[] = [];
-    const counted: HistoryDatabase = {
-      query: (text, values) => {
-        statements.push(text);
-        return f.db.query(text, values);
-      },
-    };
-    const rolled = {
-      provider: await summary(counted, fixture.authority, "provider"),
-      model: await summary(counted, fixture.authority, "model"),
-    };
-    // The coverage statement names the rollup only on the rollup path.
-    assert.ok(
-      statements[3]!.includes("basalt_model_usage_hourly"),
-      "the second read uses the rollup",
+    await f.db.query(
+      "SELECT basalt_model_usage_people_recompute($1,'2026-01-03T00:00:00Z','2026-01-04T00:00:00Z')",
+      [poolId],
     );
-    // Only the reads' own transaction times may differ; every usage figure must not.
-    const data = (value: unknown) =>
-      JSON.parse(
-        JSON.stringify(value, (key, field) =>
-          key === "capturedAt" || key === "asOf" ? "read time" : field,
-        ),
-      );
-    assert.deepEqual(data(rolled.provider), data(raw.provider));
-    assert.deepEqual(data(rolled.model), data(raw.model));
-    assert.ok(raw.provider.daily.length > 0 && raw.model.models?.status === "available");
+    const before = await summaries(f.db, fixture.authority);
+    assert.ok(before.statements[3]!.includes("basalt_model_usage_hourly"), "still v15");
+    assert.ok(!before.statements[3]!.includes("basalt_model_usage_people_hourly"));
+    await f.db.query("DELETE FROM basalt_model_usage_people_hours");
+    await backfill(f.db, "v16");
+    const after = await summaries(f.db, fixture.authority);
+    assert.ok(after.statements[3]!.includes("basalt_model_usage_people_hourly"), "now v16");
+    for (const read of [before, after]) {
+      assert.deepEqual(data(read.provider), data(raw.provider));
+      assert.deepEqual(data(read.model), data(raw.model));
+    }
   });
 });
 

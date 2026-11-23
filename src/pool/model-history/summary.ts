@@ -33,9 +33,10 @@ import {
 } from "./summary-rollup-query.ts";
 import type { HistoryReadStep } from "./read-failure.ts";
 
-/** One statement: the read's timeout, no JIT, and whether the rollup's tables exist yet. */
+/** One statement: the read's timeout, no JIT, and whether each rollup's tables exist yet. */
 export const summarySessionSettings = `SELECT set_config('statement_timeout','5s',true),
-  set_config('jit','off',true),to_regclass('basalt_model_usage_ready') IS NOT NULL AS rollup_tables`;
+  set_config('jit','off',true),to_regclass('basalt_model_usage_ready') IS NOT NULL AS rollup_tables,
+  to_regclass('basalt_model_usage_people_ready') IS NOT NULL AS people_tables`;
 
 type Prices = (
   targets: readonly { provider: string; model: string }[],
@@ -73,12 +74,16 @@ export async function poolUsageSummary(
       windowRows,
       boundaries,
       settings?.rollup_tables === true,
+      undefined,
+      settings?.people_tables === true,
     );
     mark("targets");
     const first = (await db.query(targetQuery.text, targetQuery.values)).rows;
     if (first.some((row) => row.window_rows !== null)) throw new HistoryTooLarge();
     const targets = first.filter((row) => row.kind === "target");
-    const rolled = first.some((row) => row.kind === "rollup");
+    const rollup = first.find((row) => row.kind === "rollup");
+    const rolled = rollup !== undefined;
+    const target = rollup?.provider === "v16" ? "v16" : "v15";
     const priceUnavailableReason =
       targets.length > 100
         ? "More than 100 provider/model pairs need prices; money estimates are unavailable."
@@ -95,7 +100,7 @@ export async function poolUsageSummary(
     // A pair with a price tier the rollup's bands cannot separate counts as missing a price.
     if (rolled) prices = rollupSupportedPrices(prices);
     selection = await summarySelection(pool, readFrom, input.to, authority, prices);
-    const source = rolled ? rollupSelection(selection, boundaries) : selection;
+    const source = rolled ? rollupSelection(selection, boundaries, target) : selection;
     mark("coverage");
     const observed = await summaryCoverage(
       db,
@@ -171,7 +176,7 @@ export async function poolUsageSummary(
     mark("hourly");
     const hourly = await summaryHourly(
       db,
-      rolled ? rollupSelection(hourlySelection, boundaries) : hourlySelection,
+      rolled ? rollupSelection(hourlySelection, boundaries, target) : hourlySelection,
       input.from,
       heatmapFrom,
       input.to,

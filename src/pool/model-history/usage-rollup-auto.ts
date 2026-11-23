@@ -5,13 +5,18 @@ import {
   usageRollupHourLimitMs,
   usageRollupWalPerCall,
 } from "./usage-rollup-backfill.ts";
+import { usageRollupTargets, type UsageRollupTarget } from "./usage-rollup-targets.ts";
 
 /**
  * The pool backfills its own usage rollup: each model-history pass ends with one tick of at most
  * two bounded sessions, each recomputing one pool's hours with the operator backfill's own stops
  * (the hour limit, the hold limit, the try-lock that yields to writers, the WAL budget).
+ * Each rollup keeps its own state; the v16 state exists once a tick has found v16 applied, and
+ * from then on it is the one the tick runs and reports.
  */
 export const usageRollupAutoKey = "usage-rollup-auto-v1";
+export const usagePeopleRollupAutoKey = "usage-rollup-auto-v2";
+const autoKeys = { v15: usageRollupAutoKey, v16: usagePeopleRollupAutoKey } as const;
 export interface UsageRollupAutoBounds {
   readonly sessions: number;
   readonly sessionMs: number;
@@ -66,6 +71,8 @@ export interface UsageRollupStuck {
 }
 
 export interface UsageRollupAutoState {
+  /** The rollup this state backfills; absent on a v15 state stored before v16. */
+  readonly rollup?: UsageRollupTarget;
   readonly lastTickAt?: string;
   readonly lastStop?: UsageRollupAutoStop;
   readonly lastHour?: string;
@@ -98,6 +105,7 @@ type Session = <T>(work: (db: HistoryDatabase) => Promise<T>) => Promise<T>;
 
 type Outcome =
   | { kind: "not_applied" | "ready" | "stuck"; stuck: readonly UsageRollupStuck[] }
+  | { kind: "switch"; rollup: UsageRollupTarget }
   | {
       kind: "ran";
       pool: string;
@@ -110,17 +118,32 @@ const notApplied = "The usage rollup migration is not applied";
 const hourMs = 3_600_000;
 
 /** Stuck entries whose pool became ready, or whose hour is now done, are cleared. */
-async function unresolved(db: HistoryDatabase, stuck: readonly UsageRollupStuck[]) {
+async function unresolved(
+  db: HistoryDatabase,
+  stuck: readonly UsageRollupStuck[],
+  rollup: UsageRollupTarget,
+) {
   if (!stuck.length) return stuck;
+  const names = usageRollupTargets[rollup];
   const done = await db.query(
     `SELECT s.pool, s.hour FROM jsonb_to_recordset($1::jsonb) AS s(pool text, hour text)
-    WHERE EXISTS (SELECT 1 FROM basalt_model_usage_ready r WHERE r.pool=s.pool)
-      OR (s.hour IS NOT NULL AND EXISTS (SELECT 1 FROM basalt_model_usage_hours h
+    WHERE EXISTS (SELECT 1 FROM ${names.ready} r WHERE r.pool=s.pool)
+      OR (s.hour IS NOT NULL AND EXISTS (SELECT 1 FROM ${names.hours} h
         WHERE h.pool=s.pool AND h.hour=s.hour::timestamptz))`,
     [JSON.stringify(stuck.map(({ pool, hour }) => ({ pool, hour: hour ?? null })))],
   );
   const cleared = new Set(done.rows.map((row) => `${String(row.pool)}|${row.hour ?? ""}`));
   return stuck.filter((entry) => !cleared.has(`${entry.pool}|${entry.hour ?? ""}`));
+}
+
+/** The rollup the tick runs and reports: v16 once its state exists, else v15. */
+async function activeState(storage: AutoStorage) {
+  const people = await storage.get<UsageRollupAutoState>(usagePeopleRollupAutoKey);
+  if (people) return { rollup: "v16" as const, state: people };
+  return {
+    rollup: "v15" as const,
+    state: (await storage.get<UsageRollupAutoState>(usageRollupAutoKey)) ?? {},
+  };
 }
 
 /** One tick. Returns the state it stored; never throws for a backfill failure, only logs it. */
@@ -134,6 +157,8 @@ export async function usageRollupTick(
     stopped?: () => boolean;
     plan?: typeof planUsageRollup;
     run?: typeof runUsageRollup;
+    /** Set on the tick that restarts once v16 is found applied, so it can switch only once. */
+    switched?: boolean;
   } = {},
 ): Promise<UsageRollupAutoState> {
   const now = options.now ?? (() => Date.now());
@@ -141,7 +166,10 @@ export async function usageRollupTick(
   const stopped = options.stopped ?? (() => false);
   const plan = options.plan ?? planUsageRollup;
   const run = options.run ?? runUsageRollup;
-  const previous = (await storage.get<UsageRollupAutoState>(usageRollupAutoKey)) ?? {};
+  const active = await activeState(storage);
+  const rollup = active.rollup;
+  const key = autoKeys[rollup];
+  const previous = active.state;
   const started = now();
   if (previous.pausedUntil && Date.parse(previous.pausedUntil) > started) return previous;
   let state: UsageRollupAutoState = {
@@ -152,7 +180,7 @@ export async function usageRollupTick(
   // Stored after every session, so a reset mid-tick forgets at most the session it cut short.
   const save = async (next: UsageRollupAutoState) => {
     state = next;
-    await storage.put(usageRollupAutoKey, state);
+    await storage.put(key, state);
   };
   const pause = () => new Date(now() + bounds.pauseMs).toISOString();
   const stuckWith = (
@@ -187,7 +215,7 @@ export async function usageRollupTick(
     let outcome: Outcome;
     try {
       outcome = await session(async (db): Promise<Outcome> => {
-        const stuck = await unresolved(db, stuckBefore);
+        const stuck = await unresolved(db, stuckBefore, rollup);
         let planned: Awaited<ReturnType<typeof planUsageRollup>>;
         try {
           planned = await plan(db);
@@ -196,6 +224,10 @@ export async function usageRollupTick(
             return { kind: "not_applied", stuck };
           throw error;
         }
+        // The plan names the newest applied rollup. v16 only ever replaces v15: migrations are
+        // additive, so a database never goes back, and the tick restarts on v16's own state.
+        if (planned.plan.rollup === "v16" && rollup === "v15" && !options.switched)
+          return { kind: "switch", rollup: "v16" };
         // One pool at a time: the first that is neither ready nor stuck, or whose retry is due.
         const skipped = new Set(
           stuck.filter((entry) => Date.parse(entry.retryAt) > now()).map((entry) => entry.pool),
@@ -206,7 +238,7 @@ export async function usageRollupTick(
         working = next.pool;
         const result = await run(
           db,
-          { pools: [next] },
+          { ...(planned.plan.rollup ? { rollup: planned.plan.rollup } : {}), pools: [next] },
           Math.min(bounds.sessionMs, msLeft),
           now,
           Math.min(bounds.sessionWalBytes, walLeft, usageRollupWalPerCall),
@@ -237,6 +269,10 @@ export async function usageRollupTick(
         pausedUntil: pause(),
       });
       break;
+    }
+    if (outcome.kind === "switch") {
+      await storage.put(autoKeys[outcome.rollup], { rollup: outcome.rollup });
+      return usageRollupTick(storage, session, { ...options, switched: true });
     }
     const spent = {
       at,
@@ -322,8 +358,10 @@ export async function usageRollupTick(
   return state;
 }
 
-export async function usageRollupAutoState(storage: AutoStorage) {
-  return (await storage.get<UsageRollupAutoState>(usageRollupAutoKey)) ?? {};
+/** The active rollup's state, naming its rollup. */
+export async function usageRollupAutoState(storage: AutoStorage): Promise<UsageRollupAutoState> {
+  const active = await activeState(storage);
+  return { ...active.state, rollup: active.rollup };
 }
 
 /** The pools whose rollup is stuck, which the minute check reports as a reliability reason. */
@@ -363,6 +401,7 @@ const reasons = new Set<string>(Object.keys(reasonNames));
  */
 export function usageRollupInspect(state: UsageRollupAutoState) {
   return {
+    rollup: state.rollup === "v16" ? ("v16" as const) : ("v15" as const),
     lastTickAt: iso(state.lastTickAt),
     lastStop:
       typeof state.lastStop === "string" && stops.has(state.lastStop) ? state.lastStop : null,

@@ -2,7 +2,13 @@ import { digest } from "../backend-users.ts";
 import { HistoryInputError, historyObject, invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { maxSummaryRollupGroups } from "./summary-rollup-query.ts";
-import { historyUsageRollupVersion, usageRollupLockClass } from "./usage-rollup-schema.ts";
+import { usageRollupLockClass } from "./usage-rollup-schema.ts";
+import {
+  activeUsageRollupTarget,
+  isUsageRollupTarget,
+  usageRollupTargets,
+  type UsageRollupTarget,
+} from "./usage-rollup-targets.ts";
 
 export const historyUsageRollupPath = "/model-history/usage-rollup";
 export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
@@ -47,18 +53,22 @@ const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
 
 export interface UsageRollupPlan {
+  /** The rollup the plan recomputes; a plan without one predates v16 and means v15. */
+  readonly rollup?: UsageRollupTarget;
   readonly pools: readonly { pool: string; from: string; to: string; days: number }[];
 }
 
 /**
  * Each pool's whole UTC days that may hold rows written before the rollup's trigger existed. Reads
  * only the pool-time index's ends and the rollup's own small tables; never a usage row's values.
+ * Without a target it plans the newest rollup this database applied.
  */
-export async function planUsageRollup(db: HistoryDatabase) {
-  const ready = await db.query("SELECT 1 FROM basalt_model_history_migrations WHERE name=$1", [
-    historyUsageRollupVersion,
-  ]);
-  if (!ready.rows.length) throw new Error("The usage rollup migration is not applied");
+export async function planUsageRollup(db: HistoryDatabase, target?: UsageRollupTarget) {
+  const active = await activeUsageRollupTarget(db);
+  const rollup = target ?? active;
+  if (!rollup || (rollup === "v16" && active !== "v16"))
+    throw new Error("The usage rollup migration is not applied");
+  const names = usageRollupTargets[rollup];
   const pools = (
     await db.query(`WITH RECURSIVE p AS (
         SELECT min(pool) AS pool FROM basalt_model_requests
@@ -67,11 +77,12 @@ export async function planUsageRollup(db: HistoryDatabase) {
       ) SELECT p.pool,
         (SELECT min(r.timestamp) FROM basalt_model_requests r WHERE r.pool=p.pool) AS first_at,
         (SELECT max(r.timestamp) FROM basalt_model_requests r WHERE r.pool=p.pool) AS last_at,
-        EXISTS (SELECT 1 FROM basalt_model_usage_ready d WHERE d.pool=p.pool) AS ready,
-        (SELECT count(*) FROM basalt_model_usage_hours h WHERE h.pool=p.pool)::int AS hours
+        EXISTS (SELECT 1 FROM ${names.ready} d WHERE d.pool=p.pool) AS ready,
+        (SELECT count(*) FROM ${names.hours} h WHERE h.pool=p.pool)::int AS hours
       FROM p WHERE p.pool IS NOT NULL ORDER BY p.pool`)
   ).rows;
   const plan: UsageRollupPlan = {
+    rollup,
     pools: pools
       .filter((row) => row.ready !== true)
       .map((row) => {
@@ -97,7 +108,9 @@ export async function planUsageRollup(db: HistoryDatabase) {
 export function approvedUsageRollupPlan(raw: unknown): UsageRollupPlan {
   const value = historyObject(raw);
   if (!Array.isArray(value.pools) || value.pools.length > 1_000) return invalidHistory();
+  if (value.rollup !== undefined && !isUsageRollupTarget(value.rollup)) return invalidHistory();
   return {
+    ...(value.rollup === undefined ? {} : { rollup: value.rollup }),
     pools: value.pools.map((item) => {
       const pool = historyObject(item);
       const from = String(pool.from),
@@ -132,6 +145,7 @@ export async function runUsageRollup(
   stopped: () => boolean = () => false,
 ) {
   const started = now();
+  const names = usageRollupTargets[plan.rollup ?? "v15"];
   // The write-ahead log this call adds, measured on the server before every hour it starts. The
   // insert position counts WAL a commit that skipped the flush has not written out yet.
   const walStart = String(
@@ -165,7 +179,7 @@ export async function runUsageRollup(
       await db.query(
         `SELECT h.at FROM generate_series($2::timestamptz,$3::timestamptz-interval '1 hour',
           interval '1 hour') AS h(at)
-        WHERE NOT EXISTS (SELECT 1 FROM basalt_model_usage_hours d WHERE d.pool=$1 AND d.hour=h.at)
+        WHERE NOT EXISTS (SELECT 1 FROM ${names.hours} d WHERE d.pool=$1 AND d.hour=h.at)
         ORDER BY h.at`,
         [item.pool, item.from, item.to],
       )
@@ -205,7 +219,7 @@ export async function runUsageRollup(
           const written = await db.query(
             `SELECT r.groups, extract(epoch FROM clock_timestamp() - r.locked_at) * 1000 AS held_ms
             FROM (
-              SELECT l.locked_at, CASE WHEN l.locked THEN basalt_model_usage_recompute(
+              SELECT l.locked_at, CASE WHEN l.locked THEN ${names.recompute}(
                 $1,$2::timestamptz,$2::timestamptz + interval '1 hour') END AS groups
               FROM (
                 SELECT pg_try_advisory_xact_lock(${usageRollupLockClass},hashtext($1)) AS locked,
@@ -267,7 +281,7 @@ export async function runUsageRollup(
     let groupsInWindow: number | undefined;
     if (remainingHours === 0) {
       await db.query(
-        `INSERT INTO basalt_model_usage_ready (pool,through) VALUES ($1,$2::timestamptz)
+        `INSERT INTO ${names.ready} (pool,through) VALUES ($1,$2::timestamptz)
         ON CONFLICT (pool) DO NOTHING`,
         [item.pool, item.to],
       );
@@ -275,7 +289,7 @@ export async function runUsageRollup(
       groupsInWindow = Number(
         (
           await db.query(
-            `SELECT count(*)::int AS n FROM (SELECT 1 FROM basalt_model_usage_hourly
+            `SELECT count(*)::int AS n FROM (SELECT 1 FROM ${names.hourly}
               WHERE pool=$1 AND hour >= now() - interval '14 weeks' LIMIT $2) g`,
             [item.pool, maxSummaryRollupGroups + 1],
           )

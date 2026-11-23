@@ -49,6 +49,8 @@ const Selection = Schema.Struct({
 });
 /** The pool's own usage rollup backfill, closed: no name, host or account id ever travels. */
 export const UsageRollup = Schema.Struct({
+  /** The rollup the pool backfills now: v15, or v16 once its migration is applied. */
+  rollup: Schema.Literals(["v15", "v16"]),
   lastTickAt: Schema.NullOr(Schema.String),
   lastStop: Schema.NullOr(Schema.String),
   pausedUntil: Schema.NullOr(Schema.String),

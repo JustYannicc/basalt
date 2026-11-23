@@ -7,7 +7,8 @@ import {
   maxSummaryProviderRows,
 } from "./summary-query.ts";
 import type { summarySelection } from "./summary-query.ts";
-import { usageRollupBands, usageRollupProjection } from "./usage-rollup-schema.ts";
+import { usageRollupBands } from "./usage-rollup-schema.ts";
+import { usageRollupTargets, type UsageRollupTarget } from "./usage-rollup-targets.ts";
 import { maxSummaryNativeHours } from "./summary-hourly.ts";
 
 type Selection = Awaited<ReturnType<typeof summarySelection>>;
@@ -44,17 +45,34 @@ const literal = (at: string) => {
 };
 
 /**
- * The summary's request selection, as groups: whole hours from the rollup and hours cut by a
- * boundary aggregated from their raw rows, with the same account mapping and redaction as raw rows.
+ * A window's groups in one rollup's shape: its whole hours from the rollup, and each hour cut by a
+ * boundary aggregated from its raw rows cut there, so no group ever straddles a boundary.
  */
-export function rollupSelectionText(window: ReturnType<typeof rollupWindow>, name = "selected") {
-  const native = `(r.source=$5 OR r.attribution='import-owner' AND left(r.account,${importAccountPrefix.length})='${importAccountPrefix}')`;
+export function rollupRowsText(window: ReturnType<typeof rollupWindow>, target: UsageRollupTarget) {
+  const rollup = usageRollupTargets[target];
   const raw = window.segments.map(([a, b]) =>
-    usageRollupProjection(`(SELECT * FROM basalt_model_requests e
+    rollup.projection(`(SELECT * FROM basalt_model_requests e
       WHERE e.pool=$1 AND e.timestamp >= ${literal(a!)}::timestamptz - interval '1 microsecond'
         AND e.timestamp < ${literal(b!)}::timestamptz + interval '1 microsecond'
         AND e.timestamp_exact >= ${literal(a!)} AND e.timestamp_exact < ${literal(b!)})`),
   );
+  return `SELECT u.* FROM ${rollup.hourly} u
+        WHERE u.pool=$1 AND u.hour >= ${literal(window.from)}::timestamptz
+          AND u.hour < ${literal(window.to)}::timestamptz
+          ${window.split.length ? `AND u.hour NOT IN (${window.split.map((at) => `${literal(at)}::timestamptz`).join(",")})` : ""}
+        ${raw.map((sql) => `UNION ALL ${sql}`).join("\n")}`;
+}
+
+/**
+ * The summary's request selection, as groups: whole hours from the rollup and hours cut by a
+ * boundary aggregated from their raw rows, with the same account mapping and redaction as raw rows.
+ */
+export function rollupSelectionText(
+  window: ReturnType<typeof rollupWindow>,
+  name = "selected",
+  target: UsageRollupTarget = "v15",
+) {
+  const native = `(r.source=$5 OR r.attribution='import-owner' AND left(r.account,${importAccountPrefix.length})='${importAccountPrefix}')`;
   return `${name} AS (
       SELECT r.*,$6::text AS gateway_source,
         CASE WHEN r.account IS NULL THEN NULL
@@ -63,11 +81,7 @@ export function rollupSelectionText(window: ReturnType<typeof rollupWindow>, nam
         (${native} AND r.account IS NOT NULL AND
           (NOT $8::boolean OR b.history IS NULL OR b.saved IS NULL)) AS counts_only
       FROM (
-        SELECT u.* FROM basalt_model_usage_hourly u
-        WHERE u.pool=$1 AND u.hour >= ${literal(window.from)}::timestamptz
-          AND u.hour < ${literal(window.to)}::timestamptz
-          ${window.split.length ? `AND u.hour NOT IN (${window.split.map((at) => `${literal(at)}::timestamptz`).join(",")})` : ""}
-        ${raw.map((sql) => `UNION ALL ${sql}`).join("\n")}
+        ${rollupRowsText(window, target)}
       ) r
       LEFT JOIN bindings b ON ${native} AND r.account=b.history::character(64)
       -- The window's bounds are its cuts above; the shared parameters stay typed.
@@ -75,13 +89,17 @@ export function rollupSelectionText(window: ReturnType<typeof rollupWindow>, nam
     )`;
 }
 
-export function rollupSelection(selection: Selection, boundaries: readonly string[]): Selection {
+export function rollupSelection(
+  selection: Selection,
+  boundaries: readonly string[],
+  target: UsageRollupTarget = "v15",
+): Selection {
   const window = rollupWindow(String(selection.values[1]), String(selection.values[2]), boundaries);
   return {
     ...selection,
     text: `WITH bindings AS (
       SELECT * FROM jsonb_to_recordset($4::jsonb) AS b(history text,saved text)
-    ), ${rollupSelectionText(window)}`,
+    ), ${rollupSelectionText(window, "selected", target)}`,
   };
 }
 
@@ -116,7 +134,7 @@ const tokens = {
 } as const;
 
 /** The series aggregates over groups: every count is a sum of group counts, every sum of sums. */
-function rollupAggregates() {
+export function rollupAggregates(priced = true) {
   return [
     `${count()} AS requests`,
     `${count("failed")} AS failed`,
@@ -139,15 +157,19 @@ function rollupAggregates() {
     ...["charge-snapshot", "key-at-capture", "import-owner", "unknown"].map(
       (kind) => `${count(`attribution = '${kind}'`)} AS "${kind}"`,
     ),
-    "round(sum(api_cost),12)::text AS api_amount",
-    `${count("api_cost IS NOT NULL")} AS api_priced`,
-    `${count("api_cost IS NOT NULL AND token_count_estimate")} AS api_token_count_estimates`,
-    "min(public_price_as_of) FILTER (WHERE api_cost IS NOT NULL) AS api_price_as_of",
-    "string_agg(DISTINCT public_price_version, ',' ORDER BY public_price_version) FILTER (WHERE api_cost IS NOT NULL) AS api_price_version",
-    "bool_or(public_price_basis='baseline') FILTER (WHERE api_cost IS NOT NULL) AS api_price_baseline",
-    "bool_or(public_price_refresh_failed) FILTER (WHERE api_cost IS NOT NULL) AS api_price_refresh_failed",
-    `${count("public_price_version IS NULL")} AS api_missing_prices`,
-    `${count("price_class = 'missing_tokens'")} AS api_missing_tokens`,
+    ...(priced
+      ? [
+          "round(sum(api_cost),12)::text AS api_amount",
+          `${count("api_cost IS NOT NULL")} AS api_priced`,
+          `${count("api_cost IS NOT NULL AND token_count_estimate")} AS api_token_count_estimates`,
+          "min(public_price_as_of) FILTER (WHERE api_cost IS NOT NULL) AS api_price_as_of",
+          "string_agg(DISTINCT public_price_version, ',' ORDER BY public_price_version) FILTER (WHERE api_cost IS NOT NULL) AS api_price_version",
+          "bool_or(public_price_basis='baseline') FILTER (WHERE api_cost IS NOT NULL) AS api_price_baseline",
+          "bool_or(public_price_refresh_failed) FILTER (WHERE api_cost IS NOT NULL) AS api_price_refresh_failed",
+          `${count("public_price_version IS NULL")} AS api_missing_prices`,
+          `${count("price_class = 'missing_tokens'")} AS api_missing_tokens`,
+        ]
+      : []),
     "bool_or(counts_only) AS counts_only",
   ];
 }
@@ -155,12 +177,14 @@ function rollupAggregates() {
 /**
  * Prices each group as the raw path prices each of its requests. Within one group the rate, the
  * formula and every clamp are fixed, so the cost of the group's sums is the sum of its costs.
+ * `table` is the price table's parameter and `guard` which groups may be priced.
  */
-function rollupPricedSql() {
-  const records = `jsonb_to_recordset($7::jsonb) AS x(provider text,model text,currency text,input text,
+export function rollupPricedSql(table = "$7", guard = "NOT s.counts_only") {
+  const records = `ROWS FROM (jsonb_to_recordset(${table}::jsonb) AS (provider text,model text,currency text,input text,
     output text,cache_read text,cache_write text,request text,tier text,min_input text,as_of text,
-    source text,version text,basis text,refresh_failed boolean)`;
-  // The price table is parsed once; each group then picks its rate from the parsed rows.
+    source text,version text,basis text,refresh_failed boolean)) WITH ORDINALITY AS x`;
+  // The price table is parsed once; each group then picks its rate from the parsed rows. Of two
+  // rows for the same tier and threshold the first wins, as on the raw series path.
   return `price_rows AS MATERIALIZED (
       SELECT x.*,x.min_input::numeric AS min_input_tokens FROM ${records}
       WHERE x.currency='USD' AND x.source='models.dev'
@@ -196,8 +220,8 @@ function rollupPricedSql() {
         FROM price_rows x
         WHERE x.provider=s.provider AND x.model=s.model
           AND (x.tier='*' OR x.tier=coalesce(s.service_tier,'*')) AND x.min_input_tokens<=s.context_band
-        ORDER BY (x.tier<>'*') DESC,x.min_input_tokens DESC LIMIT 1
-      ) p ON NOT s.counts_only
+        ORDER BY (x.tier<>'*') DESC,x.min_input_tokens DESC,x.ordinality LIMIT 1
+      ) p ON ${guard}
     )`;
 }
 
@@ -293,8 +317,8 @@ export const maxSummaryRollupGroups = 200_000;
 /**
  * The summary's first statement. A pool whose rollup is ready reads its targets from the rollup,
  * behind a bounded count of its window's groups; any other pool keeps the raw read behind its
- * bounded window count. Without the rollup's tables (before v15 is applied) only the raw read is
- * named. One row says which ran.
+ * bounded window count. A pool ready on v16 reads v16, else one ready on v15 reads v15. A rollup
+ * whose tables do not exist yet is never named. One row says which ran, its rollup in `provider`.
  */
 export function summaryModeTargets(
   selection: Selection,
@@ -302,21 +326,41 @@ export function summaryModeTargets(
   boundaries: readonly string[],
   rollupTables = true,
   rollupGroups = maxSummaryRollupGroups,
+  peopleTables = false,
 ) {
   for (const bound of [windowRows, rollupGroups])
     if (!Number.isSafeInteger(bound) || bound < 1) throw new Error("Invalid window bound");
   const window = rollupWindow(String(selection.values[1]), String(selection.values[2]), boundaries);
-  const rolled = rollupTables
-    ? `${rollupSelectionText(window, "rolled")},
+  // Newest first: the first ready rollup is the one the summary reads.
+  const present = [
+    ...(peopleTables ? ["v16" as const] : []),
+    ...(rollupTables ? ["v15" as const] : []),
+  ];
+  const choice = present.length
+    ? `CASE ${present
+        .map(
+          (target) =>
+            `WHEN EXISTS (SELECT 1 FROM ${usageRollupTargets[target].ready} WHERE pool=$1) THEN '${target}'`,
+        )
+        .join(" ")} END`
+    : "NULL::text";
+  const rolled = `${present.map((target) => `${rollupSelectionText(window, `rolled_${target}`, target)},`).join("\n")}
     ready AS MATERIALIZED (
-      SELECT EXISTS (SELECT 1 FROM basalt_model_usage_ready WHERE pool=$1) AS rolled
+      SELECT r.rollup IS NOT NULL AS rolled,r.rollup FROM (SELECT ${choice} AS rollup) r
     ), rolled_rows AS MATERIALIZED (
-      SELECT count(*) AS n FROM (SELECT 1 FROM basalt_model_usage_hourly g
-        WHERE (SELECT rolled FROM ready) AND g.pool=$1
+      SELECT ${
+        present.length
+          ? `count(*) AS n FROM (${present
+              .map(
+                (target) => `(SELECT 1 FROM ${usageRollupTargets[target].hourly} g
+        WHERE (SELECT rollup FROM ready)='${target}' AND g.pool=$1
           AND g.hour >= '${window.from}'::timestamptz AND g.hour < '${window.to}'::timestamptz
-        LIMIT ${rollupGroups + 1}) bounded
-    ),`
-    : `ready AS MATERIALIZED (SELECT false AS rolled), rolled_rows AS MATERIALIZED (SELECT 0::bigint AS n),`;
+        LIMIT ${rollupGroups + 1})`,
+              )
+              .join(" UNION ALL ")}) bounded`
+          : "0::bigint AS n"
+      }
+    ),`;
   return {
     text: `${selection.text}, ${rolled}
     window_rows AS MATERIALIZED (
@@ -329,19 +373,19 @@ export function summaryModeTargets(
       SELECT DISTINCT provider,model FROM (
         SELECT provider,model,counts_only FROM selected
         WHERE NOT (SELECT rolled FROM ready) AND (SELECT n FROM window_rows) <= ${windowRows}
-        ${
-          rollupTables
-            ? `UNION ALL
-        SELECT provider,model,counts_only FROM rolled
-        WHERE (SELECT rolled FROM ready) AND (SELECT n FROM rolled_rows) <= ${rollupGroups}`
-            : ""
-        }
+        ${present
+          .map(
+            (target) => `UNION ALL
+        SELECT provider,model,counts_only FROM rolled_${target}
+        WHERE (SELECT rollup FROM ready)='${target}' AND (SELECT n FROM rolled_rows) <= ${rollupGroups}`,
+          )
+          .join("\n")}
       ) t WHERE NOT counts_only AND provider IS NOT NULL AND model IS NOT NULL
       ORDER BY provider,model LIMIT 101
     ) SELECT 'target' AS kind,provider,model,NULL::bigint AS window_rows FROM targets
       UNION ALL SELECT 'over',NULL,NULL,n FROM window_rows WHERE n > ${windowRows}
       UNION ALL SELECT 'over',NULL,NULL,n FROM rolled_rows WHERE n > ${rollupGroups}
-      UNION ALL SELECT 'rollup',NULL,NULL,NULL WHERE (SELECT rolled FROM ready)
+      UNION ALL SELECT 'rollup',(SELECT rollup FROM ready),NULL,NULL WHERE (SELECT rolled FROM ready)
       ORDER BY kind,provider,model`,
     values: selection.values,
   };
