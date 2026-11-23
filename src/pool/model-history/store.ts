@@ -196,7 +196,7 @@ export async function readRequests(db: HistoryDatabase, query: HistoryQuery) {
     FROM basalt_model_requests
     WHERE pool = $1 AND ($2::text IS NULL OR person = $2) AND timestamp >= $3 AND timestamp < $4
       AND ($5::timestamptz IS NULL OR (timestamp,id) > ($5::timestamptz,$6::text))
-    ORDER BY timestamp,id LIMIT 201`,
+    ORDER BY basalt_model_requests.timestamp, basalt_model_requests.id LIMIT 201`,
     [
       query.pool,
       query.person ?? null,

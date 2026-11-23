@@ -38,7 +38,7 @@ export async function homeCaptureCoverage(
       AND NOT EXISTS (
         SELECT 1 FROM basalt_model_requests r
         WHERE r.pool=$4 AND r.source=$5
-          AND r.source_record=encode(sha256(convert_to('["usage","'||u.id::text||'"]','UTF8')),'hex')
+          AND r.source_record=encode(sha256(convert_to('["usage","'||u.id::text||'"]','UTF8')),'hex')::character(64)
       )
     ORDER BY hour LIMIT 800`,
     [username, from, to, poolHash, homeSourceHash],
