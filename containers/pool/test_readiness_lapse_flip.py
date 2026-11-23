@@ -79,20 +79,52 @@ class LapseFlipTests(unittest.TestCase):
         self.readiness.note_probe_step("plugin_probe")
         self.clock.advance(1_300)
         lapse = self.payload()["last_lapse"]
-        self.assertEqual((lapse["step"], lapse["ms"]), ("plugin_probe", 1_300))
+        # Measured to the lease's deadline, not to the moment someone asked.
+        self.assertEqual((lapse["step"], lapse["ms"]), ("plugin_probe", 1_210))
 
-    def test_a_slow_but_successful_probe_is_named_too(self) -> None:
+    def probe(self, *steps: tuple[str, int], missed: bool) -> None:
+        for step, ms in steps:
+            self.readiness.note_probe_step(step)
+            self.clock.advance(ms)
+        self.readiness.note_probe_step(None, missed=missed)
+
+    def test_a_lapse_noticed_by_the_next_renewal_names_where_the_misses_stopped(self) -> None:
         self.serve()
-        self.clock.advance(100)
-        self.readiness.note_probe_step("home_plugins")
-        self.readiness.note_probe_step("plugin_probe")
-        self.readiness.note_probe_step("probe_log")
-        self.clock.advance(1_700)
-        self.readiness.note_probe_step(None)
-        # The renewal itself notices that the lease ran out before it arrived.
+        for _ in range(2):
+            self.clock.advance(255)
+            self.probe(("home_plugins", 3), ("plugin_probe", 2), ("probe_log", 245), missed=True)
+        self.clock.advance(1_000)
+        self.probe(("home_plugins", 2), ("plugin_probe", 1), ("probe_log", 2), missed=False)
+        # The healthy probe's renewal is what notices the lease ran out.
         self.assertTrue(self.readiness.refresh_policy_lease(INSTANCE))
         lapse = self.payload()["last_lapse"]
-        self.assertEqual((lapse["step"], lapse["ms"]), ("probe_log", 1_700))
+        self.assertEqual((lapse["step"], lapse["ms"]), ("probe_log", 245))
+
+    def test_a_fast_failure_is_named_over_a_slower_step_before_it(self) -> None:
+        self.serve()
+        self.clock.advance(250)
+        self.probe(("home_plugins", 200), ("plugin_probe", 3), missed=True)
+        self.clock.advance(1_200)
+        lapse = self.payload()["last_lapse"]
+        self.assertEqual((lapse["step"], lapse["ms"]), ("plugin_probe", 3))
+
+    def test_a_lapse_noticed_late_keeps_its_order_and_deadline(self) -> None:
+        self.serve()
+        revision = self.readiness.service_audit_revision()
+        self.clock.advance(3_300)
+        # A health check that blocked past the deadline reports back before anyone asked /ready.
+        self.readiness.set_ready(True, audit_revision=revision)
+        flips = [line for line in self.lines if line.startswith((LAPSE_LINE, FLIP_LINE))]
+        self.assertEqual(flips[-2:], [
+            LAPSE_LINE + '{"step":"no_probe","ms":1500}',
+            FLIP_LINE + '{"to":"refusing","reason":"policy_unproven","prior_ms":1500}',
+        ])
+
+    def test_an_unnoticed_lapse_is_not_lost_to_an_invalidation(self) -> None:
+        self.serve()
+        self.clock.advance(1_600)
+        self.readiness.invalidate_policy()
+        self.assertEqual(self.payload()["lapses"], 1)
 
     def test_a_stalled_home_is_one_lapse_and_one_flip_however_often_it_is_asked(self) -> None:
         self.serve()
@@ -154,6 +186,8 @@ class LapseFlipTests(unittest.TestCase):
             self.serve()
             self.clock.advance(POLICY_HEALTH_LEASE_NS // MS)
             self.payload()
+            self.serve()
+            self.readiness.begin_recovery()
         self.assertTrue(held)
         self.assertFalse(any(held))
 

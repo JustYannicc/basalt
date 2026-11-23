@@ -21,11 +21,13 @@ def probe_home_policy(
     management_key: str,
     readiness: Readiness,
 ) -> tuple[ProbeState, str | None]:
-    # Readiness times each step, so a lease that lapses names the step that was slow.
+    # Readiness times each step, so a lease that lapses names the step that was slow or failed.
+    state: ProbeState = "missed"
     try:
-        return _probe_home_policy(management_key, readiness)
+        state, instance = _probe_home_policy(management_key, readiness)
+        return state, instance
     finally:
-        readiness.note_probe_step(None)
+        readiness.note_probe_step(None, missed=state != "healthy")
 
 
 def _probe_home_policy(

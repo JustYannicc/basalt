@@ -103,8 +103,9 @@ class Readiness:
         # Lapse and flip bookkeeping: only the last of each and two counters, so a stalled Home
         # cannot grow the answer, and one record and one line per transition, never per probe.
         self._probe_current: tuple[str, int] | None = None
-        self._probe_steps: dict[str, int] = {}
-        self._probe_started_ns: int | None = None
+        # Since the last renewal: each step's longest run, and where the latest missed probe stopped.
+        self._steps_max: dict[str, int] = {}
+        self._last_miss: tuple[str, int] | None = None
         self._policy_renewed_ns = 0
         self._node_audit_ok = True
         self._last_lapse: dict[str, object] | None = None
@@ -133,10 +134,10 @@ class Readiness:
             "policy_fused" if fused else "policy_unproven" if not policy_live else "degraded"
         )
 
-    def _observe_state(self, event_ns: int | None = None) -> None:
+    def _observe_state(self, event_ns: int | None = None) -> tuple[bool, str | None]:
         ready, refusal = self._current_state()
         if ready == self._state_ready:
-            return
+            return ready, refusal
         at_ns = self._monotonic_ns() if event_ns is None else event_ns
         prior_ms = max(0, (at_ns - self._state_since_ns) // 1_000_000)
         self._state_ready = ready
@@ -149,6 +150,7 @@ class Readiness:
         }
         self._last_flip = {**record, "at": self._wall_iso(at_ns)}
         self._pending_lines.append(FLIP_LINE + json.dumps(record, separators=(",", ":")))
+        return ready, refusal
 
     def _note_lapse(self, step: str, ms: int, event_ns: int) -> None:
         if step not in LAPSE_STEPS:
@@ -158,19 +160,22 @@ class Readiness:
         self._last_lapse = {**record, "at": self._wall_iso(event_ns)}
         self._pending_lines.append(LAPSE_LINE + json.dumps(record, separators=(",", ":")))
 
-    def _lapse_cause(self) -> tuple[str, int]:
-        """The slowest step of the latest probe since the last renewal, or no probe at all."""
-        now = self._monotonic_ns()
-        if self._probe_started_ns is None or self._probe_started_ns <= self._policy_renewed_ns:
-            return "no_probe", (now - self._policy_renewed_ns) // 1_000_000
-        steps = dict(self._probe_steps)
+    def _lapse_cause(self, at_ns: int) -> tuple[str, int]:
+        """Where the probe stood when the lease ran out at at_ns, measured to that moment.
+
+        The step still in flight then, else where the latest missed probe stopped, else the
+        slowest step since the renewal, else no probe ran at all.
+        """
         if self._probe_current is not None:
             step, started_ns = self._probe_current
-            steps[step] = (now - started_ns) // 1_000_000
-        if not steps:
-            return "no_probe", (now - self._policy_renewed_ns) // 1_000_000
-        slowest = max(steps, key=lambda name: steps[name])
-        return slowest, steps[slowest]
+            if started_ns < at_ns:
+                return step, (at_ns - started_ns) // 1_000_000
+        if self._last_miss is not None:
+            return self._last_miss
+        if self._steps_max:
+            slowest = max(self._steps_max, key=lambda name: self._steps_max[name])
+            return slowest, self._steps_max[slowest]
+        return "no_probe", max(0, at_ns - self._policy_renewed_ns) // 1_000_000
 
     def _emit_pending(self) -> None:
         with self._lock:
@@ -178,16 +183,16 @@ class Readiness:
         for line in lines:
             emit(line, err=True)
 
-    def note_probe_step(self, step: str | None) -> None:
-        """Marks where the policy probe is (None when it ends), so a lapse names the slow step."""
+    def note_probe_step(self, step: str | None, *, missed: bool = False) -> None:
+        """Marks where the policy probe is; None ends it, missed when it ended without a lease."""
         with self._lock:
             now = self._monotonic_ns()
             if self._probe_current is not None:
                 previous, started_ns = self._probe_current
-                self._probe_steps[previous] = (now - started_ns) // 1_000_000
-            if step == PROBE_STEPS[0]:
-                self._probe_steps = {}
-                self._probe_started_ns = now
+                took = (now - started_ns) // 1_000_000
+                self._steps_max[previous] = max(self._steps_max.get(previous, 0), took)
+                if step is None and missed:
+                    self._last_miss = (previous, took)
             self._probe_current = (step, now) if step in PROBE_STEPS else None
 
     @_emits
@@ -201,6 +206,7 @@ class Readiness:
     @_emits
     def set_ready(self, value: bool, *, audit_revision: int | None = None) -> None:
         with self._lock:
+            self._expire_policy_lease()
             self._services_ready = value and (
                 audit_revision is None or audit_revision == self._service_audit_revision
             )
@@ -234,7 +240,7 @@ class Readiness:
             self._policy_healthy = False
             self._invalidate_service_audit()
             # Expiry is noticed lazily; the records carry the lease's own deadline.
-            self._note_lapse(*self._lapse_cause(), self._policy_deadline_ns)
+            self._note_lapse(*self._lapse_cause(self._policy_deadline_ns), self._policy_deadline_ns)
             self._observe_state(self._policy_deadline_ns)
 
     @_emits
@@ -266,6 +272,8 @@ class Readiness:
             self._policy_healthy = True
             self._policy_renewed_ns = self._monotonic_ns()
             self._policy_deadline_ns = self._policy_renewed_ns + POLICY_HEALTH_LEASE_NS
+            self._steps_max = {}
+            self._last_miss = None
             self._observe_state()
             return True
 
@@ -274,6 +282,7 @@ class Readiness:
         with self._lock:
             if generation is not None and generation != self.boot_id:
                 return
+            self._expire_policy_lease()
             if self._policy_healthy:
                 self._invalidate_service_audit()
             self._policy_healthy = False
@@ -285,6 +294,7 @@ class Readiness:
         with self._lock:
             if generation is not None and generation != self.boot_id:
                 return
+            self._expire_policy_lease()
             self._fused_instance_id = self._policy_instance_id
             self._fused_instance_pending = self._policy_instance_id is None
             self._fuse_seen = True
@@ -346,14 +356,20 @@ class Readiness:
         with self._lock:
             return self._fuse_seen
 
+    @_emits
     def begin_recovery(self) -> None:
         with self._lock:
             if self.policy_fused():
                 raise RuntimeError("Policy fuse forbids recovery")
-            self.home_process_restarted()
+            self._home_process_restarted()
 
+    @_emits
     def home_process_restarted(self) -> None:
+        self._home_process_restarted()
+
+    def _home_process_restarted(self) -> None:
         with self._probe_condition:
+            self._expire_policy_lease()
             self.boot_id = str(uuid.uuid4())
             self.started_at = (
                 dt.datetime.now(dt.timezone.utc)
@@ -369,11 +385,10 @@ class Readiness:
             self._policy_deadline_ns = 0
             self._observed_policy_probes.clear()
             self._probe_current = None
-            self._probe_steps = {}
-            self._probe_started_ns = None
+            self._steps_max = {}
+            self._last_miss = None
             self._observe_state()
             self._probe_condition.notify_all()
-        self._emit_pending()
 
     def set_diagnostics(self, provider: Callable[[int], dict[str, object]]) -> None:
         self._diagnostics = provider
@@ -404,8 +419,8 @@ class Readiness:
     def readiness_response(self) -> tuple[bool, dict[str, object], int]:
         with self._lock:
             self._expire_policy_lease()
-            self._observe_state()
-            ready, refusal = self._current_state()
+            # One state reading serves both the flip record and the answer.
+            ready, refusal = self._observe_state()
             remaining_ns = self._policy_deadline_ns - self._monotonic_ns()
             lease_ms = max(0, min(1500, remaining_ns // 1_000_000)) if ready else 0
             # The distance is reported while warming too, so the controller can redraw a far cell.
