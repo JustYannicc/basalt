@@ -170,7 +170,7 @@ export class PoolRuntimeFleet {
     await this.imageUpdate.assertLaunch(target, transaction);
     const record = await this.configuration.inspect(undefined, transaction);
     if (!record?.enabled) throw new SlotRefused("selection");
-    this.configuration.assertBindings(record.configuration);
+    this.configuration.assertBindings(record.configuration, false);
     const app = record.configuration.applications.find(
       (entry) => entry.color === record.configuration.active,
     );
@@ -206,7 +206,7 @@ export class PoolRuntimeFleet {
   private async target(occupied: readonly SlotTarget[]) {
     const record = await this.configuration.inspect();
     if (!record) throw new SlotRefused("selection");
-    this.configuration.assertBindings(record.configuration);
+    this.configuration.assertBindings(record.configuration, false);
     const app = record.configuration.applications.find(
       (entry) => entry.color === record.configuration.active,
     )!;
@@ -307,8 +307,11 @@ export class PoolRuntimeFleet {
     return record;
   }
   async inspect(operationId?: string) {
+    const permission = await this.configuration.inspect(operationId);
     return {
-      permission: await this.configuration.inspect(operationId),
+      permission,
+      // The stored record can say enabled while launches are refused; this says which holds now.
+      ...this.configuration.standing(operationId ? await this.configuration.inspect() : permission),
       replacement: operationId ? await this.replacement.inspect(operationId) : undefined,
       // A held row has no time exit, so its age and reason show wherever the fleet is inspected.
       resources: (await this.state.inspect()).map((row) => ({

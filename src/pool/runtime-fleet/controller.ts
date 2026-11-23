@@ -10,6 +10,7 @@ import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import {
   sameIdentity,
   sameTarget,
+  SlotRefused,
   type SlotIdentity,
   type SlotTarget,
 } from "../runtime-slots/contract.ts";
@@ -150,6 +151,7 @@ export class RuntimeFleet {
   private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
+  private growthRefusal?: string;
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
   private dispatches = new FleetDispatches();
   // In memory: a replaced isolate only reports a held row again, or counts an unproven drain afresh.
@@ -208,7 +210,25 @@ export class RuntimeFleet {
         this.growing = undefined;
         this.deps.changed?.();
       });
-      this.deps.defer(this.growing.catch(() => {}));
+      this.deps.defer(
+        this.growing.then(
+          () => {
+            this.growthRefusal = undefined;
+          },
+          (error: unknown) => {
+            // Growth retries on every request and alarm, so a refusal logs once until it changes.
+            const reason =
+              error instanceof SlotRefused || error instanceof FleetRefused
+                ? error.reason
+                : error instanceof Error
+                  ? error.name
+                  : "unknown";
+            if (reason !== this.growthRefusal)
+              console.warn("POOL_FLEET_GROWTH_REFUSED", { reason });
+            this.growthRefusal = reason;
+          },
+        ),
+      );
     }
   }
   private async addDemandedRuntime() {
@@ -240,6 +260,7 @@ export class RuntimeFleet {
       if (replacements) await this.deps.state.reserveReplacement(target);
       else await this.deps.state.reserve(target);
       await this.start(target);
+      this.growthRefusal = undefined;
     }
   }
   private async start(target: SlotTarget) {

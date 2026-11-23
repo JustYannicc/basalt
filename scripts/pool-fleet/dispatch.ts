@@ -84,6 +84,8 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
         active: fleet.permission.configuration.active,
       }
     : null,
+  inForce: fleet.inForce ?? null,
+  notInForce: fleet.notInForce ?? null,
   rows: fleet.resources.map((row) => ({
     phase: row.phase,
     active: row.active,

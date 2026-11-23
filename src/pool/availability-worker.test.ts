@@ -27,6 +27,8 @@ const {
     availabilityProbe(pool: string, includeRuntime?: boolean): Promise<ProbeResult>;
     automaticRecoveryObservation(pool: string): Promise<unknown>;
     reliabilitySlo(pool: string): Promise<unknown>;
+    availabilityEpisode(): Promise<unknown>;
+    recordAvailabilityEpisode(episode: unknown): Promise<void>;
   };
   PoolOperations: {
     prototype: { fetch(this: { env: object }, request: Request): Promise<Response> };
@@ -47,6 +49,9 @@ interface StubStorage {
 }
 
 test("the scheduled Worker keeps its passive probe and reports unavailable history separately without warming or repair", async (t) => {
+  // The test owns its clock: a minute off the quarter hour, where no fallback reports on its own.
+  const now = Date.parse("2026-11-23T05:07:00Z");
+  t.mock.method(Date, "now", () => now);
   const f = await fixture();
   f.home.addFile("auth-a");
   f.home.addGroup("fixture-pool", 1, ["auth-a"]);
@@ -97,18 +102,26 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
               reliabilitySlo(pool: string) {
                 return object.reliabilitySlo(pool);
               },
+              // The run's memory of the failures it already reported, as production's object keeps it.
+              availabilityEpisode() {
+                return object.availabilityEpisode();
+              },
+              recordAvailabilityEpisode(episode: unknown) {
+                return object.recordAvailabilityEpisode(episode);
+              },
             };
           },
         };
       },
     },
   };
-  // With no runtime selected the probe arms no upkeep alarm, writes nothing, and warms or repairs
-  // nothing.
+  // With no runtime selected the probe arms no upkeep alarm, warms or repairs nothing, and writes
+  // only what the run reported.
   const background: Promise<unknown>[] = [];
   const armed: number[] = [];
   let alarm: number | null = null;
   let deadlines: unknown;
+  let episode: unknown;
   const object = new PoolContainer(
     {
       id: { toString: () => "a".repeat(64) },
@@ -149,8 +162,14 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
               ? { [state.pool]: structuredClone(state) }
               : key === "pool-alarm-v1:deadlines"
                 ? deadlines
-                : undefined,
+                : key === "pool-availability-episode-v1"
+                  ? structuredClone(episode)
+                  : undefined,
           put: async (key: string, value: unknown) => {
+            if (key === "pool-availability-episode-v1") {
+              episode = structuredClone(value);
+              return;
+            }
             assert.equal(key, "pool-alarm-v1:deadlines", "probe wrote storage");
             deadlines = value;
           },
@@ -170,6 +189,11 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   await Promise.all(background);
   assert.deepEqual(armed, [], "nothing is selected, so no upkeep alarm is armed");
   assert.equal(deadlines, undefined);
+  assert.deepEqual(
+    episode,
+    { pool: state.pool, availability: null, reliability: ["collection_unavailable"] },
+    "the run remembers the failure it reported",
+  );
   assert.equal(probeTarget, state.pool);
   assert.ok(f.home.calls.some((call) => call.path.endsWith("/quota/credentials/auth-a")));
   assert.deepEqual(native.sort(), ["/native-policy/check", "/ready"]);
