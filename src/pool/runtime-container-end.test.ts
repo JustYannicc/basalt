@@ -218,7 +218,7 @@ test("a container gone with no monitor outcome reads as found stopped, and the n
   assert.equal(record?.current.end, undefined);
 });
 
-test("a monitor that rejects while the container still runs records no end", async () => {
+test("a monitor that rejects with no exit while the container runs records unknown, never a crash", async () => {
   const process = containerProcess();
   const view = process.view();
   const ends = new ContainerEnds(memory(), view, () => 7_000);
@@ -233,7 +233,12 @@ test("a monitor that rejects while the container still runs records no end", asy
   const lost = new ContainerEnds(memory(), live, () => 7_000);
   await lost.constructed();
   await containerEndSettled(live);
-  assert.equal((await lost.observe())?.current.end, undefined);
+  assert.deepEqual((await lost.observe())?.current.end, {
+    at: 7_000,
+    exitCode: null,
+    cause: "unknown",
+    seen: "monitor",
+  });
 });
 
 test("the fleet keeps a retired cell's end on its tombstone and in the recent ends, newest first", async () => {

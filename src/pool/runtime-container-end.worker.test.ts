@@ -48,3 +48,33 @@ test("a cell we retire ends with our stop mark, never as a crash", async (contex
   assert.equal(end?.seen, "monitor");
   assert.equal(end?.stopSent, true, "a stop we sent read as a crash");
 });
+
+test("a monitor that rejects with no exit while the primary is healthy records unknown and starts, stops or recovers nothing", async (context) => {
+  quiet(context);
+  const f = await fleetWorkerFixture();
+  context.after(f.cleanup);
+  await f.bootstrap();
+  const primary = f.old.identity();
+  const before = { ...f.old.calls, signals: [...f.old.calls.signals] };
+  // The monitor's transport is lost; the container runs on and answers its health reads.
+  f.old.loseMonitor(new Error("Network connection lost."));
+  for (let pass = 0; pass < 3; pass++) {
+    await f.upkeep();
+    await f.settle();
+  }
+  const inspected = (await f.send("inspect")) as {
+    selection: { active: { identity: { bootId: string } } };
+    lastEnd?: unknown;
+  };
+  assert.equal(inspected.selection.active.identity.bootId, primary.bootId, "the primary recovered");
+  assert.equal(inspected.lastEnd ?? null, null);
+  assert.equal(f.old.calls.start, before.start, "a start followed the monitor");
+  assert.equal(f.old.calls.destroy, before.destroy, "a destroy followed the monitor");
+  assert.deepEqual(f.old.calls.signals, before.signals, "a stop followed the monitor");
+  const record = await f.old.storage.get<{ current: { end?: { at: number } } }>(
+    "runtime-container-end-v1",
+  );
+  const { at, ...end } = record?.current.end ?? { at: undefined };
+  assert.equal(typeof at, "number");
+  assert.deepEqual(end, { exitCode: null, cause: "unknown", seen: "monitor" });
+});

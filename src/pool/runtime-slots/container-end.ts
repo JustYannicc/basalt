@@ -192,8 +192,8 @@ export class ContainerEnds {
     outcome: { readonly resolved: true } | { readonly error: unknown },
   ) {
     if (watching.get(this.container) === startedAt) watching.delete(this.container);
-    // A rejection with the container still up is a lost transport, not an end.
-    if (this.container.running) return;
+    // A rejection that is no exit records `unknown` even with the container up: the monitor only
+    // writes this record, and no start, stop or recovery reads its outcome.
     const record = await this.read();
     if (!record || record.current.startedAt !== startedAt || record.current.end) return;
     const at = this.now();
