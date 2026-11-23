@@ -146,13 +146,20 @@ export function usageRollupProjection(
         THEN 'inconsistent' ELSE 'priced' END`,
     context_band: `coalesce(${band},0)`,
     person: "s.person",
-    // A request table at the base schema has no app column. Read by name from the row, the app of
-    // such a row is NULL, as for a row whose app is unknown, and the trigger runs there as v15's does.
-    app_id: "(to_jsonb(s)->>'app_id')::varchar(256)",
+    // A request table at the base schema has no app column; see `app` below.
+    app_id: "app_row.app_id",
   };
+  // The app by name: inside `app_row`, a bare app_id is the row's own column where the table has
+  // one, and otherwise resolves outward to `app_none`'s NULL, so a row at the base schema keys as a
+  // row whose app is unknown and the trigger runs there as v15's does. Only rollups keyed by app
+  // join it.
+  const app = keys.includes("app_id")
+    ? ` CROSS JOIN (SELECT NULL::varchar(256) AS app_id) app_none
+      CROSS JOIN LATERAL (SELECT app_id FROM (SELECT s.*) z) app_row`
+    : "";
   return `SELECT ${keys.map((key) => `${keyExpressions[key]} AS ${key}`).join(",")},
       ${values.map(([name, , aggregate]) => `${aggregate} AS ${name}`).join(",")}
-    FROM ${rows} s ${counterShapeSql}
+    FROM ${rows} s${app} ${counterShapeSql}
     WHERE s.pool IS NOT NULL
     GROUP BY ${keys.map((_, index) => index + 1).join(",")}`;
 }
