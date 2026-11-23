@@ -149,7 +149,7 @@ export function usageRollupProjection(rows: string) {
 
 /**
  * One lock per pool. A bulk insert can span thousands of hours, and a lock per hour would exhaust
- * the shared lock table; a recompute holds the pool's writers only for one day's recompute.
+ * the shared lock table; a recompute holds the pool's writers only for one hour's recompute.
  */
 const poolLock = (pool: string) => `${usageRollupLockClass}, hashtext(${pool})`;
 
@@ -182,7 +182,7 @@ export const historyUsageRollupStatements = [
   `CREATE TABLE basalt_model_usage_ready (
     pool varchar(16) PRIMARY KEY, through timestamptz NOT NULL,
     completed_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP)`,
-  // A shared lock per pool, taken in key order, lets a backfill recompute a pool's day exclusively.
+  // A shared lock per pool, taken in key order, lets a backfill recompute a pool's hour exclusively.
   `CREATE FUNCTION basalt_model_usage_rollup() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
       PERFORM pg_advisory_xact_lock_shared(${poolLock("k.pool")})
         FROM (SELECT DISTINCT s.pool FROM inserted s WHERE s.pool IS NOT NULL ORDER BY 1) k;
@@ -217,4 +217,7 @@ export const historyUsageRollupStatements = [
   `CREATE TRIGGER basalt_model_usage_rollup AFTER INSERT ON basalt_model_requests
     REFERENCING NEW TABLE AS inserted FOR EACH STATEMENT
     EXECUTE FUNCTION basalt_model_usage_rollup()`,
+  // An import may write with session_replication_role = replica to skip the change journal; the
+  // rollup must still see those rows, or a ready pool's summary would undercount for good.
+  `ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup`,
 ];

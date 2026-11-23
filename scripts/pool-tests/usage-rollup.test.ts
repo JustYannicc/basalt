@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import pg from "pg";
 import { insertBulkRequests } from "../../src/pool/model-history/bulk-store.ts";
+import {
+  withHistoryDatabase,
+  type HistoryDatabaseClient,
+} from "../../src/pool/model-history/database.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import {
   handleUsageRollupOperation,
@@ -75,7 +79,9 @@ test("a backfill recomputes rows that predate the trigger, and resumes where it 
     // Rows written before the trigger existed, as production's retained history is.
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(48, 3));
-    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
     assert.equal(
       (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hourly")).rows[0]!.n,
       0,
@@ -152,7 +158,9 @@ test("the operator endpoint dry-runs without writes, refuses a changed plan, and
   await seriesFixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(30, 2));
-    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
     const url = "http://pool-operations/model-history/usage-rollup";
     const dry = (await (await handleUsageRollupOperation(new Request(url), f.db)).json()) as {
       status: string;
@@ -211,7 +219,9 @@ test("the backfill stops at its write-ahead-log budget, yields to a writer holdi
   await seriesFixture(async (f) => {
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     await f.insert(...rows(6, 2));
-    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
     const { plan } = await planUsageRollup(f.db);
     // A one-byte budget: the first hour runs, then the call stops at that hour's boundary.
     const capped = await runUsageRollup(f.db, plan, 60_000, undefined, 1);
@@ -264,7 +274,9 @@ test("writers on the 500 ms lock timeout never fail while the backfill runs betw
     await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
     for (let hour = 0; hour < 48; hour += 8)
       await f.insert(...rows(8, 20, new Date(Date.UTC(2026, 0, 1, hour)).toISOString()));
-    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
     const { plan } = await planUsageRollup(f.db);
     const client = async () => {
       const c = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
@@ -323,6 +335,129 @@ test("writers on the 500 ms lock timeout never fail while the backfill runs betw
       await holder.query("ROLLBACK").catch(() => {});
       await holder.end();
       await quick.end();
+    }
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("a recompute cancelled inside the operator's bounded session is retried and stops as slow_hour", async () => {
+  await seriesFixture(async (f) => {
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(6, 2));
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
+    const { plan } = await planUsageRollup(f.db);
+    // The operator's own session, which rethrows Postgres's cancel as a history timeout.
+    const result = await withHistoryDatabase(
+      process.env.POOL_TEST_ADMIN_URL,
+      (db) => runUsageRollup(db, plan, 60_000, undefined, undefined, 1),
+      {
+        createClient: async (connectionString) =>
+          new pg.Client({
+            connectionString,
+            options: `-c search_path=${f.schema}`,
+          }) as unknown as HistoryDatabaseClient,
+      },
+    );
+    assert.equal(result.status, "progress");
+    assert.equal(result.stopped, "slow_hour");
+    assert.equal(typeof result.slowHour, "string");
+    assert.equal(result.pools[0]!.recomputedHours, 0);
+    const marked = await f.db.query("SELECT count(*)::int AS n FROM basalt_model_usage_hours");
+    assert.equal(marked.rows[0]!.n, 0, "a cancelled hour leaves no done-marker");
+  });
+});
+
+test("a hold past its limit on a pool's last hour ends the call before the next pool", async () => {
+  await seriesFixture(async (f) => {
+    const first = String((await f.row()).pool);
+    const second = "0123456789abcdef";
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(1, 2), ...rows(2, 2).map((row) => ({ ...row, pool: second })));
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
+    const at = "2026-01-01T00:00:00.000Z";
+    const plan = {
+      pools: [
+        { pool: first, from: at, to: "2026-01-01T01:00:00.000Z", days: 0 },
+        { pool: second, from: at, to: "2026-01-01T02:00:00.000Z", days: 0 },
+      ],
+    };
+    let tick = 0;
+    const held = await runUsageRollup(
+      f.db,
+      plan,
+      60_000,
+      () => (tick += usageRollupHoldLimitMs + 50),
+    );
+    assert.equal(held.status, "progress");
+    assert.equal(held.stopped, "slow_hold");
+    assert.equal(held.slowHour, at);
+    assert.equal(held.pools.length, 1, "the next pool is not started");
+    assert.equal(held.pools[0]!.remainingHours, 0);
+    const later = await f.db.query(
+      "SELECT count(*)::int AS n FROM basalt_model_usage_hours WHERE pool=$1",
+      [second],
+    );
+    assert.equal(later.rows[0]!.n, 0);
+    const resumed = await runUsageRollup(f.db, plan, 60_000);
+    assert.equal(resumed.status, "complete");
+    assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
+  });
+});
+
+test("an import written in replica mode keeps the rollup, racing a backfill without a deadlock", async () => {
+  await seriesFixture(async (f) => {
+    const trigger = await f.db.query(
+      `SELECT tgenabled FROM pg_trigger WHERE tgname='basalt_model_usage_rollup'
+        AND tgrelid=to_regclass('basalt_model_requests')`,
+    );
+    assert.equal(trigger.rows[0]!.tgenabled, "A", "the rollup trigger fires in replica mode too");
+    await f.db.query("ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup");
+    await f.insert(...rows(24, 4));
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
+    const { plan } = await planUsageRollup(f.db);
+    const importer = new pg.Client({ connectionString: process.env.POOL_TEST_ADMIN_URL! });
+    await importer.connect();
+    try {
+      await importer.query(`SET search_path TO ${f.schema}`);
+      // Batches into the hours the backfill is recomputing, as the import finish commits a chunk.
+      const batches = await Promise.all(
+        Array.from({ length: 12 }, async (_, batch) =>
+          Promise.all(
+            rows(24, 2, "2026-01-01T00:30:00Z").map((row, i) =>
+              f.row({ ...row, model: `import-${batch}-${i % 2}` }),
+            ),
+          ),
+        ),
+      );
+      const imports = (async () => {
+        for (const records of batches) {
+          await importer.query(
+            "BEGIN; SET LOCAL lock_timeout = '500ms'; SET LOCAL statement_timeout = '10s'",
+          );
+          try {
+            await importer.query("SET LOCAL session_replication_role = replica");
+            await insertBulkRequests(importer, records);
+            await importer.query("SET LOCAL session_replication_role = origin");
+            await importer.query("COMMIT");
+          } catch (error) {
+            await importer.query("ROLLBACK").catch(() => {});
+            throw error;
+          }
+        }
+      })();
+      let complete = false;
+      for (let call = 0; call < 500 && !complete; call++)
+        complete = (await runUsageRollup(f.db, plan, 200)).status === "complete";
+      await imports;
+      assert.ok(complete, "the backfill finished beside the import");
+    } finally {
+      await importer.end();
     }
     assert.deepEqual((await f.db.query(rolled)).rows, (await f.db.query(raw)).rows);
   });

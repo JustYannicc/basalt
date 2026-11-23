@@ -11,6 +11,11 @@ import {
   usageRollupHoldLimitMs,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { maxSummaryRollupGroups } from "../../src/pool/model-history/summary-rollup-query.ts";
+import {
+  historyBulkBatchSize,
+  insertBulkRequests,
+} from "../../src/pool/model-history/bulk-store.ts";
+import { timestamp } from "../../src/pool/model-history/record.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -107,7 +112,9 @@ async function scaleCase(shape: Shape) {
       );
       await f.db.query(query.text, query.values);
     }
-    await f.db.query("ALTER TABLE basalt_model_requests ENABLE TRIGGER basalt_model_usage_rollup");
+    await f.db.query(
+      "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+    );
     await f.db.query("ANALYZE basalt_model_requests");
 
     const planned = await planUsageRollup(f.db);
@@ -349,3 +356,62 @@ test(`a pool with ${rows} history rows backfilled in interrupted runs, with writ
 test("history whose keys all vary independently, under the group bound, reads identically from the rollup", async () => {
   await scaleCase({ rows: 150_000, worst: true, race: true });
 });
+
+/**
+ * A measurement, not a proof: the import finish's rows per second in replica mode, with the
+ * rollup's trigger (which fires always) and with it off, printed for whoever plans an import.
+ * Set POOL_TEST_ROLLUP_IMPORT_RATE to the row count to run it.
+ */
+const importRows = Number(process.env.POOL_TEST_ROLLUP_IMPORT_RATE ?? 0);
+test(
+  "import rows per second in replica mode, with and without the rollup trigger",
+  { skip: !importRows && "set POOL_TEST_ROLLUP_IMPORT_RATE to measure" },
+  async () => {
+    await seriesFixture(async (f) => {
+      const rate = async (label: string, offset: number) => {
+        const started = performance.now();
+        for (let at = 0; at < importRows; at += historyBulkBatchSize) {
+          const records = await Promise.all(
+            Array.from({ length: Math.min(historyBulkBatchSize, importRows - at) }, (_, i) => {
+              const n = offset + at + i;
+              return f.row({
+                timestamp: timestamp(
+                  new Date(
+                    Date.parse("2026-01-01T00:00:00Z") + (n % 7_776_000) * 1_000,
+                  ).toISOString(),
+                ),
+                provider: "fixture-lab",
+                model: `fixture-model-${n % 8}`,
+                inputTokens: String(1_000 + (n % 30_000)),
+                outputTokens: String(n % 500),
+                totalTokens: String(1_000 + (n % 30_000) + (n % 500)),
+                tokenQuality: "complete",
+              });
+            }),
+          );
+          await f.db.query("BEGIN; SET LOCAL session_replication_role = replica");
+          await insertBulkRequests(f.db, records);
+          await f.db.query("COMMIT");
+        }
+        const seconds = (performance.now() - started) / 1_000;
+        console.info(
+          "ROLLUP_IMPORT_RATE",
+          JSON.stringify({
+            label,
+            rows: importRows,
+            seconds: Math.round(seconds),
+            rowsPerSecond: Math.round(importRows / seconds),
+          }),
+        );
+      };
+      await rate("trigger-always", 0);
+      await f.db.query(
+        "ALTER TABLE basalt_model_requests DISABLE TRIGGER basalt_model_usage_rollup",
+      );
+      await rate("trigger-off", importRows);
+      await f.db.query(
+        "ALTER TABLE basalt_model_requests ENABLE ALWAYS TRIGGER basalt_model_usage_rollup",
+      );
+    });
+  },
+);

@@ -10,6 +10,7 @@ export const historyUsageRollupBackfillVersion = "usage_rollup_backfill_v3";
  * The most write-ahead log the database may write during one backfill call before it stops at the
  * next hour boundary. It counts every writer's WAL, not only the backfill's, so concurrent writes
  * slow the backfill; a call can pass it by its last hour's WAL and whatever else wrote meanwhile.
+ * It is checked before every hour after the call's first, whichever pool the hour belongs to.
  */
 export const usageRollupWalPerCall = 32 * 1024 * 1024;
 /**
@@ -18,14 +19,29 @@ export const usageRollupWalPerCall = 32 * 1024 * 1024;
  */
 export const usageRollupHourLimitMs = 150;
 /**
- * The longest the backfill may hold the pool. The hold is measured on the server from taking the
- * lock to the end of the recompute, plus the commit's round trip timed by the caller, so a slow
- * caller does not inflate it. A recompute cancelled at its timeout returns no server time, so its
- * hold is timed by the caller until the rollback returns. The hold is normally the recompute, one
- * round trip and a commit that does not wait for the WAL flush; a hold over this stops the run,
- * naming the hour. It bounds how often a hold runs long, not how long one lasts on a stalled disk.
+ * The longest the backfill may hold the pool. A committed hour's hold is measured on the server
+ * from taking the lock to the end of the recompute, plus the commit's round trip timed by the
+ * caller. Postgres releases the lock when a cancelled recompute fails, so a cancelled attempt's
+ * hold is timed by the caller from sending the statement until its error arrives, which includes
+ * both legs of that round trip. The hold is normally the recompute, one round trip and a commit
+ * that does not wait for the WAL flush; a hold over this ends the call, naming the hour, and the
+ * run stops there for a person. It bounds how often a hold runs long, not how long one lasts on a
+ * stalled disk.
  */
 export const usageRollupHoldLimitMs = 350;
+
+/**
+ * The Postgres error code behind a failed statement. The bounded session the operator runs in
+ * rethrows Postgres's own statement cancel as a history timeout carrying the driver's error as its
+ * cause, so a code read only from the error itself would never see a cancel there.
+ */
+function postgresCode(error: unknown): unknown {
+  const code = (value: unknown) =>
+    typeof value === "object" && value !== null && "code" in value ? value.code : undefined;
+  const cause =
+    typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined;
+  return code(error) === "57014" || code(cause) === undefined ? code(error) : code(cause);
+}
 
 const day = 86_400_000;
 const midnight = (at: number) => new Date(Math.floor(at / day) * day).toISOString();
@@ -140,7 +156,9 @@ export async function runUsageRollup(
     groupBound?: number;
   }[] = [];
   let complete = true;
-  for (const item of plan.pools) {
+  // Hours this call recomputed across every pool: only the call's first hour skips the WAL check.
+  let callHours = 0;
+  for (const [index, item] of plan.pools.entries()) {
     const pending = (
       await db.query(
         `SELECT h.at FROM generate_series($2::timestamptz,$3::timestamptz-interval '1 hour',
@@ -158,7 +176,7 @@ export async function runUsageRollup(
         break;
       }
       // Every call gets one hour through; the hour that crosses the budget is its last.
-      if (recomputedHours > 0 && (await walWritten()) >= walBudgetBytes) {
+      if (callHours > 0 && (await walWritten()) >= walBudgetBytes) {
         stop = "wal";
         break;
       }
@@ -211,6 +229,7 @@ export async function runUsageRollup(
           maxHoldMs = Math.max(maxHoldMs, held);
           groups += Number(written.rows[0].groups);
           recomputedHours++;
+          callHours++;
           if (held > usageRollupHoldLimitMs) {
             stop = "slow_hold";
             slowHour = at;
@@ -218,13 +237,13 @@ export async function runUsageRollup(
           }
           break;
         } catch (error) {
+          const failedAt = now();
           await db.query("ROLLBACK").catch(() => {});
-          const code =
-            typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
-          // A cancelled recompute holds the pool until Postgres acts on the cancel and the rollback
-          // returns, which can be well past the hour limit; that hold counts like any other.
+          const code = postgresCode(error);
+          // A cancelled recompute holds the pool until Postgres acts on the cancel, which can be
+          // well past the hour limit; that hold counts like any other.
           if (holdStarted !== undefined) {
-            const held = now() - holdStarted;
+            const held = failedAt - holdStarted;
             maxHoldMs = Math.max(maxHoldMs, held);
             if (code === "57014" && held > usageRollupHoldLimitMs) {
               stop = "slow_hold";
@@ -271,6 +290,12 @@ export async function runUsageRollup(
         : { groupsInWindow, groupBound: maxSummaryRollupGroups }),
     });
     if (!complete) break;
+    // A hold past the limit ends the call even when it finished its pool, so no later pool's
+    // writers wait behind the next one; the run stops there for a person.
+    if (stop === "slow_hold") {
+      if (index < plan.pools.length - 1) complete = false;
+      break;
+    }
   }
   return {
     status: complete ? ("complete" as const) : ("progress" as const),

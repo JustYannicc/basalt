@@ -398,7 +398,15 @@ export async function runHistoryOperator(
         }, 0);
         // A call that gets no hour through counts toward the stop, whatever held it up.
         lost = recomputed === 0 ? lost + 1 : 0;
-        console.error(JSON.stringify({ run, stopped: report.stopped, walBytes: wal, pools }));
+        console.error(
+          JSON.stringify({
+            run,
+            stopped: report.stopped,
+            ...(typeof report.slowHour === "string" ? { slowHour: report.slowHour } : {}),
+            walBytes: wal,
+            pools,
+          }),
+        );
         if (report.stopped === "slow_hour")
           throw new Error(
             `Usage rollup stopped: hour ${String(report.slowHour)} took longer than its ${usageRollupHourLimitMs} ms limit three times; a person decides how to recompute it`,
