@@ -14,7 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
 import { dependencyIdentity } from "./upstream-inputs.ts";
 import { omitReleaseLifecycles } from "./ci/dependency-lifecycles.ts";
@@ -140,7 +140,6 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
     try {
       if (generation === undefined) {
         if (cacheHitOnly) throw new Error(`Refusing a new dependency generation for key ${key}`);
-        const id = generationName(key);
         attempt = await createInstallAttempt(entry);
         for (const file of files) {
           mkdirSync(dirname(join(attempt, file)), { recursive: true });
@@ -171,16 +170,18 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
           if (entry.isDirectory() && entry.name !== "node_modules")
             check(join(packages, entry.name));
         readonlyTree(packages);
-        const marker = join(attempt, `.ready-${id}.json`);
+        const marker = join(attempt, `.ready-${randomUUID()}.json`);
         writeFileSync(marker, JSON.stringify({ key, trees }), { flag: "wx", mode: 0o600 });
         renameSync(marker, join(attempt, "ready.json"));
         const completed = attempt;
         generation = await withDependencyStoreLock(() => {
+          const named = join(entry, "generations", generationName(key));
+          // A ready generation under the key's name was adopted above, so one there now is broken,
+          // and a checkout may still run from it. The new one takes another name until the
+          // collector frees the key's own, which the next install then uses again.
+          const id = existsSync(named) ? `${basename(named)}-${randomUUID()}` : basename(named);
           const store = join(entry, "generations", id);
           mkdirSync(dirname(store), { recursive: true });
-          // Only a broken generation can hold the name here: a ready one was adopted above. It
-          // moves aside under a name the collector removes once no consumer protects it.
-          if (existsSync(store)) renameSync(store, `${store}.replaced-${randomUUID()}`);
           renameSync(completed, store);
           const pointer = join(entry, `.current-${randomUUID()}`);
           symlinkSync(join("generations", id), pointer);

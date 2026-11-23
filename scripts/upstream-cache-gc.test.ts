@@ -332,7 +332,8 @@ test("interrupted eviction retires the key before deletion and prepare rebuilds 
   create();
   const rebuilt = await installUpstreamDependencies(consumer, "current");
   assert.equal(rebuilt.key, first.key);
-  assert.notEqual(rebuilt.store, first.store);
+  // The evicted key is rebuilt under its own name: one key always gives one store path (#1811).
+  assert.equal(rebuilt.store, first.store);
   assert.match(
     readFileSync(join(consumer, "node_modules/is-number/index.js"), "utf8"),
     /module.exports/,
