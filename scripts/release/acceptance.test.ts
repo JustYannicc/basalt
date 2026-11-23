@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { test } from "node:test";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import {
+  acceptanceExit,
   acceptanceModelBeforeApply,
   awaitRecoveryReady,
   bootBeforeApply,
@@ -17,7 +18,7 @@ import {
   healingReadinessWithinMs,
 } from "../../src/pool/runtime-slots/forced-restart-timing.ts";
 import { stopPaths } from "./stop-path.ts";
-import { AcceptanceDeviceRefused } from "./acceptance-device.ts";
+import { AcceptanceDeviceRefused, COULD_NOT_TEST_EXIT } from "./acceptance-device.ts";
 import { failureReport } from "./public-report.ts";
 import { rewriteCapResponse } from "../../src/pool/cap-message.ts";
 
@@ -98,9 +99,10 @@ async function pool(
       return;
     }
     if (request.url === "/v1/models") {
+      // The catalog answers from the runtime serving first, as the live pool's does.
       response.writeHead(200, {
         "content-type": "application/json",
-        "x-signalbox-pool-boot": "boot-root",
+        "x-signalbox-pool-boot": options.boots?.[0] ?? "boot-root",
       });
       const ids = options.models ?? ["claude-opus-5-5"];
       response.end(
@@ -342,18 +344,83 @@ test("a healing release ends healed, serving but needing a person, or not servin
   });
   const served = { passed: true };
   const refused = { passed: false };
-  assert.equal(healingOutcome(ready, served), "healed");
-  assert.equal(healingOutcome(unfinished("boot-new"), served), "serving-needs-person");
+  const before = "boot-stuck";
+  assert.equal(healingOutcome(ready, served, before), "healed");
+  assert.equal(healingOutcome(unfinished("boot-new"), served, before), "serving-needs-person");
   // Anything else is not serving: a failed model call, or no new boot.
-  assert.equal(healingOutcome(ready, refused), "not-serving");
-  assert.equal(healingOutcome(unfinished("boot-new"), refused), "not-serving");
-  assert.equal(healingOutcome(unfinished(), served), "not-serving");
-  assert.equal(healingOutcome(unfinished(), undefined), "not-serving");
+  assert.equal(healingOutcome(ready, refused, before), "not-serving");
+  assert.equal(healingOutcome(unfinished("boot-new"), refused, before), "not-serving");
+  assert.equal(healingOutcome(unfinished(), served, before), "not-serving");
+  assert.equal(healingOutcome(unfinished(), undefined, before), "not-serving");
   // The pool refused the acceptance device on a new boot: nothing was tested either way.
   const untested = { passed: false, couldNotTest: true };
-  assert.equal(healingOutcome(ready, untested), "could-not-test");
-  assert.equal(healingOutcome(unfinished("boot-new"), untested), "could-not-test");
-  assert.equal(healingOutcome(unfinished(), untested), "not-serving");
+  assert.equal(healingOutcome(ready, untested, before), "could-not-test");
+  assert.equal(healingOutcome(unfinished("boot-new"), untested, before), "could-not-test");
+  assert.equal(healingOutcome(unfinished(), untested, before), "not-serving");
+});
+
+/** A healing release's acceptance as the entry runs it: the bounded wait, then the model calls. */
+async function heal(before: string, controller: string, served = controller) {
+  const verdict = await awaitRecoveryReady({
+    inspect: replies(inspected(controller)).inspect,
+    before,
+    withinMs: 60_000,
+    ...clock(),
+  });
+  if (!verdict.boot) return healingOutcome(verdict, undefined, before);
+  const live = await pool({ boots: [served] });
+  try {
+    const result = await runAcceptance({
+      credential,
+      expect: "same-boot",
+      rootBoot: verdict.boot,
+      admitted: true,
+      client: live.client,
+    });
+    return healingOutcome(verdict, result, before);
+  } finally {
+    live.close();
+  }
+}
+
+test("a healing release is healed only on a boot other than the one read before the apply", async () => {
+  // A served boot record: the old boot serving is not serving, as it always was; a new one healed.
+  assert.equal(await heal("boot-stuck", "boot-stuck"), "not-serving");
+  assert.equal(await heal("boot-stuck", "boot-new"), "healed");
+  // A not-serving record names no boot to compare with, so whatever boot serves, nothing shows
+  // the root restarted: the old boot serving is never healed.
+  assert.equal(await heal(NOT_SERVING, "boot-stuck"), "serving-restart-unconfirmed");
+  assert.equal(await heal(NOT_SERVING, "boot-new"), "serving-restart-unconfirmed");
+  // A recovery that is not ready does not claim a new boot either.
+  const unfinished = {
+    ready: false as const,
+    boot: "boot-stuck",
+    reason: "needs a person (restart_failed)",
+    last: "a new boot, recovery not ready",
+    waitedMs: 1,
+    reads: 1,
+  };
+  assert.equal(
+    healingOutcome(unfinished, { passed: true }, NOT_SERVING),
+    "serving-restart-unconfirmed",
+  );
+  // What did not serve, or was not tested, says so whatever was read before.
+  assert.equal(healingOutcome(unfinished, { passed: false }, NOT_SERVING), "not-serving");
+  assert.equal(
+    healingOutcome(unfinished, { passed: false, couldNotTest: true }, NOT_SERVING),
+    "could-not-test",
+  );
+});
+
+test("only a healed or a passed release exits 0; serving without proof exits 3, never green", () => {
+  assert.equal(acceptanceExit("healed", true), 0);
+  assert.equal(acceptanceExit("serving-restart-unconfirmed", true), 3);
+  assert.equal(acceptanceExit("serving-needs-person", true), 3);
+  assert.equal(acceptanceExit("could-not-test", false), COULD_NOT_TEST_EXIT);
+  assert.equal(acceptanceExit("not-serving", false), 1);
+  // A release that declares no restart has no healing outcome: its result decides, as before.
+  assert.equal(acceptanceExit(undefined, true), 0);
+  assert.equal(acceptanceExit(undefined, false), 1);
 });
 
 test("the stop path is read from the forced-stop lines only, as fixed words", () => {
@@ -460,6 +527,64 @@ test("a refused device stops the boot read before the apply, even where the pool
   } finally {
     live.close();
   }
+});
+
+test("a revoked device's 410 fails closed: never not serving, never could not test", async () => {
+  // A person revoking the device is no pool failing to serve, so a release declaring a root restart
+  // must not start on it; and no 410 may end a run as untested.
+  const revoked = await pool({ answer: { catalog: 410 } });
+  try {
+    for (const allowNotServing of [true, false]) {
+      const error = await bootBeforeApply(credential, revoked.client, allowNotServing).then(
+        () => assert.fail("a revoked device read a boot"),
+        (error: unknown) => error,
+      );
+      assert.ok(!(error instanceof AcceptanceDeviceRefused), String(error));
+      assert.match(String(error), /HTTP 410/u);
+    }
+  } finally {
+    revoked.close();
+  }
+  for (const admitted of [true, false]) {
+    // A catalog the pool will not serve is the pool not serving (exit 1, the rollback takes it).
+    const live = await pool({ answer: { catalog: 410 } });
+    try {
+      const error = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted,
+        client: live.client,
+      }).then(
+        () => assert.fail("a revoked device's catalog returned a result"),
+        (error: unknown) => error,
+      );
+      assert.ok(!(error instanceof AcceptanceDeviceRefused), String(error));
+      assert.match(String(error), /HTTP 410/u);
+    } finally {
+      live.close();
+    }
+  }
+  for (const answer of [{ 1: 410 }, { 27: 410 }])
+    for (const admitted of [true, false]) {
+      const live = await pool({ answer });
+      try {
+        const result = await runAcceptance({
+          credential,
+          expect: "same-boot",
+          rootBoot: "boot-root",
+          admitted,
+          client: live.client,
+        });
+        const label = JSON.stringify({ answer, admitted });
+        assert.equal(result.passed, false, label);
+        assert.equal(result.couldNotTest, false, label);
+        assert.deepEqual(result.refused, [], label);
+        assert.ok(result.failures.length >= 1, label);
+      } finally {
+        live.close();
+      }
+    }
 });
 
 test("after this run's boot read admitted the device, a 401 or 403 is a serving failure", async () => {

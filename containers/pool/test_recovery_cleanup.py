@@ -37,6 +37,7 @@ class CleanupTests(unittest.TestCase):
 
             children.append(
                 SimpleNamespace(
+                    name=name,
                     process=SimpleNamespace(
                         poll=lambda state=state: -9 if state["killed"] else None,
                         terminate=lambda: None,
@@ -63,3 +64,54 @@ class CleanupTests(unittest.TestCase):
         self.assertLessEqual(clock.now, 180)
         self.assertTrue(all(until == 180 for _, _, until in observed))
         self.assertIsNone(current_deadline())
+
+
+class OrdinaryStopTests(unittest.TestCase):
+    """A stop outside any recovery episode, as a deploy's SIGTERM arrives on a quiet pool."""
+
+    def test_children_that_ignore_sigterm_are_killed_at_the_stop_grace(self):
+        grace = float(supervisor.CHILD_STOP_GRACE_SECONDS)
+        clock = Clock()
+        waits = []
+        killed = []
+        terminated = []
+        children = []
+        for name in ("home", "node"):
+            state = {"killed": False}
+
+            def wait(timeout, state=state, name=name):
+                waits.append((name, clock.now, timeout))
+                # Each child takes its whole allowance, before and after the kill.
+                clock.now += timeout
+                if not state["killed"]:
+                    raise subprocess.TimeoutExpired(name, timeout)
+                return -9
+
+            def kill(state=state, name=name):
+                state["killed"] = True
+                killed.append((name, clock.now))
+
+            children.append(
+                SimpleNamespace(
+                    name=name,
+                    process=SimpleNamespace(
+                        poll=lambda state=state: -9 if state["killed"] else None,
+                        terminate=lambda name=name: terminated.append((name, clock.now)),
+                        kill=kill,
+                        wait=wait,
+                    ),
+                )
+            )
+        with (
+            patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)),
+            redirect_stderr(io.StringIO()),
+        ):
+            supervisor.terminate_children(children)
+        self.assertIsNone(current_deadline())
+        self.assertEqual(terminated, [("home", 0.0), ("node", 0.0)], "both children get SIGTERM first")
+        self.assertEqual(waits[:2], [("home", 0.0, grace), ("node", grace, 0)])
+        self.assertEqual(killed, [("home", grace), ("node", grace)])
+        self.assertEqual([timeout for _, _, timeout in waits[2:]], [1, 1])
+        # One second for each killed child, one after the other: the grace plus 2 s for two, which
+        # the controller's forced stop outlasts (runtime-forced-stop.test.ts keeps the two in step).
+        self.assertEqual(clock.now, grace + 2)

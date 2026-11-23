@@ -1,0 +1,153 @@
+diff --git a/apps/hosted/server/src/implementation/link-setup-revokes.ts b/apps/hosted/server/src/implementation/link-setup-revokes.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/server/src/implementation/link-setup-revokes.ts
+@@ -0,0 +1,69 @@
++import type { GenericEndpointContext } from "@better-auth/core";
++import { authCall } from "@executor-js/mcp-auth/oauth";
++import type { APIError } from "better-auth/api";
++import { Effect, Option, Schema } from "effect";
++
++/** The pool's control call, as the tools host's own service identity makes it. */
++export type PoolControl = <A>(
++  action: string,
++  value: Readonly<Record<string, unknown>>,
++  schema: Schema.Decoder<A>,
++) => Effect.Effect<A, APIError>;
++
++/** Rows one pass reads and deletes, the pool's own bound too. */
++const batch = 25;
++const Leftovers = Schema.Struct({
++  computers: Schema.Array(
++    Schema.Struct({
++      computer: Schema.NonEmptyString,
++      user: Schema.NonEmptyString,
++      toolsKeyId: Schema.NonEmptyString,
++    }),
++  ),
++});
++const Finished = Schema.Struct({ finished: Schema.Number });
++
++/**
++ * A computer set up with a link signs in with an ordinary tools key. When its person's revoke stops
++ * part-way, its pool row stays revoked or revoking while the key keeps working, until this pass,
++ * which deletes it. The pool names at most a batch of such rows; a key is deleted only when it is
++ * that row's person's own. A pool that doesn't answer, or an answer this can't read, deletes
++ * nothing: serving tools never asks the pool, so an outage only pauses the cleanup.
++ */
++export const finishLinkSetupRevokes = (ctx: GenericEndpointContext, control: PoolControl) =>
++  Effect.gen(function* () {
++    const result = { deleted: 0, finished: 0, unavailable: false };
++    const listed = yield* control("tools-leftovers", {}, Leftovers).pipe(Effect.option);
++    if (Option.isNone(listed)) {
++      result.unavailable = true;
++      yield* Effect.logWarning("native.tools_revokes.unavailable");
++      return result;
++    }
++    const gone: { computer: string; toolsKeyId: string }[] = [];
++    for (const left of listed.value.computers.slice(0, batch)) {
++      // Another person's key with this id is not this computer's; its person has none to lose.
++      const removed = yield* authCall(() =>
++        ctx.context.adapter.deleteMany({
++          model: "apikey",
++          where: [
++            { field: "id", value: left.toolsKeyId },
++            { field: "referenceId", value: left.user },
++          ],
++        }),
++      ).pipe(Effect.option);
++      if (Option.isNone(removed)) continue;
++      result.deleted += removed.value;
++      gone.push({ computer: left.computer, toolsKeyId: left.toolsKeyId });
++    }
++    if (gone.length > 0) {
++      // Unreported keys are found already gone and reported by the next pass.
++      const reported = yield* control("tools-deleted", { computers: gone }, Finished).pipe(
++        Effect.option,
++      );
++      if (Option.isSome(reported)) result.finished = reported.value.finished;
++      else result.unavailable = true;
++    }
++    if (result.deleted > 0 || result.finished > 0 || result.unavailable)
++      yield* Effect.logInfo("native.tools_revokes").pipe(Effect.annotateLogs(result));
++    return result;
++  });
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -17,6 +17,7 @@ import {
+ } from "./native-grant-display.ts";
+ import { nativeControlPath, nativeControlPrefix } from "./native-contract.ts";
+ import { nativeControlCall, nativeControlFailure } from "./native-control-error.ts";
++import { finishLinkSetupRevokes } from "./link-setup-revokes.ts";
+ // Apart from the import above, whose lines later carries match as context.
+ import { computerName, openSetupIntent } from "./pool-token.ts";
+ 
+@@ -443,5 +444,9 @@ export const nativeGrantHost = (
+             : Effect.succeed(error.body?.dependencyStatus === 410),
+         ),
+       ),
++    finishToolsRevokes: (ctx) =>
++      finishLinkSetupRevokes(ctx, (action, value, schema) =>
++        control(secret, poolOrigin, action, value, schema),
++      ),
+   };
+ };
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -58,6 +58,13 @@ export interface NativeGrantHost {
+     context: GenericEndpointContext,
+     access: NativeGrantAccess,
+   ) => Effect.Effect<boolean, APIError>;
++  /**
++   * Delete the tools keys of computers set up with a link whose person's revoke stopped part-way.
++   * Never fails: while the pool doesn't answer it reports itself unavailable and deletes nothing.
++   */
++  readonly finishToolsRevokes?: (
++    context: GenericEndpointContext,
++  ) => Effect.Effect<{ deleted: number; finished: number; unavailable: boolean }>;
+   /** Remove the device at the pool. A revoked grant repeats it until it succeeds. */
+   readonly revoke: (
+     context: GenericEndpointContext,
+@@ -526,6 +533,9 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+         );
+         return result;
+       }),
++    finishToolsRevokes: (ctx: GenericEndpointContext) =>
++      host.finishToolsRevokes?.(ctx) ??
++      Effect.succeed({ deleted: 0, finished: 0, unavailable: false }),
+     /** Retry pending pool cleanups, least recently tried first. */
+     retryCleanups: (ctx: GenericEndpointContext) =>
+       Effect.gen(function* () {
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -1246,13 +1246,23 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+               checked: 0,
+               revoked: 0,
+               unavailable: false,
++              tools: { deleted: 0, finished: 0, unavailable: false },
+             })
+           : runAuth(
+               Effect.gen(function* () {
+-                const cleanups = yield* native.retryCleanups(ctx);
+-                // A device its person revoked at the pool loses its grant here, as any revoke ends it.
+-                const reconciled = yield* native.reconcile(ctx, (id) => revoke(ctx, id));
+-                return { ...cleanups, ...reconciled };
++                const grants = yield* Effect.exit(
++                  Effect.gen(function* () {
++                    const cleanups = yield* native.retryCleanups(ctx);
++                    // A device its person revoked at the pool loses its grant here, as any revoke
++                    // ends it.
++                    const reconciled = yield* native.reconcile(ctx, (id) => revoke(ctx, id));
++                    return { ...cleanups, ...reconciled };
++                  }),
++                );
++                // A computer set up with a link loses the tools key its person's revoke left, even
++                // while the grant steps above fail; their failure is still the pass's.
++                const tools = yield* native.finishToolsRevokes(ctx);
++                return { ...(yield* grants), tools };
+               }),
+             ),
+       ),

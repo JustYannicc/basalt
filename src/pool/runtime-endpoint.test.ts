@@ -150,6 +150,10 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
   context.after(f.cleanup);
   const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
   await f.endpoint.drain(identity, AbortSignal.timeout(2_000));
+  // Home is still draining when the grace ends, and the destroy that follows loses its reply.
+  f.ctx.container.signal = (signal: number) => {
+    f.calls.signals.push(signal);
+  };
   f.ctx.container.destroy = async () => {
     f.calls.destroy++;
     throw new Error("lost destroy response");
@@ -158,6 +162,7 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
     f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)),
     /lost destroy/,
   );
+  assert.deepEqual(f.calls.signals, [15]);
   const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
   await assert.rejects(
     reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000)),
@@ -168,6 +173,7 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
     identity,
     retired: false,
     running: true,
+    stopping: true,
     provider: f.grant.proof.provider,
   });
 });
@@ -425,4 +431,24 @@ test("readiness is read after the keep-alive, so a lease spent during it never a
     PoolRuntimeUnhealthy,
   );
   assert.equal(f.calls.model, 0, "nothing reached the model port");
+});
+
+test("a retired record is never admitted again, so its slot can't start a second container", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await f.endpoint.drain(identity, AbortSignal.timeout(2_000));
+  await f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000));
+  await assert.rejects(f.endpoint.admit(f.grant.envelope), /identity/);
+  await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)));
+  assert.equal(f.calls.start, 1);
+});
+
+test("a fenced fleet start is never admitted or started again", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  await f.endpoint.abandonStart(f.target);
+  await assert.rejects(f.endpoint.admit(f.grant.envelope), /identity/);
+  await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)), /selection/);
+  assert.equal(f.calls.start, 0);
 });

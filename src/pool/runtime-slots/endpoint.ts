@@ -36,18 +36,18 @@ import {
   RuntimeConfiguration,
   type RuntimeEnvironment,
 } from "./configuration.ts";
-import type { ControllerState } from "./runtime-state.ts";
+import type { ControllerState, OwnedRuntimeStorage } from "./runtime-state.ts";
 import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
-import { RuntimeActivity } from "./activity.ts";
+import { RuntimeActivity, stillFor } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
-import { RuntimeForcedStop } from "./forced-stop.ts";
+import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -66,6 +66,8 @@ const crashHealthTimeoutMs = 1_000;
 const homeManagementPort = 8327;
 export interface EndpointOptions {
   controlPair?: RuntimeControlPair;
+  /** The hosting runtime object's own storage, so an ended slot drops the alarm its start armed. */
+  ownStorage?: OwnedRuntimeStorage;
   beforeStart?(witness: StartupWitness): Promise<void>;
   beforeBootstrap?(identity: SlotIdentity): Promise<void>;
 }
@@ -103,7 +105,12 @@ export class RuntimeEndpoint {
     this.env = env;
     this.role = role;
     this.code = code;
-    this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
+    // The legacy endpoint shares its object's alarm with the pool's own deadlines.
+    this.store = new RuntimeWitnessStore(
+      ctx.storage,
+      env.POOL_DEPLOYMENT_KEY ?? "",
+      role === "runtime" ? options.ownStorage : undefined,
+    );
     this.startupStop = new RuntimeStartupStop(ctx, this.store);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
@@ -215,7 +222,10 @@ export class RuntimeEndpoint {
         return;
       }
       const retained = await this.store.retained(proof.target.slotId);
-      if (retained && !retained.retired) {
+      // A retired or abandoned slot never starts again: its place may already be counted free.
+      if (retained?.retired || (await this.store.abandoned(proof.target.slotId)))
+        throw new SlotRefused("identity");
+      if (retained) {
         const { record } = await this.store.read(proof.target);
         if (
           !sameControllerCode(record.authorization.controllerCode, proof.controllerCode) ||
@@ -517,6 +527,26 @@ export class RuntimeEndpoint {
       throw error;
     }
   }
+  /**
+   * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
+   * is durable before it answers, and from then on this slot is never admitted or started again, so
+   * a container it finds stopped can't come back.
+   */
+  abandonStart(target: SlotTarget) {
+    return this.serialize(async () => {
+      this.bound(target);
+      await this.store.abandon(target);
+      return { stopped: !this.ctx.container!.running };
+    });
+  }
+  /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
+  async streamCount(identity: SlotIdentity) {
+    this.bound(identity);
+    const row = await this.activity.inspect(identity);
+    return row
+      ? { active: row.active, known: row.known, ...stillFor(row) }
+      : { active: 0, known: false };
+  }
   drain(identity: SlotIdentity, signal: AbortSignal) {
     const trace = new PoolUpkeepTrace("endpoint");
     const fields = { ordinal: identity.homePeerOrdinal };
@@ -565,21 +595,35 @@ export class RuntimeEndpoint {
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
-    return this.serialize(async () => {
+    let began = false;
+    const work = this.serialize(async () => {
       const { record } = await trace.run("witness_read", () => this.store.read(target));
       await trace.run("health", () => this.health(identity, signal), undefined, signal);
       signal.throwIfAborted();
       if (!sameTarget(target, identity)) throw new SlotRefused("identity");
       await trace.run("activity_retire", () => this.activity.retire(identity));
-      signal.throwIfAborted();
+      // From the retiring latch on, the stop no longer follows its caller's 2 s budget: the latch
+      // refuses every later drain and retire, and Home's drain of claimed refreshes may take the
+      // whole grace. The retirement read sees the stop end.
+      await trace.run("monitor_attach", async () => this.retirementMonitor.start(identity));
+      await this.store.stopSent(target, Date.now());
       await trace.run(
-        "monitor_attach",
-        async () => this.retirementMonitor.start(identity),
-        undefined,
-        signal,
+        "stop",
+        () => stopGracefully(this.ctx.container!, () => (began = true)),
+        (stopped) => ({ stopped }),
       );
-      await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
-      await trace.run("retired_record", () => this.store.put(target, { ...record, retired: true }));
+      await trace.run("retired_record", () =>
+        this.store.retire(target, { ...record, retired: true }),
+      );
+    });
+    this.ctx.waitUntil(work.catch(() => {}));
+    // A caller that stops waiting once the stop began has done its part; the retirement read sees
+    // the stop end, so a stop longer than the caller's budget is no failure.
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => (began ? resolve() : reject(signal.reason));
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
   }
   async retirement(identity: SlotIdentity, signal?: AbortSignal) {

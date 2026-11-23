@@ -302,6 +302,51 @@
             "mode": "manual",
             "requires": "Carry 0736 is offered to Home upstream with the coordination-pool pull request. Retire when the pinned Home stores a node liveness timeout of at least its configured floor on every membership it creates, clamped inside its lifecycle safety rule, every Home in the cluster runs that code or a cluster-wide timeout of at least the floor, and it passes the stored-floor, short-stall, past-the-floor and lifecycle-rule regressions."
           }
+        },
+        {
+          "identity": "cliproxy-home-scheduler-fail-closed",
+          "file": "0694-home-scheduler-fail-closed.patch",
+          "sha256": "e19fe1df4bbbbaa13398f71090490dbfa8412e2a79e399d602c019c622833ef6",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0694 adds an opt-in fail-closed scheduler to Home; it is to be offered upstream. Retire when the pinned Home refuses auth picks with a closed code while an enabled plugin instance sets scheduler-required and no scheduler plugin is active, never falling back to the built-in selector, and passes the fused, fused-during-pick, never-loaded and unchanged-veto regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-safe-stop",
+          "file": "0695-home-safe-stop.patch",
+          "sha256": "a4511839d43f86609e9b01891d4310ccaf5d7973d21c831beb34f0e10dbdafe3",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0695 makes a stopping Home keep a refresh token the provider already rotated. Retire when the pinned Home never cancels a claimed provider refresh call when its caller goes away, drains claimed refreshes on SIGTERM within a bounded wait and starts no new one meanwhile, reports refresh_in_flight on its database-free /healthz, logs a provider rejection naming the credential only by an opaque reference and a closed reason, and passes the cancelled-caller, drain, refused-while-draining and rejection-line regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-oauth-session-proxy",
+          "file": "0758-home-oauth-session-proxy.patch",
+          "sha256": "bd7e2028c748f0413c5e9977ec2cc275c5378df7afddf1ba16afbe1cd731c443",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0758 lets one Home sign-in go through its own proxy; it is to be offered upstream. Retire when the pinned Home accepts an optional proxy_url on /oauth/auth-url and advertises oauth_session_proxy_v1 on /capabilities, sends that sign-in's code exchange and every call it makes only through that proxy, saves the proxy on the credential it creates, refuses a proxy it cannot route through before any session exists (invalid_proxy_url, or proxy_unsupported for plugin providers and for Claude with an http or https proxy), fails the sign-in closed with proxy_unavailable when the proxy can't be reached, never through Home's own proxy or direct, and passes the through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-funding-aged-reading",
+          "file": "0762-home-funding-aged-reading.patch",
+          "sha256": "3a14248825846e58fd51ea09690df5c56d495c26484ebf67f3faeb60bde76330",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0762 keeps an account whose plan reading has aged out from being refused outright by the pool's funding filter. Retire when the pinned Home keeps an account on its plan while a fresh reading says its credits can't be spent and its last plan reading showed quota, treats an aged credits reading as unknown rather than refused, keeps out a plan last seen empty before its reset, and under a never policy refreshes the candidates' readings within a bound and decides on the fresh reading before it refuses, and passes the aged-reading, bounded-refresh and wait-for-in-flight-probe regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-cooldown-provider-time",
+          "file": "0763-home-cooldown-provider-time.patch",
+          "sha256": "3e018f9a27936645cca6f1d6b4e3830b4bf4f06fa2fa8e86de967677f01afaf3",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0763 lets a quota cooldown end at the provider's own time. Retire when the pinned Home ends a 429 cooldown at the provider's reset or retry time for every provider when that time is 10 s or more, never later on the blind backoff, lets a shorter provider time only lengthen the escalating backoff so a provider that keeps saying retry in a moment is never called every second, never shortens an open window because two limits can hold at once, grows the backoff only for a 429 without a provider time, reads the node's fail.retry_after_ms, and passes the provider-time, high-backoff, floor, open-window and usage-payload regressions."
+          }
         }
       ]
     },
@@ -416,6 +461,33 @@
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
+          }
+        },
+        {
+          "identity": "cliproxy-node-provider-retry-time",
+          "file": "0764-node-provider-retry-time.patch",
+          "sha256": "5502cdd4da913618fb2fa0847e76498333968d3db6124208c5cb506ed7de6b78",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
+          }
+        },
+        {
+          "identity": "cliproxy-node-websocket-terminal-frame",
+          "file": "0765-node-websocket-terminal-frame.patch",
+          "sha256": "dcddbb9e4a9b78c92dbd4b41a404bb33c09a5e408002c37f466f4a7e16ae9784",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0765 keeps a Responses websocket's terminal frame from being dropped. Its close used to take the write lock only if it was free at that instant and otherwise closed the socket bare, so a terminal error or the 1012 replay close that landed while a ping or the previous frame's write still held the lock reached the client as a 1006 with no reason. Retire when the pinned node's terminal closes wait a bounded time for a finishing write and still cut off a blocked one, the session's own teardown never closes the socket under a terminal frame already being written, and the node passes the finishing-writer, replay-close, teardown and blocked-writer regressions and upstream's committed-429 websocket test in 50 race runs in a row."
+          }
+        },
+        {
+          "identity": "cliproxy-node-websocket-idle-eof-test",
+          "file": "0766-node-websocket-idle-eof-test.patch",
+          "sha256": "273b6b3027599166b3ac726b3edb0d8db1c627418a4004bd66e57329de511d45",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0766 changes only a test. Upstream's TestResponsesWebsocketIdleUpstreamEOFIsSilent sends a continuation right after the upstream closes an idle socket and accepted only previous_response_not_found; when the node has not yet seen that EOF the continuation goes to the dead socket and is correctly reported upstream_websocket_lost. Retire when the pinned node's idle-EOF test accepts either refusal, or waits until the node has seen the EOF, and passes 50 race runs of its package in a row."
           }
         }
       ]

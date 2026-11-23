@@ -1,6 +1,6 @@
 import { executionKey, type SlotIdentity } from "../runtime-slots/contract.ts";
 import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
-import { FleetRefused, type RuntimeFleetState } from "./state.ts";
+import { FleetRefused, type QuarantineReason, type RuntimeFleetState } from "./state.ts";
 
 /** Failure fencing denies unsent calls locally before committing the durable selection fence. */
 export class FleetFailures {
@@ -26,11 +26,18 @@ export class FleetFailures {
       diagnostic.runtimeStep === "resume_layer"
     )
       return;
+    return this.quarantine(identity);
+  }
+  /** A runtime that refused a membership policy takes no new call under its old one. */
+  refused(identity: SlotIdentity) {
+    return this.quarantine(identity, "policy_refused");
+  }
+  private async quarantine(identity: SlotIdentity, reason?: QuarantineReason) {
     const key = executionKey(identity);
     this.blocked.add(key);
     const retained = this.pending.get(key);
     if (retained) return retained;
-    const work = this.state.quarantine(identity).finally(() => this.changed());
+    const work = this.state.quarantine(identity, reason).finally(() => this.changed());
     this.pending.set(key, work);
     try {
       await work;

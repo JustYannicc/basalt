@@ -29,6 +29,7 @@ export class PoolRuntime extends DurableObject<EndpointEnvironment> {
       nativeResponse,
       {
         controlPair: nativeControlPair,
+        ownStorage: ctx.storage,
         beforeStart: (witness) => this.peers.configure({ kind: "runtime", witness }),
       },
     );

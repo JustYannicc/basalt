@@ -171,6 +171,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "supervisor.py",
       "child_signals.py",
       "quota_signals.py",
+      "refresh_signals.py",
       "dispatch_signals.py",
       "crash_tail.py",
       "runtime_signals.py",
@@ -180,6 +181,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "home_peer_wire.py",
       "billing_policy.py",
       "readiness.py",
+      "output.py",
       "service_health.py",
       "policy_diagnostic.py",
       "healthcheck.py",
@@ -189,6 +191,7 @@ test("the actual build downloader and pool wrapper require a release service", (
       "recovery_deadline.py",
       "recovery_http.py",
       "recovery_signals.py",
+      "resume_layer.py",
       "__init__.py",
     ].map((file) => [
       `containers/pool/${file}`,

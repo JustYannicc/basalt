@@ -5,6 +5,10 @@ import { SlotRefused, sameIdentity, type SlotIdentity } from "./contract.ts";
 import { RuntimeWitnessStore } from "./witness-store.ts";
 import type { RuntimeState } from "./runtime-state.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
+import { forcedStopGraceMs } from "./forced-restart-timing.ts";
+
+/** A stop is under way for the grace and its destroy after a SIGTERM; past that it is stuck. */
+const stoppingForMs = forcedStopGraceMs + 30_000;
 
 const isProcessExit = Schema.is(
   Schema.Struct({
@@ -93,13 +97,23 @@ export async function observeRuntimeRetirement(
   }
   if (retired || intent) {
     monitor.start(identity);
-    if (!retired && container.running)
-      return { identity, retired: false, running: true, provider: record.authorization.provider };
+    if (!retired && container.running) {
+      const sentAt = await store.stopSentAt(identity.slotId);
+      // A latch whose SIGTERM was never sent, or a stop past its grace, is stuck, not under way.
+      const stopping = sentAt !== undefined && Date.now() - sentAt <= stoppingForMs;
+      return {
+        identity,
+        retired: false,
+        running: true,
+        ...(stopping ? { stopping: true as const } : {}),
+        provider: record.authorization.provider,
+      };
+    }
     await monitor.stopped(identity, trace, signal);
     if (!retired) {
       await trace.run(
         "retired_record",
-        () => store.put(identity, { ...record, retired: true }),
+        () => store.retire(identity, { ...record, retired: true }),
         () => ({ recovered: true }),
         signal,
       );

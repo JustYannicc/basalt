@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-pool-unavailable-reason",
+  "file": "0721-native-pool-unavailable-reason.patch",
+  "content_sha256": "133675fd1a7033937e2c39d20b5a18b13db3adb5d297ef3a13fc8e583bbb5f0b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

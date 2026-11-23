@@ -509,6 +509,33 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /Generic credential, refresh and auxiliary HTTP calls remain untracked/,
         );
+      } else if (patch.identity === "cliproxy-home-oauth-session-proxy") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0758-home-oauth-session-proxy.patch");
+        assert.match(patch.retirement.requires, /optional proxy_url on \/oauth\/auth-url/);
+        assert.match(patch.retirement.requires, /never through Home's own proxy or direct/);
+        assert.match(
+          patch.retirement.requires,
+          /through-the-proxy, unreachable, absent, invalid, device-flow and plugin regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-safe-stop") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0695-home-safe-stop.patch");
+        assert.match(patch.retirement.requires, /never cancels a claimed provider refresh call/);
+        assert.match(patch.retirement.requires, /refresh_in_flight on its database-free \/healthz/);
+        assert.match(
+          patch.retirement.requires,
+          /cancelled-caller, drain, refused-while-draining and rejection-line regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-scheduler-fail-closed") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0694-home-scheduler-fail-closed.patch");
+        assert.match(patch.retirement.requires, /scheduler-required/);
+        assert.match(patch.retirement.requires, /never falling back to the built-in selector/);
+        assert.match(
+          patch.retirement.requires,
+          /fused, fused-during-pick, never-loaded and unchanged-veto regressions/,
+        );
       } else if (patch.identity === "cliproxy-home-coordination-pool") {
         assert.equal(name, "home");
         assert.equal(patch.file, "0691-home-coordination-pool.patch");
@@ -529,6 +556,53 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.match(
           patch.retirement.requires,
           /live-owner, silent-owner, expired-owner, backstop and own-node regressions/,
+        );
+      } else if (patch.identity === "cliproxy-home-cooldown-provider-time") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0763-home-cooldown-provider-time.patch");
+        assert.match(patch.retirement.requires, /never later on the blind backoff/);
+        assert.match(patch.retirement.requires, /never shortens an open window/);
+        assert.match(
+          patch.retirement.requires,
+          /provider-time, high-backoff, floor, open-window and usage-payload regressions/,
+        );
+      } else if (patch.identity === "cliproxy-node-websocket-idle-eof-test") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0766-node-websocket-idle-eof-test.patch");
+        assert.match(patch.retirement.requires, /changes only a test/);
+        assert.match(
+          patch.retirement.requires,
+          /accepts either refusal, or waits until the node has seen the EOF/,
+        );
+      } else if (patch.identity === "cliproxy-node-websocket-terminal-frame") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0765-node-websocket-terminal-frame.patch");
+        assert.match(patch.retirement.requires, /still cut off a blocked one/);
+        assert.match(patch.retirement.requires, /never closes the socket under a terminal frame/);
+        assert.match(
+          patch.retirement.requires,
+          /finishing-writer, replay-close, teardown and blocked-writer regressions/,
+        );
+      } else if (patch.identity === "cliproxy-node-provider-retry-time") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0764-node-provider-retry-time.patch");
+        assert.match(
+          patch.retirement.requires,
+          /assumes carry 0646's metadata-only failure keeps only the status/,
+        );
+        assert.match(patch.retirement.requires, /without any provider body or header/);
+        assert.match(
+          patch.retirement.requires,
+          /Claude, Codex and Antigravity on-the-wire regression/,
+        );
+      } else if (patch.identity === "cliproxy-home-funding-aged-reading") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0762-home-funding-aged-reading.patch");
+        assert.match(patch.retirement.requires, /aged out from being refused outright/);
+        assert.match(patch.retirement.requires, /decides on the fresh reading before it refuses/);
+        assert.match(
+          patch.retirement.requires,
+          /aged-reading, bounded-refresh and wait-for-in-flight-probe regressions/,
         );
       } else if (patch.identity === "cliproxy-home-node-liveness-floor") {
         assert.equal(name, "home");

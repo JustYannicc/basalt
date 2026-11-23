@@ -1,14 +1,19 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
-import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
+import { SlotRefused, type SlotIdentity, type SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
+import { ControlFailure } from "./json.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
 import type { PrimaryRoute } from "./runtime-fleet/state.ts";
 import { fleetRouting } from "./runtime-fleet/production.ts";
 import { decodeResumeTarget } from "./stream-resume.ts";
-import { rememberRuntimeFailure } from "./runtime-route-diagnostic.ts";
+import {
+  rememberRuntimeFailure,
+  retainRuntimeFailure,
+  runtimeFailureHeaders,
+} from "./runtime-route-diagnostic.ts";
 import { forwardRecoverably } from "./runtime-fleet/retry.ts";
 import { rootFallbackBurst } from "./runtime-fleet/root-fallback.ts";
 
@@ -83,6 +88,7 @@ function fixture(
         calls.retires++;
         retired = true;
         if (retirementLost) throw new Error("lost retirement acknowledgement");
+        return true;
       },
       retired: async () => retired,
       failed: async () => false,
@@ -242,7 +248,8 @@ test("lost retirement acknowledgement is inspected without repeating destruction
   const identity = await f.add();
   await f.state.drain(identity);
   f.loseRetirement();
-  await assert.rejects(f.fleet.upkeep(), /lost retirement/);
+  // The lost acknowledgement settles for its row; the pass itself goes on.
+  await f.fleet.upkeep();
   assert.equal((await f.state.inspect())[0]?.phase, "retiring");
   await f.fleet.upkeep();
   assert.equal(f.calls.retires, 1);
@@ -281,6 +288,126 @@ test("membership fanout includes an activated cell whose ready acknowledgement i
     expiresAt: 1000,
   });
   assert.equal(f.calls.installs, 1);
+});
+
+const membership = () => ({
+  pool: "pool",
+  organization: "org",
+  revision: 3,
+  dirty: false,
+  accounts: [],
+  expiresAt: 1000,
+});
+// The controller sees a cell's install refusal the way the slot transport hands it over: a 409
+// carrying the endpoint's step, reason and cause headers.
+const refusal = (error: Error, step: "endpoint_health" | "endpoint_route") =>
+  retainRuntimeFailure(
+    new Response(null, { status: 409, headers: runtimeFailureHeaders(error, step) }),
+    new SlotRefused("uncertain"),
+  );
+// What production's retiring cell answered: its health pre-check found no live policy lease.
+const unhealthy = () => refusal(new SlotRefused("unhealthy"), "endpoint_health");
+// The plugin answered and refused the policy itself, as for an older revision racing a newer one.
+const policyRefused = () =>
+  refusal(new ControlFailure(503, "backend_unavailable", "refused"), "endpoint_route");
+const refusing = (f: ReturnType<typeof fixture>, identity: SlotIdentity, error = unhealthy()) => {
+  f.cell(identity).install = async () => {
+    f.calls.installs++;
+    throw error;
+  };
+  return error;
+};
+const startingRow = async (f: ReturnType<typeof fixture>) => {
+  const identity = f.target();
+  await f.state.reserve(identity);
+  await f.state.dispatch(identity);
+  f.selected.set(identity.slotId, identity);
+  return identity;
+};
+
+test("a retiring row is never asked for a policy, so its refusal cannot hold the fan-out", async () => {
+  const f = fixture();
+  const identity = await f.add();
+  await f.state.drain(identity);
+  f.loseRetirement();
+  // The lost acknowledgement settles for its row; the pass itself goes on.
+  await f.fleet.upkeep();
+  assert.equal((await f.state.inspect())[0]?.phase, "retiring");
+  refusing(f, identity);
+  await f.fleet.install(membership());
+  assert.equal(f.calls.installs, 0);
+});
+
+test("a ready row whose runtime fails the install leaves the selection, and the fan-out still resolves", async () => {
+  const f = fixture();
+  const identity = await f.add();
+  refusing(f, identity);
+  let served = 0;
+  f.cell(identity).forward = async () => {
+    served++;
+    return new Response("stale");
+  };
+  await f.fleet.install(membership());
+  assert.equal(f.calls.installs, 1);
+  assert.equal(
+    (await f.state.inspect()).find((row) => row.identity?.slotId === identity.slotId)?.phase,
+    "quarantined",
+  );
+  await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
+  assert.equal(served, 0);
+});
+
+test("a ready row whose policy layer refuses the policy holds the fan-out and stays in the selection", async () => {
+  const f = fixture();
+  const identity = await f.add();
+  const error = refusing(f, identity, policyRefused());
+  await assert.rejects(f.fleet.install(membership()), (thrown) => thrown === error);
+  assert.equal((await f.state.inspect())[0]?.phase, "ready");
+});
+
+test("a redrawn draining row that fails the install is never restored to serve under the old policy", async () => {
+  const redrawn = async (f: ReturnType<typeof fixture>) => {
+    const identity = await startingRow(f);
+    await f.state.redraw(identity, undefined);
+    assert.equal((await f.state.inspect())[0]?.phase, "draining");
+    return identity;
+  };
+  // Without a refusal, upkeep restores a redrawn row when nothing else serves.
+  const control = fixture(4, 1, { primaryAvailable: () => false });
+  await redrawn(control);
+  await control.fleet.upkeep();
+  assert.equal((await control.state.inspect())[0]?.phase, "ready");
+
+  const f = fixture(4, 1, { primaryAvailable: () => false });
+  const identity = await redrawn(f);
+  refusing(f, identity);
+  await f.fleet.install(membership());
+  await f.fleet.upkeep();
+  assert.equal(
+    (await f.state.inspect()).find((row) => row.identity?.slotId === identity.slotId)?.phase,
+    "quarantined",
+  );
+});
+
+test("a draining row that isn't redrawn settles its refusal with no quarantine and no replacement", async () => {
+  const f = fixture();
+  const identity = await f.add();
+  await f.state.drain(identity);
+  refusing(f, identity);
+  await f.fleet.install(membership());
+  assert.equal(f.calls.installs, 1);
+  const rows = await f.state.inspect();
+  assert.deepEqual(
+    rows.map((row) => row.phase),
+    ["draining"],
+  );
+});
+
+test("a starting row that refuses the policy still holds the fan-out", async () => {
+  const f = fixture();
+  const identity = await startingRow(f);
+  const error = refusing(f, identity);
+  await assert.rejects(f.fleet.install(membership()), (thrown) => thrown === error);
 });
 
 test("a pre-dispatch selection failure releases its reservation and lets planned drain finish", async (context) => {

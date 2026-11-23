@@ -18,6 +18,7 @@ import { appsManifest } from "../.upstream/e2e/support/apps-release.ts";
 import { provisionSelfHostActors } from "../scripts/connectors-tests/test-accounts.mjs";
 import { startNativeClientWorker } from "./native-client-worker.mjs";
 import { verifyNativeMobile } from "./native-mobile.mjs";
+import { proofSigningKey, setupIntentFor } from "./native-intent.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const upstream = join(root, ".upstream");
@@ -69,7 +70,7 @@ const program = Effect.gen(function* () {
     BETTER_AUTH_URL: worker.origin,
     BETTER_AUTH_SECRET: secret,
     EXECUTOR_NPM_REGISTRY: registry.url,
-    POOL_APP_SIGNING_KEY: "ab".repeat(32),
+    POOL_APP_SIGNING_KEY: proofSigningKey,
     BASALT_POOL_ORIGIN: pool.origin,
   });
   yield* Effect.promise(async () => {
@@ -99,7 +100,13 @@ const program = Effect.gen(function* () {
     assert.equal(deployed.status, 200);
     const app = await deployed.json();
     try {
-      const mobile = await verifyNativeMobile({ origin: worker.origin, owner, app, receipt });
+      const mobile = await verifyNativeMobile({
+        origin: worker.origin,
+        owner,
+        app,
+        receipt,
+        intent: () => setupIntentFor(actors.owner, "pool-native-client"),
+      });
       assert.equal(worker.refreshes(), 1, "The phone renews the shortened real hosted grant once.");
       const result = {
         mobile,
