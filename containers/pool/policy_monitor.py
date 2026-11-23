@@ -21,11 +21,23 @@ def probe_home_policy(
     management_key: str,
     readiness: Readiness,
 ) -> tuple[ProbeState, str | None]:
+    # Readiness times each step, so a lease that lapses names the step that was slow.
+    try:
+        return _probe_home_policy(management_key, readiness)
+    finally:
+        readiness.note_probe_step(None)
+
+
+def _probe_home_policy(
+    management_key: str,
+    readiness: Readiness,
+) -> tuple[ProbeState, str | None]:
     generation = readiness.generation()
     deadline = time.monotonic() + POLICY_PROBE_TIMEOUT_SECONDS
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return "missed", None
+    readiness.note_probe_step("home_plugins")
     status, payload = request_json(
         f"{HOME_URL}{POLICY_HEALTH_PATH}",
         "GET",
@@ -56,6 +68,7 @@ def probe_home_policy(
     if remaining <= 0:
         return "missed", None
     nonce = secrets.token_urlsafe(24)
+    readiness.note_probe_step("plugin_probe")
     status, probe = native_policy_request(
         "/probe",
         {"nonce": nonce},
@@ -72,6 +85,7 @@ def probe_home_policy(
     ):
         return "unavailable", None
     remaining = deadline - time.monotonic()
+    readiness.note_probe_step("probe_log")
     if remaining <= 0 or not readiness.wait_for_policy_probe(
         nonce, remaining, generation
     ):

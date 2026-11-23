@@ -544,7 +544,12 @@ def main(stop: threading.Event | None = None) -> int:
             return node_id, successful_audit_revision
 
         node_id, audit_revision = launch_generation()
-        health = ServiceHealth(management_key, node_id, observe=readiness.note_refresh_in_flight)
+        health = ServiceHealth(
+            management_key,
+            node_id,
+            observe=readiness.note_refresh_in_flight,
+            on_audit=readiness.note_node_audit,
+        )
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
         def spawn_resume_layer() -> Child:
@@ -598,7 +603,12 @@ def main(stop: threading.Event | None = None) -> int:
                                 readiness.begin_recovery()
                                 continue
                             episode.recovered()
-                            health = ServiceHealth(management_key, node_id, observe=readiness.note_refresh_in_flight)
+                            health = ServiceHealth(
+                                management_key,
+                                node_id,
+                                observe=readiness.note_refresh_in_flight,
+                                on_audit=readiness.note_node_audit,
+                            )
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.

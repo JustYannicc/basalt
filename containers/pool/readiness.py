@@ -16,6 +16,7 @@ from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
 
+from .output import emit
 from .pool_contract import native_policy_request
 from .policy_diagnostic import policy_failure
 from .runtime_signals import FailureCategory, report_failure
@@ -28,6 +29,24 @@ MAX_POLICY_INSTALL_BYTES = 1 << 20
 
 
 REFRESH_READING_MAX_AGE_NS = 3_000_000_000
+
+# Closed vocabulary of the lapse and flip records on /ready and in their output lines.
+PROBE_STEPS = ("home_plugins", "plugin_probe", "probe_log")
+LAPSE_STEPS = PROBE_STEPS + ("node_audit", "no_probe")
+LAPSE_LINE = "POOL_READINESS_LAPSE "
+FLIP_LINE = "POOL_READINESS_FLIP "
+
+
+def _emits(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Prints the lines a method recorded only after it has left the readiness lock."""
+
+    def wrapper(self: "Readiness", *args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._emit_pending()
+
+    return wrapper
 
 
 class Readiness:
@@ -81,12 +100,111 @@ class Readiness:
         self._lock = threading.RLock()
         self._probe_condition = threading.Condition(self._lock)
         self._observed_policy_probes: OrderedDict[str, None] = OrderedDict()
+        # Lapse and flip bookkeeping: only the last of each and two counters, so a stalled Home
+        # cannot grow the answer, and one record and one line per transition, never per probe.
+        self._probe_current: tuple[str, int] | None = None
+        self._probe_steps: dict[str, int] = {}
+        self._probe_started_ns: int | None = None
+        self._policy_renewed_ns = 0
+        self._node_audit_ok = True
+        self._last_lapse: dict[str, object] | None = None
+        self._last_flip: dict[str, object] | None = None
+        self._lapses = 0
+        self._flips = 0
+        self._state_ready = False
+        self._state_since_ns = monotonic_ns()
+        self._pending_lines: list[str] = []
 
+    def _wall_iso(self, event_ns: int) -> str:
+        offset_ns = max(0, self._monotonic_ns() - event_ns)
+        at = dt.datetime.fromtimestamp((time.time_ns() - offset_ns) / 1e9, dt.timezone.utc)
+        return at.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def _current_state(self) -> tuple[bool, str | None]:
+        remaining_ns = self._policy_deadline_ns - self._monotonic_ns()
+        policy_live = (
+            self._policy_healthy and remaining_ns > 0 and not self._fused_instance_pending
+        )
+        if self._services_ready and policy_live:
+            return True, None
+        # Closed and ordered: a fused or unproven policy outranks unhealthy services.
+        fused = self._fused_instance_pending or self._fused_instance_id is not None
+        return False, (
+            "policy_fused" if fused else "policy_unproven" if not policy_live else "degraded"
+        )
+
+    def _observe_state(self, event_ns: int | None = None) -> None:
+        ready, refusal = self._current_state()
+        if ready == self._state_ready:
+            return
+        at_ns = self._monotonic_ns() if event_ns is None else event_ns
+        prior_ms = max(0, (at_ns - self._state_since_ns) // 1_000_000)
+        self._state_ready = ready
+        self._state_since_ns = at_ns
+        self._flips += 1
+        record = {
+            "to": "ready" if ready else "refusing",
+            "reason": "restored" if ready else refusal,
+            "prior_ms": prior_ms,
+        }
+        self._last_flip = {**record, "at": self._wall_iso(at_ns)}
+        self._pending_lines.append(FLIP_LINE + json.dumps(record, separators=(",", ":")))
+
+    def _note_lapse(self, step: str, ms: int, event_ns: int) -> None:
+        if step not in LAPSE_STEPS:
+            return
+        record = {"step": step, "ms": max(0, int(ms))}
+        self._lapses += 1
+        self._last_lapse = {**record, "at": self._wall_iso(event_ns)}
+        self._pending_lines.append(LAPSE_LINE + json.dumps(record, separators=(",", ":")))
+
+    def _lapse_cause(self) -> tuple[str, int]:
+        """The slowest step of the latest probe since the last renewal, or no probe at all."""
+        now = self._monotonic_ns()
+        if self._probe_started_ns is None or self._probe_started_ns <= self._policy_renewed_ns:
+            return "no_probe", (now - self._policy_renewed_ns) // 1_000_000
+        steps = dict(self._probe_steps)
+        if self._probe_current is not None:
+            step, started_ns = self._probe_current
+            steps[step] = (now - started_ns) // 1_000_000
+        if not steps:
+            return "no_probe", (now - self._policy_renewed_ns) // 1_000_000
+        slowest = max(steps, key=lambda name: steps[name])
+        return slowest, steps[slowest]
+
+    def _emit_pending(self) -> None:
+        with self._lock:
+            lines, self._pending_lines = self._pending_lines, []
+        for line in lines:
+            emit(line, err=True)
+
+    def note_probe_step(self, step: str | None) -> None:
+        """Marks where the policy probe is (None when it ends), so a lapse names the slow step."""
+        with self._lock:
+            now = self._monotonic_ns()
+            if self._probe_current is not None:
+                previous, started_ns = self._probe_current
+                self._probe_steps[previous] = (now - started_ns) // 1_000_000
+            if step == PROBE_STEPS[0]:
+                self._probe_steps = {}
+                self._probe_started_ns = now
+            self._probe_current = (step, now) if step in PROBE_STEPS else None
+
+    @_emits
+    def note_node_audit(self, healthy: bool, ms: int) -> None:
+        """One lapse when the database-backed node audit starts failing, not one per retry."""
+        with self._lock:
+            if not healthy and self._node_audit_ok:
+                self._note_lapse("node_audit", ms, self._monotonic_ns())
+            self._node_audit_ok = bool(healthy)
+
+    @_emits
     def set_ready(self, value: bool, *, audit_revision: int | None = None) -> None:
         with self._lock:
             self._services_ready = value and (
                 audit_revision is None or audit_revision == self._service_audit_revision
             )
+            self._observe_state()
 
     def set_resume_available(self, value: bool) -> None:
         with self._lock:
@@ -101,6 +219,7 @@ class Readiness:
                 else {"db_rtt_state": "measured", "db_rtt_ms": rtt_ms}
             )
 
+    @_emits
     def service_audit_revision(self) -> int:
         with self._lock:
             self._expire_policy_lease()
@@ -114,7 +233,11 @@ class Readiness:
         if self._policy_healthy and self._monotonic_ns() >= self._policy_deadline_ns:
             self._policy_healthy = False
             self._invalidate_service_audit()
+            # Expiry is noticed lazily; the records carry the lease's own deadline.
+            self._note_lapse(*self._lapse_cause(), self._policy_deadline_ns)
+            self._observe_state(self._policy_deadline_ns)
 
+    @_emits
     def refresh_policy_lease(
         self, instance_id: str, generation: str | None = None
     ) -> bool:
@@ -141,9 +264,12 @@ class Readiness:
                 self._invalidate_service_audit()
             self._policy_instance_id = instance_id
             self._policy_healthy = True
-            self._policy_deadline_ns = self._monotonic_ns() + POLICY_HEALTH_LEASE_NS
+            self._policy_renewed_ns = self._monotonic_ns()
+            self._policy_deadline_ns = self._policy_renewed_ns + POLICY_HEALTH_LEASE_NS
+            self._observe_state()
             return True
 
+    @_emits
     def invalidate_policy(self, generation: str | None = None) -> None:
         with self._lock:
             if generation is not None and generation != self.boot_id:
@@ -152,7 +278,9 @@ class Readiness:
                 self._invalidate_service_audit()
             self._policy_healthy = False
             self._policy_deadline_ns = 0
+            self._observe_state()
 
+    @_emits
     def note_policy_fused(self, generation: str | None = None) -> None:
         with self._lock:
             if generation is not None and generation != self.boot_id:
@@ -163,6 +291,7 @@ class Readiness:
             self._policy_healthy = False
             self._invalidate_service_audit()
             self._policy_deadline_ns = 0
+            self._observe_state()
 
     def note_policy_probe(self, nonce: str, generation: str | None = None) -> None:
         if (
@@ -239,7 +368,12 @@ class Readiness:
             self._policy_healthy = False
             self._policy_deadline_ns = 0
             self._observed_policy_probes.clear()
+            self._probe_current = None
+            self._probe_steps = {}
+            self._probe_started_ns = None
+            self._observe_state()
             self._probe_condition.notify_all()
+        self._emit_pending()
 
     def set_diagnostics(self, provider: Callable[[int], dict[str, object]]) -> None:
         self._diagnostics = provider
@@ -266,16 +400,13 @@ class Readiness:
         ready, payload, _ = self.readiness_response()
         return ready, payload
 
+    @_emits
     def readiness_response(self) -> tuple[bool, dict[str, object], int]:
         with self._lock:
             self._expire_policy_lease()
+            self._observe_state()
+            ready, refusal = self._current_state()
             remaining_ns = self._policy_deadline_ns - self._monotonic_ns()
-            policy_live = (
-                self._policy_healthy
-                and remaining_ns > 0
-                and not self._fused_instance_pending
-            )
-            ready = self._services_ready and policy_live
             lease_ms = max(0, min(1500, remaining_ns // 1_000_000)) if ready else 0
             # The distance is reported while warming too, so the controller can redraw a far cell.
             payload: dict[str, object] = {"boot_id": self.boot_id, "started_at": self.started_at}
@@ -285,12 +416,15 @@ class Readiness:
             payload.update(self._refresh_diagnostics())
             if self._resume_available:
                 payload["resume"] = "v1"
-            if not ready:
-                # Closed and ordered: a fused or unproven policy outranks unhealthy services.
-                fused = self._fused_instance_pending or self._fused_instance_id is not None
-                payload["refusal"] = (
-                    "policy_fused" if fused else "policy_unproven" if not policy_live else "degraded"
-                )
+            if refusal is not None:
+                payload["refusal"] = refusal
+            # Absent until the first of each since the supervisor started; older images omit them.
+            if self._lapses:
+                payload["lapses"] = self._lapses
+                payload["last_lapse"] = dict(self._last_lapse or {})
+            if self._flips:
+                payload["flips"] = self._flips
+                payload["last_flip"] = dict(self._last_flip or {})
             return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:

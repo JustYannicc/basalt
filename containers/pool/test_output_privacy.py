@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
-from . import readiness, supervisor
+from . import policy_monitor, readiness, supervisor
 from .pool_contract import StartupError
 
 
@@ -393,6 +393,19 @@ class OutputPrivacyTests(unittest.TestCase):
             observed.append(phase)
         self.assertTrue(observed == expected, "startup phase sequence changed")
 
+    def assert_readiness_record(self, line: str) -> None:
+        name, _space, body = line.partition(" ")
+        fields = json.loads(body)
+        self.assertTrue(all(type(value) in (str, int) for value in fields.values()))
+        if name == readiness.LAPSE_LINE.strip():
+            self.assertEqual(set(fields), {"step", "ms"})
+            self.assertIn(fields["step"], readiness.LAPSE_STEPS)
+        else:
+            self.assertEqual(name, readiness.FLIP_LINE.strip())
+            self.assertEqual(set(fields), {"to", "reason", "prior_ms"})
+            self.assertIn(fields["to"], {"ready", "refusing"})
+            self.assertIn(fields["reason"], {"restored", "policy_fused", "policy_unproven", "degraded"})
+
     def assert_closed_output(
         self,
         stdout: str,
@@ -403,7 +416,12 @@ class OutputPrivacyTests(unittest.TestCase):
         for value in (RESPONSE_SENTINEL, TOKEN_SENTINEL, CLASS_SENTINEL):
             self.assertNotIn(value, stdout + stderr)
         self.assert_startup_phases(stdout, startup_phases or [])
-        lines = stderr.splitlines()
+        lines = []
+        for line in stderr.splitlines():
+            if line.startswith((readiness.LAPSE_LINE, readiness.FLIP_LINE)):
+                self.assert_readiness_record(line)
+            else:
+                lines.append(line)
         self.assertEqual(len(lines), len(categories))
         observed = []
         for line in lines:
@@ -530,7 +548,12 @@ class OutputPrivacyTests(unittest.TestCase):
                         redirect_stderr(stderr),
                     ):
                         self.assertEqual(supervisor.main(), 1)
-                    lines = stderr.getvalue().splitlines()
+                    lines = []
+                    for line in stderr.getvalue().splitlines():
+                        if line.startswith((readiness.LAPSE_LINE, readiness.FLIP_LINE)):
+                            self.assert_readiness_record(line)
+                        else:
+                            lines.append(line)
                     marker, payload = lines[0].split(" ", 1)
                     self.assertEqual(marker, "POOL_CHILD_EXIT")
                     self.assertEqual(json.loads(payload), {"child": name, "exit_code": exit_code, "category": category})
@@ -601,6 +624,62 @@ class OutputPrivacyTests(unittest.TestCase):
             with runtime_signals.startup_phase(runtime_signals.StartupPhase.HOME_BOOT, 0):
                 pass
         self.assertEqual(stdout.getvalue(), "")
+
+    def test_lapse_and_flip_records_never_carry_the_probe_answers(self) -> None:
+        secret = "planted-probe-secret-" + TOKEN_SENTINEL
+        now = [10_000_000_000]
+        lines: list[str] = []
+        state = readiness.Readiness(secret, lambda: now[0])
+        home_answer = {
+            "plugins_enabled": True,
+            "plugins": [
+                {
+                    "id": readiness.POLICY_PLUGIN_ID,
+                    "registered": True,
+                    "enabled": True,
+                    "effective_enabled": True,
+                    "note": secret,
+                }
+            ],
+            "error": secret,
+        }
+        calls = iter([True, False])
+
+        def plugin_answer(_path: str, body: dict[str, str], **_kwargs: object) -> tuple[int, dict[str, object]]:
+            if next(calls):
+                return 200, {"ok": True, "nonce": body["nonce"], "instance": "a" * 32, "error": secret}
+            return 0, {"error": secret, "address": "10.0.0.9:8329"}
+
+        with (
+            patch.object(readiness, "emit", lambda line, err=False: lines.append(line)),
+            patch.object(policy_monitor, "request_json", lambda *_a, **_k: (200, home_answer)),
+            patch.object(policy_monitor, "native_policy_request", plugin_answer),
+        ):
+            self.assertTrue(state.refresh_policy_lease("a" * 32))
+            state.set_ready(True, audit_revision=state.service_audit_revision())
+            now[0] += 300_000_000
+            # The first probe never sees its log line and the second loses the plugin.
+            self.assertEqual(policy_monitor.probe_home_policy(secret, state)[0], "missed")
+            self.assertEqual(policy_monitor.probe_home_policy(secret, state)[0], "missed")
+            state.note_node_audit(False, 2_000)
+            now[0] += 2_000_000_000
+            _ready, payload, _lease = state.readiness_response()
+        self.assertIn("last_lapse", payload)
+        self.assertIn("last_flip", payload)
+        rendered = json.dumps(payload) + "\n".join(lines)
+        for leaked in (secret, TOKEN_SENTINEL, "10.0.0.9", "8329", "note", "error"):
+            self.assertNotIn(leaked, rendered)
+        for line in lines:
+            name, _space, body = line.partition(" ")
+            self.assertIn(name, {"POOL_READINESS_LAPSE", "POOL_READINESS_FLIP"})
+            fields = json.loads(body)
+            if name == "POOL_READINESS_LAPSE":
+                self.assertEqual(set(fields), {"step", "ms"})
+                self.assertIn(fields["step"], readiness.LAPSE_STEPS)
+            else:
+                self.assertEqual(set(fields), {"to", "reason", "prior_ms"})
+                self.assertIn(fields["reason"], {"restored", "policy_fused", "policy_unproven", "degraded"})
+            self.assertTrue(all(isinstance(value, (str, int)) for value in fields.values()))
 
     def test_http_handler_failure_cannot_print_response_token_or_address(self) -> None:
         class ExplodingHandler(readiness.ReadyHandler):
