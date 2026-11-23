@@ -196,7 +196,9 @@ test("inspect says why a stored permission is not in force, and launches agree",
   const first = await f.worker(before).configure("enable", f.configuration);
   // An image release changes the Worker's bound image input; the stored permission names the old.
   f.rebind(
-    f.applications.map((app) => (app.color === "blue" ? { ...app, imageInput: "9".repeat(16) } : app)),
+    f.applications.map((app) =>
+      app.color === "blue" ? { ...app, imageInput: "9".repeat(16) } : app,
+    ),
   );
   const imaged = f.worker(after);
   assert.deepEqual(

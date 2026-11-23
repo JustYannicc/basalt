@@ -922,7 +922,13 @@ test("growth logs its refusal once per change of reason, and again after a launc
   const f = fixture(3, 1);
   const log = context.mock.method(console, "warn", () => {});
   // Each growth reserves once and stops at the first refusal; "ok" lets one launch through.
-  const script: (SlotRefused["reason"] | "ok")[] = ["identity", "identity", "selection", "ok", "identity"];
+  const script: (SlotRefused["reason"] | "ok")[] = [
+    "identity",
+    "identity",
+    "selection",
+    "ok",
+    "identity",
+  ];
   const reserve = f.state.reserve.bind(f.state);
   context.mock.method(f.state, "reserve", async (...args: Parameters<typeof f.state.reserve>) => {
     const next = script.shift();
