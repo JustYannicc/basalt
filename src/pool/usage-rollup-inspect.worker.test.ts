@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { usageRollupAutoKey } from "./model-history/usage-rollup-auto.ts";
+import { usagePeopleRollupAutoKey, usageRollupAutoKey } from "./model-history/usage-rollup-auto.ts";
 
 test("the controller's inspect carries the usage rollup's stored state without a database read", async (t) => {
   t.mock.method(console, "info", () => {});
@@ -26,13 +26,40 @@ test("the controller's inspect carries the usage rollup's stored state without a
     "the inspect release flows rely on still answers",
   );
   assert.deepEqual(inspected.usageRollup, {
+    rollup: "v15",
     lastTickAt: "2026-11-23T09:30:00.000Z",
     lastStop: "budget",
     pausedUntil: null,
+    lastHour: null,
+    lastHourPhase: null,
+    lastHourReadMs: null,
     pools: 1,
     pendingHours: 2_832,
+    totalPendingHours: null,
     stuck: [
       { pool: "0123456789abcdef", reason: "slow", hour: null, retryAt: "2026-11-24T09:30:00.000Z" },
     ],
+  });
+  // Once a tick found v16 applied, inspect shows v16's own state, not v15's.
+  await f.old.storage.put(usagePeopleRollupAutoKey, {
+    rollup: "v16",
+    lastTickAt: "2026-11-23T10:30:00.000Z",
+    lastStop: "complete",
+    pools: 0,
+    pendingHours: 0,
+  });
+  const people = (await f.send("inspect")) as { usageRollup?: unknown };
+  assert.deepEqual(people.usageRollup, {
+    rollup: "v16",
+    lastTickAt: "2026-11-23T10:30:00.000Z",
+    lastStop: "complete",
+    pausedUntil: null,
+    lastHour: null,
+    lastHourPhase: null,
+    lastHourReadMs: null,
+    pools: 0,
+    pendingHours: 0,
+    totalPendingHours: null,
+    stuck: [],
   });
 });

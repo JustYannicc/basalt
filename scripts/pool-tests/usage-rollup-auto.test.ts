@@ -13,7 +13,7 @@ import {
   usageRollupHoldLimitMs,
   type runUsageRollup,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
-import { seriesFixture } from "./series-fixture.ts";
+import { v15Fixture } from "./series-fixture.ts";
 
 /** The raw answer the rollup must reproduce exactly. */
 const raw = `SELECT pool,date_trunc('hour',timestamp) AS hour,source,provider,model,
@@ -74,7 +74,7 @@ const marked = async (db: HistoryDatabase, pool: string) =>
   );
 
 test("a pool with pending hours becomes ready by ticks alone", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(6, 3));
     const storage = memoryStorage();
@@ -97,7 +97,7 @@ test("a pool with pending hours becomes ready by ticks alone", async () => {
 });
 
 test("one pool at a time: the second pool starts only on a later tick", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const first = String((await f.row()).pool);
     await preexisting(f, rows(3, 2), rows(3, 2, second));
     const storage = memoryStorage();
@@ -117,7 +117,7 @@ test("one pool at a time: the second pool starts only on a later tick", async ()
 });
 
 test("the hourly ceilings hold over any sliding hour, across ticks", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(48, 2));
     const start = Date.parse("2026-02-01T00:00:00Z");
@@ -194,7 +194,7 @@ test("each session's time and WAL budgets are capped by what the hour has left",
 });
 
 test("a slow stop pauses for an hour and resumes by itself; a slow hour three times is stuck", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(6, 3));
     const storage = memoryStorage();
@@ -240,7 +240,7 @@ test("a slow stop pauses for an hour and resumes by itself; a slow hour three ti
 });
 
 test("a hold past its limit three times on the same hour is stuck too, and other pools go on", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const first = String((await f.row()).pool);
     await preexisting(f, rows(3, 2), rows(3, 2, second));
     const [a, b] = [first, second].sort();
@@ -274,7 +274,7 @@ test("a hold past its limit three times on the same hour is stuck too, and other
 });
 
 test("a stuck pool clears itself once its hour is done another way", async () => {
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(6, 3));
     const storage = memoryStorage();
@@ -300,7 +300,7 @@ test("a stuck pool clears itself once its hour is done another way", async () =>
 
 test("an error pauses for an hour, and six errors in a row on a pool are stuck", async (t) => {
   t.mock.method(console, "error", () => {});
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(6, 3));
     const storage = memoryStorage();
@@ -328,7 +328,7 @@ test("an error pauses for an hour, and six errors in a row on a pool are stuck",
 
 test("a handover that starts mid-tick never waits for the tick, and no hour is half-counted", async (t) => {
   t.mock.method(console, "info", () => {});
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(24, 3));
     const storage = memoryStorage();
@@ -393,7 +393,7 @@ test("a handover that starts mid-tick never waits for the tick, and no hour is h
 
 test("a session killed mid-tick, as by a reset, loses and double-counts nothing", async (t) => {
   t.mock.method(console, "error", () => {});
-  await seriesFixture(async (f) => {
+  await v15Fixture(async (f) => {
     const pool = String((await f.row()).pool);
     await preexisting(f, rows(12, 3));
     const storage = memoryStorage();

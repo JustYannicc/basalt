@@ -12,6 +12,7 @@ export const poolMigrationSources = [
   "src/pool/model-history/history-row-schema.ts",
   "src/pool/model-history/import-completion-schema.ts",
   "src/pool/model-history/schema.ts",
+  "src/pool/model-history/usage-rollup-people-schema.ts",
   "src/pool/model-history/usage-rollup-schema.ts",
   "src/pool/pool-group.ts",
 ] as const;
