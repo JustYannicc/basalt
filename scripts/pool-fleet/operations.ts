@@ -58,19 +58,6 @@ export const configureFleet = (input: {
     const { controller: access, go } = input;
     const operationId = configureOperationId(go);
     const retained = (yield* call(() => inspectFleet(access, operationId))).permission;
-    // A rerun under the same GO only inspects, so a different target would silently not apply.
-    if (
-      retained &&
-      input.targetActive !== undefined &&
-      input.targetActive !== retained.configuration.targetActive
-    )
-      return yield* Effect.fail(
-        refuse(
-          "target-active-differs",
-          `This GO already configured targetActive ${retained.configuration.targetActive}; ${input.targetActive} was not applied.`,
-          "A new target needs a new GO.",
-        ),
-      );
     if (retained)
       return { status: "already-configured" as const, operationId, digest: retained.digest };
     const legacy = yield* selectedPrimary(access);

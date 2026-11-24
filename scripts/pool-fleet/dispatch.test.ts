@@ -750,7 +750,12 @@ test("a configure rerun under the same GO with another target-active is refused 
     );
     assert.equal(rerun.ok, false);
     assert.match(String("cause" in rerun && rerun.cause), /target-active-differs/u);
-    assert.equal((await lane.configuration.inspect())?.configuration.targetActive, 5);
+    const kept = await lane.configuration.inspect();
+    assert.deepEqual([kept?.configuration.targetActive, kept?.enabled], [5, true]);
+    assert.ok(
+      !lane.actions.includes("fleet-disable"),
+      "a refused input never rolls the fleet back",
+    );
   } finally {
     await lane.close();
   }
@@ -774,6 +779,29 @@ test("retire-check on a ready row reports the refusal and warns about nothing", 
     ).result;
     assert.deepEqual([outcome.check.wouldProceed, outcome.check.refusal], [false, "not_draining"]);
     assert.equal(outcome.warning, null, "a ready row's connections are its live traffic");
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check says so when part of the cell's count carries no lease record", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    lane.retireRead.gone = 4;
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(
+      (result as unknown as { result: { check: { leaseOwner: string } } }).result.check.leaseOwner,
+      "2 of the cell's count carry no lease record, so nothing says which isolate took them",
+    );
   } finally {
     await lane.close();
   }

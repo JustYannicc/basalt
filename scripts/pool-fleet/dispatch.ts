@@ -27,6 +27,7 @@ import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import {
   checkRetireRow,
   configureFleet,
+  configureOperationId,
   disableFleet,
   retireRow,
   waitForReadyCell,
@@ -381,6 +382,20 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           now: deps.now,
         }),
       };
+    }
+    // A rerun under the same GO only inspects, so another target would silently not apply. It is
+    // refused here, before the attempt, whose rollback would disable a fleet this run never touched.
+    if (targetActive !== undefined) {
+      const retained = (yield* call(() => inspectFleet(access, configureOperationId(input.go))))
+        .permission;
+      if (retained && retained.configuration.targetActive !== targetActive)
+        return yield* Effect.fail(
+          refuse(
+            "target-active-differs",
+            `This GO already configured targetActive ${retained.configuration.targetActive}; ${targetActive} was not applied.`,
+            "A new target needs a new GO.",
+          ),
+        );
     }
     // configure-and-accept stands alone: any failure after a send disables, then proves the root.
     const attempt = yield* Effect.result(
