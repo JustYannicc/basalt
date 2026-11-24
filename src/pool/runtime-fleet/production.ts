@@ -415,7 +415,11 @@ export class PoolRuntimeFleet {
         (current, dispatch) => fleet.forward(current, pool, legacy, dispatch),
         beforeDispatch,
         () => fleet.recoverPrimary(),
-        { rootHoldMs: () => fleet.primaryHoldMs(), handover: this.deps.handingOver },
+        {
+          rootHoldMs: () => fleet.primaryHoldMs(),
+          coldHoldMs: () => fleet.coldHoldMs(),
+          handover: this.deps.handingOver,
+        },
       );
     }
     return stampResumeTarget(

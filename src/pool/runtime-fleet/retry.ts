@@ -8,6 +8,7 @@ import {
 import { awaitProbe } from "../availability.ts";
 import { FleetRefused } from "./state.ts";
 import { runtimeRecoveryBudgetMs } from "../runtime-slots/recovery.ts";
+import { restartStartBoundMs } from "../runtime-slots/forced-restart-timing.ts";
 import { nativeRuntimeUnavailable, nativeRuntimeStream } from "../runtime-unavailable.ts";
 import { reachedNoContainer, unsentRefusal } from "../controller-unsent.ts";
 import {
@@ -72,6 +73,11 @@ interface RetryOptions {
    * cell can take the call. While it lasts, the call waits for that restart instead of failing.
    */
   rootHoldMs?(): Promise<number>;
+  /**
+   * The same for a cold fleet, a cell starting while none is ready (`RuntimeFleet.coldHoldMs`), and
+   * below 0 when nothing can become ready, so a call it held has today's answer at once.
+   */
+  coldHoldMs?(): Promise<number>;
   /** Whether a code handover drains: nothing waits then, since a waiting call would hold it. */
   handover?(): boolean;
 }
@@ -144,7 +150,7 @@ export async function forwardRecoverably(
   attempt: (request: Request, dispatched: () => void) => Promise<Response>,
   beforeDispatch: () => void,
   recover?: () => Promise<void>,
-  { timing = runtimeRetryTiming, rootHoldMs, handover }: RetryOptions = {},
+  { timing = runtimeRetryTiming, rootHoldMs, coldHoldMs, handover }: RetryOptions = {},
 ) {
   const deadline = new AbortController();
   const expire = () =>
@@ -171,7 +177,13 @@ export async function forwardRecoverably(
   let waitingSince: number | undefined;
   // Where the hold last in force ends, on this clock; a cap refusal is waited out until then.
   let holdEndsAt = -Infinity;
+  // A call holds at most one start bound in all, whatever it waits for and however often.
+  let firstHeldAt: number | undefined;
   let held = false;
+  // Whether a cold start is what holds the call, so its stand-down ends the cap waits too; the cap
+  // waits a root recovery gave the call stay until that recovery's own end.
+  let heldCold = false;
+  let rootHoldEndsAt = -Infinity;
   let kicked = false;
   // Recovery is advisory. It declines to restart a runtime that is still running, and may fail for
   // other reasons; the request's own next admission re-checks selection, fence, policy and health.
@@ -191,16 +203,31 @@ export async function forwardRecoverably(
     while (true) {
       signal.throwIfAborted();
       // The hold in force when an attempt begins judges it, whatever the hold reads once it fails.
-      const holdMs = rootHoldMs && !handover?.() ? await rootHoldMs().catch(() => 0) : 0;
+      const root = rootHoldMs && !handover?.() ? await rootHoldMs().catch(() => 0) : 0;
+      const cold = coldHoldMs && !handover?.() ? await coldHoldMs().catch(() => 0) : 0;
+      const read = Math.max(root, cold);
+      if (read > 0) firstHeldAt ??= timing.now();
+      const holdMs =
+        read <= 0
+          ? 0
+          : firstHeldAt === undefined
+            ? read
+            : Math.max(0, Math.min(read, firstHeldAt + restartStartBoundMs - timing.now()));
+      if (root > 0)
+        rootHoldEndsAt = Math.max(rootHoldEndsAt, timing.now() + Math.min(root, holdMs));
       if (holdMs > 0) {
         held = true;
+        heldCold = cold > root;
         holdEndsAt = timing.now() + holdMs;
       } else if (held) {
         held = kicked = false;
         // A hold that ends before its bound (the root serves, or recovery stands down) leaves the
         // call today's rules from now on; one that reaches it has had its wait. A handover ends it
         // on the call's own history instead, so the drain is never longer than it was without holds.
-        if (timing.now() < holdEndsAt - paceCapMs && !handover?.()) {
+        // When nothing can become ready for a cold start, the call has today's answer now, cap waits
+        // included.
+        if (heldCold && cold < 0) holdEndsAt = rootHoldEndsAt;
+        else if (timing.now() < holdEndsAt - paceCapMs && !handover?.()) {
           waitingSince = undefined;
           refusals = failures = 0;
           recovered = false;
@@ -232,6 +259,8 @@ export async function forwardRecoverably(
           void response.body?.cancel().catch(() => {});
           void current.body?.cancel().catch(() => {});
           retained = backup ?? new Request(request, { signal });
+          // A hold longer than the call's own deadline is never ended by it while the cap is waited out.
+          holdUntil(holdEndsAt - timing.now());
           await timing.pause(capPace, signal);
           continue;
         }

@@ -24,6 +24,7 @@ import {
   logQuarantine,
   pastBound,
   quarantineReportMs,
+  startingBoundMs,
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
@@ -166,6 +167,8 @@ function growthRefusal(error: unknown) {
 export class RuntimeFleet {
   private deps: Dependencies;
   private growing?: Promise<void>;
+  // When the growth under way began: a cold hold waits for it one start bound at most.
+  private growingSince = 0;
   private atCapacity = false;
   private primaryFailed = false;
   private primaryPlace: DistanceClass = "unknown";
@@ -236,6 +239,7 @@ export class RuntimeFleet {
     this.growthAlarm = undefined;
     if (!this.growing) {
       this.nextGrowthCheck = this.deps.now() + 100;
+      this.growingSince = this.deps.now();
       this.growing = this.addDemandedRuntime().finally(() => {
         this.growing = undefined;
         this.deps.changed?.();
@@ -405,6 +409,36 @@ export class RuntimeFleet {
     if (hold === 0) return 0;
     const rows = await this.deps.state.inspect();
     return rows.some((row) => row.phase === "ready" && this.serves(row)) ? 0 : hold;
+  }
+  /**
+   * The cold-start hold: while no cell is ready and one is starting, what is left of that start's
+   * bound. 0 once a ready cell can take the call, and below 0 when nothing can become ready.
+   */
+  async coldHoldMs() {
+    const rows = await this.deps.state.inspect();
+    if (rows.some((row) => row.phase === "ready" && this.serves(row))) return 0;
+    return this.startingHoldMs(rows);
+  }
+  /**
+   * While no cell is ready, a call waits for a cell that is starting instead of failing on the
+   * root's cap: what is left of that start's bound. A start that failed (uncertain) or ran past
+   * its bound doesn't count, nor does a growth under way for more than one start bound, so below 0
+   * when nothing can become ready: a disabled fleet, no start that can still finish.
+   */
+  private startingHoldMs(rows: readonly FleetRow[]) {
+    if (this.deps.enabled?.() === false) return -1;
+    const now = this.deps.now();
+    const left = rows
+      .filter(
+        (row) =>
+          (row.phase === "reserved" || row.phase === "warming") &&
+          row.phaseAt !== undefined &&
+          !pastBound(row, now),
+      )
+      .map((row) => row.phaseAt! + startingBoundMs - now);
+    if (left.length) return Math.max(0, ...left);
+    const growth = this.growing ? this.growingSince + startingBoundMs - now : 0;
+    return growth > 0 ? growth : -1;
   }
   /**
    * A root call that the fallback admitted stops waiting at its send. One that failed before its
