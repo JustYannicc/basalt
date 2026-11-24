@@ -63,6 +63,8 @@ export async function handleRuntimeHandoff(
   alertDelivery?: () => Promise<{ refusedSince: number; lastStatus?: number } | undefined>,
   /** The pool's own usage rollup backfill, from the object's storage alone. */
   usageRollup?: () => Promise<unknown>,
+  /** The pool's own capture-hour counts, from the object's storage alone. */
+  captureHours?: () => Promise<unknown>,
 ) {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
@@ -177,6 +179,7 @@ export async function handleRuntimeHandoff(
           alertDelivery: (await alertDelivery?.().catch(() => undefined)) ?? null,
           // So is the backfill's state, which a blind monitor would otherwise keep from everyone.
           usageRollup: (await usageRollup?.().catch(() => undefined)) ?? null,
+          captureHours: (await captureHours?.().catch(() => undefined)) ?? null,
         };
         break;
       case "recovery-reset":

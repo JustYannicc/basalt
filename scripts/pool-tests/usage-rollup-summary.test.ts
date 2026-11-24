@@ -11,6 +11,7 @@ import {
   usageRollupTargets,
   type UsageRollupTarget,
 } from "../../src/pool/model-history/usage-rollup-targets.ts";
+import { historyCaptureHoursVersion } from "../../src/pool/model-history/capture-hours-schema.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -121,6 +122,7 @@ async function backfill(db: HistoryDatabase, target: UsageRollupTarget) {
     poolId,
     "2026-01-10T00:00:00Z",
   ]);
+  if (target === "v16") await withoutCaptureHours(db);
 }
 
 /** Both summaries, counting the statements the second one ran. */
@@ -300,3 +302,15 @@ test("a pool whose v16 window is past the group bound keeps reading v15 instead 
     assert.deepEqual(data(read.model), data(raw.model));
   });
 });
+
+/**
+ * The fixture's January 2026 window reaches past the 400 days capture-hour counts cover, where no
+ * hour reads complete by design. This test proves the rollup equals raw rows, so it reads capture as
+ * before v17, on both sides: v17's table and record dropped.
+ */
+async function withoutCaptureHours(db: HistoryDatabase) {
+  await db.query("DROP TABLE basalt_model_capture_hours");
+  await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+    historyCaptureHoursVersion,
+  ]);
+}

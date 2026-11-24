@@ -8,9 +8,9 @@ const prices = async () => ({ prices: summaryPrices, issues: [] });
 const window = { from: "2026-01-01T00:00:00Z", to: "2026-01-01T02:14:00Z" };
 
 /**
- * The capture ingests on its own schedule (every model-history pass) and the availability probe
- * writes about one usage row a minute, so the newest minutes' rows have no request yet: they are
- * past the capture's recorded position, not missing.
+ * The capture ingests on its own schedule (every model-history pass, about every five minutes), so
+ * while calls are running the newest minutes' usage rows have no request yet: they are past the
+ * capture's recorded position, not missing.
  */
 test("a usage row newer than the capture's recorded position is not a missing hour, and the summary does not read partial", async () => {
   await seriesFixture(async (f) => {

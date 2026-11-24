@@ -167,6 +167,9 @@ export async function poolUsageSummary(
     const captureTo = [readFrom, checkedThrough].sort().at(-1)!;
     // Only an hour or a day the check has passed whole can be complete; the rest are not yet.
     const capturedMs = Date.parse(captureTo);
+    // Both of its statements, the stored hours' comparison and the rows it leaves, are this step. A
+    // pool read from v16 is ready on it, so its stored counts can stand in for the per-row check,
+    // and its per-row check of the tail and cut hours runs to the same captureTo.
     mark("capture");
     const capture = await homeCaptureCoverage(
       db,
@@ -174,6 +177,7 @@ export async function poolUsageSummary(
       selection.homeSource,
       readFrom,
       captureTo,
+      rolled && target === "v16",
     );
     const series: PoolUsageSeriesResult = {
       from: readFrom,
