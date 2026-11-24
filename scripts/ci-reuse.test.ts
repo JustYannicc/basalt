@@ -210,6 +210,11 @@ test("workflow skips every suite job only through the verified reuse decision", 
   assert.equal(workflow.jobs.reuse.permissions.actions, "read");
   assert.equal(workflow.jobs.select.needs, "reuse");
   assert.match(workflow.jobs.select.if, /always\(\).*needs.reuse.outputs.reused != 'true'/);
+  // A rehearsal's stage label, added or removed, selects nothing, so no suite job runs for it.
+  assert.match(
+    workflow.jobs.select.if,
+    /!\(\(github\.event\.action == 'labeled' \|\| github\.event\.action == 'unlabeled'\) &&\s+startsWith\(github\.event\.label\.name, 'stage-'\)\)/,
+  );
   for (const [name, job] of Object.entries(workflow.jobs) as [
     string,
     { needs?: string | string[] },
