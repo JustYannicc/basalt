@@ -231,3 +231,53 @@ test("incidents always read the live hour and exclude proof traffic and client c
     assert.equal(result.daily.length, 0);
   });
 });
+
+test("a native request on an account not saved in the pool reads its hours' capture complete, and its account still reads unmapped", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await summaryFixture(f);
+    // An account the caller's saved accounts don't bind: the probe's, a test account, or one
+    // removed from the pool.
+    await fixture.native(1, "2026-01-01T01:00:00Z", { account: "c".repeat(64) });
+    await fixture.cursor(1);
+    const result = await poolUsageSummary(
+      f.db,
+      { pool, from, to, authority: fixture.authority },
+      prices,
+      Date.parse(to),
+    );
+    assert.equal(result.coverage.mapping.unmapped, 1, "the account is still reported unmapped");
+    assert.equal(result.homeCapture.status, "available");
+    assert.equal(result.homeCapture.completeHours.length, 24);
+    assert.equal(result.partial, false, "nothing in the window is unread");
+  });
+});
+
+for (const [name, unproven] of [
+  [
+    "the capture check that cannot answer",
+    (f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) =>
+      f.db.query("ALTER TABLE usage RENAME TO usage_hidden"),
+  ],
+  [
+    "a Home capture backfill not complete",
+    (f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) =>
+      f.db.query("UPDATE basalt_model_history_cursor SET backfill_complete=false"),
+  ],
+] as const)
+  test(`${name} still leaves home capture unavailable, with no hour complete`, async () => {
+    await seriesFixture(async (f) => {
+      const fixture = await summaryFixture(f);
+      await fixture.native(1, "2026-01-01T01:00:00Z");
+      await fixture.cursor(1);
+      await unproven(f);
+      const result = await poolUsageSummary(
+        f.db,
+        { pool, from, to, authority: fixture.authority },
+        prices,
+        Date.parse(to),
+      );
+      assert.equal(result.homeCapture.status, "unavailable");
+      assert.deepEqual(result.homeCapture.completeHours, []);
+      assert.equal(result.partial, true);
+    });
+  });

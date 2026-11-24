@@ -4,10 +4,14 @@ import hashlib
 import http.client
 import http.server
 import json
+import select
+import socket
+import sys
 import threading
+import time
 import unittest
 
-from .readiness import Readiness, ReadyHandler
+from .readiness import Readiness, ReadyHandler, ReadyServer
 
 
 class LaunchReadinessTests(unittest.TestCase):
@@ -151,3 +155,27 @@ class ReadinessRefusalTests(unittest.TestCase):
         ready.set_ready(True, audit_revision=ready.service_audit_revision())
         clock[0] += 2_000_000_000
         self.assertEqual(ready.snapshot()[1]["refusal"], "policy_unproven")
+
+
+class ReadyServerBacklogTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux accept-queue semantics")
+    def test_a_burst_of_connects_completes_before_anything_is_accepted(self) -> None:
+        # Linux completes a handshake only while the listen backlog has room and drops the rest,
+        # which then wait out SYN retransmits. Nothing accepts here, so the backlog alone decides
+        # whether a burst of health reads connects at once.
+        handler = type("Handler", (ReadyHandler,), {"readiness": Readiness("fixture")})
+        server = ReadyServer(("127.0.0.1", 0), handler)
+        self.addCleanup(server.server_close)
+        clients = [socket.socket(socket.AF_INET, socket.SOCK_STREAM) for _ in range(64)]
+        for client in clients:
+            self.addCleanup(client.close)
+            client.setblocking(False)
+            client.connect_ex(server.server_address)
+        pending = set(clients)
+        deadline = time.monotonic() + 2
+        while pending and time.monotonic() < deadline:
+            _, writable, _ = select.select([], list(pending), [], max(0.0, deadline - time.monotonic()))
+            for client in writable:
+                self.assertEqual(client.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR), 0)
+                pending.discard(client)
+        self.assertEqual(len(pending), 0, f"{len(pending)} of 64 connects still waiting for the backlog")

@@ -35,7 +35,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
-import { failureBeforeSend, failureRead, readSuspect } from "./failure-record.ts";
+import { failureIgnored, failureRead, readSuspect } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
 
@@ -608,17 +608,24 @@ export class RuntimeFleet {
       runtimeFailureCause(error) === "control"
     )
       throw error;
-    // A refused or late readiness read means the install could not be made or was not proven to
-    // land, not that the cell refused the policy: it takes no call until this revision is installed.
     const read = failureRead(error, "endpoint_health", this.deps.now());
-    if (row.phase === "ready" && failureBeforeSend(read)) {
+    if (row.phase === "ready") {
+      // An aborted round or a refusal on the controller's own side (slot policy, authorization)
+      // says nothing about the cell, and a fence would never be set for it: the round fails, and
+      // the next renewal installs again.
+      if (failureIgnored(read)) throw error;
+      // Only hard evidence that the runtime is not the one recorded ends it at once, with its read.
+      // Any other failure leaves the install unproven, a broken connection to the cell's policy
+      // port included: the cell takes no call until this revision lands, and the health rule's
+      // bounds quarantine it if it never does.
       await this.failures.missed(row.identity, read, {
         path: "install",
         owe: { pool: policy.pool, revision: policy.revision },
       });
       return;
     }
-    // A serving runtime that failed leaves the selection: it takes no call under the old policy.
+    // A redrawn draining runtime that failed leaves the selection: it takes no call under the old
+    // policy.
     await this.failures.refused(row.identity);
   }
   abortPool(pool: string) {

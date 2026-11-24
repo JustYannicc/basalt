@@ -185,8 +185,10 @@ export async function poolUsageSummary(
       rolled,
     );
     const missingHours = capture.incompleteHours;
+    // Whether every Home usage row has its request, which is not whether each request's account is
+    // saved in the pool: an unmapped account is counted as unmapped in the coverage and in the
+    // account views, and never makes a captured hour unproven.
     const nativeComplete =
-      observed.nativeMappingProven &&
       missingHours !== null &&
       observed.coverage.sources.find((source) => source.kind === "home")?.backfillComplete === true;
     const completeHours: string[] = [];

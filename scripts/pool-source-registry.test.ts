@@ -566,6 +566,28 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
           patch.retirement.requires,
           /provider-time, high-backoff, floor, open-window and usage-payload regressions/,
         );
+      } else if (patch.identity === "cliproxy-home-limit-reading") {
+        assert.equal(name, "home");
+        assert.equal(patch.file, "0770-home-limit-reading.patch");
+        assert.match(patch.retirement.requires, /without making the report wait/);
+        assert.match(
+          patch.retirement.requires,
+          /limit-reading, non-blocking-report, own-window, accepted-reading and per-model regressions/,
+        );
+      } else if (patch.identity === "cliproxy-node-limit-failover") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0769-node-limit-failover.patch");
+        assert.match(patch.retirement.requires, /within 48 frames, 1 MiB and 5 s/);
+        assert.match(patch.retirement.requires, /one more pick within one cancel bound/);
+        assert.match(
+          patch.retirement.requires,
+          /bootstrap-hold, realistic-limit, time-bound, byte-identity, off-switch, excluded-release, websocket-release, extra-pick and 25-call burst regressions/,
+        );
+      } else if (patch.identity === "cliproxy-node-limit-failover-usage-pair-test") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0771-node-limit-failover-usage-pair-test.patch");
+        assert.match(patch.retirement.requires, /changes only a test/);
+        assert.match(patch.retirement.requires, /under the call's one request_id/);
       } else if (patch.identity === "cliproxy-node-tunnel-initial-list-test") {
         assert.equal(name, "node");
         assert.equal(patch.file, "0768-node-tunnel-initial-list-test.patch");

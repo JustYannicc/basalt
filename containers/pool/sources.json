@@ -333,7 +333,7 @@
         {
           "identity": "cliproxy-home-funding-aged-reading",
           "file": "0762-home-funding-aged-reading.patch",
-          "sha256": "3a14248825846e58fd51ea09690df5c56d495c26484ebf67f3faeb60bde76330",
+          "sha256": "a37f930909cf03d72477f4becf250289db125ce021681a3b8ab951241bef041e",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0762 keeps an account whose plan reading has aged out from being refused outright by the pool's funding filter. Retire when the pinned Home keeps an account on its plan while a fresh reading says its credits can't be spent and its last plan reading showed quota, treats an aged credits reading as unknown rather than refused, keeps out a plan last seen empty before its reset, and under a never policy refreshes the candidates' readings within a bound and decides on the fresh reading before it refuses, and passes the aged-reading, bounded-refresh and wait-for-in-flight-probe regressions."
@@ -346,6 +346,15 @@
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0763 lets a quota cooldown end at the provider's own time. Retire when the pinned Home ends a 429 cooldown at the provider's reset or retry time for every provider when that time is 10 s or more, never later on the blind backoff, lets a shorter provider time only lengthen the escalating backoff so a provider that keeps saying retry in a moment is never called every second, never shortens an open window because two limits can hold at once, grows the backoff only for a 429 without a provider time, reads the node's fail.retry_after_ms, and passes the provider-time, high-backoff, floor, open-window and usage-payload regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-home-limit-reading",
+          "file": "0770-home-limit-reading.patch",
+          "sha256": "9508673cff6520ae5b53fb0f1e2ea092f82fc60d559d4254ae38c2c66b8e5d79",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0770 queues one forced quota reading for a Claude or Codex account whose call on a model was refused 429, so its reading shows the limit and the funding filter ranks it behind every account with quota left until its reset. Retire when the pinned Home refreshes a limited subscription account's quota reading on its 429 without making the report wait, at most once per account and model in 5 minutes once the collector accepted the reading and apart from the funding refusal's refresh, and passes the limit-reading, non-blocking-report, own-window, accepted-reading and per-model regressions."
           }
         }
       ]
@@ -497,6 +506,24 @@
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0768 changes only tests. Upstream's TestServerWebsocketTunnel_EndToEndAndTenantIsolation dials a server and then a client and expected the server in the client's initial server_list, and TestServerWebsocketTunnel_HotReloadRevokesRemovedKeyOnly sends the client's first data frame without waiting for the server, but a dial returns at the websocket upgrade, before the hub commits the peer, so the client can commit first and correctly learn the server from the next server_online instead. Retire when the pinned node's tests accept the server in either the initial list or the next server_online, or wait until the hub has committed it, and pass 50 race runs of their package in a row."
+          }
+        },
+        {
+          "identity": "cliproxy-node-limit-failover",
+          "file": "0769-node-limit-failover.patch",
+          "sha256": "de3555b25f8e37121e48d7cccda602c2e1175db2ad2c8438f71f57d6b096267e",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0769 keeps an account's limit from reaching the caller while another account of that lab is eligible. Retire when the pinned node holds a Claude stream's message_start, ping and empty block starts until the first generating event, within 48 frames, 1 MiB and 5 s, except for fast requests, turns a rate_limit_error that arrives while holding into the account's own 429 with the 200's retry time so the conductor fails over, releases everything held in order on any other error, end of stream or bound, answers a limit a non-streamed translated call buffered as the account's 429, lets a Home redispatch go ahead when Home did not acknowledge the release of a credential the next pick excludes, never waits twice for that release when a websocket session still holds the credential's selection, makes one more pick within one cancel bound after a retryable home_unavailable and answers the account's own 429 only when that pick fails with home_unavailable again, and passes the bootstrap-hold, realistic-limit, time-bound, byte-identity, off-switch, excluded-release, websocket-release, extra-pick and 25-call burst regressions."
+          }
+        },
+        {
+          "identity": "cliproxy-node-limit-failover-usage-pair-test",
+          "file": "0771-node-limit-failover-usage-pair-test.patch",
+          "sha256": "2c6bfdab4e7059d7f25aaf4b1e212ecacbd1f56448856b48a72c742bd587e050",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0771 changes only a test. It pins the evidence that a call moved accounts after a limit carry 0769's hold caught: two usage-queue payloads under the call's one request_id, the limited account's failed with status 429 and the serving account's completed, while the caller gets only the serving account's bytes. Retire with carry 0769, or when the pinned node pins the same pair, in metadata-only and default modes."
           }
         }
       ]
