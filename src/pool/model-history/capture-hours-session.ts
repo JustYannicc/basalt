@@ -215,11 +215,19 @@ export async function captureHoursSession(
   // The plan's pools in a fixed order, so a log line and inspect name a pool by its place alone.
   const ordinals = [...known].sort();
   const ordinal = (pool: string) => ordinals.indexOf(pool) + 1;
-  /** The hours in their slow wait, as pool|hour: each is left alone; its pool goes on. */
+  /** Whether a count's wait is a stuck hour's: it is only ever retried alone, by retryStuck. */
+  const isStuck = (entry: { count: number; limit?: "read" }) =>
+    entry.limit !== "read" && entry.count >= bounds.slowAfter;
+  /**
+   * The hours in their slow wait, and every stuck hour, as pool|hour: each is left out of its pool's
+   * counting, which goes on.
+   */
   const slowWaiting = () =>
     new Set(
       (state().slow ?? [])
-        .filter((entry) => entry.limit !== "read" && Date.parse(entry.until) > now())
+        .filter(
+          (entry) => entry.limit !== "read" && (Date.parse(entry.until) > now() || isStuck(entry)),
+        )
         .map((entry) => `${entry.pool}|${entry.hour}`),
     );
 
@@ -539,6 +547,88 @@ export async function captureHoursSession(
     }
     return undefined;
   };
+  /**
+   * Stuck hours whose wait is over, first, while the session's budget is whole: each alone, under
+   * the next of its retry limits, and only when the session has that much left, else in a later
+   * session. Counted, it says the limit and the time it took. Slow under its last limit, it is given
+   * up: it stays stuck, held from counting, and is not tried again.
+   */
+  const retryStuck = async (): Promise<CaptureHoursAutoStop | undefined> => {
+    const due = (state().slow ?? []).filter(
+      (entry) =>
+        isStuck(entry) &&
+        entry.gaveUp !== true &&
+        known.has(entry.pool) &&
+        Date.parse(entry.until) <= now(),
+    );
+    for (const entry of due) {
+      const step = entry.retries ?? 0;
+      const limitMs = bounds.stuckRetryLimitsMs[step];
+      if (limitMs === undefined) continue;
+      if (stopped()) return "handover";
+      if (left() < limitMs) continue;
+      const { pool, hour } = entry;
+      const alone = { pool, from: hour, to: new Date(Date.parse(hour) + hourMs).toISOString() };
+      progress.working = pool;
+      const started = performance.now();
+      let result: Awaited<ReturnType<typeof countCaptureHour>>;
+      try {
+        result = await countCaptureHour(db, pool, hour, left, limitMs);
+      } catch (error) {
+        const code = poolCountFailure(error);
+        if (code === undefined) {
+          progress.working = "";
+          throw error;
+        }
+        console.error("POOL_CAPTURE_HOURS_COUNT_FAILED", { code });
+        failedPool(pool);
+        continue;
+      }
+      const elapsedMs = Math.round(performance.now() - started);
+      if (result.kind === "budget") return undefined;
+      if (result.kind === "lock") {
+        progress.stopHour = hour;
+        return "lock";
+      }
+      if (result.kind === "done") {
+        console.error("POOL_CAPTURE_HOURS_STUCK_COUNTED", {
+          pool: ordinal(pool),
+          hour,
+          limitMs,
+          elapsedMs,
+          readMs: result.readMs,
+        });
+        counted(alone, true);
+        continue;
+      }
+      slowHour(alone, hour, result.readMs, "count", elapsedMs);
+      const gaveUp = step + 1 >= bounds.stuckRetryLimitsMs.length;
+      if (gaveUp)
+        console.error("POOL_CAPTURE_HOURS_GAVE_UP", {
+          pool: ordinal(pool),
+          hour,
+          limitMs,
+          elapsedMs,
+        });
+      const mine = (item: { pool: string; hour?: string; limit?: "read" }) =>
+        item.pool === pool && item.hour === hour && item.limit === undefined;
+      update({
+        slow: (state().slow ?? []).map((item) =>
+          mine(item) ? { ...item, retries: step + 1, ...(gaveUp ? { gaveUp: true } : {}) } : item,
+        ),
+        ...(gaveUp
+          ? {
+              stuck: (state().stuck ?? []).map((item) =>
+                mine(item) ? { ...item, gaveUp: true } : item,
+              ),
+            }
+          : {}),
+      });
+    }
+    return undefined;
+  };
+  const retried = await retryStuck();
+  if (retried) return retried;
   const first = await fill(budget * (1 - bounds.recountShare));
   if (first) return first;
   // The guaranteed share: the blocks counted longest ago, for as long as the session lasts.

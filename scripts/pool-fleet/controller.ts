@@ -102,6 +102,8 @@ export const CaptureHours = Schema.Struct({
             hour: Schema.String,
             until: Schema.NullOr(Schema.String),
             repeat: Schema.NullOr(Schema.Number),
+            retries: Schema.optional(Schema.NullOr(Schema.Number)),
+            gaveUp: Schema.optional(Schema.Boolean),
           }),
         ),
         lastSlow: Schema.NullOr(
