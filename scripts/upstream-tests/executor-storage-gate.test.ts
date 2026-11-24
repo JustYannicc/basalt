@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { PgClient } from "@effect/sql-pg";
@@ -42,10 +43,16 @@ const local =
   adminUrl !== undefined && ["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname);
 const cloud = fileURLToPath(new URL("../../.upstream/apps/hosted/cloud/", import.meta.url));
 const preludeDatabase = fumadb({ namespace: "executor", schemas: preludeSchemas });
+const journals = JSON.parse(
+  readFileSync(new URL("./migration-journals.json", import.meta.url), "utf8"),
+) as Record<"private_hosted_migrations" | "private_cloud_migrations", string[]>;
+const ids = (keys: readonly string[]) => keys.map((key) => Number(key.split("_", 1)[0]));
 // Hosted step 22 is the change journal's explicit activation, which a plain migration never runs.
-const hostedSteps = [...Array.from({ length: 21 }, (_, index) => index + 1), 23];
-// Upstream's Cloud steps 8 to 13 run as 14 to 19, after Basalt's 8 to 10 (carry 0475).
-const cloudSteps = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 14, 15, 16, 17, 18, 19];
+const hostedSteps = ids(
+  journals.private_hosted_migrations.filter((key) => key !== "22_change_journal_activate"),
+);
+// Upstream's Cloud steps 8 to 13 run under the ids the list gives them (carry 0475).
+const cloudSteps = ids(journals.private_cloud_migrations);
 
 async function database() {
   const name = `executor_storage_gate_${randomBytes(5).toString("hex")}`;

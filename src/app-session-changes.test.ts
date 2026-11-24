@@ -4,9 +4,11 @@
 // frame's own change stream reads the result. Stand-ins: the change transport (one queue per scope,
 // fed by the journal's delivery), the pool's change heads, and the app-use check, which always grants.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
+import { admin } from "better-auth/plugins/admin";
 import { organization as organizations } from "better-auth/plugins/organization";
 import { Effect, Fiber, Queue, Redacted, Schema, Stream, type Scope } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -43,6 +45,11 @@ import {
 import { makeAppChanges } from "../.upstream/apps/hosted/server/src/implementation/pool-app-changes.ts";
 import { ScopedChanges } from "../.upstream/apps/hosted/server/src/implementation/scoped-changes.ts";
 
+const hostedJournal = (
+  JSON.parse(
+    readFileSync(new URL("../scripts/upstream-tests/migration-journals.json", import.meta.url), "utf8"),
+  ) as { private_hosted_migrations: string[] }
+).private_hosted_migrations;
 const target = Schema.decodeUnknownSync(AppUiTarget)({
   app: "app_frame",
   organization: "org_frame",
@@ -130,7 +137,8 @@ const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const options = {
     database: { db: yield* makeAuthDatabase, type: "postgres" as const, transaction: true },
-    plugins: [organizations()],
+    // As the hosted server's: its admin plugin adds the session column app sessions read.
+    plugins: [admin(), organizations()],
     // As on app origins, which check expiry themselves.
     verification: { disableCleanup: true },
     secret: "fixture-only-app-session-secret-never-used-elsewhere",
@@ -320,8 +328,12 @@ test("hosted step 24 reinstalls the trigger body on a database that already ran 
         "the old body publishes a new app session",
       );
       yield* migrateProductSteps("private_hosted_migrations", {});
-      yield* sql`insert into private_hosted_migrations (migration_id, name)
-        select id, 'recorded' from generate_series(1, 23) id`;
+      // A production database's steps 1 to 23, under the names the hosted lineage check expects.
+      for (const key of hostedJournal.filter((key) => Number(key.split("_", 1)[0]) <= 23)) {
+        const [id, ...name] = key.split("_");
+        yield* sql`insert into private_hosted_migrations (migration_id, name)
+          values (${Number(id)}, ${name.join("_")})`;
+      }
       yield* hostedProductMigrations;
       assert.deepEqual(
         yield* sql`select migration_id, name from private_hosted_migrations where migration_id > 23`,

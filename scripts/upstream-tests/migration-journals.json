@@ -22,7 +22,8 @@
     "20_account_changes",
     "21_change_journal_prepare",
     "22_change_journal_activate",
-    "23_account_traffic_changes"
+    "23_account_traffic_changes",
+    "24_app_session_inserts"
   ],
   "private_cloud_migrations": [
     "1_baseline",
