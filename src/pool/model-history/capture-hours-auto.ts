@@ -48,8 +48,9 @@ export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   pauseMs: 3_600_000,
   slowPauseMs: 600_000,
   slowAfter: 3,
-  // One try at 3 s, then one at 10 s: the most a 12 s session can give one hour. Each comes after a
-  // 10 min wait, so a stuck hour costs at most 13 s more of the hourly 120 s, once.
+  // One try at 3 s, then tries at up to 10 s, the most a 12 s session can give one hour, until one
+  // runs the full 10 s. Each comes after a 10 min wait; a try the session cuts short of 10 s is not
+  // the last, so a stuck hour costs a few retries of the hourly 120 s, never one each wait.
   stuckRetryLimitsMs: [3_000, 10_000],
   failingAfter: 6,
   countLimitMs: captureHoursCountLimitMs,

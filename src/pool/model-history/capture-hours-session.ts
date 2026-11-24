@@ -577,8 +577,8 @@ export async function captureHoursSession(
         step === last
           ? Math.min(bounds.stuckRetryLimitsMs[last]!, room)
           : bounds.stuckRetryLimitsMs[step]!;
-      const floor = step === last ? (bounds.stuckRetryLimitsMs[last - 1] ?? 0) : limitMs;
-      if (room < limitMs || limitMs <= (step === last ? floor : 0)) continue;
+      const before = step === last ? (bounds.stuckRetryLimitsMs[last - 1] ?? 0) : 0;
+      if (room < limitMs || limitMs <= before) continue;
       const { pool, hour } = entry;
       const alone = { pool, from: hour, to: new Date(Date.parse(hour) + hourMs).toISOString() };
       progress.working = pool;
@@ -637,7 +637,9 @@ export async function captureHoursSession(
         continue;
       }
       slowHour(alone, hour, result.readMs, "count", elapsedMs);
-      const gaveUp = step + 1 >= bounds.stuckRetryLimitsMs.length;
+      // Given up only after a try under the full last limit: one the session cut shorter stays at
+      // the last step, to be tried again after its wait.
+      const gaveUp = step === last && limitMs >= bounds.stuckRetryLimitsMs[last]!;
       if (gaveUp)
         console.error("POOL_CAPTURE_HOURS_GAVE_UP", {
           pool: ordinal(pool),
@@ -649,7 +651,9 @@ export async function captureHoursSession(
         item.pool === pool && item.hour === hour && item.limit === undefined;
       update({
         slow: (state().slow ?? []).map((item) =>
-          mine(item) ? { ...item, retries: step + 1, ...(gaveUp ? { gaveUp: true } : {}) } : item,
+          mine(item)
+            ? { ...item, retries: (entry.retries ?? 0) + 1, ...(gaveUp ? { gaveUp: true } : {}) }
+            : item,
         ),
         ...(gaveUp
           ? {
