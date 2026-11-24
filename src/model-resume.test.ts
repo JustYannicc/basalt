@@ -47,7 +47,12 @@ const shapes = {
  * first frames arrive, then the binding's body breaks. The resume route answers the rest from the
  * offset it is asked for, as the controller's resume does from the container's layer.
  */
-async function pool(frames: string[], cutAfter: number) {
+async function pool(
+  frames: string[],
+  cutAfter: number,
+  ending: "error" | "end" = "error",
+  stamped = true,
+) {
   const whole = encoder.encode(frames.join(""));
   const cut = encoder.encode(frames.slice(0, cutAfter).join("")).byteLength;
   let requestId = "";
@@ -73,8 +78,11 @@ async function pool(frames: string[], cutAfter: number) {
         return new Response(
           new ReadableStream<Uint8Array>({
             pull(controller) {
+              // As real workerd shows it, the binding's body may just end where the pool went down.
               if (sent)
-                return controller.error(new Error("The script will never generate a response."));
+                return ending === "end"
+                  ? controller.close()
+                  : controller.error(new Error("The script will never generate a response."));
               sent = true;
               controller.enqueue(whole.slice(0, cut));
             },
@@ -83,11 +91,15 @@ async function pool(frames: string[], cutAfter: number) {
             headers: {
               "content-type": "text/event-stream",
               "X-Request-Id": requestId,
-              [routerResumeHeader]: await signResumeStamp(signingKey, {
-                requestId,
-                target,
-                boot: "boot-a",
-              }),
+              ...(stamped
+                ? {
+                    [routerResumeHeader]: await signResumeStamp(signingKey, {
+                      requestId,
+                      target,
+                      boot: "boot-a",
+                    }),
+                  }
+                : {}),
             },
           },
         );
@@ -199,3 +211,28 @@ for (const [shape, frames] of Object.entries(shapes))
     assert.equal(sent.at(-1)?.type, "end");
     assert.equal(p.resumes.length, 1);
   });
+
+for (const [shape, frames] of Object.entries(shapes))
+  test(`a ${shape} stream that just ends before its terminal event is resumed like a cut`, async () => {
+    const p = await pool(frames, 2, "end");
+    const response = await forwardModelCall(
+      new Request("https://app.example/v1/messages", { method: "POST", body: "{}" }),
+      p.env,
+      undefined,
+      noWait,
+    );
+    assert.equal(await response.text(), p.whole);
+    assert.equal(p.resumes.length, 1);
+  });
+
+test("an answer the entry did not stamp ends exactly as it ended before", async () => {
+  const p = await pool(shapes.messages, 2, "end", false);
+  const response = await forwardModelCall(
+    new Request("https://app.example/v1/messages", { method: "POST", body: "{}" }),
+    p.env,
+    undefined,
+    noWait,
+  );
+  assert.equal(await response.text(), shapes.messages.slice(0, 2).join(""));
+  assert.equal(p.resumes.length, 0);
+});

@@ -185,7 +185,6 @@ for (const [shape, parts] of Object.entries(frames))
         text += decoder.decode(next.value, { stream: true });
       }
       text += decoder.decode();
-      console.log("PROBE", JSON.stringify({ sends, got: text.length, want: whole.length }));
       assert.equal(text, whole, "every byte exactly once, no gap and no repeat");
       assert.deepEqual(sends, ["0:/v1/messages", "1:/__basalt/router-resume/v1"]);
     },
