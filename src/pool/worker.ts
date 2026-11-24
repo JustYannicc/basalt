@@ -150,6 +150,7 @@ import { capturedReliability, recordReliability } from "./reliability-cadence.ts
 import { fetchController } from "./controller-reset.ts";
 import { detachFromCaller, followsCaller } from "./caller-signal.ts";
 import { isolate } from "./isolate.ts";
+import { routerResume, routerResumePath } from "./router-resume.ts";
 import {
   CodeHandover,
   decodeControllerCode,
@@ -1292,6 +1293,13 @@ export async function handlePoolWorkerRequest(
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       jobs: env.BulkUsageImport,
     });
+  // The router resumes a stream whose entry went down; it names the call it carried (router-resume.ts).
+  if (pathname === routerResumePath)
+    return routerResume(
+      request,
+      { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+      (input) => singleton(env).resume(input),
+    );
   // Answered here, without waking the container.
   if (pathname === poolReleasePath)
     return poolRelease(request, env, undefined, () => singleton(env).imageReleaseReady());
