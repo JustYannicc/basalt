@@ -434,3 +434,17 @@ test("the operator's check reads the same rules and whose leases they are, and w
   const untracked = { ...identity, slotId: "runtime-3", instanceId: "runtime-3", bootId: "boot-3" };
   assert.equal((await activity.checkStill(untracked, 300_000)).refusal, "unknown_count");
 });
+
+test("the check counts a count it settles as moved, as the override does", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 10_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  // Still for hours, with two plain calls a replaced instance took: settling them moves the count.
+  await storage.put(activityKey, {
+    ...leakedRow(0),
+    owners: { "dead-0": "replaced", "dead-1": "replaced" },
+  });
+  const activity = new RuntimeActivity(storage, "current");
+  assert.equal((await activity.checkStill(identity, 300_000)).refusal, "still_moving");
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/u);
+});

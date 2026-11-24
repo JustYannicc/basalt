@@ -169,15 +169,23 @@ const leaseOwnerLine = (
   const unrecorded = count - current - leases.foreignSockets - leases.unstamped;
   if (current > 0)
     return `${current} of the cell's leases belong to its current instance (${leases.currentCalls} calls, ${leases.currentSockets} model sockets), so their streams may be live; the override refuses them`;
-  const parts = [
+  const proven = [
     leases.foreignSockets
       ? `${leases.foreignSockets} model sockets another instance took, which can outlive it`
       : "",
     leases.unstamped ? `${leases.unstamped} unstamped leases from before the stamps` : "",
-    unrecorded > 0 ? `${unrecorded} counted with no lease record` : "",
+  ].filter(Boolean);
+  // The proof release ends lease records only; a count with none ends only by the override.
+  const parts = [
+    proven.length
+      ? `${proven.join(", ")}, which the proof release ends only when 8317 reads 0`
+      : "",
+    unrecorded > 0
+      ? `${unrecorded} counted with no lease record, which only the override ends`
+      : "",
   ].filter(Boolean);
   return parts.length
-    ? `none of the cell's leases is held by its current instance: ${parts.join(", ")}; the proof release ends these only when 8317 reads 0`
+    ? `none of the cell's leases is held by its current instance: ${parts.join("; ")}`
     : "the cell holds no lease";
 };
 
@@ -199,7 +207,7 @@ export const checkRetireRow = (access: ControllerAccess, key: string) =>
     const leases = checked.leases;
     return {
       ...checked,
-      // Whose isolate took the row's cell leases: a gone one's may only be a model socket.
+      // Whose leases the cell's count holds, by #1871's stamps and kinds.
       leaseOwner: !leases
         ? "the cell's leases weren't read"
         : leaseOwnerLine(checked.cell ?? 0, leases),

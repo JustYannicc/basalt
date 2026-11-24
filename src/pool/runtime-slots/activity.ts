@@ -232,8 +232,10 @@ export class RuntimeActivity {
         refusal: "unknown_count" as const,
         phase: null,
       };
-    const settled = reconciled(row, this.instance).row;
-    return { ...stillCheck(settled, stillAtLeastMs, this.instance), phase: row.phase };
+    // As `change` does: ending another instance's plain calls moves the count, so it counts as moved.
+    const settled = reconciled(row, this.instance);
+    const view = settled.foreign ? { ...settled.row, changedAt: Date.now() } : settled.row;
+    return { ...stillCheck(view, stillAtLeastMs, this.instance), phase: row.phase };
   }
 
   /** Settles what this instance can settle by itself, then names what only a proof can end. */

@@ -723,7 +723,7 @@ test("retire-check takes any go text, reports what retire-row would do and whose
     );
     assert.equal(
       outcome.check.leaseOwner,
-      "none of the cell's leases is held by its current instance: 6 unstamped leases from before the stamps; the proof release ends these only when 8317 reads 0",
+      "none of the cell's leases is held by its current instance: 6 unstamped leases from before the stamps, which the proof release ends only when 8317 reads 0",
     );
     assert.equal(outcome.warning, "1 connections are open on this cell; the override may cut them");
     assert.deepEqual(lane.checks, [key]);
@@ -805,7 +805,7 @@ test("retire-check names model sockets, unstamped leases and a count with no lea
     const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
     assert.equal(
       (result as unknown as { result: { check: { leaseOwner: string } } }).result.check.leaseOwner,
-      "none of the cell's leases is held by its current instance: 1 model sockets another instance took, which can outlive it, 3 unstamped leases from before the stamps, 2 counted with no lease record; the proof release ends these only when 8317 reads 0",
+      "none of the cell's leases is held by its current instance: 1 model sockets another instance took, which can outlive it, 3 unstamped leases from before the stamps, which the proof release ends only when 8317 reads 0; 2 counted with no lease record, which only the override ends",
     );
   } finally {
     await lane.close();
