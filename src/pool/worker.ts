@@ -460,7 +460,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       home,
       onProductEvent,
       routeRefusals: {
-        refused: (reference) => this.routes.refused(reference),
+        refusesUse: (reference, provider) => this.routes.refusesUse(reference, provider),
         markRefused: (reference, refused) => this.routes.markRefused(reference, refused),
         refusedReferences: () => this.routes.refusedReferences(),
       },

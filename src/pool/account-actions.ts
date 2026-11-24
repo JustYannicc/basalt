@@ -18,7 +18,7 @@ export const accountActionPath =
   /^\/accounts\/([^/]+)\/(refresh|pause|resume|cooldown\/clear|resets(?:\/(?:use|attempt))?)$/;
 
 export interface RouteRefusals {
-  refused(reference: string): Promise<boolean>;
+  refusesUse(reference: string, provider: string): Promise<boolean>;
   refusedReferences(): Promise<ReadonlySet<string>>;
   markRefused(reference: string, refused: boolean): Promise<void>;
 }
@@ -90,7 +90,7 @@ export class AccountActions {
       const disabled = action === "pause";
       await stillMember();
       // Resuming would let its plugin call without the owner's route; it stays off (change 37).
-      if (!disabled && (await this.refusals?.refused(id)))
+      if (!disabled && (await this.refusals?.refusesUse(id, String(provider ?? ""))))
         return fail(409, "route_unsupported", "This account can't use its owner's route yet.");
       const result = await this.client.data("/credentials/status", {
         ...post({ name: id, disabled }),

@@ -114,7 +114,8 @@ export async function handleAccountKeyMirror(
         }),
       });
       if (saved.name !== `${value.reference}.json`) return unavailable();
-      await input.routes?.markRefused(value.reference, refused);
+      if (refused || (await input.routes?.refused(value.reference)))
+        await input.routes?.markRefused(value.reference, refused);
       await enableNewCodexWebSockets(input.home, [value.reference], value.credential.type);
     }
     if (value.action === "remove") await input.routes?.forget(value.reference);

@@ -271,7 +271,12 @@ export class RouteAssignments {
       };
     }
     // Any 200 means rules are served, from then on durably; only then is its content judged.
-    if (!state.served) await this.storage.put(stateKey, { ...state, served: true } satisfies State);
+    // The first 200 also ends the unserved pause, so the alarm reads the new rules at once.
+    if (!state.served)
+      await this.storage.put(stateKey, {
+        served: true,
+        pools: state.pools,
+      } satisfies State);
     // An answer missing a requested reference, or naming a route we can't use, is a failure.
     if (
       references.some(
@@ -286,6 +291,18 @@ export class RouteAssignments {
   /** Whether the pool disabled this credential because its plugin can't use the route. */
   async refused(reference: string) {
     return (await this.storage.get(refusedPrefix + reference)) === true;
+  }
+  /**
+   * Whether `provider`'s credential must stay off: its plugin can't use the route that applies, or
+   * the hold its owner's rules put it on. Not the marker, which an owner's pause clears.
+   */
+  async refusesUse(reference: string, provider: string) {
+    if (!pluginProviders.has(provider)) return false;
+    return (
+      (await this.storage.get(entryPrefix + reference)) !== undefined ||
+      (await this.hasRules(reference)) ||
+      (await this.refused(reference))
+    );
   }
   async refusedReferences(): Promise<ReadonlySet<string>> {
     return new Set((await this.listed(refusedPrefix, Schema.Literal(true))).keys());
@@ -342,6 +359,17 @@ export class RouteAssignments {
         if (decision === null) await this.record(reference, null);
         continue;
       }
+      const plugin = credential.kind === "auth" && pluginProviders.has(credential.provider);
+      // Disabled before its proxy changes, so a refused plugin credential is never live routed.
+      // The marker comes first: one without the write only means a harmless lift later.
+      if (plugin && decision !== null && !credential.disabled)
+        try {
+          await this.storage.put(refusedPrefix + reference, true);
+          await writeDisabled(this.home, reference, true, signal);
+        } catch {
+          failed = true;
+          continue;
+        }
       // A hold never replaces a route another pool already gave the credential.
       if (decision === "hold" && credential.proxy.includes(routePeerAddress)) continue;
       const proxy =
@@ -349,12 +377,6 @@ export class RouteAssignments {
           ? routeProxyUrl(unassignedRoute)
           : credentialProxy(decision?.routeId ?? null, credential.proxy);
       try {
-        const plugin = credential.kind === "auth" && pluginProviders.has(credential.provider);
-        // Disabled before its proxy changes, so a refused plugin credential is never live routed.
-        if (plugin && decision !== null && !credential.disabled) {
-          await writeDisabled(this.home, reference, true, signal);
-          await this.storage.put(refusedPrefix + reference, true);
-        }
         if (proxy !== credential.proxy) {
           if (credential.kind === "config")
             await setHomeConfigProxy(this.home, credential.family, reference, proxy, signal);
@@ -467,7 +489,11 @@ export class RouteAssignments {
       // A re-mirror never drops a credential its membership step routed.
       const stored = await this.storage.get(entryPrefix + reference);
       const kept = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
-      return kept ? routeProxyUrl(kept.routeId) : undefined;
+      if (kept) return routeProxyUrl(kept.routeId);
+      // Nor a hold: only an earlier hasRules:true or a refusal leads here, never a ruleless pool.
+      if ((await this.hasRules(reference)) || (await this.refused(reference)))
+        return routeProxyUrl(unassignedRoute);
+      return undefined;
     }
     const answers: (RouteResolution | undefined)[] = [];
     let claimed = false;

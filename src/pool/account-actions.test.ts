@@ -260,19 +260,33 @@ test("account actions authorize before contacting Home and cannot affect another
   assert.equal((await f.call("cooldown/clear")).status, 200);
 });
 
-test("a credential the pool keeps off for its owner's route can't be resumed; the owner's own pause takes it over", async (t) => {
-  const refused = new Set(["account"]);
+test("a credential its plugin can't route can't be resumed while the route applies, even after the owner's own pause", async (t) => {
+  // The pool's lift right (the marker) and whether a route applies are separate.
+  const marked = new Set(["account"]);
+  let routed = true;
+  const asked: string[] = [];
   const f = await fixture(t, "codex", [], claudeGrants, {
-    refused: async (id) => refused.has(id),
-    refusedReferences: async () => refused,
-    markRefused: async (id, value) => void (value ? refused.add(id) : refused.delete(id)),
+    refusesUse: async (id, provider) => {
+      asked.push(provider);
+      return routed && id === "account";
+    },
+    refusedReferences: async () => marked,
+    markRefused: async (id, value) => void (value ? marked.add(id) : marked.delete(id)),
   });
-  const resumed = await f.call("resume");
-  assert.equal(resumed.status, 409);
-  assert.equal(((await resumed.json()) as Json).error, "route_unsupported");
+  const refuse = async () => {
+    const resumed = await f.call("resume");
+    assert.equal(resumed.status, 409);
+    assert.equal(((await resumed.json()) as Json).error, "route_unsupported");
+  };
+  await refuse();
   assert.ok(!f.calls.some((call) => call.path === "/credentials/status"));
+  // The owner's pause takes the lift right, never the refusal.
   assert.equal((await f.call("pause")).status, 200);
-  assert.equal(refused.has("account"), false);
+  assert.equal(marked.has("account"), false);
+  await refuse();
+  assert.deepEqual(asked, ["codex", "codex"]);
+  // Once no route applies, resuming is the owner's again.
+  routed = false;
   assert.equal((await f.call("resume")).status, 200);
 });
 

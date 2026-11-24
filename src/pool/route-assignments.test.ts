@@ -594,6 +594,11 @@ test("while rules are not served the alarm asks the tools service at most once p
   rules.serve(true);
   clock.at += unservedPauseMs;
   await routes.tick(signal());
+  // The first 200 ends the unserved pause: the next alarm reads the rules at once.
+  const first = rules.calls.length;
+  clock.at += 5_000;
+  await routes.tick(signal());
+  assert.ok(rules.calls.length > first);
   const served = rules.calls.length;
   for (let at = 5_000; at < servedPollMs; at += 5_000) {
     clock.at += 5_000;
@@ -653,6 +658,7 @@ test("a routed owner's plugin-provider credential is kept disabled, never live o
   await routes.tick(signal());
   assert.equal(file(gemini).disabled, false);
   assert.equal(file(paused).disabled, true);
+  assert.equal(file(typesafe).disabled, false);
   assert.deepEqual([...(await routes.refusedReferences())], []);
 });
 
@@ -683,8 +689,38 @@ test("every provider plugin the pool image ships is refused for routed owners un
   const shipped = [...dockerfile.matchAll(/\/opt\/pool\/plugins\/([a-z0-9-]+)\.so\b/g)].map(
     (match) => match[1]!,
   );
+  // Every copy into the plugin directory names one .so, so no plugin arrives unnamed.
+  const copies = dockerfile
+    .split("\n")
+    .filter((row) => /^\s*(COPY|ADD)\b/.test(row) && row.includes("/opt/pool/plugins"));
+  assert.ok(copies.length >= 3);
+  for (const line of copies) assert.match(line, /\/opt\/pool\/plugins\/[a-z0-9-]+\.so(\s|$)/, line);
   // The scheduler veto is a plugin but makes no provider calls.
   const providers = shipped.filter((name) => name !== "basalt-native-policy");
   assert.ok(providers.length > 0);
   for (const name of providers) assert.ok(pluginProviders.has(name), `${name} is not refused`);
+});
+
+test("a re-mirror without a hint keeps a hold, and a refused plugin credential stays disabled", async () => {
+  const { client, keyProxy, state } = fakeHome();
+  const rules = scripted({});
+  rules.fail(true);
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  const gemini = "12345678-abcd-4000-8000-0000000000a5";
+  await mirror(client, routes, mine, apiKey, { hasRules: true });
+  await mirror(
+    client,
+    routes,
+    gemini,
+    { type: "gemini-cli", access_token: "x" },
+    { hasRules: true },
+  );
+  assert.equal(state.files[0]!.disabled, true);
+  await mirror(client, routes, mine, apiKey);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(unassignedRoute));
+  assert.equal(state.files[0]!.disabled, true);
+  assert.equal(await routes.refusesUse(gemini, "gemini-cli"), true);
+  assert.equal(await routes.refusesUse(mine, "codex"), false);
 });
