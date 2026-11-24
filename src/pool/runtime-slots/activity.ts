@@ -78,6 +78,52 @@ export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
   };
 }
 
+/** Why an operator's override of a still count is refused, in the order the rules apply. */
+export type StillRefusal = "not_draining" | "unknown_count" | "still_moving" | "live_lease";
+const stillRefusalReason = {
+  not_draining: "selection",
+  unknown_count: "uncertain",
+  still_moving: "draining",
+  live_lease: "draining",
+} as const;
+
+/**
+ * Whether a settled count may be overridden, and by its stamps whose leases it holds. A lease this
+ * object instance took, a call's or a socket's, may still be live however long it stood. A socket
+ * another instance took, and an unstamped lease, are what the proof release ends when the 8317 read
+ * finds 0; the override ends them on the operator's GO when it doesn't.
+ */
+function stillCheck(row: Row | undefined, stillAtLeastMs: number, instance: string) {
+  const ids = Object.entries(row?.leases ?? {})
+    .filter(([, state]) => state === "active")
+    .map(([id]) => id);
+  const mine = (map: Record<string, string> | undefined) =>
+    ids.filter((id) => map?.[id] === instance).length;
+  const leases = {
+    currentCalls: mine(row?.owners),
+    currentSockets: mine(row?.sockets),
+    foreignSockets: ids.filter(
+      (id) => row?.sockets?.[id] !== undefined && row.sockets[id] !== instance,
+    ).length,
+    unstamped: ids.filter((id) => !row?.owners?.[id] && !row?.sockets?.[id]).length,
+  };
+  const stillMs = row ? stillFor(row).stillMs : 0;
+  const refusal: StillRefusal | null =
+    !row || row.phase !== "draining"
+      ? "not_draining"
+      : // An unknown count stays the drain's own proof (`drain_unproven`), never an override's.
+        !row.known
+        ? "unknown_count"
+        : row.active === 0
+          ? null
+          : stillMs < stillAtLeastMs
+            ? "still_moving"
+            : leases.currentCalls + leases.currentSockets > 0
+              ? "live_lease"
+              : null;
+  return { refusal, active: row?.active ?? 0, known: row?.known ?? false, stillMs, leases };
+}
+
 /**
  * A lease another instance took ends only by proof: its instance's own end for a plain HTTP call, a
  * container read with no live model connection for anything else. Reconstruction never invents an
@@ -145,6 +191,51 @@ export class RuntimeActivity {
     const row = Schema.decodeUnknownSync(Activity)(value);
     if (!sameIdentity(row.identity, identity)) throw new SlotRefused("identity");
     return row;
+  }
+
+  /**
+   * An operator's override of a count that no stream has moved for `stillAtLeastMs`, for when the
+   * proof release can't end it: the 8317 read keeps finding a connection, or fails. Only a draining,
+   * known count with no lease this instance took qualifies, so nothing new can be admitted on it and
+   * no stream this instance serves is cut. It ends the unstamped leases and the sockets other
+   * instances took, which may include a live model socket that outlived its instance.
+   */
+  releaseStill(identity: SlotIdentity, stillAtLeastMs: number, signal?: AbortSignal) {
+    return this.change(identity, (row) => {
+      // A caller that gave up never sees this commit, so it never commits.
+      signal?.throwIfAborted();
+      const check = stillCheck(row, stillAtLeastMs, this.instance);
+      if (check.refusal) throw new SlotRefused(stillRefusalReason[check.refusal]);
+      const result = {
+        released: row.active,
+        stillMs: check.stillMs,
+        unstamped: check.leases.unstamped,
+        foreignSockets: check.leases.foreignSockets,
+      };
+      // Nothing left to release, as after a re-send whose first answer was lost.
+      if (row.active === 0) return { row, result };
+      const { owners: _owners, sockets: _sockets, ...rest } = row;
+      return {
+        row: { ...rest, active: 0, known: true, leases: {}, changedAt: Date.now() },
+        result,
+      };
+    });
+  }
+
+  /** The same rules as `releaseStill`, on the same settled count, read without writing anything. */
+  async checkStill(identity: SlotIdentity, stillAtLeastMs: number) {
+    const row = await this.inspect(identity);
+    // The override refuses an untracked boot as uncertain, so the check names it the same way.
+    if (!row)
+      return {
+        ...stillCheck(undefined, stillAtLeastMs, this.instance),
+        refusal: "unknown_count" as const,
+        phase: null,
+      };
+    // As `change` does: ending another instance's plain calls moves the count, so it counts as moved.
+    const settled = reconciled(row, this.instance);
+    const view = settled.foreign ? { ...settled.row, changedAt: Date.now() } : settled.row;
+    return { ...stillCheck(view, stillAtLeastMs, this.instance), phase: row.phase };
   }
 
   /** Settles what this instance can settle by itself, then names what only a proof can end. */

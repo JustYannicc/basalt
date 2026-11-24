@@ -19,7 +19,33 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     planMs: 812.04,
     recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z", host: "x" },
     split: [{ pool: "0123456789abcdef", from: "2026-08-01T00:00:00Z", to: "x" }],
-    slow: [{ pool: "0123456789abcdef", hour: "2026-08-01T03:00:00Z", count: 3, until: "x" }],
+    slow: [
+      { pool: "0123456789abcdef", hour: "2026-08-01T03:00:00Z", count: 3, until: "x" },
+      {
+        pool: "0123456789abcdef",
+        hour: "2026-08-01T05:00:00Z",
+        count: 1,
+        until: "2026-11-23T09:40:00.000Z",
+      },
+      { pool: "fedcba9876543210", hour: "Pool-name 03:00", count: 1, until: "x" },
+    ],
+    lastSlow: [
+      {
+        pool: "0123456789abcdef",
+        at: "2026-11-23T09:30:00.000Z",
+        hour: "2026-08-01T05:00:00Z",
+        block: "2026-08-01T00:00:00Z",
+        limit: "count",
+        elapsedMs: 1_002.04,
+        repeat: 1,
+      },
+      { pool: "fedcba9876543210", hour: "x", limit: "drop", elapsedMs: -1 },
+    ],
+    byPool: [
+      { pool: "fedcba9876543210", pendingBlocks: 1, pendingHours: 2 },
+      { pool: "0123456789abcdef", pendingBlocks: 15, pendingHours: 94 },
+      { pool: "fixture-pool-name", pendingBlocks: 1, pendingHours: 1 },
+    ],
     repeat: { pool: "0123456789abcdef", reason: "lock", count: 2 },
     sessions: [{ at: 1, ms: 2 }],
     stuck: [
@@ -56,6 +82,28 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
     planMs: 812,
     recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z" },
+    // Each pool by its place in the order of its id, never the id; a pool name never passes.
+    byPool: [
+      {
+        ordinal: 1,
+        pendingBlocks: 15,
+        pendingHours: 94,
+        slow: [
+          { hour: "2026-08-01T03:00:00Z", until: null, repeat: 3 },
+          { hour: "2026-08-01T05:00:00Z", until: "2026-11-23T09:40:00.000Z", repeat: 1 },
+        ],
+        lastSlow: {
+          at: "2026-11-23T09:30:00.000Z",
+          hour: "2026-08-01T05:00:00Z",
+          block: "2026-08-01T00:00:00Z",
+          limit: "count",
+          elapsedMs: 1_002,
+          repeat: 1,
+        },
+      },
+      // Free text in a last slow stop names none of it.
+      { ordinal: 2, pendingBlocks: 1, pendingHours: 2, slow: [], lastSlow: null },
+    ],
   });
   // Free text never passes: a lenient date, an unknown stop or reason, a negative count.
   assert.deepEqual(
@@ -85,6 +133,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       stalestCheckedAt: null,
       planMs: null,
       recountPosition: null,
+      byPool: [],
     },
   );
   // A position on a pool id but with free text for its block names nothing.

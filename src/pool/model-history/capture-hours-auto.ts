@@ -21,7 +21,7 @@ export interface CaptureHoursAutoBounds {
   readonly hourMs: number;
   /** After a lock or an error the tick waits this long. */
   readonly pauseMs: number;
-  /** A pool whose count of an hour ran out its limit waits this long; the others go on. */
+  /** An hour whose count ran out its limit waits this long; its pool and the others go on. */
   readonly slowPauseMs: number;
   /** The same pool-hour slow this many times in a row is stuck; it is retried after each wait. */
   readonly slowAfter: number;
@@ -53,13 +53,16 @@ export type CaptureHoursAutoStop =
   | "complete"
   | "budget"
   | "lock"
-  /** A count ran out its own limit and every pool left is waiting after one. */
+  /**
+   * A count ran out its own limit this session, and nothing was left it could count: hours in their
+   * wait, or the blocks of a pool whose second slow count this session ended its turn.
+   */
   | "slow"
   | "ceiling"
   | "error"
   | "handover"
   | "not_applied"
-  /** Every pool with pending hours is in its slow wait. */
+  /** All that is left pending is hours in their slow wait. */
   | "waiting";
 
 type StuckReason = "slow" | "lock" | "error";
@@ -76,6 +79,8 @@ export interface CaptureHoursSlowWait {
   /** Slow counts of this hour in a row. */
   readonly count: number;
   readonly until: string;
+  /** "read": the block's read of its pending hours ran out, keyed on the block's start. */
+  readonly limit?: "read";
 }
 
 export interface CaptureHoursAutoState {
@@ -90,6 +95,22 @@ export interface CaptureHoursAutoState {
   readonly pools?: number;
   readonly pendingBlocks?: number;
   readonly pendingHours?: number;
+  /** Each pool's last slow stop: which limit ran out, on which hour of which block, and how long. */
+  readonly lastSlow?: readonly {
+    readonly pool: string;
+    readonly at: string;
+    readonly hour: string;
+    readonly block: string;
+    readonly limit: "count" | "read";
+    readonly elapsedMs: number;
+    readonly repeat: number;
+  }[];
+  /** Each counted pool's own pending blocks and hours, as the last session left them. */
+  readonly byPool?: readonly {
+    readonly pool: string;
+    readonly pendingBlocks: number;
+    readonly pendingHours: number;
+  }[];
   /** The block the recount reached last. */
   readonly recountPosition?: { readonly pool: string; readonly block: string };
   /** The pool whose block was counted last: the next session starts with the one after it. */

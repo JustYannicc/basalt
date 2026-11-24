@@ -649,3 +649,16 @@ test("storage that keeps failing is reported once per proof interval, not on eve
   );
   assert.equal(failed.length, 1);
 });
+
+test("the proof read waits up to its 5 s, and the operator's read gives up at 1.5 s, on one read", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  // A container read slower than the operator's 1.5 s and inside the proof's 5 s.
+  f.hooks.connections = () => new Promise<number>((resolve) => setTimeout(() => resolve(0), 2_000));
+  const checked = await fresh(f).checkStill(identity);
+  assert.equal(checked.connections, null, "the operator's read stops at 1.5 s");
+  assert.equal(await proven(f, fresh(f), identity), 0, "the proof's read still ends the lease");
+});

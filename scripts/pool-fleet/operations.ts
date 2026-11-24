@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { Effect, Schema } from "effect";
 import {
   FleetConfiguration,
@@ -11,6 +12,7 @@ import {
   type CloudflareAccess,
 } from "./cloudflare.ts";
 import {
+  checkRetire,
   inspectController,
   inspectFleet,
   sendFleetOperation,
@@ -49,6 +51,8 @@ export const configureFleet = (input: {
   controller: ControllerAccess;
   go: string;
   active?: "blue" | "green";
+  /** The growth target for this configuration; otherwise the current one, or 25. */
+  targetActive?: number;
 }) =>
   Effect.gen(function* () {
     const { controller: access, go } = input;
@@ -100,7 +104,7 @@ export const configureFleet = (input: {
             "blue",
           applications,
           maximum: current?.configuration.maximum ?? 4,
-          targetActive: current?.configuration.targetActive ?? 25,
+          targetActive: input.targetActive ?? current?.configuration.targetActive ?? 25,
           idleMilliseconds: current?.configuration.idleMilliseconds ?? 60_000,
         }),
       catch: () =>
@@ -133,6 +137,139 @@ export const configureFleet = (input: {
         ),
       );
     return { status: sent.status, operationId, digest, configuration };
+  });
+
+const RetireReceipt = Schema.Struct({
+  key: Schema.String,
+  ordinal: Schema.NullOr(Schema.Number),
+  ledger: Schema.Number,
+  cell: Schema.Number,
+  ledgerStillMs: Schema.Number,
+  cellStillMs: Schema.Number,
+  ledgerLowered: Schema.Boolean,
+  connections: Schema.NullOr(Schema.Number),
+  unstamped: Schema.Number,
+  foreignSockets: Schema.Number,
+});
+/**
+ * Whose leases a cell's count holds, by #1871's stamps: this object instance's own (live as far as
+ * anyone knows), sockets other instances took (a model socket outlives its instance), unstamped ones
+ * from before the stamps, and any count with no lease record at all.
+ */
+const leaseOwnerLine = (
+  count: number,
+  leases: {
+    currentCalls: number;
+    currentSockets: number;
+    foreignSockets: number;
+    unstamped: number;
+  },
+) => {
+  const current = leases.currentCalls + leases.currentSockets;
+  const unrecorded = count - current - leases.foreignSockets - leases.unstamped;
+  if (current > 0)
+    return `${current} of the cell's leases belong to its current instance (${leases.currentCalls} calls, ${leases.currentSockets} model sockets), so their streams may be live; the override refuses them`;
+  const proven = [
+    leases.foreignSockets
+      ? `${leases.foreignSockets} model sockets another instance took, which can outlive it`
+      : "",
+    leases.unstamped ? `${leases.unstamped} unstamped leases from before the stamps` : "",
+  ].filter(Boolean);
+  // The proof release ends lease records only; a count with none ends only by the override.
+  const parts = [
+    proven.length
+      ? `${proven.join(", ")}, which the proof release ends only when 8317 reads 0`
+      : "",
+    unrecorded > 0
+      ? `${unrecorded} counted with no lease record, which only the override ends`
+      : "",
+  ].filter(Boolean);
+  return parts.length
+    ? `none of the cell's leases is held by its current instance: ${parts.join("; ")}`
+    : "the cell holds no lease";
+};
+
+/**
+ * The check before retire-row: the controller's refusal tests and the cell's own check and 8317
+ * read for the named row, with nothing overridden. Any go text will do, as for inspect.
+ */
+export const checkRetireRow = (access: ControllerAccess, key: string) =>
+  Effect.gen(function* () {
+    if (!/^[0-9a-f]{8,24}$/u.test(key))
+      return yield* Effect.fail(
+        refuse(
+          "row-key-invalid",
+          "key must be 8 to 24 lowercase hex digits, a row's key from the lane's inspect.",
+          "Pass the row's key as the key input.",
+        ),
+      );
+    const checked = yield* call(() => checkRetire(access, key));
+    const leases = checked.leases;
+    return {
+      ...checked,
+      // Whose leases the cell's count holds, by #1871's stamps and kinds.
+      leaseOwner: !leases
+        ? "the cell's leases weren't read"
+        : leaseOwnerLine(checked.cell ?? 0, leases),
+    };
+  });
+
+export const retireOperationId = (go: string, key: string) =>
+  `fleet-${shortHash("retire", go, key)}`;
+
+/**
+ * Retires one named draining row over a count that stood still. The lane refuses what it can see
+ * first; the controller checks every rule again (src/pool/runtime-fleet/controller.ts, retireRow).
+ */
+export const retireRow = (access: ControllerAccess, go: string, key: string) =>
+  Effect.gen(function* () {
+    if (!/^[0-9a-f]{8,24}$/u.test(key))
+      return yield* Effect.fail(
+        refuse(
+          "row-key-invalid",
+          "key must be 8 to 24 lowercase hex digits, a row's key from the lane's inspect.",
+          "Pass the row's key as the key input.",
+        ),
+      );
+    const named = (fleet: Awaited<ReturnType<typeof inspectFleet>>) =>
+      fleet.resources.filter((row) => shortHash(row.target.slotId).startsWith(key));
+    const rows = named(yield* call(() => inspectFleet(access)));
+    const row = rows[0];
+    if (rows.length !== 1 || !row)
+      return yield* Effect.fail(
+        refuse(
+          "row-key-ambiguous",
+          `key ${key} matches ${rows.length} fleet rows; it must match exactly one.`,
+          "Pass a longer key from the lane's inspect.",
+        ),
+      );
+    if (row.phase !== "draining")
+      return yield* Effect.fail(
+        refuse(
+          "row-not-draining",
+          `row ${key} is ${row.phase}; only a draining row may be retired over its count.`,
+          "Disable the fleet or let the row idle out, then rerun once its count has stood still 300 s.",
+        ),
+      );
+    const operationId = retireOperationId(go, key);
+    const sent = yield* call(() =>
+      sendFleetOperation(
+        access,
+        { controllerCode: access.code, action: "fleet-retire", operationId, go, key },
+        go,
+      ),
+    );
+    // The controller's receipt names what it overrode; only closed numbers and the key leave.
+    const receipt = yield* call(async () =>
+      Schema.decodeUnknownOption(
+        Schema.Struct({ result: Schema.Struct({ result: RetireReceipt }) }),
+      )(JSON.parse(await readFile(sent.receiptPath, "utf8"))),
+    );
+    return {
+      operationId,
+      status: sent.status,
+      overrode: receipt._tag === "Some" ? receipt.value.result.result : null,
+    };
   });
 
 /** fleet-disable needs its own operation id: reusing the configure id is refused (configuration.ts:221-224). */

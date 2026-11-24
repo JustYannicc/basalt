@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { summaryCaptureLagMs, poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import { captureHoursLookbackHours } from "../../src/pool/model-history/capture-hours-plan.ts";
+import { isRowCheck, rowCheckRanges } from "../../src/pool/model-history/capture-coverage.ts";
 import { at, captureFixture, fillByTicks, hourMs } from "./capture-hours-fixture.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryPrices } from "./usage-summary-fixture.ts";
@@ -52,9 +53,9 @@ test("stored counts prove the settled hours while the tail's check ends at the c
       ran.some((entry) => entry.text.includes("JOIN basalt_model_capture_hours")),
       "the summary read the stored counts",
     );
-    const rowCheck = ran.filter((entry) => entry.text.includes("AS w(f text, t text)"));
+    const rowCheck = ran.filter((entry) => isRowCheck(entry.text));
     assert.equal(rowCheck.length, 1, "one per-row check of the tail");
-    const ranges = JSON.parse(String(rowCheck[0]!.values![1])) as { f: string; t: string }[];
+    const ranges = rowCheckRanges(rowCheck[0]!.values!);
     assert.ok(
       ranges.every((range) => Date.parse(range.f) >= lastHour - hourMs),
       `the per-row check reads no settled hour: ${JSON.stringify(ranges)}`,
