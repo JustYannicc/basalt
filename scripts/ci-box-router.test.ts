@@ -24,6 +24,8 @@ import {
   namedJobs,
   routeBox,
   routedJob,
+  maxCalls,
+  tokenReserve,
   type ActiveJobs,
   type BoxInput,
   type BoxObserver,
@@ -613,7 +615,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     "/actions/runs?status=queued&per_page=50&page=1": {
       workflow_runs: [{ id: 2, path: ".github/workflows/ci.yml@refs/pull/7/merge" }],
     },
-    "/actions/runs/1/jobs?filter=latest&per_page=50&page=1": {
+    "/actions/runs/1/jobs?filter=latest&per_page=100&page=1": {
       jobs: [
         select(30),
         job("in_progress", ["ubuntu-latest"], "GitHub Actions"),
@@ -627,7 +629,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
         job("in_progress", ["basalt-release"], "Default"),
       ],
     },
-    "/actions/runs/2/jobs?filter=latest&per_page=50&page=1": {
+    "/actions/runs/2/jobs?filter=latest&per_page=100&page=1": {
       // A queued box job holds a slot just like a running one, whatever its label's case.
       jobs: [
         select(20),
@@ -637,7 +639,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
       ],
     },
     // This Check's own run: read for its select's start only.
-    "/actions/runs/99/jobs?filter=latest&per_page=50&page=1": {
+    "/actions/runs/99/jobs?filter=latest&per_page=100&page=1": {
       jobs: [
         {
           ...job("in_progress", ["ubuntu-latest"], "GitHub Actions", "select"),
@@ -1347,9 +1349,9 @@ test("the REST observer waits for selects that started first and counts the jobs
   assert.equal(active.selecting, 3);
   assert.equal(active.box, 3);
   assert.deepEqual(active.boxJobs, [
-    "declared-cloud (declared-cloud-5)",
     "declared-cloud-1",
     "client-connection",
+    "declared-cloud (declared-cloud-5)",
   ]);
   // Only the Checks still waiting on their box jobs have their annotations read.
   assert.deepEqual(requests.filter((path) => path.startsWith("/check-runs/")).sort(), [
@@ -1359,4 +1361,261 @@ test("the REST observer waits for selects that started first and counts the jobs
   // A placement that isn't a list fails the read, so nothing routes.
   annotations[41] = [{ message: placementMarker + '{"jobs":2}' }];
   await assert.rejects(githubObserver(env, fetcher, () => now).active(), /not a list/);
+});
+
+// A repository with `others` other Checks running (ids 100 on), as the REST API lists them.
+// `jobsOf` answers each read of a run's jobs, `placed` each select's annotation by check run, and
+// every call is counted.
+const fakeGitHub = ({
+  others,
+  jobsOf = () => [],
+  remaining,
+  attempts = {},
+  placed = {},
+  limited,
+}: {
+  others: number;
+  jobsOf?: (id: number, read: number) => object[];
+  remaining?: (call: number) => string;
+  attempts?: Record<number, number>;
+  placed?: Record<number, string[]>;
+  limited?: (call: number) => { status: number; headers?: Record<string, string> } | undefined;
+}) => {
+  const calls: string[] = [];
+  const reads: Record<number, number> = {};
+  const fetcher = async (url: string) => {
+    const path = url.replace("https://api.github.test/repos/owner/repo", "");
+    calls.push(path);
+    const call = calls.length;
+    const headers: Record<string, string> = remaining
+      ? { "x-ratelimit-remaining": remaining(call) }
+      : {};
+    const body = (value: unknown, status = 200, extra: Record<string, string> = {}) =>
+      new Response(typeof value === "string" ? value : JSON.stringify(value), {
+        status,
+        headers: { ...headers, ...extra },
+      });
+    const limit = limited?.(call);
+    if (limit) return body("rate limited", limit.status, limit.headers);
+    if (remaining?.(call) === "0") return body("rate limited", 403);
+    if (path.startsWith("/actions/workflows/box-heartbeat.yml/runs"))
+      return body({
+        workflow_runs: [
+          {
+            id: 6,
+            event: "schedule",
+            path: heartbeatPath,
+            head_repository: { full_name: "owner/repo" },
+            head_branch: "main",
+            conclusion: "success",
+            updated_at: minutesAgo(1),
+          },
+        ],
+      });
+    if (path.startsWith("/actions/runs/6/jobs"))
+      return body({
+        jobs: [
+          { id: 60, labels: ["basalt-box"], conclusion: "success", completed_at: minutesAgo(1) },
+        ],
+      });
+    if (path === "/actions/jobs/60/logs")
+      return body("2026-11-19T11:59:00.0000000Z " + budgetLog({ ci_budget: 6 }));
+    if (path.startsWith("/actions/runs?status=in_progress"))
+      return body({
+        workflow_runs: Array.from({ length: others }, (_, index) => ({
+          id: 100 + index,
+          path: ".github/workflows/ci.yml",
+          run_attempt: attempts[100 + index] ?? 1,
+          head_repository: { full_name: "owner/repo" },
+        })),
+      });
+    if (path.startsWith("/actions/runs?status=queued")) return body({ workflow_runs: [] });
+    const run = Number(/^\/actions\/runs\/(\d+)\/jobs/.exec(path)?.[1]);
+    if (run === 99)
+      return body({
+        jobs: [
+          {
+            name: "select",
+            status: "in_progress",
+            labels: ["ubuntu-latest"],
+            started_at: minutesAgo(1),
+          },
+        ],
+      });
+    if (run >= 100) {
+      const page = Number(/[?&]page=(\d+)/.exec(path)?.[1] ?? 1);
+      const size = Number(/[?&]per_page=(\d+)/.exec(path)?.[1] ?? 30);
+      if (page === 1) reads[run] = (reads[run] ?? 0) + 1;
+      return body({ jobs: jobsOf(run, reads[run]!).slice((page - 1) * size, page * size) });
+    }
+    const check = Number(/^\/check-runs\/(\d+)\/annotations/.exec(path)?.[1]);
+    if (placed[check]) return body([{ message: placementMarker + JSON.stringify(placed[check]) }]);
+    return body("missing", 404);
+  };
+  const observe = githubObserver(
+    {
+      api: "https://api.github.test",
+      repository: "owner/repo",
+      token: "t",
+      runId: "99",
+      label: "basalt-box",
+    },
+    fetcher,
+    () => now,
+  );
+  return { calls, reads, observe };
+};
+const hostedJob = (name: string) => ({
+  name,
+  status: "in_progress",
+  labels: ["ubuntu-latest"],
+  runner_group_name: "GitHub Actions",
+});
+const selectAt = (startedMinutesAgo: number) => ({
+  ...hostedJob("select"),
+  started_at: minutesAgo(startedMinutesAgo),
+});
+// A select that ended and placed box jobs GitHub doesn't list yet: its annotation is check run `checkRun`.
+const placedJobs = (checkRun: number) => [
+  {
+    ...hostedJob("select"),
+    status: "completed",
+    conclusion: "success",
+    completed_at: minutesAgo(0.5),
+    check_run_url: `https://api.github.test/repos/owner/repo/check-runs/${checkRun}`,
+  },
+  { ...hostedJob("box-watch"), status: "queued" },
+];
+const routeThree = (observe: BoxObserver) =>
+  routeBox(input({ slots: "3" }), observe, () => now, noWait);
+
+test("a select spends 6 REST calls plus one per other active Check, and two for a re-run one", async () => {
+  const github = fakeGitHub({ others: 10, jobsOf: () => [hostedJob("fast")] });
+  assert.equal((await routeThree(github.observe)).jobs.length, 3);
+  assert.equal(github.calls.length, 16);
+  // A re-run Check's jobs are read fifty a page: GitHub answers a hundred with a 502.
+  const rerun = fakeGitHub({
+    others: 2,
+    attempts: { 101: 2 },
+    jobsOf: (id) => Array.from({ length: id === 101 ? 60 : 1 }, () => hostedJob("fast")),
+  });
+  await routeThree(rerun.observe);
+  const pages = rerun.calls.filter((path) => /^\/actions\/runs\/10\d\/jobs/.test(path)).sort();
+  assert.deepEqual(pages, [
+    "/actions/runs/100/jobs?filter=latest&per_page=100&page=1",
+    "/actions/runs/101/jobs?filter=latest&per_page=50&page=1",
+    "/actions/runs/101/jobs?filter=latest&per_page=50&page=2",
+  ]);
+});
+
+test("waiting for an earlier Check re-reads only the Checks that may still place", async () => {
+  // Check 100 started selecting first: it is still at it on the first two reads, then has placed
+  // client-connection, which GitHub doesn't list yet.
+  const github = fakeGitHub({
+    others: 10,
+    jobsOf: (id, read) =>
+      id !== 100 ? [hostedJob("fast")] : read < 3 ? [selectAt(2)] : placedJobs(7),
+    placed: { 7: ["client-connection"] },
+  });
+  // Two slots are left once its job is counted.
+  assert.equal((await routeThree(github.observe)).jobs.length, 2);
+  assert.equal(github.reads[100], 3);
+  for (let id = 101; id < 110; id++) assert.equal(github.reads[id], 1, String(id));
+  // 16 for the first read, then two re-reads of Check 100 and one read of its annotation.
+  assert.equal(github.calls.length, 19);
+});
+
+test("a stuck select is not waited for, but what it places while this one waits counts", async () => {
+  // Check 100 started first and finishes on the third read; Check 101 has run for six minutes
+  // and places two jobs during the wait.
+  const github = fakeGitHub({
+    others: 3,
+    jobsOf: (id, read) =>
+      id === 100
+        ? read < 3
+          ? [selectAt(2)]
+          : [
+              {
+                ...hostedJob("select"),
+                status: "completed",
+                conclusion: "success",
+                completed_at: minutesAgo(0.1),
+              },
+              { ...hostedJob("box-watch"), status: "completed", conclusion: "skipped" },
+            ]
+        : id === 101
+          ? read < 2
+            ? [selectAt(6)]
+            : placedJobs(8)
+          : [hostedJob("fast")],
+    placed: { 8: ["client-connection", "browser-install"] },
+  });
+  assert.equal((await routeThree(github.observe)).jobs.length, 1);
+  // The Check that only runs hosted jobs is read once.
+  assert.equal(github.reads[102], 1);
+});
+
+test("no select spends more than its cap of REST calls, and then it routes nothing", async () => {
+  // Thirty or forty other Checks, one of which never stops selecting.
+  for (const others of [30, 40]) {
+    const github = fakeGitHub({
+      others,
+      jobsOf: (id) => (id === 100 ? [selectAt(2)] : [hostedJob("fast")]),
+    });
+    const routed = await routeThree(github.observe);
+    assert.deepEqual(routed.jobs, []);
+    assert.ok(github.calls.length <= maxCalls, `${others}: ${github.calls.length} calls`);
+    assert.match(
+      routed.summary,
+      new RegExp(
+        `every job runs hosted, because reading the box state would take more than ${maxCalls} API calls`,
+      ),
+    );
+  }
+});
+
+test("routing leaves the workflow token's last calls to the Check's own jobs", async () => {
+  const fast = () => [hostedJob("fast")];
+  // The first answer says the hour's calls are nearly spent: nothing more is asked.
+  const short = fakeGitHub({ others: 10, jobsOf: fast, remaining: () => String(tokenReserve - 1) });
+  const routed = await routeThree(short.observe);
+  assert.deepEqual(routed.jobs, []);
+  assert.equal(short.calls.length, 1);
+  assert.match(
+    routed.summary,
+    new RegExp(`because the workflow token has ${tokenReserve - 1} of its hourly API calls left`),
+  );
+  // Calls sent at once count before their answers do: the reserve is never spent.
+  const close = fakeGitHub({
+    others: 30,
+    jobsOf: fast,
+    remaining: (call) => String(tokenReserve + 15 - call),
+  });
+  assert.deepEqual((await routeThree(close.observe)).jobs, []);
+  assert.ok(close.calls.length <= 16, String(close.calls.length));
+  // A limit hit mid-read routes nothing too, and says so.
+  const spent = fakeGitHub({
+    others: 10,
+    jobsOf: fast,
+    remaining: (call) => (call < 5 ? "900" : "0"),
+  });
+  assert.match(
+    (await routeThree(spent.observe)).summary,
+    /because the workflow token has no API calls left this hour/,
+  );
+  // So does a secondary limit, which carries no count.
+  for (const limit of [{ status: 429 }, { status: 403, headers: { "retry-after": "60" } }]) {
+    const secondary = fakeGitHub({
+      others: 10,
+      jobsOf: fast,
+      limited: (call) => (call === 4 ? limit : undefined),
+    });
+    assert.match(
+      (await routeThree(secondary.observe)).summary,
+      new RegExp(`because GitHub's rate limit stopped the read \\(${limit.status}\\)`),
+    );
+  }
+  // An empty count says nothing.
+  const blank = fakeGitHub({ others: 10, jobsOf: fast, remaining: () => "" });
+  assert.equal((await routeThree(blank.observe)).jobs.length, 3);
 });

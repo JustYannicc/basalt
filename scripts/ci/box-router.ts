@@ -31,6 +31,18 @@ const selectingRetryMs = 15_000;
 const stuckSelect = 5 * 60_000;
 // After its select ends GitHub lists box-watch within seconds; a minute covers a slow listing.
 const listingLag = 60_000;
+/**
+ * The most REST calls one select spends on routing. Every job of every Check shares the workflow
+ * token's hourly limit (1,000 per repository), so a select that would need more routes nothing.
+ * A typical select spends 6 (heartbeat 3, run lists 2, its own run 1), plus one per other active
+ * Check (two for a re-run one), plus one per Check whose box-watch is still running; a stale
+ * heartbeat costs 3 more per retry, and each wait re-reads only the Checks that may still place.
+ */
+export const maxCalls = 40;
+/** The token's hourly calls select never touches, left for the Check's other jobs. */
+export const tokenReserve = 200;
+/** Routing stopped to spare the workflow token; the Check runs hosted and is never failed. */
+export class TokenBudget extends Error {}
 /** How select's annotation naming the jobs it placed on the box begins; a JSON list follows. */
 export const placementMarker = "box placement ";
 // The release runners are self-hosted too, so a broad label could hand CI work to them.
@@ -411,6 +423,7 @@ export async function routeBox(
         `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };
   } catch (error) {
+    if (error instanceof TokenBudget) return none(error.message);
     return none("the box state could not be read: " + (error as Error).message);
   }
 }
@@ -431,22 +444,45 @@ export function githubObserver(
   fetcher: Fetch = fetch,
   now: () => number = Date.now,
 ): BoxObserver {
+  let calls = 0;
+  let inFlight = 0;
+  // The fewest calls any answer reported left; answers can arrive out of order.
+  let remaining = Number.POSITIVE_INFINITY;
   const get = async (path: string) => {
-    const response = await fetcher(env.api + "/repos/" + env.repository + path, {
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: "Bearer " + env.token,
-        "x-github-api-version": "2022-11-28",
-      },
-      signal: AbortSignal.timeout(20_000),
-    });
+    if (calls >= maxCalls)
+      throw new TokenBudget(`reading the box state would take more than ${maxCalls} API calls`);
+    // Calls still in flight have spent the token too, though no answer says so yet.
+    if (remaining - inFlight < tokenReserve)
+      throw new TokenBudget(
+        `the workflow token has ${Math.max(0, remaining - inFlight)} of its hourly API calls left, and routing leaves ${tokenReserve} for the Check's other jobs`,
+      );
+    calls++;
+    inFlight++;
+    let response: Response;
+    try {
+      response = await fetcher(env.api + "/repos/" + env.repository + path, {
+        headers: {
+          accept: "application/vnd.github+json",
+          authorization: "Bearer " + env.token,
+          "x-github-api-version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(20_000),
+      });
+    } finally {
+      inFlight--;
+    }
+    const left = response.headers.get("x-ratelimit-remaining")?.trim();
+    if (left && Number.isFinite(Number(left))) remaining = Math.min(remaining, Number(left));
+    if (!response.ok && remaining === 0)
+      throw new TokenBudget("the workflow token has no API calls left this hour");
+    // A secondary rate limit answers 403 with a retry-after, or 429.
+    if (response.status === 429 || (response.status === 403 && response.headers.has("retry-after")))
+      throw new TokenBudget(`GitHub's rate limit stopped the read (${response.status})`);
     if (!response.ok)
       throw new Error(`GitHub returned ${response.status} for ${path.split("?")[0]}`);
     return response;
   };
-  // GitHub answers 502 to a hundred jobs a page of a Check that was re-run, every time; fifty works.
-  const perPage = 50;
-  const list = async (path: string, key: string) => {
+  const list = async (path: string, key: string, perPage = 50) => {
     const items: Record<string, unknown>[] = [];
     for (let page = 1; page <= 20; page++) {
       const batch = record(await (await get(`${path}&per_page=${perPage}&page=${page}`)).json())[
@@ -456,7 +492,7 @@ export function githubObserver(
       items.push(...batch.map(record));
       if (batch.length < perPage) return items;
     }
-    throw new Error("more than 1000 active " + key);
+    throw new Error(`more than ${20 * perPage} active ${key}`);
   };
   const boxLabel = env.label.toLowerCase();
   const selfHosted = new Set([boxLabel, ...sharedLabels]);
@@ -508,6 +544,74 @@ export function githubObserver(
     if (!Array.isArray(jobs)) throw new Error("select's box placement is not a list");
     return jobs.map(String);
   };
+  // GitHub answers 502 to a hundred jobs a page of a Check that was re-run, every time; fifty
+  // works. A first attempt's jobs, about 92 in a full Check, then fit one page.
+  const runJobs = (id: number, attempt: unknown = 1) =>
+    list(`/actions/runs/${id}/jobs?filter=latest`, "jobs", Number(attempt) === 1 ? 100 : 50);
+  let ownStart = Number.NaN;
+  // One Check's hold on the box: its hosted and box jobs, whether this select waits for it, and
+  // whether a re-read could find more of its box jobs.
+  type Share = {
+    run: Record<string, unknown>;
+    hosted: number;
+    boxJobs: string[];
+    selecting: boolean;
+    unsettled: boolean;
+  };
+  let shares: Map<number, Share> | undefined;
+  const share = async (
+    id: number,
+    run: Record<string, unknown>,
+    jobs: Record<string, unknown>[],
+  ): Promise<Share> => {
+    const held: Share = { run, hosted: 0, boxJobs: [], selecting: false, unsettled: false };
+    for (const job of jobs) {
+      if (job.status !== "queued" && job.status !== "in_progress") continue;
+      const kind = runner(job);
+      if (kind === "box") held.boxJobs.push(String(job.name));
+      else if (kind === "hosted") held.hosted++;
+    }
+    // Only this repository's own first attempts place box jobs.
+    if (
+      Number(run.run_attempt ?? 1) !== 1 ||
+      record(run.head_repository).full_name !== env.repository
+    )
+      return held;
+    // A select still queued when this one read it started after this one, so it waits for it.
+    const select = named(jobs, "select");
+    if (select?.status === "in_progress") {
+      const start = started(select);
+      const first = !(start > ownStart) && (start !== ownStart || id < Number(env.runId));
+      // Not waited for once stuck, but a stuck select may still finish and place while this waits.
+      held.selecting = first && !(now() - start > stuckSelect);
+      held.unsettled = first;
+      return held;
+    }
+    if (select?.conclusion !== "success") return held;
+    // box-watch exists only when select placed box jobs, and ends once each has started.
+    const watch = named(jobs, "box-watch");
+    const ended = Date.parse(String(select.completed_at));
+    if (watch === undefined) {
+      held.selecting = held.unsettled = now() - ended < listingLag;
+      return held;
+    }
+    if (watch.status === "completed") return held;
+    // Its box jobs wait for long-started, a hosted job that can queue for minutes, before GitHub
+    // lists them; select's annotation names them meanwhile.
+    const placed = await placement(select);
+    if (placed === undefined) {
+      // A select from before the annotation existed: unknown until its jobs are listed, and not
+      // held for longer than a select may run.
+      held.selecting = !jobs.some(onBox) && !(now() - ended > stuckSelect);
+      held.unsettled = true;
+      return held;
+    }
+    const unlisted = Math.max(0, placed.length - jobs.filter(onBox).length);
+    held.boxJobs.push(
+      ...[...placed].sort((a, b) => memoryPrice(b) - memoryPrice(a)).slice(0, unlisted),
+    );
+    return held;
+  };
   return {
     async heartbeat() {
       // Triggered heartbeats cancel each other in flight, so a page holds many cancelled runs.
@@ -529,82 +633,58 @@ export function githubObserver(
       throw new Error("no completed heartbeat run from the box");
     },
     async active() {
-      const listed = await Promise.all(
-        ["in_progress", "queued"].map((status) =>
-          list(`/actions/runs?status=${status}`, "workflow_runs"),
-        ),
-      );
-      // Box-label jobs come only from Check runs (the heartbeat's own short job holds no CI slot),
-      // so only their jobs are listed: every same-repository push routes now, and listing every
-      // workflow's runs would spend the token's shared hourly request limit.
-      const runs = new Map(
-        listed
-          .flat()
-          .filter((run) => String(run.id) !== env.runId && checkRun(run))
-          .map((run) => [Number(run.id), run] as const),
-      );
-      const [own, ...jobs] = await Promise.all(
-        [Number(env.runId), ...runs.keys()].map((id) =>
-          list(`/actions/runs/${id}/jobs?filter=latest`, "jobs"),
-        ),
-      );
-      // This Check's own select start orders it against the others selecting now. One that started
-      // first places first and is waited for; one that started later waits for this one.
-      const ownStart = started(named(own!, "select"));
-      const ownId = Number(env.runId);
-      const first = (start: number, id: number) =>
-        !(start > ownStart) && (start !== ownStart || id < ownId);
-      const counts = { hosted: 0, box: 0, boxJobs: [] as string[], selecting: 0 };
-      const placed = await Promise.all(
-        [...runs].map(async ([id, run], index) => {
-          const runJobs = jobs[index]!;
-          for (const job of runJobs) {
-            if (job.status !== "queued" && job.status !== "in_progress") continue;
-            const kind = runner(job);
-            if (kind === "box") {
-              counts.box++;
-              counts.boxJobs.push(String(job.name));
-            } else if (kind === "hosted") counts.hosted++;
-          }
-          // Only this repository's own first attempts place box jobs.
-          if (
-            Number(run.run_attempt ?? 1) !== 1 ||
-            record(run.head_repository).full_name !== env.repository
-          )
-            return [];
-          const select = named(runJobs, "select");
-          if (select?.status === "in_progress") {
-            const start = started(select);
-            if (first(start, id) && !(now() - start > stuckSelect)) counts.selecting++;
-            return [];
-          }
-          if (select?.conclusion !== "success") return [];
-          // box-watch exists only when select placed box jobs, and ends once each has started.
-          const watch = named(runJobs, "box-watch");
-          if (watch === undefined) {
-            if (now() - Date.parse(String(select.completed_at)) < listingLag) counts.selecting++;
-            return [];
-          }
-          if (watch.status === "completed") return [];
-          // Its box jobs wait for long-started, a hosted job that can queue for minutes, before
-          // GitHub lists them; select's annotation names them meanwhile.
-          const jobsPlaced = await placement(select);
-          if (jobsPlaced === undefined) {
-            // A select from before the annotation existed: unknown until its jobs are listed, and
-            // not held for longer than a select may run.
-            const ended = Date.parse(String(select.completed_at));
-            if (!runJobs.some(onBox) && !(now() - ended > stuckSelect)) counts.selecting++;
-            return [];
-          }
-          const unlisted = Math.max(0, jobsPlaced.length - runJobs.filter(onBox).length);
-          return [...jobsPlaced].sort((a, b) => memoryPrice(b) - memoryPrice(a)).slice(0, unlisted);
-        }),
-      );
-      for (const name of placed.flat()) {
-        counts.box++;
-        counts.boxJobs.push(name);
+      if (shares === undefined) {
+        const listed = await Promise.all(
+          ["in_progress", "queued"].map((status) =>
+            list(`/actions/runs?status=${status}`, "workflow_runs"),
+          ),
+        );
+        // Box-label jobs come only from Check runs (the heartbeat's own short job holds no CI slot),
+        // so only their jobs are listed: every same-repository push routes now, and listing every
+        // workflow's runs would spend the token's shared hourly request limit.
+        const runs = new Map(
+          listed
+            .flat()
+            .filter((run) => String(run.id) !== env.runId && checkRun(run))
+            .map((run) => [Number(run.id), run] as const),
+        );
+        const [own, ...jobs] = await Promise.all([
+          runJobs(Number(env.runId)),
+          ...[...runs].map(([id, run]) => runJobs(id, run.run_attempt ?? 1)),
+        ]);
+        // This Check's own select start orders it against the others selecting now. One that
+        // started first places first and is waited for; one that started later waits for this one.
+        ownStart = started(named(own!, "select"));
+        shares = new Map(
+          await Promise.all(
+            [...runs].map(
+              async ([id, run], index) => [id, await share(id, run, jobs[index]!)] as const,
+            ),
+          ),
+        );
+      } else {
+        // A re-read only refreshes the Checks that may still place box jobs: every other Check's
+        // box jobs are counted already, and a Check that starts selecting later waits for this one.
+        const known = shares;
+        await Promise.all(
+          [...known]
+            .filter(([, held]) => held.unsettled)
+            .map(async ([id, held]) =>
+              known.set(
+                id,
+                await share(id, held.run, await runJobs(id, held.run.run_attempt ?? 1)),
+              ),
+            ),
+        );
       }
-      return counts;
+      const all = [...shares.values()];
+      const boxJobs = all.flatMap((held) => held.boxJobs);
+      return {
+        hosted: all.reduce((sum, held) => sum + held.hosted, 0),
+        box: boxJobs.length,
+        boxJobs,
+        selecting: all.filter((held) => held.selecting).length,
+      };
     },
   };
 }
