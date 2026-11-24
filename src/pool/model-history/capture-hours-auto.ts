@@ -23,8 +23,14 @@ export interface CaptureHoursAutoBounds {
   readonly pauseMs: number;
   /** An hour whose count ran out its limit waits this long; its pool and the others go on. */
   readonly slowPauseMs: number;
-  /** The same pool-hour slow this many times in a row is stuck; it is retried after each wait. */
+  /**
+   * The same pool-hour slow this many times in a row is stuck. It is then left out of the pool's
+   * counting and retried alone, at the start of a session, once per wait, each try under the next
+   * of `stuckRetryLimitsMs`. Past the last it is given up: it stays stuck and is not tried again.
+   */
   readonly slowAfter: number;
+  /** A stuck hour's retries, each a longer limit, none longer than a session's budget. */
+  readonly stuckRetryLimitsMs: readonly number[];
   /** The same pool stopping on a lock or an error this many times in a row is stuck. */
   readonly failingAfter: number;
   readonly countLimitMs: number;
@@ -42,6 +48,10 @@ export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   pauseMs: 3_600_000,
   slowPauseMs: 600_000,
   slowAfter: 3,
+  // One try at 3 s, then tries at up to 10 s, the most a 12 s session can give one hour, until one
+  // runs the full 10 s. Each comes after a 10 min wait; a try the session cuts short of 10 s is not
+  // the last, so a stuck hour costs a few retries of the hourly 120 s, never one each wait.
+  stuckRetryLimitsMs: [3_000, 10_000],
   failingAfter: 6,
   countLimitMs: captureHoursCountLimitMs,
   recount: listedBlocks,
@@ -72,6 +82,8 @@ export interface CaptureHoursStuck {
   readonly reason: StuckReason;
   readonly hour?: string;
   readonly retryAt: string;
+  /** A slow hour that ran out its last retry limit: it is not tried again. */
+  readonly gaveUp?: true;
 }
 export interface CaptureHoursSlowWait {
   readonly pool: string;
@@ -81,6 +93,10 @@ export interface CaptureHoursSlowWait {
   readonly until: string;
   /** "read": the block's read of its pending hours ran out, keyed on the block's start. */
   readonly limit?: "read";
+  /** A stuck hour's tries under a retry limit so far: the next one runs under the next limit. */
+  readonly retries?: number;
+  /** A stuck hour that ran out its last retry limit: held from counting and not tried again. */
+  readonly gaveUp?: true;
 }
 
 export interface CaptureHoursAutoState {
@@ -253,6 +269,20 @@ export async function captureHoursAutoState(storage: AutoStorage): Promise<Captu
   return (await storage.get<CaptureHoursAutoState>(captureHoursAutoKey)) ?? {};
 }
 
-/** The pools whose counting is stuck, which the minute check reports as a reliability reason. */
-export const captureHoursStuckPools = (state: CaptureHoursAutoState) =>
-  [...new Set((state.stuck ?? []).map((entry) => entry.pool))].sort();
+/**
+ * The pools whose counting is stuck, which the minute check reports as a reliability reason: any
+ * with a stuck entry, and any with a count's wait on an hour slow `slowAfter` times in a row, given
+ * up or not, since a pool keeps one stuck entry and another hour can replace it.
+ */
+export const captureHoursStuckPools = (
+  state: CaptureHoursAutoState,
+  slowAfter = captureHoursAutoBounds.slowAfter,
+) =>
+  [
+    ...new Set([
+      ...(state.stuck ?? []).map((entry) => entry.pool),
+      ...(state.slow ?? [])
+        .filter((entry) => entry.limit !== "read" && entry.count >= slowAfter)
+        .map((entry) => entry.pool),
+    ]),
+  ].sort();
