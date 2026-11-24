@@ -47,6 +47,12 @@ import {
 
 /** A far cell is started again at most this many times before it serves from its last draw. */
 export const placementDraws = 4;
+/**
+ * A first far cell is kept when the root's cap turned a call away this recently. A waiting caller
+ * comes back at least once a second: the entry re-sends an unsent refusal each second, and a held
+ * call waits out the cap at its pace of 1.2 a second.
+ */
+export const rootWaitingMs = 5_000;
 type PlacementDecision =
   | "admit"
   | "admit_unknown"
@@ -388,9 +394,10 @@ export class RuntimeFleet {
     logPlacement(identity, database, decision, draw);
   }
   /**
-   * A far cell serves at once when the fleet needs it now: another cell already serves, fewer cells
-   * are ready than the demand of this moment wants, and the cell is within `neededFarMs`. The first
-   * cell, beside only the root, keeps the redraw rule.
+   * A far cell within `neededFarMs` serves at once when the fleet needs it now. Beside another cell,
+   * that is while fewer cells are ready than the demand of this moment wants. As the first cell,
+   * beside only the root, it is while the root's cap turns callers away: they wait for this cell,
+   * and a redraw would add a whole start to their wait.
    */
   private async neededNow(identity: SlotIdentity, database: RuntimeDistance | undefined) {
     if (database?.state !== "measured" || (database.rttMs ?? Infinity) > neededFarMs) return false;
@@ -402,7 +409,8 @@ export class RuntimeFleet {
         row.identity &&
         !sameIdentity(row.identity, identity),
     ).length;
-    return ready > 0 && ready < (await this.demandedCells(rows));
+    if (ready === 0) return this.rootFallback.refusedWithin(rootWaitingMs);
+    return ready < (await this.demandedCells(rows));
   }
   private async othersServing(identity: SlotIdentity) {
     if (this.primaryServing && this.deps.primaryAvailable?.() !== false && !this.primaryFailed)
