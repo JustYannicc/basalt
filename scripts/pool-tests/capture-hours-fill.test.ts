@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { captureRowCheckLimitMs } from "../../src/pool/model-history/capture-coverage.ts";
+import {
+  captureRowCheckLimitMs,
+  isRowCheck,
+  rowCheckRanges,
+} from "../../src/pool/model-history/capture-coverage.ts";
 import { historyCaptureHoursVersion } from "../../src/pool/model-history/capture-hours-schema.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
@@ -10,7 +14,7 @@ import { summaryPrices } from "./usage-summary-fixture.ts";
 
 type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 const dayMs = 24 * hourMs;
-const rowCheck = (text: string) => text.includes("AS w(f text, t text)");
+const rowCheck = isRowCheck;
 
 /**
  * Three weeks of captured requests, one missed usage row ten days ago and one fifty days ago, and
@@ -112,7 +116,7 @@ test("with half the read counted, each half takes its own path and the summary r
     const { result, ran } = await summary();
     const read = ran.filter((entry) => rowCheck(entry.text));
     assert.equal(read.length, 1, "one row check");
-    const ranges = (JSON.parse(String(read[0]!.values![1])) as { f: string; t: string }[]).map(
+    const ranges = rowCheckRanges(read[0]!.values!).map(
       (range) => [Date.parse(range.f), Date.parse(range.t)] as const,
     );
     const inCounted = ranges.filter(([from, to]) => from >= lookbackStart && to <= first);
@@ -154,8 +158,9 @@ test("a row check past its own limit reads its hours unproven and the summary pa
           slept++;
           // Longer than the read's own 5 s: only the row check's own limit can end it in time.
           return db.query(
-            `SELECT NULL::text AS hour FROM pg_sleep(8) WHERE $1::text IS NOT NULL
-              AND $2::jsonb IS NOT NULL AND $3::text IS NOT NULL AND $4::text IS NOT NULL`,
+            `SELECT NULL::text AS hour FROM pg_sleep(8) WHERE ${values!
+              .map((_, n) => `$${n + 1}::text IS NOT NULL`)
+              .join(" AND ")}`,
             values,
           );
         }
