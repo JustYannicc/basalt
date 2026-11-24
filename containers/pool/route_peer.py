@@ -188,6 +188,15 @@ class RoutePeers:
                 self.connections.add(client)
             threading.Thread(target=self.serve, args=(client,), daemon=True).start()
 
+    @staticmethod
+    def relay(remote: socket.socket, wire: PeerWire) -> None:
+        try:
+            pipe_peer(remote, wire)
+        finally:
+            # pipe_peer only shuts its end down, and on macOS a send to a shut-down socketpair
+            # peer blocks instead of failing; closing it makes a refused tunnel fail at once.
+            remote.close()
+
     def serve(self, client: socket.socket) -> None:
         local = remote = None
         try:
@@ -208,7 +217,7 @@ class RoutePeers:
                     wire.close()
                     return
                 self.connections.update((local, remote))
-            threading.Thread(target=pipe_peer, args=(remote, wire), daemon=True).start()
+            threading.Thread(target=self.relay, args=(remote, wire), daemon=True).start()
             local.settimeout(HANDSHAKE_SECONDS)
             try:
                 local.sendall(b"\x05\x01\x00")

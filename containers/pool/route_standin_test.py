@@ -10,7 +10,7 @@
   pool makes for itself shows up as a direct call.
 - A provider that streams SSE and records who called it.
 
-Run as ``python3 -I route_standin_test.py <allowed-host> <provider-port>`` for the
+Run as ``python3 -I route_standin_test.py <allowed-host> <provider-port> [<vendor-cert-dir>]`` for the
 container integration; tests import the pieces.
 """
 
@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 WINDOW = 64 * 1024
 CHUNK = 16 * 1024
@@ -37,6 +38,7 @@ class Records:
         self.connects: list[dict[str, object]] = []
         self.dns: list[str] = []
         self.provider: list[dict[str, object]] = []
+        self.vendor: list[dict[str, object]] = []
 
     def add(self, kind: str, value: object) -> None:
         with self.lock:
@@ -49,11 +51,12 @@ class Records:
                 "connects": list(self.connects),
                 "dns": list(self.dns),
                 "provider": list(self.provider),
+                "vendor": list(self.vendor),
             }
 
     def reset(self) -> None:
         with self.lock:
-            for items in (self.tunnels, self.connects, self.dns, self.provider):
+            for items in (self.tunnels, self.connects, self.dns, self.provider, self.vendor):
                 items.clear()
 
 
@@ -87,6 +90,11 @@ def receive_frame(connection: socket.socket) -> tuple[int, bytes]:
     return first & 15, bytes(value ^ mask[index % 4] for index, value in enumerate(body))
 
 
+# The stand-in vendor: the real provider host name, served here with a throwaway CA's certificate,
+# reachable only through the route and only once a test switches it on.
+VENDOR = {"on": False, "hosts": {"api.anthropic.com"}, "port": 8443}
+
+
 def gateway(client: socket.socket, route_id: str, allowed: set[str], records: Records) -> None:
     """One SOCKS5 no-auth CONNECT, as the I1 forwarder answers it."""
     upstream = None
@@ -103,13 +111,16 @@ def gateway(client: socket.socket, route_id: str, allowed: set[str], records: Re
         else:
             host = socket.inet_ntop(socket.AF_INET6, exact(client, 16))
         port = struct.unpack("!H", exact(client, 2))[0]
-        refused = head[1] != 1 or route_id.startswith("rt_down") or host not in allowed
+        vendor = bool(VENDOR["on"]) and host in VENDOR["hosts"] and port == 443
+        refused = head[1] != 1 or route_id.startswith("rt_down") or (host not in allowed and not vendor)
         records.add("connects", {"route": route_id, "host": host, "port": port, "refused": refused})
         if refused:
             client.sendall(bytes([5, 2 if head[1] == 1 else 7, 0, 1, 0, 0, 0, 0, 0, 0]))
             return
         try:
-            upstream = socket.create_connection((host, port), timeout=10)
+            upstream = socket.create_connection(
+                ("127.0.0.1", int(VENDOR["port"])) if vendor else (host, port), timeout=10
+            )
         except OSError:
             client.sendall(bytes([5, 1, 0, 1, 0, 0, 0, 0, 0, 0]))
             return
@@ -324,11 +335,77 @@ def control_handler(records: Records):
             self.wfile.write(body)
 
         def do_POST(self) -> None:
-            records.reset()
+            if self.path == "/vendor":
+                VENDOR["on"] = True
+            else:
+                records.reset()
             self.send_response(204)
             self.end_headers()
 
     return Control
+
+
+def vendor_handler(records: Records):
+    issued = {"count": 0}
+
+    class Vendor(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args) -> None:
+            pass
+
+        def answer(self, status: int, value: object) -> None:
+            body = json.dumps(value).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self) -> None:
+            raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            try:
+                payload = json.loads(raw or b"{}")
+            except ValueError:
+                payload = {key: values[0] for key, values in parse_qs(raw.decode("latin-1")).items()}
+            if not isinstance(payload, dict):
+                payload = {}
+            grant = payload.get("grant_type")
+            presented = payload.get("refresh_token") if grant == "refresh_token" else None
+            entry = {"path": self.path, "grant": grant, "presented": presented, "issued": None}
+            if self.path != "/v1/oauth/token" or grant not in ("authorization_code", "refresh_token"):
+                records.add("vendor", entry)
+                self.answer(404, {"error": "not_found"})
+                return
+            with records.lock:
+                issued["count"] += 1
+                n = issued["count"]
+            records.add("vendor", {**entry, "issued": n})
+            # Short-lived on purpose: inside Home's refresh lead, so the next refresh comes soon.
+            self.answer(200, {
+                "access_token": f"fixture-access-{n}",
+                "refresh_token": f"fixture-refresh-{n}",
+                "expires_in": 3600,
+                "token_type": "Bearer",
+                "account": {"uuid": "fixture-account", "email_address": ""},
+                "organization": {"uuid": "fixture-organization", "name": "fixture"},
+            })
+
+        def do_GET(self) -> None:
+            records.add("vendor", {"path": self.path, "grant": None, "presented": None, "issued": None})
+            self.answer(404, {"error": "not_found"})
+
+    return Vendor
+
+
+def serve_vendor(records: Records, directory: str) -> None:
+    import ssl
+
+    server = ThreadingHTTPServer(("127.0.0.1", int(VENDOR["port"])), vendor_handler(records))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(f"{directory}/vendor.pem", f"{directory}/vendor-key.pem")
+    server.socket = context.wrap_socket(server.socket, server_side=True)
+    server.serve_forever()
 
 
 def main() -> None:
@@ -340,6 +417,8 @@ def main() -> None:
         target=ThreadingHTTPServer(("0.0.0.0", provider_port), provider_handler(records)).serve_forever,
         daemon=True,
     ).start()
+    if len(sys.argv) > 3:
+        threading.Thread(target=serve_vendor, args=(records, sys.argv[3]), daemon=True).start()
     print("ROUTE_STANDIN_READY", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 9090), control_handler(records)).serve_forever()
 

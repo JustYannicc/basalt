@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -25,6 +28,7 @@ import {
   type RouteResolution,
   type RouteStorage,
 } from "../../src/pool/route-assignments.ts";
+import { homeReferences } from "../../src/pool/home-references.ts";
 import { routeDownAnswer, routePeerAddress } from "../../src/pool/route-refusal.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
 import { managedMigrationUrl } from "./managed-postgres.ts";
@@ -65,6 +69,82 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 90_000): 
   }
   throw new Error("The route rig did not reach the expected state within the test budget");
 }
+/**
+ * A CA made for this run only, and a certificate it signs for the vendor's token host. Only the
+ * pool container trusts it, through SSL_CERT_FILE, so a sign-in can finish against the stand-in.
+ */
+function throwawayVendorCertificates(): string {
+  const directory = mkdtempSync(join(tmpdir(), "basalt-route-vendor-"));
+  const ssl = (...args: string[]) => {
+    const result = spawnSync("openssl", args, { cwd: directory, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  };
+  writeFileSync(
+    join(directory, "ca.ext"),
+    "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n",
+  );
+  writeFileSync(
+    join(directory, "vendor.ext"),
+    "subjectAltName=DNS:api.anthropic.com\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n",
+  );
+  ssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "ca-key.pem");
+  ssl("req", "-new", "-key", "ca-key.pem", "-subj", "/CN=route rig throwaway CA", "-out", "ca.csr");
+  ssl(
+    "x509",
+    "-req",
+    "-in",
+    "ca.csr",
+    "-signkey",
+    "ca-key.pem",
+    "-days",
+    "1",
+    "-extfile",
+    "ca.ext",
+    "-out",
+    "ca.pem",
+  );
+  ssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "vendor-key.pem");
+  ssl(
+    "req",
+    "-new",
+    "-key",
+    "vendor-key.pem",
+    "-subj",
+    "/CN=api.anthropic.com",
+    "-out",
+    "vendor.csr",
+  );
+  ssl(
+    "x509",
+    "-req",
+    "-in",
+    "vendor.csr",
+    "-CA",
+    "ca.pem",
+    "-CAkey",
+    "ca-key.pem",
+    "-set_serial",
+    "2",
+    "-days",
+    "1",
+    "-extfile",
+    "vendor.ext",
+    "-out",
+    "vendor.pem",
+  );
+  // Nothing can sign with this CA again once the run has its certificate.
+  rmSync(join(directory, "ca-key.pem"));
+  // The containers' own users read these through bind mounts.
+  chmodSync(directory, 0o755);
+  for (const file of ["ca.pem", "vendor.pem", "vendor-key.pem"])
+    chmodSync(join(directory, file), 0o644);
+  return directory;
+}
+function rows(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((row): row is Record<string, unknown> => !!row && typeof row === "object")
+    : [];
+}
 function memory(): RouteStorage {
   const map = new Map<string, unknown>();
   return {
@@ -79,6 +159,7 @@ interface Records {
   connects: { route: string; host: string; port: number; refused: boolean }[];
   dns: string[];
   provider: { from: string; path: string; key: string }[];
+  vendor: { path: string; grant: string | null; presented: string | null; issued: number | null }[];
 }
 
 test(
@@ -89,6 +170,7 @@ test(
     await admin.connect();
     const network = `basalt-route-test-${process.pid}`;
     const containers: string[] = [];
+    const vendorCertificates = throwawayVendorCertificates();
     try {
       const migrationUrl = await managedMigrationUrl(admin, adminUrl!);
       await admin.query("CREATE ROLE pool_route_test LOGIN PASSWORD 'fixture-only'");
@@ -128,6 +210,8 @@ test(
         "python3",
         "--volume",
         `${standin}:/standin/route_standin_test.py:ro`,
+        "--volume",
+        `${vendorCertificates}:/vendor:ro`,
         "--publish",
         "127.0.0.1::9090",
         image,
@@ -135,6 +219,7 @@ test(
         "/standin/route_standin_test.py",
         "models.example.test",
         "9000",
+        "/vendor",
       ]);
       containers.push(relay);
       await until(async () =>
@@ -178,6 +263,12 @@ test(
         `POOL_MANAGEMENT_KEY=${managementKey}`,
         "--env",
         "POOL_MANAGEMENT_ALLOW_REMOTE=true",
+        // Test-only: the throwaway CA is the only root this container trusts. Every other phase
+        // refuses or never resolves before TLS, so this changes nothing but the vendor sign-in.
+        "--volume",
+        `${join(vendorCertificates, "ca.pem")}:/fixture/ca.pem:ro`,
+        "--env",
+        "SSL_CERT_FILE=/fixture/ca.pem",
         image,
       ]);
       containers.push(pool);
@@ -585,6 +676,15 @@ test(
       let signIn: Record<string, unknown> = { skipped: "Home lacks oauth_session_proxy_v1" };
       if (capabilities?.oauth_session_proxy_v1 === true) {
         const retained = new Map<string, unknown>();
+        const proxiesOf = async (references: readonly string[]) => {
+          const files = rows((await home.data("/credentials")).files);
+          return references.map((id) => {
+            const file = files.find((row) => row.id === id);
+            const proxy = file?.proxy_url ?? file?.["proxy-url"];
+            return typeof proxy === "string" ? proxy : null;
+          });
+        };
+        let savedByHome: (string | null)[] | undefined;
         const acquisitions = new HomeAccountAcquisitions(
           {
             get: async <T>(key: string) => structuredClone(retained.get(key)) as T | undefined,
@@ -600,7 +700,11 @@ test(
           () => Date.now(),
           {
             beginSignIn: (session, entry) => routes.beginSignIn(session, entry),
-            settleSignIn: (session, references) => routes.settleSignIn(session, references),
+            settleSignIn: async (session, references) => {
+              // What Home saved by itself, before the pool re-asserts the route.
+              if (references.length) savedByHome = await proxiesOf(references);
+              return routes.settleSignIn(session, references);
+            },
             // One Home and no slot selection: one image, the one the start proves.
             servingImage: async () => "rig-image",
           },
@@ -624,37 +728,94 @@ test(
           );
           return (await response.json()) as Record<string, unknown>;
         };
-        await reset();
-        const started = await acquire("start", {
-          hasRules: true,
-          route: { routeId: route, owner },
-        });
-        assert.equal(typeof started.session, "string", JSON.stringify(started));
-        const authorization = new URL(String(started.url));
-        const redirect = authorization.searchParams.get("redirect_uri")!;
-        const state = authorization.searchParams.get("state")!;
-        await acquire("submit", {
-          session: started.session,
-          value: `${redirect}?code=fixture-code&state=${encodeURIComponent(state)}`,
-        });
-        const finished = await until(async () => {
-          const answer = await acquire("status", { session: started.session });
-          return answer.state === "failed" || answer.state === "connected" ? answer : undefined;
-        }, 90_000);
-        const seen = await records();
-        const exchange = seen.connects.filter(
-          (item) => item.route === route && item.host !== "models.example.test",
+        const signInOnce = async () => {
+          await reset();
+          const started = await acquire("start", {
+            hasRules: true,
+            route: { routeId: route, owner },
+          });
+          assert.equal(typeof started.session, "string", JSON.stringify(started));
+          const authorization = new URL(String(started.url));
+          const redirect = authorization.searchParams.get("redirect_uri")!;
+          const state = authorization.searchParams.get("state")!;
+          await acquire("submit", {
+            session: started.session,
+            value: `${redirect}?code=fixture-code&state=${encodeURIComponent(state)}`,
+          });
+          const finished = await until(async () => {
+            const answer = await acquire("status", { session: started.session });
+            return answer.state === "failed" || answer.state === "connected" ? answer : undefined;
+          }, 90_000);
+          const seen = await records();
+          const exchange = seen.connects.filter(
+            (item) => item.route === route && item.host !== "models.example.test",
+          );
+          assert.ok(
+            exchange.length > 0,
+            `the code exchange never reached the route: ${JSON.stringify(seen)}`,
+          );
+          for (const item of exchange)
+            assert.ok(!seen.dns.includes(item.host), `${item.host} was looked up directly`);
+          return {
+            finished,
+            seen,
+            exchange: [...new Set(exchange.map((item) => `${item.host}:${item.port}`))],
+          };
+        };
+
+        // The route's gateway refuses the token host: the sign-in fails closed.
+        const refusedSignIn = await signInOnce();
+        assert.deepEqual(refusedSignIn.finished, { state: "failed", message: "route_unavailable" });
+        assert.deepEqual(refusedSignIn.seen.vendor, []);
+
+        // The gateway now forwards the token host to the stand-in vendor, which listens only on the
+        // stand-in's own loopback: the gateway is the only way to reach it.
+        await fetch(`${control}/vendor`, { method: "POST" });
+        const success = await signInOnce();
+        assert.equal(success.finished.state, "connected", JSON.stringify(success.finished));
+        const exchanged = success.seen.vendor.filter((item) => item.grant === "authorization_code");
+        assert.equal(exchanged.length, 1, JSON.stringify(success.seen));
+        const tokenHost = (seen: Records) =>
+          seen.connects.filter((item) => item.host === "api.anthropic.com");
+        for (const item of tokenHost(success.seen))
+          assert.deepEqual([item.route, item.port, item.refused], [route, 443, false]);
+        assert.ok(!success.seen.dns.includes("api.anthropic.com"), "the token host was looked up");
+        const saved = homeReferences(String(success.finished.ref));
+        assert.ok(saved.length > 0);
+        assert.deepEqual(
+          savedByHome,
+          saved.map(() => routeProxyUrl(route)),
         );
-        assert.ok(
-          exchange.length > 0,
-          `the code exchange never reached the route: ${JSON.stringify(seen)}`,
+        assert.deepEqual(
+          await proxiesOf(saved),
+          saved.map(() => routeProxyUrl(route)),
         );
-        for (const item of exchange)
-          assert.ok(!seen.dns.includes(item.host), `${item.host} was looked up directly`);
-        assert.deepEqual(finished, { state: "failed", message: "route_unavailable" });
+
+        // Home refreshes what it saved with the refresh token the exchange issued, through the route.
+        const issued = exchanged[0]!.issued;
+        const refreshed = await until(async () => {
+          const seen = await records();
+          return seen.vendor.some(
+            (item) =>
+              item.grant === "refresh_token" && item.presented === `fixture-refresh-${issued}`,
+          )
+            ? seen
+            : undefined;
+        }, 180_000).catch(async (error: unknown) => {
+          console.log("ROUTE_SIGN_IN_REFRESH_RECORDS", JSON.stringify(await records()));
+          throw error;
+        });
+        for (const item of tokenHost(refreshed))
+          assert.deepEqual([item.route, item.port, item.refused], [route, 443, false]);
+        assert.ok(!refreshed.dns.includes("api.anthropic.com"), "the refresh looked its host up");
         signIn = {
-          exchange: [...new Set(exchange.map((item) => `${item.host}:${item.port}`))],
-          finished,
+          refused: { exchange: refusedSignIn.exchange, finished: refusedSignIn.finished },
+          connected: {
+            exchange: success.exchange,
+            vendor: success.seen.vendor.map((item) => item.grant),
+            savedProxyIsRoute: true,
+            refreshThroughRoute: tokenHost(refreshed).length,
+          },
         };
       }
 
@@ -673,6 +834,7 @@ test(
     } finally {
       for (const id of containers.reverse()) spawnSync("docker", ["rm", "--force", id]);
       spawnSync("docker", ["network", "rm", network]);
+      rmSync(vendorCertificates, { recursive: true, force: true });
       await admin.query(`DROP DATABASE IF EXISTS ${poolDatabase.name} WITH (FORCE)`);
       await admin.query(`DROP ROLE IF EXISTS ${poolDatabase.owner}`);
       await admin.query("DROP ROLE IF EXISTS pool_route_test");
