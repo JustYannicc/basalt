@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Provider rows are shared by every organization, so an app deploy writes one only when the merged definition differs from the stored row, and takes its provider lock as a FOR NO KEY UPDATE row lock rather than a key-preserving update. A deploy that changes nothing therefore leaves no new row version, and cannot fail another organization's serializable production operation that locks the same provider. Concurrent deploys of one provider still wait for that lock and merge one after another, and a deploy that really changes a definition still writes it, so an operation that meets the write keeps today's refusal."
+    }
+  }
+}

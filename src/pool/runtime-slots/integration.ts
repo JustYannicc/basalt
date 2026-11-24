@@ -1,4 +1,6 @@
-import { RuntimeSlotRecovery } from "./recovery.ts";
+import { RuntimeSlotRecovery, primaryLastEnd } from "./recovery.ts";
+import { lastRecovery } from "./recovery-record.ts";
+import { UnservingClock } from "./unserving-clock.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
 import { observeUnattestedAdoption } from "./adoption-observation.ts";
@@ -17,6 +19,7 @@ import { BoundSlotDriver, runtimeRequest, type RuntimeStub } from "./transport.t
 import { RuntimeEndpoint, type EndpointEnvironment, type EndpointOptions } from "./endpoint.ts";
 import {
   SlotRefused,
+  awaitsProof,
   type ControllerCode,
   type SlotIdentity,
   type SlotTarget,
@@ -29,6 +32,7 @@ import { LegacyActivity } from "./legacy-activity.ts";
 import type { SlotStorage } from "./storage.ts";
 import type { PeerBootstrapInput } from "./peer-bootstrap.ts";
 import type { RetirementProvider } from "./retirement.ts";
+import type { HomeDatabasePoolObservation } from "../home-database-pool.ts";
 
 export interface HandoffEnvironment extends EndpointEnvironment {
   POOL_DESIRED_IMAGE_INPUT?: string;
@@ -42,6 +46,8 @@ interface Options {
   retirementProvider?: RetirementProvider;
   startupAbsence?(record: StartupStopRecord): Promise<void>;
   selectedChanged?(): Promise<void>;
+  /** The last counters Home reported; active-health returns them without reading Home. */
+  databasePool?(): HomeDatabasePoolObservation | null;
   recovery?: {
     provider: RuntimeProviderReader;
     beforeCommit?(
@@ -133,6 +139,7 @@ export class RuntimeHandoff {
       clock: slotClock,
       defer: (work) => this.ctx.waitUntil(work),
       wrap: this.options.wrap,
+      ...(this.options.databasePool ? { databasePool: this.options.databasePool } : {}),
     }));
   }
   async selected() {
@@ -149,6 +156,25 @@ export class RuntimeHandoff {
   }
   available() {
     return this.recovery?.available() ?? true;
+  }
+  /** How long a call may still wait for the selected root's recovery; 0 when none is restoring it. */
+  recoveryHoldMs() {
+    return this.recovery?.holdMs() ?? 0;
+  }
+  /** The forced-restart clock, readable while the runtime refuses: "needs a person" shows here. */
+  recoveryState() {
+    return new UnservingClock(this.storage).inspect();
+  }
+  /** How the last primary a recovery restarted had ended. */
+  primaryEnd() {
+    return primaryLastEnd(this.ctx.storage);
+  }
+  /** The selected root's last recovery: detected, ready, its rounds and their refusals. */
+  lastRecovery() {
+    return lastRecovery(this.ctx.storage);
+  }
+  resetRecovery() {
+    return new UnservingClock(this.storage).reset();
   }
   supervise() {
     if (!this.options.recovery) return Promise.resolve();
@@ -184,18 +210,34 @@ export class RuntimeHandoff {
   async status(signal = AbortSignal.timeout(2_000)) {
     const identity = await this.selected();
     if (!identity) return undefined;
+    await this.assertProven();
     const health = await this.driver.health(identity, signal);
     return {
       boot_id: identity.bootId,
       started_at: "selected-runtime",
       policyLeaseUntil: health.policyLeaseUntil,
+      ...(health.database ? { database: health.database } : {}),
     };
+  }
+  databasePool() {
+    return this.options.databasePool?.() ?? null;
+  }
+  /** Nothing reports a slot an unfence handed back as serving until it is proven. */
+  private async assertProven() {
+    if (awaitsProof((await this.storage.inspect()).selection?.active))
+      throw new SlotRefused("selection");
   }
   async activeHealth() {
     const identity = await this.selected();
     if (!identity) throw new SlotRefused("selection");
+    await this.assertProven();
     const health = await this.driver.health(identity, AbortSignal.timeout(2_000));
-    return { identity, leaseMs: Math.floor(health.policyLeaseUntil - performance.now()) };
+    return {
+      identity,
+      leaseMs: Math.floor(health.policyLeaseUntil - performance.now()),
+      ...(this.options.databasePool ? { homeDatabasePool: this.options.databasePool() } : {}),
+      ...(health.database ? { database: health.database } : {}),
+    };
   }
   private async choose<T>(
     legacy: (prepared: () => void) => Promise<T>,
@@ -306,6 +348,17 @@ export class RuntimeHandoff {
       throw new SlotRefused("selection");
     return this.legacyEndpoint.bootstrapPeer(input, signal);
   }
+  /**
+   * A fence stopped the fleet alarm that runs recovery, so an unfence arms it again. Armed before
+   * the unfence commits too, so an object reset between the two still runs recovery; a pass under
+   * a fence that holds refuses and arms nothing further.
+   */
+  async unfence(identity: SlotIdentity) {
+    await this.options.selectedChanged?.();
+    const unfenced = await this.slots.unfence(identity);
+    await this.options.selectedChanged?.();
+    return unfenced;
+  }
   async promote(intent: PromotionIntent, envelope: string) {
     const proof = await this.authority.promotion(intent, envelope);
     await this.driver.attest(proof.target, envelope);
@@ -333,6 +386,7 @@ export class RuntimeHandoff {
     return this.choose(
       () => legacy(),
       async (identity) => {
+        await this.assertProven();
         const health = await this.driver.warm(identity, AbortSignal.timeout(2_000));
         return {
           boot_id: identity.bootId,
@@ -364,6 +418,7 @@ export class RuntimeHandoff {
     return this.choose(
       () => legacy(),
       async (identity) => {
+        await this.assertProven();
         const observed = Schema.decodeUnknownSync(Schema.Struct({ kind: Schema.String }))(
           await this.driver.witness(identity),
         );
@@ -447,11 +502,13 @@ export class RuntimeHandoff {
   ) {
     const selected = await this.selected();
     if (!selected) throw new SlotRefused("selection");
+    await this.assertProven();
     await this.driver.native(selected, policy, signal);
   }
   async probeFetch(request: Request, port: 8318 | 8327) {
     const selected = await this.selected();
     if (!selected) throw new SlotRefused("selection");
+    await this.assertProven();
     return this.driver.probeFetch(selected, request, port);
   }
 }

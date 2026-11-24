@@ -1,12 +1,14 @@
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import { RuntimeSqlite } from "./runtime-handoff-storage.ts";
 import { runtimeFixtureCode } from "./runtime-handoff-proofs.ts";
-import { runtimeProofFixture } from "../release-barrier/test/runtime-proof-fixture.ts";
+import { runtimeProofFixture } from "../pool-fleet/test/runtime-proof-fixture.ts";
 import { boundFleetCell } from "../../src/pool/runtime-fleet/bound-cell.ts";
 import { RuntimeProviderReader } from "../../src/pool/runtime-provider/read.ts";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
+import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
+import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 
 export async function fleetCellFixture(
   staleFailure: "flagged" | "plain" | "overloaded" | "non-error" | "http" = "flagged",
@@ -35,20 +37,24 @@ export async function fleetCellFixture(
   let failApplication = false,
     failRuntime = false;
   let credential: string | null = "synthetic-provider-token";
+  let ran = false;
   const provider = new RuntimeProviderReader({ get: async () => credential }, async (input) => {
     const instances = new URL(input).pathname.endsWith("instances-v2");
     if (instances ? failRuntime : failApplication) return new Response(null, { status: 403 });
+    const running = runtime.ctx.container.running;
+    ran ||= running;
     return Response.json({
       success: true,
       errors: [],
+      // As on production: once destroyed, the instance stays listed under state=active as inactive.
       result: instances
-        ? runtime.ctx.container.running
+        ? ran
           ? [
               {
                 id: target.instanceId,
                 application_id: target.applicationId,
                 image: providerFixture.raw.configuration.image,
-                status: { state: "running" },
+                status: { state: running ? "running" : "inactive" },
               },
             ]
           : []
@@ -74,43 +80,55 @@ export async function fleetCellFixture(
     disconnected: 0,
     failHealth: false,
     modelStubs,
+    // A control path the endpoint refuses, answered as its own refusals are.
+    refuse: {} as Record<string, SlotRefused["reason"]>,
   };
-  const cell = boundFleetCell({
-    ctx: root,
-    env,
-    target,
-    code: runtimeFixtureCode,
-    provider,
-    application: { ...application, color: "blue", imageInput: target.imageInput },
-    wrap: runtime.wrap,
-    remote: () => {
-      const stub = ++transport.stubs;
-      const generation = transport.generation;
-      return {
-        fetch: async (request) => {
-          transport.calls++;
-          if (transport.fail) throw new Error("native transport failed");
-          if (
-            generation !== transport.generation ||
-            (transport.failHealth && new URL(request.url).pathname === "/health")
-          ) {
-            transport.disconnected++;
-            await request.text();
-            if (staleFailure === "http") return new Response(null, { status: 409 });
-            if (staleFailure === "non-error") throw "synthetic non-Error failure";
-            const error = new Error("synthetic stale endpoint stub");
-            if (staleFailure === "flagged")
-              Object.assign(error, { disconnected: true, retryable: true });
-            if (staleFailure === "overloaded") Object.assign(error, { overloaded: true });
-            throw error;
-          }
-          if (request.headers.has("X-Signalbox-Runtime-Identity")) transport.modelStubs.push(stub);
-          return runtime.stub.fetch(request);
-        },
-      };
-    },
-  });
+  const makeCell = () =>
+    boundFleetCell({
+      ctx: root,
+      env,
+      target,
+      code: runtimeFixtureCode,
+      provider,
+      application: { ...application, color: "blue", imageInput: target.imageInput },
+      wrap: runtime.wrap,
+      remote: () => {
+        const stub = ++transport.stubs;
+        const generation = transport.generation;
+        return {
+          fetch: async (request) => {
+            transport.calls++;
+            if (transport.fail) throw new Error("native transport failed");
+            if (
+              generation !== transport.generation ||
+              (transport.failHealth && new URL(request.url).pathname === "/health")
+            ) {
+              transport.disconnected++;
+              await request.text();
+              if (staleFailure === "http") return new Response(null, { status: 409 });
+              if (staleFailure === "non-error") throw "synthetic non-Error failure";
+              const error = new Error("synthetic stale endpoint stub");
+              if (staleFailure === "flagged")
+                Object.assign(error, { disconnected: true, retryable: true });
+              if (staleFailure === "overloaded") Object.assign(error, { overloaded: true });
+              throw error;
+            }
+            const refused = transport.refuse[new URL(request.url).pathname];
+            if (refused) {
+              await request.text();
+              return runtimeErrorResponse(new SlotRefused(refused), "endpoint");
+            }
+            if (request.headers.has("X-Signalbox-Runtime-Identity"))
+              transport.modelStubs.push(stub);
+            return runtime.stub.fetch(request);
+          },
+        };
+      },
+    });
+  const cell = makeCell();
   return {
+    // The same cell over the same storage, as the controller's replaced isolate builds it.
+    replacedCell: makeCell,
     ...runtime,
     cell,
     storage,

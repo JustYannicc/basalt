@@ -1,0 +1,130 @@
+import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
+import { refuse } from "./errors.ts";
+import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
+
+/*
+ * scripts/pool-acceptance.ts asserts one boot for the whole pool ("Pool boot changed during
+ * acceptance requests"), and its restart mode passes on any boot change. With a fleet, each
+ * response's X-Signalbox-Pool-Boot is the serving runtime's boot, so both would misread a healthy
+ * fleet. This gate reuses the same client and checks the fleet's own invariant instead.
+ */
+
+export interface AcceptanceInput {
+  client: PoolAcceptanceClient;
+  /** Signs each model call for the release's acceptance device. */
+  credential: ModelAuth;
+  model?: string;
+  /**
+   * An owner token for a dedicated acceptance pool only. Absent when the device is in a pool that
+   * holds people's work: then the two reads it allows (the pool's accounts, its usage) are skipped.
+   */
+  access?: PoolAccess;
+  controller: () => Promise<ControllerView>;
+  fleet: () => Promise<FleetView>;
+  burst?: number;
+  rounds?: number;
+  log: (line: string) => void;
+}
+
+const conversation = (expectedRecords = 1) => ({
+  id: crypto.randomUUID().toLowerCase(),
+  expectedRecords,
+});
+
+function selectModel(ids: string[], requested?: string) {
+  if (requested) {
+    if (!ids.includes(requested))
+      throw new AcceptanceFailure("The requested model is not present in /v1/models");
+    return requested;
+  }
+  if (ids.length !== 1)
+    throw new AcceptanceFailure(`/v1/models returned ${ids.length} models; set the model input`);
+  return ids[0]!;
+}
+
+export const primaryBoot = (view: ControllerView) => {
+  const boot = view.selection?.active.identity?.bootId;
+  if (!boot)
+    throw refuse(
+      "selection-missing",
+      "Controller inspect shows no selected primary identity (selection.active.identity).",
+      "Adopt the root first; the fleet is configured only beside a selected primary.",
+    );
+  return boot;
+};
+
+/** Boots of fleet cells, never the primary's; a draining cell that just served still counts. */
+export const cellBoots = (fleet: FleetView, primary: string) =>
+  new Set(
+    fleet.resources
+      .flatMap((row) => (row.identity ? [row.identity.bootId] : []))
+      .filter((boot) => boot !== primary),
+  );
+
+export async function runFleetAcceptance(input: AcceptanceInput) {
+  const { client, credential, log } = input;
+  const catalog = await client.modelCatalog(credential);
+  const model = selectModel(catalog.ids, input.model);
+  const { access } = input;
+  const accounts = access ? await client.testAccountIds(access) : undefined;
+  log(`models status=200 count=${catalog.ids.length}`);
+  const burst = input.burst ?? 6;
+  let served: { round: number; cell: number; primary: number; other: number } | undefined;
+  const conversations = [];
+  for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
+    // Ready cells take every turn; the root serves only while no cell is ready.
+    const batch = Array.from({ length: burst }, () => conversation());
+    conversations.push(...batch);
+    const results = await Promise.all(
+      batch.map((value) => client.sendTurn(credential, model, value)),
+    );
+    const primary = primaryBoot(await input.controller());
+    const cells = cellBoots(await input.fleet(), primary);
+    const count = { round, cell: 0, primary: 0, other: 0 };
+    for (const result of results)
+      if (cells.has(result.boot)) count.cell++;
+      else if (result.boot === primary) count.primary++;
+      else count.other++;
+    log(
+      `burst round=${round} turns=${burst} cell=${count.cell} primary=${count.primary} unknown_boot=${count.other}`,
+    );
+    if (count.cell > 0) served = count;
+  }
+  if (!served)
+    throw refuse(
+      "cell-served-proof-missing",
+      `No streamed turn in ${input.rounds ?? 3} bursts of ${burst} carried a fleet cell's X-Signalbox-Pool-Boot; every response came from the primary or an unknown runtime.`,
+      "Check fleet-inspect for a ready cell; if one is ready and still unused, the balancer never routed to it.",
+    );
+  let usageRecords: number | "skipped" = "skipped";
+  if (access && accounts) {
+    // With an owner token, the usage check stays mandatory: every record in the test pool's accounts.
+    const records = await Promise.all(
+      conversations.map((value) => client.waitForUsageRecords(access, value)),
+    );
+    if (records.flat().some((record) => !accounts.has(record.account)))
+      throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
+    usageRecords = records.flat().length;
+    log(`usage_records status=200 matched=${usageRecords}`);
+  } else log("usage_records skipped; the acceptance device is not in a dedicated acceptance pool");
+  const final = await client.sendTurn(credential, model, conversation());
+  log(`final_request status=200 first_byte_ms=${Math.round(final.firstByteMs)}`);
+  return { model, servedByCell: served, usageRecords };
+}
+
+/** After a disable: one plain streamed turn must come back from the selected primary. */
+export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "access">) {
+  const catalog = await input.client.modelCatalog(input.credential);
+  const model = selectModel(catalog.ids, input.model);
+  const result = await input.client.sendTurn(input.credential, model, conversation());
+  const primary = primaryBoot(await input.controller());
+  if (result.boot !== primary)
+    throw refuse(
+      "root-not-serving",
+      `After fleet-disable a streamed turn came from boot ${shortHash(result.boot)}, not the primary's ${shortHash(primary)}.`,
+      "Read fleet-inspect: a cell still serving after disable means the disable did not take effect.",
+    );
+  input.log(`root_request status=200 boot=primary`);
+  return { boot: shortHash(primary) };
+}

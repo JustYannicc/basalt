@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "Home serves a management read of its shortest round trip to the database over its coordination pool, since queueing in the pool or the pooler only adds time: one unmeasured warm-up, then up to seven trivial statements, each within half a second and all within three and a half seconds, answered in whole milliseconds with the median and slowest beside it, and unavailable below three samples. The pool supervisor reads it once per boot after Home has its configuration and before the node starts, and readiness reports the closed distance state, the whole-millisecond distance and the platform location while warming and serving, so the controller routes to runtimes near the database and redraws far cells. No raw socket reaches the database host."
+    }
+  }
+}

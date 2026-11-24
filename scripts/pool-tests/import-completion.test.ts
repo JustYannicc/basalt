@@ -242,7 +242,6 @@ test("v8 creates only its checkpoint and never skips a later registered v7 migra
           values: [v7.name],
         },
       ]);
-      await runHistoryOperator({ ...options, apply: true }, "f".repeat(32), connect);
       await migrateModelHistory(db);
       assert.equal(
         (await db.query("SELECT to_regclass('fixture_v7_marker') AS name")).rows[0]!.name,

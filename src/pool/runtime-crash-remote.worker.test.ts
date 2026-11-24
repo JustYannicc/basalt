@@ -6,6 +6,7 @@ import { joinedRuntimeProof } from "../../scripts/pool-tests/runtime-handoff-pro
 import { StartAuthorization } from "./runtime-slots/admission-proof.ts";
 import { SlotIdentity } from "./runtime-slots/contract.ts";
 import { crashAuditKey } from "./runtime-crash-contract.ts";
+import { answerTopology, followerTopology } from "./test/home-topology.ts";
 
 test(
   "a remote selected primary is killed and audited only inside its owning runtime DO",
@@ -44,6 +45,8 @@ test(
     await initial.body?.cancel();
     await f.settle();
     await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
+    // Production shape: the primary is killed only once its own Home proves it is a follower.
+    answerTopology(primary.home, () => Response.json(followerTopology()));
     const at = Date.now();
     const nonce = crypto.randomUUID();
     const response = await f.command("runtime-crash", {
@@ -55,7 +58,8 @@ test(
     });
     assert.equal(response.status, 200, await response.clone().text());
     assert.deepEqual(primary.calls.signals, [9]);
-    assert.deepEqual(f.old.calls.signals, []);
+    // The old root's own retirement at the handoff stopped it gracefully; the crash never reached it.
+    assert.deepEqual(f.old.calls.signals, [15]);
     assert.equal(await f.old.storage.get(crashAuditKey(nonce)), undefined);
     assert.ok(await primary.storage.get(crashAuditKey(nonce)));
     const inspection = await f.command("runtime-crash-inspect", { identity, nonce });

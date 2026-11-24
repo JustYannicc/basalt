@@ -2,6 +2,7 @@ import { seriesAggregates, tokenColumns } from "./series-aggregates.ts";
 import type { OverviewPriceTable } from "../../../apps/pool/overview-contract.ts";
 import { officialPriceRows } from "./official-cost.ts";
 import { pricedRowsSql } from "./overview-sql.ts";
+import { rollupPricedSql } from "./summary-rollup-query.ts";
 import { digest } from "../backend-users.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { appAttributionReady } from "./schema.ts";
@@ -10,6 +11,11 @@ import { accountHistoryReferences, importAccountPrefix } from "./import-account-
 import { seriesBounds, type SeriesCursor } from "./series-input.ts";
 import type { PoolUsageSeriesInput, SeriesAuthority } from "./series-contract.ts";
 import { seriesGrouping } from "./series-grouping.ts";
+import {
+  seriesRollupAggregate,
+  seriesRollupCoverage,
+  seriesRollupRows,
+} from "./series-rollup-query.ts";
 
 export { tokenColumns } from "./series-aggregates.ts";
 export const utcSql = (value: string) =>
@@ -22,6 +28,8 @@ export async function seriesQuery(
   after?: SeriesCursor,
   personScope?: string,
   prices?: OverviewPriceTable,
+  /** True when the pool is ready on the v16 rollup: whole hours read it, cut hours raw rows. */
+  rollup = false,
 ) {
   const source = await digest("home-local-v1"),
     gateway = await digest("pool-gateway-v1");
@@ -76,7 +84,7 @@ export async function seriesQuery(
     : undefined;
   const aggregates = seriesAggregates(prices !== undefined, true);
   const grouping = seriesGrouping(input.by);
-  const app = (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
+  const app = rollup || (await appAttributionReady(db)) ? "r.app_id" : "NULL::text AS app_id";
   const timezone = input.timezone ?? "UTC";
   const localBucket = `date_trunc('${input.bucket}', (left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC') AT TIME ZONE '${timezone}')`;
   // Totals scan imported history too; hash foreign identities only for account drill-downs.
@@ -91,12 +99,18 @@ export async function seriesQuery(
         WHEN NOT ${nativeAccount} OR NOT $7::boolean OR b.history IS NULL THEN 'unmapped'
         WHEN b.saved IS NULL THEN 'otherAccounts' ELSE b.saved END AS saved_account,
       ${personScope === undefined ? `(${nativeAccount} AND r.account IS NOT NULL AND (NOT $7::boolean OR b.history IS NULL OR b.saved IS NULL))` : "false"} AS counts_only
-      FROM basalt_model_requests r LEFT JOIN bindings b ON ${nativeAccount} AND r.account = b.history::character(64)
-      WHERE r.pool = $1
+      FROM ${rollup ? `(${seriesRollupRows(from, to)})` : "basalt_model_requests"} r LEFT JOIN bindings b ON ${nativeAccount} AND r.account = b.history::character(64)
+      WHERE ${
+        rollup
+          ? // The rows above are cut at the bounds already; the bound parameters stay typed.
+            "$2::text IS NOT NULL AND $3::text IS NOT NULL"
+          : `r.pool = $1
         AND r.timestamp >= $2::text::timestamptz - interval '1 microsecond'
         AND r.timestamp < $3::text::timestamptz + interval '1 microsecond'
-        AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text${where}${personalWhere}ACCOUNT_FILTER)`;
-  const prefix = `${selection}${prices ? `,${pricedRowsSql("selected", priceParameter!, "(s.source=$5 OR s.attribution='import-owner') AND NOT s.counts_only", "public_", true)}` : ""}`;
+        AND r.timestamp_exact >= $2::text AND r.timestamp_exact < $3::text`
+      }${where}${personalWhere}ACCOUNT_FILTER)`;
+  const guard = "(s.source=$5 OR s.attribution='import-owner') AND NOT s.counts_only";
+  const prefix = `${selection}${prices ? `,${rollup ? rollupPricedSql(priceParameter!, guard) : pricedRowsSql("selected", priceParameter!, guard, "public_", true)}` : ""}`;
   const metadataValues = values.slice(0, prices ? -1 : undefined);
   const rows = prices ? "priced" : "selected";
   const aggregateInputs = [
@@ -125,9 +139,13 @@ export async function seriesQuery(
   ];
   // OFFSET 0 makes aggregate filters reuse each calculated request price.
   const aggregate = `${prefix.replace("ACCOUNT_FILTER", accountWhere)},
-    normalized AS (SELECT ${aggregateInputs.join(",")}, ${grouping.projection}, ${localBucket} AS bucket_local FROM ${rows} OFFSET 0),
+    ${
+      rollup
+        ? seriesRollupAggregate(rows, grouping, input.bucket, timezone, prices !== undefined)
+        : `normalized AS (SELECT ${aggregateInputs.join(",")}, ${grouping.projection}, ${localBucket} AS bucket_local FROM ${rows} OFFSET 0),
     aggregated AS (SELECT ${grouping.columns}, bucket_local, ${aggregates.join(",\n      ")}
-      FROM normalized GROUP BY ${grouping.columns},bucket_local),
+      FROM normalized GROUP BY ${grouping.columns},bucket_local)`
+    },
     keyed AS (SELECT (${grouping.key})::text COLLATE "C" AS group_key,
       bucket_local AT TIME ZONE '${timezone}' AS bucket_at,
       (bucket_local + interval '1 ${input.bucket}') AT TIME ZONE '${timezone}' AS bucket_end,
@@ -141,7 +159,10 @@ export async function seriesQuery(
   return {
     text: `${aggregate}${condition} ORDER BY group_key,bucket_at LIMIT 5001`,
     values,
-    coverageText: `${selection.replace("ACCOUNT_FILTER", authority.mappingProven ? accountWhere : "")} SELECT source, min(timestamp_exact) AS first_at,max(timestamp_exact) AS last_at,
+    coverageText: `${selection.replace("ACCOUNT_FILTER", authority.mappingProven ? accountWhere : "")} ${
+      rollup
+        ? seriesRollupCoverage()
+        : `SELECT source, min(timestamp_exact) AS first_at,max(timestamp_exact) AS last_at,
       ${utcSql("max(ingested_at)")} AS ingested_at, count(*)::text AS requests,
       count(*) FILTER (WHERE saved_account NOT IN ('unmapped','otherAccounts') AND saved_account NOT LIKE 'imported:%')::text AS mapped,
       count(*) FILTER (WHERE saved_account = 'unmapped' OR saved_account LIKE 'imported:%')::text AS unmapped,
@@ -152,7 +173,8 @@ export async function seriesQuery(
       count(*) FILTER (WHERE counts_only OR cost_basis = 'historical-api-price' AND currency <> 'USD')::text AS missing,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_snapshot IS NULL)::text AS missing_snapshot,
       count(*) FILTER (WHERE NOT counts_only AND cost_basis <> 'unpriced' AND price_version IS NULL)::text AS missing_version
-      FROM selected GROUP BY source ORDER BY source LIMIT 501`,
+      FROM selected GROUP BY source ORDER BY source LIMIT 501`
+    }`,
     coverageValues: metadataValues,
     targetsText: `${selection.replace("ACCOUNT_FILTER", accountWhere)} SELECT DISTINCT provider,model FROM selected WHERE NOT counts_only AND (source=$5 OR attribution='import-owner') AND provider IS NOT NULL AND model IS NOT NULL ORDER BY provider,model LIMIT 101`,
     targetsValues: metadataValues,

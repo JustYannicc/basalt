@@ -1,3 +1,4 @@
+import { detachFromCaller } from "../caller-signal.ts";
 import { runtimeInput } from "./input.ts";
 import { remoteRuntimeDefect, runtimeErrorResponse } from "./request-error.ts";
 import { EndpointTrace, failEndpointResponse } from "../runtime-fleet/endpoint-trace.ts";
@@ -10,6 +11,7 @@ import {
   SlotIdentity,
   SlotTarget,
   SlotRefused,
+  HealthLeaseElapsed,
   RuntimeRetirementObservation,
   sameTarget,
   sameIdentity,
@@ -18,6 +20,7 @@ import {
 } from "./contract.ts";
 import { RuntimeEndpoint } from "./endpoint.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
+import { RuntimeDistance } from "../runtime-distance.ts";
 
 export interface RuntimeStub {
   fetch(request: Request): Promise<Response>;
@@ -33,6 +36,45 @@ const Policy = Schema.Struct({
 const Health = Schema.Struct({
   identity: SlotIdentity,
   leaseMs: Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1500)),
+  // An older runtime omits it and its remaining lease is used as before.
+  grantMs: Schema.optional(
+    Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1500)),
+  ),
+  // An older runtime omits it; a malformed one is dropped below rather than failing the read.
+  database: Schema.optional(Schema.Unknown),
+});
+const distance = (value: unknown) => {
+  const decoded = Schema.decodeUnknownOption(RuntimeDistance)(value);
+  return decoded._tag === "Some" ? { database: decoded.value } : {};
+};
+const ActivityCount = Schema.Struct({
+  active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  known: Schema.Boolean,
+  stillMs: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+const StillRelease = Schema.Struct({
+  released: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  unstamped: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  foreignSockets: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  connections: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+});
+const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+const StillCheck = Schema.Struct({
+  refusal: Schema.NullOr(
+    Schema.Literals(["not_draining", "unknown_count", "still_moving", "live_lease"]),
+  ),
+  phase: Schema.NullOr(Schema.Literals(["open", "draining", "retiring"])),
+  active: Count,
+  known: Schema.Boolean,
+  stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  leases: Schema.Struct({
+    currentCalls: Count,
+    currentSockets: Count,
+    foreignSockets: Count,
+    unstamped: Count,
+  }),
+  connections: Schema.NullOr(Count),
 });
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
@@ -50,7 +92,10 @@ export class BoundSlotDriver implements SlotDriver {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(value),
     });
-    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId);
+    // Control calls to a running boot carry its identity; a slot-only call has no boot yet.
+    const bootId =
+      "bootId" in target && typeof target.bootId === "string" ? target.bootId : undefined;
+    const trace = EndpointTrace.forRequest(request, target.slotId, this.driverId, bootId);
     let response: Response;
     try {
       response = await homeResponse(async () => {
@@ -81,9 +126,16 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(target, action, { target }, signal);
     try {
       const health = Schema.decodeUnknownSync(Health)(await response.json());
-      const policyLeaseUntil = requestedAt + health.leaseMs;
-      if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
-      return { identity: health.identity, policyLeaseUntil };
+      // The container's grant runs from the endpoint's own readiness send, which comes after this
+      // send, so counting it from here is never longer than granted and counts the read once. The
+      // remaining lease already had the read taken off; counted from here it took it off twice.
+      const leaseMs = health.grantMs ?? health.leaseMs;
+      const policyLeaseUntil = requestedAt + leaseMs;
+      const roundTripMs = performance.now() - requestedAt;
+      if (policyLeaseUntil <= performance.now())
+        // The remaining lease, as before, so the failure record's fields keep their meaning.
+        throw new HealthLeaseElapsed(Math.round(roundTripMs), health.leaseMs);
+      return { identity: health.identity, policyLeaseUntil, ...distance(health.database) };
     } catch (error) {
       failEndpointResponse(response, error);
       throw error;
@@ -142,6 +194,24 @@ export class BoundSlotDriver implements SlotDriver {
   async witness(target: SlotTarget) {
     return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
   }
+  async stopRefusing(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
+    const response = await this.call(
+      identity,
+      "stop-refusing",
+      { identity, refusingSince },
+      signal,
+    );
+    return Schema.decodeUnknownSync(
+      Schema.Struct({
+        stopped: Schema.Boolean,
+        hard: Schema.Boolean,
+        limited: Schema.optional(Schema.Boolean),
+        waiting: Schema.optional(
+          Schema.Struct({ active: Schema.Number, stillSince: Schema.Number }),
+        ),
+      }),
+    )(await response.json());
+  }
   async abortStartup(intent: StartupStopIntent, inspect: boolean) {
     const response = await this.call(
       intent.target,
@@ -160,8 +230,10 @@ export class BoundSlotDriver implements SlotDriver {
       AbortSignal.timeout(2_000),
     );
     const health = Schema.decodeUnknownSync(Health)(await response.json());
-    if (requestedAt + health.leaseMs <= performance.now()) throw new SlotRefused("unhealthy");
-    return { identity: health.identity, policyLeaseUntil: requestedAt + health.leaseMs };
+    // Counted as `read` counts it: the whole grant, from this send.
+    const policyLeaseUntil = requestedAt + (health.grantMs ?? health.leaseMs);
+    if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
+    return { identity: health.identity, policyLeaseUntil };
   }
   async install(identity: SlotIdentity, policy: NativeMembershipPolicy, signal: AbortSignal) {
     await (await this.call(identity, "install", { identity, policy }, signal)).body?.cancel();
@@ -175,12 +247,25 @@ export class BoundSlotDriver implements SlotDriver {
   }
   async drain(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "drain", { identity }, signal);
-    return Schema.decodeUnknownSync(
-      Schema.Struct({
-        active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-        known: Schema.Boolean,
-      }),
-    )(await response.json());
+    return Schema.decodeUnknownSync(ActivityCount)(await response.json());
+  }
+  async abandonStart(target: SlotTarget, signal: AbortSignal) {
+    const response = await this.call(target, "abandon-start", { target }, signal);
+    return Schema.decodeUnknownSync(Schema.Struct({ stopped: Schema.Boolean }))(
+      await response.json(),
+    );
+  }
+  async activity(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "activity", { identity }, signal);
+    return Schema.decodeUnknownSync(ActivityCount)(await response.json());
+  }
+  async checkStill(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "release-check", { identity }, signal);
+    return Schema.decodeUnknownSync(StillCheck)(await response.json());
+  }
+  async releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
+    const response = await this.call(identity, "release-still", { identity, operationId }, signal);
+    return Schema.decodeUnknownSync(StillRelease)(await response.json());
   }
   async retirement(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "retirement", { identity }, signal);
@@ -191,7 +276,11 @@ export class BoundSlotDriver implements SlotDriver {
   async failed(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "failed", { identity }, signal);
     return Schema.decodeUnknownSync(
-      Schema.Struct({ identity: SlotIdentity, stopped: Schema.Boolean }),
+      Schema.Struct({
+        identity: SlotIdentity,
+        stopped: Schema.Boolean,
+        end: Schema.optional(Schema.Unknown),
+      }),
     )(await retirementBody(response, signal));
   }
   fetch(identity: SlotIdentity, request: Request, port: 8317 | 8327 | 8318) {
@@ -219,6 +308,18 @@ export class BoundSlotDriver implements SlotDriver {
     }
     return response;
   }
+}
+
+/**
+ * A cell follows its caller only for a model call it forwards to its container's model port; every
+ * control action (start, install, drain, retire and the rest) runs to its end, as before the flag.
+ */
+export function runtimeCallerSignal(request: Request): Request {
+  const model =
+    request.headers.has("X-Signalbox-Runtime-Identity") &&
+    request.headers.get("X-Signalbox-Runtime-Port") === "8317" &&
+    request.headers.get("X-Signalbox-Runtime-Read-Only") !== "1";
+  return model ? request : detachFromCaller(request);
 }
 
 /** Only the pool Worker's private DO binding can reach this transport. */
@@ -323,11 +424,37 @@ export async function runtimeRequest(
       );
       if (action === "/install") await endpoint.install(identity, policy, request.signal);
       else await endpoint.native(identity, policy, request.signal);
-    } else if (action === "/drain") {
+    } else if (action === "/stop-refusing") {
+      const { identity, refusingSince } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({ identity: SlotIdentity, refusingSince: Schema.Number }),
+        )(value),
+      );
+      return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
+    } else if (action === "/release-check") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
       );
-      return Response.json(await endpoint.drain(identity, request.signal));
+      return Response.json(await endpoint.checkStill(identity));
+    } else if (action === "/release-still") {
+      const { identity, operationId } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({
+            identity: SlotIdentity,
+            operationId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9-]{1,128}$/u)),
+          }),
+        )(value),
+      );
+      return Response.json(await endpoint.releaseStill(identity, operationId, request.signal));
+    } else if (action === "/drain" || action === "/activity") {
+      const { identity } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
+      );
+      return Response.json(
+        await (action === "/activity"
+          ? endpoint.streamCount(identity)
+          : endpoint.drain(identity, request.signal)),
+      );
     } else if (action === "/retirement" || action === "/failed") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
@@ -335,6 +462,11 @@ export async function runtimeRequest(
       return Response.json(
         await endpoint[action === "/failed" ? "failed" : "retirement"](identity, request.signal),
       );
+    } else if (action === "/abandon-start") {
+      const { target } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value),
+      );
+      return Response.json(await endpoint.abandonStart(target));
     } else if (action === "/retire") {
       const { target, identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget, identity: SlotIdentity }))(

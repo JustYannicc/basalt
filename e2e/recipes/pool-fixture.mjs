@@ -179,6 +179,7 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     );
   });
   const homeMembership = new HomeMembership(new HomeClient(home));
+  let wake;
   const memberships = new NativeMemberships({
     storage,
     signingKey,
@@ -196,15 +197,24 @@ export async function startPoolFixture(signingKey, { catalog = [] } = {}) {
     install: async () => {},
     abort: () => {},
     invalidateView: (pool) => control.invalidateViews(pool),
+    // One pending wake-up, like the controller's single alarm: every pass asks for two, and a pass
+    // that needs no host read ends before either fires. The deadline is on the memberships' own
+    // clock, which advance() does not move.
     schedule: async (at) => {
-      if (stopped) return;
+      if (stopped || (wake && wake.at <= at)) return;
+      if (wake) {
+        clearTimeout(wake.timer);
+        timers.delete(wake.timer);
+      }
       const timer = setTimeout(
         () => {
           timers.delete(timer);
+          wake = undefined;
           void memberships.tick();
         },
-        Math.max(0, at - now()),
+        Math.max(0, at - Date.now()),
       );
+      wake = { at, timer };
       timers.add(timer);
     },
   });

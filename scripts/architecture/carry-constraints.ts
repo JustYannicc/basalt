@@ -69,12 +69,43 @@ export function architectureChangeErrors(
   return errors;
 }
 
+const metadataSnapshot = /^src\/catalog\/[^/]+\.oauth-metadata\.json$/;
+const reviewRegistry = "src/catalog/oauth-reviews.json";
+const pinLine = /^[+-]\s*"metadataSha256": "[a-f0-9]{64}",?$/;
+
+/**
+ * A reviewed OAuth metadata re-pin moves only snapshots and their digests. The runtime never reads
+ * the snapshots and ignores the digests, so the drift job's re-pin needs no architecture change.
+ */
+export function withoutMetadataRepins(changed: readonly string[], registryDiff: string) {
+  const content = registryDiff
+    .split("\n")
+    .filter((line) => /^[+-]/.test(line) && !/^(?:\+\+\+|---)(?: |$)/.test(line));
+  // A diff without content lines can't prove a pin-only change, so it keeps the rule.
+  const digestsOnly = content.length > 0 && content.every((line) => pinLine.test(line));
+  return changed.filter(
+    (file) => !metadataSnapshot.test(file) && !(file === reviewRegistry && digestsOnly),
+  );
+}
+
 export function repositoryArchitectureErrors(root: string, base: string | undefined) {
   if (!base) return [];
   if (!/^[a-f0-9]{40}$/.test(base)) throw new Error("Invalid architecture comparison commit");
   const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim().split("\n");
-  const changed = git("diff", "--no-renames", "--name-only", `${base}...HEAD`);
+  const changed = withoutMetadataRepins(
+    git("diff", "--no-renames", "--name-only", `${base}...HEAD`),
+    git(
+      "diff",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-renames",
+      "--unified=0",
+      `${base}...HEAD`,
+      "--",
+      reviewRegistry,
+    ).join("\n"),
+  );
   const present = new Set(git("ls-files"));
   const constraints = new Map(
     [...present]

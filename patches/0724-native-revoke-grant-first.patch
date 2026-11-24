@@ -1,0 +1,735 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+--- a/apps/hosted/cloud/src/infrastructure/auth.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth.ts
+@@ -36,6 +36,7 @@ import {
+   ApiAuthentication,
+   apiBearerAccess,
+   grantExpiry,
++  nativeCleanups,
+   authEndpointTemplates,
+ } from "@executor-js/hosted-server";
+ import { routeTemplates } from "@executor-js/telemetry";
+@@ -407,6 +408,8 @@ export const cloudAuth = (
+       appSessions,
+       // Background jobs only: grant expiry runs from the data step and the daily cron.
+       agentGrants: grantExpiry((run) => nativeCall((instance) => run(instance.api))),
++      // Background jobs only: revoked devices' pool cleanups, retried every minute.
++      nativeCleanups: nativeCleanups((run) => nativeCall((instance) => run(instance.api))),
+       handler,
+       origin: settings.url,
+       resourceOrigins: settings.resourceOrigins,
+diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+--- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
++++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+@@ -29,6 +29,7 @@ export const BackgroundJob = Schema.Literals([
+   "workflow-reconcile",
+   "billing-reconcile",
+   "agent-grant-expiry",
++  "native-cleanups",
+   "connection-retention",
+   "pool-migration-inventory",
+   "personal-data-reporting",
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -482,6 +482,14 @@ export default Api.make(
+       Effect.scoped,
+       Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+     );
++    // A revoked device's grant is already dead; its pool cleanup is retried until the pool answers.
++    const nativeDeviceCleanups = auth.nativeCleanups.retry.pipe(
++      Effect.provide(executor),
++      reportErrors,
++      Effect.scoped,
++      Effect.catch(() => Effect.logWarning("Native device cleanup retry failed")),
++      Effect.asVoid,
++    );
+     // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
+     const connectionRetention = whenConnectionRetentionEnabled(
+       Effect.gen(function* () {
+@@ -519,6 +527,7 @@ export default Api.make(
+       "schedule-wake",
+       "site-assets",
+       "account-health-rechecks",
++      "native-cleanups",
+     );
+     yield* jobs.schedule(
+       "*/5 * * * *",
+@@ -564,6 +573,7 @@ export default Api.make(
+       "workflow-reconcile": workflowReconcile,
+       "billing-reconcile": billingReconcile,
+       "agent-grant-expiry": agentGrantExpiry,
++      "native-cleanups": nativeDeviceCleanups,
+       "connection-retention": connectionRetention,
+       "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+       "personal-data-reporting": personalDataReporting,
+diff --git a/apps/hosted/self-host/src/auth.ts b/apps/hosted/self-host/src/auth.ts
+--- a/apps/hosted/self-host/src/auth.ts
++++ b/apps/hosted/self-host/src/auth.ts
+@@ -23,6 +23,7 @@ import {
+   resolveOrganizationReference,
+   deleteOrganizationRecords,
+   grantExpiry,
++  nativeCleanups,
+   authEndpointTemplates,
+ } from "@executor-js/hosted-server";
+ import { routeTemplates } from "@executor-js/telemetry";
+@@ -157,6 +158,9 @@ export const selfHostAuth = Effect.gen(function* () {
+     agentGrants: grantExpiry((run) =>
+       Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
+     ),
++    nativeCleanups: nativeCleanups((run) =>
++      Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
++    ),
+     origin: settings.url,
+     handler,
+   };
+diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+--- a/apps/hosted/self-host/src/implementation/executor-services.ts
++++ b/apps/hosted/self-host/src/implementation/executor-services.ts
+@@ -195,6 +195,13 @@ export const selfHostExecutorServices = <E, R>(
+           Effect.repeat(Schedule.spaced("1 day")),
+         ),
+       );
++      // A revoked device's grant is already dead; its pool cleanup is retried until the pool answers.
++      yield* Effect.forkScoped(
++        auth.nativeCleanups.retry.pipe(
++          Effect.catch(() => Effect.logWarning("Native device cleanup retry failed")),
++          Effect.repeat(Schedule.spaced("1 minute")),
++        ),
++      );
+       // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
+       yield* whenConnectionRetentionEnabled(
+         Effect.forkScoped(
+diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+--- a/apps/hosted/server/src/implementation/native-grant-host.ts
++++ b/apps/hosted/server/src/implementation/native-grant-host.ts
+@@ -55,9 +55,10 @@ const control = <A>(
+       }),
+     );
+     if (!response.ok) {
+-      // Registration keeps only the pool's refusal class; its message and edge pages stay here.
++      // Registration and revocation keep only the pool's refusal class; its message and edge pages
++      // stay here.
+       const refusal =
+-        action === "register" &&
++        (action === "register" || action === "revoke") &&
+         response.headers.get("content-type")?.startsWith("application/json") === true
+           ? Schema.decodeUnknownOption(PoolRefusal)(
+               yield* Effect.promise(() => response.json().catch(() => undefined)),
+@@ -75,7 +76,8 @@ const control = <A>(
+           dependencyStatus: response.status,
+           ...(Option.isSome(refusal) ? { dependencyCode: refusal.value.error } : {}),
+         },
+-        response.status === 401 || response.status === 403,
++        // 410: the pool says its person revoked this device.
++        response.status === 401 || response.status === 403 || response.status === 410,
+       );
+     }
+     const body: unknown = yield* nativeControlCall(action, "native_control_response", () =>
+@@ -423,9 +425,23 @@ export const nativeGrantHost = (
+         Schema.Struct({ revoked: Schema.Literal(true) }),
+       ).pipe(
+         Effect.asVoid,
+-        // A tools-only device's grant alone authorizes it, so revoking the grant ends it whatever
+-        // the pool answers; a pool that never heard of it answers that it doesn't exist.
+-        Effect.catch((error) => (access.policy.models ? Effect.fail(error) : Effect.void)),
++        // The pool holds no such device for this grant, so nothing is left to clean there.
++        Effect.catch((error) =>
++          error.body?.dependencyStatus === 404 && error.body?.dependencyCode === "not_found"
++            ? Effect.void
++            : Effect.fail(error),
++        ),
++      ),
++    // Any other refusal, such as a device whose person lost access to its pool, keeps a tools-only
++    // grant: its tools are the person's own. Fails only while the pool doesn't answer.
++    revokedAtPool: (_ctx, access) =>
++      checkNativeComputer(secret, poolOrigin, access).pipe(
++        Effect.as(false),
++        Effect.catch((error) =>
++          error.statusCode === 503
++            ? Effect.fail(error)
++            : Effect.succeed(error.body?.dependencyStatus === 410),
++        ),
+       ),
+   };
+ };
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -89,7 +89,13 @@ export {
+   type GrantObservers,
+   type RefreshRejection,
+ } from "./implementation/mcp-oauth.ts";
+-export { authEndpointTemplates, grantExpiry, type GrantExpiry } from "@executor-js/mcp-auth/oauth";
++export {
++  authEndpointTemplates,
++  grantExpiry,
++  nativeCleanups,
++  type GrantExpiry,
++  type NativeCleanups,
++} from "@executor-js/mcp-auth/oauth";
+ export type { OriginList, ResourceOrigins } from "@executor-js/mcp-auth";
+ export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
+ export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
+diff --git a/packages/mcp-auth/src/implementation/native-access-memory.ts b/packages/mcp-auth/src/implementation/native-access-memory.ts
+--- a/packages/mcp-auth/src/implementation/native-access-memory.ts
++++ b/packages/mcp-auth/src/implementation/native-access-memory.ts
+@@ -4,8 +4,8 @@ import { authCall } from "./auth-call.ts";
+ /**
+  * Every model request checks its device's bearer. An allowed answer and the database facts read
+  * for it are reused until this long after those rows were read, in one isolate, so a revocation
+- * made anywhere reaches every check within it. The pool's device check and the device budget
+- * still run every time.
++ * made anywhere reaches every check within it. One made in the same isolate forgets the grant's
++ * answers at once. The pool's device check and the device budget still run every time.
+  */
+ const memoryMs = 3_000;
+ const capacity = 1_000;
+@@ -14,9 +14,14 @@ const capacity = 1_000;
+ export const servable = (now: number, deadline: number, readAt: number) =>
+   now < Math.min(deadline, readAt + memoryMs);
+ 
+-/** Allowed answers by bearer digest. An entry never outlives its own deadline. */
+-export const recentAnswers = <V>() => {
++/**
++ * Allowed answers by bearer digest. An entry never outlives its own deadline. `grantOf` names the
++ * grant an answer allows, so a revoke can forget every answer for it.
++ */
++export const recentAnswers = <V>(grantOf: (value: V) => string) => {
+   const entries = new Map<string, { readonly value: V; readonly until: number }>();
++  /** When each grant was forgotten; an answer whose rows were read by then is never kept. */
++  const forgotten = new Map<string, number>();
+   return {
+     get: (key: string) => {
+       const entry = entries.get(key);
+@@ -29,6 +34,8 @@ export const recentAnswers = <V>() => {
+     set: (key: string, value: V, deadline: number, readAt: number) => {
+       entries.delete(key);
+       if (!servable(Date.now(), deadline, readAt)) return;
++      const forgottenAt = forgotten.get(grantOf(value));
++      if (forgottenAt !== undefined && readAt <= forgottenAt) return;
+       entries.set(key, { value, until: Math.min(deadline, readAt + memoryMs) });
+       for (const oldest of entries.keys()) {
+         if (entries.size <= capacity) break;
+@@ -38,6 +45,20 @@ export const recentAnswers = <V>() => {
+     delete: (key: string) => {
+       entries.delete(key);
+     },
++    /**
++     * Forget a grant whose rows say it was revoked by `at`, including answers still being checked
++     * that read its rows before then.
++     */
++    forget: (grant: string, at: number) => {
++      for (const [key, entry] of entries) if (grantOf(entry.value) === grant) entries.delete(key);
++      forgotten.delete(grant);
++      forgotten.set(grant, at);
++      // `servable` already refuses an answer read this long ago.
++      for (const [old, oldAt] of forgotten) {
++        if (Date.now() < oldAt + memoryMs) break;
++        forgotten.delete(old);
++      }
++    },
+   };
+ };
+ 
+diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+--- a/packages/mcp-auth/src/implementation/native-grants.ts
++++ b/packages/mcp-auth/src/implementation/native-grants.ts
+@@ -50,11 +50,54 @@ export interface NativeGrantHost {
+       facts?: object;
+     },
+   ) => Effect.Effect<void | NativeGrantDisplay, APIError>;
++  /**
++   * Whether the pool says the device's person revoked it, for a tools-only grant, which no access
++   * check asks the pool about. Fails while the pool doesn't answer.
++   */
++  readonly revokedAtPool?: (
++    context: GenericEndpointContext,
++    access: NativeGrantAccess,
++  ) => Effect.Effect<boolean, APIError>;
++  /** Remove the device at the pool. A revoked grant repeats it until it succeeds. */
+   readonly revoke: (
+     context: GenericEndpointContext,
+     access: NativeGrantAccess,
+   ) => Effect.Effect<void, APIError>;
+ }
++/**
++ * A revoked device whose pool cleanup has not been confirmed, kept as a verification row so every
++ * host's auth store holds it without a schema change. Cleanups are retried for this long.
++ */
++const cleanupPrefix = "native-cleanup:";
++const cleanupMs = 30 * 24 * 60 * 60 * 1000;
++const cleanupBatch = 25;
++/** Native grants read to find one computer's; one person's devices, revoked ones included. */
++const deviceLimit = 1000;
++/**
++ * Live grants read per pass when tools-only grants are checked against the pool, in id order from
++ * a saved cursor. A grant is checked again only once a whole cycle has passed and at least this
++ * long since the cycle started.
++ */
++const reconcileBatch = 50;
++const reconcileEveryMs = 10 * 60 * 1000;
++const reconcileIdentifier = "native-reconcile";
++const ReconcileCursor = Schema.Struct({
++  after: Schema.NullOr(Schema.String),
++  cycleStartedAt: Schema.Number,
++  /** Grants the pool said were revoked whose revoke failed; each pass tries them first. */
++  retry: Schema.optionalKey(Schema.Array(GrantId)),
++});
++const PendingRow = Schema.Struct({
++  id: Schema.String,
++  identifier: Schema.String,
++  value: Schema.String,
++  expiresAt: Schema.Date,
++});
++const GrantState = Schema.Struct({ revoked: Schema.Boolean });
++interface PendingCleanup {
++  readonly identifier: string;
++  readonly access: NativeGrantAccess;
++}
+ const Stored = Schema.Struct({
+   id: GrantId,
+   userId: Schema.NonEmptyString,
+@@ -88,7 +131,7 @@ interface Answer {
+ 
+ /** Better Auth owns tokens; native authority lives in the existing revocable grant record. */
+ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope[]>) => {
+-  const remembered = recentAnswers<Answer>();
++  const remembered = recentAnswers<Answer>((answer) => answer.access.id);
+   const stored = (ctx: GenericEndpointContext, id: GrantId) =>
+     Effect.gen(function* () {
+       if (!isNativeGrant(id)) return yield* Effect.fail(invalid());
+@@ -204,6 +247,93 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+         ),
+     },
+   };
++  const forget = (ctx: GenericEndpointContext, field: "id" | "identifier", value: string) =>
++    authCall(() =>
++      ctx.context.adapter.deleteMany({ model: "verification", where: [{ field, value }] }),
++    );
++  /** One attempt at the pool; a failure keeps the row, moved to the back of the queue. */
++  const cleanup = (ctx: GenericEndpointContext, pending: PendingCleanup) =>
++    host.revoke(ctx, pending.access).pipe(
++      Effect.andThen(forget(ctx, "identifier", pending.identifier)),
++      Effect.as(true),
++      Effect.catch(() =>
++        Effect.gen(function* () {
++          yield* Effect.logWarning("native.cleanup.pending").pipe(
++            Effect.annotateLogs({ grant: pending.access.id }),
++          );
++          const now = yield* Clock.currentTimeMillis;
++          yield* authCall(() =>
++            ctx.context.adapter.updateMany({
++              model: "verification",
++              where: [{ field: "identifier", value: pending.identifier }],
++              update: { updatedAt: new Date(now) },
++            }),
++          ).pipe(Effect.ignore);
++          return false;
++        }),
++      ),
++    );
++  /** Record the pool's part of a revoke, before the grant is revoked, so it can't be lost. */
++  const record = (ctx: GenericEndpointContext, id: GrantId) =>
++    Effect.gen(function* () {
++      const { access } = yield* stored(ctx, id);
++      const identifier = `${cleanupPrefix}${access.id}`;
++      const now = yield* Clock.currentTimeMillis;
++      yield* forget(ctx, "identifier", identifier);
++      yield* authCall(() =>
++        ctx.context.adapter.create({
++          model: "verification",
++          data: {
++            identifier,
++            value: JSON.stringify(access),
++            expiresAt: new Date(now + cleanupMs),
++            createdAt: new Date(now),
++            updatedAt: new Date(now),
++          },
++        }),
++      );
++      return { identifier, access } satisfies PendingCleanup;
++    });
++  /** One pending row. A row that can't be used is dropped, so it never holds a place in the queue. */
++  const retry = (ctx: GenericEndpointContext, value: unknown, now: number) =>
++    Effect.gen(function* () {
++      const row = Schema.decodeUnknownOption(PendingRow)(value);
++      if (Option.isNone(row)) {
++        const id = Schema.decodeUnknownOption(Schema.Struct({ id: Schema.String }))(value);
++        if (Option.isSome(id)) yield* forget(ctx, "id", id.value.id);
++        yield* Effect.logError("native.cleanup.unreadable");
++        return false;
++      }
++      const access = Schema.decodeUnknownOption(Schema.fromJsonString(NativeGrantAccess))(
++        row.value.value,
++      );
++      if (Option.isNone(access) || row.value.expiresAt.getTime() <= now) {
++        yield* forget(ctx, "id", row.value.id);
++        yield* Effect.logError(
++          Option.isNone(access) ? "native.cleanup.unreadable" : "native.cleanup.abandoned",
++        ).pipe(Effect.annotateLogs({ cleanup: row.value.identifier }));
++        return false;
++      }
++      // Only a revoked or deleted grant's device is removed; a revoke that failed half-way waits.
++      const grant = yield* authCall(() =>
++        ctx.context.adapter.findOne({
++          model: "mcpGrant",
++          where: [{ field: "id", value: access.value.id }],
++        }),
++      ).pipe(Effect.flatMap((found) => parse(Schema.NullOr(GrantState), found)));
++      const pending = { identifier: row.value.identifier, access: access.value };
++      if (grant !== null && !grant.revoked) {
++        yield* authCall(() =>
++          ctx.context.adapter.updateMany({
++            model: "verification",
++            where: [{ field: "id", value: row.value.id }],
++            update: { updatedAt: new Date(now) },
++          }),
++        );
++        return false;
++      }
++      return yield* cleanup(ctx, pending);
++    }).pipe(Effect.catch(() => Effect.succeed(false)));
+   return {
+     extension,
+     /**
+@@ -246,8 +376,180 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+           }),
+         ),
+       ),
+-    revoke: (ctx: GenericEndpointContext, id: GrantId) =>
+-      stored(ctx, id).pipe(Effect.flatMap(({ access }) => host.revoke(ctx, access))),
++    record,
++    /** Try a recorded cleanup once; while the pool doesn't answer, `retryCleanups` repeats it. */
++    cleanup: (ctx: GenericEndpointContext, pending: PendingCleanup) =>
++      cleanup(ctx, pending).pipe(Effect.asVoid),
++    /** The person's native grants for one computer, revoked or not. */
++    grantsForComputer: (ctx: GenericEndpointContext, userId: string, computer: string) =>
++      authCall(() =>
++        ctx.context.adapter.findMany({
++          model: "mcpGrant",
++          where: [
++            { field: "userId", value: userId },
++            { field: "resource", value: host.audience },
++          ],
++          limit: deviceLimit,
++        }),
++      ).pipe(
++        // At the cap the computer's grant can't be confirmed absent, so nothing is decided.
++        Effect.flatMap((rows) =>
++          rows.length < deviceLimit
++            ? Effect.succeed(rows)
++            : Effect.fail(new APIError("SERVICE_UNAVAILABLE")),
++        ),
++        Effect.flatMap((rows) => parse(Schema.Array(Stored), rows)),
++        Effect.map((rows) =>
++          rows.filter(
++            (row) =>
++              isNativeGrant(row.id) &&
++              Option.exists(
++                Schema.decodeUnknownOption(Schema.fromJsonString(NativeGrantPolicy))(row.policy),
++                (policy) => policy.computer === computer,
++              ),
++          ),
++        ),
++      ),
++    /**
++     * The live tools-only grants the pool says were revoked, checked a batch at a time. A device
++     * revoked before the grant ended first can still hold its grant, and no access check asks the
++     * pool about it. While the pool doesn't answer, nothing changes and the cursor waits.
++     */
++    reconcile: (ctx: GenericEndpointContext, end: (id: GrantId) => Effect.Effect<void, APIError>) =>
++      Effect.gen(function* () {
++        const revokedAtPool = host.revokedAtPool;
++        const result = { checked: 0, revoked: 0, unavailable: false };
++        if (revokedAtPool === undefined) return result;
++        const now = yield* Clock.currentTimeMillis;
++        const saved = yield* authCall(() =>
++          ctx.context.adapter.findOne({
++            model: "verification",
++            where: [{ field: "identifier", value: reconcileIdentifier }],
++          }),
++        ).pipe(
++          Effect.map((row) =>
++            Schema.decodeUnknownOption(Schema.Struct({ value: Schema.String }))(row).pipe(
++              Option.flatMap(({ value }) =>
++                Schema.decodeUnknownOption(Schema.fromJsonString(ReconcileCursor))(value),
++              ),
++              Option.getOrElse(() => ({ after: null, cycleStartedAt: 0, retry: [] })),
++            ),
++          ),
++        );
++        const { after } = saved;
++        let { cycleStartedAt } = saved;
++        const pending = saved.retry ?? [];
++        // A new cycle starts only once the last one began long enough ago; retries don't wait.
++        const readFresh = after !== null || now - cycleStartedAt >= reconcileEveryMs;
++        if (!readFresh && pending.length === 0) return result;
++        if (after === null && readFresh) cycleStartedAt = now;
++        type Filter = { field: string; operator?: "in" | "gt"; value: string | string[] };
++        const read = (where: Filter[], limit: number) =>
++          authCall(() =>
++            ctx.context.adapter.findMany({
++              model: "mcpGrant",
++              where: [
++                { field: "resource", value: host.audience },
++                { field: "revoked", value: false },
++                ...where,
++              ],
++              sortBy: { field: "id", direction: "asc" },
++              limit,
++            }),
++          ).pipe(Effect.flatMap((value) => parse(Schema.Array(Stored), value)));
++        // Grants whose revoke failed come first; a grant revoked meanwhile isn't read again.
++        const retried = pending.length
++          ? yield* read([{ field: "id", operator: "in", value: [...pending] }], pending.length)
++          : [];
++        const room = reconcileBatch - retried.length;
++        const fresh =
++          readFresh && room > 0
++            ? yield* read(
++                after === null ? [] : [{ field: "id", operator: "gt", value: after }],
++                room,
++              )
++            : [];
++        const retry: GrantId[] = [];
++        let last = after;
++        for (const [index, row] of [...retried, ...fresh].entries()) {
++          const policy = Schema.decodeUnknownOption(Schema.fromJsonString(NativeGrantPolicy))(
++            row.policy,
++          );
++          if (isNativeGrant(row.id) && Option.isSome(policy) && !policy.value.models) {
++            const access = NativeGrantAccess.make({
++              id: row.id,
++              userId: row.userId,
++              clientId: row.clientId,
++              policy: policy.value,
++            });
++            const answer = yield* revokedAtPool(ctx, access).pipe(
++              Effect.map((value) => ({ value })),
++              Effect.catch(() => Effect.succeed(undefined)),
++            );
++            if (answer === undefined) {
++              result.unavailable = true;
++              // Unasked grants keep their place: the retries not reached, and the cursor stays.
++              retry.push(...retried.slice(index).map((left) => left.id));
++              break;
++            }
++            result.checked++;
++            if (answer.value) {
++              const ended = yield* end(row.id).pipe(
++                Effect.as(true),
++                Effect.catch(() => Effect.succeed(false)),
++              );
++              if (ended) result.revoked++;
++              else retry.push(row.id);
++            }
++          }
++          if (index >= retried.length) last = row.id;
++        }
++        if (result.unavailable)
++          yield* Effect.logWarning("native.reconcile.unavailable").pipe(
++            Effect.annotateLogs({ checked: result.checked, revoked: result.revoked }),
++          );
++        // Nothing asked while the pool didn't answer: the saved cursor, and its cycle, stand.
++        if (result.unavailable && result.checked === 0) return result;
++        const next = !readFresh || (!result.unavailable && fresh.length < room) ? null : last;
++        yield* forget(ctx, "identifier", reconcileIdentifier);
++        yield* authCall(() =>
++          ctx.context.adapter.create({
++            model: "verification",
++            data: {
++              identifier: reconcileIdentifier,
++              value: JSON.stringify({ after: next, cycleStartedAt, retry: [...new Set(retry)] }),
++              expiresAt: new Date(now + cleanupMs),
++              createdAt: new Date(now),
++              updatedAt: new Date(now),
++            },
++          }),
++        );
++        return result;
++      }),
++    /** Retry pending pool cleanups, least recently tried first. */
++    retryCleanups: (ctx: GenericEndpointContext) =>
++      Effect.gen(function* () {
++        const rows = yield* authCall(() =>
++          ctx.context.adapter.findMany({
++            model: "verification",
++            where: [{ field: "identifier", operator: "starts_with", value: cleanupPrefix }],
++            sortBy: { field: "updatedAt", direction: "asc" },
++            limit: cleanupBatch,
++          }),
++        ).pipe(Effect.flatMap((value) => parse(Schema.Array(Schema.Unknown), value)));
++        const now = yield* Clock.currentTimeMillis;
++        const done = yield* Effect.forEach(rows, (row) => retry(ctx, row, now), {
++          concurrency: 5,
++        });
++        return { cleaned: done.filter(Boolean).length, attempted: rows.length };
++      }),
++    /** The bearer's own token, grant and consent rows: revoking needs no pool or membership check. */
++    holder: (ctx: GenericEndpointContext) =>
++      Effect.gen(function* () {
++        const token = ctx.headers?.get("authorization")?.match(/^Bearer ([^\s]+)$/iu)?.[1];
++        if (token === undefined) return yield* Effect.fail(invalid());
++        return (yield* resolve(ctx, token)).access;
++      }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid()))),
+     create: (ctx: GenericEndpointContext, userId: string, clientId: string) =>
+       Effect.gen(function* () {
+         const id = GrantId.make(`native:${crypto.randomUUID()}`);
+@@ -318,6 +620,8 @@ export const nativeGrants = (host: NativeGrantHost, provider: OAuthOptions<Scope
+           ),
+         );
+       }).pipe(Effect.mapError((error) => (error.statusCode === 503 ? error : invalid()))),
++    /** A grant revoked here by `at` is refused on its next check, not once the bound has passed. */
++    forgetAnswers: (id: GrantId, at: number) => remembered.forget(id, at),
+     /** Rotation's replay cache can return tokens without invoking claim contributors again. */
+     beforeRefresh: (ctx: GenericEndpointContext) =>
+       Effect.gen(function* () {
+diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+--- a/packages/mcp-auth/src/implementation/oauth.ts
++++ b/packages/mcp-auth/src/implementation/oauth.ts
+@@ -512,9 +512,14 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+       yield* settings.checkResource(context, row.userId, row.resource);
+       return yield* project(context, row, target);
+     });
++  /**
++   * The grant and its tokens end first, so a device stops at once. A native device's pool cleanup is
++   * recorded before that and tried after it; a background retry repeats it until the pool answers.
++   */
+   const revoke = (ctx: GenericEndpointContext, id: GrantId) =>
+     Effect.gen(function* () {
+-      if (isNativeGrant(id) && native !== undefined) yield* native.revoke(ctx, id);
++      const pending =
++        isNativeGrant(id) && native !== undefined ? yield* native.record(ctx, id) : undefined;
+       yield* authCall(() =>
+         ctx.context.adapter.update({
+           model: "mcpGrant",
+@@ -522,10 +527,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+           update: { revoked: true },
+         }),
+       );
++      if (pending !== undefined && native !== undefined)
++        native.forgetAnswers(id, yield* Clock.currentTimeMillis);
+       for (const model of ["oauthAccessToken", "oauthRefreshToken"])
+         yield* authCall(() =>
+           ctx.context.adapter.deleteMany({ model, where: [{ field: "referenceId", value: id }] }),
+         );
++      if (pending !== undefined && native !== undefined) yield* native.cleanup(ctx, pending);
+     });
+   /** New grants and tokens for a revoked connection fail; its grants lose their tokens now. */
+   const revokeConnection = (ctx: GenericEndpointContext, row: typeof ConnectionRecord.Type) =>
+@@ -1212,7 +1220,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+             ? Promise.reject(new APIError("NOT_FOUND"))
+             : runAuth(
+                 Effect.gen(function* () {
+-                  const access = yield* native.authenticate(ctx);
++                  // A device may end its own grant while the pool is down or it left its team.
++                  const access = yield* native.holder(ctx);
+                   yield* revoke(ctx, access.id);
+                   return { revoked: true };
+                 }),
+@@ -1231,6 +1240,24 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+                 ),
+               ),
+       ),
++      retryNativeCleanups: createAuthEndpoint("/native/cleanups/retry", serverOnly, (ctx) =>
++        native === undefined
++          ? Promise.resolve({
++              cleaned: 0,
++              attempted: 0,
++              checked: 0,
++              revoked: 0,
++              unavailable: false,
++            })
++          : runAuth(
++              Effect.gen(function* () {
++                const cleanups = yield* native.retryCleanups(ctx);
++                // A device its person revoked at the pool loses its grant here, as any revoke ends it.
++                const reconciled = yield* native.reconcile(ctx, (id) => revoke(ctx, id));
++                return { ...cleanups, ...reconciled };
++              }),
++            ),
++      ),
+       getMcpGrantAccess: createAuthEndpoint(
+         "/mcp/grant-access",
+         { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },
+@@ -1626,6 +1653,31 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+             }),
+           ),
+       ),
++      /**
++       * Connect revokes a native device by its computer, so the grant ends without the pool. A
++       * device already revoked has its pool cleanup recorded and tried again.
++       */
++      revokeNativeDevice: createAuthEndpoint(
++        "/native/devices/revoke",
++        { method: "POST", requireHeaders: true },
++        (ctx) =>
++          native === undefined
++            ? Promise.reject(new APIError("NOT_FOUND"))
++            : runAuth(
++                Effect.gen(function* () {
++                  const userId = yield* browser(ctx);
++                  const { computer } = yield* parse(
++                    Schema.Struct({ computer: Schema.NonEmptyString }),
++                    ctx.body,
++                  );
++                  const grants = yield* native.grantsForComputer(ctx, userId, computer);
++                  for (const grant of grants)
++                    if (!grant.revoked) yield* revoke(ctx, grant.id);
++                    else yield* native.cleanup(ctx, yield* native.record(ctx, grant.id));
++                  return { revoked: grants.length > 0 };
++                }),
++              ),
++      ),
+       revokeMcpGrant: createAuthEndpoint(
+         "/mcp/grants/revoke",
+         { method: "POST", requireHeaders: true },
+@@ -1647,8 +1699,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+                   Option.isSome(existing) &&
+                   existing.value.userId === userId &&
+                   existing.value.revoked
+-                )
++                ) {
++                  // Its pool cleanup is recorded and tried again; the retry repeats it after.
++                  if (native !== undefined)
++                    yield* native.cleanup(ctx, yield* native.record(ctx, id));
+                   return { revoked: true };
++                }
+               }
+               const row = yield* get(ctx, id);
+               if (row.userId !== userId) return yield* Effect.fail(new APIError("FORBIDDEN"));
+@@ -1821,3 +1877,32 @@ export const grantExpiry = (
+     ),
+ });
+ export type GrantExpiry = ReturnType<typeof grantExpiry>;
++
++export class NativeCleanupUnavailable extends Schema.TaggedError<NativeCleanupUnavailable>()(
++  "NativeCleanupUnavailable",
++  {},
++) {}
++/**
++ * The server-only endpoint that retries revoked devices' pool cleanups and checks tools-only
++ * grants against the pool.
++ */
++export interface NativeCleanupApi {
++  readonly retryNativeCleanups: (input?: { body?: undefined }) => Promise<unknown>;
++}
++const NativeCleanupResult = Schema.Struct({
++  cleaned: Schema.Number,
++  attempted: Schema.Number,
++  checked: Schema.Number,
++  revoked: Schema.Number,
++  unavailable: Schema.Boolean,
++});
++/** A host's background retry of revoked devices' pool cleanups, through its own auth instance. */
++export const nativeCleanups = (
++  call: <A>(run: (api: NativeCleanupApi) => Promise<A>) => Effect.Effect<A, unknown>,
++) => ({
++  retry: call((api) => api.retryNativeCleanups({})).pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(NativeCleanupResult)),
++    Effect.mapError(() => new NativeCleanupUnavailable()),
++  ),
++});
++export type NativeCleanups = ReturnType<typeof nativeCleanups>;

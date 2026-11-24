@@ -1,4 +1,5 @@
 import { cost, tokens } from "./usage-format.ts";
+import { formatMoment, utc } from "./moments.ts";
 import { zurichDay, type Metric } from "./summary-model.ts";
 
 const count = new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 });
@@ -30,18 +31,13 @@ export function formatDelta(value: number | null): string | null {
   return `${rounded > 0 ? "+" : "−"}${percent.format(Math.abs(value))}`;
 }
 
-const dayShort = new Intl.DateTimeFormat("en", {
-  timeZone: "UTC",
-  month: "short",
-  day: "numeric",
-});
 const weekdayShort = new Intl.DateTimeFormat("en", { timeZone: "UTC", weekday: "short" });
 
 /** A calendar day, or an instant read as its Zurich day, so it is the same date in every browser. */
 export const calendarDay = (value: string) =>
   /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : zurichDay(value);
 const noon = (value: string) => new Date(`${calendarDay(value)}T12:00:00Z`);
-export const formatDay = (day: string) => dayShort.format(noon(day));
+export const formatDay = (day: string) => formatMoment(noon(day), utc, { dateStyle: "short" });
 export const formatWeekday = (day: string) => weekdayShort.format(noon(day));
 export const formatMonth = (day: string) =>
   new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" }).format(noon(day));

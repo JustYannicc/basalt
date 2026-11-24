@@ -75,7 +75,9 @@ struct HomeView: View {
 
   private var connectionDetail: String {
     guard let view = model.snapshot?.connection else { return "Not signed in" }
-    if let display = view.display { return "\(display.account.email) · \(display.pool.name)" }
+    if let display = view.display {
+      return [display.account.email, model.presentation.poolName].compactMap { $0 }.joined(separator: " · ")
+    }
     return view.mode == .direct ? "Direct credentials" : model.presentation.statusLabel
   }
 }

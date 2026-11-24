@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
-import { readdirSync, statSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inflateSync } from "node:zlib";
 import { readEntryHeader } from "../../shared/.generated/strata/git/pack-entries.js";
-import { git } from "./backend.ts";
+import { boundedGit, git } from "./backend.ts";
+
+// Packing, pushing and checking 48 MiB of incompressible history takes seconds on an idle core and
+// several times that on a loaded runner: this bound on those git processes stops only a hung one.
+export const largeGitMs = 5 * 60_000;
 
 export const sampleBytes = (version: number, file: number) =>
   createHash("shake256", { outputLength: 1024 * 1024 })
@@ -27,14 +32,34 @@ export function largeHistory(root: string, bare: string) {
     git(clone, "commit", "-m", `version ${version}`);
     commits.push(git(clone, "rev-parse", "HEAD").toString().trim());
   }
-  git(clone, "push", "origin", "main");
-  git(bare, "-c", "pack.threads=1", "gc", "--aggressive", "--prune=now");
-  git(bare, "fsck", "--full", "--strict");
+  boundedGit(largeGitMs, clone, "push", "origin", "main");
+  boundedGit(largeGitMs, bare, "-c", "pack.threads=1", "gc", "--aggressive", "--prune=now");
+  boundedGit(largeGitMs, bare, "fsck", "--full", "--strict");
   const packs = join(bare, "objects", "pack"),
     packBytes = readdirSync(packs)
       .filter((name) => name.endsWith(".pack"))
       .reduce((sum, name) => sum + statSync(join(packs, name)).size, 0);
   return { commits, packBytes };
+}
+
+/**
+ * The large history, built once per test file while it loads, before any test's deadline runs:
+ * a test copies its bare repository with `useLargeHistory` instead of building its own.
+ */
+export function largeHistoryOnce() {
+  const root = mkdtempSync(join(tmpdir(), "large-history-"));
+  process.once("exit", () => rmSync(root, { recursive: true, force: true }));
+  const bare = join(root, "repo.git");
+  git(root, "init", "--bare", "--initial-branch=main", bare);
+  return { bare, ...largeHistory(root, bare) };
+}
+
+/** Puts the large history into a test's own bare repository, which its backend serves. */
+export function useLargeHistory(history: ReturnType<typeof largeHistoryOnce>, bare: string) {
+  rmSync(bare, { recursive: true, force: true });
+  cpSync(history.bare, bare, { recursive: true });
+  git(bare, "config", "http.receivepack", "true");
+  return { commits: history.commits, packBytes: history.packBytes };
 }
 
 export function deltaKinds(pack: Uint8Array<ArrayBuffer>) {

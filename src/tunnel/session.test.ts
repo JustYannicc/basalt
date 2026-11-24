@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { decodeTunnelFrame, tunnelLimits } from "../../clients/contracts/tunnel.ts";
-import { serveTunnel } from "./session.ts";
+import { leaseLostLimitMs, serveTunnel } from "./session.ts";
 import type { TunnelSocket } from "./platform.ts";
 
 class Peer extends EventTarget implements TunnelSocket {
@@ -153,4 +153,117 @@ test("a long-valid grant does not overflow the platform timer and close early", 
   fixture.headers(new Response(null));
   await fixture.work[1];
   assert.equal(fixture.calls(), 1);
+});
+
+// As workerd reports a lease whose holder's instance went away: no Close frame, code 1006.
+const wentAway = (lease: EventTarget) =>
+  lease.dispatchEvent(Object.assign(new Event("close"), { code: 1006, wasClean: false }));
+
+test("a session whose lease went away ends once its calls end, with one closed line", async (context) => {
+  const warned = context.mock.method(console, "warn", () => {});
+  const fixture = session(context);
+  const request = await fixture.dispatched;
+  wentAway(fixture.lease);
+  assert.equal(request.signal.aborted, false, "the call under way goes on");
+  assert.deepEqual(fixture.socket.closed, []);
+  context.mock.timers.tick(5_000);
+  fixture.headers(
+    new Response(
+      new TextEncoder().encode(
+        'event: response.completed\ndata: {"type":"response.completed"}\n\n',
+      ),
+      {
+        headers: { "content-type": "text/event-stream" },
+      },
+    ),
+  );
+  await fixture.work[1];
+  assert.equal(fixture.frames().at(-1)?.type, "end");
+  assert.deepEqual(fixture.socket.closed, [1000]);
+  const lines = warned.mock.calls.filter(
+    (call) => call.arguments[0] === "NATIVE_TUNNEL_LEASE_LOST",
+  );
+  assert.deepEqual(
+    lines.map((call) => call.arguments[1]),
+    [{ cause: "went_away", code: 1006, operations: 1, ended: "operations", heldMs: 5_000 }],
+  );
+});
+
+test(`a session whose lease went away ends after ${leaseLostLimitMs} ms at most`, async (context) => {
+  const warned = context.mock.method(console, "warn", () => {});
+  const fixture = session(context);
+  const request = await fixture.dispatched;
+  fixture.lease.dispatchEvent(new Event("error"));
+  context.mock.timers.tick(leaseLostLimitMs - 1);
+  assert.deepEqual(fixture.socket.closed, []);
+  assert.equal(request.signal.aborted, false);
+  context.mock.timers.tick(1);
+  assert.deepEqual(fixture.socket.closed, [1011]);
+  assert.equal(request.signal.aborted, true, "the call is stopped with the session");
+  assert.deepEqual(
+    warned.mock.calls
+      .filter((call) => call.arguments[0] === "NATIVE_TUNNEL_LEASE_LOST")
+      .map((call) => call.arguments[1]),
+    [{ cause: "error", code: null, operations: 1, ended: "bound", heldMs: leaseLostLimitMs }],
+  );
+});
+
+test("a session whose lease went away refuses a new call, and drops the body the device already sent", async (context) => {
+  context.mock.method(console, "warn", () => {});
+  const fixture = session(context);
+  await fixture.dispatched;
+  wentAway(fixture.lease);
+  fixture.socket.frame({
+    type: "open",
+    id: 2,
+    operation: { service: "models", method: "POST", path: "/v1/responses", transport: "http" },
+    headers: { "content-type": "application/json" },
+  });
+  fixture.socket.frame({ type: "credit", id: 2, bytes: tunnelLimits.windowBytes });
+  fixture.socket.frame({
+    type: "data",
+    id: 2,
+    bytes: Buffer.from("{}").toString("base64"),
+    text: false,
+  });
+  fixture.socket.frame({ type: "end", id: 2 });
+  assert.deepEqual(
+    fixture.frames().filter((frame) => "id" in frame && frame.id === 2),
+    [{ v: 1, type: "error", id: 2, code: "unavailable", outcome: "not-started" }],
+  );
+  assert.equal(fixture.calls(), 1, "nothing new reached the pool");
+  assert.deepEqual(fixture.socket.closed, [], "the session stays for the call under way");
+});
+
+test("a close the pool sends ends the session and its calls at once, with one line", async (context) => {
+  const warned = context.mock.method(console, "warn", () => {});
+  const fixture = session(context);
+  const request = await fixture.dispatched;
+  fixture.lease.dispatchEvent(Object.assign(new Event("close"), { code: 1000, wasClean: true }));
+  assert.equal(request.signal.aborted, true);
+  assert.deepEqual(fixture.socket.closed, [1000]);
+  assert.deepEqual(
+    warned.mock.calls.map((call) => call.arguments),
+    [["NATIVE_TUNNEL_LEASE_CLOSED", { code: 1000, clean: true, operations: 1 }]],
+  );
+});
+
+test("a lease error and the close after it are one loss, with the close's code", async (context) => {
+  const warned = context.mock.method(console, "warn", () => {});
+  const fixture = session(context);
+  await fixture.dispatched;
+  fixture.lease.dispatchEvent(new Event("error"));
+  wentAway(fixture.lease);
+  assert.deepEqual(fixture.socket.closed, []);
+  context.mock.timers.tick(leaseLostLimitMs);
+  const [line] = warned.mock.calls.filter(
+    (call) => call.arguments[0] === "NATIVE_TUNNEL_LEASE_LOST",
+  );
+  assert.deepEqual(line?.arguments[1], {
+    cause: "error",
+    code: 1006,
+    operations: 1,
+    ended: "bound",
+    heldMs: leaseLostLimitMs,
+  });
 });

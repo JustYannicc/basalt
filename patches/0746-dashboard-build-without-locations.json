@@ -1,0 +1,11 @@
+{
+  "identity": "dashboard-build-without-locations",
+  "file": "0746-dashboard-build-without-locations.patch",
+  "content_sha256": "ea716693feebbcdf925f6211692e5b8df385cf38e87d8413e488a8e0d53564b5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "dashboard-build-upgrade",
+  "requires": "The dashboard's server build carries no module location comments; remove only with a bundler default that writes none."
+}

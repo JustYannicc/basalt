@@ -3,6 +3,8 @@ import type { HistoryDatabase } from "./schema.ts";
 import type { ModelRequest } from "./record.ts";
 
 export const historyBatchSize = 200;
+/** Forward pages one capture run reads; more uncaptured rows than this wait for a later run. */
+export const historyForwardPages = 2;
 export class HistoryConflict extends Error {
   constructor() {
     super("Model usage identity conflicts with retained history");
@@ -192,9 +194,9 @@ export async function readRequests(db: HistoryDatabase, query: HistoryQuery) {
     cost::text, currency, cost_basis, price_version, original_price_rule, price_snapshot, attribution,
     to_char(timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS page_timestamp
     FROM basalt_model_requests
-    WHERE pool = $1 AND ($2::text IS NULL OR person = $2) AND timestamp >= $3 AND timestamp < $4
-      AND ($5::timestamptz IS NULL OR (timestamp,id) > ($5::timestamptz,$6::text))
-    ORDER BY timestamp,id LIMIT 201`,
+    WHERE pool = $1 AND ($2::character(64) IS NULL OR person = $2) AND timestamp >= $3 AND timestamp < $4
+      AND ($5::timestamptz IS NULL OR (timestamp,id) > ($5::timestamptz,$6::character(64)))
+    ORDER BY basalt_model_requests.timestamp, basalt_model_requests.id LIMIT 201`,
     [
       query.pool,
       query.person ?? null,

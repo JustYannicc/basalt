@@ -1,7 +1,11 @@
 import { eventId, sendEnvelope } from "./sentry-envelope.ts";
 import type { SentryEnv } from "./sentry-target.ts";
-import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
+import type { PoolReliabilitySlo, UnknownOutcomes } from "../../apps/pool/reliability-contract.ts";
 import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
+
+/** A reliability failure's episode key: its reason, and the pool it names when it names one. */
+export const reliabilityKey = (failure: { reason: string; pool?: string }) =>
+  failure.pool ? `${failure.reason}:${failure.pool}` : failure.reason;
 
 const guards = new Set([
   "configuration",
@@ -33,9 +37,19 @@ const reasons = new Set([
   "below_target",
   "collection_unavailable",
   "failing_now",
+  "usage_rollup_stuck",
+  "capture_hours_stuck",
 ]);
+/** The history reasons that name a pool, by its own 16-hex history id; never an outage. */
+const historyStuck = new Set(["usage_rollup_stuck", "capture_hours_stuck"]);
 
-export async function startPoolMonitor(env: SentryEnv) {
+/**
+ * The opening check-in defines the monitor; who is notified, and how, stays in Sentry's alert rules.
+ * The check-in upsert is the one route open to the connected accounts, which cannot edit a cron
+ * monitor. All six settings are sent because Sentry does not document what happens to one left
+ * out. One failed minute is a blip; three in a row open an incident.
+ */
+export async function startPoolMonitor(env: SentryEnv, schedule: string) {
   const receipt = { id: eventId(), started: performance.now() };
   const accepted = await sendEnvelope(env, {
     id: receipt.id,
@@ -44,23 +58,32 @@ export async function startPoolMonitor(env: SentryEnv) {
       check_in_id: receipt.id,
       monitor_slug: "pool-availability",
       status: "in_progress",
+      monitor_config: {
+        schedule: { type: "crontab", value: schedule },
+        timezone: "UTC",
+        checkin_margin: 1,
+        max_runtime: 1,
+        failure_issue_threshold: 3,
+        recovery_threshold: 1,
+      },
     },
   });
   return { ...receipt, accepted };
 }
 
-/** Check-ins use an existing monitor. Runtime code never creates or configures alert routing. */
 export async function capturePoolMonitor(
   env: SentryEnv,
   receipt: Awaited<ReturnType<typeof startPoolMonitor>>,
   input: {
     ok: boolean;
-    failures: readonly { guard: string; reason: string; backendStatus?: number }[];
+    failures: readonly { guard: string; reason: string; backendStatus?: number; pool?: string }[];
     reliability?: PoolReliabilitySlo;
     release?: string;
     runtime?: ProbeRuntimeIdentity;
+    /** Which failures start an episode; without it every failure is reported, as each minute was. */
+    report?: { readonly availability: boolean; readonly reliability: readonly string[] };
   },
-): Promise<boolean> {
+): Promise<{ delivered: boolean; eventsDelivered: boolean }> {
   const failures = input.failures.slice(0, 8).map((failure) => ({
     guard: guards.has(failure.guard) ? failure.guard : "runtime",
     reason: reasons.has(failure.reason) ? failure.reason : "unknown",
@@ -69,6 +92,12 @@ export async function capturePoolMonitor(
     failure.backendStatus >= 100 &&
     failure.backendStatus <= 599
       ? { backend_status: failure.backendStatus }
+      : {}),
+    // Only a stuck history tick names a pool, by its own 16-hex history id.
+    ...(historyStuck.has(failure.reason) &&
+    typeof failure.pool === "string" &&
+    /^[0-9a-f]{16}$/.test(failure.pool)
+      ? { pool: failure.pool }
       : {}),
   }));
   // Request history measures a separate objective; missing history is not a pool outage.
@@ -86,13 +115,24 @@ export async function capturePoolMonitor(
     },
   });
   const events = [];
-  if (!ok) events.push(report("pool_availability_failure", availability));
-  for (const failure of reliability)
+  if (!ok && (input.report?.availability ?? true))
+    events.push(report("pool_availability_failure", availability));
+  for (const failure of reliability) {
+    // A reason that was already failing a minute ago belongs to the episode it started then.
+    if (input.report && !input.report.reliability.includes(reliabilityKey(failure))) continue;
     if (failure.reason === "below_target")
       events.push(report("pool_request_success_below_target", [failure]));
     else if (failure.reason === "failing_now")
       events.push(report("pool_request_failing_now", [failure]));
+    else if (failure.reason === "usage_rollup_stuck")
+      events.push(report("pool_usage_rollup_stuck", [failure]));
+    else if (failure.reason === "capture_hours_stuck")
+      events.push(report("pool_capture_hours_stuck", [failure]));
     else events.push(report("pool_request_reliability_unavailable", [failure]));
+  }
+  // Unknown outcomes are a recording defect even when the objective is decided without them.
+  const unknown = input.reliability && unknownWindows(input.reliability);
+  if (unknown) console.warn("POOL_REQUEST_OUTCOMES_UNKNOWN", unknown);
   // Missing evidence is a reliability incident, independently of synthetic availability.
   if (reliability.some((failure) => failure.reason === "collection_unavailable")) {
     const context = input.reliability ? reliabilityContext(input.reliability) : undefined;
@@ -103,8 +143,11 @@ export async function capturePoolMonitor(
       reason: context?.reason ?? "collection_unavailable",
     });
   }
-  const results = await Promise.all([check, ...events]);
-  return receipt.accepted && results.every(Boolean);
+  const [checked, ...sent] = await Promise.all([check, ...events]);
+  // Whether the error events got through apart from the check-ins: an episode's start is recorded
+  // as reported on that alone.
+  const eventsDelivered = sent.every(Boolean);
+  return { delivered: receipt.accepted && checked && eventsDelivered, eventsDelivered };
 
   function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
@@ -125,6 +168,7 @@ export async function capturePoolMonitor(
           error_code: errorCode,
           guard: diagnostics[0]?.guard ?? "runtime",
           reason: diagnostics[0]?.reason ?? "unknown",
+          ...(diagnostics[0]?.pool ? { rollup_pool: diagnostics[0].pool } : {}),
           probe_origin: "availability_cron",
           runtime_source: runtime.source,
           application_version: runtime.application_version,
@@ -134,7 +178,7 @@ export async function capturePoolMonitor(
           pool_probe: { check_in_id: receipt.id, failures, runtime },
           ...(input.reliability
             ? { request_reliability: reliabilityContext(input.reliability) }
-            : reliability.length
+            : reliability.some((failure) => !historyStuck.has(failure.reason))
               ? { request_reliability: { target: 99, state: "unavailable" } }
               : {}),
         },
@@ -143,17 +187,21 @@ export async function capturePoolMonitor(
   }
 }
 
+const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+const state = (slo: PoolReliabilitySlo) =>
+  ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null;
+
 function reliabilityContext(slo: PoolReliabilitySlo) {
-  const count = (value: number) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
   const window = (value: PoolReliabilitySlo["hour"]) => ({
     requests: count(value.real.requests),
     failed: count(value.real.failed),
     proof_requests: count(value.proof.requests),
     proof_failed: count(value.proof.failed),
+    ...(value.unknown ? { unknown: unknownOutcomes(value.unknown) } : {}),
   });
   return {
     target: 99,
-    state: ["ok", "breached", "no_traffic", "unavailable"].includes(slo.state) ? slo.state : null,
+    state: state(slo),
     hour: window(slo.hour),
     day: window(slo.day),
     ...(slo.current ? { current: window(slo.current) } : {}),
@@ -167,5 +215,26 @@ function reliabilityContext(slo: PoolReliabilitySlo) {
     ].includes(slo.reason ?? "")
       ? slo.reason
       : null,
+  };
+}
+
+function unknownOutcomes(value: UnknownOutcomes) {
+  return {
+    requests: count(value.requests),
+    pending: count(value.pending),
+    unavailable: count(value.unavailable),
+    unmatched: count(value.unmatched),
+    uncounted: count(value.uncounted),
+    could_fail: count(value.couldFail),
+  };
+}
+
+/** Counts per window and class, only when some outcome in the hour or day is unknown. */
+function unknownWindows(slo: PoolReliabilitySlo) {
+  if (!slo.hour.unknown?.requests && !slo.day.unknown?.requests) return undefined;
+  return {
+    state: state(slo),
+    ...(slo.hour.unknown ? { hour: unknownOutcomes(slo.hour.unknown) } : {}),
+    ...(slo.day.unknown ? { day: unknownOutcomes(slo.day.unknown) } : {}),
   };
 }

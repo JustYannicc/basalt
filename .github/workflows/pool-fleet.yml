@@ -1,0 +1,105 @@
+name: Pool fleet
+run-name: pool-fleet ${{ inputs.mode }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: inspect reads only; configure-and-accept enables the fleet, accepts it and disables it again on any failure; retire-row retires one named draining row over a count that stood still; retire-check runs retire-row's checks for that row and changes nothing
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, configure-and-accept, disable, accept, crash-cell, retire-row, retire-check]
+      go:
+        description: The coordinator's literal GO (coordinator-20YY-...); required for configure-and-accept, disable, crash-cell and retire-row
+        required: false
+        default: ""
+        type: string
+      active:
+        description: Colour new cells launch in; default keeps the release rule (the primary's colour, else blue)
+        required: false
+        default: default
+        type: choice
+        options: [default, blue, green]
+      key:
+        description: retire-row and retire-check only, the row's key from the lane's inspect (8 to 24 hex digits)
+        required: false
+        default: ""
+        type: string
+      target-active:
+        description: configure-and-accept only, the growth target to configure (1 to 100000); empty keeps the configured value
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# Shares the production release lock, so the fleet never changes inside a release, and a queued
+# dispatch never cancels one already running.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  fleet:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    environment:
+      name: production-release
+      deployment: false
+    steps:
+      - name: Refuse a production change without a coordinator GO
+        env:
+          MODE: ${{ inputs.mode }}
+          GO: ${{ inputs.go }}
+        run: |
+          case "$MODE" in
+            configure-and-accept|disable|crash-cell|retire-row)
+              if ! printf '%s' "$GO" | grep -Eq '^coordinator-20[0-9]{2}-[A-Za-z0-9-]{1,96}$'; then
+                echo "::error::mode $MODE needs a go input matching ^coordinator-20YY-"
+                exit 1
+              fi
+              ;;
+          esac
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Run the fleet lane
+        run: |
+          mkdir -p "$POOL_FLEET_OUTPUT_DIRECTORY"
+          set -o pipefail
+          bun scripts/pool-fleet/dispatch.ts 2>&1 | tee "$POOL_FLEET_OUTPUT_DIRECTORY/output.log"
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          # Each model call signs a fresh assertion for this registered device, as release
+          # acceptance does; usage is read in its pool, which must be a dedicated acceptance pool.
+          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+          POOL_ACCEPTANCE_MODEL: ${{ vars.POOL_ACCEPTANCE_MODEL }}
+          POOL_FLEET_MODE: ${{ inputs.mode }}
+          POOL_FLEET_GO: ${{ inputs.go }}
+          POOL_FLEET_ACTIVE: ${{ inputs.active != 'default' && inputs.active || '' }}
+          POOL_FLEET_KEY: ${{ inputs.key }}
+          POOL_FLEET_TARGET_ACTIVE: ${{ inputs.target-active }}
+          POOL_FLEET_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-fleet
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-fleet-${{ inputs.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pool-fleet/
+          if-no-files-found: ignore
+          retention-days: 30

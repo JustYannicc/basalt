@@ -1,0 +1,5805 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "version": "1.1.4",
+    "title": "GitHub v3 REST API",
+    "description": "GitHub's v3 REST API.",
+    "license": {
+      "name": "MIT",
+      "url": "https://spdx.org/licenses/MIT"
+    },
+    "termsOfService": "https://docs.github.com/articles/github-terms-of-service",
+    "contact": {
+      "name": "Support",
+      "url": "https://support.github.com/contact?tags=dotcom-rest-api"
+    },
+    "x-github-plan": "api.github.com"
+  },
+  "servers": [
+    {
+      "url": "https://api.github.com"
+    }
+  ],
+  "paths": {
+    "/repos/{owner}/{repo}": {
+      "get": {
+        "summary": "Get a repository",
+        "description": "The `parent` and `source` objects are present when the repository is a fork. `parent` is the repository this repository was forked from, `source` is the ultimate source for the network.\n\nWhen present and non-empty, `temp_clone_token` is a temporary credential for read-only Git access to this repository. It expires five minutes after generation and cannot be used to push changes. Treat this value as sensitive and avoid recording it in logs.\n\n> [!NOTE]\n> - In order to see the `security_and_analysis` block for a repository you must have admin permissions for the repository or be an owner or security manager for the organization that owns the repository. For more information, see \"[Managing security managers in your organization](https://docs.github.com/organizations/managing-peoples-access-to-your-organization-with-roles/managing-security-managers-in-your-organization).\"\n> - To view merge-related settings, you must have the `contents:read` and `contents:write` permissions.",
+        "tags": [
+          "repos"
+        ],
+        "operationId": "repos/get",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/repos/repos#get-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/full-repository"
+                }
+              }
+            }
+          },
+          "301": {
+            "$ref": "#/components/responses/moved_permanently"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "repos",
+          "subcategory": "repos"
+        }
+      }
+    },
+    "/user/repos": {
+      "get": {
+        "summary": "List repositories for the authenticated user",
+        "description": "Lists repositories that the authenticated user has explicit permission (`:read`, `:write`, or `:admin`) to access.\n\nThe authenticated user has explicit permission to access repositories they own, repositories where they are a collaborator, and repositories that they can access through an organization membership.",
+        "tags": [
+          "repos"
+        ],
+        "operationId": "repos/list-for-authenticated-user",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/repos/repos#list-repositories-for-the-authenticated-user"
+        },
+        "parameters": [
+          {
+            "name": "visibility",
+            "description": "Limit results to repositories with the specified visibility.",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "public",
+                "private"
+              ],
+              "default": "all"
+            }
+          },
+          {
+            "name": "affiliation",
+            "description": "Comma-separated list of values. Can include:  \n * `owner`: Repositories that are owned by the authenticated user.  \n * `collaborator`: Repositories that the user has been added to as a collaborator.  \n * `organization_member`: Repositories that the user has access to through being a member of an organization. This includes every repository on every team that the user is on.",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "owner,collaborator,organization_member"
+            }
+          },
+          {
+            "name": "type",
+            "description": "Limit results to repositories of the specified type. Will cause a `422` error if used in the same request as **visibility** or **affiliation**.",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "owner",
+                "public",
+                "private",
+                "member"
+              ],
+              "default": "all"
+            }
+          },
+          {
+            "name": "sort",
+            "description": "The property to sort the results by.",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "created",
+                "updated",
+                "pushed",
+                "full_name"
+              ],
+              "default": "full_name"
+            }
+          },
+          {
+            "name": "direction",
+            "description": "The order to sort by. Default: `asc` when using `full_name`, otherwise `desc`.",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/per-page"
+          },
+          {
+            "$ref": "#/components/parameters/page"
+          },
+          {
+            "$ref": "#/components/parameters/since-repo-date"
+          },
+          {
+            "$ref": "#/components/parameters/before-repo-date"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/repository"
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Link": {
+                "$ref": "#/components/headers/link"
+              }
+            }
+          },
+          "304": {
+            "$ref": "#/components/responses/not_modified"
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "repos",
+          "subcategory": "repos"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/actions/runners/downloads": {
+      "get": {
+        "summary": "List runner applications for a repository",
+        "description": "Lists binaries for the runner application that you can download and run.\n\nAuthenticated users must have admin access to the repository to use this endpoint.\n\nOAuth app tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/list-runner-applications-for-repo",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#list-runner-applications-for-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/runner-application"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/contents/{path}": {
+      "get": {
+        "summary": "Get repository content",
+        "description": "Gets the contents of a file or directory in a repository. Specify the file path or directory with the `path` parameter. If you omit the `path` parameter, you will receive the contents of the repository's root directory.\n\nThis endpoint supports the following custom media types. For more information, see \"[Media types](https://docs.github.com/rest/using-the-rest-api/getting-started-with-the-rest-api#media-types).\"\n\n- **`application/vnd.github.raw+json`**: Returns the raw file contents for files and symlinks.\n- **`application/vnd.github.html+json`**: Returns the file contents in HTML. Markup languages are rendered to HTML using GitHub's open-source [Markup library](https://github.com/github/markup).\n- **`application/vnd.github.object+json`**: Returns the contents in a consistent object format regardless of the content type. For example, instead of an array of objects for a directory, the response will be an object with an `entries` attribute containing the array of objects.\n\nIf the content is a directory, the response will be an array of objects, one object for each item in the directory. When listing the contents of a directory, submodules have their \"type\" specified as \"file\". Logically, the value _should_ be \"submodule\". This behavior exists [for backwards compatibility purposes](https://git.io/v1YCW). In the next major version of the API, the type will be returned as \"submodule\".\n\nIf the content is a symlink and the symlink's target is a normal file in the repository, then the API responds with the content of the file. Otherwise, the API responds with an object describing the symlink itself.\n\nIf the content is a submodule, the `submodule_git_url` field identifies the location of the submodule repository, and the `sha` identifies a specific commit within the submodule repository. Git uses the given URL when cloning the submodule repository, and checks out the submodule at that specific commit. If the submodule repository is not hosted on github.com, the Git URLs (`git_url` and `_links[\"git\"]`) and the github.com URLs (`html_url` and `_links[\"html\"]`) will have null values.\n\n**Notes**:\n\n- To get a repository's contents recursively, you can [recursively get the tree](https://docs.github.com/rest/git/trees#get-a-tree).\n- This API has an upper limit of 1,000 files for a directory. If you need to retrieve\nmore files, use the [Git Trees API](https://docs.github.com/rest/git/trees#get-a-tree).\n- Download URLs expire and are meant to be used just once. To ensure the download URL does not expire, please use the contents API to obtain a fresh download URL for each download.\n- If the requested file's size is:\n  - 1 MB or smaller: All features of this endpoint are supported.\n  - Between 1-100 MB: Only the `raw` or `object` custom media types are supported. Both will work as normal, except that when using the `object` media type, the `content` field will be an empty\nstring and the `encoding` field will be `\"none\"`. To get the contents of these larger files, use the `raw` media type.\n  - Greater than 100 MB: This endpoint is not supported.",
+        "tags": [
+          "repos"
+        ],
+        "operationId": "repos/get-content",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/repos/contents#get-repository-content"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          },
+          {
+            "name": "path",
+            "description": "path parameter",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "x-multi-segment": true
+          },
+          {
+            "name": "ref",
+            "description": "The name of the commit/branch/tag. Default: the repository’s default branch.",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {}
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/vnd.github.object": {
+                "schema": {
+                  "$ref": "#/components/schemas/content-tree"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/content-directory"
+                    },
+                    {
+                      "$ref": "#/components/schemas/content-file"
+                    },
+                    {
+                      "$ref": "#/components/schemas/content-symlink"
+                    },
+                    {
+                      "$ref": "#/components/schemas/content-submodule"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "type",
+                    "mapping": {
+                      "array": "#/components/schemas/content-directory",
+                      "file": "#/components/schemas/content-file",
+                      "symlink": "#/components/schemas/content-symlink",
+                      "submodule": "#/components/schemas/content-submodule"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "302": {
+            "$ref": "#/components/responses/found"
+          },
+          "304": {
+            "$ref": "#/components/responses/not_modified"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "repos",
+          "subcategory": "contents"
+        },
+        "x-github-breaking-changes": [
+          {
+            "changeset": "return_submodule_type_for_submodules_in_directory_lists",
+            "patch": {
+              "description": "Gets the contents of a file or directory in a repository. Specify the file path or directory with the `path` parameter. If you omit the `path` parameter, you will receive the contents of the repository's root directory.\n\nThis endpoint supports the following custom media types. For more information, see \"[Media types](https://docs.github.com/rest/using-the-rest-api/getting-started-with-the-rest-api#media-types).\"\n\n- **`application/vnd.github.raw+json`**: Returns the raw file contents for files and symlinks.\n- **`application/vnd.github.html+json`**: Returns the file contents in HTML. Markup languages are rendered to HTML using GitHub's open-source [Markup library](https://github.com/github/markup).\n- **`application/vnd.github.object+json`**: Returns the contents in a consistent object format regardless of the content type. For example, instead of an array of objects for a directory, the response will be an object with an `entries` attribute containing the array of objects.\n\nIf the content is a directory: The response will be an array of objects, one object for each item in the directory.\n\nIf the content is a symlink and the symlink's target is a normal file in the repository, then the API responds with the content of the file. Otherwise, the API responds with an object describing the symlink itself.\n\nIf the content is a submodule, the `submodule_git_url` field identifies the location of the submodule repository, and the `sha` identifies a specific commit within the submodule repository. Git uses the given URL when cloning the submodule repository, and checks out the submodule at that specific commit. If the submodule repository is not hosted on github.com, the Git URLs (`git_url` and `_links[\"git\"]`) and the github.com URLs (`html_url` and `_links[\"html\"]`) will have null values.\n\n**Notes**:\n\n- To get a repository's contents recursively, you can [recursively get the tree](https://docs.github.com/rest/git/trees#get-a-tree).\n- This API has an upper limit of 1,000 files for a directory. If you need to retrieve\nmore files, use the [Git Trees API](https://docs.github.com/rest/git/trees#get-a-tree).\n- Download URLs expire and are meant to be used just once. To ensure the download URL does not expire, please use the contents API to obtain a fresh download URL for each download.\n- If the requested file's size is:\n  - 1 MB or smaller: All features of this endpoint are supported.\n  - Between 1-100 MB: Only the `raw` or `object` custom media types are supported. Both will work as normal, except that when using the `object` media type, the `content` field will be an empty\nstring and the `encoding` field will be `\"none\"`. To get the contents of these larger files, use the `raw` media type.\n  - Greater than 100 MB: This endpoint is not supported."
+            },
+            "version": "2026-03-10"
+          }
+        ]
+      }
+    },
+    "/repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}": {
+      "get": {
+        "summary": "Get a secret scanning alert",
+        "description": "Gets a single secret scanning alert detected in an eligible repository.\n\nThe authenticated user must be an administrator for the repository or for the organization that owns the repository to use this endpoint.\n\nOAuth app tokens and personal access tokens (classic) need the `repo` or `security_events` scope to use this endpoint. If this endpoint is only used with public repositories, the token can use the `public_repo` scope instead.",
+        "tags": [
+          "secret-scanning"
+        ],
+        "operationId": "secret-scanning/get-alert",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/secret-scanning/secret-scanning#get-a-secret-scanning-alert"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          },
+          {
+            "$ref": "#/components/parameters/alert-number"
+          },
+          {
+            "$ref": "#/components/parameters/secret-scanning-alert-hide-secret"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/secret-scanning-alert-with-metadata"
+                }
+              }
+            }
+          },
+          "304": {
+            "$ref": "#/components/responses/not_modified"
+          },
+          "404": {
+            "description": "Repository is public, or secret scanning is disabled for the repository, or the resource is not found"
+          },
+          "503": {
+            "$ref": "#/components/responses/service_unavailable"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "secret-scanning",
+          "subcategory": "secret-scanning"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/actions/runners/registration-token": {
+      "post": {
+        "summary": "Create a registration token for a repository",
+        "description": "Returns a token that you can pass to the `config` script. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to configure your self-hosted runner:\n\n```\n./config.sh --url https://github.com/octo-org --token TOKEN\n```\n\nAuthenticated users must have admin access to the repository to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-registration-token-for-repo",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-registration-token-for-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/applications/{client_id}/grant": {
+      "delete": {
+        "summary": "Delete an app authorization",
+        "description": "OAuth and GitHub application owners can revoke a grant for their application and a specific user. You must provide a valid OAuth `access_token` as an input parameter and the grant for the token's owner will be deleted.\nDeleting an application's grant will also delete all OAuth tokens associated with the application for the user. Once deleted, the application will have no access to the user's account and will no longer be listed on [the application authorizations settings screen within GitHub](https://github.com/settings/applications#authorized).",
+        "operationId": "apps/delete-authorization",
+        "tags": [
+          "apps"
+        ],
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/oauth-applications#delete-an-app-authorization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "access_token": {
+                    "type": "string",
+                    "description": "The OAuth access token used to authenticate to the GitHub API."
+                  }
+                },
+                "required": [
+                  "access_token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Response"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "oauth-applications"
+        }
+      }
+    },
+    "/applications/{client_id}/token": {
+      "post": {
+        "summary": "Check a token",
+        "description": "OAuth applications and GitHub applications with OAuth authorizations can use this API method for checking OAuth token validity without exceeding the normal rate limits for failed login attempts. Authentication works differently with this particular endpoint. Invalid tokens will return `404 NOT FOUND`.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/check-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/oauth-applications#check-a-token"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "access_token": {
+                    "description": "The access_token of the OAuth or GitHub application.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "access_token"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authorization"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "oauth-applications"
+        }
+      },
+      "patch": {
+        "summary": "Reset a token",
+        "description": "OAuth applications and GitHub applications with OAuth authorizations can use this API method to reset a valid OAuth token without end-user involvement. Applications must save the \"token\" property in the response because changes take effect immediately. Invalid tokens will return `404 NOT FOUND`.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/reset-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/oauth-applications#reset-a-token"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "access_token": {
+                    "description": "The access_token of the OAuth or GitHub application.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "access_token"
+                ],
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authorization"
+                }
+              }
+            }
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "oauth-applications"
+        }
+      },
+      "delete": {
+        "summary": "Delete an app token",
+        "description": "OAuth  or GitHub application owners can revoke a single token for an OAuth application or a GitHub application with an OAuth authorization.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/delete-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/oauth-applications#delete-an-app-token"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "access_token": {
+                    "type": "string",
+                    "description": "The OAuth access token used to authenticate to the GitHub API."
+                  }
+                },
+                "required": [
+                  "access_token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Response"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "oauth-applications"
+        }
+      }
+    },
+    "/orgs/{org}/actions/runners/registration-token": {
+      "post": {
+        "summary": "Create a registration token for an organization",
+        "description": "Returns a token that you can pass to the `config` script. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to configure your self-hosted runner:\n\n```\n./config.sh --url https://github.com/octo-org --token TOKEN\n```\n\nAuthenticated users must have admin access to the organization to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the`admin:org` scope to use this endpoint. If the repository is private, OAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-registration-token-for-org",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-registration-token-for-an-organization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/orgs/{org}/actions/runners/remove-token": {
+      "post": {
+        "summary": "Create a remove token for an organization",
+        "description": "Returns a token that you can pass to the `config` script to remove a self-hosted runner from an organization. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to remove your self-hosted runner from an organization:\n\n```\n./config.sh remove --token TOKEN\n```\n\nAuthenticated users must have admin access to the organization to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the`admin:org` scope to use this endpoint. If the repository is private, OAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-remove-token-for-org",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-remove-token-for-an-organization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/actions/runners/remove-token": {
+      "post": {
+        "summary": "Create a remove token for a repository",
+        "description": "Returns a token that you can pass to the `config` script to remove a self-hosted runner from an repository. The token expires after one hour.\n\nFor example, you can replace `TOKEN` in the following example with the registration token provided by this endpoint to remove your self-hosted runner from an organization:\n\n```\n./config.sh remove --token TOKEN\n```\n\nAuthenticated users must have admin access to the repository to use this endpoint.\n\nOAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/create-remove-token-for-repo",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-a-remove-token-for-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authentication-token"
+                }
+              }
+            }
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/orgs/{org}/actions/runners/generate-jitconfig": {
+      "post": {
+        "summary": "Create configuration for a just-in-time runner for an organization",
+        "description": "Generates a configuration that can be passed to the runner application at startup.\n\nThe authenticated user must have admin access to the organization.\n\nOAuth tokens and personal access tokens (classic) need the`admin:org` scope to use this endpoint. If the repository is private, OAuth tokens and personal access tokens (classic) need the `repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/generate-runner-jitconfig-for-org",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-an-organization"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/org"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "runner_group_id",
+                  "labels"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "The name of the new runner."
+                  },
+                  "runner_group_id": {
+                    "type": "integer",
+                    "description": "The ID of the runner group to register the runner to."
+                  },
+                  "labels": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The names of the custom labels to add to the runner. **Minimum items**: 1. **Maximum items**: 100."
+                  },
+                  "work_folder": {
+                    "type": "string",
+                    "description": "The working directory to be used for job execution, relative to the runner install directory.",
+                    "default": "_work"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/actions_runner_jitconfig"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "409": {
+            "$ref": "#/components/responses/conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/repos/{owner}/{repo}/actions/runners/generate-jitconfig": {
+      "post": {
+        "summary": "Create configuration for a just-in-time runner for a repository",
+        "description": "Generates a configuration that can be passed to the runner application at startup.\n\nThe authenticated user must have admin access to the repository.\n\nOAuth tokens and personal access tokens (classic) need the`repo` scope to use this endpoint.",
+        "tags": [
+          "actions"
+        ],
+        "operationId": "actions/generate-runner-jitconfig-for-repo",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/actions/self-hosted-runners#create-configuration-for-a-just-in-time-runner-for-a-repository"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/owner"
+          },
+          {
+            "$ref": "#/components/parameters/repo"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "runner_group_id",
+                  "labels"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "The name of the new runner."
+                  },
+                  "runner_group_id": {
+                    "type": "integer",
+                    "description": "The ID of the runner group to register the runner to."
+                  },
+                  "labels": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The names of the custom labels to add to the runner. **Minimum items**: 1. **Maximum items**: 100."
+                  },
+                  "work_folder": {
+                    "type": "string",
+                    "description": "The working directory to be used for job execution, relative to the runner install directory.",
+                    "default": "_work"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "$ref": "#/components/responses/actions_runner_jitconfig"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "409": {
+            "$ref": "#/components/responses/conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "actions",
+          "subcategory": "self-hosted-runners"
+        }
+      }
+    },
+    "/app/installations/{installation_id}/access_tokens": {
+      "post": {
+        "summary": "Create an installation access token for an app",
+        "description": "Creates an installation access token that enables a GitHub App to make authenticated API requests for the app's installation on an organization or individual account. Installation tokens expire one hour from the time you create them. Using an expired token produces a status code of `401 - Unauthorized`, and requires creating a new installation token. By default the installation token has access to all repositories that the installation can access.\n\n> [!NOTE]\n> Starting April 27, 2026, GitHub began a staged rollout of a stateless format (`ghs_APPID_JWT`) to all newly minted GitHub App installation tokens, making them more performant and improving the reliability of our API surface. If your application expects or relies on installation tokens being exactly 40 characters long, it may not handle this new token format correctly. You can now validate your apps and workflows using a temporary request header that lets you enable the token format on demand. For more information about the temporary header, see [the GitHub blog](https://github.blog/changelog/2026-05-15-github-app-installation-tokens-per-request-override-header).\n\nOptionally, you can use the `repositories` or `repository_ids` body parameters to specify individual repositories that the installation access token can access. If you don't use `repositories` or `repository_ids` to grant access to specific repositories, the installation access token will have access to all repositories that the installation was granted access to. The installation access token cannot be granted access to repositories that the installation was not granted access to. Up to 500 repositories can be listed in this manner.\n\nOptionally, use the `permissions` body parameter to specify the permissions that the installation access token should have. If `permissions` is not specified, the installation access token will have all of the permissions that were granted to the app. The installation access token cannot be granted permissions that the app was not granted.\n\nYou must use a [JWT](https://docs.github.com/apps/building-github-apps/authenticating-with-github-apps/#authenticating-as-a-github-app) to access this endpoint.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/create-installation-access-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-an-installation-access-token-for-an-app"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/installation-id"
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "repositories": {
+                    "description": "List of repository names that the token should have access to",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "repository_ids": {
+                    "description": "List of repository IDs that the token should have access to",
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "permissions": {
+                    "$ref": "#/components/schemas/app-permissions"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/installation-token"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": true,
+          "category": "apps",
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/applications/{client_id}/token/scoped": {
+      "post": {
+        "summary": "Create a scoped access token",
+        "description": "Use a non-scoped user access token to create a repository-scoped and/or permission-scoped user access token. You can specify\nwhich repositories the token can access and which permissions are granted to the\ntoken.\n\nInvalid tokens will return `404 NOT FOUND`.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/scope-token",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-a-scoped-access-token"
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/client-id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "access_token": {
+                    "type": "string",
+                    "description": "The access token used to authenticate to the GitHub API."
+                  },
+                  "target": {
+                    "description": "The name of the user or organization to scope the user access token to. **Required** unless `target_id` is specified.",
+                    "type": "string"
+                  },
+                  "target_id": {
+                    "description": "The ID of the user or organization to scope the user access token to. **Required** unless `target` is specified.",
+                    "type": "integer"
+                  },
+                  "repositories": {
+                    "description": "The list of repository names to scope the user access token to. `repositories` may not be specified if `repository_ids` is specified.",
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "repository_ids": {
+                    "description": "The list of repository IDs to scope the user access token to. `repository_ids` may not be specified if `repositories` is specified.",
+                    "type": "array",
+                    "items": {
+                      "type": "integer"
+                    }
+                  },
+                  "permissions": {
+                    "$ref": "#/components/schemas/app-permissions"
+                  }
+                },
+                "required": [
+                  "access_token"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/authorization"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/requires_authentication"
+          },
+          "403": {
+            "$ref": "#/components/responses/forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "apps"
+        }
+      }
+    },
+    "/app-manifests/{code}/conversions": {
+      "post": {
+        "summary": "Create a GitHub App from a manifest",
+        "description": "Use this endpoint to complete the handshake necessary when implementing the [GitHub App Manifest flow](https://docs.github.com/apps/building-github-apps/creating-github-apps-from-a-manifest/). When you create a GitHub App with the manifest flow, you receive a temporary `code` used to retrieve the GitHub App's `id`, `pem` (private key), and `webhook_secret`.",
+        "tags": [
+          "apps"
+        ],
+        "operationId": "apps/create-from-manifest",
+        "externalDocs": {
+          "description": "API method documentation",
+          "url": "https://docs.github.com/rest/apps/apps#create-a-github-app-from-a-manifest"
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/integration"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "client_id": {
+                          "type": "string"
+                        },
+                        "client_secret": {
+                          "type": "string"
+                        },
+                        "webhook_secret": {
+                          "type": "string",
+                          "nullable": true
+                        },
+                        "pem": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "client_id",
+                        "client_secret",
+                        "webhook_secret",
+                        "pem"
+                      ],
+                      "additionalProperties": true
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/not_found"
+          },
+          "422": {
+            "$ref": "#/components/responses/validation_failed_simple"
+          }
+        },
+        "x-github": {
+          "githubCloudOnly": false,
+          "enabledForGitHubApps": false,
+          "category": "apps",
+          "subcategory": "apps"
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "alert-created-at": {
+        "type": "string",
+        "description": "The time that the alert was created in ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`.",
+        "format": "date-time",
+        "readOnly": true
+      },
+      "alert-html-url": {
+        "type": "string",
+        "description": "The GitHub URL of the alert resource.",
+        "format": "uri",
+        "readOnly": true
+      },
+      "alert-number": {
+        "type": "integer",
+        "description": "The security alert number.",
+        "readOnly": true
+      },
+      "alert-url": {
+        "type": "string",
+        "description": "The REST API URL of the alert resource.",
+        "format": "uri",
+        "readOnly": true
+      },
+      "app-permissions": {
+        "title": "App Permissions",
+        "type": "object",
+        "description": "The permissions granted to the fine-grained access token.",
+        "properties": {
+          "actions": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for GitHub Actions workflows, workflow runs, and artifacts.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "administration": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for repository creation, deletion, settings, teams, and collaborators creation.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "artifact_metadata": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to create and retrieve build artifact metadata records.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "attestations": {
+            "type": "string",
+            "description": "The level of permission to create and retrieve the access token for repository attestations.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "checks": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for checks on code.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "code_quality": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage code quality data.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "codespaces": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to create, edit, delete, and list Codespaces.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "contents": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for repository contents, commits, branches, downloads, releases, and merges.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "dependabot_secrets": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage Dependabot secrets.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "deployments": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for deployments and deployment statuses.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "discussions": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for discussions and related comments and labels.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "environments": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for managing repository environments.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "issues": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for issues and related comments, assignees, labels, and milestones.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "merge_queues": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage the merge queues for a repository.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "metadata": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to search repositories, list collaborators, and access repository metadata.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "packages": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for packages published to GitHub Packages.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "pages": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to retrieve Pages statuses, configuration, and builds, as well as create new builds.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "pull_requests": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for pull requests and related comments, assignees, labels, milestones, and merges.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "repository_custom_properties": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and edit custom properties for a repository, when allowed by the property.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "repository_hooks": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage the post-receive hooks for a repository.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "repository_projects": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage repository projects, columns, and cards.",
+            "enum": [
+              "read",
+              "write",
+              "admin"
+            ]
+          },
+          "secret_scanning_alerts": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage secret scanning alerts.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "secrets": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage repository secrets.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "security_events": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage security events like code scanning alerts.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "single_file": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage just a single file.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "statuses": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for commit statuses.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "vulnerability_alerts": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage Dependabot alerts.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "workflows": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to update GitHub Actions workflow files.",
+            "enum": [
+              "write"
+            ]
+          },
+          "custom_properties_for_organizations": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and edit custom properties for an organization, when allowed by the property.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "members": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for organization teams and members.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_administration": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage access to an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_custom_roles": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for custom repository roles management.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_custom_org_roles": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for custom organization roles management.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_custom_properties": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for repository custom properties management at the organization level.",
+            "enum": [
+              "read",
+              "write",
+              "admin"
+            ]
+          },
+          "organization_copilot_seat_management": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for managing access to GitHub Copilot for members of an organization with a Copilot Business subscription. This property is in public preview and is subject to change.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_copilot_agent_settings": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage Copilot cloud agent settings for an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_copilot_requests": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to make Copilot requests billed to the organization where the app is installed. This property is in public preview and is subject to change.",
+            "enum": [
+              "read"
+            ]
+          },
+          "organization_external_properties_for_repos": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for managing external custom properties for repositories in an organization.",
+            "enum": [
+              "read",
+              "write",
+              "admin"
+            ]
+          },
+          "organization_announcement_banners": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage announcement banners for an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_events": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view events triggered by an activity in an organization.",
+            "enum": [
+              "read"
+            ]
+          },
+          "organization_hooks": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage the post-receive hooks for an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_personal_access_tokens": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for viewing and managing fine-grained personal access token requests to an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_personal_access_token_requests": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for viewing and managing fine-grained personal access tokens that have been approved by an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_plan": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for viewing an organization's plan.",
+            "enum": [
+              "read"
+            ]
+          },
+          "organization_projects": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage organization projects and projects public preview (where available).",
+            "enum": [
+              "read",
+              "write",
+              "admin"
+            ]
+          },
+          "organization_packages": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for organization packages published to GitHub Packages.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_secrets": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage organization secrets.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_self_hosted_runners": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage GitHub Actions self-hosted runners available to an organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "organization_user_blocking": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage users blocked by the organization.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "email_addresses": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage the email addresses belonging to a user.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "followers": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage the followers belonging to a user.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "git_ssh_keys": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage git SSH keys.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "gpg_keys": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage GPG keys belonging to a user.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "interaction_limits": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to view and manage interaction limits on a repository.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "profile": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to manage the profile settings belonging to a user.",
+            "enum": [
+              "write"
+            ]
+          },
+          "starring": {
+            "type": "string",
+            "description": "The level of permission to grant the access token to list and manage repositories a user is starring.",
+            "enum": [
+              "read",
+              "write"
+            ]
+          },
+          "enterprise_custom_properties_for_organizations": {
+            "type": "string",
+            "description": "The level of permission to grant the access token for organization custom properties management at the enterprise level.",
+            "enum": [
+              "read",
+              "write",
+              "admin"
+            ]
+          }
+        }
+      },
+      "authentication-token": {
+        "title": "Authentication Token",
+        "description": "Authentication Token",
+        "type": "object",
+        "properties": {
+          "token": {
+            "description": "The token used for authentication",
+            "type": "string"
+          },
+          "expires_at": {
+            "description": "The time this token expires",
+            "type": "string",
+            "format": "date-time"
+          },
+          "permissions": {
+            "type": "object"
+          },
+          "repositories": {
+            "description": "The repositories this token has access to",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/repository"
+            }
+          },
+          "single_file": {
+            "type": "string",
+            "nullable": true
+          },
+          "repository_selection": {
+            "description": "Describe whether all repositories have been selected or there's a selection involved",
+            "type": "string",
+            "enum": [
+              "all",
+              "selected"
+            ]
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ]
+      },
+      "authorization": {
+        "title": "Authorization",
+        "description": "The authorization for an OAuth app, GitHub App, or a Personal Access Token.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "scopes": {
+            "description": "A list of scopes that this authorization is in.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "token": {
+            "type": "string"
+          },
+          "token_last_eight": {
+            "type": "string",
+            "nullable": true
+          },
+          "hashed_token": {
+            "type": "string",
+            "nullable": true
+          },
+          "app": {
+            "type": "object",
+            "properties": {
+              "client_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": [
+              "client_id",
+              "name",
+              "url"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "nullable": true
+          },
+          "note_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fingerprint": {
+            "type": "string",
+            "nullable": true
+          },
+          "user": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "installation": {
+            "$ref": "#/components/schemas/nullable-scoped-installation"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "app",
+          "id",
+          "note",
+          "note_url",
+          "scopes",
+          "token",
+          "hashed_token",
+          "token_last_eight",
+          "fingerprint",
+          "url",
+          "created_at",
+          "updated_at",
+          "expires_at"
+        ]
+      },
+      "basic-error": {
+        "title": "Basic Error",
+        "description": "Basic Error",
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "documentation_url": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "code-of-conduct-simple": {
+        "title": "Code Of Conduct Simple",
+        "description": "Code of Conduct Simple",
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "html_url": {
+            "type": "string",
+            "nullable": true,
+            "format": "uri"
+          }
+        },
+        "required": [
+          "url",
+          "key",
+          "name",
+          "html_url"
+        ]
+      },
+      "content-directory": {
+        "title": "Content Directory",
+        "description": "A list of directory items",
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "dir",
+                "file",
+                "submodule",
+                "symlink"
+              ]
+            },
+            "size": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            },
+            "content": {
+              "type": "string"
+            },
+            "sha": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "git_url": {
+              "type": "string",
+              "format": "uri",
+              "nullable": true
+            },
+            "html_url": {
+              "type": "string",
+              "format": "uri",
+              "nullable": true
+            },
+            "download_url": {
+              "type": "string",
+              "format": "uri",
+              "nullable": true
+            },
+            "_links": {
+              "type": "object",
+              "properties": {
+                "git": {
+                  "type": "string",
+                  "format": "uri",
+                  "nullable": true
+                },
+                "html": {
+                  "type": "string",
+                  "format": "uri",
+                  "nullable": true
+                },
+                "self": {
+                  "type": "string",
+                  "format": "uri"
+                }
+              },
+              "required": [
+                "git",
+                "html",
+                "self"
+              ]
+            }
+          },
+          "required": [
+            "_links",
+            "git_url",
+            "html_url",
+            "download_url",
+            "name",
+            "path",
+            "sha",
+            "size",
+            "type",
+            "url"
+          ]
+        }
+      },
+      "content-file": {
+        "title": "Content File",
+        "description": "Content File",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "file"
+            ]
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "download_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "_links": {
+            "type": "object",
+            "properties": {
+              "git": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "html": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "self": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": [
+              "git",
+              "html",
+              "self"
+            ]
+          },
+          "target": {
+            "type": "string"
+          },
+          "submodule_git_url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "_links",
+          "git_url",
+          "html_url",
+          "download_url",
+          "name",
+          "path",
+          "sha",
+          "size",
+          "type",
+          "url",
+          "content",
+          "encoding"
+        ]
+      },
+      "content-submodule": {
+        "title": "Submodule Content",
+        "description": "An object describing a submodule",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "submodule"
+            ]
+          },
+          "submodule_git_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "download_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "_links": {
+            "type": "object",
+            "properties": {
+              "git": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "html": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "self": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": [
+              "git",
+              "html",
+              "self"
+            ]
+          }
+        },
+        "required": [
+          "_links",
+          "git_url",
+          "html_url",
+          "download_url",
+          "name",
+          "path",
+          "sha",
+          "size",
+          "type",
+          "url",
+          "submodule_git_url"
+        ]
+      },
+      "content-symlink": {
+        "title": "Symlink Content",
+        "description": "An object describing a symlink",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "symlink"
+            ]
+          },
+          "target": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "download_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "_links": {
+            "type": "object",
+            "properties": {
+              "git": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "html": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "self": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": [
+              "git",
+              "html",
+              "self"
+            ]
+          }
+        },
+        "required": [
+          "_links",
+          "git_url",
+          "html_url",
+          "download_url",
+          "name",
+          "path",
+          "sha",
+          "size",
+          "type",
+          "url",
+          "target"
+        ]
+      },
+      "content-tree": {
+        "title": "Content Tree",
+        "description": "Content Tree",
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "sha": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "download_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string"
+                },
+                "size": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "sha": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "git_url": {
+                  "type": "string",
+                  "format": "uri",
+                  "nullable": true
+                },
+                "html_url": {
+                  "type": "string",
+                  "format": "uri",
+                  "nullable": true
+                },
+                "download_url": {
+                  "type": "string",
+                  "format": "uri",
+                  "nullable": true
+                },
+                "_links": {
+                  "type": "object",
+                  "properties": {
+                    "git": {
+                      "type": "string",
+                      "format": "uri",
+                      "nullable": true
+                    },
+                    "html": {
+                      "type": "string",
+                      "format": "uri",
+                      "nullable": true
+                    },
+                    "self": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  },
+                  "required": [
+                    "git",
+                    "html",
+                    "self"
+                  ]
+                }
+              },
+              "required": [
+                "_links",
+                "git_url",
+                "html_url",
+                "download_url",
+                "name",
+                "path",
+                "sha",
+                "size",
+                "type",
+                "url"
+              ]
+            }
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "_links": {
+            "type": "object",
+            "properties": {
+              "git": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "html": {
+                "type": "string",
+                "format": "uri",
+                "nullable": true
+              },
+              "self": {
+                "type": "string",
+                "format": "uri"
+              }
+            },
+            "required": [
+              "git",
+              "html",
+              "self"
+            ]
+          }
+        },
+        "required": [
+          "_links",
+          "git_url",
+          "html_url",
+          "download_url",
+          "name",
+          "path",
+          "sha",
+          "size",
+          "type",
+          "url"
+        ]
+      },
+      "enterprise": {
+        "title": "Enterprise",
+        "description": "An enterprise on GitHub.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "description": "A short description of the enterprise.",
+            "type": "string",
+            "nullable": true
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "website_url": {
+            "description": "The enterprise's website URL.",
+            "type": "string",
+            "nullable": true,
+            "format": "uri"
+          },
+          "id": {
+            "description": "Unique identifier of the enterprise",
+            "type": "integer"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the enterprise.",
+            "type": "string"
+          },
+          "slug": {
+            "description": "The slug url identifier for the enterprise.",
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "avatar_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "name",
+          "slug",
+          "html_url",
+          "created_at",
+          "updated_at",
+          "avatar_url"
+        ]
+      },
+      "full-repository": {
+        "title": "Full Repository",
+        "description": "Full Repository",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/simple-user"
+          },
+          "private": {
+            "type": "boolean"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "fork": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "archive_url": {
+            "type": "string"
+          },
+          "assignees_url": {
+            "type": "string"
+          },
+          "blobs_url": {
+            "type": "string"
+          },
+          "branches_url": {
+            "type": "string"
+          },
+          "collaborators_url": {
+            "type": "string"
+          },
+          "comments_url": {
+            "type": "string"
+          },
+          "commits_url": {
+            "type": "string"
+          },
+          "compare_url": {
+            "type": "string"
+          },
+          "contents_url": {
+            "type": "string"
+          },
+          "contributors_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "deployments_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "downloads_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "events_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "forks_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_commits_url": {
+            "type": "string"
+          },
+          "git_refs_url": {
+            "type": "string"
+          },
+          "git_tags_url": {
+            "type": "string"
+          },
+          "git_url": {
+            "type": "string"
+          },
+          "issue_comment_url": {
+            "type": "string"
+          },
+          "issue_events_url": {
+            "type": "string"
+          },
+          "issues_url": {
+            "type": "string"
+          },
+          "keys_url": {
+            "type": "string"
+          },
+          "labels_url": {
+            "type": "string"
+          },
+          "languages_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "merges_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "milestones_url": {
+            "type": "string"
+          },
+          "notifications_url": {
+            "type": "string"
+          },
+          "pulls_url": {
+            "type": "string"
+          },
+          "releases_url": {
+            "type": "string"
+          },
+          "ssh_url": {
+            "type": "string"
+          },
+          "stargazers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "statuses_url": {
+            "type": "string"
+          },
+          "subscribers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "subscription_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "tags_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "teams_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "trees_url": {
+            "type": "string"
+          },
+          "clone_url": {
+            "type": "string"
+          },
+          "mirror_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "hooks_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "svn_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "homepage": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "forks_count": {
+            "type": "integer"
+          },
+          "stargazers_count": {
+            "type": "integer"
+          },
+          "watchers_count": {
+            "type": "integer"
+          },
+          "size": {
+            "description": "The size of the repository, in kilobytes. Size is calculated hourly. When a repository is initially created, the size is 0.",
+            "type": "integer"
+          },
+          "default_branch": {
+            "type": "string"
+          },
+          "open_issues_count": {
+            "type": "integer"
+          },
+          "is_template": {
+            "type": "boolean"
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "has_issues": {
+            "type": "boolean"
+          },
+          "has_projects": {
+            "type": "boolean"
+          },
+          "has_wiki": {
+            "type": "boolean"
+          },
+          "has_pages": {
+            "type": "boolean"
+          },
+          "has_downloads": {
+            "type": "boolean"
+          },
+          "has_discussions": {
+            "type": "boolean"
+          },
+          "has_pull_requests": {
+            "type": "boolean"
+          },
+          "pull_request_creation_policy": {
+            "description": "The policy controlling who can create pull requests: all or collaborators_only.",
+            "type": "string",
+            "enum": [
+              "all",
+              "collaborators_only"
+            ]
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "Returns whether or not this repository disabled."
+          },
+          "visibility": {
+            "description": "The repository visibility: public, private, or internal.",
+            "type": "string"
+          },
+          "pushed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "permissions": {
+            "type": "object",
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "maintain": {
+                "type": "boolean"
+              },
+              "push": {
+                "type": "boolean"
+              },
+              "triage": {
+                "type": "boolean"
+              },
+              "pull": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "admin",
+              "pull",
+              "push"
+            ]
+          },
+          "allow_rebase_merge": {
+            "type": "boolean"
+          },
+          "template_repository": {
+            "$ref": "#/components/schemas/nullable-repository"
+          },
+          "temp_clone_token": {
+            "description": "When present and non-empty, a temporary credential for read-only Git access to this repository.\nIt expires five minutes after generation and cannot be used to push changes.\nTreat this value as sensitive and avoid recording it in logs.",
+            "type": "string",
+            "nullable": true
+          },
+          "allow_squash_merge": {
+            "type": "boolean"
+          },
+          "allow_auto_merge": {
+            "type": "boolean"
+          },
+          "delete_branch_on_merge": {
+            "type": "boolean"
+          },
+          "allow_merge_commit": {
+            "type": "boolean"
+          },
+          "allow_update_branch": {
+            "type": "boolean"
+          },
+          "use_squash_pr_title_as_default": {
+            "type": "boolean"
+          },
+          "squash_merge_commit_title": {
+            "type": "string",
+            "enum": [
+              "PR_TITLE",
+              "COMMIT_OR_PR_TITLE"
+            ],
+            "description": "The default value for a squash merge commit title:\n\n- `PR_TITLE` - default to the pull request's title.\n- `COMMIT_OR_PR_TITLE` - default to the commit's title (if only one commit) or the pull request's title (when more than one commit)."
+          },
+          "squash_merge_commit_message": {
+            "type": "string",
+            "enum": [
+              "PR_BODY",
+              "COMMIT_MESSAGES",
+              "BLANK"
+            ],
+            "description": "The default value for a squash merge commit message:\n\n- `PR_BODY` - default to the pull request's body.\n- `COMMIT_MESSAGES` - default to the branch's commit messages.\n- `BLANK` - default to a blank commit message."
+          },
+          "merge_commit_title": {
+            "type": "string",
+            "enum": [
+              "PR_TITLE",
+              "MERGE_MESSAGE"
+            ],
+            "description": "The default value for a merge commit title.\n\n  - `PR_TITLE` - default to the pull request's title.\n  - `MERGE_MESSAGE` - default to the classic title for a merge message (e.g., Merge pull request #123 from branch-name)."
+          },
+          "merge_commit_message": {
+            "type": "string",
+            "enum": [
+              "PR_BODY",
+              "PR_TITLE",
+              "BLANK"
+            ],
+            "description": "The default value for a merge commit message.\n\n- `PR_TITLE` - default to the pull request's title.\n- `PR_BODY` - default to the pull request's body.\n- `BLANK` - default to a blank commit message."
+          },
+          "allow_forking": {
+            "type": "boolean"
+          },
+          "web_commit_signoff_required": {
+            "type": "boolean"
+          },
+          "subscribers_count": {
+            "type": "integer"
+          },
+          "network_count": {
+            "type": "integer"
+          },
+          "license": {
+            "$ref": "#/components/schemas/nullable-license-simple"
+          },
+          "organization": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/repository"
+          },
+          "source": {
+            "$ref": "#/components/schemas/repository"
+          },
+          "forks": {
+            "type": "integer"
+          },
+          "master_branch": {
+            "type": "string"
+          },
+          "open_issues": {
+            "type": "integer"
+          },
+          "watchers": {
+            "type": "integer"
+          },
+          "anonymous_access_enabled": {
+            "description": "Whether anonymous git access is allowed.",
+            "default": true,
+            "type": "boolean"
+          },
+          "code_of_conduct": {
+            "$ref": "#/components/schemas/code-of-conduct-simple"
+          },
+          "security_and_analysis": {
+            "$ref": "#/components/schemas/security-and-analysis"
+          },
+          "custom_properties": {
+            "type": "object",
+            "description": "The custom properties that were defined for the repository. The keys are the custom property names, and the values are the corresponding custom property values.",
+            "additionalProperties": true
+          }
+        },
+        "required": [
+          "archive_url",
+          "assignees_url",
+          "blobs_url",
+          "branches_url",
+          "collaborators_url",
+          "comments_url",
+          "commits_url",
+          "compare_url",
+          "contents_url",
+          "contributors_url",
+          "deployments_url",
+          "description",
+          "downloads_url",
+          "events_url",
+          "fork",
+          "forks_url",
+          "full_name",
+          "git_commits_url",
+          "git_refs_url",
+          "git_tags_url",
+          "hooks_url",
+          "html_url",
+          "id",
+          "node_id",
+          "issue_comment_url",
+          "issue_events_url",
+          "issues_url",
+          "keys_url",
+          "labels_url",
+          "languages_url",
+          "merges_url",
+          "milestones_url",
+          "name",
+          "notifications_url",
+          "owner",
+          "private",
+          "pulls_url",
+          "releases_url",
+          "stargazers_url",
+          "statuses_url",
+          "subscribers_url",
+          "subscription_url",
+          "tags_url",
+          "teams_url",
+          "trees_url",
+          "url",
+          "clone_url",
+          "default_branch",
+          "forks",
+          "forks_count",
+          "git_url",
+          "has_issues",
+          "has_projects",
+          "has_wiki",
+          "has_pages",
+          "has_discussions",
+          "homepage",
+          "language",
+          "archived",
+          "disabled",
+          "mirror_url",
+          "open_issues",
+          "open_issues_count",
+          "license",
+          "pushed_at",
+          "size",
+          "ssh_url",
+          "stargazers_count",
+          "svn_url",
+          "watchers",
+          "watchers_count",
+          "created_at",
+          "updated_at",
+          "network_count",
+          "subscribers_count"
+        ],
+        "x-github-breaking-changes": [
+          {
+            "changeset": "remove_use_squash_pr_title_as_default",
+            "patch": {
+              "properties": {
+                "use_squash_pr_title_as_default": null
+              }
+            },
+            "version": "2026-03-10"
+          },
+          {
+            "changeset": "remove_has_downloads",
+            "patch": {
+              "properties": {
+                "has_downloads": null
+              }
+            },
+            "version": "2026-03-10"
+          }
+        ]
+      },
+      "installation-token": {
+        "title": "Installation Token",
+        "description": "Authentication token for a GitHub App installed on a user or org.",
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "permissions": {
+            "$ref": "#/components/schemas/app-permissions"
+          },
+          "repository_selection": {
+            "type": "string",
+            "enum": [
+              "all",
+              "selected"
+            ]
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/repository"
+            }
+          },
+          "single_file": {
+            "type": "string"
+          },
+          "has_multiple_single_files": {
+            "type": "boolean"
+          },
+          "single_file_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "token",
+          "expires_at"
+        ]
+      },
+      "integration": {
+        "title": "GitHub app",
+        "description": "GitHub apps are a new way to extend GitHub. They can be installed directly on organizations and user accounts and granted access to specific repositories. They come with granular permissions and built-in webhooks. GitHub apps are first class actors within GitHub.",
+        "type": "object",
+        "nullable": true,
+        "properties": {
+          "id": {
+            "description": "Unique identifier of the GitHub app",
+            "type": "integer"
+          },
+          "slug": {
+            "description": "The slug name of the GitHub app",
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "client_id": {
+            "type": "string"
+          },
+          "owner": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/simple-user"
+              },
+              {
+                "$ref": "#/components/schemas/enterprise"
+              }
+            ]
+          },
+          "name": {
+            "description": "The name of the GitHub app",
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "external_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "permissions": {
+            "description": "The set of permissions for the GitHub app",
+            "type": "object",
+            "properties": {
+              "issues": {
+                "type": "string"
+              },
+              "checks": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "string"
+              },
+              "contents": {
+                "type": "string"
+              },
+              "deployments": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "events": {
+            "description": "The list of events for the GitHub app. Note that the `installation_target`, `security_advisory`, and `meta` events are not included because they are global events and not specific to an installation.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "installations_count": {
+            "description": "The number of installations associated with the GitHub app. Only returned when the integration is requesting details about itself.",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "node_id",
+          "owner",
+          "name",
+          "description",
+          "external_url",
+          "html_url",
+          "created_at",
+          "updated_at",
+          "permissions",
+          "events"
+        ]
+      },
+      "nullable-alert-updated-at": {
+        "type": "string",
+        "description": "The time that the alert was last updated in ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`.",
+        "format": "date-time",
+        "readOnly": true,
+        "nullable": true
+      },
+      "nullable-license-simple": {
+        "title": "License Simple",
+        "description": "License Simple",
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true,
+            "format": "uri"
+          },
+          "spdx_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "url",
+          "spdx_id",
+          "node_id"
+        ],
+        "nullable": true
+      },
+      "nullable-repository": {
+        "title": "Repository",
+        "description": "A repository on GitHub.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Unique identifier of the repository",
+            "type": "integer",
+            "format": "int64"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the repository.",
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "license": {
+            "$ref": "#/components/schemas/nullable-license-simple"
+          },
+          "forks": {
+            "type": "integer"
+          },
+          "permissions": {
+            "type": "object",
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "pull": {
+                "type": "boolean"
+              },
+              "triage": {
+                "type": "boolean"
+              },
+              "push": {
+                "type": "boolean"
+              },
+              "maintain": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "admin",
+              "pull",
+              "push"
+            ]
+          },
+          "owner": {
+            "$ref": "#/components/schemas/simple-user"
+          },
+          "private": {
+            "description": "Whether the repository is private or public.",
+            "default": false,
+            "type": "boolean"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "fork": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "archive_url": {
+            "type": "string"
+          },
+          "assignees_url": {
+            "type": "string"
+          },
+          "blobs_url": {
+            "type": "string"
+          },
+          "branches_url": {
+            "type": "string"
+          },
+          "collaborators_url": {
+            "type": "string"
+          },
+          "comments_url": {
+            "type": "string"
+          },
+          "commits_url": {
+            "type": "string"
+          },
+          "compare_url": {
+            "type": "string"
+          },
+          "contents_url": {
+            "type": "string"
+          },
+          "contributors_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "deployments_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "downloads_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "events_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "forks_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_commits_url": {
+            "type": "string"
+          },
+          "git_refs_url": {
+            "type": "string"
+          },
+          "git_tags_url": {
+            "type": "string"
+          },
+          "git_url": {
+            "type": "string"
+          },
+          "issue_comment_url": {
+            "type": "string"
+          },
+          "issue_events_url": {
+            "type": "string"
+          },
+          "issues_url": {
+            "type": "string"
+          },
+          "keys_url": {
+            "type": "string"
+          },
+          "labels_url": {
+            "type": "string"
+          },
+          "languages_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "merges_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "milestones_url": {
+            "type": "string"
+          },
+          "notifications_url": {
+            "type": "string"
+          },
+          "pulls_url": {
+            "type": "string"
+          },
+          "releases_url": {
+            "type": "string"
+          },
+          "ssh_url": {
+            "type": "string"
+          },
+          "stargazers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "statuses_url": {
+            "type": "string"
+          },
+          "subscribers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "subscription_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "tags_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "teams_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "trees_url": {
+            "type": "string"
+          },
+          "clone_url": {
+            "type": "string"
+          },
+          "mirror_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "hooks_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "svn_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "homepage": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "forks_count": {
+            "type": "integer"
+          },
+          "stargazers_count": {
+            "type": "integer"
+          },
+          "watchers_count": {
+            "type": "integer"
+          },
+          "size": {
+            "description": "The size of the repository, in kilobytes. Size is calculated hourly. When a repository is initially created, the size is 0.",
+            "type": "integer"
+          },
+          "default_branch": {
+            "description": "The default branch of the repository.",
+            "type": "string"
+          },
+          "open_issues_count": {
+            "type": "integer"
+          },
+          "is_template": {
+            "description": "Whether this repository acts as a template that can be used to generate new repositories.",
+            "default": false,
+            "type": "boolean"
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "has_issues": {
+            "description": "Whether issues are enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "has_projects": {
+            "description": "Whether projects are enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "has_wiki": {
+            "description": "Whether the wiki is enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "has_pages": {
+            "type": "boolean"
+          },
+          "has_downloads": {
+            "description": "Whether downloads are enabled.",
+            "default": true,
+            "type": "boolean",
+            "deprecated": true
+          },
+          "has_discussions": {
+            "description": "Whether discussions are enabled.",
+            "default": false,
+            "type": "boolean"
+          },
+          "has_pull_requests": {
+            "description": "Whether pull requests are enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "pull_request_creation_policy": {
+            "description": "The policy controlling who can create pull requests: all or collaborators_only.",
+            "type": "string",
+            "enum": [
+              "all",
+              "collaborators_only"
+            ]
+          },
+          "archived": {
+            "description": "Whether the repository is archived.",
+            "default": false,
+            "type": "boolean"
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "Returns whether or not this repository disabled."
+          },
+          "visibility": {
+            "description": "The repository visibility: public, private, or internal.",
+            "default": "public",
+            "type": "string"
+          },
+          "pushed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "allow_rebase_merge": {
+            "description": "Whether to allow rebase merges for pull requests.",
+            "default": true,
+            "type": "boolean"
+          },
+          "temp_clone_token": {
+            "description": "When present and non-empty, a temporary credential for read-only Git access to this repository.\nIt expires five minutes after generation and cannot be used to push changes.\nTreat this value as sensitive and avoid recording it in logs.",
+            "type": "string"
+          },
+          "allow_squash_merge": {
+            "description": "Whether to allow squash merges for pull requests.",
+            "default": true,
+            "type": "boolean"
+          },
+          "allow_auto_merge": {
+            "description": "Whether to allow Auto-merge to be used on pull requests.",
+            "default": false,
+            "type": "boolean"
+          },
+          "delete_branch_on_merge": {
+            "description": "Whether to delete head branches when pull requests are merged",
+            "default": false,
+            "type": "boolean"
+          },
+          "allow_update_branch": {
+            "description": "Whether or not a pull request head branch that is behind its base branch can always be updated even if it is not required to be up to date before merging.",
+            "default": false,
+            "type": "boolean"
+          },
+          "use_squash_pr_title_as_default": {
+            "type": "boolean",
+            "description": "Whether a squash merge commit can use the pull request title as default. **This property is closing down. Please use `squash_merge_commit_title` instead.",
+            "default": false,
+            "deprecated": true
+          },
+          "squash_merge_commit_title": {
+            "type": "string",
+            "enum": [
+              "PR_TITLE",
+              "COMMIT_OR_PR_TITLE"
+            ],
+            "description": "The default value for a squash merge commit title:\n\n- `PR_TITLE` - default to the pull request's title.\n- `COMMIT_OR_PR_TITLE` - default to the commit's title (if only one commit) or the pull request's title (when more than one commit)."
+          },
+          "squash_merge_commit_message": {
+            "type": "string",
+            "enum": [
+              "PR_BODY",
+              "COMMIT_MESSAGES",
+              "BLANK"
+            ],
+            "description": "The default value for a squash merge commit message:\n\n- `PR_BODY` - default to the pull request's body.\n- `COMMIT_MESSAGES` - default to the branch's commit messages.\n- `BLANK` - default to a blank commit message."
+          },
+          "merge_commit_title": {
+            "type": "string",
+            "enum": [
+              "PR_TITLE",
+              "MERGE_MESSAGE"
+            ],
+            "description": "The default value for a merge commit title.\n\n- `PR_TITLE` - default to the pull request's title.\n- `MERGE_MESSAGE` - default to the classic title for a merge message (e.g., Merge pull request #123 from branch-name)."
+          },
+          "merge_commit_message": {
+            "type": "string",
+            "enum": [
+              "PR_BODY",
+              "PR_TITLE",
+              "BLANK"
+            ],
+            "description": "The default value for a merge commit message.\n\n- `PR_TITLE` - default to the pull request's title.\n- `PR_BODY` - default to the pull request's body.\n- `BLANK` - default to a blank commit message."
+          },
+          "allow_merge_commit": {
+            "description": "Whether to allow merge commits for pull requests.",
+            "default": true,
+            "type": "boolean"
+          },
+          "allow_forking": {
+            "description": "Whether to allow forking this repo",
+            "type": "boolean"
+          },
+          "web_commit_signoff_required": {
+            "description": "Whether to require contributors to sign off on web-based commits",
+            "default": false,
+            "type": "boolean"
+          },
+          "open_issues": {
+            "type": "integer"
+          },
+          "watchers": {
+            "type": "integer"
+          },
+          "master_branch": {
+            "type": "string"
+          },
+          "starred_at": {
+            "type": "string"
+          },
+          "anonymous_access_enabled": {
+            "type": "boolean",
+            "description": "Whether anonymous git access is enabled for this repository"
+          },
+          "code_search_index_status": {
+            "type": "object",
+            "description": "The status of the code search index for this repository",
+            "properties": {
+              "lexical_search_ok": {
+                "type": "boolean"
+              },
+              "lexical_commit_sha": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "archive_url",
+          "assignees_url",
+          "blobs_url",
+          "branches_url",
+          "collaborators_url",
+          "comments_url",
+          "commits_url",
+          "compare_url",
+          "contents_url",
+          "contributors_url",
+          "deployments_url",
+          "description",
+          "downloads_url",
+          "events_url",
+          "fork",
+          "forks_url",
+          "full_name",
+          "git_commits_url",
+          "git_refs_url",
+          "git_tags_url",
+          "hooks_url",
+          "html_url",
+          "id",
+          "node_id",
+          "issue_comment_url",
+          "issue_events_url",
+          "issues_url",
+          "keys_url",
+          "labels_url",
+          "languages_url",
+          "merges_url",
+          "milestones_url",
+          "name",
+          "notifications_url",
+          "owner",
+          "private",
+          "pulls_url",
+          "releases_url",
+          "stargazers_url",
+          "statuses_url",
+          "subscribers_url",
+          "subscription_url",
+          "tags_url",
+          "teams_url",
+          "trees_url",
+          "url",
+          "clone_url",
+          "default_branch",
+          "forks",
+          "forks_count",
+          "git_url",
+          "has_downloads",
+          "has_issues",
+          "has_projects",
+          "has_wiki",
+          "has_pages",
+          "homepage",
+          "language",
+          "archived",
+          "disabled",
+          "mirror_url",
+          "open_issues",
+          "open_issues_count",
+          "license",
+          "pushed_at",
+          "size",
+          "ssh_url",
+          "stargazers_count",
+          "svn_url",
+          "watchers",
+          "watchers_count",
+          "created_at",
+          "updated_at"
+        ],
+        "x-github-breaking-changes": [
+          {
+            "changeset": "remove_use_squash_pr_title_as_default",
+            "patch": {
+              "properties": {
+                "use_squash_pr_title_as_default": null
+              }
+            },
+            "version": "2026-03-10"
+          },
+          {
+            "changeset": "deprecate_beta_media_type",
+            "patch": {
+              "properties": {
+                "master_branch": null
+              }
+            },
+            "version": "2026-03-10"
+          },
+          {
+            "changeset": "remove_has_downloads",
+            "patch": {
+              "properties": {
+                "has_downloads": null
+              },
+              "required": [
+                "archive_url",
+                "assignees_url",
+                "blobs_url",
+                "branches_url",
+                "collaborators_url",
+                "comments_url",
+                "commits_url",
+                "compare_url",
+                "contents_url",
+                "contributors_url",
+                "deployments_url",
+                "description",
+                "downloads_url",
+                "events_url",
+                "fork",
+                "forks_url",
+                "full_name",
+                "git_commits_url",
+                "git_refs_url",
+                "git_tags_url",
+                "hooks_url",
+                "html_url",
+                "id",
+                "node_id",
+                "issue_comment_url",
+                "issue_events_url",
+                "issues_url",
+                "keys_url",
+                "labels_url",
+                "languages_url",
+                "merges_url",
+                "milestones_url",
+                "name",
+                "notifications_url",
+                "owner",
+                "private",
+                "pulls_url",
+                "releases_url",
+                "stargazers_url",
+                "statuses_url",
+                "subscribers_url",
+                "subscription_url",
+                "tags_url",
+                "teams_url",
+                "trees_url",
+                "url",
+                "clone_url",
+                "default_branch",
+                "forks",
+                "forks_count",
+                "git_url",
+                "has_issues",
+                "has_projects",
+                "has_wiki",
+                "has_pages",
+                "homepage",
+                "language",
+                "archived",
+                "disabled",
+                "mirror_url",
+                "open_issues",
+                "open_issues_count",
+                "license",
+                "pushed_at",
+                "size",
+                "ssh_url",
+                "stargazers_count",
+                "svn_url",
+                "watchers",
+                "watchers_count",
+                "created_at",
+                "updated_at"
+              ]
+            },
+            "version": "2026-03-10"
+          }
+        ],
+        "nullable": true
+      },
+      "nullable-scoped-installation": {
+        "title": "Scoped Installation",
+        "type": "object",
+        "properties": {
+          "permissions": {
+            "$ref": "#/components/schemas/app-permissions"
+          },
+          "repository_selection": {
+            "description": "Describe whether all repositories have been selected or there's a selection involved",
+            "type": "string",
+            "enum": [
+              "all",
+              "selected"
+            ]
+          },
+          "single_file_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "has_multiple_single_files": {
+            "type": "boolean"
+          },
+          "single_file_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "repositories_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "account": {
+            "$ref": "#/components/schemas/simple-user"
+          }
+        },
+        "required": [
+          "permissions",
+          "repository_selection",
+          "single_file_name",
+          "repositories_url",
+          "account"
+        ],
+        "nullable": true
+      },
+      "nullable-secret-scanning-first-detected-location": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-commit"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-wiki-commit"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-issue-title"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-issue-body"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-issue-comment"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-discussion-title"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-discussion-body"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-discussion-comment"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-pull-request-title"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-pull-request-body"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-pull-request-comment"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-pull-request-review"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-pull-request-review-comment"
+          },
+          {
+            "$ref": "#/components/schemas/secret-scanning-location-actions-log"
+          }
+        ],
+        "nullable": true,
+        "description": "Details on the location where the token was initially detected. This can be a commit, wiki commit, issue, discussion, pull request, or Actions job log.\n"
+      },
+      "nullable-simple-user": {
+        "title": "Simple User",
+        "description": "A GitHub user.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "avatar_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "gravatar_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "followers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "following_url": {
+            "type": "string"
+          },
+          "gists_url": {
+            "type": "string"
+          },
+          "starred_url": {
+            "type": "string"
+          },
+          "subscriptions_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "organizations_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "repos_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "events_url": {
+            "type": "string"
+          },
+          "received_events_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "type": {
+            "type": "string"
+          },
+          "site_admin": {
+            "type": "boolean"
+          },
+          "starred_at": {
+            "type": "string"
+          },
+          "user_view_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "avatar_url",
+          "events_url",
+          "followers_url",
+          "following_url",
+          "gists_url",
+          "gravatar_id",
+          "html_url",
+          "id",
+          "node_id",
+          "login",
+          "organizations_url",
+          "received_events_url",
+          "repos_url",
+          "site_admin",
+          "starred_url",
+          "subscriptions_url",
+          "type",
+          "url"
+        ],
+        "nullable": true
+      },
+      "repository": {
+        "title": "Repository",
+        "description": "A repository on GitHub.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "Unique identifier of the repository",
+            "type": "integer",
+            "format": "int64"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "name": {
+            "description": "The name of the repository.",
+            "type": "string"
+          },
+          "full_name": {
+            "type": "string"
+          },
+          "license": {
+            "$ref": "#/components/schemas/nullable-license-simple"
+          },
+          "forks": {
+            "type": "integer"
+          },
+          "permissions": {
+            "type": "object",
+            "properties": {
+              "admin": {
+                "type": "boolean"
+              },
+              "pull": {
+                "type": "boolean"
+              },
+              "triage": {
+                "type": "boolean"
+              },
+              "push": {
+                "type": "boolean"
+              },
+              "maintain": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "admin",
+              "pull",
+              "push"
+            ]
+          },
+          "owner": {
+            "$ref": "#/components/schemas/simple-user"
+          },
+          "private": {
+            "description": "Whether the repository is private or public.",
+            "default": false,
+            "type": "boolean"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "fork": {
+            "type": "boolean"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "archive_url": {
+            "type": "string"
+          },
+          "assignees_url": {
+            "type": "string"
+          },
+          "blobs_url": {
+            "type": "string"
+          },
+          "branches_url": {
+            "type": "string"
+          },
+          "collaborators_url": {
+            "type": "string"
+          },
+          "comments_url": {
+            "type": "string"
+          },
+          "commits_url": {
+            "type": "string"
+          },
+          "compare_url": {
+            "type": "string"
+          },
+          "contents_url": {
+            "type": "string"
+          },
+          "contributors_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "deployments_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "downloads_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "events_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "forks_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "git_commits_url": {
+            "type": "string"
+          },
+          "git_refs_url": {
+            "type": "string"
+          },
+          "git_tags_url": {
+            "type": "string"
+          },
+          "git_url": {
+            "type": "string"
+          },
+          "issue_comment_url": {
+            "type": "string"
+          },
+          "issue_events_url": {
+            "type": "string"
+          },
+          "issues_url": {
+            "type": "string"
+          },
+          "keys_url": {
+            "type": "string"
+          },
+          "labels_url": {
+            "type": "string"
+          },
+          "languages_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "merges_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "milestones_url": {
+            "type": "string"
+          },
+          "notifications_url": {
+            "type": "string"
+          },
+          "pulls_url": {
+            "type": "string"
+          },
+          "releases_url": {
+            "type": "string"
+          },
+          "ssh_url": {
+            "type": "string"
+          },
+          "stargazers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "statuses_url": {
+            "type": "string"
+          },
+          "subscribers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "subscription_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "tags_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "teams_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "trees_url": {
+            "type": "string"
+          },
+          "clone_url": {
+            "type": "string"
+          },
+          "mirror_url": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "hooks_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "svn_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "homepage": {
+            "type": "string",
+            "format": "uri",
+            "nullable": true
+          },
+          "language": {
+            "type": "string",
+            "nullable": true
+          },
+          "forks_count": {
+            "type": "integer"
+          },
+          "stargazers_count": {
+            "type": "integer"
+          },
+          "watchers_count": {
+            "type": "integer"
+          },
+          "size": {
+            "description": "The size of the repository, in kilobytes. Size is calculated hourly. When a repository is initially created, the size is 0.",
+            "type": "integer"
+          },
+          "default_branch": {
+            "description": "The default branch of the repository.",
+            "type": "string"
+          },
+          "open_issues_count": {
+            "type": "integer"
+          },
+          "is_template": {
+            "description": "Whether this repository acts as a template that can be used to generate new repositories.",
+            "default": false,
+            "type": "boolean"
+          },
+          "topics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "has_issues": {
+            "description": "Whether issues are enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "has_projects": {
+            "description": "Whether projects are enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "has_wiki": {
+            "description": "Whether the wiki is enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "has_pages": {
+            "type": "boolean"
+          },
+          "has_downloads": {
+            "description": "Whether downloads are enabled.",
+            "default": true,
+            "type": "boolean",
+            "deprecated": true
+          },
+          "has_discussions": {
+            "description": "Whether discussions are enabled.",
+            "default": false,
+            "type": "boolean"
+          },
+          "has_pull_requests": {
+            "description": "Whether pull requests are enabled.",
+            "default": true,
+            "type": "boolean"
+          },
+          "pull_request_creation_policy": {
+            "description": "The policy controlling who can create pull requests: all or collaborators_only.",
+            "type": "string",
+            "enum": [
+              "all",
+              "collaborators_only"
+            ]
+          },
+          "archived": {
+            "description": "Whether the repository is archived.",
+            "default": false,
+            "type": "boolean"
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "Returns whether or not this repository disabled."
+          },
+          "visibility": {
+            "description": "The repository visibility: public, private, or internal.",
+            "default": "public",
+            "type": "string"
+          },
+          "pushed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "allow_rebase_merge": {
+            "description": "Whether to allow rebase merges for pull requests.",
+            "default": true,
+            "type": "boolean"
+          },
+          "temp_clone_token": {
+            "description": "When present and non-empty, a temporary credential for read-only Git access to this repository.\nIt expires five minutes after generation and cannot be used to push changes.\nTreat this value as sensitive and avoid recording it in logs.",
+            "type": "string"
+          },
+          "allow_squash_merge": {
+            "description": "Whether to allow squash merges for pull requests.",
+            "default": true,
+            "type": "boolean"
+          },
+          "allow_auto_merge": {
+            "description": "Whether to allow Auto-merge to be used on pull requests.",
+            "default": false,
+            "type": "boolean"
+          },
+          "delete_branch_on_merge": {
+            "description": "Whether to delete head branches when pull requests are merged",
+            "default": false,
+            "type": "boolean"
+          },
+          "allow_update_branch": {
+            "description": "Whether or not a pull request head branch that is behind its base branch can always be updated even if it is not required to be up to date before merging.",
+            "default": false,
+            "type": "boolean"
+          },
+          "use_squash_pr_title_as_default": {
+            "type": "boolean",
+            "description": "Whether a squash merge commit can use the pull request title as default. **This property is closing down. Please use `squash_merge_commit_title` instead.",
+            "default": false,
+            "deprecated": true
+          },
+          "squash_merge_commit_title": {
+            "type": "string",
+            "enum": [
+              "PR_TITLE",
+              "COMMIT_OR_PR_TITLE"
+            ],
+            "description": "The default value for a squash merge commit title:\n\n- `PR_TITLE` - default to the pull request's title.\n- `COMMIT_OR_PR_TITLE` - default to the commit's title (if only one commit) or the pull request's title (when more than one commit)."
+          },
+          "squash_merge_commit_message": {
+            "type": "string",
+            "enum": [
+              "PR_BODY",
+              "COMMIT_MESSAGES",
+              "BLANK"
+            ],
+            "description": "The default value for a squash merge commit message:\n\n- `PR_BODY` - default to the pull request's body.\n- `COMMIT_MESSAGES` - default to the branch's commit messages.\n- `BLANK` - default to a blank commit message."
+          },
+          "merge_commit_title": {
+            "type": "string",
+            "enum": [
+              "PR_TITLE",
+              "MERGE_MESSAGE"
+            ],
+            "description": "The default value for a merge commit title.\n\n- `PR_TITLE` - default to the pull request's title.\n- `MERGE_MESSAGE` - default to the classic title for a merge message (e.g., Merge pull request #123 from branch-name)."
+          },
+          "merge_commit_message": {
+            "type": "string",
+            "enum": [
+              "PR_BODY",
+              "PR_TITLE",
+              "BLANK"
+            ],
+            "description": "The default value for a merge commit message.\n\n- `PR_TITLE` - default to the pull request's title.\n- `PR_BODY` - default to the pull request's body.\n- `BLANK` - default to a blank commit message."
+          },
+          "allow_merge_commit": {
+            "description": "Whether to allow merge commits for pull requests.",
+            "default": true,
+            "type": "boolean"
+          },
+          "allow_forking": {
+            "description": "Whether to allow forking this repo",
+            "type": "boolean"
+          },
+          "web_commit_signoff_required": {
+            "description": "Whether to require contributors to sign off on web-based commits",
+            "default": false,
+            "type": "boolean"
+          },
+          "open_issues": {
+            "type": "integer"
+          },
+          "watchers": {
+            "type": "integer"
+          },
+          "master_branch": {
+            "type": "string"
+          },
+          "starred_at": {
+            "type": "string"
+          },
+          "anonymous_access_enabled": {
+            "type": "boolean",
+            "description": "Whether anonymous git access is enabled for this repository"
+          },
+          "code_search_index_status": {
+            "type": "object",
+            "description": "The status of the code search index for this repository",
+            "properties": {
+              "lexical_search_ok": {
+                "type": "boolean"
+              },
+              "lexical_commit_sha": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "archive_url",
+          "assignees_url",
+          "blobs_url",
+          "branches_url",
+          "collaborators_url",
+          "comments_url",
+          "commits_url",
+          "compare_url",
+          "contents_url",
+          "contributors_url",
+          "deployments_url",
+          "description",
+          "downloads_url",
+          "events_url",
+          "fork",
+          "forks_url",
+          "full_name",
+          "git_commits_url",
+          "git_refs_url",
+          "git_tags_url",
+          "hooks_url",
+          "html_url",
+          "id",
+          "node_id",
+          "issue_comment_url",
+          "issue_events_url",
+          "issues_url",
+          "keys_url",
+          "labels_url",
+          "languages_url",
+          "merges_url",
+          "milestones_url",
+          "name",
+          "notifications_url",
+          "owner",
+          "private",
+          "pulls_url",
+          "releases_url",
+          "stargazers_url",
+          "statuses_url",
+          "subscribers_url",
+          "subscription_url",
+          "tags_url",
+          "teams_url",
+          "trees_url",
+          "url",
+          "clone_url",
+          "default_branch",
+          "forks",
+          "forks_count",
+          "git_url",
+          "has_downloads",
+          "has_issues",
+          "has_projects",
+          "has_wiki",
+          "has_pages",
+          "homepage",
+          "language",
+          "archived",
+          "disabled",
+          "mirror_url",
+          "open_issues",
+          "open_issues_count",
+          "license",
+          "pushed_at",
+          "size",
+          "ssh_url",
+          "stargazers_count",
+          "svn_url",
+          "watchers",
+          "watchers_count",
+          "created_at",
+          "updated_at"
+        ],
+        "x-github-breaking-changes": [
+          {
+            "changeset": "remove_use_squash_pr_title_as_default",
+            "patch": {
+              "properties": {
+                "use_squash_pr_title_as_default": null
+              }
+            },
+            "version": "2026-03-10"
+          },
+          {
+            "changeset": "deprecate_beta_media_type",
+            "patch": {
+              "properties": {
+                "master_branch": null
+              }
+            },
+            "version": "2026-03-10"
+          },
+          {
+            "changeset": "remove_has_downloads",
+            "patch": {
+              "properties": {
+                "has_downloads": null
+              },
+              "required": [
+                "archive_url",
+                "assignees_url",
+                "blobs_url",
+                "branches_url",
+                "collaborators_url",
+                "comments_url",
+                "commits_url",
+                "compare_url",
+                "contents_url",
+                "contributors_url",
+                "deployments_url",
+                "description",
+                "downloads_url",
+                "events_url",
+                "fork",
+                "forks_url",
+                "full_name",
+                "git_commits_url",
+                "git_refs_url",
+                "git_tags_url",
+                "hooks_url",
+                "html_url",
+                "id",
+                "node_id",
+                "issue_comment_url",
+                "issue_events_url",
+                "issues_url",
+                "keys_url",
+                "labels_url",
+                "languages_url",
+                "merges_url",
+                "milestones_url",
+                "name",
+                "notifications_url",
+                "owner",
+                "private",
+                "pulls_url",
+                "releases_url",
+                "stargazers_url",
+                "statuses_url",
+                "subscribers_url",
+                "subscription_url",
+                "tags_url",
+                "teams_url",
+                "trees_url",
+                "url",
+                "clone_url",
+                "default_branch",
+                "forks",
+                "forks_count",
+                "git_url",
+                "has_issues",
+                "has_projects",
+                "has_wiki",
+                "has_pages",
+                "homepage",
+                "language",
+                "archived",
+                "disabled",
+                "mirror_url",
+                "open_issues",
+                "open_issues_count",
+                "license",
+                "pushed_at",
+                "size",
+                "ssh_url",
+                "stargazers_count",
+                "svn_url",
+                "watchers",
+                "watchers_count",
+                "created_at",
+                "updated_at"
+              ]
+            },
+            "version": "2026-03-10"
+          }
+        ]
+      },
+      "runner": {
+        "title": "Self hosted runners",
+        "description": "A self hosted runner",
+        "type": "object",
+        "properties": {
+          "id": {
+            "description": "The ID of the runner.",
+            "type": "integer"
+          },
+          "runner_group_id": {
+            "description": "The ID of the runner group.",
+            "type": "integer"
+          },
+          "name": {
+            "description": "The name of the runner.",
+            "type": "string"
+          },
+          "os": {
+            "description": "The Operating System of the runner.",
+            "type": "string"
+          },
+          "status": {
+            "description": "The status of the runner.",
+            "type": "string"
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "labels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/runner-label"
+            }
+          },
+          "ephemeral": {
+            "type": "boolean"
+          },
+          "version": {
+            "description": "The version of the GitHub Actions Runner software. This is only set if the runner has connected to the service at least once.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "os",
+          "status",
+          "busy",
+          "labels"
+        ]
+      },
+      "runner-application": {
+        "title": "Runner Application",
+        "description": "Runner Application",
+        "type": "object",
+        "properties": {
+          "os": {
+            "type": "string"
+          },
+          "architecture": {
+            "type": "string"
+          },
+          "download_url": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "temp_download_token": {
+            "description": "A short lived bearer token used to download the runner, if needed.",
+            "type": "string"
+          },
+          "sha256_checksum": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "os",
+          "architecture",
+          "download_url",
+          "filename"
+        ]
+      },
+      "runner-label": {
+        "title": "Self hosted runner label",
+        "description": "A label for a self hosted runner",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Unique identifier of the label."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name of the label."
+          },
+          "type": {
+            "type": "string",
+            "description": "The type of label. Read-only labels are applied automatically when the runner is configured.",
+            "enum": [
+              "read-only",
+              "custom"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "secret-scanning-alert-metadata": {
+        "type": "array",
+        "description": "A list of metadata key/value pairs associated with the secret scanning alert.",
+        "readOnly": true,
+        "items": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "description": "The metadata key."
+            },
+            "value": {
+              "type": "string",
+              "description": "The metadata value."
+            }
+          },
+          "required": [
+            "key",
+            "value"
+          ]
+        }
+      },
+      "secret-scanning-alert-resolution": {
+        "type": "string",
+        "description": "**Required when the `state` is `resolved`.** The reason for resolving the alert.",
+        "nullable": true,
+        "enum": [
+          "false_positive",
+          "wont_fix",
+          "revoked",
+          "used_in_tests"
+        ]
+      },
+      "secret-scanning-alert-state": {
+        "description": "Sets the state of the secret scanning alert. You must provide `resolution` when you set the state to `resolved`.",
+        "type": "string",
+        "enum": [
+          "open",
+          "resolved"
+        ]
+      },
+      "secret-scanning-alert-with-metadata": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "$ref": "#/components/schemas/alert-number"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/alert-created-at"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/nullable-alert-updated-at"
+          },
+          "url": {
+            "$ref": "#/components/schemas/alert-url"
+          },
+          "html_url": {
+            "$ref": "#/components/schemas/alert-html-url"
+          },
+          "locations_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The REST API URL of the code locations for this alert."
+          },
+          "state": {
+            "$ref": "#/components/schemas/secret-scanning-alert-state"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/secret-scanning-alert-resolution"
+          },
+          "resolved_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The time that the alert was resolved in ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`.",
+            "nullable": true
+          },
+          "resolved_by": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "resolution_comment": {
+            "type": "string",
+            "description": "An optional comment to resolve an alert.",
+            "nullable": true
+          },
+          "secret_type": {
+            "type": "string",
+            "description": "The type of secret that secret scanning detected."
+          },
+          "secret_type_display_name": {
+            "type": "string",
+            "description": "User-friendly name for the detected secret, matching the `secret_type`.\nFor a list of built-in patterns, see \"[Supported secret scanning patterns](https://docs.github.com/code-security/secret-scanning/introduction/supported-secret-scanning-patterns#supported-secrets).\""
+          },
+          "provider": {
+            "type": "string",
+            "description": "The provider of the secret that was detected.",
+            "nullable": true
+          },
+          "provider_slug": {
+            "type": "string",
+            "description": "The slug identifier for the provider of the secret that was detected. Use this value for filtering by provider with the `providers` or `exclude_providers` parameters.",
+            "nullable": true
+          },
+          "secret": {
+            "type": "string",
+            "description": "The secret that was detected."
+          },
+          "push_protection_bypassed": {
+            "type": "boolean",
+            "description": "Whether push protection was bypassed for the detected secret.",
+            "nullable": true
+          },
+          "push_protection_bypassed_by": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "push_protection_bypassed_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The time that push protection was bypassed in ISO 8601 format: `YYYY-MM-DDTHH:MM:SSZ`.",
+            "nullable": true
+          },
+          "push_protection_bypass_request_reviewer": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "push_protection_bypass_request_reviewer_comment": {
+            "type": "string",
+            "description": "An optional comment when reviewing a push protection bypass.",
+            "nullable": true
+          },
+          "push_protection_bypass_request_comment": {
+            "type": "string",
+            "description": "An optional comment when requesting a push protection bypass.",
+            "nullable": true
+          },
+          "push_protection_bypass_request_html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL to a push protection bypass request.",
+            "nullable": true
+          },
+          "validity": {
+            "type": "string",
+            "description": "The token status as of the latest validity check.",
+            "enum": [
+              "active",
+              "inactive",
+              "unknown"
+            ]
+          },
+          "publicly_leaked": {
+            "type": "boolean",
+            "description": "Whether the detected secret was publicly leaked.",
+            "nullable": true
+          },
+          "multi_repo": {
+            "type": "boolean",
+            "description": "Whether the detected secret was found in multiple repositories under the same organization or enterprise.",
+            "nullable": true
+          },
+          "is_base64_encoded": {
+            "type": "boolean",
+            "description": "A boolean value representing whether or not alert is base64 encoded",
+            "nullable": true
+          },
+          "first_location_detected": {
+            "$ref": "#/components/schemas/nullable-secret-scanning-first-detected-location"
+          },
+          "has_more_locations": {
+            "type": "boolean",
+            "description": "A boolean value representing whether or not the token in the alert was detected in more than one location."
+          },
+          "assigned_to": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "closure_request_comment": {
+            "type": "string",
+            "description": "An optional comment from the closure request author.",
+            "nullable": true
+          },
+          "closure_request_reviewer_comment": {
+            "type": "string",
+            "description": "An optional comment from the closure request reviewer.",
+            "nullable": true
+          },
+          "closure_request_reviewer": {
+            "$ref": "#/components/schemas/nullable-simple-user"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/secret-scanning-alert-metadata"
+          }
+        }
+      },
+      "secret-scanning-location-actions-log": {
+        "description": "Represents an 'actions_log' secret scanning location type. The path identifies the workflow definition, while line and column positions identify the secret in the raw job log, not in the workflow file.",
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The workflow definition path. Dynamically generated workflows can have a synthetic path."
+          },
+          "start_line": {
+            "type": "number",
+            "description": "Line number at which the secret starts in the raw job log."
+          },
+          "end_line": {
+            "type": "number",
+            "description": "Line number at which the secret ends in the raw job log."
+          },
+          "start_column": {
+            "type": "number",
+            "description": "The one-based column at which the secret starts within the start line of the raw job log."
+          },
+          "end_column": {
+            "type": "number",
+            "description": "The one-based column at which the secret ends within the end line of the raw job log."
+          }
+        },
+        "required": [
+          "path",
+          "start_line",
+          "end_line",
+          "start_column",
+          "end_column"
+        ]
+      },
+      "secret-scanning-location-commit": {
+        "description": "Represents a 'commit' secret scanning location type. This location type shows that a secret was detected inside a commit to a repository.",
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file path in the repository"
+          },
+          "start_line": {
+            "type": "number",
+            "description": "Line number at which the secret starts in the file"
+          },
+          "end_line": {
+            "type": "number",
+            "description": "Line number at which the secret ends in the file"
+          },
+          "start_column": {
+            "type": "number",
+            "description": "The column at which the secret starts within the start line when the file is interpreted as 8BIT ASCII"
+          },
+          "end_column": {
+            "type": "number",
+            "description": "The column at which the secret ends within the end line when the file is interpreted as 8BIT ASCII"
+          },
+          "blob_sha": {
+            "type": "string",
+            "description": "SHA-1 hash ID of the associated blob"
+          },
+          "blob_url": {
+            "type": "string",
+            "description": "The API URL to get the associated blob resource"
+          },
+          "commit_sha": {
+            "type": "string",
+            "description": "SHA-1 hash ID of the associated commit"
+          },
+          "commit_url": {
+            "type": "string",
+            "description": "The API URL to get the associated commit resource"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL to get the associated commit resource."
+          }
+        },
+        "required": [
+          "path",
+          "start_line",
+          "end_line",
+          "start_column",
+          "end_column",
+          "blob_sha",
+          "blob_url",
+          "commit_sha",
+          "commit_url"
+        ]
+      },
+      "secret-scanning-location-discussion-body": {
+        "description": "Represents a 'discussion_body' secret scanning location type. This location type shows that a secret was detected in the body of a discussion.",
+        "type": "object",
+        "properties": {
+          "discussion_body_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL to the discussion where the secret was detected."
+          }
+        },
+        "required": [
+          "discussion_body_url"
+        ]
+      },
+      "secret-scanning-location-discussion-comment": {
+        "description": "Represents a 'discussion_comment' secret scanning location type. This location type shows that a secret was detected in a comment on a discussion.",
+        "type": "object",
+        "properties": {
+          "discussion_comment_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the discussion comment where the secret was detected."
+          }
+        },
+        "required": [
+          "discussion_comment_url"
+        ]
+      },
+      "secret-scanning-location-discussion-title": {
+        "description": "Represents a 'discussion_title' secret scanning location type. This location type shows that a secret was detected in the title of a discussion.",
+        "type": "object",
+        "properties": {
+          "discussion_title_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL to the discussion where the secret was detected."
+          }
+        },
+        "required": [
+          "discussion_title_url"
+        ]
+      },
+      "secret-scanning-location-issue-body": {
+        "description": "Represents an 'issue_body' secret scanning location type. This location type shows that a secret was detected in the body of an issue.",
+        "type": "object",
+        "properties": {
+          "issue_body_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the issue where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the issue where the secret was detected."
+          }
+        },
+        "required": [
+          "issue_body_url"
+        ]
+      },
+      "secret-scanning-location-issue-comment": {
+        "description": "Represents an 'issue_comment' secret scanning location type. This location type shows that a secret was detected in a comment on an issue.",
+        "type": "object",
+        "properties": {
+          "issue_comment_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the issue comment where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the issue comment where the secret was detected."
+          }
+        },
+        "required": [
+          "issue_comment_url"
+        ]
+      },
+      "secret-scanning-location-issue-title": {
+        "description": "Represents an 'issue_title' secret scanning location type. This location type shows that a secret was detected in the title of an issue.",
+        "type": "object",
+        "properties": {
+          "issue_title_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the issue where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the issue where the secret was detected."
+          }
+        },
+        "required": [
+          "issue_title_url"
+        ]
+      },
+      "secret-scanning-location-pull-request-body": {
+        "description": "Represents a 'pull_request_body' secret scanning location type. This location type shows that a secret was detected in the body of a pull request.",
+        "type": "object",
+        "properties": {
+          "pull_request_body_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the pull request where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the pull request where the secret was detected."
+          }
+        },
+        "required": [
+          "pull_request_body_url"
+        ]
+      },
+      "secret-scanning-location-pull-request-comment": {
+        "description": "Represents a 'pull_request_comment' secret scanning location type. This location type shows that a secret was detected in a comment on a pull request.",
+        "type": "object",
+        "properties": {
+          "pull_request_comment_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the pull request comment where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the pull request comment where the secret was detected."
+          }
+        },
+        "required": [
+          "pull_request_comment_url"
+        ]
+      },
+      "secret-scanning-location-pull-request-review": {
+        "description": "Represents a 'pull_request_review' secret scanning location type. This location type shows that a secret was detected in a review on a pull request.",
+        "type": "object",
+        "properties": {
+          "pull_request_review_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the pull request review where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the pull request review where the secret was detected."
+          }
+        },
+        "required": [
+          "pull_request_review_url"
+        ]
+      },
+      "secret-scanning-location-pull-request-review-comment": {
+        "description": "Represents a 'pull_request_review_comment' secret scanning location type. This location type shows that a secret was detected in a review comment on a pull request.",
+        "type": "object",
+        "properties": {
+          "pull_request_review_comment_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the pull request review comment where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the pull request review comment where the secret was detected."
+          }
+        },
+        "required": [
+          "pull_request_review_comment_url"
+        ]
+      },
+      "secret-scanning-location-pull-request-title": {
+        "description": "Represents a 'pull_request_title' secret scanning location type. This location type shows that a secret was detected in the title of a pull request.",
+        "type": "object",
+        "properties": {
+          "pull_request_title_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The API URL to get the pull request where the secret was detected."
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri",
+            "description": "The GitHub URL for the pull request where the secret was detected."
+          }
+        },
+        "required": [
+          "pull_request_title_url"
+        ]
+      },
+      "secret-scanning-location-wiki-commit": {
+        "description": "Represents a 'wiki_commit' secret scanning location type. This location type shows that a secret was detected inside a commit to a repository wiki.",
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file path of the wiki page"
+          },
+          "start_line": {
+            "type": "number",
+            "description": "Line number at which the secret starts in the file"
+          },
+          "end_line": {
+            "type": "number",
+            "description": "Line number at which the secret ends in the file"
+          },
+          "start_column": {
+            "type": "number",
+            "description": "The column at which the secret starts within the start line when the file is interpreted as 8-bit ASCII."
+          },
+          "end_column": {
+            "type": "number",
+            "description": "The column at which the secret ends within the end line when the file is interpreted as 8-bit ASCII."
+          },
+          "blob_sha": {
+            "type": "string",
+            "description": "SHA-1 hash ID of the associated blob"
+          },
+          "page_url": {
+            "type": "string",
+            "description": "The GitHub URL to get the associated wiki page"
+          },
+          "commit_sha": {
+            "type": "string",
+            "description": "SHA-1 hash ID of the associated commit"
+          },
+          "commit_url": {
+            "type": "string",
+            "description": "The GitHub URL to get the associated wiki commit"
+          }
+        },
+        "required": [
+          "path",
+          "start_line",
+          "end_line",
+          "start_column",
+          "end_column",
+          "blob_sha",
+          "page_url",
+          "commit_sha",
+          "commit_url"
+        ]
+      },
+      "security-and-analysis": {
+        "nullable": true,
+        "type": "object",
+        "properties": {
+          "advanced_security": {
+            "description": "Enable or disable GitHub Advanced Security for the repository.\n\nFor standalone Code Scanning or Secret Protection products, this parameter cannot be used.\n",
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "code_security": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "dependabot_security_updates": {
+            "description": "Enable or disable Dependabot security updates for the repository.",
+            "type": "object",
+            "properties": {
+              "status": {
+                "description": "The enablement status of Dependabot security updates for the repository.",
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning_push_protection": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning_non_provider_patterns": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning_ai_detection": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning_delegated_alert_dismissal": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning_delegated_bypass": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "enabled",
+                  "disabled"
+                ]
+              }
+            }
+          },
+          "secret_scanning_delegated_bypass_options": {
+            "type": "object",
+            "properties": {
+              "reviewers": {
+                "type": "array",
+                "description": "The bypass reviewers for secret scanning delegated bypass",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "reviewer_id",
+                    "reviewer_type"
+                  ],
+                  "properties": {
+                    "reviewer_id": {
+                      "type": "integer",
+                      "description": "The ID of the team or role selected as a bypass reviewer"
+                    },
+                    "reviewer_type": {
+                      "type": "string",
+                      "description": "The type of the bypass reviewer",
+                      "enum": [
+                        "TEAM",
+                        "ROLE"
+                      ]
+                    },
+                    "mode": {
+                      "type": "string",
+                      "description": "The bypass mode for the reviewer",
+                      "enum": [
+                        "ALWAYS",
+                        "EXEMPT"
+                      ],
+                      "default": "ALWAYS"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "simple-user": {
+        "title": "Simple User",
+        "description": "A GitHub user.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "nullable": true,
+            "type": "string"
+          },
+          "email": {
+            "nullable": true,
+            "type": "string"
+          },
+          "login": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "avatar_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "gravatar_id": {
+            "type": "string",
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "html_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "followers_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "following_url": {
+            "type": "string"
+          },
+          "gists_url": {
+            "type": "string"
+          },
+          "starred_url": {
+            "type": "string"
+          },
+          "subscriptions_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "organizations_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "repos_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "events_url": {
+            "type": "string"
+          },
+          "received_events_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "type": {
+            "type": "string"
+          },
+          "site_admin": {
+            "type": "boolean"
+          },
+          "starred_at": {
+            "type": "string"
+          },
+          "user_view_type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "avatar_url",
+          "events_url",
+          "followers_url",
+          "following_url",
+          "gists_url",
+          "gravatar_id",
+          "html_url",
+          "id",
+          "node_id",
+          "login",
+          "organizations_url",
+          "received_events_url",
+          "repos_url",
+          "site_admin",
+          "starred_url",
+          "subscriptions_url",
+          "type",
+          "url"
+        ]
+      },
+      "validation-error": {
+        "title": "Validation Error",
+        "description": "Validation Error",
+        "type": "object",
+        "required": [
+          "message",
+          "documentation_url"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "documentation_url": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "resource": {
+                  "type": "string"
+                },
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "code": {
+                  "type": "string"
+                },
+                "index": {
+                  "type": "integer"
+                },
+                "value": {
+                  "oneOf": [
+                    {
+                      "type": "string",
+                      "nullable": true
+                    },
+                    {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    {
+                      "type": "array",
+                      "nullable": true,
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "validation-error-simple": {
+        "title": "Validation Error Simple",
+        "description": "Validation Error Simple",
+        "type": "object",
+        "required": [
+          "message",
+          "documentation_url"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "documentation_url": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "alert-number": {
+        "name": "alert_number",
+        "in": "path",
+        "description": "The number that identifies an alert. You can find this at the end of the URL for a code scanning alert within GitHub, and in the `number` field in the response from the `GET /repos/{owner}/{repo}/code-scanning/alerts` operation.",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/alert-number"
+        }
+      },
+      "before-repo-date": {
+        "name": "before",
+        "description": "Only show repositories updated before the given time. This is a timestamp in [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) format: `YYYY-MM-DDTHH:MM:SSZ`.",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "client-id": {
+        "name": "client_id",
+        "in": "path",
+        "required": true,
+        "description": "The client ID of the GitHub app.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "installation-id": {
+        "name": "installation_id",
+        "description": "The unique identifier of the installation.",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "org": {
+        "name": "org",
+        "description": "The organization name. The name is not case sensitive.",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "owner": {
+        "name": "owner",
+        "description": "The account owner of the repository. The name is not case sensitive.",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "page": {
+        "name": "page",
+        "description": "The page number of the results to fetch. For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\"",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "default": 1
+        }
+      },
+      "per-page": {
+        "name": "per_page",
+        "description": "The number of results per page (max 100). For more information, see \"[Using pagination in the REST API](https://docs.github.com/rest/using-the-rest-api/using-pagination-in-the-rest-api).\"",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "default": 30
+        }
+      },
+      "repo": {
+        "name": "repo",
+        "description": "The name of the repository without the `.git` extension. The name is not case sensitive.",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      "secret-scanning-alert-hide-secret": {
+        "name": "hide_secret",
+        "in": "query",
+        "description": "A boolean value representing whether or not to hide literal secrets in the results.",
+        "required": false,
+        "schema": {
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "since-repo-date": {
+        "name": "since",
+        "description": "Only show repositories updated after the given time. This is a timestamp in [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) format: `YYYY-MM-DDTHH:MM:SSZ`.",
+        "in": "query",
+        "required": false,
+        "schema": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "responses": {
+      "actions_runner_jitconfig": {
+        "description": "Response",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "required": [
+                "runner",
+                "encoded_jit_config"
+              ],
+              "properties": {
+                "runner": {
+                  "$ref": "#/components/schemas/runner"
+                },
+                "encoded_jit_config": {
+                  "type": "string",
+                  "description": "The base64 encoded runner configuration."
+                }
+              }
+            }
+          }
+        }
+      },
+      "conflict": {
+        "description": "Conflict",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        }
+      },
+      "forbidden": {
+        "description": "Forbidden",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        }
+      },
+      "found": {
+        "description": "Found"
+      },
+      "moved_permanently": {
+        "description": "Moved permanently",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        }
+      },
+      "not_found": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        }
+      },
+      "not_modified": {
+        "description": "Not modified"
+      },
+      "requires_authentication": {
+        "description": "Requires authentication",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/basic-error"
+            }
+          }
+        }
+      },
+      "service_unavailable": {
+        "description": "Service unavailable",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "documentation_url": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "validation_failed": {
+        "description": "Validation failed, or the endpoint has been spammed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/validation-error"
+            }
+          }
+        }
+      },
+      "validation_failed_simple": {
+        "description": "Validation failed, or the endpoint has been spammed.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/validation-error-simple"
+            }
+          }
+        }
+      }
+    },
+    "headers": {
+      "link": {
+        "schema": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
