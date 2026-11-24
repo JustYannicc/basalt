@@ -599,6 +599,29 @@ export async function captureHoursSession(
           readMs: result.readMs,
         });
         counted(alone, true);
+        // A pending block that is only this hour, as the settle horizon can cut one, is done: never
+        // counted again whole in this session. A longer block reads its pending hours afresh.
+        const queue = queues.get(pool) ?? [];
+        const inside = (queued: CaptureBlock) =>
+          Date.parse(queued.from) >= Date.parse(alone.from) &&
+          Date.parse(queued.to) <= Date.parse(alone.to);
+        const finished = queue.filter(inside);
+        if (finished.length) {
+          queues.set(
+            pool,
+            queue.filter((queued) => !inside(queued)),
+          );
+          const was = pending.get(pool);
+          if (was)
+            pending.set(pool, {
+              blocks: Math.max(0, was.blocks - finished.length),
+              hours: Math.max(
+                0,
+                was.hours - finished.reduce((sum, queued) => sum + (queued.missing ?? 1), 0),
+              ),
+            });
+          tally();
+        }
         continue;
       }
       slowHour(alone, hour, result.readMs, "count", elapsedMs);
