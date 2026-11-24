@@ -277,8 +277,16 @@ export async function harness(options: HarnessOptions = {}) {
             cellStillMs: 2_400_000,
             leases: { current: 0, gone: row.active },
             connections: retireRead.connections,
+            // The real record carries no slot either; this one does, so the lane's decode must drop it.
+            slot: cell.slotId,
           }
-        : { wouldProceed: false, refusal: "not_draining", matches: 1, phase: row?.phase ?? "none" };
+        : {
+            wouldProceed: false,
+            refusal: "not_draining",
+            matches: 1,
+            phase: row?.phase ?? "none",
+            connections: retireRead.connections,
+          };
     },
     inspectCrash: async (_identity, nonce) => ({
       submission: (await storage.get(crashNonceKey(nonce))) ?? null,

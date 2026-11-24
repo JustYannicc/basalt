@@ -307,4 +307,14 @@ test("the operator's check reads the same rules and whose leases they are, and w
   context.mock.timers.tick(300_000);
   const live = await activity.checkStill(other, 300_000);
   assert.deepEqual([live.refusal, live.leases], ["live_lease", { current: 1, gone: 0 }]);
+  // A released lease no longer counts, as the override's own read applies it.
+  await storage.put(activityKey, {
+    ...leakedRow(0),
+    leases: { ...leakedRow(0).leases, "dead-5": "released" },
+  });
+  const reconciledCheck = await activity.checkStill(identity, 300_000);
+  assert.deepEqual([reconciledCheck.active, reconciledCheck.leases], [5, { current: 0, gone: 5 }]);
+  // An untracked boot is refused as the override refuses it.
+  const untracked = { ...identity, slotId: "runtime-3", instanceId: "runtime-3", bootId: "boot-3" };
+  assert.equal((await activity.checkStill(untracked, 300_000)).refusal, "unknown_count");
 });

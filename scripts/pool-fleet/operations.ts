@@ -58,6 +58,19 @@ export const configureFleet = (input: {
     const { controller: access, go } = input;
     const operationId = configureOperationId(go);
     const retained = (yield* call(() => inspectFleet(access, operationId))).permission;
+    // A rerun under the same GO only inspects, so a different target would silently not apply.
+    if (
+      retained &&
+      input.targetActive !== undefined &&
+      input.targetActive !== retained.configuration.targetActive
+    )
+      return yield* Effect.fail(
+        refuse(
+          "target-active-differs",
+          `This GO already configured targetActive ${retained.configuration.targetActive}; ${input.targetActive} was not applied.`,
+          "A new target needs a new GO.",
+        ),
+      );
     if (retained)
       return { status: "already-configured" as const, operationId, digest: retained.digest };
     const legacy = yield* selectedPrimary(access);
@@ -172,9 +185,11 @@ export const checkRetireRow = (access: ControllerAccess, key: string) =>
         ? "the cell's leases weren't read"
         : leases.current > 0
           ? `${leases.current} of the cell's leases belong to its current isolate, so their streams may be live; the override refuses them`
-          : leases.gone > 0
-            ? `all ${leases.gone} of the cell's leases were left by an isolate that is gone; only a model socket can outlive it`
-            : "the cell holds no lease",
+          : (checked.cell ?? 0) > leases.gone
+            ? `${(checked.cell ?? 0) - leases.gone} of the cell's count carry no lease record, so nothing says which isolate took them`
+            : leases.gone > 0
+              ? `none of the cell's ${leases.gone} leases is held by its current isolate; only a model socket can outlive the isolate that took it`
+              : "the cell holds no lease",
     };
   });
 

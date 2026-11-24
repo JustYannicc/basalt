@@ -723,13 +723,57 @@ test("retire-check takes any go text, reports what retire-row would do and whose
     );
     assert.equal(
       outcome.check.leaseOwner,
-      "all 6 of the cell's leases were left by an isolate that is gone; only a model socket can outlive it",
+      "none of the cell's 6 leases is held by its current isolate; only a model socket can outlive the isolate that took it",
     );
     assert.equal(outcome.warning, "1 connections are open on this cell; the override may cut them");
     assert.deepEqual(lane.checks, [key]);
     assert.deepEqual(lane.retires, [], "no override was sent");
     assert.equal(JSON.stringify(lane.storage.values.get("runtime-fleet-v1:resources")), before);
     assert.doesNotMatch(JSON.stringify(result), /runtime-cell-1|cell-boot/u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a configure rerun under the same GO with another target-active is refused instead of silently not applied", async () => {
+  const lane = await harness();
+  try {
+    const go = "coordinator-2026-11-25-target-5";
+    assert.equal(
+      (await runPoolFleet(dispatch("configure-and-accept", { go, targetActive: "5" }), lane.deps()))
+        .ok,
+      true,
+    );
+    const rerun = await runPoolFleet(
+      dispatch("configure-and-accept", { go, targetActive: "25" }),
+      lane.deps(),
+    );
+    assert.equal(rerun.ok, false);
+    assert.match(String("cause" in rerun && rerun.cause), /target-active-differs/u);
+    assert.equal((await lane.configuration.inspect())?.configuration.targetActive, 5);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check on a ready row reports the refusal and warns about nothing", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.retireRead.connections = 1;
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const outcome = (
+      result as unknown as {
+        result: { check: { wouldProceed: boolean; refusal: string }; warning: unknown };
+      }
+    ).result;
+    assert.deepEqual([outcome.check.wouldProceed, outcome.check.refusal], [false, "not_draining"]);
+    assert.equal(outcome.warning, null, "a ready row's connections are its live traffic");
   } finally {
     await lane.close();
   }

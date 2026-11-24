@@ -149,7 +149,13 @@ export class RuntimeActivity {
   /** The same rules as `releaseStill`, read without writing anything: the operator's check. */
   async checkStill(identity: SlotIdentity, stillAtLeastMs: number) {
     const row = await this.inspect(identity);
-    if (!row) return { ...stillCheck(undefined, stillAtLeastMs), phase: null };
+    // The override refuses an untracked boot as uncertain, so the check names it the same way.
+    if (!row)
+      return {
+        ...stillCheck(undefined, stillAtLeastMs),
+        refusal: "unknown_count" as const,
+        phase: null,
+      };
     return { ...stillCheck(reconciled(row), stillAtLeastMs), phase: row.phase };
   }
 

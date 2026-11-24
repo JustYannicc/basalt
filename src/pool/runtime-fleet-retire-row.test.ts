@@ -23,6 +23,8 @@ async function stuckRow(
     phase?: "ready" | "draining";
     stillMs?: number;
     cellMoved?: boolean;
+    // The cell's check can't be read, as when its route is missing mid-deploy.
+    cellUnreadable?: boolean;
     sibling?: boolean;
     // One of the six calls' releases lands while the cell's override is under way.
     releaseDuring?: boolean;
@@ -72,13 +74,16 @@ async function stuckRow(
     abortPool: () => {},
     drain: async () => ({ active: cellCount, known: true }),
     activity: async () => ({ active: cellCount, known: true, stillMs: 2_400_000 }),
-    checkStill: async () => ({
-      refusal: options.cellMoved ? "still_moving" : null,
-      active: cellCount,
-      stillMs: 2_400_000,
-      leases: { current: 0, gone: cellCount },
-      connections: 0,
-    }),
+    checkStill: async () => {
+      if (options.cellUnreadable) throw new Error("not found");
+      return {
+        refusal: options.cellMoved ? "still_moving" : null,
+        active: cellCount,
+        stillMs: 2_400_000,
+        leases: { current: 0, gone: cellCount },
+        connections: 0,
+      };
+    },
     releaseStill: async () => {
       if (options.cellMoved) throw new SlotRefused("draining");
       if (options.releaseDuring) await held[0]!.release();
@@ -210,6 +215,14 @@ test("the operator's check runs every refusal test and the cell's read, and over
     ["a ledger that moved", { stillMs: 299_999 }, undefined, "ledger_moving"],
     ["a cell count that moved", { cellMoved: true }, undefined, "cell_still_moving"],
     ["a key that matches no row", {}, "0123456789abcdef", "key_matches"],
+    ["a cell that can't be read", { cellUnreadable: true }, undefined, "cell_unreadable"],
+    // The override hits the ledger's rule first, so the check reports it first too.
+    [
+      "a moving ledger and a moving cell",
+      { stillMs: 299_999, cellMoved: true },
+      undefined,
+      "ledger_moving",
+    ],
   ] as const) {
     context.mock.restoreAll();
     const g = await stuckRow(context, options);
