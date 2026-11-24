@@ -55,7 +55,8 @@ const key = (at: number) => new Date(at).toISOString().replace(".000Z", "Z");
  * The test's clock, as production spends it: a count of a range of `slow`'s pool holding its hour
  * (or any of its ranges, without one) costs `cost.ms`, never more than the limit it was given, past
  * which Postgres cancels it; with `blocks`, only a range of more than one hour costs it. `fail`
- * makes every count of its pool fail outright. `counts` records every count's range.
+ * makes every count of its pool fail outright. `counts` records every count's range, and `limits`
+ * each count's start and the limit it ran under.
  */
 function timed(
   db: HistoryDatabase,
@@ -64,6 +65,7 @@ function timed(
   /** A pool whose counts fail as Postgres fails one statement, or how every count fails. */
   fail?: string | { pool?: string; code: string; severity?: string },
   counts: { pool: string; from: number; to: number }[] = [],
+  limits: { pool: string; from: number; to: number; limit: number }[] = [],
 ) {
   let limit = Number.POSITIVE_INFINITY;
   return {
@@ -84,7 +86,10 @@ function timed(
         });
       const from = text === countBlockStatement ? Date.parse(String(values![1])) : 0;
       const to = text === countBlockStatement ? Date.parse(String(values![2])) : 0;
-      if (text === countBlockStatement) counts.push({ pool: String(values![0]), from, to });
+      if (text === countBlockStatement) {
+        counts.push({ pool: String(values![0]), from, to });
+        limits.push({ pool: String(values![0]), from, to, limit });
+      }
       if (
         text === countBlockStatement &&
         slow &&
@@ -310,6 +315,118 @@ for (const position of blockPositions())
       assert.deepEqual(done.slow, []);
       const pool = await counted(f, c.poolId);
       assert.equal(pool.settled, pool.hours);
+    });
+  });
+
+/**
+ * A pool whose hour before the settle horizon costs `ms` to count, ticked through three slow counts
+ * at the first-try limit, ten minutes and a second apart, so that hour is stuck.
+ */
+async function stuckHour(f: Fixture, position: { at: number }, ms: number) {
+  await clockAt(f, position.at);
+  const c = await captureFixture(f);
+  await c.native(at(0, minute));
+  await c.native(at(1, minute), true);
+  await c.ready();
+  const slowHour = key((await horizon(f)) - hour);
+  const cost = { ms };
+  const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+  const storage = memoryStorage();
+  const limits: { pool: string; from: number; to: number; limit: number }[] = [];
+  const tick = () =>
+    captureHoursTick(
+      storage,
+      (work) =>
+        work(timed(f.db, clock, { pool: c.poolId, hour: slowHour, cost }, undefined, [], limits)),
+      { now: () => clock.at, bounds: { lookbackHours } },
+    );
+  let state = await tick();
+  for (let n = 0; n < 2; n++) {
+    clock.at += 10 * minute + 1_000;
+    state = await tick();
+  }
+  assert.deepEqual(captureHoursStuckPools(state), [c.poolId], "three slow counts: stuck");
+  // The tries of that hour alone, as the limits they ran under.
+  const tries = () =>
+    limits
+      .filter((entry) => entry.pool === c.poolId && entry.from === Date.parse(slowHour))
+      .filter((entry) => entry.to - entry.from === hour)
+      .map((entry) => entry.limit);
+  return { c, slowHour, cost, clock, tick, tries, limits, state };
+}
+
+for (const position of blockPositions())
+  test(`a stuck hour is retried alone under a longer limit, counted there, and says the limit and its time, while every other hour keeps the first-try limit (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      // It takes 2.5 s: past the first-try 1 s, inside the first retry limit.
+      const s = await stuckHour(f, position, 2_500);
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000]);
+      // Inside its wait it is not tried, nor counted with its block's other hours.
+      s.clock.at += 5 * minute;
+      await s.tick();
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000], "not tried while it waits");
+      s.clock.at += 5 * minute + 1_000;
+      const done = await s.tick();
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000], "retried once, at 3 s");
+      assert.deepEqual(captureHoursStuckPools(done), []);
+      assert.deepEqual(done.slow, []);
+      const pool = await counted(f, s.c.poolId);
+      assert.equal(pool.settled, pool.hours, "the stuck hour is counted");
+      const lines = logged.mock.calls
+        .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK_COUNTED")
+        .map((call) => call.arguments[1] as { elapsedMs: number; readMs: number });
+      assert.equal(lines.length, 1, "one closed line");
+      assert.ok(Number.isInteger(lines[0]!.elapsedMs) && lines[0]!.elapsedMs >= 0, "as measured");
+      const ordinal = [s.c.poolId, s.c.otherId].sort().indexOf(s.c.poolId) + 1;
+      assert.deepEqual(
+        { ...lines[0]!, elapsedMs: 0, readMs: 0 },
+        { pool: ordinal, hour: s.slowHour, limitMs: 3_000, elapsedMs: 0, readMs: 0 },
+      );
+      // Every other count, of either pool, ran at the first-try limit.
+      const others = s.limits.filter(
+        (entry) => !(entry.pool === s.c.poolId && entry.from === Date.parse(s.slowHour)),
+      );
+      assert.ok(others.length > 0);
+      assert.deepEqual([...new Set(others.map((entry) => entry.limit))], [1_000]);
+    });
+  });
+
+for (const position of blockPositions())
+  test(`a stuck hour slower than the last retry limit is given up: it stays stuck, inspect says so, and it is not tried again (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      // Slower than every limit.
+      const s = await stuckHour(f, position, 60_000);
+      s.clock.at += 10 * minute + 1_000;
+      await s.tick();
+      s.clock.at += 10 * minute + 1_000;
+      const gaveUp = await s.tick();
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000, 10_000], "3 s, then the 10 s cap");
+      assert.deepEqual(captureHoursStuckPools(gaveUp), [s.c.poolId], "it stays stuck");
+      assert.equal(gaveUp.stuck?.[0]?.gaveUp, true);
+      const waits = captureHoursInspect(gaveUp).byPool.flatMap((entry) => entry.slow);
+      assert.deepEqual(
+        waits.map((wait) => [wait.hour, wait.retries, wait.gaveUp]),
+        [[s.slowHour, 2, true]],
+        "inspect names the hour, its two retries, and that it was given up",
+      );
+      const ordinal = [s.c.poolId, s.c.otherId].sort().indexOf(s.c.poolId) + 1;
+      assert.deepEqual(
+        logged.mock.calls
+          .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_GAVE_UP")
+          .map((call) => ({ ...(call.arguments[1] as object), elapsedMs: 0 })),
+        [{ pool: ordinal, hour: s.slowHour, limitMs: 10_000, elapsedMs: 0 }],
+        "loud once",
+      );
+      // Waits later, it is never tried again, at the cap or any limit, and its pool goes on.
+      for (let n = 0; n < 3; n++) {
+        s.clock.at += 10 * minute + 1_000;
+        await s.tick();
+      }
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000, 10_000]);
+      const pool = await counted(f, s.c.poolId);
+      assert.equal(pool.settled, pool.hours - 1, "all but the given-up hour");
     });
   });
 
