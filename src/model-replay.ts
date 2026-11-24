@@ -1,7 +1,7 @@
 import { modelCallReplayable, upstreamOutcomeUnknown } from "../clients/contracts/model-error.ts";
 import { holdBody } from "./pool/held-body.ts";
 import { routerAttemptHeader, signRouterAttempt } from "./pool/router-attempt.ts";
-import { shape } from "./pool/runtime-fleet/endpoint-trace.ts";
+import { shape } from "./pool/error-shape.ts";
 import { resumeThroughRouter } from "./model-resume.ts";
 
 /**
@@ -90,10 +90,13 @@ export async function forwardModelCall(
   );
   const headersFor = async (attempt: number) => {
     const headers = new Headers(request.headers);
-    headers.set(
-      routerAttemptHeader,
-      await signRouterAttempt(env.POOL_APP_SIGNING_KEY, { requestId, attempt }),
+    // A caller's own value never names a call. The name only ties sends together, so a router that
+    // cannot sign one still forwards the call, and the pool answers it, a 401 included, as before.
+    headers.delete(routerAttemptHeader);
+    const name = await signRouterAttempt(env.POOL_APP_SIGNING_KEY, { requestId, attempt }).catch(
+      () => undefined,
     );
+    if (name) headers.set(routerAttemptHeader, name);
     await prepare(headers);
     return headers;
   };
@@ -112,7 +115,8 @@ export async function forwardModelCall(
   const resumable = (answer: Response) =>
     resumeThroughRouter(answer, request, env, requestId, () => ++resumes, wait);
   try {
-    // Built before the send: a signing failure is not a lost pool, and its caller keeps the 503.
+    // Built before the send: a device assertion that cannot be signed is not a lost pool, and the
+    // native path answers it as before.
     const first = new Request(request, { headers: await headersFor(1) });
     let firstError: unknown;
     try {
