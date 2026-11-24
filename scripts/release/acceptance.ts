@@ -1,6 +1,12 @@
 import { PoolAcceptanceClient, type ModelAuth } from "../pool-acceptance/client.ts";
 import { AcceptanceFailure, HttpStatusFailure } from "../pool-acceptance/types.ts";
-import { deviceRefusal, refusalFix, refusedDevice } from "./acceptance-device.ts";
+import {
+  COULD_NOT_TEST_EXIT,
+  deviceRefusal,
+  deviceRevoked,
+  refusalFix,
+  refusedDevice,
+} from "./acceptance-device.ts";
 import {
   healingAcceptanceWithinMs,
   healingReadinessWithinMs,
@@ -45,7 +51,11 @@ export async function servingBoot(credential: ModelAuth, client = new PoolAccept
   return (await client.modelCatalog(credential)).boot;
 }
 
-/** Recorded before the apply of a release that declares a root restart, when the pool did not answer. */
+/**
+ * Recorded before the apply of a release that declares a root restart, when the pool did not serve
+ * the read: no answer, an error status other than a revoked device's 410, or a 429. It names no
+ * boot a restart could be compared with.
+ */
 export const NOT_SERVING = "not-serving";
 
 /**
@@ -131,7 +141,8 @@ export async function bootBeforeApply(
   } catch (error) {
     const refused = deviceRefusal(error);
     if (refused !== undefined) throw refusedDevice(refused);
-    if (allowNotServing) return NOT_SERVING;
+    // A device its person revoked is no pool failing to serve: a restart must not start on it.
+    if (allowNotServing && !deviceRevoked(error)) return NOT_SERVING;
     throw error;
   }
 }
@@ -190,8 +201,9 @@ export type RecoveryVerdict =
 
 /**
  * A healing release: wait, bounded, until the controller's recovery reports `ready` on a boot other
- * than the stuck one. `/v1/models` is no signal: it answers while model calls are still refused,
- * until a membership pass renews the pool's policy. Ready is all three of: a new active boot, no
+ * than the stuck one. After NOT_SERVING any boot ends the wait, so healingOutcome never calls it
+ * healed. `/v1/models` is no signal: it answers while model calls are still refused, until a
+ * membership pass renews the pool's policy. Ready is all three of: a new active boot, no
  * `recovery.restartedAt`, no `recovery.needsPerson`. A new boot whose recovery needs a person ends
  * the wait at once; the model calls then say whether the pool serves. On the stuck boot it does not:
  * that can be the state the release came to heal.
@@ -250,17 +262,26 @@ export async function awaitRecoveryReady(options: {
 }
 
 /**
- * A healing release ends in one of four outcomes. Healed: recovery ready on a new boot, and every
+ * A healing release ends in one of five outcomes. Healed: recovery ready on a new boot, and every
  * model call served. Serving, needs a person: a new boot is selected and every model call served,
  * but recovery needs a person or did not report ready within the bound; nothing is undone, and a
- * person looks at it with the pool serving. Could not test: a new boot is selected, but the pool
- * refused the acceptance device on its user's cap. Not serving: anything else, a refusal of the
- * device included, since this run's boot read before the apply did not refuse it.
+ * person looks at it with the pool serving. Serving, restart unconfirmed: every model call served,
+ * but no boot was read before the apply (NOT_SERVING), so nothing shows the boot is new. Could not
+ * test: a boot is selected, but the pool refused the acceptance device on its user's cap. Not
+ * serving: anything else, a refusal of the device included, since this run's boot read before the
+ * apply did not refuse it.
  */
-export type HealingOutcome = "healed" | "serving-needs-person" | "could-not-test" | "not-serving";
+export type HealingOutcome =
+  | "healed"
+  | "serving-needs-person"
+  | "serving-restart-unconfirmed"
+  | "could-not-test"
+  | "not-serving";
 export const healingOutcome = (
   verdict: RecoveryVerdict,
   calls: { readonly passed: boolean; readonly couldNotTest?: boolean } | undefined,
+  /** The boot read before the apply, or NOT_SERVING. */
+  before: string,
 ): HealingOutcome =>
   !verdict.boot
     ? "not-serving"
@@ -268,9 +289,24 @@ export const healingOutcome = (
       ? "could-not-test"
       : !calls?.passed
         ? "not-serving"
-        : verdict.ready
-          ? "healed"
-          : "serving-needs-person";
+        : before === NOT_SERVING
+          ? "serving-restart-unconfirmed"
+          : verdict.ready
+            ? "healed"
+            : "serving-needs-person";
+
+/**
+ * The entry's exit. Only a healed or a passed release is green. Serving without proof of a healed
+ * root exits 3 and could not test exits 4: not green, and not a failure to undo.
+ */
+export const acceptanceExit = (outcome: HealingOutcome | undefined, passed: boolean) =>
+  outcome === "serving-needs-person" || outcome === "serving-restart-unconfirmed"
+    ? 3
+    : outcome === "could-not-test"
+      ? COULD_NOT_TEST_EXIT
+      : outcome === "not-serving" || !passed
+        ? 1
+        : 0;
 
 export interface AcceptanceResult {
   readonly passed: boolean;

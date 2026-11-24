@@ -59,6 +59,7 @@ async function fixture() {
       retire: async (_identity, begin) => {
         await begin();
         retires++;
+        return true;
       },
       retired: async () => true,
       failed: async () => false,
@@ -133,7 +134,8 @@ test("failed readiness retains the old route across reconstruction and does not 
   const f = await fixture();
   f.fail();
   await f.replacement.plan("replace", f.old);
-  await assert.rejects(f.controller().upkeep(), /unverified startup/);
+  // The unverified startup settles for its row; the pass itself goes on.
+  await f.controller().upkeep();
   await f.controller().upkeep();
   await f.replacement.upkeep();
   assert.equal(f.starts(), 1);

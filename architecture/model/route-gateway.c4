@@ -1,13 +1,22 @@
 model {
   extend basalt {
-    routeGateway = actor "Route gateway" {
+    routeGateway = module "Route gateway" {
+      #basalt #v1 #deep
+      description "One container per connected route account and the only device Signalbox puts on the person's private network. A userspace network daemon holds the device identity; a forwarder accepts SOCKS5 CONNECT on port 1080 and is the only thing that dials. Port 8080 is a small JSON control interface for the owning object: start from a stored identity, sign in, list and select exit devices, read status and the opaque identity state, sign out. Neither port is public."
+      metadata {
+        code "containers/route-gateway"
+        libraries "asyncio|socket"
+        constraint "Stop-when-down is enforced by the forwarder, never left to the network daemon: its own proxy dials direct whenever no exit is active, including after control removes the exit from the network map while still reporting it online. Before every connection the forwarder requires routing to be on, a signed-in unexpired device, the selected exit in preferences, that exit present in the network map, still offering an exit route and reported online, and a successful ping within six seconds from a two-second background loop. A failed check refuses with SOCKS reply 2 and logs one reason code; when the person chose direct, the forwarder dials from the gateway's own address instead. Names are passed on unresolved so lookups happen on the exit side. After the daemon's proxy answers and before the client sees the reply, the forwarder checks the exit again and refuses if it is gone, so no request bytes follow a network-map change during the dial. Logs and errors carry reason codes only; device names, network names and sign-in links appear only in control responses. Identity state lives in shared memory and leaves the container only through the control interface."
+      }
+    }
+    routeGatewayObject = actor "Route gateway object" {
       #basalt #v1 #deep
       description "One RouteGateway object per route account, addressed by its route id in the EU jurisdiction, runs that account's single gateway container: the only device Signalbox puts on a person's tailnet. It is a state machine over what it stores (unjoined, signing in, joined with no exit, joined with an exit); the container only caches that state, and every start gets the sealed identity and the stored selection before anything else reaches it, so a restart never asks for a second approval. Every intent event (sign-in start, choosing an exit, switching off, disconnect) advances an epoch; a container reply changes state only through one commit that drops it when the epoch has moved, and its writes are storage only, so nothing slips between the check and the write. Control calls go through one serial channel bound to the container launch they began in. Invariants: after a disconnect nothing from before it writes and nothing starts except one node that logs the device out; switching off always wins without a container call; a route with no identity starts compute only to sign in; a late reply never changes a state it did not start from; a tunnel opens only while the route has an exit and its latest reading is routed. The identity is sealed with a key derived from the pool signing key and bound to its route id; a rotation reseals it, and a seal no key opens is forgotten. Crossing into or out of down emits route.reading.changed with reason codes only. Every request names its route and owner and is refused as route_not_permitted otherwise. Tunnels are raw byte streams to the gateway's SOCKS port over the Home peer relay wire, through a private stub fetch whose owner only PoolRoutePeer sets. Exit, device and tailnet names and the sign-in link reach only the owner's own replies, never logs or refusals. The class is declared only by ROUTE_GATEWAY_CLASS, and once declared it is never dropped."
       metadata {
         code "src/route"
         jurisdiction "eu"
         endpointHosts "route-peer.internal|route-gateway.internal"
-        bindings "controlPlane=basalt.routeGatewayImage"
+        bindings "controlPlane=basalt.routeGateway"
       }
     }
     routePeer = adapter "Pool route peer" {
@@ -15,20 +24,18 @@ model {
       description "The entrypoint a pool container's route-peer.internal loopback reaches. Its pool comes only from the container binding. It accepts one WebSocket upgrade per route id, asks that pool which owner assigned the route, and refuses with close code 1008 when none did or 1013 when the gateway class is absent."
       metadata {
         code "src/route/pool-peer.worker.ts"
-        bindings "gateways.get(gateways.idFromName(routeId))=basalt.routeGateway"
+        bindings "gateways.get(gateways.idFromName(routeId))=basalt.routeGatewayObject"
       }
-    }
-    routeGatewayImage = module "Route gateway image" {
-      #basalt #v1 #planned
-      description "The container a route gateway runs: userspace tailscaled and the forwarder, the only dialler. Its control port starts the node from a sealed state, reports status and the exits its netmap offers, and applies the exit selection; its SOCKS port refuses each new connection that would not leave through the selected exit unless the route falls back to direct."
     }
   }
 
-  basalt.modelGateway -[sync]-> basalt.routeGateway "serve signed route acquisitions and pool route tunnels from PoolWorker"
-  basalt.routeGateway -[sync]-> basalt.modelGateway "reuse the Home peer relay wire, signed envelopes and bounded body reads"
+  basalt.routeGateway -[sync]-> containerRegistry "pull the pinned network daemon and runtime base images"
+  basalt.routeGateway -[tool]-> outsideServices "send a connection through the selected exit device, or direct when the person chose that while the route is down"
+  basalt.modelGateway -[sync]-> basalt.routeGatewayObject "serve signed route acquisitions and pool route tunnels from PoolWorker"
+  basalt.routeGatewayObject -[sync]-> basalt.modelGateway "reuse the Home peer relay wire, signed envelopes and bounded body reads"
   basalt.modelGateway -[sync]-> basalt.routePeer "export the pool route peer from PoolWorker"
   basalt.routePeer -[sync]-> basalt.poolController "ask the assigning pool for a route's owner before a tunnel opens"
-  basalt.routePeer -[sync]-> basalt.routeGateway "open the tunnel through the route's own gateway object"
-  basalt.routeGateway -[sync]-> basalt.routeGatewayImage "start, status, login, exits, select, logout and state on the control port; raw tunnel bytes to the SOCKS port"
-  basalt.router -[sync]-> basalt.routeGateway "forward signed route acquisitions to PoolWorker"
+  basalt.routePeer -[sync]-> basalt.routeGatewayObject "open the tunnel through the route's own gateway object"
+  basalt.routeGatewayObject -[sync]-> basalt.routeGateway "start, status, login, exits, select, logout and state on the control port; raw tunnel bytes to the SOCKS port"
+  basalt.router -[sync]-> basalt.routeGatewayObject "forward signed route acquisitions to PoolWorker"
 }

@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "The native-policy scheduler plugin carries the pool account veto, so Home must never schedule without it. Its plugin instance sets scheduler-required; while that holds and no scheduler plugin is active (never loaded, or fused by the host after a panic, including a panic during the pick itself), Home refuses every auth pick with the closed scheduler_unavailable code instead of falling back to the built-in selector. With the scheduler active, the veto's allow path still lets the built-in selector choose among permitted candidates."
+    }
+  }
+}

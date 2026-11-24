@@ -14,7 +14,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
 import { dependencyIdentity } from "./upstream-inputs.ts";
 import { omitReleaseLifecycles } from "./ci/dependency-lifecycles.ts";
@@ -67,6 +67,14 @@ function readyGeneration(store: string, key: string) {
   return { store: realpathSync(store), trees };
 }
 
+/**
+ * A generation is named by its dependency key, never by a random id. Builds resolve dependencies
+ * through the store's real path, and the apps framework's output carries it, so a random name made
+ * every fresh store build different bytes and redeployed Workers whose source had not changed
+ * (#1811). One key always installs one set of packages, so one name per key loses nothing.
+ */
+export const generationName = (key: string) => digest(`dependency-generation:${key}`).slice(0, 32);
+
 function publishedGeneration(entry: string, key: string) {
   const pointer = join(entry, "current");
   try {
@@ -79,6 +87,33 @@ function publishedGeneration(entry: string, key: string) {
     if ((error as NodeJS.ErrnoException).code === "EINVAL") return;
     throw error;
   }
+}
+
+/** Point the key at its named generation when that is ready but no longer published. */
+function adoptGeneration(entry: string, key: string) {
+  const store = join(entry, "generations", generationName(key));
+  if (!existsSync(store)) return;
+  const ready = readyGeneration(store, key);
+  if (!ready) return;
+  const pointer = join(entry, `.current-${randomUUID()}`);
+  symlinkSync(join("generations", generationName(key)), pointer);
+  renameSync(pointer, join(entry, "current"));
+  return ready;
+}
+
+/**
+ * The generation a prepare uses. A published one under the key's name is used as it is; a ready one
+ * under that name is adopted. A published store under any other name (a random one prepared before
+ * #1811, or a fallback beside a broken named one) is kept only while that name is still taken, or
+ * when the prepare may not install; once the name is free, the key installs under it.
+ */
+function keyedGeneration(entry: string, key: string, cacheHitOnly: boolean) {
+  const published = publishedGeneration(entry, key);
+  if (published && basename(published.store) === generationName(key)) return published;
+  const adopted = adoptGeneration(entry, key);
+  if (adopted) return adopted;
+  if (cacheHitOnly || existsSync(join(entry, "generations", generationName(key)))) return published;
+  return undefined;
 }
 
 function readonlyTree(path: string) {
@@ -111,7 +146,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
   const entry = join(upstreamCache(), "prepared", pin, key);
   const prepared = await withCacheLock(`${entry}.lock`, async () => {
     let generation = await withDependencyStoreLock(() => {
-      const found = publishedGeneration(entry, key);
+      const found = keyedGeneration(entry, key, cacheHitOnly);
       if (found) rememberDependencyConsumer(root, found.store, true);
       return found;
     });
@@ -119,7 +154,6 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
     try {
       if (generation === undefined) {
         if (cacheHitOnly) throw new Error(`Refusing a new dependency generation for key ${key}`);
-        const id = randomUUID();
         attempt = await createInstallAttempt(entry);
         for (const file of files) {
           mkdirSync(dirname(join(attempt, file)), { recursive: true });
@@ -150,15 +184,20 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
           if (entry.isDirectory() && entry.name !== "node_modules")
             check(join(packages, entry.name));
         readonlyTree(packages);
-        const marker = join(attempt, `.ready-${id}.json`);
+        const marker = join(attempt, `.ready-${randomUUID()}.json`);
         writeFileSync(marker, JSON.stringify({ key, trees }), { flag: "wx", mode: 0o600 });
         renameSync(marker, join(attempt, "ready.json"));
         const completed = attempt;
         generation = await withDependencyStoreLock(() => {
+          const named = join(entry, "generations", generationName(key));
+          // A ready generation under the key's name was adopted above, so one there now is broken,
+          // and a checkout may still run from it. The new one takes another name until the
+          // collector frees the key's own; the first prepare after that installs under it.
+          const id = existsSync(named) ? `${basename(named)}-${randomUUID()}` : basename(named);
           const store = join(entry, "generations", id);
           mkdirSync(dirname(store), { recursive: true });
           renameSync(completed, store);
-          const pointer = join(entry, `.current-${id}`);
+          const pointer = join(entry, `.current-${randomUUID()}`);
           symlinkSync(join("generations", id), pointer);
           renameSync(pointer, join(entry, "current"));
           const published = { store: realpathSync(store), trees };

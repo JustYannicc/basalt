@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-hosted-structured-logs",
+  "file": "0728-hosted-structured-logs.patch",
+  "content_sha256": "cf3b9700f5c9c28f6e0e5588d0f3fac42c9762cc332893263e38fb1e2aa63ecb",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

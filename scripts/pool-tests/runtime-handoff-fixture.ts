@@ -13,7 +13,11 @@ import {
   runtimeConfiguration,
   type StartupOptions,
 } from "../../src/pool/runtime-slots/configuration.ts";
-import type { SlotIdentity, SlotTarget } from "../../src/pool/runtime-slots/contract.ts";
+import type {
+  ControllerCode,
+  SlotIdentity,
+  SlotTarget,
+} from "../../src/pool/runtime-slots/contract.ts";
 import { launchTokenHash } from "../../src/pool/launch-ledger.ts";
 import {
   launchGenerationHeader,
@@ -78,6 +82,8 @@ export async function handoffRuntime(
     role?: "legacy" | "runtime";
     home?: Awaited<ReturnType<typeof fixture>>["home"];
     endpoint?: EndpointOptions;
+    /** The endpoint's code; an object on another Worker version runs code the controller lacks. */
+    code?: ControllerCode;
   } = {},
 ) {
   const home = options.home ?? (await fixture()).home;
@@ -88,6 +94,7 @@ export async function handoffRuntime(
   const storage = options.storage ?? new RuntimeSqlite();
   const background: Promise<unknown>[] = [];
   const stops = new Set<() => void>();
+  const losses = new Set<(error: unknown) => void>();
   const calls = {
     signals: [] as number[],
     start: 0,
@@ -116,6 +123,11 @@ export async function handoffRuntime(
     install: async (_policy: NativeMembershipPolicy) => {},
     model: async (_request: Request): Promise<Response | undefined> => undefined,
     connections: async () => 0,
+    /**
+     * Whether SIGTERM ends the container at once. Fixtures run a zero stop grace, so by default
+     * Home is still draining when the grace ends and the stop falls to `destroy()`.
+     */
+    sigtermExits: false,
   };
   const ctx = {
     exports: { PoolHomePeer: ({ props }: { props: { source: HomePeerSource } }) => ({ props }) },
@@ -128,6 +140,7 @@ export async function handoffRuntime(
       signal(signal: number) {
         assert.ok(signal === 9 || signal === 15, `unexpected signal ${signal}`);
         calls.signals.push(signal);
+        if (signal === 15 && !hooks.sigtermExits) return;
         running = false;
         for (const stop of stops) stop();
         stops.clear();
@@ -191,9 +204,15 @@ export async function handoffRuntime(
         bootId = crypto.randomUUID();
       },
       async monitor() {
-        if (running) await new Promise<void>((resolve) => stops.add(resolve));
+        if (running)
+          await new Promise<void>((resolve, reject) => {
+            stops.add(resolve);
+            losses.add(reject);
+          });
       },
       async destroy() {
+        // Like the platform, which sends nothing for a container that isn't running.
+        if (!running) return;
         calls.destroy++;
         running = false;
         for (const stop of stops) stop();
@@ -286,9 +305,9 @@ export async function handoffRuntime(
     ctx,
     env,
     options.role ?? "runtime",
-    runtimeFixtureCode,
+    options.code ?? runtimeFixtureCode,
     nativeResponse,
-    { controlPair: nativeControlPair, ...options.endpoint },
+    { controlPair: nativeControlPair, ownStorage: storage, ...options.endpoint },
   );
   return {
     ctx,
@@ -323,6 +342,17 @@ export async function handoffRuntime(
     signingKey,
     crash: () => {
       running = false;
+    },
+    /**
+     * Every held monitor rejects with an error that is no exit while the container process runs on.
+     * Like the platform's runtime, whose own monitor sets `running` false on any settle, `running`
+     * reads false after it unless a test holds it true to isolate the monitor's outcome.
+     */
+    loseMonitor: (error: unknown, { runningStays = false } = {}) => {
+      if (!runningStays) running = false;
+      for (const lose of losses) lose(error);
+      losses.clear();
+      stops.clear();
     },
     // The same container process reads as running again: same boot, same launch settings.
     revive: () => {

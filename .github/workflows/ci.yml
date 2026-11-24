@@ -2423,7 +2423,9 @@ jobs:
       - name: Check the provider table against the pinned pool backend
         run: npm run check:providers
       - name: Check the pool bootstrap
-        run: python3 -m unittest containers.pool.test_dispatch_signals containers.pool.test_quota_signals containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_service_health containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals containers.pool.test_home_peer containers.pool.test_database_distance
+        run: python3 -m unittest containers.pool.test_dispatch_signals containers.pool.test_quota_signals containers.pool.test_bootstrap containers.pool.test_sources containers.pool.test_release_cache containers.pool.test_output_privacy containers.pool.test_native_policy containers.pool.test_policy_diagnostic containers.pool.test_policy_check containers.pool.test_recovery containers.pool.test_recovery_supervisor containers.pool.test_service_health containers.pool.test_recovery_readiness containers.pool.test_launch_readiness containers.pool.test_recovery_http containers.pool.test_recovery_cleanup containers.pool.test_capture_recovery containers.pool.test_billing_policy containers.pool.test_usage_write_signals containers.pool.test_home_peer containers.pool.test_database_distance containers.pool.test_container_ends containers.pool.test_safe_stop containers.pool.test_resume_layer containers.pool.test_readiness_lapse_flip
+      - name: Check the route gateway
+        run: python3 -m unittest discover -s containers/route-gateway -t containers/route-gateway
       - name: Prove the output regression catches the previous image source
         run: |
           mkdir -p "$RUNNER_TEMP/pool-output-baseline"
@@ -2480,7 +2482,7 @@ jobs:
         shard: [contracts, compatibility]
     services:
       postgres:
-        image: postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
+        image: mirror.gcr.io/library/postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
         env:
           POSTGRES_USER: fixture_root
           POSTGRES_DB: postgres
@@ -2686,7 +2688,7 @@ jobs:
     timeout-minutes: 25
     services:
       postgres:
-        image: postgres:17.7-alpine
+        image: mirror.gcr.io/library/postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2
         env:
           POSTGRES_USER: fixture_root
           POSTGRES_DB: postgres

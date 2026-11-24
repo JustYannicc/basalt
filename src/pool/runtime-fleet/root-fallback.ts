@@ -1,5 +1,5 @@
 import { unsentRefusal } from "../controller-unsent.ts";
-import { fleetSafeRead } from "./retry.ts";
+import { fleetSafeRead, markRootFallbackCap } from "./retry.ts";
 
 /*
  * What the root may take as the fleet's fallback, when no cell is ready to serve.
@@ -33,6 +33,7 @@ const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 export class RootFallback {
   private tokens = rootFallbackBurst;
   private waiting = 0;
+  private refusedAt = -Infinity;
   private at: number;
   private now: () => number;
   constructor(now: () => number) {
@@ -49,10 +50,17 @@ export class RootFallback {
   /** Takes a token for a call that then waits until its send. */
   admit() {
     this.refill();
-    if (this.tokens < 1) return false;
+    if (this.tokens < 1) {
+      this.refusedAt = this.now();
+      return false;
+    }
     this.tokens -= 1;
     this.waiting += 1;
     return true;
+  }
+  /** Whether the cap turned a call away this recently, so someone is waiting for a cell. */
+  refusedWithin(milliseconds: number) {
+    return this.now() - this.refusedAt <= milliseconds;
   }
   /** The admitted call sent, or ended; with `refund`, it reached nothing and its token comes back. */
   release(refund: boolean) {
@@ -71,7 +79,8 @@ export const rootFallbackCounts = (request: Request) => !fleetSafeRead(request);
 /**
  * Nothing was sent, so the refusal is marked unsent: the entry sends a held call again each second
  * inside its replay window, and a client that isn't held gets the retryable answer it already
- * follows. One count line either way.
+ * follows. One count line either way. A call held for the root's restart waits it out at the cap's
+ * rate instead.
  */
 export function rootFallbackRefused(request: Request) {
   const id = request.headers.get("X-Basalt-Request-Id");
@@ -79,5 +88,5 @@ export function rootFallbackRefused(request: Request) {
     "POOL_ROOT_FALLBACK_REFUSED",
     JSON.stringify({ count: 1, requestId: id && requestIdPattern.test(id) ? id : null }),
   );
-  return unsentRefusal(request);
+  return markRootFallbackCap(unsentRefusal(request), 1_000 / rootFallbackPerSecond);
 }

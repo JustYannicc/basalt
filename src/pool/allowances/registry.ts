@@ -1,3 +1,4 @@
+import { Schema } from "effect";
 import type { PlanAllowanceCatalog } from "apps";
 import type { ComputerStorage } from "../computer-registry.ts";
 import { digest } from "../backend-users.ts";
@@ -22,6 +23,22 @@ export interface ExpiringAllowance {
   expiresAt: number;
 }
 const retryMs = 30 * 60_000;
+/** What the report's sender says Sentry answered; a refusal may carry Sentry's own wait. */
+interface ReportDelivery {
+  readonly delivered: boolean;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+}
+/** The UTC day a report was delivered, or a refused one: since when, Sentry's last status, next try. */
+const ExpiryAlert = Schema.Union([
+  Schema.Number,
+  Schema.Struct({
+    refusedSince: Schema.Number,
+    status: Schema.optional(Schema.Number),
+    nextAttemptAt: Schema.Number,
+  }),
+]);
+const isExpiryAlert = Schema.is(ExpiryAlert);
 interface SourceState {
   at: number;
   nextAttemptAt: number;
@@ -251,15 +268,17 @@ export class PlanAllowances {
   /**
    * Reports plans whose last usable row expires within the lead, at most once per UTC day, so a
    * source that stopped re-checking is fixed before its value goes stale. The day counts only
-   * once the report was delivered.
+   * once the report was delivered. A refused report waits for Sentry's own retry time, or the
+   * registry's retry cadence, so neither the send nor this read repeats on every upkeep pass.
    */
   async reportExpiring(
-    report: (rows: readonly ExpiringAllowance[]) => Promise<boolean>,
+    report: (rows: readonly ExpiringAllowance[]) => Promise<ReportDelivery>,
     lead = expiryAlertLead,
   ): Promise<void> {
     const now = this.now();
     const day = Math.floor(now / dayMs);
-    if ((await this.storage.get<number>(expiryAlertKey)) === day) return;
+    const alert = await this.expiryAlert();
+    if (alert === day || (typeof alert === "object" && alert.nextAttemptAt > now)) return;
     const latest = new Map<string, PlanAllowance>();
     for (const entry of (await this.read()).entries) {
       if (entry.verification === "unknown" || entry.contradicted || entry.expiresAt === null)
@@ -275,7 +294,30 @@ export class PlanAllowances {
         windowSeconds,
         expiresAt: expiresAt!,
       }));
-    if (rows.length === 0 || (await report(rows))) await this.storage.put(expiryAlertKey, day);
+    const delivery: ReportDelivery = rows.length === 0 ? { delivered: true } : await report(rows);
+    await this.storage.put(
+      expiryAlertKey,
+      delivery.delivered
+        ? day
+        : {
+            refusedSince: typeof alert === "object" ? alert.refusedSince : now,
+            ...(delivery.status !== undefined ? { status: delivery.status } : {}),
+            nextAttemptAt: now + Math.max(delivery.retryAfterMs ?? 0, retryMs),
+          },
+    );
+  }
+  /** While Sentry refuses the expiry report: since when, and its last status. */
+  async alertDelivery() {
+    const alert = await this.expiryAlert();
+    if (typeof alert !== "object") return undefined;
+    return {
+      refusedSince: alert.refusedSince,
+      ...(alert.status !== undefined ? { lastStatus: alert.status } : {}),
+    };
+  }
+  private async expiryAlert() {
+    const value = await this.storage.get<unknown>(expiryAlertKey);
+    return isExpiryAlert(value) ? value : undefined;
   }
   async status(): Promise<State | undefined> {
     return this.storage.get<State>(stateKey);

@@ -91,17 +91,14 @@ test("native approval refuses a different audience and wider scopes before any d
 test("approval uses a fresh intent and the selected shared pool while retaining explicit tool access", async () => {
   using f = fixture();
   const original = await readDeviceRequest("BCDF-GHJK", signal());
-  const result = await reviewDeviceDecision("BCDF-GHJK", original, signal(), {
-    ...selection,
-    models: false,
-  });
+  const result = await reviewDeviceDecision("BCDF-GHJK", original, signal(), selection);
   assert.deepEqual(result, { kind: "decided", status: "approved" });
   const decision = decisionCalls(f.calls);
   assert.equal(decision.length, 1);
   const headers = new Headers(decision[0]!.input.headers);
   assert.equal(headers.get("x-basalt-native-intent"), "fresh-intent");
   assert.equal(headers.get("x-basalt-native-pool"), "shared-pool");
-  assert.equal(headers.get("x-basalt-native-models"), "false");
+  assert.equal(headers.get("x-basalt-native-models"), "true");
   assert.equal(headers.get("x-basalt-native-tools"), "true");
   assert.equal(headers.has("authorization"), false);
   assert.equal(
@@ -173,6 +170,78 @@ test("an unconfirmed decision is never retried or reported as approved", async (
         error instanceof DeviceApprovalError &&
         error.kind === "uncertain" &&
         !error.message.includes("private backend"),
+    );
+    assert.equal(decisionCalls(f.calls).length, 1);
+  }
+});
+
+// The decide answer when the pool did not answer, as the host's device decision step sends it.
+const poolUnavailable = {
+  stage: "native_control_response",
+  failure: "status",
+  dependencyStatus: 503,
+  dependencyCode: "backend_unavailable",
+  reason: "NATIVE_POOL_UNAVAILABLE",
+  code: "DEVICE_APPROVAL_UNAVAILABLE",
+  message:
+    "We could not confirm this device connection. Check its status on your device before trying again.",
+};
+
+test("a pool outage answer offers tools only, and approving again sends the same code with models off", async () => {
+  let attempts = 0;
+  using f = fixture(({ url }) =>
+    url.pathname === "/api/auth/device/decide"
+      ? ++attempts === 1
+        ? json(poolUnavailable, 503)
+        : json({ status: "approved" })
+      : undefined,
+  );
+  const original = await readDeviceRequest("BCDF-GHJK", signal());
+  await assert.rejects(
+    reviewDeviceDecision("BCDF-GHJK", original, signal(), selection),
+    (error: unknown) =>
+      error instanceof DeviceApprovalError &&
+      error.message === "Models are unavailable right now. Connect with tools only?",
+  );
+  assert.deepEqual(
+    await reviewDeviceDecision("BCDF-GHJK", original, signal(), { ...selection, models: false }),
+    { kind: "decided", status: "approved" },
+  );
+  const [first, second] = decisionCalls(f.calls).map((call) => ({
+    code: JSON.parse(String(call.input.body)).user_code,
+    models: new Headers(call.input.headers).get("x-basalt-native-models"),
+    tools: new Headers(call.input.headers).get("x-basalt-native-tools"),
+  }));
+  assert.deepEqual(first, { code: "BCDF-GHJK", models: "true", tools: "true" });
+  assert.deepEqual(second, { code: "BCDF-GHJK", models: "false", tools: "true" });
+});
+
+test("a 503 without the pool reason, or one tools only cannot answer, still reads as unconfirmed", async () => {
+  const unconfirmed =
+    "The decision could not be confirmed. Return to your device to check its status.";
+  for (const [body, choice] of [
+    [
+      {
+        stage: "grant_record",
+        failure: "storage",
+        code: "DEVICE_APPROVAL_UNAVAILABLE",
+        message: poolUnavailable.message,
+      },
+      selection,
+    ],
+    [poolUnavailable, { ...selection, models: false }],
+    [poolUnavailable, { ...selection, tools: false }],
+  ] as const) {
+    using f = fixture(({ url }) =>
+      url.pathname === "/api/auth/device/decide" ? json(body, 503) : undefined,
+    );
+    const original = await readDeviceRequest("BCDF-GHJK", signal());
+    await assert.rejects(
+      reviewDeviceDecision("BCDF-GHJK", original, signal(), choice),
+      (error: unknown) =>
+        error instanceof DeviceApprovalError &&
+        error.kind === "uncertain" &&
+        error.message === unconfirmed,
     );
     assert.equal(decisionCalls(f.calls).length, 1);
   }

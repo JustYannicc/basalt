@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { fetchController, type ControllerHop } from "./controller-reset.ts";
+import { nativeModelHeader, nativeModelPrefix } from "./native-contract.ts";
+import { openEnvelope, signEnvelope } from "./token.ts";
 import { nativeRuntimeStream } from "./runtime-unavailable.ts";
 import { runtimeFailureDiagnostic } from "./runtime-route-diagnostic.ts";
 import { RuntimeChannel } from "./runtime-slots/channel.ts";
@@ -138,7 +140,19 @@ test("a cut answer is re-attached from the delivered offset and spliced, with no
   const response = await fetchController(call(), h.hop);
   assert.equal(await read(response), first + rest);
   assert.deepEqual(h.resumes, [
-    { requestId, from: encoder.encode(first).byteLength, target: "primary", boot: "boot-1" },
+    {
+      requestId,
+      from: encoder.encode(first).byteLength,
+      target: "primary",
+      boot: "boot-1",
+      // The call as its caller made it, for the controller to admit again; the upload's framing
+      // is not part of who made it.
+      call: {
+        method: "POST",
+        path: "/v1/messages",
+        headers: [["anthropic-version", "2023-06-01"]],
+      },
+    },
   ]);
   assert.deepEqual(h.waits, [1_000]);
   assert.equal(
@@ -657,4 +671,56 @@ test("a re-sent copy arrives whole when the node answers before reading it, and 
     await response.text();
   }
   assert.equal(resent, 10);
+});
+
+test("the entry's own resume signs a device's assertion afresh, its claims unchanged", async (context) => {
+  const key = "ab".repeat(32);
+  const claims = {
+    user: "person",
+    grant: "native:grant",
+    computer: "computer",
+    pool: "pool",
+    method: "POST",
+    path: "/v1/messages",
+  };
+  // Signed long ago: a device answer outlasts the assertion's 25 s.
+  const stale = await signEnvelope(key, nativeModelPrefix, { ...claims, expiresAt: 1 });
+  const h = hop(
+    context,
+    () => new Response(cutBody([first]), { headers: resumableHeaders() }),
+    async () => new Response(null, { status: 410, headers: { "X-Basalt-Resume-State": "gone" } }),
+  );
+  const device = new Request("https://pool.example/v1/messages", {
+    method: "POST",
+    headers: { [nativeModelHeader]: stale },
+    body: "{}",
+  });
+  await read(await fetchController(device, { ...h.hop, signing: { key } }));
+  const sent = new Headers(h.resumes[0]!.call!.headers).get(nativeModelHeader)!;
+  const opened = (await openEnvelope(key, nativeModelPrefix, sent)) as Record<string, unknown>;
+  const { expiresAt, ...rest } = opened;
+  assert.deepEqual(rest, claims);
+  assert.ok((expiresAt as number) > Date.now(), "a live assertion");
+});
+
+test("an entry whose own admission refuses the call does not resume it: today's retry terminal", async (context) => {
+  const today = await read(
+    nativeRuntimeStream(
+      new Response(cutBody([first]), { headers: { "content-type": "text/event-stream" } }),
+      call(),
+    ),
+  );
+  const h = hop(
+    context,
+    () => new Response(cutBody([first]), { headers: resumableHeaders() }),
+    async () => assert.fail("a refused caller is never resumed"),
+  );
+  const asked: string[] = [];
+  const readmit = async (request: Request) => {
+    asked.push(new URL(request.url).pathname);
+    return false;
+  };
+  assert.equal(await read(await fetchController(call(), { ...h.hop, readmit })), today);
+  assert.deepEqual(asked, ["/v1/messages"]);
+  assert.deepEqual(h.resumes, []);
 });

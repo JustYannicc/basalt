@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-container-precreate-no-application",
+  "file": "0761-alchemy-container-precreate-no-application.patch",
+  "content_sha256": "12f1d88679076fab7281daa2bc292c94f60f79dfaea0bab82f93d959d61870fe",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release creates a cycle's container application unattached in precreate, then deletes and recreates it; backport of https://github.com/alchemy-run/alchemy/pull/3265; remove when the pinned release contains it."
+}

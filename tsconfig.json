@@ -30,6 +30,7 @@
     "src/pool/forward.worker.ts",
     "src/pool/native-response.worker.ts",
     "src/pool/stream-resume.worker.ts",
+    "src/pool/resume-admission.worker.ts",
     "src/pool/terminal-socket.worker.ts",
     "src/route/gateway.worker.ts",
     "src/route/pool-peer.worker.ts",
