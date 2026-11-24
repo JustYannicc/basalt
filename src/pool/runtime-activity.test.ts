@@ -258,3 +258,25 @@ test("an operator never releases a lease this isolate still holds, nor an unknow
   await storage.put(activityKey, { ...leakedRow(0), known: false });
   await assert.rejects(activity.releaseStill(identity, 300_000), /uncertain/, "an unknown count");
 });
+
+test("a stream whose release write failed no longer holds the operator's override", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await activity.initialize(identity, true);
+  const done = await activity.acquire(identity);
+  await activity.drain(identity);
+  // The stream ended, but its release never reached storage.
+  const transaction = storage.transaction.bind(storage);
+  storage.transaction = async () => {
+    throw new Error("storage refused the release");
+  };
+  await assert.rejects(done(), /storage refused/u);
+  storage.transaction = transaction;
+  context.mock.timers.tick(300_000);
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), {
+    released: 1,
+    stillMs: 300_000,
+  });
+});

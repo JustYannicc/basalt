@@ -470,7 +470,8 @@ export class RuntimeFleet {
     // while it is exactly what was read, as any reconcile is; otherwise upkeep's reconcile lowers it
     // to the cell's 0 once it stands still.
     const ledgerLowered =
-      row.active === 0 || (await this.deps.state.reconcileActive(row.identity, row, 0));
+      row.active === 0 ||
+      (await this.deps.state.reconcileActive(row.identity, row, 0).catch(() => false));
     const receipt = {
       operationId,
       go,

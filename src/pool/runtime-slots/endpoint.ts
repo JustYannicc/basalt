@@ -569,10 +569,11 @@ export class RuntimeEndpoint {
       const read = container?.exec
         ? legacyConnections({ exec: container.exec.bind(container) })
         : Promise.reject(new SlotRefused("uncertain"));
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const connections = await Promise.race([
         read.catch(() => null),
-        new Promise<null>((late) => setTimeout(() => late(null), 1_500)),
-      ]);
+        new Promise<null>((late) => (timer = setTimeout(() => late(null), 1_500))),
+      ]).finally(() => clearTimeout(timer));
       const released = {
         ...(await this.activity.releaseStill(identity, leakedStreamsMs, signal)),
         connections,
