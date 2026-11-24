@@ -813,9 +813,18 @@ test("a fully counted pool's summary reads the same complete hours, known days a
     await c.cursor(forward);
     await c.ready();
     await fillByTicks(f.db, captureHoursLookbackHours);
-    const summary = () =>
-      poolUsageSummary(
-        f.db,
+    // Every statement each summary ran, so the test can prove which capture path it took.
+    let ran: string[] = [];
+    const recorded = {
+      query: (text: string, values?: unknown[]) => {
+        ran.push(text);
+        return f.db.query(text, values);
+      },
+    };
+    const summary = () => {
+      ran = [];
+      return poolUsageSummary(
+        recorded,
         {
           pool,
           from: new Date(now - 14 * 86_400_000).toISOString(),
@@ -825,6 +834,8 @@ test("a fully counted pool's summary reads the same complete hours, known days a
         async () => ({ prices: summaryPrices, issues: [] }),
         now,
       );
+    };
+    const readCounts = () => ran.some((text) => text.includes("JOIN basalt_model_capture_hours"));
     const view = (result: Awaited<ReturnType<typeof summary>>) => ({
       status: result.homeCapture.status,
       completeHours: result.homeCapture.completeHours,
@@ -833,6 +844,7 @@ test("a fully counted pool's summary reads the same complete hours, known days a
       partial: result.partial,
     });
     const counted = view(await summary());
+    assert.ok(readCounts(), "the counted side read the stored counts");
     assert.equal(counted.status, "partial", "the missed row's hour is incomplete");
     assert.ok(counted.completeHours.length > 300, `${counted.completeHours.length} complete hours`);
     // The per-row check, as before v17.
@@ -840,6 +852,8 @@ test("a fully counted pool's summary reads the same complete hours, known days a
     await f.db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
       historyCaptureHoursVersion,
     ]);
-    assert.deepEqual(counted, view(await summary()));
+    const perRow = view(await summary());
+    assert.ok(!readCounts(), "the per-row side read no stored counts");
+    assert.deepEqual(counted, perRow);
   });
 });
