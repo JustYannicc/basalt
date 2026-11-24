@@ -1,7 +1,7 @@
 {
   "identity": "basalt-accounts-requests-complete",
   "file": "0775-accounts-requests-complete.patch",
-  "content_sha256": "a2ec4f6a73bfaac8ac717ed240d6f19d6cdbdae4f94f6ef2d4a62625ef7aa22e",
+  "content_sha256": "d5e3bfd9e3e7b8fa7df9f698c6395f401b45f76804d90e60c14c9d3cbbadb0e4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -1,3 +1,46 @@
+diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/web/src/contracts/connector-traffic.ts
+--- a/apps/hosted/web/src/contracts/connector-traffic.ts
++++ b/apps/hosted/web/src/contracts/connector-traffic.ts
+@@ -1,11 +1,12 @@
+ /**
+  * The tool calls each visible account served, following its authorized committed changes. The host
+  * leaves out accounts the caller may not inspect and accounts no call used, so either gets no
+- * numbers, never 0. A failed read gives nothing at all.
++ * numbers, never 0. A refused read gives nothing at all; any other failure stays a failure, so a
++ * pool account's count, which these calls are part of, reads as unavailable rather than partial.
+  */
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import type { TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
+-import { Effect, Semaphore } from "effect";
++import { Effect, Predicate, Semaphore } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import type { AccountId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+@@ -73,7 +74,11 @@
+           ? Effect.succeed(undefined)
+           : read(parsed).pipe(
+               requests.withPermits(1),
+-              Effect.catch(() => Effect.succeed(undefined)),
++              Effect.catch((error) =>
++                Predicate.isTagged(error, "OrganizationForbidden")
++                  ? Effect.succeed(undefined)
++                  : Effect.fail(error),
++              ),
+             ),
+       )
+       .pipe(
+@@ -108,6 +113,11 @@
+       let waiting = false;
+       for (const page of pages) {
+         const result = get(page);
++        // One page's earlier value never stands in for every page's: a failure has none.
++        if (AsyncResult.isFailure(result))
++          return AsyncResult.failure<Map<AccountId, ToolCallTraffic> | undefined, unknown>(
++            result.cause,
++          );
+         if (!AsyncResult.isSuccess(result) || result.value === undefined) return result;
+         values.push(result.value);
+         waiting ||= result.waiting;
 diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
 --- a/apps/hosted/web/src/implementation/pages/account-traffic.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx

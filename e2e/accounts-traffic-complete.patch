@@ -9,7 +9,7 @@
  
  const cells = (page: Page, label: string) => {
    const row = accountRow(page, label);
-@@ -430,6 +432,69 @@
+@@ -430,6 +432,118 @@
            expect(answered, `answered cells at ${width}px`).toEqual(["3", "0", 0, [0, 0, 0]]);
          }
  
@@ -76,9 +76,70 @@
 +          expect(answered, `full counts at ${width}px`).toEqual(["3", "0", 0]);
 +        }
 +
++        // When the tool calls' read fails, every account of the pool says its count is unavailable:
++        // its pool's requests alone are part of it. An account outside any pool shows nothing.
++        for (const width of [1280, 390]) {
++          const failed = yield* Effect.scoped(
++            Effect.gen(function* () {
++              const reads = yield* holdQuery(toolCallReads, "fail", {
++                method: "POST",
++                allRequests: true,
++              });
++              yield* browser.use(
++                `Open accounts at ${width}px before the tool calls' read fails`,
++                (page) =>
++                  page
++                    .setViewportSize({ width, height: 900 })
++                    .then(() => page.goto(accounts))
++                    .then(() =>
++                      accountRow(page, "Called account")
++                        .locator("[data-account-requests-pending]")
++                        .waitFor(),
++                    ),
++              );
++              yield* reads.release;
++              return yield* browser.use(`The tool calls' read failed at ${width}px`, (page) =>
++                accountRow(page, "Traffic account")
++                  .locator("[data-account-requests-unavailable]")
++                  .waitFor()
++                  .then(() =>
++                    Promise.all([
++                      accountRow(page, "Called account")
++                        .locator("[data-account-requests-unavailable]")
++                        .count(),
++                      accountRow(page, "Idle account")
++                        .locator("[data-account-requests-unavailable]")
++                        .count(),
++                      accountRow(page, "Traffic account")
++                        .locator("[data-account-requests]")
++                        .count(),
++                      cells(page, "Connector mail"),
++                      accountRow(page, "Connector mail")
++                        .locator("[data-account-requests-unavailable]")
++                        .count(),
++                    ]),
++                  ),
++              );
++            }),
++          );
++          expect(failed, `failed tool-call read at ${width}px`).toEqual([1, 1, 0, [0, 0, 0], 0]);
++        }
++
          // When the pool's reads fail, every account of the pool says its count is unavailable:
          // never its tool calls alone as if they were its total, never an empty cell that means no
          // history. An account outside any pool is unchanged.
+@@ -539,7 +653,10 @@
+           page
+             .setViewportSize({ width: 1280, height: 900 })
+             .then(() => page.goto(accounts))
+-            .then(() => page.locator("[data-requests-header]").waitFor()),
++            // Numbers, not the column alone: while its reads are out the column shows counting.
++            .then(() =>
++              accountRow(page, "Traffic account").locator("[data-account-requests]").waitFor(),
++            ),
+         );
+ 
+         // Once the pool can't map any request, no row has numbers: the column and the ticks go,
 --- a/e2e/tests/app-account-traffic.spec.ts
 +++ b/e2e/tests/app-account-traffic.spec.ts
 @@ -19,6 +19,8 @@
