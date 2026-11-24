@@ -42,6 +42,56 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
          if (!AsyncResult.isSuccess(result) || result.value === undefined) return result;
          values.push(result.value);
          waiting ||= result.waiting;
+diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/web/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/web/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/web/src/contracts/pool-usage-series.ts
+@@ -132,24 +132,34 @@
+     // The visible accounts bound the reads, so a large pool never pages past its cap. One account
+     // the caller may not inspect refuses the filtered read, so it falls back to the whole pool,
+     // where such accounts are only other accounts' counts. Any other failure is the pool's.
+-    const [week, hours] = yield* accounts.length > 0 && accounts.length <= maxAccounts
+-      ? read({ accounts }).pipe(Effect.catchTag("OrganizationForbidden", () => read({})))
+-      : read({});
++    // The last-success lookup goes out with the series, not after them: it needs the series only
++    // when it is refused, to retry with the accounts they named.
++    const series =
++      accounts.length > 0 && accounts.length <= maxAccounts
++        ? read({ accounts }).pipe(Effect.catchTag("OrganizationForbidden", () => read({})))
++        : read({});
++    const lastOfAll = lastSuccess(organization, pool, accounts).pipe(
++      Effect.map((found) => ({ refused: false as const, found })),
++      Effect.catchTag("OrganizationForbidden", () =>
++        Effect.succeed({ refused: true as const, found: undefined }),
++      ),
++    );
++    const [[week, hours], first] = yield* Effect.all([series, lastOfAll], {
++      concurrency: "unbounded",
++    });
+     const traffic = new Map<AccountId, PoolAccountTraffic>();
+     if (week === undefined) return { readable: false, traffic };
+     // An account this caller may not inspect refuses the lookup for all, so retry with the accounts
+     // the series already named; refused again, last success stays unread. Any other failure is the
+     // pool's: an idle account it would have proven would otherwise read as having no history.
+     const named = accounts.filter((account) => week.has(account));
+-    const last = yield* lastSuccess(organization, pool, accounts).pipe(
+-      Effect.catchTag("OrganizationForbidden", () =>
+-        named.length === accounts.length
+-          ? Effect.succeed(undefined)
+-          : lastSuccess(organization, pool, named).pipe(
+-              Effect.catchTag("OrganizationForbidden", () => Effect.succeed(undefined)),
+-            ),
+-      ),
+-    );
++    const last = !first.refused
++      ? first.found
++      : named.length === accounts.length
++        ? undefined
++        : yield* lastSuccess(organization, pool, named).pipe(
++            Effect.catchTag("OrganizationForbidden", () => Effect.succeed(undefined)),
++          );
+     for (const account of accounts) {
+       const buckets = week.get(account);
+       const at = last?.get(account);
 diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
 --- a/apps/hosted/web/src/implementation/pages/account-traffic.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx

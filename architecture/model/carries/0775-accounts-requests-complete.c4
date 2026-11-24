@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "An Accounts row or app Accounts tab row holding a pool account shows a Requests 7d number only once both reads it is built from have answered: the traffic of the pools carrying the account and the tool calls the account served. While either is starting, or waiting with nothing read before, the row reads as counting, and while a page has pool accounts that are counting the Requests column is shown, so no pool row is a blank cell; once both have answered, a caller who may read neither still gets no column. If either read fails, except the caller's refusal, the row reads as unavailable. Its Health and Details show no traffic until then. Rows without a pool account are unchanged."
+      constraint "An Accounts row or app Accounts tab row holding a pool account shows a Requests 7d number only once both reads it is built from have answered: the traffic of the pools carrying the account and the tool calls the account served. While either is starting, or waiting with nothing read before, the row reads as counting, and while a page has pool accounts that are counting the Requests column is shown, so no pool row is a blank cell; once both have answered, a caller who may read neither still gets no column. If either read fails, except the caller's refusal, the row reads as unavailable. Its Health and Details show no traffic until then. Rows without a pool account are unchanged. A pool's last-success lookup is sent with its series reads, not after them; only a refused lookup waits for the series, to retry with the accounts they named."
     }
   }
 }
