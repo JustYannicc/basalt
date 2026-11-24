@@ -6,6 +6,7 @@
  *   plan      R0: the cutover's plan, `--include PoolWorker` with the fleet declared; applies nothing
  *   apply     R1: the same deploy applied, read back, then planned again (must be all noop)
  *   destroy   tear the stage down and prove it gone
+ *   leftovers read-only: what State still holds for the four-digit stages from before the lanes
  *
  * Every apply and destroy goes through the release entry (`scripts/release/deploy.ts`), which never
  * lets Alchemy bootstrap the shared State store; nothing here runs the CLI with `--yes`.
@@ -31,7 +32,7 @@ import {
 } from "../preview/lifecycle.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { describeError, redactor } from "./redact.ts";
-import { alchemyPreviewStateReader } from "../preview/inventory.ts";
+import { alchemyPreviewStateReader, readNumberedRehearsalStages } from "../preview/inventory.ts";
 import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
@@ -60,6 +61,7 @@ export const stageModes = [
   "release",
   "classplan",
   "stateread",
+  "leftovers",
   "redrelease",
   "retry",
   "adopt",
@@ -2038,6 +2040,37 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       result.statuses = Object.fromEntries(
         Object.entries(recorded).map(([fqn, row]) => [fqn, (row as { status: unknown }).status]),
       );
+    } else if (mode === "leftovers") {
+      // Read-only. The public record counts each stage's rows by kind under an ordinal; which stage
+      // each ordinal is goes to private output only.
+      const config = stageEnvironment(subject, source);
+      const stages = await readNumberedRehearsalStages(config.stage, {
+        environment: config.deploy,
+      });
+      await writeFile(
+        join(outputs, "numbered-stages.json"),
+        `${JSON.stringify(stages, null, 2)}\n`,
+        {
+          mode: 0o600,
+        },
+      );
+      result.numberedStages = stages.map(({ stacks, unreadable }, index) => ({
+        ordinal: index + 1,
+        stacks,
+        ...(unreadable ? { unreadable: true } : {}),
+      }));
+      console.log(`Four-digit rehearsal stages State still lists: ${stages.length}.`);
+      for (const [index, { stacks, unreadable }] of stages.entries())
+        console.log(
+          `  stage ${index + 1}${unreadable ? " (one stack unreadable; why is in private output)" : ""}: ${
+            Object.entries(stacks)
+              .map(([stack, kinds]) => {
+                const rows = Object.entries(kinds).map(([kind, count]) => `${kind} ${count}`);
+                return `${stack}: ${rows.join(", ") || "no rows"}`;
+              })
+              .join("; ") || "no rows"
+          }`,
+        );
     } else if (mode === "classplan") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks, "classplan"));
     } else if (mode === "heal") {

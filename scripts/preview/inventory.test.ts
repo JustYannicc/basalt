@@ -3,10 +3,12 @@ import { test } from "node:test";
 import {
   alchemyPreviewStateReader,
   capturePreviewInventory,
+  inventoryKindsLine,
   inventoryResourceCount,
   mergePreviewInventories,
   parsePreviewInventory,
   previewStacks,
+  readNumberedRehearsalStages,
   type PreviewStateEntry,
   type StateCommand,
 } from "./inventory.ts";
@@ -335,4 +337,133 @@ test("progress lines before a state read's JSON are not part of the document", a
     stacks.basalt.map((entry) => entry.path),
     [router.path],
   );
+});
+
+test("the numbered rehearsal stages are listed and read, never written, with rows by kind", async () => {
+  const lane = "test-rehearsal-1";
+  const bucket = (stack: string, stage: string, fqn: string) => ({
+    path: `${stack}/${stage}/${fqn}`,
+    value: row(fqn, "Cloudflare.R2.Bucket").value,
+  });
+  const old = [
+    bucket("basalt-rehearsal", "test-rehearsal-1234", "AppBuilds"),
+    bucket("basalt-rehearsal", "test-rehearsal-1234", "SiteAssets"),
+  ];
+  const calls: string[][] = [];
+  const command: StateCommand = (args, _cwd, env) => {
+    calls.push([...args]);
+    assert.equal(env.ALCHEMY_STAGE, lane);
+    const verb = args[args.indexOf("state") + 1];
+    const at = args[args.indexOf("state") + 2];
+    if (verb === "list" && at === "--config")
+      return { status: 0, stdout: "basalt/\nbasalt-rehearsal/\nbasalt-preview-database/\n" };
+    if (verb === "list" && at === "basalt-rehearsal")
+      // A lane, a stage of each other width, and two four-digit stages.
+      return {
+        status: 0,
+        stdout: [1, 12, 1234, 5678, 12345]
+          .map((n) => `basalt-rehearsal/test-rehearsal-${n}/`)
+          .join("\n"),
+      };
+    if (verb === "list" && at === "basalt-preview-database")
+      return { status: 0, stdout: "basalt-preview-database/test-rehearsal-1234/\n" };
+    if (verb === "list" && at === "basalt-rehearsal/test-rehearsal-1234")
+      return {
+        status: 0,
+        stdout: [
+          ...old.map((entry) => entry.path),
+          "basalt-rehearsal/test-rehearsal-1234/output",
+        ].join("\n"),
+      };
+    if (verb === "list" && at === "basalt-preview-database/test-rehearsal-1234")
+      return { status: 0, stdout: "basalt-preview-database/test-rehearsal-1234/Branch\n" };
+    if (verb === "list" && at === "basalt-rehearsal/test-rehearsal-5678")
+      return { status: 0, stdout: "" };
+    if (verb === "read" && at === "basalt-rehearsal/test-rehearsal-1234")
+      return {
+        status: 0,
+        stdout: JSON.stringify({
+          ...Object.fromEntries(old.map((entry) => [entry.path, entry.value])),
+          "basalt-rehearsal/test-rehearsal-1234/output": null,
+        }),
+      };
+    if (verb === "read" && at === "basalt-preview-database/test-rehearsal-1234")
+      return { status: 0, stdout: JSON.stringify(row("Branch", "Planetscale.Branch").value) };
+    throw new Error(`unexpected ${args.join(" ")}`);
+  };
+  const stages = await readNumberedRehearsalStages(lane, { command, environment: {} });
+  assert.deepEqual(stages, [
+    {
+      stage: "test-rehearsal-1234",
+      stacks: {
+        "basalt-rehearsal": { "Cloudflare.R2.Bucket": 2, output: 1 },
+        "basalt-preview-database": { "Planetscale.Branch": 1 },
+      },
+    },
+    { stage: "test-rehearsal-5678", stacks: { "basalt-rehearsal": {} } },
+  ]);
+  // Only lists and reads: nothing here can change the store.
+  assert.ok(calls.every((args) => ["list", "read"].includes(args[args.indexOf("state") + 1]!)));
+  await assert.rejects(readNumberedRehearsalStages("test-pr-17", { command, environment: {} }));
+});
+
+test("a destroy's first line counts what State records by kind, and names nothing", () => {
+  const line = inventoryKindsLine({
+    version: 1,
+    capturedAt: "2026-11-24T00:00:00.000Z",
+    stacks: {
+      "basalt-rehearsal": [
+        {
+          path: "basalt-rehearsal/test-rehearsal-1/AppBuilds",
+          value: row("AppBuilds", "Cloudflare.R2.Bucket").value,
+        },
+        {
+          path: "basalt-rehearsal/test-rehearsal-1/SiteAssets",
+          value: row("SiteAssets", "Cloudflare.R2.Bucket").value,
+        },
+        {
+          path: "basalt-rehearsal/test-rehearsal-1/Api",
+          value: row("Api", "Cloudflare.Worker").value,
+        },
+        { path: "basalt-rehearsal/test-rehearsal-1/output", value: null },
+      ],
+      "basalt-preview-database": [],
+    },
+    providers: {
+      complete: true,
+      containers: [{ applicationId: "app-1", applicationName: "basalt-rehearsal-poolcontainer-x" }],
+      domains: [],
+    },
+  });
+  assert.equal(
+    line,
+    "The destroy is about to delete what State records, by kind: basalt-rehearsal: Cloudflare.R2.Bucket 2, Cloudflare.Worker 1; basalt-preview-database: none. The provider read found 1 container application(s) and 0 domain(s).",
+  );
+  assert.doesNotMatch(line, /AppBuilds|app-1|poolcontainer|test-rehearsal-1/u);
+});
+
+test("a numbered stage that cannot be read is marked, and the others are still read", async () => {
+  const command: StateCommand = (args) => {
+    const verb = args[args.indexOf("state") + 1];
+    const at = args[args.indexOf("state") + 2];
+    if (verb === "list" && at === "--config") return { status: 0, stdout: "basalt-rehearsal/\n" };
+    if (verb === "list" && at === "basalt-rehearsal")
+      return {
+        status: 0,
+        stdout: "basalt-rehearsal/test-rehearsal-1111/\nbasalt-rehearsal/test-rehearsal-2222/\n",
+      };
+    // The first stage lists a path outside itself; the second holds nothing.
+    if (verb === "list" && at === "basalt-rehearsal/test-rehearsal-1111")
+      return { status: 0, stdout: "basalt-rehearsal/test-rehearsal-9999/Api\n" };
+    if (verb === "list" && at === "basalt-rehearsal/test-rehearsal-2222")
+      return { status: 0, stdout: "" };
+    throw new Error(`unexpected ${args.join(" ")}`);
+  };
+  const [first, second] = await readNumberedRehearsalStages("test-rehearsal-1", {
+    command,
+    environment: {},
+  });
+  assert.equal(first?.stage, "test-rehearsal-1111");
+  assert.match(first?.unreadable ?? "", /malformed remote state path/u);
+  assert.deepEqual(second, { stage: "test-rehearsal-2222", stacks: { "basalt-rehearsal": {} } });
 });

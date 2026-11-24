@@ -356,6 +356,81 @@ export function alchemyPreviewStateReader(
   };
 }
 
+/** What State still holds for one stage named before stages were lanes: rows per stack, by kind. */
+export type NumberedStageRows = {
+  readonly stage: string;
+  readonly stacks: Readonly<Record<PreviewStack, Readonly<Record<string, number>>>>;
+  /** Why a stack of this stage could not be read; it can name the stage, so it stays private. */
+  readonly unreadable?: string;
+};
+
+/**
+ * Read-only: the rehearsal stages with a four-digit number, from before a rehearsal ran on a lane,
+ * that the State store still lists, with their rows counted by kind. No entry admits these stages,
+ * so the store is opened the way the given lane opens it, and only listed and read.
+ */
+export async function readNumberedRehearsalStages(
+  lane: string,
+  options: { readonly command?: StateCommand; readonly environment?: NodeJS.ProcessEnv } = {},
+): Promise<NumberedStageRows[]> {
+  if (subjectFromStage(lane)?.kind !== "rehearsal")
+    throw new Error("The numbered stages are read through a rehearsal lane");
+  const command = options.command ?? defaultStateCommand;
+  const env = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    ...(options.environment ?? process.env),
+    ALCHEMY_STAGE: lane,
+    CI: "true",
+  };
+  const flags = ["--config", stateConfig, "--backend", "configured", "--no-input"];
+  const state = (...args: string[]) =>
+    runStateCommand(command, ["--log-level", "none", "state", ...args, ...flags], env);
+  const found = new Map<
+    string,
+    { stacks: Record<PreviewStack, Record<string, number>>; unreadable?: string }
+  >();
+  const known = stdoutLines(state("list"));
+  for (const stack of previewStacks(lane)) {
+    if (!known.includes(`${stack}/`)) continue;
+    for (const line of stdoutLines(state("list", stack))) {
+      const stage = new RegExp(`^${stack}/(test-rehearsal-[1-9][0-9]{3})/$`, "u").exec(line)?.[1];
+      if (!stage) continue;
+      const entry = found.get(stage) ?? {
+        stacks: {} as Record<PreviewStack, Record<string, number>>,
+      };
+      found.set(stage, entry);
+      // One stage that cannot be read does not hide the others.
+      try {
+        const prefix = `${stack}/${stage}/`;
+        const paths = parsePaths(
+          state("list", `${stack}/${stage}`, "--recursive"),
+          prefix,
+          redactor(env),
+        ).sort((a, b) => a.localeCompare(b, "en"));
+        const kinds: Record<string, number> = {};
+        if (paths.length)
+          for (const { value } of parseStageValues(
+            state("read", `${stack}/${stage}`, "--recursive"),
+            stack,
+            stage,
+            paths,
+          )) {
+            const kind = (value as { resourceType?: unknown } | null)?.resourceType;
+            const name = typeof kind === "string" ? kind : "output";
+            kinds[name] = (kinds[name] ?? 0) + 1;
+          }
+        entry.stacks[stack] = kinds;
+      } catch (error) {
+        entry.unreadable = `${stack}: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+  }
+  return [...found]
+    .sort(([a], [b]) => a.localeCompare(b, "en"))
+    .map(([stage, entry]) => ({ stage, ...entry }));
+}
+
 /** Snapshot and validate both exact stage inventories before any delete begins. */
 export async function capturePreviewInventory(
   identity: Pick<PreviewIdentity, "stage">,
@@ -378,6 +453,31 @@ export function inventoryResourceCount(inventory: PreviewInventory): number {
   return Object.values(inventory.stacks).reduce(
     (count, entries) => count + entries.filter((entry) => !entry.path.endsWith("/output")).length,
     0,
+  );
+}
+
+/**
+ * What a destroy is about to delete, before its first step: the State rows of each stack counted by
+ * kind, and what the provider read found. Kinds and counts only, so it can go on a public log.
+ */
+export function inventoryKindsLine(inventory: PreviewInventory): string {
+  const stacks = Object.entries(inventory.stacks).map(([stack, entries]) => {
+    const kinds: Record<string, number> = {};
+    for (const { path, value } of entries) {
+      if (path.endsWith("/output")) continue;
+      const kind = (value as { resourceType?: unknown } | null)?.resourceType;
+      const name = typeof kind === "string" ? kind : "unknown";
+      kinds[name] = (kinds[name] ?? 0) + 1;
+    }
+    const rows = Object.entries(kinds)
+      .sort(([a], [b]) => a.localeCompare(b, "en"))
+      .map(([kind, count]) => `${kind} ${count}`);
+    return `${stack}: ${rows.join(", ") || "none"}`;
+  });
+  const { containers, domains } = inventory.providers;
+  return (
+    `The destroy is about to delete what State records, by kind: ${stacks.join("; ") || "nothing"}.` +
+    ` The provider read found ${containers.length} container application(s) and ${domains.length} domain(s).`
   );
 }
 

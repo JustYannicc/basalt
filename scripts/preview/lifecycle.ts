@@ -18,6 +18,7 @@ import { manifestPath } from "../release-preview/checkpoint.ts";
 import {
   alchemyPreviewStateReader,
   capturePreviewInventory,
+  inventoryKindsLine,
   inventoryResourceCount,
   mergePreviewInventories,
   withPreviewProviderInventory,
@@ -621,6 +622,8 @@ export async function destroyStage(
       );
   }
   await updatePreviewManifest(path, subject, "destroying", undefined, inventory);
+  // Before the first delete, so a run can be stopped on what it was about to do.
+  console.log(inventoryKindsLine(inventory));
 
   const failures: unknown[] = [];
   // A rehearsal stage bills for these while it stands, whatever else of it is left.
