@@ -48,9 +48,10 @@ import {
 /** A far cell is started again at most this many times before it serves from its last draw. */
 export const placementDraws = 4;
 /**
- * A first far cell is kept when the root's cap turned a call away this recently. A waiting caller
- * comes back at least once a second: the entry re-sends an unsent refusal each second, and a held
- * call waits out the cap at its pace of 1.2 a second.
+ * With no cell serving, a far draw is kept when the root's cap turned a call away this recently. A
+ * waiting caller comes back about once a second: the entry re-sends an unsent refusal each second
+ * inside its replay window, and a call #1861 or #1866 holds waits out the cap at its 1.2 a second.
+ * Past both, how often it comes back is the client's own backoff.
  */
 export const rootWaitingMs = 5_000;
 type PlacementDecision =
@@ -394,10 +395,10 @@ export class RuntimeFleet {
     logPlacement(identity, database, decision, draw);
   }
   /**
-   * A far cell within `neededFarMs` serves at once when the fleet needs it now. Beside another cell,
-   * that is while fewer cells are ready than the demand of this moment wants. As the first cell,
-   * beside only the root, it is while the root's cap turns callers away: they wait for this cell,
-   * and a redraw would add a whole start to their wait.
+   * A far cell within `neededFarMs` serves at once when the fleet needs it now. Beside a serving
+   * cell, that is while fewer cells are ready than the demand of this moment wants. With only the
+   * root serving (a first cell, or the other cells fenced), it is while the root's cap turns callers
+   * away: they wait for this cell, and a redraw would add a whole start to their wait.
    */
   private async neededNow(identity: SlotIdentity, database: RuntimeDistance | undefined) {
     if (database?.state !== "measured" || (database.rttMs ?? Infinity) > neededFarMs) return false;

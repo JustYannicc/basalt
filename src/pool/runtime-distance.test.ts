@@ -382,7 +382,7 @@ test("with demand for two cells, the first far draw beside a ready cell serves a
   assert.deepEqual(f.retired, []);
 });
 
-test("a far draw beside a cell that is fenced, with only the root serving, is redrawn", async (context) => {
+test("a far draw beside a cell that is fenced, with only the root serving and nobody waiting at its cap, is redrawn", async (context) => {
   const log = context.mock.method(console, "info", () => {});
   context.mock.method(console, "warn", () => {});
   const f = redrawFleet([frankfurt, athens], true, () => 4);
@@ -552,9 +552,27 @@ test("the draw count survives a controller reset, so resets can't redraw past th
   assert.equal(await f.state.placementDraws(), 0, "the admission ends the run of redraws");
 });
 
+test("a slow run of redraws keeps its count: draws 300 s apart still reach the limit", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens, athens, athens, athens], true);
+  const runtime = await f.build();
+  for (let draw = 0; draw < 4; draw++) {
+    // A retirement's 60 s bound and the next start's 240 s bound: the slowest back-to-back draws.
+    if (draw) f.advance(300_000);
+    await f.reserveNext();
+    await runtime.upkeep();
+  }
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "redraw", 1],
+    ["slot-2", "redraw", 2],
+    ["slot-3", "redraw", 3],
+    ["slot-4", "admit_after_limit", 4],
+  ]);
+});
+
 test("a run of redraws left by demand that stopped starts over, and so does an unreadable count", async (context) => {
   const log = context.mock.method(console, "info", () => {});
-  const f = redrawFleet([athens, athens, athens, athens, athens], true);
+  const f = redrawFleet([athens, athens, athens, athens, athens, frankfurt], true);
   const runtime = await f.build();
   for (let draw = 0; draw < 3; draw++) {
     await f.reserveNext();
@@ -567,13 +585,32 @@ test("a run of redraws left by demand that stopped starts over, and so does an u
   await f.memory.put("runtime-fleet-v1:placement-draws", { count: "three" });
   await f.reserveNext();
   await runtime.upkeep();
+  // An admission over a count it can't read clears it rather than refusing.
+  await f.memory.put("runtime-fleet-v1:placement-draws", { count: "three" });
+  await f.reserveNext();
+  await runtime.upkeep();
   assert.deepEqual(placementDecisions(log), [
     ["slot-1", "redraw", 1],
     ["slot-2", "redraw", 2],
     ["slot-3", "redraw", 3],
     ["slot-4", "redraw", 1],
     ["slot-5", "redraw", 1],
+    ["slot-6", "admit", 1],
   ]);
+  assert.equal(await phaseOf(f, "slot-6"), "ready");
+  assert.deepEqual(await f.memory.get("runtime-fleet-v1:placement-draws"), {
+    count: 0,
+    at: 100 + 480_001,
+  });
+});
+
+test("with only the root serving, a refusal inside rootWaitingMs keeps a far draw and one past it doesn't", async (context) => {
+  // A burst of 11: the cap serves 10 and refuses one at 0 s, which it serves a second later.
+  const kept = await coldCallers(context, athens, Array<number>(11).fill(0), 4_000);
+  assert.deepEqual(kept.decisions, [["slot-1", "admit_needed", 1]]);
+  context.mock.restoreAll();
+  const redrawn = await coldCallers(context, athens, Array<number>(11).fill(0), 6_000);
+  assert.deepEqual(redrawn.decisions, [["slot-1", "redraw", 1]]);
 });
 
 test("without distances the order is today's on both sides of the growth target", async () => {
