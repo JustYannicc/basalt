@@ -1,3 +1,4 @@
+import { detachFromCaller } from "../caller-signal.ts";
 import { runtimeInput } from "./input.ts";
 import { remoteRuntimeDefect, runtimeErrorResponse } from "./request-error.ts";
 import { EndpointTrace, failEndpointResponse } from "../runtime-fleet/endpoint-trace.ts";
@@ -46,6 +47,30 @@ const ActivityCount = Schema.Struct({
   active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   known: Schema.Boolean,
   stillMs: Schema.optional(Schema.Number.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+const StillRelease = Schema.Struct({
+  released: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  unstamped: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  foreignSockets: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  connections: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+});
+const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+const StillCheck = Schema.Struct({
+  refusal: Schema.NullOr(
+    Schema.Literals(["not_draining", "unknown_count", "still_moving", "live_lease"]),
+  ),
+  phase: Schema.NullOr(Schema.Literals(["open", "draining", "retiring"])),
+  active: Count,
+  known: Schema.Boolean,
+  stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  leases: Schema.Struct({
+    currentCalls: Count,
+    currentSockets: Count,
+    foreignSockets: Count,
+    unstamped: Count,
+  }),
+  connections: Schema.NullOr(Count),
 });
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
@@ -223,6 +248,14 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(identity, "activity", { identity }, signal);
     return Schema.decodeUnknownSync(ActivityCount)(await response.json());
   }
+  async checkStill(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "release-check", { identity }, signal);
+    return Schema.decodeUnknownSync(StillCheck)(await response.json());
+  }
+  async releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
+    const response = await this.call(identity, "release-still", { identity, operationId }, signal);
+    return Schema.decodeUnknownSync(StillRelease)(await response.json());
+  }
   async retirement(identity: SlotIdentity, signal: AbortSignal) {
     const response = await this.call(identity, "retirement", { identity }, signal);
     return Schema.decodeUnknownSync(RuntimeRetirementObservation)(
@@ -264,6 +297,18 @@ export class BoundSlotDriver implements SlotDriver {
     }
     return response;
   }
+}
+
+/**
+ * A cell follows its caller only for a model call it forwards to its container's model port; every
+ * control action (start, install, drain, retire and the rest) runs to its end, as before the flag.
+ */
+export function runtimeCallerSignal(request: Request): Request {
+  const model =
+    request.headers.has("X-Signalbox-Runtime-Identity") &&
+    request.headers.get("X-Signalbox-Runtime-Port") === "8317" &&
+    request.headers.get("X-Signalbox-Runtime-Read-Only") !== "1";
+  return model ? request : detachFromCaller(request);
 }
 
 /** Only the pool Worker's private DO binding can reach this transport. */
@@ -375,6 +420,21 @@ export async function runtimeRequest(
         )(value),
       );
       return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
+    } else if (action === "/release-check") {
+      const { identity } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
+      );
+      return Response.json(await endpoint.checkStill(identity));
+    } else if (action === "/release-still") {
+      const { identity, operationId } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({
+            identity: SlotIdentity,
+            operationId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9-]{1,128}$/u)),
+          }),
+        )(value),
+      );
+      return Response.json(await endpoint.releaseStill(identity, operationId, request.signal));
     } else if (action === "/drain" || action === "/activity") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),

@@ -109,3 +109,39 @@ test("a lost monitor reads running false as on the platform, and upkeep decides 
   const unwatched = await passes((f) => f.old.crash());
   assert.deepEqual(watched, unwatched);
 });
+
+test("a restart attempt that ends before it serves doesn't replace how the replaced primary ended", async (context) => {
+  quiet(context);
+  let now = Date.now();
+  context.mock.method(Date, "now", () => now);
+  const f = await fleetWorkerFixture();
+  context.after(f.cleanup);
+  await f.bootstrap();
+  const previous = f.old.identity();
+  f.old.ctx.container.signal(9);
+  await f.settle();
+  const killedAt = now;
+  now += 5_000;
+  // The first restart's container ends before it ever answers ready.
+  let failed = false;
+  f.old.hooks.health = async () => {
+    if (failed) return;
+    failed = true;
+    f.old.ctx.container.signal(9);
+    return new Response(null, { status: 503 });
+  };
+  for (let pass = 0; pass < 4; pass++) {
+    await f.upkeep();
+    await f.settle();
+    now += 5_000;
+  }
+  const inspected = (await f.send("inspect")) as {
+    selection: { active: { identity: { bootId: string } } };
+    lastEnd?: { previous: { bootId: string }; end: { at: number } } | null;
+  };
+  assert.ok(failed, "the first restart attempt ended");
+  assert.ok(f.old.calls.start >= 2, "a later attempt restarted it");
+  assert.notEqual(inspected.selection.active.identity.bootId, previous.bootId, "recovered");
+  assert.equal(inspected.lastEnd?.previous.bootId, previous.bootId);
+  assert.equal(inspected.lastEnd?.end.at, killedAt, "the replaced boot's own end");
+});

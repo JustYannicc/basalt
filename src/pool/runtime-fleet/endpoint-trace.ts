@@ -5,29 +5,9 @@ import {
 } from "../runtime-route-diagnostic.ts";
 
 export { endpointRequestId, retainEndpointRequestId } from "../runtime-route-diagnostic.ts";
+import { field, object, shape } from "../error-shape.ts";
+export { shape } from "../error-shape.ts";
 
-const names = [
-  "Error",
-  "TypeError",
-  "RangeError",
-  "SyntaxError",
-  "URIError",
-  "EvalError",
-  "AbortError",
-  "TimeoutError",
-  "InvalidStateError",
-  "NetworkError",
-  "DisconnectedError",
-] as const;
-const codes = [
-  "ABORT_ERR",
-  "ERR_DISCONNECTED",
-  "ERR_RPC_DISCONNECTED",
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "EPIPE",
-  "ETIMEDOUT",
-] as const;
 const actions = [
   "/health",
   "/start",
@@ -40,67 +20,14 @@ const actions = [
   "/install",
   "/native",
   "/retire",
+  "/release-still",
+  "/release-check",
   "/drain",
   "/retirement",
   "/failed",
 ] as const;
 const responses = new WeakMap<Response, EndpointTrace>();
 const requests = new WeakMap<Request, EndpointTrace>();
-const object = (value: unknown): value is object =>
-  value !== null && (typeof value === "object" || typeof value === "function");
-function field(error: unknown, key: string): unknown {
-  try {
-    return object(error) ? Reflect.get(error, key) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-function flag(error: unknown, key: string) {
-  const value = field(error, key);
-  return value === undefined ? null : typeof value === "boolean" ? value : "invalid";
-}
-/** Closed classes and the platform's own flags, never the exception text. */
-export function shape(error: unknown) {
-  const name = field(error, "name"),
-    code = field(error, "code"),
-    message = field(error, "message");
-  return {
-    name: names.find((value) => value === name) ?? (name === undefined ? null : "other"),
-    code:
-      codes.find((value) => value === code) ??
-      (typeof code === "number" && Number.isInteger(code) && code >= 0 && code <= 25
-        ? code
-        : code === undefined
-          ? null
-          : "other"),
-    messageClass:
-      typeof message !== "string"
-        ? "absent"
-        : /no longer active/i.test(message)
-          ? "instance_inactive"
-          : /was reset/i.test(message)
-            ? "object_reset"
-            : /connection lost/i.test(message)
-              ? "connection_lost"
-              : /disconnect|broken.*stub|broken.*capability/i.test(message)
-                ? "disconnected"
-                : /overload/i.test(message)
-                  ? "overloaded"
-                  : /abort|cancel/i.test(message)
-                    ? "aborted"
-                    : /timed?\s*out|deadline/i.test(message)
-                      ? "timeout"
-                      : /reset|refused|socket|network|transport/i.test(message)
-                        ? "transport"
-                        : "other",
-    isError: error instanceof Error,
-    disconnected: flag(error, "disconnected"),
-    retryable: flag(error, "retryable"),
-    overloaded: flag(error, "overloaded"),
-    remote: flag(error, "remote"),
-    durableObjectReset: flag(error, "durableObjectReset"),
-  };
-}
 interface Attempt {
   attempt: number;
   stub: number;
@@ -235,9 +162,27 @@ export class EndpointTrace {
       !this.attempts.some((attempt) => attempt.outcome === "error")
     )
       return;
+    const path = new URL(this.request.url).pathname;
+    // A health read its own caller deliberately aborted, as the guard's probe does at its deadline,
+    // is that caller's to report: the guard keeps its own outcome and elapsed time. It is decided on
+    // the abort's reason, so the outcome doesn't depend on which promise settles first: a timeout
+    // signal's reason is a TimeoutError and always logs, and so does a send that failed first.
+    const reason: unknown = this.request.signal.reason;
+    if (
+      path === "/health" &&
+      !(result instanceof Response) &&
+      this.request.signal.aborted &&
+      reason instanceof DOMException &&
+      reason.name === "AbortError" &&
+      this.attempts.every(
+        (attempt) =>
+          attempt.outcome === "pending" ||
+          (attempt.outcome === "error" && attempt.error?.name === "AbortError"),
+      )
+    )
+      return;
     this.logged = true;
     if (object(result)) correlateEndpointRequest(result, this.requestId);
-    const path = new URL(this.request.url).pathname;
     console.error(
       "POOL_RUNTIME_ENDPOINT_FAILURE",
       JSON.stringify({

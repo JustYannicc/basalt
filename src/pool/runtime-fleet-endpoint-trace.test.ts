@@ -449,3 +449,89 @@ test("each send records its own elapsed time, and a send the caller abandoned re
   defect.finish(response);
   assert.equal(JSON.parse(log.mock.calls[1]!.arguments[1]).attempts[0].refusal, undefined);
 });
+
+test("a health read its own caller aborted logs no endpoint failure; any other aborted call still does", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const aborted = async (path: string) => {
+    const caller = new AbortController();
+    const trace = new EndpointTrace(
+      new Request(`http://runtime${path}`, { method: "POST", signal: caller.signal }),
+      "test-slot",
+      "test-cell",
+    );
+    caller.abort(new DOMException("The probe's deadline passed", "AbortError"));
+    const error = caller.signal.reason;
+    await assert.rejects(
+      trace.send(1, async () => {
+        throw error;
+      }),
+    );
+    trace.finish(error);
+  };
+  await aborted("/health");
+  assert.equal(log.mock.callCount(), 0);
+  await aborted("/warm");
+  assert.equal(log.mock.callCount(), 1);
+  // A health read that failed without its caller giving up is still the endpoint's failure.
+  const trace = new EndpointTrace(
+    new Request("http://runtime/health", { method: "POST" }),
+    "test-slot",
+    "test-cell",
+  );
+  const reset = new Error("connection reset");
+  await assert.rejects(
+    trace.send(1, async () => {
+      throw reset;
+    }),
+  );
+  trace.finish(reset);
+  assert.equal(log.mock.callCount(), 2);
+  assert.equal(JSON.parse(log.mock.calls[1]!.arguments[1]).path, "/health");
+});
+
+test("the guard's probe giving up on a health read through the driver writes no endpoint failure", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");
+  const { slotIdentity } = await import("../../scripts/pool-tests/runtime-slots-fixture.ts");
+  const entered = Promise.withResolvers<void>();
+  // The endpoint answers only when the caller gives up, as a slow health read does.
+  const driver = new BoundSlotDriver(() => ({
+    fetch: (request) =>
+      new Promise<Response>((_, reject) => {
+        entered.resolve();
+        request.signal.addEventListener("abort", () => reject(request.signal.reason));
+      }),
+  }));
+  const probe = new AbortController();
+  const work = driver.health(slotIdentity("primary"), probe.signal);
+  await entered.promise;
+  probe.abort();
+  await assert.rejects(work, { name: "AbortError" });
+  assert.equal(log.mock.callCount(), 0);
+});
+
+test("a health read that timed out logs whichever settles first, so only a deliberate abort is exempt", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const timedOut = (send: (reason: DOMException) => Promise<Response>) => {
+    const timeout = new AbortController();
+    const reason = new DOMException("The operation timed out", "TimeoutError");
+    const trace = new EndpointTrace(
+      new Request("http://runtime/health", { method: "POST", signal: timeout.signal }),
+      "test-slot",
+      "test-cell",
+    );
+    const sent = trace.send(1, () => send(reason)).catch(() => {});
+    timeout.abort(reason);
+    return { trace, reason, sent };
+  };
+  // The caller's timeout settles first, with the send still pending.
+  const pending = timedOut(() => new Promise<Response>(() => {}));
+  pending.trace.finish(pending.reason);
+  // The send rejects with the timeout first.
+  const rejected = timedOut(async (reason) => {
+    throw reason;
+  });
+  await rejected.sent;
+  rejected.trace.finish(rejected.reason);
+  assert.equal(log.mock.callCount(), 2);
+});

@@ -31,6 +31,7 @@ import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
 import { awaitProbe } from "../availability.ts";
 import { RuntimeForcedRestart } from "./forced-restart.ts";
+import { RecoveryRecords } from "./recovery-record.ts";
 import { recoveryWarmMs, restartStartBoundMs } from "./forced-restart-timing.ts";
 import type { UnservingState } from "./unserving-clock.ts";
 
@@ -51,10 +52,22 @@ const Retained = Schema.Struct({
 });
 const PrimaryEnd = Schema.Struct({ previous: SlotIdentity, end: RuntimeEnd });
 const isPrimaryEnd = Schema.is(PrimaryEnd);
-/** How the last primary a recovery replaced had ended, for the controller inspect. */
+/** How the last primary a recovery restarted had ended, for the controller inspect. */
 export async function primaryLastEnd(storage: { get(key: string): Promise<unknown> }) {
   const value = await storage.get(primaryEndKey);
   return isPrimaryEnd(value) ? value : null;
+}
+/**
+ * A boot's own end is the first one recovery reads for it. A restart attempt that ends before it
+ * serves ends a container too, and must not replace it: the record keeps the boot's end until a
+ * later boot ends in its turn.
+ */
+async function keepFirstEnd(transaction: SlotStorage, previous: SlotIdentity, end: unknown) {
+  const ended = readEnd(end);
+  if (!ended) return;
+  const kept = await transaction.get(primaryEndKey);
+  if (isPrimaryEnd(kept) && sameIdentity(kept.previous, previous)) return;
+  await transaction.put(primaryEndKey, { previous, end: ended });
 }
 interface Dependencies {
   storage: RuntimeSlotStorage;
@@ -81,9 +94,11 @@ export class RuntimeSlotRecovery {
   /** A pass found nothing it can do until a person acts; it ends once a pass starts the root. */
   private stalled = false;
   private forced: RuntimeForcedRestart;
+  private records: RecoveryRecords;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.forced = new RuntimeForcedRestart(deps.storage, deps.driver);
+    this.records = new RecoveryRecords(deps.storage);
   }
   available() {
     return !this.unavailable;
@@ -121,7 +136,16 @@ export class RuntimeSlotRecovery {
   }
   private async run() {
     const signal = AbortSignal.timeout(runtimeRecoveryBudgetMs);
-    await awaitProbe(() => this.runWithin(signal), signal);
+    // This pass's own: a pass abandoned at its budget can't count against the next one.
+    const pass: { round?: number } = {};
+    try {
+      await awaitProbe(() => this.runWithin(signal, pass), signal);
+    } catch (error) {
+      // The record is a diagnostic: its write never changes what the round did.
+      if (pass.round !== undefined)
+        await this.records.refused(pass.round, Date.now(), error).catch(() => {});
+      throw error;
+    }
   }
   private async finish(identity: SlotIdentity, fingerprint: string, signal: AbortSignal) {
     const before = await this.deps.storage.inspect();
@@ -156,6 +180,7 @@ export class RuntimeSlotRecovery {
       at: Date.now(),
       slot: identity.slotId,
     });
+    await this.records.ready(Date.now()).catch(() => {});
   }
   /** A boot handed back by an unfence that answers again serves once current policies reach it. */
   private async proveHandedBack(identity: SlotIdentity, snapshot: SlotSnapshot) {
@@ -172,7 +197,7 @@ export class RuntimeSlotRecovery {
       });
     });
   }
-  private async runWithin(signal: AbortSignal) {
+  private async runWithin(signal: AbortSignal, pass: { round?: number }) {
     const { storage, driver, provider, code, key } = this.deps;
     const completion = await storage.transact(async (_, transaction) =>
       transaction.get(completionKey),
@@ -232,6 +257,7 @@ export class RuntimeSlotRecovery {
       this.unavailable = false;
       this.restored();
       await this.forced.clock.serving();
+      await this.records.ready(Date.now()).catch(() => {});
       return;
     } catch (error) {
       this.unavailable = true;
@@ -242,6 +268,7 @@ export class RuntimeSlotRecovery {
       at: Date.now(),
       slot: previous.slotId,
     });
+    pass.round = await this.records.round(previous, Date.now()).catch(() => undefined);
     this.restoring(await this.forced.refused());
     retiredDenials(snapshot);
     let retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
@@ -342,7 +369,7 @@ export class RuntimeSlotRecovery {
       );
     };
     // Compare before admission and again at commit; a promotion or policy edit cannot be overwritten.
-    await storage.transact(async (current) => {
+    await storage.transact(async (current, transaction) => {
       if (
         current.selection?.epoch !== selection.epoch ||
         !sameIdentity(current.selection.active.identity, previous) ||
@@ -350,6 +377,8 @@ export class RuntimeSlotRecovery {
       )
         throw new SlotRefused("selection");
       retiredDenials(current);
+      // Before any restart of this round can end a container of its own.
+      await keepFirstEnd(transaction, previous, retained.end);
     });
     if (!retained.running) {
       await driver.admit(previous, await envelope(false));
@@ -413,8 +442,7 @@ export class RuntimeSlotRecovery {
         identity: health.identity,
         fingerprint: original.configurationFingerprint,
       });
-      const previousEnd = readEnd(retained.end);
-      if (previousEnd) await transaction.put(primaryEndKey, { previous, end: previousEnd });
+      await keepFirstEnd(transaction, previous, retained.end);
     });
     await this.finish(health.identity, original.configurationFingerprint, signal);
   }

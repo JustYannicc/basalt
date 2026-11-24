@@ -91,6 +91,32 @@ export const CaptureHours = Schema.Struct({
   stalestCheckedAt: Schema.optional(Schema.NullOr(Schema.String)),
   pendingBlocks: Schema.optional(Schema.NullOr(Schema.Number)),
   planMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  byPool: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        ordinal: Schema.Number,
+        pendingBlocks: Schema.NullOr(Schema.Number),
+        pendingHours: Schema.NullOr(Schema.Number),
+        slow: Schema.Array(
+          Schema.Struct({
+            hour: Schema.String,
+            until: Schema.NullOr(Schema.String),
+            repeat: Schema.NullOr(Schema.Number),
+          }),
+        ),
+        lastSlow: Schema.NullOr(
+          Schema.Struct({
+            at: Schema.NullOr(Schema.String),
+            hour: Schema.String,
+            block: Schema.NullOr(Schema.String),
+            limit: Schema.NullOr(Schema.Literals(["count", "read"])),
+            elapsedMs: Schema.NullOr(Schema.Number),
+            repeat: Schema.NullOr(Schema.Number),
+          }),
+        ),
+      }),
+    ),
+  ),
   recountPosition: Schema.optional(
     Schema.NullOr(
       Schema.Struct({
@@ -110,6 +136,7 @@ const Inspect = Schema.Struct({
       ),
     ),
     lastEnd: Schema.optional(Schema.Unknown),
+    lastRecovery: Schema.optional(Schema.Unknown),
     // Decoded apart, leniently: a diagnostic must never block the fleet lane's other modes.
     usageRollup: Schema.optional(Schema.Unknown),
     captureHours: Schema.optional(Schema.Unknown),
@@ -176,6 +203,39 @@ async function read(access: ControllerAccess, action: Record<string, unknown>) {
 // Lenient: a newer controller may add fields; only the ones decoded here decide anything.
 export const inspectController = async (access: ControllerAccess) =>
   Schema.decodeUnknownSync(Inspect)(await read(access, { action: "inspect" })).result;
+
+const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+// Lenient like inspect: only the closed fields decoded here are printed.
+const RetireCheck = Schema.Struct({
+  result: Schema.Struct({
+    wouldProceed: Schema.Boolean,
+    refusal: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-z_]{1,40}$/u))),
+    matches: Count,
+    key: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{24}$/u))),
+    ordinal: Schema.optional(Schema.NullOr(Count)),
+    phase: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z]{1,20}$/u))),
+    ledger: Schema.optional(Count),
+    ledgerStillMs: Schema.optional(Schema.Number),
+    cell: Schema.optional(Schema.NullOr(Count)),
+    cellStillMs: Schema.optional(Schema.NullOr(Schema.Number)),
+    leases: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          currentCalls: Count,
+          currentSockets: Count,
+          foreignSockets: Count,
+          unstamped: Count,
+        }),
+      ),
+    ),
+    connections: Schema.optional(Schema.NullOr(Count)),
+  }),
+});
+
+/** fleet-retire's refusal tests and the cell's connection read for one row; nothing is changed. */
+export const checkRetire = async (access: ControllerAccess, key: string) =>
+  Schema.decodeUnknownSync(RetireCheck)(await read(access, { action: "fleet-retire-check", key }))
+    .result;
 
 export const inspectFleet = async (access: ControllerAccess, operationId?: string) =>
   Schema.decodeUnknownSync(FleetInspect)(

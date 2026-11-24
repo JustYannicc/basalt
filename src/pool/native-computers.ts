@@ -143,6 +143,9 @@ export class NativeComputers {
   sync(registry: Registry) {
     this.streams.sync(registry);
   }
+  wasCut(call: string) {
+    return this.streams.wasCut(call);
+  }
   /**
    * A keyless `issuing` native row is an approval with models whose mint failed before the pool
    * answered: the host records such a grant only after that answer, so it never recorded this one,
@@ -505,21 +508,28 @@ export class NativeComputers {
       return this.streams.acquire(computer.id, computer.pool, request.signal);
     });
   }
-  async model(request: Request) {
+  /** `call` names the model call, so a deliberate end of its lease is remembered. */
+  async model(request: Request, call?: string) {
     const value = await this.assertion(request.headers.get(nativeModelHeader), nativeModelPrefix);
     const url = new URL(request.url);
     if (value.method !== request.method || value.path !== url.pathname + url.search)
       return fail(401, "unauthorized", "The native assertion belongs to another request.");
     const caller = identity(value);
-    const first = await this.forward(request, url, value, caller);
+    const first = await this.forward(request, url, value, caller, call);
     if (!(first instanceof KeyRequest)) return first;
     await this.provision(first).catch((error: unknown) => {
       console.error("Native model key could not be minted", homeFailure(error));
     });
-    const second = await this.forward(request, url, value, caller);
+    const second = await this.forward(request, url, value, caller, call);
     return second instanceof KeyRequest ? modelsUnavailable() : second;
   }
-  private forward(request: Request, url: URL, value: Record<string, unknown>, caller: Identity) {
+  private forward(
+    request: Request,
+    url: URL,
+    value: Record<string, unknown>,
+    caller: Identity,
+    call?: string,
+  ) {
     return this.deps.run(async (registry) => {
       const { computer, owner } = await this.admitted(registry, caller);
       if (!computer.native?.models)
@@ -531,7 +541,7 @@ export class NativeComputers {
         keyIdentity(computer),
         this.deps.previousSigningKey,
       );
-      const lease = this.streams.acquire(computer.id, computer.pool, request.signal);
+      const lease = this.streams.acquire(computer.id, computer.pool, request.signal, call);
       const headers = new Headers(request.headers);
       for (const name of [
         nativeModelHeader,

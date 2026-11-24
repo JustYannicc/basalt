@@ -23,8 +23,19 @@ import {
   type FleetFailureRead,
 } from "../../src/pool/runtime-fleet/failure-record.ts";
 import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
+import { RecoveryRecord } from "../../src/pool/runtime-slots/recovery-record.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
-import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
+import {
+  checkRetireRow,
+  codeMismatch,
+  configureFleet,
+  configureOperationId,
+  disableFleet,
+  retireRow,
+  step,
+  untilSettled,
+  waitForReadyCell,
+} from "./operations.ts";
 
 export const modes = [
   "inspect",
@@ -33,6 +44,8 @@ export const modes = [
   "accept",
   "crash-cell",
   "bookmark",
+  "retire-row",
+  "retire-check",
 ] as const;
 type Mode = (typeof modes)[number];
 const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
@@ -41,6 +54,10 @@ export interface DispatchInput {
   mode: string;
   go: string;
   active?: string;
+  /** retire-row and retire-check only: the row's key from the lane's inspect. */
+  key?: string;
+  /** configure-and-accept only: the growth target to configure, 1 to 100,000. */
+  targetActive?: string;
   ref: string;
   event: string;
 }
@@ -87,6 +104,26 @@ const iso = (at: number) => {
   const date = new Date(at);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
+/** A word from the Worker's closed vocabulary; anything else, from any version, prints as other. */
+const word = (value: string) => (/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value) ? value : "other");
+/** The root's last recovery: when detected and ready, its rounds, and each kept round's refusal. */
+const recoverySummary = (value: unknown) =>
+  Option.getOrNull(
+    Option.map(Schema.decodeUnknownOption(RecoveryRecord)(value), (record) => ({
+      key: shortHash(record.boot),
+      detectedAt: iso(record.detectedAt),
+      readyAt: record.readyAt === null ? null : iso(record.readyAt),
+      rounds: record.rounds,
+      refusals: record.refusals.map((refusal) => ({
+        round: refusal.round,
+        at: iso(refusal.at),
+        reason: word(refusal.reason),
+        step: refusal.step === undefined ? null : word(refusal.step),
+        class: word(refusal.class),
+        provider: refusal.provider === undefined ? null : word(refusal.provider),
+      })),
+    })),
+  );
 /** The cell's own readiness record behind a read, decoded again so only closed values print. */
 const readySummary = (value: unknown) => {
   const ready = decodeReadySignals(value);
@@ -149,6 +186,8 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
         enabled: fleet.permission.enabled,
         revision: fleet.permission.configuration.revision,
         active: fleet.permission.configuration.active,
+        targetActive: fleet.permission.configuration.targetActive,
+        maximum: fleet.permission.configuration.maximum,
       }
     : null,
   inForce: fleet.inForce ?? null,
@@ -178,6 +217,17 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
 const needAcceptance = ({ acceptance }: DispatchDependencies) =>
   acceptance instanceof FleetLaneRefused ? Effect.fail(acceptance) : Effect.succeed(acceptance);
 
+/**
+ * The GO is the gate. A model socket can outlive the isolate that took its lease, so the cell's own
+ * read of its open connections is said plainly whenever it doesn't show the cell idle.
+ */
+const connectionWarning = (connections: number | null | undefined) =>
+  connections === 0
+    ? null
+    : typeof connections === "number"
+      ? `${connections} connections are open on this cell; the override may cut them`
+      : "the connection read failed; nothing proves this cell is idle";
+
 const program = (input: DispatchInput, deps: DispatchDependencies) =>
   Effect.gen(function* () {
     if (!modes.includes(input.mode as Mode))
@@ -194,7 +244,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         ),
       );
     if (
-      ["configure-and-accept", "disable", "crash-cell", "bookmark"].includes(mode) &&
+      ["configure-and-accept", "disable", "crash-cell", "bookmark", "retire-row"].includes(mode) &&
       !goPattern.test(input.go)
     )
       return yield* Effect.fail(
@@ -202,6 +252,21 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           "coordinator-go-missing",
           `mode ${mode} changes production and needs a go matching ${goPattern.source}.`,
           "Ask the coordinator for a literal GO and pass it as the go input.",
+        ),
+      );
+    // The bounds src/pool/runtime-fleet/configuration.ts accepts for targetActive.
+    const targetActive = input.targetActive ? Number(input.targetActive) : undefined;
+    if (
+      input.targetActive &&
+      (mode !== "configure-and-accept" ||
+        !/^[1-9][0-9]{0,5}$/u.test(input.targetActive) ||
+        targetActive! > 100_000)
+    )
+      return yield* Effect.fail(
+        refuse(
+          "target-active-invalid",
+          `target-active "${input.targetActive.slice(0, 12)}" must be an integer from 1 to 100000, and only configure-and-accept takes it.`,
+          "Leave it empty to keep the configured value, or pass one in range with configure-and-accept.",
         ),
       );
     if (input.active && input.active !== "blue" && input.active !== "green")
@@ -215,16 +280,23 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     const worker = yield* poolWorkerName(deps.cloudflare);
     const access = deps.controller(worker);
     const evidence: Record<string, unknown> = { controllerCode: access.code };
+    // configure-and-accept may run right after a deploy: every read before its send shares one wait
+    // for the controller's code handover.
+    const settle = { clock: { sleep: deps.sleep, now: deps.now }, from: deps.now() };
     // Signing uses this checkout's generated code (git HEAD at prepare time); say so when it is stale.
-    const probe = yield* Effect.result(call(() => inspectController(access)));
+    const probe = yield* Effect.result(
+      mode === "configure-and-accept"
+        ? untilSettled(
+            settle,
+            access,
+            step("probe", () => inspectController(access)).pipe(Effect.map((value) => ({ value }))),
+          )
+        : call(() => inspectController(access)),
+    );
     if (Result.isFailure(probe))
       return yield* Effect.fail(
         /slot_identity/u.test(describeError(probe.failure))
-          ? refuse(
-              "controller-code-mismatch",
-              `The controller refused inspect signed for candidate ${access.code.candidate}; the live PoolWorker runs code built from another commit.`,
-              "Dispatch from the main commit the last release deployed, or release main first.",
-            )
+          ? codeMismatch(access, false)
           : probe.failure,
       );
     const read = () =>
@@ -245,6 +317,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               ? (entry.previous as Record<string, unknown>).bootId
               : undefined,
           ),
+          // The root's last recovery; its key is the restarted boot's short hash, as lastEnd's.
+          lastRecovery: recoverySummary(view.lastRecovery),
           // The pool's expiry alert refused by Sentry (spent quota, a rate limit) or, with no
           // lastStatus, never reaching it.
           alertDelivery: view.alertDelivery
@@ -277,6 +351,28 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       return { ...evidence, acceptance, ...(yield* read()) };
     }
     if (mode === "disable") return { ...evidence, disable: yield* disableFleet(access, input.go) };
+    if (mode === "retire-row") {
+      const key = input.key ?? "";
+      const named = (fleet: ReturnType<typeof fleetSummary>) =>
+        fleet.rows.filter((row) => row.key.startsWith(key));
+      const before = named((yield* read()).fleet);
+      const retired = yield* retireRow(access, input.go, key);
+      const warning = connectionWarning(retired.overrode?.connections);
+      if (warning) deps.log(`WARNING ${warning}`);
+      return { ...evidence, before, retired, warning, after: named((yield* read()).fleet) };
+    }
+    if (mode === "retire-check") {
+      const check = yield* checkRetireRow(access, input.key ?? "");
+      deps.log(
+        check.wouldProceed
+          ? "retire-row would proceed"
+          : `retire-row would be refused: ${check.refusal}`,
+      );
+      deps.log(check.leaseOwner);
+      const warning = check.phase === "draining" ? connectionWarning(check.connections) : null;
+      if (warning) deps.log(`WARNING ${warning}`);
+      return { ...evidence, check, warning };
+    }
     if (mode === "bookmark")
       return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };
     const acceptance = yield* needAcceptance(deps);
@@ -320,7 +416,28 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         }),
       };
     }
-    // configure-and-accept stands alone: any failure after a send disables, then proves the root.
+    // A rerun under the same GO only inspects, so another target would silently not apply. It is
+    // refused here, before anything is sent.
+    if (targetActive !== undefined) {
+      const retained = (yield* untilSettled(
+        settle,
+        access,
+        step("inspect", () => inspectFleet(access, configureOperationId(input.go))).pipe(
+          Effect.map((value) => ({ value })),
+        ),
+      )).permission;
+      if (retained && retained.configuration.targetActive !== targetActive)
+        return yield* Effect.fail(
+          refuse(
+            "target-active-differs",
+            `This GO already configured targetActive ${retained.configuration.targetActive}; ${targetActive} was not applied.`,
+            "A new target needs a new GO.",
+          ),
+        );
+    }
+    // configure-and-accept stands alone: any failure once this run sent or holds a configuration
+    // disables, then proves the root. A failure before that leaves a fleet it never touched alone.
+    let touched = false;
     const attempt = yield* Effect.result(
       Effect.gen(function* () {
         const configured = yield* configureFleet({
@@ -328,7 +445,13 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           controller: access,
           go: input.go,
           active: input.active as "blue" | "green" | undefined,
+          ...(targetActive ? { targetActive } : {}),
+          settle,
+          sending: () => {
+            touched = true;
+          },
         });
+        touched = true;
         evidence.configure = configured;
         evidence.ready = yield* waitForReadyCell({
           controller: access,
@@ -342,6 +465,10 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     );
     if (Result.isSuccess(attempt)) return { ...evidence, ...(yield* read()) };
     const cause = describeError(attempt.failure);
+    if (!touched) {
+      deps.log(`configure_and_accept status=failed before any send; the fleet is as it was`);
+      return yield* Effect.fail({ cause, rollback: { skipped: "nothing-sent" }, evidence });
+    }
     deps.log(`configure_and_accept status=failed; disabling the fleet`);
     const rollback = yield* Effect.result(
       Effect.gen(function* () {
