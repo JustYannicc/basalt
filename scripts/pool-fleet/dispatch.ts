@@ -23,6 +23,7 @@ import {
   type FleetFailureRead,
 } from "../../src/pool/runtime-fleet/failure-record.ts";
 import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
+import { RecoveryRecord } from "../../src/pool/runtime-slots/recovery-record.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import {
   checkRetireRow,
@@ -100,6 +101,26 @@ const iso = (at: number) => {
   const date = new Date(at);
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
+/** A word from the Worker's closed vocabulary; anything else, from any version, prints as other. */
+const word = (value: string) => (/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(value) ? value : "other");
+/** The root's last recovery: when detected and ready, its rounds, and each kept round's refusal. */
+const recoverySummary = (value: unknown) =>
+  Option.getOrNull(
+    Option.map(Schema.decodeUnknownOption(RecoveryRecord)(value), (record) => ({
+      key: shortHash(record.boot),
+      detectedAt: iso(record.detectedAt),
+      readyAt: record.readyAt === null ? null : iso(record.readyAt),
+      rounds: record.rounds,
+      refusals: record.refusals.map((refusal) => ({
+        round: refusal.round,
+        at: iso(refusal.at),
+        reason: word(refusal.reason),
+        step: refusal.step === undefined ? null : word(refusal.step),
+        class: word(refusal.class),
+        provider: refusal.provider === undefined ? null : word(refusal.provider),
+      })),
+    })),
+  );
 /** The cell's own readiness record behind a read, decoded again so only closed values print. */
 const readySummary = (value: unknown) => {
   const ready = decodeReadySignals(value);
@@ -286,6 +307,8 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
               ? (entry.previous as Record<string, unknown>).bootId
               : undefined,
           ),
+          // The root's last recovery; its key is the restarted boot's short hash, as lastEnd's.
+          lastRecovery: recoverySummary(view.lastRecovery),
           // The pool's expiry alert refused by Sentry (spent quota, a rate limit) or, with no
           // lastStatus, never reaching it.
           alertDelivery: view.alertDelivery

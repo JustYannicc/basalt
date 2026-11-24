@@ -83,6 +83,8 @@ export interface HarnessOptions {
   usageRollup?: unknown;
   /** What the controller's inspect reports for the pool's own capture-hour counts. */
   captureHours?: unknown;
+  /** What the controller's inspect reports as the root's last recovery. */
+  lastRecovery?: unknown;
   /** While true, the controller still holds blue's image input from before the settings' deploy. */
   bindingsLag?: () => boolean;
   /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
@@ -358,6 +360,7 @@ export async function harness(options: HarnessOptions = {}) {
     recoveryState: async () => ({ restarts: [] }),
     // `inspect` reports how the last replaced primary ended; this double replaced none.
     primaryEnd: async () => null,
+    lastRecovery: async () => options.lastRecovery ?? null,
     resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
   const connect: PoolOperationsTarget["connect"] = async () => ({

@@ -110,6 +110,7 @@ const Inspect = Schema.Struct({
       ),
     ),
     lastEnd: Schema.optional(Schema.Unknown),
+    lastRecovery: Schema.optional(Schema.Unknown),
     // Decoded apart, leniently: a diagnostic must never block the fleet lane's other modes.
     usageRollup: Schema.optional(Schema.Unknown),
     captureHours: Schema.optional(Schema.Unknown),

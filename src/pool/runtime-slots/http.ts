@@ -194,6 +194,7 @@ export async function handleRuntimeHandoff(
           ...(await handoff.slots.inspect()),
           recovery: await handoff.recoveryState(),
           lastEnd: await handoff.primaryEnd().catch(() => null),
+          lastRecovery: await handoff.lastRecovery().catch(() => null),
           // A diagnostic: its read failing must not fail the inspect release flows rely on.
           alertDelivery: (await alertDelivery?.().catch(() => undefined)) ?? null,
           // So is the backfill's state, which a blind monitor would otherwise keep from everyone.

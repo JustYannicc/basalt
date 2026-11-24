@@ -31,6 +31,7 @@ import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
 import { awaitProbe } from "../availability.ts";
 import { RuntimeForcedRestart } from "./forced-restart.ts";
+import { RecoveryRecords } from "./recovery-record.ts";
 import { recoveryWarmMs, restartStartBoundMs } from "./forced-restart-timing.ts";
 import type { UnservingState } from "./unserving-clock.ts";
 
@@ -93,9 +94,13 @@ export class RuntimeSlotRecovery {
   /** A pass found nothing it can do until a person acts; it ends once a pass starts the root. */
   private stalled = false;
   private forced: RuntimeForcedRestart;
+  private records: RecoveryRecords;
+  /** This pass's round of the open recovery, once it found the root not serving. */
+  private round?: number;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.forced = new RuntimeForcedRestart(deps.storage, deps.driver);
+    this.records = new RecoveryRecords(deps.storage);
   }
   available() {
     return !this.unavailable;
@@ -133,7 +138,15 @@ export class RuntimeSlotRecovery {
   }
   private async run() {
     const signal = AbortSignal.timeout(runtimeRecoveryBudgetMs);
-    await awaitProbe(() => this.runWithin(signal), signal);
+    this.round = undefined;
+    try {
+      await awaitProbe(() => this.runWithin(signal), signal);
+    } catch (error) {
+      // The record is a diagnostic: its write never changes what the round did.
+      if (this.round !== undefined)
+        await this.records.refused(this.round, Date.now(), error).catch(() => {});
+      throw error;
+    }
   }
   private async finish(identity: SlotIdentity, fingerprint: string, signal: AbortSignal) {
     const before = await this.deps.storage.inspect();
@@ -168,6 +181,7 @@ export class RuntimeSlotRecovery {
       at: Date.now(),
       slot: identity.slotId,
     });
+    await this.records.ready(Date.now()).catch(() => {});
   }
   /** A boot handed back by an unfence that answers again serves once current policies reach it. */
   private async proveHandedBack(identity: SlotIdentity, snapshot: SlotSnapshot) {
@@ -244,6 +258,7 @@ export class RuntimeSlotRecovery {
       this.unavailable = false;
       this.restored();
       await this.forced.clock.serving();
+      await this.records.ready(Date.now()).catch(() => {});
       return;
     } catch (error) {
       this.unavailable = true;
@@ -254,6 +269,7 @@ export class RuntimeSlotRecovery {
       at: Date.now(),
       slot: previous.slotId,
     });
+    this.round = await this.records.round(previous, Date.now()).catch(() => undefined);
     this.restoring(await this.forced.refused());
     retiredDenials(snapshot);
     let retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
