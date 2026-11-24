@@ -162,12 +162,7 @@ import {
   HandoverCount,
   handoverRefusal,
 } from "./code-handover.ts";
-import {
-  resumeGone,
-  resumeRoute,
-  toLayer,
-  type StreamResumeInput,
-} from "./stream-resume.ts";
+import { resumeGone, resumeRoute, toLayer, type StreamResumeInput } from "./stream-resume.ts";
 import { governedResume } from "./resume-admission.worker.ts";
 import { boundedLog } from "./bounded-log.ts";
 import { resumedTerminal } from "./terminal-recording.worker.ts";
