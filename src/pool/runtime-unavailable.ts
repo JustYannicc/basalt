@@ -1,3 +1,4 @@
+import { streamTerminalTypes } from "./stream-splice.ts";
 import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
 import { retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
@@ -45,10 +46,11 @@ export function nativeRuntimeStream(
     responses = path.endsWith("/responses");
   if (!claude && !responses) return response;
   const reader = response.body.getReader();
-  // The router resumes from the bytes delivered, so a leading BOM must pass through as it came.
+  // The answer's own bytes pass on unchanged: the router resumes from the bytes delivered, so a
+  // re-encoded invalid byte or a dropped BOM would move its offset. Text is decoded only to watch.
   const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }),
     encoder = new TextEncoder();
-  let pending = "",
+  let pending: Uint8Array = new Uint8Array(),
     ended = false,
     cancelled = false,
     passthrough = false,
@@ -66,13 +68,7 @@ export function nativeRuntimeStream(
           event &&
           typeof event === "object" &&
           "type" in event &&
-          [
-            "response.completed",
-            "response.failed",
-            "response.incomplete",
-            "message_stop",
-            "error",
-          ].includes(String(event.type))
+          streamTerminalTypes.has(String(event.type))
         )
           terminal = true;
       } catch {}
@@ -89,40 +85,38 @@ export function nativeRuntimeStream(
             const next = await reader.read();
             if (cancelled) return;
             if (passthrough) {
-              const text = next.done
-                ? decoder.decode()
-                : decoder.decode(next.value, { stream: true });
-              if (text) controller.enqueue(encoder.encode(text));
               if (next.done) {
                 ended = true;
                 controller.close();
+                return;
               }
-              if (text || next.done) return;
+              if (next.value.byteLength) return controller.enqueue(next.value);
               continue;
             }
             if (next.done) {
               if (!terminal) throw new Error("Native stream ended before completion");
               ended = true;
-              if (pending) controller.enqueue(encoder.encode(pending + decoder.decode()));
+              if (pending.byteLength) controller.enqueue(pending);
               controller.close();
               return;
             }
-            const scanned = pending.length;
-            pending += decoder.decode(next.value, { stream: true });
-            const boundary = /(?:\r?\n){2}/g;
-            // Earlier text holds no boundary, so only a separator reaching back into it is new.
-            boundary.lastIndex = Math.max(0, scanned - 3);
-            let end = 0;
-            for (const match of pending.matchAll(boundary)) end = match.index + match[0].length;
+            const scanned = pending.byteLength;
+            const joined = new Uint8Array(scanned + next.value.byteLength);
+            joined.set(pending);
+            joined.set(next.value, scanned);
+            pending = joined;
+            // Earlier bytes hold no boundary, so only a separator reaching back into them is new.
+            const end = lastBoundary(pending, Math.max(0, scanned - 3));
             if (end) {
-              observe(pending.slice(0, end));
-              controller.enqueue(encoder.encode(pending.slice(0, end)));
+              const frames = pending.slice(0, end);
+              observe(decoder.decode(frames));
+              controller.enqueue(frames);
               pending = pending.slice(end);
             }
-            if (pending.length > parsedCharacters) {
+            if (pending.byteLength > parsedCharacters) {
               // Holding and rescanning one endless event would grow memory and time with its square.
-              controller.enqueue(encoder.encode(pending));
-              pending = "";
+              controller.enqueue(pending);
+              pending = new Uint8Array();
               passthrough = true;
               return;
             }
@@ -174,4 +168,18 @@ export function nativeRuntimeStream(
     }),
     { status: response.status, statusText: response.statusText, headers },
   );
+}
+
+/**
+ * Where the last complete event ends in these bytes: after a blank line, `\n` or `\r\n` twice.
+ * Line endings are ASCII, so they are found in the bytes themselves, whatever the text holds.
+ */
+function lastBoundary(bytes: Uint8Array, from: number) {
+  let end = 0;
+  for (let index = from; index < bytes.length; index++) {
+    if (bytes[index] !== 0x0a) continue;
+    if (bytes[index + 1] === 0x0a) end = index + 2;
+    else if (bytes[index + 1] === 0x0d && bytes[index + 2] === 0x0a) end = index + 3;
+  }
+  return end;
 }

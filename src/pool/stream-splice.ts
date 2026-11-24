@@ -30,6 +30,19 @@ export const streamResumeWindowMs = 20_000;
 export const streamResumeCuts = 5;
 export const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const internalHeaders = [streamResumeHeader, streamResumeTargetHeader, streamResumeStateHeader];
+/**
+ * The events that end a messages or responses stream, for the entry's retry terminal and the
+ * router's cut judge alike. `response.done` is what some providers' executors pass through
+ * unchanged; the pool's own framer counts it as the end.
+ */
+export const streamTerminalTypes: ReadonlySet<string> = new Set([
+  "message_stop",
+  "response.completed",
+  "response.done",
+  "response.failed",
+  "response.incomplete",
+  "error",
+]);
 /** The opaque value a resume hands back; only its shape is checked before the pool decodes it. */
 export const resumeTargetShape = /^(?:primary|runtime:[A-Za-z0-9_-]{1,4096})$/;
 

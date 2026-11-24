@@ -334,7 +334,7 @@ test("a finished stream is never taken for a cut, whatever follows its terminal 
   }
 });
 
-test("a chat completions stream is not judged by its end, only by a failed read", async () => {
+test("a chat completions stream that ends with an error object is whole", async () => {
   const text =
     'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"error":{"message":"x"}}\n\n';
   const result = await cuttingPool(text, [9], { path: "/v1/chat/completions" });
@@ -506,4 +506,47 @@ test("a stamp that does not open leaves the answer untouched: wrong key, expired
     assert.equal(await response.text(), frames, label);
     assert.equal(resumes, 0, label);
   }
+});
+
+test("a chat completions stream cut before [DONE] is resumed; one that ends with [DONE] is whole", async () => {
+  const text =
+    'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"choices":[{"delta":{"content":" there"}}]}\n\ndata: [DONE]\n\n';
+  const whole = encoder.encode(text).byteLength;
+  const finished = await cuttingPoolBytes(text, [whole], "/v1/chat/completions");
+  assert.equal(finished.text, text);
+  assert.equal(finished.resumes.length, 0);
+  const cut = await cuttingPoolBytes(text, [whole - 14], "/v1/chat/completions");
+  assert.equal(cut.text, text);
+  assert.equal(cut.resumes.length, 1);
+});
+
+test("response.done ends a responses stream", async () => {
+  const text =
+    shapes.responses.slice(0, 3).join("") +
+    'event: response.done\ndata: {"type":"response.done","response":{}}\n\n';
+  const result = await cuttingPoolBytes(text, [encoder.encode(text).byteLength], "/v1/responses");
+  assert.equal(result.text, text);
+  assert.equal(result.resumes.length, 0);
+});
+
+test("an oversized last event whose type cannot be read is taken as whole, as the entry takes it", async () => {
+  const big = `data: {"sequence_number":9,"response":{"output":"${"x".repeat(300 * 1024)}"},"type":"response.completed"}\n\n`;
+  const text = 'data: {"type":"response.created"}\n\n' + big;
+  const whole = encoder.encode(text).byteLength;
+  const finished = await cuttingPoolBytes(text, [whole], "/v1/responses");
+  assert.equal(finished.text, text);
+  assert.equal(finished.resumes.length, 0);
+  // Cut inside it, the event never closed: still a cut.
+  const cut = await cuttingPoolBytes(text, [whole - 1000], "/v1/responses");
+  assert.equal(cut.text, text);
+  assert.equal(cut.resumes.length, 1);
+});
+
+test("an oversized event whose type is readable and not a terminal is no reason to call the answer whole", async () => {
+  const big = `event: response.output_text.done\ndata: {"type":"response.output_text.done","text":"${"x".repeat(300 * 1024)}"}\n\n`;
+  const text = shapes.responses.slice(0, 2).join("") + big + shapes.responses.at(-1);
+  const afterBig = encoder.encode(shapes.responses.slice(0, 2).join("") + big).byteLength;
+  const cut = await cuttingPoolBytes(text, [afterBig], "/v1/responses");
+  assert.equal(cut.text, text);
+  assert.equal(cut.resumes.length, 1);
 });

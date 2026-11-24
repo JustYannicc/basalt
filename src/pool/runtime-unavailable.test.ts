@@ -174,3 +174,34 @@ test("past the parse bound an upstream failure cuts the stream, and a client lea
   await reader.cancel("client left");
   assert.deepEqual(quiet, []);
 });
+
+test("the native stream passes its answer's own bytes on: invalid UTF-8 and a leading BOM unchanged", async () => {
+  const encoder = new TextEncoder();
+  const parts = [
+    new Uint8Array([0xef, 0xbb, 0xbf]),
+    encoder.encode('event: content_block_delta\ndata: {"delta":{"text":"x'),
+    new Uint8Array([0xff]),
+    encoder.encode('"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n'),
+  ];
+  const sent = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    sent.set(part, offset);
+    offset += part.byteLength;
+  }
+  const answer = nativeRuntimeStream(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          // Split inside the invalid byte's neighbours, as reads arrive.
+          for (let index = 0; index < sent.byteLength; index += 5)
+            controller.enqueue(sent.slice(index, index + 5));
+          controller.close();
+        },
+      }),
+      { headers: { "content-type": "text/event-stream" } },
+    ),
+    new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
+  );
+  assert.deepEqual(new Uint8Array(await answer.arrayBuffer()), sent);
+});

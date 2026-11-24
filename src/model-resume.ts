@@ -10,6 +10,7 @@ import {
   streamResumeHeader,
   streamResumeTargetHeader,
   streamResumeVersion,
+  streamTerminalTypes,
 } from "./pool/stream-splice.ts";
 
 /** As the entry waits before each re-attach (controller-reset.ts). */
@@ -47,10 +48,11 @@ export async function resumeThroughRouter(
   headers.set(streamResumeTargetHeader, stamp.target);
   headers.set(streamBootHeader, stamp.boot);
   headers.set("X-Request-Id", requestId);
-  // Only these streams always end with a terminal event, so only their end is judged.
+  // The pool's own framers always end these streams with a terminal event, so their end is judged.
+  // A lone carriage return as a line ending is out of contract here, as in the entry's own reader.
   const judged =
     /^text\/event-stream(?:;|$)/i.test(response.headers.get("content-type") ?? "") &&
-    /\/(?:messages|responses)$/.test(new URL(request.url).pathname);
+    /\/(?:messages|responses|chat\/completions)$/.test(new URL(request.url).pathname);
   const spliced = resumableAnswer(new Response(response.body, init), {
     ...(judged ? { complete: terminalJudge() } : {}),
     resume: async (input) => {
@@ -135,11 +137,16 @@ function terminalJudge() {
   let tail = "";
   // Once the terminal event is seen the answer is whole; a ping or comment after it changes nothing.
   let terminal = false;
-  const close = (event: string) => {
+  // An event too large to hold whole, whose head names no type, arrived complete; when it is the
+  // last one the answer is taken as whole, never judged stricter than the entry, which parses it.
+  let unknownLast = false;
+  const close = (event: string, truncated = false) => {
     const data = eventData(event);
+    if (data === undefined) return;
     // The event's own name says the same in both protocols, and survives a head cut short.
-    if (data !== undefined && (isTerminal(data) || terminalTypes.has(eventName(event))))
-      terminal = true;
+    const name = eventName(event);
+    if (isTerminal(data) || terminalTypes.has(name)) terminal = true;
+    unknownLast = truncated && !name && leadingType(data) === undefined;
   };
   const scan = (incoming: string) => {
     let text = incoming;
@@ -160,7 +167,8 @@ function terminalJudge() {
       }
       // Where the event ends in the held text and this read; it may begin inside the tail.
       const eventEnd = held + end.index - tail.length;
-      close(head ?? (parts.join("") + text).slice(0, eventEnd));
+      if (head !== undefined) close(head, true);
+      else close((parts.join("") + text).slice(0, eventEnd));
       parts = [];
       held = 0;
       head = undefined;
@@ -174,7 +182,7 @@ function terminalJudge() {
     // and a client's event parser drops it.
     whole() {
       scan(decoder.decode());
-      return terminal;
+      return terminal || unknownLast;
     },
   };
 }
@@ -192,17 +200,13 @@ function eventData(event: string) {
   return lines.length ? lines.join("\n") : undefined;
 }
 
-const terminalTypes = new Set([
-  "message_stop",
-  "response.completed",
-  "response.failed",
-  "response.incomplete",
-  "error",
-]);
+const terminalTypes = streamTerminalTypes;
 
-/** The last event of a messages or responses stream. */
+/** The last event of a messages, responses or chat completions stream. */
 function isTerminal(data: string) {
   if (data === "[DONE]") return true;
+  // A chat completions stream that fails ends with a bare error object instead of [DONE].
+  if (/^\s*\{\s*"error"\s*:/.test(data)) return true;
   try {
     const value: unknown = JSON.parse(data);
     return (
@@ -211,8 +215,12 @@ function isTerminal(data: string) {
       terminalTypes.has(String((value as { type?: unknown }).type))
     );
   } catch {
-    // Only the head of a very large event is kept; its type comes first.
-    const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(data)?.[1];
+    // Only the head of a very large event is kept; its type comes first when it can be read.
+    const type = leadingType(data);
     return type !== undefined && terminalTypes.has(type);
   }
+}
+
+function leadingType(data: string) {
+  return /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(data)?.[1];
 }
