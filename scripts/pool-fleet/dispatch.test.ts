@@ -558,6 +558,7 @@ test("retire-row sends one fleet-retire for the named draining row and prints it
       0,
       "the 8317 connection read is printed beside the counts",
     );
+    assert.equal((result as unknown as { result: { warning: unknown } }).result.warning, null);
     assert.doesNotMatch(
       JSON.stringify(result),
       /runtime-cell-1|cell-boot/u,
@@ -592,5 +593,34 @@ test("retire-row refuses a ready row, a bad key and a key matching no row before
     assert.deepEqual(lane.retires, []);
   } finally {
     await lane.close();
+  }
+});
+
+test("retire-row says plainly when the cell's connection read doesn't show it idle", async () => {
+  for (const [connections, warning] of [
+    [2, "2 connections are open on this cell; the override may cut them"],
+    [null, "the connection read failed; nothing proves this cell is idle"],
+  ] as const) {
+    const lane = await harness();
+    try {
+      assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+      const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+        target: { slotId: string };
+      }[];
+      lane.storage.values.set(
+        "runtime-fleet-v1:resources",
+        rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+      );
+      lane.retireRead.connections = connections;
+      const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+      const result = await runPoolFleet(
+        dispatch("retire-row", { go: "coordinator-2026-11-24-retire-stuck-row", key }),
+        lane.deps(),
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal((result as unknown as { result: { warning: unknown } }).result.warning, warning);
+    } finally {
+      await lane.close();
+    }
   }
 });

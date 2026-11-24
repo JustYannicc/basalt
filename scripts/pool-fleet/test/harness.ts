@@ -195,6 +195,8 @@ export async function harness(options: HarnessOptions = {}) {
   const actions: string[] = [];
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
   const retires: { operationId: string; go: string; key: string }[] = [];
+  // What the cell's 8317 read returns to the next fleet-retire.
+  const retireRead = { connections: 0 as number | null };
   let restart = 0;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
   const providerRequests: string[] = [];
@@ -250,7 +252,7 @@ export async function harness(options: HarnessOptions = {}) {
         ledgerStillMs: 300_000,
         cellStillMs: 2_400_000,
         ledgerLowered: true,
-        connections: 0,
+        connections: retireRead.connections,
         // The real receipt names the slot; the lane must keep it out of its output.
         slot: cell.slotId,
       };
@@ -401,6 +403,7 @@ export async function harness(options: HarnessOptions = {}) {
     actions,
     crashes,
     retires,
+    retireRead,
     providerRequests,
     storage,
     configuration,

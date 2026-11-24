@@ -286,7 +286,17 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         fleet.rows.filter((row) => row.key.startsWith(key));
       const before = named((yield* read()).fleet);
       const retired = yield* retireRow(access, input.go, key);
-      return { ...evidence, before, retired, after: named((yield* read()).fleet) };
+      // The GO is the gate. A model socket can outlive the isolate that took its lease, so the cell's
+      // own read of its open connections is said plainly whenever it doesn't show the cell idle.
+      const connections = retired.overrode?.connections;
+      const warning =
+        connections === 0
+          ? null
+          : typeof connections === "number"
+            ? `${connections} connections are open on this cell; the override may cut them`
+            : "the connection read failed; nothing proves this cell is idle";
+      if (warning) deps.log(`WARNING ${warning}`);
+      return { ...evidence, before, retired, warning, after: named((yield* read()).fleet) };
     }
     if (mode === "bookmark")
       return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };
