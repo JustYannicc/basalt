@@ -15,6 +15,8 @@ const names = [
   "InvalidStateError",
   "NetworkError",
   "DisconnectedError",
+  // An argument an RPC call can't send, such as a Request carrying an AbortSignal.
+  "DataCloneError",
 ] as const;
 const codes = [
   "ABORT_ERR",
