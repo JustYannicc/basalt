@@ -106,7 +106,8 @@ test("a checkout built from other code than the live Worker is refused by name b
     });
     assert.equal(result.ok, false);
     assert.match(String("cause" in result && result.cause), /controller-code-mismatch/u);
-    assert.deepEqual(lane.actions, ["inspect"]);
+    // configure-and-accept reads through the controller's handover window first; it only reads.
+    assert.deepEqual([...new Set(lane.actions)], ["inspect"]);
   } finally {
     await lane.close();
   }
