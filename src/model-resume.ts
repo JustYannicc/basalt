@@ -126,8 +126,13 @@ function terminalJudge() {
   // One event is held up to this; past it only its head, which names its type, is kept.
   const limit = 256 * 1024;
   const headLength = 4 * 1024;
-  let pending = "";
-  let overflow: { head: string; tail: string } | undefined;
+  // The open event is kept as its pieces, joined once when it closes, so a read costs its own length.
+  let parts: string[] = [];
+  let held = 0;
+  // Past the bound only the event's head is kept.
+  let head: string | undefined;
+  // The last three characters read: a boundary can begin in them and end in the next read.
+  let tail = "";
   // Once the terminal event is seen the answer is whole; a ping or comment after it changes nothing.
   let terminal = false;
   const close = (event: string) => {
@@ -139,27 +144,28 @@ function terminalJudge() {
   const scan = (incoming: string) => {
     let text = incoming;
     while (text) {
-      if (overflow) {
-        const joined = overflow.tail + text;
-        const end = /\r?\n\r?\n/.exec(joined);
-        if (!end) {
-          overflow.tail = joined.slice(-3);
-          return;
+      const joined = tail + text;
+      const end = /\r?\n\r?\n/.exec(joined);
+      if (!end) {
+        if (head === undefined) {
+          parts.push(text);
+          held += text.length;
+          if (held > limit) {
+            head = parts.join("").slice(0, headLength);
+            parts = [];
+          }
         }
-        close(overflow.head);
-        overflow = undefined;
-        text = joined.slice(end.index + end[0].length);
-        continue;
+        tail = joined.slice(-3);
+        return;
       }
-      pending += text;
-      text = "";
-      const events = pending.split(/\r?\n\r?\n/);
-      pending = events.pop() ?? "";
-      for (const event of events) close(event);
-      if (pending.length > limit) {
-        overflow = { head: pending.slice(0, headLength), tail: pending.slice(-3) };
-        pending = "";
-      }
+      // Where the event ends in the held text and this read; it may begin inside the tail.
+      const eventEnd = held + end.index - tail.length;
+      close(head ?? (parts.join("") + text).slice(0, eventEnd));
+      parts = [];
+      held = 0;
+      head = undefined;
+      tail = "";
+      text = joined.slice(end.index + end[0].length);
     }
   };
   return {

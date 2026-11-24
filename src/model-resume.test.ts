@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { forwardModelCall } from "./model-replay.ts";
+import { signEnvelope } from "./pool/token.ts";
 import { TunnelOperation } from "./tunnel/operation.ts";
 import { tunnelLimits, type TunnelServerFrame } from "../clients/contracts/tunnel.ts";
 import {
@@ -372,18 +373,27 @@ test("an event larger than the judge holds is still judged by its type", async (
 });
 
 /** As `cuttingPool`, with each part ending at an exact byte offset. */
-async function cuttingPoolBytes(text: string, offsets: number[], path = "/v1/messages") {
+function cuttingPoolBytes(text: string, offsets: number[], path = "/v1/messages") {
+  return cuttingPoolChunks(text, offsets, 4093, path);
+}
+
+async function cuttingPoolChunks(
+  text: string,
+  offsets: number[],
+  size: number,
+  path = "/v1/messages",
+) {
   const whole = encoder.encode(text);
   const resumes: number[] = [];
-  // In reads of 4093 bytes, so a large event spans many of them, as it does from a binding.
+  // In reads of `size` bytes, so a large event spans many of them, as it does from a binding.
   const part = (from: number, end: number, headers: Record<string, string>) => {
     let offset = from;
     return new Response(
       new ReadableStream<Uint8Array>({
         pull(controller) {
           if (offset >= end) return controller.close();
-          controller.enqueue(whole.slice(offset, Math.min(end, offset + 4093)));
-          offset += 4093;
+          controller.enqueue(whole.slice(offset, Math.min(end, offset + size)));
+          offset += size;
         },
       }),
       { headers },
@@ -433,4 +443,67 @@ test("a large terminal event whose type is not its first key is still judged by 
   const cut = await cuttingPoolBytes(text, [whole - 1000], "/v1/responses");
   assert.equal(cut.text, text);
   assert.equal(cut.resumes.length, 1);
+});
+
+test("event boundaries split across reads anywhere, \\r\\n or \\n, are found", async () => {
+  for (const newline of ["\n", "\r\n"]) {
+    const text = shapes.messages.join("").replaceAll("\n", newline);
+    const whole = encoder.encode(text).byteLength;
+    // One byte at a time: every boundary falls across reads.
+    const finished = await cuttingPoolChunks(text, [whole], 1);
+    assert.equal(finished.text, text);
+    assert.equal(finished.resumes.length, 0, JSON.stringify(newline));
+    const cut = await cuttingPoolChunks(text, [whole - 2], 1);
+    assert.equal(cut.text, text);
+    assert.equal(cut.resumes.length, 1, JSON.stringify(newline));
+  }
+});
+
+test("a stamp that does not open leaves the answer untouched: wrong key, expired, another call", async () => {
+  const frames = shapes.messages.slice(0, 2).join("");
+  const stamps = {
+    "wrong key": async () =>
+      signResumeStamp("ef".repeat(32), { requestId: "", target, boot: "boot-a" }),
+    expired: async (requestId: string) =>
+      signEnvelope(signingKey, "sbrs1", {
+        requestId,
+        target,
+        boot: "boot-a",
+        expiresAt: Date.now() - 1,
+      }),
+    "another call": async () =>
+      signResumeStamp(signingKey, {
+        requestId: "00000000-0000-4000-8000-000000000000",
+        target,
+        boot: "boot-a",
+      }),
+  };
+  for (const [label, stamp] of Object.entries(stamps)) {
+    let resumes = 0;
+    const response = await forwardModelCall(
+      new Request("https://app.example/v1/messages", { method: "POST", body: "{}" }),
+      {
+        POOL_APP_SIGNING_KEY: signingKey,
+        POOL_SERVICE: {
+          fetch: async (request: Request) => {
+            const named = (await openRouterAttempt(request, signingKey))!;
+            if (new URL(request.url).pathname === routerResumePath) resumes++;
+            return new Response(frames, {
+              headers: {
+                "content-type": "text/event-stream",
+                "X-Request-Id": named.requestId,
+                [routerResumeHeader]: await stamp(named.requestId),
+              },
+            });
+          },
+        },
+      },
+      undefined,
+      noWait,
+    );
+    assert.equal(response.headers.has(routerResumeHeader), false, label);
+    // The truncated answer ends exactly as it did: cleanly, byte for byte, never resumed.
+    assert.equal(await response.text(), frames, label);
+    assert.equal(resumes, 0, label);
+  }
 });
