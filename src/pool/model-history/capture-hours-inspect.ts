@@ -1,6 +1,8 @@
 import type { CaptureHoursAutoState, CaptureHoursAutoStop } from "./capture-hours-auto.ts";
 import { closedStuck, count, iso, milliseconds } from "./usage-rollup-inspect.ts";
 
+const hex16 = /^[0-9a-f]{16}$/;
+
 const stopNames = {
   complete: true,
   budget: true,
@@ -24,12 +26,18 @@ export function captureHoursInspect(state: CaptureHoursAutoState) {
       typeof state.lastStop === "string" && stops.has(state.lastStop) ? state.lastStop : null,
     pausedUntil: iso(state.pausedUntil),
     pools: count(state.pools),
+    pendingBlocks: count(state.pendingBlocks),
     pendingHours: count(state.pendingHours),
-    totalPendingHours: count(state.totalPendingHours),
     // The same closed reasons as the rollup's: slow, lock or error.
     stuck: closedStuck(state.stuck),
     lastHour: iso(state.lastHour),
     lastHourReadMs: milliseconds(state.lastHourReadMs),
     stalestCheckedAt: iso(state.stalestCheckedAt),
+    recountPosition:
+      typeof state.recountPosition?.pool === "string" &&
+      hex16.test(state.recountPosition.pool) &&
+      iso(state.recountPosition.block)
+        ? { pool: state.recountPosition.pool, block: iso(state.recountPosition.block)! }
+        : null,
   };
 }

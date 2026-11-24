@@ -1,21 +1,16 @@
 import type { HistoryDatabase } from "./schema.ts";
-import { captureHoursCountLimitMs, countCaptureHour } from "./capture-hours-count.ts";
-import {
-  captureHoursLookbackHours,
-  boundedRead,
-  countedHours,
-  planCaptureHours,
-  recountHours,
-  stalestCapture,
-} from "./capture-hours-plan.ts";
+import { captureHoursCountLimitMs } from "./capture-hours-count.ts";
+import { captureHoursLookbackHours, listedBlocks } from "./capture-hours-plan.ts";
+import { captureHoursSession, type CaptureSessionProgress } from "./capture-hours-session.ts";
 
 export { captureHoursInspect } from "./capture-hours-inspect.ts";
 
 /**
  * The pool counts each of its settled hours' Home usage rows itself: each model-history pass ends,
- * after the usage rollup's tick, with one tick of at most two bounded sessions of its own, each
- * counting pending hours of the last 400 days newest first, one short transaction per hour, then
- * recounting the hours counted longest ago. Its state is stored apart from the rollup's.
+ * after the usage rollup's tick, with one tick of at most two bounded sessions of its own. Each
+ * counts six-hour blocks of the last 400 days, one short transaction a block, the pools in turn
+ * by their newest pending block, and gives at least a quarter of its time to recounting the blocks
+ * counted longest ago. Its state is stored apart from the rollup's.
  */
 export const captureHoursAutoKey = "capture-hours-auto-v1";
 
@@ -33,11 +28,10 @@ export interface CaptureHoursAutoBounds {
   /** The same pool stopping on a lock or an error this many times in a row is stuck. */
   readonly failingAfter: number;
   readonly countLimitMs: number;
-  /**
-   * The most settled hours a tick recounts once nothing is pending: the 48 before the settle horizon,
-   * where late rows land, then the ones counted longest ago, for as long as the session lasts.
-   */
+  /** The most blocks one recount read lists, the ones counted longest ago. */
   readonly recount: number;
+  /** The least share of each session's budget the recount gets; pending blocks get the rest. */
+  readonly recountShare: number;
   /** The hours before the settle horizon each pool's counts cover. */
   readonly lookbackHours: number;
 }
@@ -50,7 +44,8 @@ export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   slowAfter: 3,
   failingAfter: 6,
   countLimitMs: captureHoursCountLimitMs,
-  recount: 2_000,
+  recount: listedBlocks,
+  recountShare: 0.25,
   lookbackHours: captureHoursLookbackHours,
 };
 
@@ -91,10 +86,16 @@ export interface CaptureHoursAutoState {
   readonly lastHourReadMs?: number;
   /** The pool `lastHour` belongs to: another pool counting the same hour never clears it. */
   readonly lastHourPool?: string;
-  /** Pools with pending hours, the hours left in the last pool worked on, and across pools. */
+  /** Pools with pending blocks, and the pending blocks and hours across them. */
   readonly pools?: number;
+  readonly pendingBlocks?: number;
   readonly pendingHours?: number;
-  readonly totalPendingHours?: number;
+  /** The block the recount reached last. */
+  readonly recountPosition?: { readonly pool: string; readonly block: string };
+  /** The pool whose block was counted last: the next session starts with the one after it. */
+  readonly nextPool?: string;
+  /** Blocks that ran out their own limit, counted hour by hour from then on. */
+  readonly split?: readonly { readonly pool: string; readonly from: string; readonly to: string }[];
   /** The oldest time any settled count was taken: how far the rolling recount lags. */
   readonly stalestCheckedAt?: string;
   readonly pausedUntil?: string;
@@ -169,7 +170,6 @@ export async function captureHoursTick(
       pausedUntil,
     });
   };
-  let recounted = false;
   for (let index = 0; index < bounds.sessions; index++) {
     if (stopped()) {
       await save({ ...state, lastStop: "handover" });
@@ -184,148 +184,26 @@ export async function captureHoursTick(
     }
     const budget = Math.min(bounds.sessionMs, msLeft);
     const left = () => budget - (now() - at);
-    let working = "";
     // Every change the session makes is kept here, so a failure mid-session keeps its progress.
-    let next: CaptureHoursAutoState = { ...state };
+    const progress: CaptureSessionProgress = { state: { ...state }, working: "" };
     let stop: CaptureHoursAutoStop | undefined;
-    let stopHour: string | undefined;
     try {
-      stop = await session(async (db) => {
-        // Each read runs under 1 s, and never past what the session has left.
-        const read = <T>(work: () => Promise<T>) => boundedRead(db, left, work);
-        const plan = await read(() => planCaptureHours(db, bounds.lookbackHours));
-        if (!plan) return "not_applied";
-        const { pools, plannedAt } = plan;
-        // The tick reached its database and plan, so it is no longer failing as a whole.
-        const done = await read(() =>
-          countedHours(db, [...(next.stuck ?? []), ...(next.slow ?? [])]),
-        );
-        const open = (entry: { pool: string; hour?: string }) =>
-          !entry.hour || !done.has(`${entry.pool}|${entry.hour}`);
-        next = {
-          ...next,
-          stuck: (next.stuck ?? []).filter((entry) => entry.pool !== "" && open(entry)),
-          slow: (next.slow ?? []).filter(open),
-          repeat: next.repeat?.pool === "" ? undefined : next.repeat,
-          stalestCheckedAt:
-            (await read(() => stalestCapture(db)).catch(() => undefined)) ?? next.stalestCheckedAt,
-        };
-        const pending = new Map(pools.map((pool) => [pool.pool, pool.pending]));
-        const tally = () => {
-          const left = [...pending.values()];
-          next = {
-            ...next,
-            pools: left.filter((n) => n > 0).length,
-            totalPendingHours: left.reduce((sum, n) => sum + n, 0),
-          };
-        };
-        tally();
-        const waiting = () =>
-          new Set(
-            (next.slow ?? [])
-              .filter((entry) => Date.parse(entry.until) > now())
-              .map((entry) => entry.pool),
-          );
-        let slowed = false;
-        // One hour, counted. Returns the session's stop, or undefined to go on with its pool, or
-        // "next" to leave the pool for this session.
-        const count = async (pool: string, hour: string) => {
-          if (stopped()) return "handover" as const;
-          if (left() <= 0) return "budget" as const;
-          working = pool;
-          const result = await countCaptureHour(db, pool, hour, left, bounds.countLimitMs);
-          if (result.kind === "budget") return "budget" as const;
-          if (result.kind === "lock") {
-            stopHour = hour;
-            return "lock" as const;
-          }
-          if (result.kind === "slow") {
-            const before = (next.slow ?? []).find((entry) => entry.pool === pool);
-            const repeats = before?.hour === hour ? before.count + 1 : 1;
-            const until = new Date(now() + bounds.slowPauseMs).toISOString();
-            // Loud once, when the pool first becomes stuck; its retries after each wait stay quiet.
-            if (repeats === bounds.slowAfter)
-              console.error("POOL_CAPTURE_HOURS_STUCK", { reason: "slow", hour });
-            next = {
-              ...next,
-              lastHour: hour,
-              lastHourReadMs: result.readMs,
-              lastHourPool: pool,
-              slow: [
-                ...(next.slow ?? []).filter((entry) => entry.pool !== pool),
-                { pool, hour, count: repeats, until },
-              ],
-              ...(repeats >= bounds.slowAfter
-                ? {
-                    stuck: stuckWith(next.stuck ?? [], {
-                      pool,
-                      reason: "slow",
-                      hour,
-                      retryAt: until,
-                    }),
-                  }
-                : {}),
-            };
-            slowed = true;
-            return "next" as const;
-          }
-          // Counted: the pool is no longer failing, and its slow or stuck hour is done.
-          const cleared = (entry: { pool: string; hour?: string }) =>
-            entry.pool !== pool || (entry.hour !== undefined && entry.hour !== hour);
-          next = {
-            ...next,
-            // The hour that last stopped a session is named until it is counted.
-            ...(next.lastHour === hour && next.lastHourPool === pool
-              ? { lastHour: undefined, lastHourReadMs: undefined, lastHourPool: undefined }
-              : {}),
-            stuck: (next.stuck ?? []).filter(cleared),
-            slow: (next.slow ?? []).filter(cleared),
-            repeat: next.repeat?.pool === pool ? undefined : next.repeat,
-          };
-          return undefined;
-        };
-        for (const pool of pools) {
-          if (waiting().has(pool.pool)) continue;
-          for (const hour of pool.hours) {
-            const stop = await count(pool.pool, hour);
-            if (stop === "next") break;
-            if (stop) return stop;
-            pending.set(pool.pool, Math.max(0, pending.get(pool.pool)! - 1));
-            next = { ...next, pendingHours: pending.get(pool.pool) };
-            tally();
-          }
-        }
-        const held = waiting();
-        // Hours a plan did not list, beyond its cap, are left for the next session.
-        if (pools.some((pool) => pending.get(pool.pool)! > 0 && !held.has(pool.pool)))
-          return "budget";
-        if (!recounted) {
-          const pools = [...pending.keys()].filter((pool) => !held.has(pool));
-          // As many as the session's rest allows; a budget stop ends the recount, not the tick.
-          recounted = true;
-          for (const entry of await read(() =>
-            recountHours(db, pools, bounds.recount, plannedAt),
-          )) {
-            if (waiting().has(entry.pool)) continue;
-            const stop = await count(entry.pool, entry.hour);
-            if (stop === "budget") break;
-            if (stop && stop !== "next") return stop;
-          }
-        }
-        if ([...pending].some(([pool, n]) => n > 0 && held.has(pool)))
-          return slowed ? "slow" : "waiting";
-        return "complete";
-      });
+      stop = await session((db) =>
+        captureHoursSession({ db, bounds, now, budget, left, stopped, progress }),
+      );
     } catch (error) {
       console.error("POOL_CAPTURE_HOURS_TICK_FAILED", {
         failure: error instanceof Error ? error.name : "unknown",
       });
-      await failed("error", working, {
-        ...next,
+      await failed("error", progress.working, {
+        ...progress.state,
         sessions: [...recent, { at, ms: now() - at }],
       });
       break;
     }
+    const next = progress.state;
+    const working = progress.working;
+    const stopHour = progress.stopHour;
     const base = { ...next, sessions: [...recent, { at, ms: now() - at }] };
     if (stop === "lock") {
       await failed("lock", working, base, stopHour);

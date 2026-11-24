@@ -13,9 +13,11 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     lastHour: "2026-08-01T03:00:00Z",
     lastHourReadMs: 1_000.04,
     pools: 2,
+    pendingBlocks: 16,
     pendingHours: 96,
-    totalPendingHours: 3_104,
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
+    recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z", host: "x" },
+    split: [{ pool: "0123456789abcdef", from: "2026-08-01T00:00:00Z", to: "x" }],
     slow: [{ pool: "0123456789abcdef", hour: "2026-08-01T03:00:00Z", count: 3, until: "x" }],
     repeat: { pool: "0123456789abcdef", reason: "lock", count: 2 },
     sessions: [{ at: 1, ms: 2 }],
@@ -37,8 +39,8 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     lastStop: "slow",
     pausedUntil: "2026-11-23T10:30:00.000Z",
     pools: 2,
+    pendingBlocks: 16,
     pendingHours: 96,
-    totalPendingHours: 3_104,
     stuck: [
       {
         pool: "0123456789abcdef",
@@ -51,6 +53,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     lastHour: "2026-08-01T03:00:00Z",
     lastHourReadMs: 1_000,
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
+    recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z" },
   });
   // Free text never passes: a lenient date, an unknown stop or reason, a negative count.
   assert.deepEqual(
@@ -62,6 +65,8 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       lastHourReadMs: -1,
       pools: -1,
       pendingHours: 1.5,
+      pendingBlocks: "3",
+      recountPosition: { pool: "fixture-pool-name", block: "2026-08-01T00:00:00Z" },
       stuck: [{ pool: "0123456789abcdef", reason: "drop", retryAt: "soon" }],
     } as unknown as CaptureHoursAutoState),
     {
@@ -69,13 +74,20 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       lastStop: null,
       pausedUntil: null,
       pools: null,
+      pendingBlocks: null,
       pendingHours: null,
-      totalPendingHours: null,
       stuck: [{ pool: "0123456789abcdef", reason: null, hour: null, retryAt: null }],
       lastHour: null,
       lastHourReadMs: null,
       stalestCheckedAt: null,
+      recountPosition: null,
     },
+  );
+  // A position on a pool id but with free text for its block names nothing.
+  assert.equal(
+    captureHoursInspect({ recountPosition: { pool: "0123456789abcdef", block: "soon" } })
+      .recountPosition,
+    null,
   );
   assert.deepEqual(captureHoursInspect({}).stuck, []);
 });

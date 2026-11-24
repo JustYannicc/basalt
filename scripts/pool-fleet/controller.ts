@@ -77,7 +77,6 @@ export const CaptureHours = Schema.Struct({
   pausedUntil: Schema.NullOr(Schema.String),
   pools: Schema.NullOr(Schema.Number),
   pendingHours: Schema.NullOr(Schema.Number),
-  totalPendingHours: Schema.NullOr(Schema.Number),
   stuck: Schema.Array(
     Schema.Struct({
       pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
@@ -90,6 +89,15 @@ export const CaptureHours = Schema.Struct({
   lastHour: Schema.optional(Schema.NullOr(Schema.String)),
   lastHourReadMs: Schema.optional(Schema.NullOr(Schema.Number)),
   stalestCheckedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  pendingBlocks: Schema.optional(Schema.NullOr(Schema.Number)),
+  recountPosition: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        pool: Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u)),
+        block: Schema.String,
+      }),
+    ),
+  ),
 });
 const Inspect = Schema.Struct({
   result: Schema.Struct({

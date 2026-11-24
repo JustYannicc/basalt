@@ -19,6 +19,8 @@ export const historyCaptureHoursStatements = [
     pool varchar(16) NOT NULL, hour timestamptz NOT NULL, usage_requests integer NOT NULL,
     uncaptured_requests integer NOT NULL, checked_at timestamptz NOT NULL,
     PRIMARY KEY (pool, hour))`,
+  // The recount reads the counts taken longest ago in one ordered read of this index.
+  `CREATE INDEX basalt_model_capture_hours_checked ON basalt_model_capture_hours (checked_at)`,
 ];
 
 /**

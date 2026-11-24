@@ -5,7 +5,7 @@ import { timestamp } from "../../src/pool/model-history/record.ts";
 import { homeCaptureCoverage } from "../../src/pool/model-history/capture-coverage.ts";
 import {
   countCaptureHour,
-  countHourStatement,
+  countBlockStatement,
 } from "../../src/pool/model-history/capture-hours-count.ts";
 import {
   captureHoursLookbackHours,
@@ -17,6 +17,14 @@ import { at, captureFixture, hourKey, lookbackHours, recording } from "./capture
 import { pool, seriesFixture } from "./series-fixture.ts";
 
 const lots = () => 60_000;
+/** A block's start, as the plan writes it, and its missing hours. */
+const blockOf = (block: { from: string; missing?: number }) => [
+  new Date(Date.parse(block.from)).toISOString(),
+  block.missing,
+];
+/** The start of the six-hour block an hour belongs to. */
+const blockStart = (hour: string) =>
+  new Date(Math.floor(Date.parse(hour) / (6 * 3_600_000)) * 6 * 3_600_000).toISOString();
 type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 
 test("an hour whose stored count equals its captured requests reads complete without a per-row check", async () => {
@@ -109,10 +117,12 @@ test("a count taken before its hour settled is uncounted: unproven to the summar
     assert.deepEqual([...read.incomplete!], [hourKey(2)]);
     assert.equal(read.ranges, undefined);
     const plan = await planCaptureHours(f.db, lookbackHours);
+    // The block holding that hour is pending, missing that one hour.
     assert.deepEqual(
-      plan?.pools.map((item) => [item.pool, item.pending, item.hours]),
-      [[c.poolId, 1, [hourKey(2)]]],
+      plan?.pools.map((item) => [item.pool, item.pendingBlocks, item.pendingHours]),
+      [[c.poolId, 1, 1]],
     );
+    assert.deepEqual(blockOf(plan!.pools[0]!.blocks[0]!), [blockStart(at(2)), 1]);
     await c.fill();
     assert.deepEqual([...(await c.coverage(at(0), at(24))).incomplete!], []);
   });
@@ -297,15 +307,22 @@ test("plans: a count reads one hour of usage through its time index, and the sum
     await c.ready();
     await c.fill();
     await c.analyze();
-    const count = await shape(f.db, countHourStatement, [
-      c.poolId,
-      at(10),
-      poolUsernamePattern(c.poolId),
-      c.source,
-    ]);
-    assert.equal(count.reads.usage, 50, "one hour's usage rows");
-    assert.ok(count.indexes.has("fixture_usage_time"), [...count.indexes].join(" "));
-    assert.ok(!count.seq.has("usage"), "no scan of all usage");
+    // A block reads its six hours of usage, 300 rows, and an hour's block its one hour.
+    for (const [hours, rows] of [
+      [6, 300],
+      [1, 50],
+    ] as const) {
+      const count = await shape(f.db, countBlockStatement, [
+        c.poolId,
+        at(12),
+        at(12 + hours),
+        poolUsernamePattern(c.poolId),
+        c.source,
+      ]);
+      assert.equal(count.reads.usage, rows, `${hours} hours' usage rows`);
+      assert.ok(count.indexes.has("fixture_usage_time"), [...count.indexes].join(" "));
+      assert.ok(!count.seq.has("usage"), "no scan of all usage");
+    }
     const read = recording(f.db);
     await homeCaptureCoverage(
       read.db,
@@ -373,14 +390,25 @@ test("every pool ready on v16 is counted over the 400 days before the settle hor
     const end = await horizon(f.db);
     const plan = (await planCaptureHours(f.db))!.pools;
     assert.equal(captureHoursLookbackHours, 9_600);
+    // Six-hour blocks: 1,600, and one more when the horizon falls inside a block, cutting two.
+    const blocks = end % (6 * 3_600_000) === 0 ? 1_600 : 1_601;
     assert.deepEqual(
-      plan.map((item) => [item.pool, item.pending, item.hours.length]),
-      [[c.poolId, 9_600, 2_000]],
-      "400 days of hours, whatever the pool's first request, listed 2,000 at a time",
+      plan.map((item) => [item.pool, item.pendingHours, item.pendingBlocks, item.blocks.length]),
+      [[c.poolId, 9_600, blocks, 100]],
+      "400 days of hours, whatever the pool's first request, listed 100 blocks at a time",
     );
-    const hour = (n: number) => new Date(end - n * 3_600_000).toISOString().replace(".000Z", "Z");
-    assert.deepEqual(plan[0]!.hours.slice(0, 3), [hour(1), hour(2), hour(3)], "newest first");
-    assert.equal(plan[0]!.hours.at(-1), hour(2_000));
+    // Newest first: the block before the horizon, then each one before it, back to back.
+    const newest = Math.floor((end - 3_600_000) / (6 * 3_600_000)) * 6 * 3_600_000;
+    assert.deepEqual(blockOf(plan[0]!.blocks[0]!), [
+      new Date(newest).toISOString(),
+      (end - newest) / 3_600_000,
+    ]);
+    for (let n = 1; n < plan[0]!.blocks.length; n++)
+      assert.equal(
+        plan[0]!.blocks[n]!.to,
+        plan[0]!.blocks[n - 1]!.from,
+        "newest first, back to back",
+      );
   });
 });
 
@@ -576,6 +604,28 @@ test("a count taken at exactly two hours past its hour is settled; a microsecond
     const read = await c.coverage(at(0), at(24));
     assert.deepEqual([...read.incomplete!], [hourKey(3)]);
     const plan = await planCaptureHours(f.db, lookbackHours);
-    assert.deepEqual(plan?.pools[0]?.hours, [hourKey(3)]);
+    assert.deepEqual(plan?.pools[0]?.blocks.map(blockOf), [[blockStart(at(3)), 1]]);
+  });
+});
+
+test("the plan reads in two statements, whatever the pools and the hours each one counts", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, 60_000));
+    await c.ready();
+    const statements = async (lookback: number) => {
+      const read = recording(f.db);
+      const plan = await planCaptureHours(read.db, lookback);
+      return [read.seen.length, plan!.pools.length];
+    };
+    assert.deepEqual(await statements(lookbackHours), [2, 1]);
+    await c.fill();
+    assert.deepEqual(await statements(lookbackHours), [2, 1], "counted hours add none");
+    assert.deepEqual(await statements(captureHoursLookbackHours), [2, 1], "400 days add none");
+    // Two more pools ready on v16.
+    await f.db.query(
+      "INSERT INTO basalt_model_usage_people_ready (pool,through) VALUES ('aaaaaaaaaaaaaaaa',now()),('bbbbbbbbbbbbbbbb',now())",
+    );
+    assert.deepEqual(await statements(captureHoursLookbackHours), [2, 3], "pools add none");
   });
 });

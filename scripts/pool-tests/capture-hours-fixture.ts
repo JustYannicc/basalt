@@ -140,7 +140,7 @@ export async function fillByTicks(
     const state = await captureHoursTick(storage, (work) => work(db), {
       bounds: { lookbackHours: lookback, hourMs: Number.POSITIVE_INFINITY },
     });
-    if (state.lastStop === "complete" && state.totalPendingHours === 0) return state;
+    if (state.lastStop === "complete" && state.pendingHours === 0) return state;
   }
   throw new Error("the tick did not fill the counts");
 }
