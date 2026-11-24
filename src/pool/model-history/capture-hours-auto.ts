@@ -21,7 +21,7 @@ export interface CaptureHoursAutoBounds {
   readonly hourMs: number;
   /** After a lock or an error the tick waits this long. */
   readonly pauseMs: number;
-  /** A pool whose count of an hour ran out its limit waits this long; the others go on. */
+  /** An hour whose count ran out its limit waits this long; its pool and the others go on. */
   readonly slowPauseMs: number;
   /** The same pool-hour slow this many times in a row is stuck; it is retried after each wait. */
   readonly slowAfter: number;
@@ -53,13 +53,13 @@ export type CaptureHoursAutoStop =
   | "complete"
   | "budget"
   | "lock"
-  /** A count ran out its own limit and every pool left is waiting after one. */
+  /** A count ran out its own limit this session, and all that is left is hours in their wait. */
   | "slow"
   | "ceiling"
   | "error"
   | "handover"
   | "not_applied"
-  /** Every pool with pending hours is in its slow wait. */
+  /** All that is left pending is hours in their slow wait. */
   | "waiting";
 
 type StuckReason = "slow" | "lock" | "error";
@@ -76,6 +76,8 @@ export interface CaptureHoursSlowWait {
   /** Slow counts of this hour in a row. */
   readonly count: number;
   readonly until: string;
+  /** "read": the block's read of its pending hours ran out, keyed on the block's first hour. */
+  readonly limit?: "read";
 }
 
 export interface CaptureHoursAutoState {
