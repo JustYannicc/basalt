@@ -1,0 +1,652 @@
+diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+--- a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
++++ b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+@@ -41,6 +41,24 @@ export const readNativePoolRegistration = (organization: string, pool: AppId) =>
+     return registrations.find((registration) => registration.native);
+   });
+ 
++/** A legacy registration whose handoff needs the exclusive organization lock. */
++export class PoolMembershipReconcileRequired extends Schema.TaggedError<PoolMembershipReconcileRequired>()(
++  "PoolMembershipReconcileRequired",
++  {},
++) {}
++
++/**
++ * The registration for a reader holding only the shared organization lock: it never hands off,
++ * since that write needs the exclusive lock, so a legacy registration asks for the exclusive read.
++ */
++export const readRegisteredNativePool = (organization: string, pool: AppId) =>
++  Effect.gen(function* () {
++    const registrations = yield* poolRegistrations(organization, pool);
++    if (registrations.some((registration) => registration.legacy))
++      return yield* new PoolMembershipReconcileRequired();
++    return registrations.find((registration) => registration.native);
++  });
++
+ /** Reuse the host's signed handoff; reads never infer Home identities or rewrite saved links. */
+ export const reconcilePoolMembership = (organization: string, pool: AppId) =>
+   Effect.gen(function* () {
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -16,7 +16,11 @@ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
+ import { preparePoolMembershipMirrors } from "./pool-membership-mirrors.ts";
+-import { readNativePoolRegistration } from "./pool-membership-reconcile.ts";
++import {
++  PoolMembershipReconcileRequired,
++  readNativePoolRegistration,
++  readRegisteredNativePool,
++} from "./pool-membership-reconcile.ts";
+ import { poolMembershipReferences } from "./pool-membership-reference-cache.ts";
+ import { readNativePoolAccountRows } from "./pool-membership-rows.ts";
+ 
+@@ -85,70 +89,95 @@ const homeReference = (executor: Executor, row: typeof NativePoolAccountRow.Type
+ export const nativePoolMembership = (organization: string, pool: AppId, executor: Executor) =>
+   withOrganizationAccessLock(
+     organization,
+-    Effect.gen(function* () {
+-      const sql = yield* SqlClient.SqlClient;
+-      const identity = yield* readNativePoolRegistration(organization, pool);
+-      if (identity === undefined) return { pool, organization, native: false, accounts: [] };
+-      // Lock the candidate superset in account/binding order; only the final policy read grants membership.
+-      const candidates = yield* sql`select a.id from hosted_app_account_links l
+-        join executor_apps app on app.id=l.app
+-        join executor_accounts a on a.id=l.account and a.owner=app.owner
+-        where l.app=${pool} and l.subject is null order by a.id for share of a`;
+-      const accountIds = yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))([
+-        ...new Set(candidates.map((row) => row.id)),
+-      ]);
+-      yield* sql`select account from executor_account_acquisitions
+-        where ${sql.in("account", accountIds)} order by account for share`;
+-      const rows = yield* readNativePoolAccountRows(sql, organization, pool);
+-      const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
+-      const scope = poolMembershipReferences.scope(
+-        executor,
+-        JSON.stringify([identity.database, identity.schema, organization, pool]),
+-      );
+-      const fingerprint = JSON.stringify(linked);
+-      const retained = poolMembershipReferences.get(scope, fingerprint);
+-      const needsMirrors = linked.some((row) => row.mirrorNeeded);
+-      if (retained !== undefined)
+-        return { pool, organization, native: true, accounts: [...retained], needsMirrors };
+-      const accounts = yield* Effect.forEach(linked, (row) =>
+-        Effect.gen(function* () {
+-          // Only the provisioned control token is outside Home; a model slot may also be named pool.
+-          if (
+-            (row.requirement === "pool" && row.method === "token" && row.requirementProvisioned) ||
+-            row.requirementScope !== "app" ||
+-            row.requirementProvider !== row.provider
+-          )
+-            return undefined;
+-          const reference = yield* homeReference(executor, row);
+-          return {
+-            account: row.account,
+-            requirement: row.requirement,
+-            provider: row.provider,
+-            method: row.method,
+-            generation: row.generation,
+-            driver: row.driver,
+-            driverRevision: row.driverRevision,
+-            bindingRevision: row.bindingRevision,
+-            homeReference: reference,
+-          };
+-        }),
+-      );
+-      const selected = accounts.filter((row) => row !== undefined);
+-      poolMembershipReferences.put(scope, fingerprint, selected);
+-      return {
+-        pool,
+-        organization,
+-        native: true,
+-        accounts: selected,
+-        needsMirrors,
+-      };
+-    }),
++    membershipRows(organization, pool, executor, readNativePoolRegistration(organization, pool)),
+   ).pipe(
+     // The tracked transaction keeps the policy and acquisition row locks together.
+     executor[StorageHost].transaction,
+     Effect.catch(() => new StorageError()),
+   );
+ 
++/**
++ * The same read for a caller already holding the shared organization lock through its receiver's
++ * acknowledgment: writers stay excluded, other readers do not. It takes no exclusive lock and
++ * never hands off a legacy registration; that answers PoolMembershipReconcileRequired instead.
++ */
++export const sharedPoolMembership = (organization: string, pool: AppId, executor: Executor) =>
++  membershipRows(organization, pool, executor, readRegisteredNativePool(organization, pool)).pipe(
++    executor[StorageHost].transaction,
++    Effect.catch((error) =>
++      Effect.fail(Schema.is(PoolMembershipReconcileRequired)(error) ? error : new StorageError()),
++    ),
++  );
++
++const membershipRows = <E, R>(
++  organization: string,
++  pool: AppId,
++  executor: Executor,
++  registration: Effect.Effect<
++    { readonly database: string; readonly schema: string } | undefined,
++    E,
++    R
++  >,
++) =>
++  Effect.gen(function* () {
++    const sql = yield* SqlClient.SqlClient;
++    const identity = yield* registration;
++    if (identity === undefined) return { pool, organization, native: false, accounts: [] };
++    // Lock the candidate superset in account/binding order; only the final policy read grants membership.
++    const candidates = yield* sql`select a.id from hosted_app_account_links l
++        join executor_apps app on app.id=l.app
++        join executor_accounts a on a.id=l.account and a.owner=app.owner
++        where l.app=${pool} and l.subject is null order by a.id for share of a`;
++    const accountIds = yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))([
++      ...new Set(candidates.map((row) => row.id)),
++    ]);
++    yield* sql`select account from executor_account_acquisitions
++        where ${sql.in("account", accountIds)} order by account for share`;
++    const rows = yield* readNativePoolAccountRows(sql, organization, pool);
++    const linked = yield* Schema.decodeUnknownEffect(Schema.Array(NativePoolAccountRow))(rows);
++    const scope = poolMembershipReferences.scope(
++      executor,
++      JSON.stringify([identity.database, identity.schema, organization, pool]),
++    );
++    const fingerprint = JSON.stringify(linked);
++    const retained = poolMembershipReferences.get(scope, fingerprint);
++    const needsMirrors = linked.some((row) => row.mirrorNeeded);
++    if (retained !== undefined)
++      return { pool, organization, native: true, accounts: [...retained], needsMirrors };
++    const accounts = yield* Effect.forEach(linked, (row) =>
++      Effect.gen(function* () {
++        // Only the provisioned control token is outside Home; a model slot may also be named pool.
++        if (
++          (row.requirement === "pool" && row.method === "token" && row.requirementProvisioned) ||
++          row.requirementScope !== "app" ||
++          row.requirementProvider !== row.provider
++        )
++          return undefined;
++        const reference = yield* homeReference(executor, row);
++        return {
++          account: row.account,
++          requirement: row.requirement,
++          provider: row.provider,
++          method: row.method,
++          generation: row.generation,
++          driver: row.driver,
++          driverRevision: row.driverRevision,
++          bindingRevision: row.bindingRevision,
++          homeReference: reference,
++        };
++      }),
++    );
++    const selected = accounts.filter((row) => row !== undefined);
++    poolMembershipReferences.put(scope, fingerprint, selected);
++    return {
++      pool,
++      organization,
++      native: true,
++      accounts: selected,
++      needsMirrors,
++    };
++  });
++
+ export const poolMembershipReadPath = "/api/internal/pool-membership";
+ const Read = Schema.Struct({
+   pool: AppId,
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -1,14 +1,16 @@
+-import { AccountId, StorageError, type AppId } from "@executor-js/sdk/core";
+-import { Effect } from "effect";
++import { AccountId, StorageError, StorageHost, type AppId } from "@executor-js/sdk/core";
++import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { AccountTargets } from "../contracts/account-grants.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+ import { AccountGrants } from "./proofs/account-access.ts";
+-import { nativePoolMembership } from "./pool-membership.ts";
++import { nativePoolMembership, sharedPoolMembership } from "./pool-membership.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { historyReadPhase } from "./pool-history-read-phase.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
++import { readPool, withPool } from "./pool-backend.ts";
++import { PoolMembershipReconcileRequired } from "./pool-membership-reconcile.ts";
+ 
+ const inspect = (account: AccountId) =>
+   appUiPhase(
+@@ -25,6 +27,36 @@ const digest = async (value: string) => {
+   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+ };
+ 
++type ReadablePool = Parameters<Parameters<typeof readPool>[1]>[0];
++
++/**
++ * A usage read under the shared organization lock, held through the pool's answer: policy writers,
++ * which take the exclusive lock, still wait for it, but concurrent reads no longer queue behind
++ * each other. Only a legacy registration, whose membership handoff writes, is read again under the
++ * exclusive lock, after the shared attempt's transaction has ended so the lock is never upgraded.
++ */
++export const usageReadUnderSharedLock = <A, E, R>(
++  app: AppId,
++  work: (pool: ReadablePool, lock: "shared" | "exclusive") => Effect.Effect<A, E, R>,
++) =>
++  Effect.gen(function* () {
++    const executor = yield* Effect.flatten(HostedExecutor);
++    const tracked = <B, F, S>(read: Effect.Effect<B, F, S>) =>
++      executor[StorageHost].transaction(read);
++    return yield* readPool(app, (pool) => work(pool, "shared")).pipe(
++      tracked,
++      Effect.catchIf(Schema.is(PoolMembershipReconcileRequired), () =>
++        withPool(app, (pool) => work(pool, "exclusive")).pipe(
++          tracked,
++          // The exclusive read hands off instead, so this cannot recur; a recurrence is storage's.
++          Effect.catchIf(Schema.is(PoolMembershipReconcileRequired), () =>
++            Effect.fail(new StorageError()),
++          ),
++        ),
++      ),
++    );
++  });
++
+ /** Same opaque reference format as the private pool membership reader, bounded to 32 IDs. */
+ export const poolHomeReferences = (reference: string) => {
+   const prefix = "sbhrefs1:";
+@@ -49,6 +81,8 @@ export const poolHomeReferences = (reference: string) => {
+ export const usageSeriesAccounts = (
+   pool: { readonly pool: AppId; readonly organization: string },
+   requested: readonly AccountId[] | undefined,
++  /** `shared` when the caller holds only the shared organization lock (see usageReadUnderSharedLock). */
++  lock: "shared" | "exclusive" = "exclusive",
+ ) =>
+   Effect.gen(function* () {
+     for (const account of requested ?? []) {
+@@ -61,7 +95,11 @@ export const usageSeriesAccounts = (
+       "overview-history-membership",
+       historyReadPhase(
+         "host-membership",
+-        nativePoolMembership(pool.organization, pool.pool, executor),
++        (lock === "shared" ? sharedPoolMembership : nativePoolMembership)(
++          pool.organization,
++          pool.pool,
++          executor,
++        ),
+       ),
+     ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+     const accounts = [
+diff --git a/apps/hosted/server/src/implementation/pool-usage-summary.ts b/apps/hosted/server/src/implementation/pool-usage-summary.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-summary.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-summary.ts
+@@ -1,23 +1,16 @@
+-import { StorageError, StorageHost, type AppId } from "@executor-js/sdk/core";
++import { StorageError, type AppId } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import { PoolUsageUnavailable } from "../contracts/pool-usage.ts";
+ import type { PoolUsageOverviewReadInput } from "../contracts/pool-usage-summary.ts";
+-import { readPool, sendPoolCommand } from "./pool-backend.ts";
+-import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
++import { sendPoolCommand } from "./pool-backend.ts";
++import { usageReadUnderSharedLock, usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
+ import { appUiPhase } from "./app-ui-phase-timing.ts";
+-import { HostedExecutor } from "../contracts/executor.ts";
+-
+-const trackedRead = <A, E, R>(read: Effect.Effect<A, E, R>) =>
+-  Effect.gen(function* () {
+-    const executor = yield* Effect.flatten(HostedExecutor);
+-    return yield* executor[StorageHost].transaction(read);
+-  });
+ 
+ /** The manager lock and per-account inspection stay authoritative through the signed read. */
+ export const poolUsageOverviewRead = (app: AppId, input: PoolUsageOverviewReadInput) =>
+-  readPool(app, (pool) =>
++  usageReadUnderSharedLock(app, (pool, lock) =>
+     Effect.gen(function* () {
+-      const accounts = yield* usageSeriesAccounts(pool, undefined);
++      const accounts = yield* usageSeriesAccounts(pool, undefined, lock);
+       return yield* appUiPhase(
+         "overview-backend",
+         sendPoolCommand(
+@@ -37,7 +30,6 @@ export const poolUsageOverviewRead = (app: AppId, input: PoolUsageOverviewReadIn
+       );
+     }),
+   ).pipe(
+-    trackedRead,
+     Effect.catchTags({
+       SqlError: () => new StorageError(),
+       SchemaError: () => new PoolUsageUnavailable(),
+diff --git a/apps/hosted/server/src/implementation/pool-usage.ts b/apps/hosted/server/src/implementation/pool-usage.ts
+--- a/apps/hosted/server/src/implementation/pool-usage.ts
++++ b/apps/hosted/server/src/implementation/pool-usage.ts
+@@ -28,7 +28,7 @@ import {
+   type PoolUsageSeriesInput,
+   type UsageAccountLabelInput,
+ } from "../contracts/pool-usage-series.ts";
+-import { usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
++import { usageReadUnderSharedLock, usageSeriesAccounts } from "./pool-usage-series-accounts.ts";
+ import type { PoolOverviewInput } from "../contracts/pool-usage-overview.ts";
+ import { poolOverviewSignedInput, poolPersonalOverviewOfferings } from "./pool-usage-overview.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+@@ -133,9 +133,9 @@ const trackedUsageRead = <A, E, R>(read: Effect.Effect<A, E, R>) =>
+   });
+ 
+ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+-  withPool(app, (pool) =>
++  usageReadUnderSharedLock(app, (pool, lock) =>
+     Effect.gen(function* () {
+-      const accounts = yield* usageSeriesAccounts(pool, input.accounts);
++      const accounts = yield* usageSeriesAccounts(pool, input.accounts, lock);
+       const payload = {
+         pool: pool.pool,
+         organization: pool.organization,
+@@ -154,7 +154,6 @@ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+         : result;
+     }),
+   ).pipe(
+-    trackedUsageRead,
+     Effect.timeout("6 seconds"),
+     Effect.catchTag("TimeoutError", () => new PoolUsageTimedOut()),
+     (read) => historyReadPhase("host-series", read),
+@@ -165,9 +164,9 @@ export const poolUsageSeries = (app: AppId, input: PoolUsageSeriesInput) =>
+   );
+ 
+ export const lastSuccessAt = (app: AppId, input: LastSuccessAtInput) =>
+-  withPool(app, (pool) =>
++  usageReadUnderSharedLock(app, (pool, lock) =>
+     Effect.gen(function* () {
+-      const accounts = yield* usageSeriesAccounts(pool, input.accounts);
++      const accounts = yield* usageSeriesAccounts(pool, input.accounts, lock);
+       return yield* sendPoolCommand(
+         "lastSuccessAt",
+         {
+@@ -181,7 +180,6 @@ export const lastSuccessAt = (app: AppId, input: LastSuccessAtInput) =>
+       );
+     }),
+   ).pipe(
+-    trackedUsageRead,
+     Effect.catchTags({
+       SqlError: () => new StorageError(),
+       SchemaError: () => new PoolUsageUnavailable(),
+diff --git a/e2e/tests/pool-legacy-handoff.spec.ts b/e2e/tests/pool-legacy-handoff.spec.ts
+--- a/e2e/tests/pool-legacy-handoff.spec.ts
++++ b/e2e/tests/pool-legacy-handoff.spec.ts
+@@ -380,6 +380,24 @@ layer(HostedLive, { excludeTestServices: true })("Legacy pool membership handoff
+         expect(yield* home.members).toEqual(homeAccounts.map((account) => account.id).sort());
+         expect(yield* links()).toEqual(beforeLinks);
+         expect(yield* controlState()).toEqual(beforeControl);
++
++        // A usage read under the shared lock that meets a legacy registration ends that read and
++        // hands off under the exclusive lock before it answers.
++        for (const [route, input] of [
++          ["series", query],
++          ["last-success", {}],
++        ] as const) {
++          yield* legacy();
++          expect(yield* registration()).not.toEqual(stableRegistration);
++          const response = yield* api.request(actors.owner, "POST", `${usage}/${route}`, {
++            ...input,
++            accounts: [accounts[0]!.id],
++          });
++          expect(response.status, JSON.stringify(response.body)).toBe(200);
++          expect(yield* registration()).toEqual(stableRegistration);
++        }
++        expect(yield* links()).toEqual(beforeLinks);
++        expect(yield* controlState()).toEqual(beforeControl);
+       }),
+     ),
+   );
+diff --git a/e2e/support/pool-history-database.ts b/e2e/support/pool-history-database.ts
+--- a/e2e/support/pool-history-database.ts
++++ b/e2e/support/pool-history-database.ts
+@@ -61,6 +61,9 @@ export const poolHistoryDatabase = Effect.gen(function* () {
+   return {
+     connection,
+     run: home.run,
++    /** Run a statement in a history transaction kept open until `release`, e.g. a table lock. */
++    hold: home.hold,
++    release: home.release,
+     // Only a release's database step applies the history schema; this runs its migrator here.
+     applySchema: processes
+       .exitCode(
+diff --git a/e2e/tests/pool-usage-shared-read-lock.spec.ts b/e2e/tests/pool-usage-shared-read-lock.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-usage-shared-read-lock.spec.ts
+@@ -0,0 +1,234 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { cloudLocks } from "../support/cloud-locks.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyPoolHome } from "../support/legacy-pool-home.ts";
++import {
++  installLegacyPoolHandoffSetup,
++  legacyPoolHandoffFixture,
++} from "../support/legacy-pool-handoff-setup.ts";
++import { Target } from "../support/platform.ts";
++import { poolHistoryDatabase } from "../support/pool-history-database.ts";
++import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
++import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
++import { scenarios } from "../test-plan.ts";
++
++const Count = Schema.Array(Schema.Struct({ n: Schema.Number }));
++const Members = Schema.Struct({
++  members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
++});
++const Viewer = Schema.Struct({ userId: Schema.String });
++class Waiting extends Schema.TaggedError<Waiting>()("Waiting", {}) {}
++
++/** The host's series cap; a read still waiting then answers 504. */
++const seriesCap = 6_000;
++
++layer(HostedLive, { excludeTestServices: true })(
++  "Pool usage reads share the organization lock",
++  (it) => {
++    installLegacyPoolHandoffSetup({ nativeSources: true });
++    it.effect(scenarios.poolUsageSharedReadLock.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            target = yield* Target,
++            browser = yield* Browser,
++            evidence = yield* Evidence;
++          const { pool, accounts } = legacyPoolHandoffFixture(context);
++          const home = yield* legacyPoolHome(
++            pool.id,
++            ["codex", "claude", "claude", "claude", "xai"].map((provider, index) => ({
++              id: `synthetic-cloud-native-reference-${index + 1}`,
++              provider,
++            })),
++          );
++          const history = yield* poolHistoryDatabase;
++          const worker = yield* poolWorkerRuntime(
++            target.metadata.origin,
++            home.origin,
++            history.connection,
++          );
++          const peer = (origin: string | null) =>
++            api.request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
++              pool: pool.id,
++              origin,
++            });
++          expect((yield* peer(worker.origin)).status).toBe(200);
++          yield* Effect.addFinalizer(() => peer(null).pipe(Effect.asVoid, Effect.orDie));
++          expect((yield* worker.operations("/model-history/schema/catalog")).status).toBe(200);
++          yield* history.applySchema;
++
++          const organization = actors.organization.id;
++          const path = `/api/organizations/${organization}/apps/${pool.id}`;
++          const ids = accounts.map((account) => account.id);
++          const now = yield* Clock.currentTimeMillis;
++          const iso = (at: number) => new Date(at).toISOString();
++          const hour = 3_600_000;
++          // The Accounts tab's three reads, as it sends them together.
++          const tab = (session: typeof actors.owner) => ({
++            seriesDay: api.request(session, "POST", `${path}/pool-usage/series`, {
++              from: iso(now - 7 * 24 * hour),
++              to: iso(now),
++              bucket: "day",
++              by: ["account"],
++              accounts: ids,
++            }),
++            seriesHour: api.request(session, "POST", `${path}/pool-usage/series`, {
++              from: iso(Math.floor(now / hour) * hour - 7 * hour),
++              to: iso(now),
++              bucket: "hour",
++              by: ["account"],
++              accounts: ids,
++            }),
++            lastSuccess: api.request(session, "POST", `${path}/pool-usage/last-success`, {
++              accounts: ids,
++            }),
++          });
++          const timed = <A extends { readonly status: number }, E, R>(
++            read: Effect.Effect<A, E, R>,
++          ) =>
++            Effect.gen(function* () {
++              const start = yield* Clock.currentTimeMillis;
++              // Past the cap a read still waiting is the failure itself; don't wait for the lock.
++              const reply = yield* read.pipe(Effect.timeoutOption(seriesCap + 2_000));
++              const ms = (yield* Clock.currentTimeMillis) - start;
++              return { status: reply._tag === "Some" ? reply.value.status : "waiting", ms };
++            });
++
++          // 1. A read in flight holds the shared lock through its pool's answer. Other reads, the
++          //    overview's summary included, must not wait for it.
++          yield* browser.login(actors.owner);
++          yield* browser.use("Keep reads explicit", (page) =>
++            page.route("**/*.js", (route) => route.abort()),
++          );
++          yield* openPrivateApp(yield* waitForAppUrl(actors.owner, `${path}/ui`));
++          const summary = browser.use("Overview summary", (page) =>
++            page.evaluate(
++              ({ from, to }) => {
++                const context = JSON.parse(
++                  document.getElementById("executor-context")?.textContent ?? "{}",
++                );
++                return fetch("/_executor/api/pool-usage/summary", {
++                  method: "POST",
++                  credentials: "same-origin",
++                  headers: { "content-type": "application/json" },
++                  body: JSON.stringify({
++                    version: context.version ?? context.deployment,
++                    input: { from, to },
++                  }),
++                }).then((response) => ({ status: response.status }));
++              },
++              { from: iso(now - 7 * 24 * hour), to: iso(now) },
++            ),
++          );
++          const reader = yield* cloudLocks;
++          yield* reader.hold({
++            sql: "select pg_backend_pid() as pid, pg_advisory_xact_lock_shared(hashtextextended($1, 0))",
++            params: [`executor-access:${organization}`],
++          });
++          const reads = tab(actors.owner);
++          const concurrent = yield* Effect.all(
++            {
++              seriesDay: timed(reads.seriesDay),
++              seriesHour: timed(reads.seriesHour),
++              lastSuccess: timed(reads.lastSuccess),
++              summary: timed(summary),
++            },
++            { concurrency: "unbounded" },
++          );
++          yield* reader.release;
++          yield* evidence.json("reads-beside-a-shared-reader.json", concurrent);
++          for (const [name, read] of Object.entries(concurrent)) {
++            expect(read.status, name).toBe(200);
++            expect(read.ms, name).toBeLessThan(seriesCap);
++          }
++
++          // 2. A write that changes the reader's authority still waits for a read in flight, and a
++          //    read after it sees the change. The administrator reads; the owner demotes them.
++          const admin = yield* body(Viewer, yield* api.request(actors.admin, "GET", "/api/viewer"));
++          const directory = yield* body(
++            Members,
++            yield* api.request(
++              actors.owner,
++              "GET",
++              `/api/auth/organization/list-members?organizationId=${organization}`,
++            ),
++          );
++          const member = directory.members.find((entry) => entry.userId === admin.userId);
++          expect(member).toBeDefined();
++          const role = (next: "member" | "admin") =>
++            api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
++              organizationId: organization,
++              memberId: member!.id,
++              role: next,
++            });
++          yield* Effect.addFinalizer(() => role("admin").pipe(Effect.asVoid, Effect.orDie));
++          // The owner's accounts are private to the administrator, so it reads the whole pool's series.
++          const adminSeries = api.request(actors.admin, "POST", `${path}/pool-usage/series`, {
++            from: iso(now - 7 * 24 * hour),
++            to: iso(now),
++            bucket: "day",
++            by: ["account"],
++          });
++          expect((yield* adminSeries).status).toBe(200);
++
++          // Park the administrator's read at its pool: the pool's history read waits on this lock,
++          // so the host holds the read's organization lock through an unanswered pool call.
++          yield* history.hold({
++            sql: "lock table basalt_model_history_migrations in access exclusive mode",
++          });
++          const waitFor = <A, E, R>(probe: Effect.Effect<A, E, R>, ready: (value: A) => boolean) =>
++            probe.pipe(
++              Effect.filterOrFail(ready, () => new Waiting()),
++              Effect.retry({ while: Schema.is(Waiting), schedule: Schedule.spaced("50 millis") }),
++              Effect.timeout("4 seconds"),
++            );
++          const inFlight = yield* Effect.forkChild(adminSeries);
++          yield* waitFor(
++            history.run({
++              sql: "select count(*)::int as n from pg_locks where not granted and relation = 'basalt_model_history_migrations'::regclass",
++            }),
++            (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0,
++          );
++          const demotion = yield* Effect.forkChild(role("member"));
++          const locks = yield* cloudLocks;
++          // The demotion waits on the organization lock the parked read holds.
++          const blocked = yield* waitFor(
++            locks.run({
++              // Only this organization's access lock: other scenarios' advisory locks don't count.
++              sql: `select count(*)::int as n from pg_locks l,
++                (select hashtextextended($1, 0) as k) key
++                where l.locktype = 'advisory' and not l.granted and l.objsubid = 1
++                  and l.classid::bigint = (key.k >> 32) & 4294967295
++                  and l.objid::bigint = key.k & 4294967295
++                  and cardinality(pg_blocking_pids(l.pid)) > 0`,
++              params: [`executor-access:${organization}`],
++            }),
++            (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0,
++          );
++          expect(demotion.pollUnsafe()).toBeUndefined();
++          yield* history.release;
++          const answered = yield* Fiber.join(inFlight);
++          const demoted = yield* Fiber.join(demotion);
++          const after = yield* adminSeries;
++          yield* evidence.json("writer-waits-for-reader.json", {
++            blocked,
++            inFlight: answered.status,
++            demotion: demoted.status,
++            after: after.status,
++          });
++          // The read answered with the authority it checked; only then did the demotion commit.
++          expect(answered.status).toBe(200);
++          expect(demoted.status).toBe(200);
++          expect(after.status).toBe(403);
++        }),
++      ),
++    );
++  },
++);
