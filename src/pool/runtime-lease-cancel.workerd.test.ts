@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
+import { poolWorkerCompatibility } from "./worker-compatibility.ts";
 
 // A cell admits a model call as the runtime endpoint does: a lease in its durable activity row,
 // released by the native stream wrapper when the answer ends or the caller's signal aborts. Then
@@ -37,7 +38,7 @@ export class Cell extends DurableObject {
       const row = await this.activity.inspect(identity);
       return Response.json({ active: row?.active ?? 0 });
     }
-    const done = await this.activity.acquire(identity);
+    const done = await this.activity.acquire(identity, true);
     const release = () => {
       this.ctx.waitUntil(done());
       return true;
@@ -77,8 +78,6 @@ export default {
 };
 `;
 
-// The pool Worker's own settings (src/pool/deployment.ts).
-const poolCompatibility = { date: "2026-09-08", flags: ["nodejs_compat"] };
 
 async function cellWorker() {
   const bundle = await build({
@@ -101,8 +100,8 @@ async function cellWorker() {
     convertV4MiniflareOptions({
       modules: true,
       script: bundle.outputFiles[0]!.text,
-      compatibilityDate: poolCompatibility.date,
-      compatibilityFlags: poolCompatibility.flags,
+      compatibilityDate: poolWorkerCompatibility.date,
+      compatibilityFlags: poolWorkerCompatibility.flags,
       durableObjects: {
         CELL: { className: "Cell", useSQLite: true },
         CONTROLLER: { className: "Controller", useSQLite: true },
@@ -148,5 +147,143 @@ test(
   async () => {
     // The lease is durable, but the call it counts died with the instance that held it.
     assert.equal(await countAfterReset("/cell-reset"), 0);
+  },
+);
+
+// A lease of a replaced instance is over only for a call whose answer streams through that instance's
+// own code. A model socket is the container's own, passed through untouched (the model-lifetime data
+// path in endpoint.ts), and these two pin why only the first kind is stamped.
+const passing = `
+import { DurableObject } from "cloudflare:workers";
+import { nativeResponse } from "./src/pool/native-response.worker.ts";
+export class Container extends DurableObject {
+  async fetch(request) {
+    if (request.headers.get("Upgrade") !== "websocket") {
+      let sent = 0;
+      return new Response(
+        new ReadableStream({
+          async pull(controller) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            controller.enqueue(new TextEncoder().encode("data: " + sent++ + "\\n\\n"));
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      );
+    }
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.addEventListener("message", () => server.send("pong"));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}
+export class Cell extends DurableObject {
+  async fetch(request) {
+    if (new URL(request.url).pathname === "/cell-reset") {
+      setTimeout(() => this.ctx.abort("replaced"), 0);
+      return new Response(null, { status: 204 });
+    }
+    const answer = await this.env.CONTAINER.get(this.env.CONTAINER.idFromName("c")).fetch(request);
+    if (answer.webSocket) return new Response(null, { status: 101, webSocket: answer.webSocket });
+    return nativeResponse(answer, { signal: request.signal, release: () => true, onClose: () => {} });
+  }
+}
+export default {
+  fetch(request, env) {
+    return env.CELL.get(env.CELL.idFromName("cell")).fetch(request);
+  },
+};
+`;
+
+async function passingWorker() {
+  const bundle = await build({
+    stdin: {
+      contents: passing,
+      resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
+      loader: "ts",
+    },
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "neutral",
+    mainFields: ["module", "main"],
+    conditions: ["workerd", "module", "import"],
+    target: "es2023",
+    external: ["node:*", "cloudflare:workers"],
+  });
+  const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
+  return new Miniflare(
+    convertV4MiniflareOptions({
+      modules: true,
+      script: bundle.outputFiles[0]!.text,
+      compatibilityDate: poolWorkerCompatibility.date,
+      compatibilityFlags: poolWorkerCompatibility.flags,
+      durableObjects: {
+        CELL: { className: "Cell", useSQLite: true },
+        CONTAINER: { className: "Container", useSQLite: true },
+      },
+    }),
+  );
+}
+
+const settled = <T>(work: Promise<T>, fallback: T) =>
+  Promise.race([work, new Promise<T>((resolve) => setTimeout(() => resolve(fallback), 3_000))]);
+
+test(
+  "a streamed answer the cell wraps ends when its instance is replaced",
+  { timeout: 60_000 },
+  async () => {
+    const mf = await passingWorker();
+    try {
+      const response = await mf.dispatchFetch("http://pool/v1/messages", {
+        method: "POST",
+        body: "{}",
+      });
+      const reader = response.body!.getReader();
+      await reader.read();
+      await mf.dispatchFetch("http://pool/cell-reset");
+      const end = (async () => {
+        try {
+          for (;;) if ((await reader.read()).done) return "done";
+        } catch {
+          return "cut";
+        }
+      })();
+      assert.equal(await settled(end, "still streaming"), "cut");
+    } finally {
+      await mf.dispose();
+    }
+  },
+);
+
+test(
+  "a model socket through a cell instance that is replaced keeps running",
+  { timeout: 60_000 },
+  async () => {
+    const mf = await passingWorker();
+    try {
+      const opened = await mf.dispatchFetch("http://pool/v1/responses", {
+        headers: { Upgrade: "websocket" },
+      });
+      const socket = opened.webSocket!;
+      socket.accept();
+      const answer = () =>
+        settled(
+          new Promise<string>((resolve) =>
+            socket.addEventListener("message", () => resolve("pong"), { once: true }),
+          ),
+          "silent",
+        );
+      const first = answer();
+      socket.send("ping");
+      assert.equal(await first, "pong");
+      await mf.dispatchFetch("http://pool/cell-reset");
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const after = answer();
+      socket.send("ping");
+      assert.equal(await after, "pong");
+      socket.close();
+    } finally {
+      await mf.dispose();
+    }
   },
 );

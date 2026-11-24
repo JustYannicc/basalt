@@ -507,12 +507,21 @@ export class RuntimeEndpoint {
       const { record, configuration } = await this.store.read(identity);
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       request.signal.throwIfAborted();
-      return { configuration, done: await this.activity.acquire(identity) };
+      // A plain HTTP call's answer streams through this instance and ends with it; a socket doesn't.
+      const throughInstance =
+        request.headers.get("Upgrade") === null &&
+        !isModelLifetimePath(new URL(request.url).pathname);
+      return { configuration, done: await this.activity.acquire(identity, throughInstance) };
     }).catch((error: unknown) => refuseRuntime("endpoint_admission", error));
     const release = () => {
       this.ctx.waitUntil(done());
       return true;
     };
+    // A caller gone before the answer holds nothing here, whether or not the container still
+    // answers: nobody would read that answer, so its stream wrapper would never release the count.
+    const left = () => void release();
+    request.signal.addEventListener("abort", left, { once: true });
+    if (request.signal.aborted) left();
     try {
       await this.channel.keepAlive();
       await this.health(identity, request.signal);
@@ -541,6 +550,8 @@ export class RuntimeEndpoint {
     } catch (error) {
       release();
       throw error;
+    } finally {
+      request.signal.removeEventListener("abort", left);
     }
   }
   /**

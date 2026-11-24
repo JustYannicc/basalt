@@ -199,3 +199,52 @@ for (const failure of ["before", "after"] as const) {
     await reconstructed.retire(identity);
   });
 }
+
+test("a lease the live instance took stays counted, a lease a replaced instance took is over", async (context) => {
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const replaced = new RuntimeActivity(storage, "replaced-instance");
+  await replaced.initialize(identity, true);
+  await Promise.all([replaced.acquire(identity, true), replaced.acquire(identity, true)]);
+  const live = new RuntimeActivity(storage, "live-instance");
+  const release = await live.acquire(identity, true);
+  // Whatever else happened, this instance's own lease is counted: by a read, a drain, a reconcile.
+  assert.equal((await live.inspect(identity))?.active, 1);
+  await live.reconcile(identity);
+  assert.deepEqual(await live.drain(identity), { active: 1, known: true });
+  await assert.rejects(live.retire(identity), /draining/);
+  await release();
+  assert.deepEqual(await live.drain(identity), { active: 0, known: true });
+  await live.retire(identity);
+});
+
+test("a lease without an instance stamp, as old code or a rollback leaves it, is live", async (context) => {
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const key = `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`;
+  await storage.put(key, {
+    identity,
+    phase: "open",
+    active: 1,
+    known: true,
+    leases: { unstamped: "active" },
+    changedAt: 1,
+  });
+  const activity = new RuntimeActivity(storage, "new-instance");
+  assert.equal((await activity.inspect(identity))?.active, 1);
+  assert.deepEqual(await activity.drain(identity), { active: 1, known: true });
+  await assert.rejects(activity.retire(identity), /draining/);
+});
+
+test("a socket's lease is never stamped, so a replaced instance's socket stays counted", async (context) => {
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const replaced = new RuntimeActivity(storage, "replaced-instance");
+  await replaced.initialize(identity, true);
+  await replaced.acquire(identity);
+  await replaced.acquire(identity, true);
+  assert.deepEqual(await new RuntimeActivity(storage, "next-instance").drain(identity), {
+    active: 1,
+    known: true,
+  });
+});

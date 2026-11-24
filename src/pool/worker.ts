@@ -142,6 +142,7 @@ import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
+import { detachFromCaller, followsCaller } from "./caller-signal.ts";
 import {
   CodeHandover,
   decodeControllerCode,
@@ -1001,6 +1002,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    request = followsCaller(request);
     this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
@@ -1256,7 +1258,7 @@ export async function handlePoolWorkerRequest(
 ): Promise<Response> {
   const controller = (forwarded: Request) =>
     fetchController(forwarded, { controller: () => singleton(env), env, defer });
-  request = stripModelLifetimeRequest(request);
+  request = followsCaller(stripModelLifetimeRequest(request));
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)
     return routeBulkImport(request, {
@@ -1310,6 +1312,7 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 /** Only a service binding that explicitly selects this named entrypoint can invoke it. */
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
+    request = detachFromCaller(request);
     const path = new URL(request.url).pathname;
     if (path === "/automatic-recovery-observation") {
       if (request.method !== "GET") return new Response(null, { status: 405 });

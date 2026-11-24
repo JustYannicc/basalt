@@ -19,6 +19,7 @@ import {
   withoutUnsentMark,
 } from "./controller-unsent.ts";
 import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
+import { heldBytes, holdBody, type HeldBody } from "./held-body.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -31,19 +32,8 @@ export const controllerReplayWindowMs = 20_000;
  * join are not counted). Past it a call is forwarded unheld: it is only not replayable.
  */
 export const controllerHoldBudgetBytes = 32 * 1024 * 1024;
-// Each reservation carries its own deadline: a request the platform cancels never runs its own
-// release, and its bytes must not stay counted for the life of the isolate.
-const reservations = new Map<object, { bytes: number; until: number }>();
 /** Bytes held for replay in this isolate right now. */
-export function controllerHeldBytes() {
-  const now = Date.now();
-  let total = 0;
-  for (const [key, reservation] of reservations) {
-    if (reservation.until <= now) reservations.delete(key);
-    else total += reservation.bytes;
-  }
-  return total;
-}
+export const controllerHeldBytes = heldBytes;
 
 // The platform may end the controller instance at any time; this is its "reconnect or retry" error.
 const instanceEnded = /\bDurable Object instance is no longer active\b/i;
@@ -105,74 +95,6 @@ function replayableCall(request: Request): boolean {
   );
 }
 
-type Refusal = "body_too_large" | "body_unreadable" | "hold_budget_full" | "too_late";
-type Held = { body: Uint8Array<ArrayBuffer> } | { refused: Refusal };
-
-/**
- * Reads a tee of the body beside the real send and holds it only while a replay is still
- * possible: up to the per-call and per-isolate bounds, and until the controller answers or the
- * replay window closes, whichever is first.
- */
-function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: () => void) {
-  if (!body)
-    return {
-      ready: Promise.resolve(),
-      take: (): Held => ({ body: new Uint8Array() }),
-      release() {},
-    };
-  const reader = body.getReader();
-  const key = {};
-  const until = Date.now() + controllerReplayWindowMs;
-  let chunks: Uint8Array[] | undefined = [];
-  let joined: Uint8Array<ArrayBuffer> | undefined;
-  let refused: Refusal | undefined;
-  let reserved = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const free = (reason: Refusal | "released") => {
-    if (!refused && reason !== "released") refused = reason;
-    if (reason === "released" && !refused) refused = "too_late";
-    chunks = undefined;
-    joined = undefined;
-    reservations.delete(key);
-    reserved = 0;
-    clearTimeout(timer);
-    void reader.cancel().catch(() => {});
-  };
-  timer = setTimeout(() => free("too_late"), controllerReplayWindowMs);
-  const ready = (async () => {
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || !chunks) break;
-        if (reserved + value.byteLength > controllerHoldBytes) return free("body_too_large");
-        if (controllerHeldBytes() + value.byteLength > budget) {
-          skipped();
-          return free("hold_budget_full");
-        }
-        reserved += value.byteLength;
-        reservations.set(key, { bytes: reserved, until });
-        chunks.push(value);
-      }
-    } catch {
-      return free("body_unreadable");
-    }
-    if (!chunks) return;
-    const whole = new Uint8Array(reserved);
-    let offset = 0;
-    for (const chunk of chunks) {
-      whole.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    chunks = undefined;
-    joined = whole;
-  })();
-  return {
-    ready,
-    take: (): Held => (joined ? { body: joined } : { refused: refused ?? "body_unreadable" }),
-    release: () => free("released"),
-  };
-}
-
 const endpointOf = (request: Request) => {
   const pathname = new URL(request.url).pathname;
   return endpointMetadata(pathname).endpoint ?? pageTemplate(pathname);
@@ -232,9 +154,13 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
   }
   const model = replayableCall(request);
   const requestId = crypto.randomUUID();
-  const copy = hold(
+  const copy = holdBody(
     model && request.body ? request.clone().body : null,
-    hop.holdBudgetBytes ?? controllerHoldBudgetBytes,
+    {
+      maxBytes: controllerHoldBytes,
+      budgetBytes: hop.holdBudgetBytes ?? controllerHoldBudgetBytes,
+      windowMs: controllerReplayWindowMs,
+    },
     () =>
       console.error(
         "POOL_CONTROLLER_HOLD_SKIPPED",
@@ -267,7 +193,7 @@ async function awaitHandover(
   request: Request,
   hop: ControllerHop,
   model: boolean,
-  copy: ReturnType<typeof hold>,
+  copy: HeldBody,
   response: Response,
   begun: number,
 ): Promise<Response> {
@@ -327,7 +253,7 @@ async function forwardHeld(
   hop: ControllerHop,
   model: boolean,
   requestId: string,
-  copy: ReturnType<typeof hold>,
+  copy: HeldBody,
 ): Promise<Response> {
   const now = hop.now ?? Date.now;
   const begun = now();

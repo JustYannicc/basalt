@@ -455,3 +455,30 @@ test("a fenced fleet start is never admitted or started again", async (context) 
   await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)), /selection/);
   assert.equal(f.calls.start, 0);
 });
+
+test("a model call whose caller leaves before the container answers stops counting at once", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  let answer!: (response: Response) => void;
+  let sent!: () => void;
+  const reached = new Promise<void>((resolve) => (sent = resolve));
+  f.hooks.model = () => {
+    sent();
+    return new Promise<Response>((resolve) => (answer = resolve));
+  };
+  const caller = new AbortController();
+  const call = f.endpoint
+    .fetch(identity, new Request("http://pool/v1/messages", { signal: caller.signal }), 8317)
+    .catch(() => undefined);
+  await reached;
+  assert.equal((await f.endpoint.streamCount(identity)).active, 1);
+  caller.abort();
+  // The release is the object's own background write; it lands before the container answers.
+  await f.settle();
+  assert.equal((await f.endpoint.streamCount(identity)).active, 0);
+  // The late answer goes nowhere and releases nothing twice.
+  answer(new Response("{}"));
+  await call;
+  assert.equal((await f.endpoint.streamCount(identity)).active, 0);
+});

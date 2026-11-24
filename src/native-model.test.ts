@@ -162,7 +162,7 @@ test("tools-only native grants cannot enter the model gateway", async () => {
 });
 
 for (const native of [false, true])
-  test(`an uncertain ${native ? "native" : "direct"} model binding send asks the client to retry without a second send`, async () => {
+  test(`an uncertain ${native ? "native" : "direct"} model binding send lost twice asks the client to retry`, async () => {
     let sends = 0;
     const env: RouterEnv = {
       POOL_APP_SIGNING_KEY: signingKey,
@@ -196,7 +196,7 @@ for (const native of [false, true])
     assert.equal(body.error.code, "upstream_outcome_unknown");
     assert.equal(body.error.retryable, true);
     assert.match(body.error.message, /Retry it/u);
-    assert.equal(sends, 1);
+    assert.equal(sends, 2);
   });
 
 test("a definite Home refusal retains its retryable 503 through model ingress", async () => {

@@ -8,22 +8,41 @@ const Activity = Schema.Struct({
   active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   known: Schema.Boolean,
   leases: Schema.optional(Schema.Record(Schema.String, Schema.Literals(["active", "released"]))),
+  /**
+   * Which object instance took each stamped lease. Code before this field ignores it and drops it on
+   * its next write, so after a rollback every lease is unstamped again, and an unstamped lease is live.
+   */
+  owners: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /** When a stream was last acquired or released; a forced stop reads how long the count stood. */
   changedAt: Schema.optional(Schema.Number),
 });
 
-function reconciled(row: typeof Activity.Type) {
+/**
+ * A call lives only as long as the object instance that took its lease: its stream runs through that
+ * instance, and the platform ends every request of an instance it replaces. So a lease another
+ * instance took is over, though nothing of that instance ran its release.
+ */
+function reconciled(row: typeof Activity.Type, instance: string) {
   if (!row.leases) return row;
-  const released = Object.values(row.leases).filter((state) => state === "released").length;
-  if (Object.keys(row.leases).length > row.active) throw new SlotRefused("uncertain");
+  const over = (id: string, state: "active" | "released") =>
+    state === "released" || (row.owners?.[id] !== undefined && row.owners[id] !== instance);
+  const entries = Object.entries(row.leases);
+  if (entries.length > row.active) throw new SlotRefused("uncertain");
+  const live = entries.filter(([id, state]) => !over(id, state));
+  const owners =
+    row.owners &&
+    Object.fromEntries(Object.entries(row.owners).filter(([id]) => live.some(([kept]) => kept === id)));
   return {
     ...row,
-    active: row.active - released,
-    leases: Object.fromEntries(
-      Object.entries(row.leases).filter(([, state]) => state !== "released"),
-    ),
+    active: row.active - (entries.length - live.length),
+    leases: Object.fromEntries(live),
+    ...(owners ? { owners } : {}),
   };
 }
+
+// The platform builds a new storage object for each object instance; Workers refuse random values
+// at global scope, so an instance is named on its first lease.
+const instances = new WeakMap<object, string>();
 
 /**
  * How long the count stood still, as a duration, so no caller compares this clock with its own. Every
@@ -41,8 +60,16 @@ export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
 /** Lost request receipts remain counted. Reconstruction cannot invent an empty runtime. */
 export class RuntimeActivity {
   private storage: TransactionStorage;
-  constructor(storage: TransactionStorage) {
+  private scope?: string;
+  constructor(storage: TransactionStorage, instance?: string) {
     this.storage = storage;
+    this.scope = instance;
+  }
+  private get instance() {
+    if (this.scope) return this.scope;
+    let named = instances.get(this.storage);
+    if (!named) instances.set(this.storage, (named = crypto.randomUUID()));
+    return (this.scope = named);
   }
 
   private key(identity: SlotIdentity) {
@@ -63,7 +90,7 @@ export class RuntimeActivity {
           ? { identity, phase: "open" as const, active: 0, known: false }
           : Schema.decodeUnknownSync(Activity)(value);
       if (!sameIdentity(current.identity, identity)) throw new SlotRefused("identity");
-      const next = work(reconcile ? reconciled(current) : current);
+      const next = work(reconcile ? reconciled(current, this.instance) : current);
       await transaction.put(this.key(identity), next.row);
       return next.result;
     });
@@ -86,10 +113,15 @@ export class RuntimeActivity {
     if (value === undefined) return undefined;
     const row = Schema.decodeUnknownSync(Activity)(value);
     if (!sameIdentity(row.identity, identity)) throw new SlotRefused("identity");
-    return row;
+    return reconciled(row, this.instance);
   }
 
-  async acquire(identity: SlotIdentity) {
+  /**
+   * `endsWithInstance` only for a call whose answer streams through this instance's own code: the
+   * platform ends that stream with the instance. A model socket passes through natively and outlives
+   * a replaced instance (runtime-lease-cancel.workerd.test.ts), so its lease is never stamped.
+   */
+  async acquire(identity: SlotIdentity, endsWithInstance = false) {
     const id = crypto.randomUUID();
     await this.change(
       identity,
@@ -101,6 +133,9 @@ export class RuntimeActivity {
             ...row,
             active: row.active + 1,
             leases: { ...row.leases, [id]: "active" as const },
+            ...(endsWithInstance || row.owners
+              ? { owners: { ...row.owners, ...(endsWithInstance ? { [id]: this.instance } : {}) } }
+              : {}),
             changedAt: Date.now(),
           },
           result: undefined,
