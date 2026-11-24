@@ -13,7 +13,14 @@ import { recountBlocks } from "../../src/pool/model-history/capture-hours-plan.t
 import { captureHoursLockClass } from "../../src/pool/model-history/capture-hours-schema.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
-import { at, captureFixture, lookbackHours, memoryStorage } from "./capture-hours-fixture.ts";
+import {
+  at,
+  blockPositions,
+  captureFixture,
+  clockAt,
+  lookbackHours,
+  memoryStorage,
+} from "./capture-hours-fixture.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -556,86 +563,102 @@ test("older blocks are reached when the newest pending ones overflow every sessi
   });
 });
 
-test("with the session to spare, the recount takes every block counted over an hour ago, and none counted since", async () => {
-  await seriesFixture(async (f) => {
-    const c = await captureFixture(f);
-    await c.native(at(0, minute));
-    await c.ready();
-    await c.fill();
-    // Just counted: nothing is recounted.
-    const fresh = costly(f, 0);
-    await captureHoursTick(c.storage, (work) => work(fresh.db), { bounds: { lookbackHours } });
-    assert.deepEqual(fresh.counts, [], "a block counted within the last hour is not recounted");
-    await aged(f);
-    const before = await checkedAt(f, c.poolId);
-    const state = await captureHoursTick(c.storage, (work) => work(f.db), {
-      bounds: { lookbackHours },
+for (const position of blockPositions())
+  test(`with the session to spare, the recount takes every block counted over an hour ago, and none counted since (${position.label})`, async () => {
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.ready();
+      await c.fill();
+      // Just counted: nothing is recounted.
+      const fresh = costly(f, 0);
+      await captureHoursTick(c.storage, (work) => work(fresh.db), { bounds: { lookbackHours } });
+      assert.deepEqual(fresh.counts, [], "a block counted within the last hour is not recounted");
+      // Every count taken the moment its hour settled: over an hour ago for every hour, the newest
+      // one's too, wherever the horizon stands in its block.
+      await f.db.query(
+        "UPDATE basalt_model_capture_hours SET checked_at=hour + interval '2 hours'",
+      );
+      const before = await checkedAt(f, c.poolId);
+      const state = await captureHoursTick(c.storage, (work) => work(f.db), {
+        bounds: { lookbackHours },
+      });
+      assert.equal(state.lastStop, "complete");
+      // Read at the plan: the oldest settled count before this tick's recount.
+      assert.equal(
+        state.stalestCheckedAt,
+        new Date(Date.parse(String(before[0]![0])) + 2 * 3_600_000).toISOString(),
+      );
+      const after = await checkedAt(f, c.poolId);
+      assert.ok(
+        after.every(([, at], n) => at !== before[n]![1]),
+        "every hour was recounted",
+      );
+      assert.equal(state.recountPosition?.pool, c.poolId);
+      assert.equal(captureHoursInspect(state).recountPosition?.block, state.recountPosition?.block);
+      const next = await captureHoursTick(c.storage, (work) => work(f.db), {
+        bounds: { lookbackHours },
+      });
+      assert.ok(Date.parse(next.stalestCheckedAt!) > Date.parse(state.stalestCheckedAt!));
     });
-    assert.equal(state.lastStop, "complete");
-    // Read at the plan: the oldest settled count before this tick's recount.
-    assert.equal(
-      state.stalestCheckedAt,
-      new Date(Date.parse(String(before[0]![0])) + 3 * 3_600_000).toISOString(),
-    );
-    const after = await checkedAt(f, c.poolId);
-    assert.ok(
-      after.every(([, at], n) => at !== before[n]![1]),
-      "every hour was recounted",
-    );
-    assert.equal(state.recountPosition?.pool, c.poolId);
-    assert.equal(captureHoursInspect(state).recountPosition?.block, state.recountPosition?.block);
-    const next = await captureHoursTick(c.storage, (work) => work(f.db), {
-      bounds: { lookbackHours },
-    });
-    assert.ok(Date.parse(next.stalestCheckedAt!) > Date.parse(state.stalestCheckedAt!));
   });
-});
 
-test("a block past its own limit splits into hours, counted in the same pass, and the tick moves on to the next block", async () => {
-  await seriesFixture(async (f) => {
-    const c = await captureFixture(f);
-    await c.native(at(0, minute));
-    await c.ready();
-    const end = await horizon(f);
-    const newest = Math.floor((end - hour) / block) * block;
-    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
-    const counts: { pool: string; from: number; to: number }[] = [];
-    const storage = memoryStorage();
-    // The newest block, whole, costs 5 s; each of its hours alone costs nothing.
-    const slow = { pool: c.poolId, hour: key(newest), cost: { ms: 5_000 }, blocks: true };
-    const state = await captureHoursTick(
-      storage,
-      (work) => work(timed(f.db, clock, slow, undefined, counts)),
-      { now: () => clock.at, bounds: { lookbackHours } },
-    );
-    assert.deepEqual(state.split, [{ pool: c.poolId, blocks: [key(newest)] }]);
-    assert.deepEqual(state.slow ?? [], [], "a split block is not slow");
-    const ranges = counts.map((count) => [count.from, count.to]);
-    // Tried whole once, then hour by hour, newest first; then the next block, whole.
-    const singles: number[][] = [];
-    for (let at = end - hour; at >= newest; at -= hour) singles.push([at, at + hour]);
-    assert.deepEqual(ranges.slice(0, singles.length + 2), [
-      [newest, end],
-      ...singles,
-      [newest - block, newest],
-    ]);
-    const stored = await c.stored();
-    for (let at = newest; at < end; at += hour) assert.equal(stored[key(at)], 0, key(at));
-    // Never whole again: a recount of it goes hour by hour too.
-    await aged(f);
-    const later = counts.length;
-    await captureHoursTick(storage, (work) => work(timed(f.db, clock, slow, undefined, counts)), {
-      now: () => clock.at + 2 * hour,
-      bounds: { lookbackHours },
+for (const position of blockPositions())
+  test(`a block past its own limit splits into hours, counted in the same pass, and the tick moves on to the next block (${position.label})`, async () => {
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.ready();
+      const end = await horizon(f);
+      const newest = Math.floor((end - hour) / block) * block;
+      // The newest block with more than one settled hour: one hour alone never splits.
+      const dense = end - newest > hour ? newest : newest - block;
+      const denseEnd = Math.min(end, dense + block);
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const counts: { pool: string; from: number; to: number }[] = [];
+      const storage = memoryStorage();
+      // That block, whole, costs 5 s; each of its hours alone costs nothing.
+      const slow = { pool: c.poolId, hour: key(dense), cost: { ms: 5_000 }, blocks: true };
+      const state = await captureHoursTick(
+        storage,
+        (work) => work(timed(f.db, clock, slow, undefined, counts)),
+        { now: () => clock.at, bounds: { lookbackHours } },
+      );
+      assert.deepEqual(state.split, [{ pool: c.poolId, blocks: [key(dense)] }]);
+      assert.deepEqual(state.slow ?? [], [], "a split block is not slow");
+      const ranges = counts.map((count) => [count.from, count.to]);
+      // A newer block of one settled hour first; then the dense one tried whole once, then hour by
+      // hour, newest first; then the next block, whole.
+      const singles: number[][] = [];
+      for (let at = denseEnd - hour; at >= dense; at -= hour) singles.push([at, at + hour]);
+      const expected = [
+        ...(dense === newest ? [] : [[newest, end]]),
+        [dense, denseEnd],
+        ...singles,
+        [dense - block, dense],
+      ];
+      assert.deepEqual(ranges.slice(0, expected.length), expected);
+      const stored = await c.stored();
+      for (let at = dense; at < denseEnd; at += hour) assert.equal(stored[key(at)], 0, key(at));
+      // Never whole again: a recount of it goes hour by hour too.
+      await aged(f);
+      const later = counts.length;
+      await captureHoursTick(storage, (work) => work(timed(f.db, clock, slow, undefined, counts)), {
+        now: () => clock.at + 2 * hour,
+        bounds: { lookbackHours },
+      });
+      const recounted = counts
+        .slice(later)
+        .filter((count) => count.from >= dense && count.from < denseEnd);
+      assert.ok(recounted.length > 0, "the split block was recounted");
+      assert.ok(
+        recounted.every((count) => count.to - count.from === hour),
+        "hour by hour",
+      );
     });
-    const recounted = counts.slice(later).filter((count) => count.from >= newest);
-    assert.ok(recounted.length > 0, "the split block was recounted");
-    assert.ok(
-      recounted.every((count) => count.to - count.from === hour),
-      "hour by hour",
-    );
   });
-});
 
 test("the tick waits while v17 is not applied", async () => {
   await seriesFixture(async (f) => {
@@ -690,63 +713,69 @@ test("the tick's plan runs under its own 3 s limit, and its other reads under 1 
   });
 });
 
-test("each pool keeps its own split blocks, bounded by its lookback, so no split block is retried whole", async () => {
-  await seriesFixture(async (f) => {
-    const c = await captureFixture(f);
-    await c.native(at(0, minute));
-    await c.native(at(0, minute), true);
-    await c.ready();
-    const end = await horizon(f);
-    const newest = Math.floor((end - hour) / block) * block;
-    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
-    const counts: { pool: string; from: number; to: number }[] = [];
-    const storage = memoryStorage();
-    // A block of each pool is dense; and the state still names a block long past the lookback.
-    const ancient = key(newest - 400 * 24 * hour);
-    await storage.put(captureHoursAutoKey, {
-      split: [{ pool: c.poolId, blocks: [ancient] }],
-    });
-    const dense = (pool: string, at: number) => ({
-      pool,
-      hour: key(at),
-      cost: { ms: 5_000 },
-      blocks: true,
-    });
-    const both: HistoryDatabase = timed(
-      timed(f.db, clock, dense(c.otherId, newest - block), undefined, counts),
-      clock,
-      dense(c.poolId, newest),
-    );
-    const state = await captureHoursTick(storage, (work) => work(both), {
-      now: () => clock.at,
-      bounds: { lookbackHours },
-    });
-    const split = Object.fromEntries(
-      (state.split ?? []).map((entry) => [entry.pool, entry.blocks]),
-    );
-    assert.deepEqual(split, { [c.poolId]: [key(newest)], [c.otherId]: [key(newest - block)] });
-    // Recounted later, both go hour by hour: neither pool's split forgot the other's.
-    await aged(f);
-    const later = counts.length;
-    await captureHoursTick(storage, (work) => work(both), {
-      now: () => clock.at + 2 * hour,
-      bounds: { lookbackHours },
-    });
-    for (const [pool, from] of [
-      [c.poolId, newest],
-      [c.otherId, newest - block],
-    ] as const) {
-      const mine = counts
-        .slice(later)
-        .filter((count) => count.pool === pool && count.from >= from && count.from < from + block);
-      assert.ok(mine.length > 0, `${pool}'s split block was recounted`);
-      assert.ok(
-        mine.every((count) => count.to - count.from === hour),
-        "hour by hour",
+for (const position of blockPositions())
+  test(`each pool keeps its own split blocks, bounded by its lookback, so no split block is retried whole (${position.label})`, async () => {
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.native(at(0, minute), true);
+      await c.ready();
+      const end = await horizon(f);
+      const newest = Math.floor((end - hour) / block) * block;
+      // Each pool's newest block with more than one settled hour: one hour alone never splits.
+      const dense = end - newest > hour ? newest : newest - block;
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const counts: { pool: string; from: number; to: number }[] = [];
+      const storage = memoryStorage();
+      // A block of each pool is dense; and the state still names a block long past the lookback.
+      const ancient = key(newest - 400 * 24 * hour);
+      await storage.put(captureHoursAutoKey, {
+        split: [{ pool: c.poolId, blocks: [ancient] }],
+      });
+      const denseAt = (pool: string, at: number) => ({
+        pool,
+        hour: key(at),
+        cost: { ms: 5_000 },
+        blocks: true,
+      });
+      const both: HistoryDatabase = timed(
+        timed(f.db, clock, denseAt(c.otherId, dense - block), undefined, counts),
+        clock,
+        denseAt(c.poolId, dense),
       );
-    }
+      const state = await captureHoursTick(storage, (work) => work(both), {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      });
+      const split = Object.fromEntries(
+        (state.split ?? []).map((entry) => [entry.pool, entry.blocks]),
+      );
+      assert.deepEqual(split, { [c.poolId]: [key(dense)], [c.otherId]: [key(dense - block)] });
+      // Recounted later, both go hour by hour: neither pool's split forgot the other's.
+      await aged(f);
+      const later = counts.length;
+      await captureHoursTick(storage, (work) => work(both), {
+        now: () => clock.at + 2 * hour,
+        bounds: { lookbackHours },
+      });
+      for (const [pool, from] of [
+        [c.poolId, dense],
+        [c.otherId, dense - block],
+      ] as const) {
+        const mine = counts
+          .slice(later)
+          .filter(
+            (count) => count.pool === pool && count.from >= from && count.from < from + block,
+          );
+        assert.ok(mine.length > 0, `${pool}'s split block was recounted`);
+        assert.ok(
+          mine.every((count) => count.to - count.from === hour),
+          "hour by hour",
+        );
+      }
+    });
   });
-});
 
 test("a pending block that splits stops at the session's pending share between its hours", async () => {
   await seriesFixture(async (f) => {
