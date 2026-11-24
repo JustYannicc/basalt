@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { backendUserName, digest } from "../../src/pool/backend-users.ts";
-import { homeCaptureCoverage, isRowCheck } from "../../src/pool/model-history/capture-coverage.ts";
+import {
+  homeCaptureCoverage,
+  isRowCheck,
+  rowCheckStatement,
+} from "../../src/pool/model-history/capture-coverage.ts";
+import {
+  captureHoursCountLimitMs,
+  countBlockStatement,
+} from "../../src/pool/model-history/capture-hours-count.ts";
+import { poolUsernamePattern } from "../../src/pool/model-history/capture-population.ts";
 import { captureHoursLookbackHours } from "../../src/pool/model-history/capture-hours-plan.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
@@ -13,6 +22,8 @@ type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 const dayMs = 24 * hourMs;
 const requests = Number(process.env.POOL_TEST_CAPTURE_REQUESTS ?? 2_290_000);
 const usage = Number(process.env.POOL_TEST_CAPTURE_USAGE ?? 600_000);
+/** A busy hour's Home usage rows, as last night's load proof wrote in an hour. */
+const dense = Number(process.env.POOL_TEST_CAPTURE_DENSE ?? 4_000);
 const days = 86;
 
 /**
@@ -175,6 +186,65 @@ test(
       await fillByTicks(f.db, captureHoursLookbackHours);
       const all = await report("all counted");
       assert.equal(all.result.homeCapture.status, "available");
+
+      // A busy hour, as a load proof makes one: 4,000 native requests of one pool in one hour,
+      // each with its Home usage row, written as the capture writes them (triggers on).
+      const hour = Math.floor((now - 20 * hourMs) / hourMs) * hourMs;
+      const firstId = Number(
+        (await f.db.query("SELECT max(id)::int AS id FROM usage")).rows[0]!.id,
+      );
+      await f.db.query(
+        `INSERT INTO basalt_model_requests (id,source,source_record,timestamp,timestamp_exact,pool,
+          provider,model,token_quality,failed,cost_basis,ingested_at,attribution)
+        SELECT encode(sha256(convert_to('["'||$1::text||'","'||r||'"]','UTF8')),'hex'), $1, r, t,
+          to_char(t AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US')||'000Z', $2, 'fixture-lab',
+          'fixture-model', 'complete', false, 'unpriced', t, 'key-at-capture'
+        FROM generate_series(1,$4::int) k
+        CROSS JOIN LATERAL (
+          SELECT encode(sha256(convert_to('["usage","'||($5::int + k)||'"]','UTF8')),'hex') AS r,
+            $3::timestamptz + (k::float8 / $4 * 3599) * interval '1 second' AS t) x`,
+        [c.source, c.poolId, new Date(hour).toISOString(), dense, firstId],
+      );
+      await f.db.query(
+        `INSERT INTO usage (id,timestamp,api_key)
+        SELECT $1::int + k, $2::timestamptz + (k::float8 / $3 * 3599) * interval '1 second', $4
+        FROM generate_series(1,$3::int) k`,
+        [firstId, new Date(hour).toISOString(), dense, c.fingerprint],
+      );
+      await c.analyze();
+      const values = [
+        c.poolId,
+        new Date(hour).toISOString(),
+        new Date(hour + hourMs).toISOString(),
+        poolUsernamePattern(c.poolId),
+        c.source,
+      ];
+      for (let run = 0; run < 3; run++) {
+        const started = performance.now();
+        await f.db.query("BEGIN");
+        try {
+          await f.db.query(countBlockStatement, values);
+        } finally {
+          await f.db.query("ROLLBACK");
+        }
+        console.log(
+          `CASE busy hour count, ${dense} usage rows, run ${run + 1}: ${(performance.now() - started).toFixed(0)} ms (limit ${captureHoursCountLimitMs} ms)`,
+        );
+      }
+      await f.db.query("BEGIN");
+      try {
+        const plan = (await f.db.query(`EXPLAIN (ANALYZE, BUFFERS) ${countBlockStatement}`, values))
+          .rows;
+        console.log(
+          `PLAN busy hour count\n${plan.map((row) => String(row["QUERY PLAN"])).join("\n")}\nEND PLAN`,
+        );
+      } finally {
+        await f.db.query("ROLLBACK");
+      }
+      const busy = [poolUsernamePattern(c.poolId), c.poolId, c.source, values[1], values[2]];
+      console.log(
+        `PLAN busy hour row check\n${await explain(f, rowCheckStatement(1), busy)}\nEND PLAN`,
+      );
     });
   },
 );
