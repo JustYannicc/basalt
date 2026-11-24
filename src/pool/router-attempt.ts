@@ -13,6 +13,8 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export interface RouterAttempt {
   requestId: string;
   attempt: number;
+  /** The router resumes a stamped answer and strips its stamp; one that does not gets none. */
+  resume?: true;
 }
 
 export function signRouterAttempt(secret: string, value: RouterAttempt) {
@@ -34,7 +36,7 @@ export async function openRouterAttempt(
     () => undefined,
   );
   if (typeof value !== "object" || value === null) return undefined;
-  const { requestId, attempt, expiresAt } = value as Record<string, unknown>;
+  const { requestId, attempt, resume, expiresAt } = value as Record<string, unknown>;
   if (
     typeof requestId !== "string" ||
     !uuid.test(requestId) ||
@@ -44,5 +46,5 @@ export async function openRouterAttempt(
     expiresAt <= Date.now()
   )
     return undefined;
-  return { requestId, attempt: attempt as number };
+  return { requestId, attempt: attempt as number, ...(resume === true ? { resume } : {}) };
 }
