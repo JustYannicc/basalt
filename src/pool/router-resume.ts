@@ -1,6 +1,6 @@
 import { openRouterAttempt } from "./router-attempt.ts";
 import { openResumeStamp } from "./router-resume-contract.ts";
-import { resumeGone, type StreamResumeInput } from "./stream-resume.ts";
+import type { StreamResumeInput } from "./stream-resume.ts";
 
 export {
   openResumeStamp,
@@ -21,9 +21,12 @@ export async function routerResume(
 ): Promise<Response> {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   const named = await openRouterAttempt(request, keys.key, keys.previous);
+  if (!named) return new Response(null, { status: 403 });
+  // A stamp and an offset are a few hundred bytes; nothing larger is read.
+  const text = await request.text();
   let body: unknown;
   try {
-    body = await request.json();
+    body = text.length <= 8_192 ? JSON.parse(text) : undefined;
   } catch {
     body = undefined;
   }
@@ -53,6 +56,7 @@ export async function routerResume(
       boot: stamp.boot,
     });
   } catch {
-    return resumeGone("failed");
+    // The controller is not reachable yet, as when it is starting in a new instance: not gone.
+    return new Response(null, { status: 503, headers: { "Retry-After": "1" } });
   }
 }

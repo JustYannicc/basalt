@@ -12,7 +12,10 @@ import { resumeTargetShape } from "./stream-splice.ts";
 export const routerResumeHeader = "X-Basalt-Router-Resume";
 export const routerResumePath = "/__basalt/router-resume/v1";
 const stampPrefix = "sbrs1";
-/** Longer than any answer the container's layer keeps; the layer's own 30 s idle limit decides. */
+/**
+ * Longer than the answers it serves; the layer's own 30 s idle limit decides. A stream that runs
+ * past an hour is no longer resumed.
+ */
 const stampTtlMs = 60 * 60_000;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 

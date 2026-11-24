@@ -45,7 +45,8 @@ export function nativeRuntimeStream(
     responses = path.endsWith("/responses");
   if (!claude && !responses) return response;
   const reader = response.body.getReader();
-  const decoder = new TextDecoder(),
+  // The router resumes from the bytes delivered, so a leading BOM must pass through as it came.
+  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }),
     encoder = new TextEncoder();
   let pending = "",
     ended = false,

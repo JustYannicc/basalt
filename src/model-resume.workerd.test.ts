@@ -165,7 +165,7 @@ for (const [shape, parts] of Object.entries(frames))
         },
       });
       context.after(() => front.dispose());
-      const response = await front.dispatchFetch("http://app.example/v1/messages", {
+      const response = await front.dispatchFetch(`http://app.example/v1/${shape}`, {
         method: "POST",
         body: "{}",
       });
@@ -186,6 +186,6 @@ for (const [shape, parts] of Object.entries(frames))
       }
       text += decoder.decode();
       assert.equal(text, whole, "every byte exactly once, no gap and no repeat");
-      assert.deepEqual(sends, ["0:/v1/messages", "1:/__basalt/router-resume/v1"]);
+      assert.deepEqual(sends, [`0:/v1/${shape}`, "1:/__basalt/router-resume/v1"]);
     },
   );

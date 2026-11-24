@@ -47,13 +47,14 @@ export async function resumeThroughRouter(
   headers.set(streamResumeTargetHeader, stamp.target);
   headers.set(streamBootHeader, stamp.boot);
   headers.set("X-Request-Id", requestId);
-  const body =
-    response.body && /^text\/event-stream(?:;|$)/i.test(response.headers.get("content-type") ?? "")
-      ? endsWithTerminal(response.body)
-      : response.body;
-  const spliced = resumableAnswer(new Response(body, init), {
-    resume: async (input) =>
-      env.POOL_SERVICE.fetch(
+  // Only these streams always end with a terminal event, so only their end is judged.
+  const judged =
+    /^text\/event-stream(?:;|$)/i.test(response.headers.get("content-type") ?? "") &&
+    /\/(?:messages|responses)$/.test(new URL(request.url).pathname);
+  const spliced = resumableAnswer(new Response(response.body, init), {
+    ...(judged ? { complete: terminalJudge() } : {}),
+    resume: async (input) => {
+      const answer = await env.POOL_SERVICE.fetch(
         new Request(new URL(routerResumePath, request.url), {
           method: "POST",
           headers: {
@@ -66,7 +67,14 @@ export async function resumeThroughRouter(
           body: JSON.stringify({ stamp: value, from: input.from }),
           signal: request.signal,
         }),
-      ),
+      );
+      // The controller is not back yet: a try that failed, so the splice tries again.
+      if (answer.status === 503) {
+        void answer.body?.cancel().catch(() => {});
+        throw new Error("The pool's resume is not ready");
+      }
+      return answer;
+    },
     // From the router every broken body is the pool going down; a cut the layer cannot serve
     // answers gone, and the original error ends the stream as it would have.
     ended: () => true,
@@ -89,14 +97,17 @@ function byteStream(source: ReadableStream<Uint8Array>) {
   return new ReadableStream({
     type: "bytes",
     async pull(controller) {
-      const next = await reader.read();
-      if (next.done) {
-        controller.close();
-        // A pending BYOB read is answered with nothing once the stream has closed.
-        controller.byobRequest?.respond(0);
-        return;
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) {
+          controller.close();
+          // A pending BYOB read is answered with nothing once the stream has closed.
+          controller.byobRequest?.respond(0);
+          return;
+        }
+        // A byte stream refuses an empty chunk; there is nothing to hand on in one.
+        if (next.value.byteLength) return controller.enqueue(new Uint8Array(next.value));
       }
-      controller.enqueue(new Uint8Array(next.value));
     },
     cancel(reason) {
       return reader.cancel(reason);
@@ -106,13 +117,12 @@ function byteStream(source: ReadableStream<Uint8Array>) {
 
 /**
  * When the pool Worker's isolate goes down mid-answer, the router's binding body does not fail: it
- * ends, cleanly, where the answer stopped (real workerd, model-resume.workerd.test.ts). An event
- * stream that ends before its terminal event is that cut, so it reads as one here, and the splice
- * resumes it. Bytes pass through unchanged; only how the stream ends is judged.
+ * ends, cleanly, where the answer stopped (real workerd, model-resume.workerd.test.ts). A messages
+ * or responses stream that ends before its terminal event is that cut. This sees every delivered
+ * byte across resumed parts, which start mid-event, so one decoder and one pending event span them.
  */
-function endsWithTerminal(source: ReadableStream<Uint8Array>) {
-  const reader = source.getReader();
-  const decoder = new TextDecoder();
+function terminalJudge() {
+  const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
   // Only the event being read is kept, and only up to a bound; past it the end is not judged.
   const limit = 256 * 1024;
   let pending = "";
@@ -123,29 +133,32 @@ function endsWithTerminal(source: ReadableStream<Uint8Array>) {
     pending += text;
     const events = pending.split(/\r?\n\r?\n/);
     pending = events.pop() ?? "";
-    for (const event of events) terminal = isTerminal(event);
+    for (const event of events) {
+      // A comment, a keep-alive or a blank separator carries no data and changes nothing.
+      const data = eventData(event);
+      if (data !== undefined) terminal = isTerminal(data);
+    }
     if (pending.length > limit) {
       judged = false;
       pending = "";
     }
   };
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      const next = await reader.read();
-      if (next.done) {
-        scan(decoder.decode());
-        if (pending.trim()) terminal = isTerminal(pending);
-        if (judged && !terminal)
-          return controller.error(new Error("The pool's answer ended before its terminal event"));
-        return controller.close();
-      }
-      scan(decoder.decode(next.value, { stream: true }));
-      controller.enqueue(next.value);
+  return {
+    push: (bytes: Uint8Array) => scan(decoder.decode(bytes, { stream: true })),
+    whole() {
+      scan(decoder.decode());
+      const data = eventData(pending);
+      return !judged || (data !== undefined ? isTerminal(data) : terminal);
     },
-    cancel(reason) {
-      return reader.cancel(reason);
-    },
-  });
+  };
+}
+
+function eventData(event: string) {
+  const lines = event
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim());
+  return lines.length ? lines.join("\n") : undefined;
 }
 
 const terminalTypes = new Set([
@@ -156,13 +169,8 @@ const terminalTypes = new Set([
   "error",
 ]);
 
-/** The last event of a messages, responses or chat completions stream. */
-function isTerminal(event: string) {
-  const data = event
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trim())
-    .join("\n");
+/** The last event of a messages or responses stream. */
+function isTerminal(data: string) {
   if (data === "[DONE]") return true;
   try {
     const value: unknown = JSON.parse(data);

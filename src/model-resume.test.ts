@@ -238,3 +238,105 @@ test("an answer the entry did not stamp ends exactly as it ended before", async 
   assert.equal(await response.text(), shapes.messages.slice(0, 2).join(""));
   assert.equal(p.resumes.length, 0);
 });
+
+/**
+ * A pool whose answer and each resumed part end cleanly after the given numbers of frames, as a pool
+ * that goes down again mid-resume does. The resume route serves from the offset it is asked for.
+ */
+async function cuttingPool(
+  text: string,
+  segments: number[],
+  options: { notReadyFirst?: boolean; path?: string } = {},
+) {
+  const whole = encoder.encode(text);
+  const ends = segments.map(
+    (frames) =>
+      encoder.encode(text.split("\n\n").slice(0, frames).join("\n\n") + "\n\n").byteLength,
+  );
+  const resumes: number[] = [];
+  let notReady = options.notReadyFirst === true;
+  const part = (from: number, index: number, headers: Record<string, string>) => {
+    const end = ends[index] ?? whole.byteLength;
+    let sent = false;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) return controller.close();
+          sent = true;
+          controller.enqueue(whole.slice(from, end));
+        },
+      }),
+      { headers },
+    );
+  };
+  const env = {
+    POOL_APP_SIGNING_KEY: signingKey,
+    POOL_SERVICE: {
+      fetch: async (request: Request) => {
+        const named = (await openRouterAttempt(request, signingKey))!;
+        if (new URL(request.url).pathname === routerResumePath)
+          return routerResume(request, { key: signingKey }, async (input) => {
+            if (notReady) {
+              notReady = false;
+              throw new Error("Durable Object instance is no longer active");
+            }
+            resumes.push(input.from);
+            return part(input.from, resumes.length, {
+              [streamResumeHeader]: streamResumeVersion,
+              [streamResumeFromHeader]: String(input.from),
+            });
+          });
+        return part(0, 0, {
+          "content-type": "text/event-stream",
+          "X-Request-Id": named.requestId,
+          [routerResumeHeader]: await signResumeStamp(signingKey, {
+            requestId: named.requestId,
+            target,
+            boot: "boot-a",
+          }),
+        });
+      },
+    },
+  };
+  const response = await forwardModelCall(
+    new Request(`https://app.example${options.path ?? "/v1/messages"}`, {
+      method: "POST",
+      body: "{}",
+    }),
+    env,
+    undefined,
+    noWait,
+  );
+  return { text: await response.text(), resumes, ends };
+}
+
+test("a second clean cut inside a resumed part is resumed too, and the answer arrives whole", async () => {
+  const text = shapes.messages.join("");
+  const result = await cuttingPool(text, [1, 3]);
+  assert.equal(result.text, text);
+  assert.deepEqual(result.resumes, [result.ends[0], result.ends[1]]);
+});
+
+test("a resume that finds the controller not back yet is tried again", async () => {
+  const text = shapes.responses.join("");
+  const result = await cuttingPool(text, [2], { notReadyFirst: true, path: "/v1/responses" });
+  assert.equal(result.text, text);
+  assert.equal(result.resumes.length, 1);
+});
+
+test("a finished stream is never taken for a cut, whatever follows its terminal event", async () => {
+  for (const tail of ["\n\n", ": ping\n\n", "event: ping\n\n"]) {
+    const text = shapes.messages.join("") + tail;
+    const result = await cuttingPool(text, [shapes.messages.length + 2]);
+    assert.equal(result.text, text);
+    assert.deepEqual(result.resumes, [], JSON.stringify(tail));
+  }
+});
+
+test("a chat completions stream is not judged by its end, only by a failed read", async () => {
+  const text =
+    'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"error":{"message":"x"}}\n\n';
+  const result = await cuttingPool(text, [9], { path: "/v1/chat/completions" });
+  assert.equal(result.text, text);
+  assert.deepEqual(result.resumes, []);
+});

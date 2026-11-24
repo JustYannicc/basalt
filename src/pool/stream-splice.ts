@@ -49,6 +49,12 @@ export interface SpliceDeps {
   now(): number;
   delayMs: number;
   signal: AbortSignal;
+  /**
+   * Sees every byte delivered, across resumed parts, and says at the end whether the answer is
+   * whole. Where a lost hop below ends the body instead of failing it, an end it calls incomplete is
+   * a cut like any other. Without it, only a failed read is a cut.
+   */
+  complete?: { push(bytes: Uint8Array): void; whole(): boolean };
 }
 
 /**
@@ -83,6 +89,8 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
   const reattach = async () => {
     const cutAt = deps.now();
     for (let attempt = 1; attempt <= streamResumeAttempts; attempt++) {
+      // A reader that left wants nothing more; each try would only take the layer's reader.
+      if (cancelled || deps.signal.aborted) break;
       if (deps.now() - cutAt + deps.delayMs > streamResumeWindowMs) break;
       await deps.wait(deps.delayMs, deps.signal);
       let answer: Response | undefined;
@@ -116,6 +124,8 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
           let part: ReadableStreamReadResult<Uint8Array>;
           try {
             part = await reader.read();
+            if (part.done && deps.complete && !deps.complete.whole())
+              throw new Error("The answer ended before its terminal event");
           } catch (error) {
             if (!deps.ended(error) || deps.signal.aborted || cancelled) throw error;
             // A cut with no byte delivered since the last resume, or one too many, is not resumed.
@@ -139,6 +149,7 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
             continue;
           }
           if (part.done) return controller.close();
+          deps.complete?.push(part.value);
           delivered += part.value.byteLength;
           return controller.enqueue(part.value);
         }
