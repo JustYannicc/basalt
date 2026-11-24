@@ -31,12 +31,19 @@ const cause = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
 test("a controller read that keeps throwing waits out the handover, then refuses as controller-not-ready with its step, and sends nothing", async () => {
   const { clock, deps } = fakeClock();
   const lane = await harness({
-    handoffFailure: (action) => (action === "fleet-inspect" ? new Error("bridge reset") : undefined),
+    handoffFailure: (action) =>
+      action === "fleet-inspect" ? new Error("bridge reset") : undefined,
   });
   try {
-    const result = await runPoolFleet(dispatch("configure-and-accept"), { ...lane.deps(), ...deps });
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...lane.deps(),
+      ...deps,
+    });
     assert.equal(result.ok, false);
-    assert.match(cause(result), /^controller-not-ready: Error at step inspect, still after 300 s; nothing was sent\./u);
+    assert.match(
+      cause(result),
+      /^controller-not-ready: Error at step inspect, still after 300 s; nothing was sent\./u,
+    );
     assert.ok(clock.at - clock.start >= controllerSettleMs);
     assert.ok(clock.sleeps.every((ms) => ms === 10_000));
     assert.ok(!lane.actions.includes("fleet-configure"));
@@ -49,7 +56,10 @@ test("bindings that lag behind the settings for a while are waited for, and the 
   const { clock, deps } = fakeClock();
   const lane = await harness({ bindingsLag: () => clock.at - clock.start < 20_000 });
   try {
-    const result = await runPoolFleet(dispatch("configure-and-accept"), { ...lane.deps(), ...deps });
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...lane.deps(),
+      ...deps,
+    });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.deepEqual(clock.sleeps.slice(0, 2), [10_000, 10_000]);
     assert.deepEqual(
@@ -66,9 +76,15 @@ test("bindings that never match refuse at the bound as controller-bindings-diffe
   const { clock, deps } = fakeClock();
   const lane = await harness({ bindingsLag: () => true });
   try {
-    const result = await runPoolFleet(dispatch("configure-and-accept"), { ...lane.deps(), ...deps });
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...lane.deps(),
+      ...deps,
+    });
     assert.equal(result.ok, false);
-    assert.match(cause(result), /^controller-bindings-differ: fleet-inspect bindings still lack blue .* after 300 s/u);
+    assert.match(
+      cause(result),
+      /^controller-bindings-differ: fleet-inspect bindings still lack blue .* after 300 s/u,
+    );
     assert.ok(clock.at - clock.start >= controllerSettleMs);
     assert.ok(!lane.actions.includes("fleet-configure"));
   } finally {

@@ -1,0 +1,12 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "Every fleet lane failure says where it happened in closed values only. Each read and send of configure and disable carries one closed step name (inspect, primary_read, settings_read, application_read, send, inspect_after, digest) beside the error's class, and a refused handoff answer prints its HTTP status as a number, so an answer the bridge made reads apart from one the Worker made. Configure re-reads the controller, sending nothing, for up to the controller's 300 s code handover: a read that throws or bindings that still lag the Worker settings wait, a typed refusal stands at once, and past the bound a throw refuses as controller-not-ready and lagging bindings as controller-bindings-differ, so no release order has to know the timing."
+      constraint "The Worker's handoff entry writes one closed POOL_RUNTIME_COMMAND_REFUSED line, with its status, for every answer but a 200: a 409 refusal, a 500 defect and the early 405 and 413 alike. Writing the line never changes the answer."
+      constraint "A health read that ended by nothing but its own caller's abort, such as the guard's probe at its deadline, writes no POOL_RUNTIME_ENDPOINT_FAILURE: the guard keeps its own outcome and elapsed time. A send that failed before the abort, and every other aborted call, still writes one."
+      constraint "POOL_FLEET_GROWTH_REFUSED carries a provider refusal's closed code beside its class, as the pending-pass lines do, through one shared helper."
+      constraint "Recovery keeps how the primary it restarts had ended as that boot's own end: each round records it before admitting a restart and only when none is kept for that boot, so a restart attempt that ends before it serves never replaces it, and the record changes only when a later boot ends in its turn."
+      constraint "The controller keeps one record of the selected root's last recovery in closed values: the boot it restarts, when it was detected, when the root served again, its rounds, and the latest eight rounds' refusals. A served root's next recovery starts a new record. Healthy passes read it once per isolate and write only to end an open recovery, its writes never change what a round does, and the controller inspect returns it for the lane to print keyed by the restarted boot's short hash."
+    }
+  }
+}

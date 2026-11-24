@@ -140,19 +140,29 @@ test("every answer but a 200 logs one line with its status, early refusals and d
   ];
   // A signed fleet-inspect on a controller with no fleet is a defect, answered 500.
   let defect: Response | undefined;
-  await sendRuntimeCommand({ action: "fleet-inspect", controllerCode, at, expiresAt: at + 60_000 }, "e".repeat(64), {
-    worker: "pool-worker",
-    accountId: "account",
-    connect: async () => ({
-      dispose: async () => {},
-      env: {
-        POOL_OPERATIONS: {
-          fetch: async (request: Request) =>
-            (defect = await handleRuntimeHandoff(request, handoff, controllerCode, "e".repeat(64))),
+  await sendRuntimeCommand(
+    { action: "fleet-inspect", controllerCode, at, expiresAt: at + 60_000 },
+    "e".repeat(64),
+    {
+      worker: "pool-worker",
+      accountId: "account",
+      connect: async () => ({
+        dispose: async () => {},
+        env: {
+          POOL_OPERATIONS: {
+            fetch: async (request: Request) =>
+              (defect = await handleRuntimeHandoff(
+                request,
+                handoff,
+                controllerCode,
+                "e".repeat(64),
+              )),
+          },
         },
-      },
-    }),
-  }, () => {}).catch(() => undefined);
+      }),
+    },
+    () => {},
+  ).catch(() => undefined);
   assert.deepEqual(
     [...answers, defect!].map((answer) => answer.status),
     [405, 413, 500],

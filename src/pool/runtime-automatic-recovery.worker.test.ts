@@ -380,6 +380,9 @@ test(
     // The next healthy passes leave it as it is.
     await f.upkeep();
     await f.settle();
-    assert.deepEqual(((await f.send("inspect")) as { lastRecovery: unknown }).lastRecovery, lastRecovery);
+    assert.deepEqual(
+      ((await f.send("inspect")) as { lastRecovery: unknown }).lastRecovery,
+      lastRecovery,
+    );
   },
 );

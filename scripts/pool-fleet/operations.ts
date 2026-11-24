@@ -98,7 +98,9 @@ export const configureFleet = (input: {
   Effect.gen(function* () {
     const { controller: access, go } = input;
     const operationId = configureOperationId(go);
-    let wanted: { color: "blue" | "green"; applicationId: string; imageInput: string }[] | undefined;
+    let wanted:
+      | { color: "blue" | "green"; applicationId: string; imageInput: string }[]
+      | undefined;
     const settled = yield* untilSettled(
       input.clock,
       Effect.gen(function* () {
@@ -204,7 +206,8 @@ export const configureFleet = (input: {
         go,
       ),
     );
-    const after = (yield* step("inspect_after", () => inspectFleet(access, operationId))).permission;
+    const after = (yield* step("inspect_after", () => inspectFleet(access, operationId)))
+      .permission;
     const digest = yield* step("digest", () => providerDigest(configuration));
     if (!after?.enabled || after.digest !== digest)
       return yield* Effect.fail(

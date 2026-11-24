@@ -19,8 +19,20 @@ test("the inspect lane shows the root's last recovery as closed values, keyed by
       readyAt: Date.UTC(2026, 10, 24, 3, 19, 40),
       rounds: 3,
       refusals: [
-        { round: 1, at: Date.UTC(2026, 10, 24, 3, 14, 18), reason: "slot_identity", step: "endpoint_route", class: "SlotRefused" },
-        { round: 2, at: Date.UTC(2026, 10, 24, 3, 16, 0), reason: "free text a newer Worker wrote", class: "Error", provider: "provider_fetch_failed" },
+        {
+          round: 1,
+          at: Date.UTC(2026, 10, 24, 3, 14, 18),
+          reason: "slot_identity",
+          step: "endpoint_route",
+          class: "SlotRefused",
+        },
+        {
+          round: 2,
+          at: Date.UTC(2026, 10, 24, 3, 16, 0),
+          reason: "free text a newer Worker wrote",
+          class: "Error",
+          provider: "provider_fetch_failed",
+        },
       ],
     },
   });
@@ -33,8 +45,22 @@ test("the inspect lane shows the root's last recovery as closed values, keyed by
       readyAt: "2026-11-24T03:19:40.000Z",
       rounds: 3,
       refusals: [
-        { round: 1, at: "2026-11-24T03:14:18.000Z", reason: "slot_identity", step: "endpoint_route", class: "SlotRefused", provider: null },
-        { round: 2, at: "2026-11-24T03:16:00.000Z", reason: "other", step: null, class: "Error", provider: "provider_fetch_failed" },
+        {
+          round: 1,
+          at: "2026-11-24T03:14:18.000Z",
+          reason: "slot_identity",
+          step: "endpoint_route",
+          class: "SlotRefused",
+          provider: null,
+        },
+        {
+          round: 2,
+          at: "2026-11-24T03:16:00.000Z",
+          reason: "other",
+          step: null,
+          class: "Error",
+          provider: "provider_fetch_failed",
+        },
       ],
     });
   } finally {
