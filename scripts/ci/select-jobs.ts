@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
 import { githubObserver, routeBox } from "./box-router.ts";
+import { fastJobs } from "./gate.ts";
 import { declaredMatrices } from "./shards.ts";
 
 const root = process.cwd();
@@ -34,7 +35,9 @@ const box = await routeBox(
     headRepository: env.HEAD_REPOSITORY,
     slots: env.BOX_SLOTS,
     label: env.BOX_LABEL,
-    selected: selection.jobs,
+    // The fast lane's jobs run in every Check, so they can route as well as the selected ones.
+    selected: [...fastJobs, ...selection.jobs],
+    heartbeatLabel: env.BOX_HEARTBEAT_LABEL,
     matrices,
   },
   githubObserver({
@@ -43,6 +46,7 @@ const box = await routeBox(
     token: env.GITHUB_TOKEN ?? "",
     runId: env.GITHUB_RUN_ID ?? "",
     label: env.BOX_LABEL ?? "",
+    heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
   }),
 );
 const routed = { ...selection, matrices, boxJobs: box.jobs, boxRouting: box.summary };
@@ -63,6 +67,14 @@ if (process.env.GITHUB_OUTPUT)
       // The label routing validated; runs-on reads it here, never the variable at job time.
       "box_label=" +
       box.label +
+      "\n" +
+      // box-watch's bound for jobs the box holds back: a waiting box job never outlasts it.
+      "box_floor=" +
+      String(Math.ceil(box.floor)) +
+      "\n" +
+      // Each box job's planned minutes and wave: box-watch's deadline for it.
+      "box_plan=" +
+      JSON.stringify(box.plan) +
       "\n" +
       "matrices=" +
       JSON.stringify(matrices) +

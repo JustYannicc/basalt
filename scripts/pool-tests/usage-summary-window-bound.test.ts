@@ -6,9 +6,10 @@ import { historySeriesFailure } from "../../src/pool/model-history/series-diagno
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
 import {
   maxSummaryWindowRows,
-  summaryPriceTargets,
   summarySelection,
 } from "../../src/pool/model-history/summary-query.ts";
+import { summaryModeTargets } from "../../src/pool/model-history/summary-rollup-query.ts";
+import { timestamp } from "../../src/pool/model-history/record.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -59,8 +60,9 @@ test("a window over the row bound refuses after one bounded count, before any ag
 
     // The gate is a one-time filter: over the bound the targets scan never executes, and the count
     // itself stops one row past the bound.
-    const selection = await summarySelection(pool, "2025-10-01T00:00:00Z", to, fixture.authority);
-    const query = summaryPriceTargets(selection, 3);
+    const window = [timestamp("2025-10-01T00:00:00Z"), timestamp(to)] as const;
+    const selection = await summarySelection(pool, window[0], window[1], fixture.authority);
+    const query = summaryModeTargets(selection, 3, window);
     const plan = (await f.db.query(`EXPLAIN (ANALYZE, FORMAT JSON) ${query.text}`, query.values))
       .rows[0]!["QUERY PLAN"] as { Plan: PlanNode }[];
     const nodes = flatten(plan[0]!.Plan);
@@ -69,15 +71,14 @@ test("a window over the row bound refuses after one bounded count, before any ag
     );
     const scanned = historyScans.reduce((n, node) => n + (node["Actual Rows"] ?? 0), 0);
     assert.ok(scanned <= 4, `history scans returned ${scanned} rows`);
-    const gate = nodes.find((node) => node["One-Time Filter"] !== undefined);
+    // The gate on the raw targets scan is the one-time filter that compares the count with the bound.
+    const gate = nodes.find((node) => node["One-Time Filter"]?.includes("<= 3") === true);
     assert.ok(gate, JSON.stringify(plan));
     assert.equal(gate["Actual Rows"], 0);
-    assert.ok((gate.Plans ?? []).length > 0);
-    assert.ok(
-      flatten(gate)
-        .slice(1)
-        .every((node) => node["Actual Loops"] === 0),
-    );
+    // Its InitPlans (the ready flag and the bounded count) run; the scan it gates never does.
+    const gated = (gate.Plans ?? []).filter((node) => node["Parent Relationship"] !== "InitPlan");
+    assert.ok(gated.length > 0);
+    assert.ok(gated.flatMap(flatten).every((node) => node["Actual Loops"] === 0));
 
     // At or under the bound the summary answers as before, in the same fifteen statements.
     statements.length = 0;
@@ -97,6 +98,7 @@ interface PlanNode {
   "Actual Rows"?: number;
   "Actual Loops"?: number;
   "One-Time Filter"?: string;
+  "Parent Relationship"?: string;
   Plans?: PlanNode[];
 }
 function flatten(node: PlanNode): PlanNode[] {

@@ -7,5 +7,5 @@
   "database_sensitive": false,
   "workflow_sensitive": false,
   "remove_with": "alchemy-dependency-upgrade",
-  "requires": "A pinned Alchemy release leaves the dev-only hyperdrives channel out of a Worker's metadata hash; remove after the source/lib metadata hash proof passes without it."
+  "requires": "A pinned Alchemy release contains alchemy-run/alchemy#3641 (the hyperdrives channel left out of a Worker's metadata hash); remove after the source/lib metadata hash proof passes without it."
 }

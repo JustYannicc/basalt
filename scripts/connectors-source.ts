@@ -18,6 +18,7 @@ import {
   obsidianPluginVersionPath,
   obsidianPluginVersionSource,
 } from "./obsidian-plugin-version.ts";
+import { oauthClientIdRulePath, oauthClientIdRuleSource } from "./oauth-client-id-source.ts";
 import { prepareTestPlans, retiredTestPlanSources } from "./ci/declarations.ts";
 import { e2eCorrections } from "./ci/prepare-e2e.ts";
 import { preparedFrameworkRegistrySource } from "./framework-registry-source.ts";
@@ -176,6 +177,10 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       throw new Error(
         "Generated Obsidian plugin version differs from clients/obsidian/manifest.json",
       );
+    if (
+      readFileSync(join(upstream, oauthClientIdRulePath), "utf8") !== oauthClientIdRuleSource(root)
+    )
+      throw new Error("Generated OAuth client ID rule differs from scripts/oauth-client-id.ts");
     const permitted = new Set([
       ...additions,
       ...generated,
@@ -183,6 +188,7 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       opsReleasePath,
       poolWorkerRevisionPath,
       obsidianPluginVersionPath,
+      oauthClientIdRulePath,
     ]);
     const extraRuntimeSource = git(["ls-files", "--others", "--exclude-standard"])
       .split("\n")

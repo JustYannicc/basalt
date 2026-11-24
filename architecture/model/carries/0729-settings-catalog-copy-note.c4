@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "An installed app's Settings says it takes the catalog's updates only when the server says so, by the release sweep's own rule: its catalog reference lies in the feed this host's release sweep updates. A host that runs no sweep names no feed, so every copy there keeps the independent-copy note, as copies from anywhere else do. Anyone who can read the app gets that answer; the update held back for it stays visible only to people who manage the app. Until the answer arrives Settings says nothing about how the copy changes, rather than calling a catalog copy independent."
+    }
+  }
+}

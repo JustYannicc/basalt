@@ -141,8 +141,61 @@ async function sampleWeeks(
   };
 }
 
+type Sample = Awaited<ReturnType<typeof sampleWeeks>>;
+/** A test's own copy of a sample: the same stored history behind fresh objects. */
+function copy(sample: Sample): Sample {
+  const storage = new Memory();
+  for (const [key, value] of sample.storage.values) storage.values.set(key, structuredClone(value));
+  return { ...sample, storage, history: new CapacityHistory(storage) };
+}
+
+// A sampled week is 2,016 history observations: four take about 20 s on the gate box alone and
+// over a minute beside another suite. Each sample is taken once, while the file loads and before any
+// test's deadline runs, and every test starts from its own copy.
+const thinSample = await sampleWeeks([regular, regular]);
+const enoughSample = await sampleWeeks([regular, regular, spike, regular]);
+const retainedSample = await sampleWeeks([regular, regular, regular, regular], {
+  plan: "Max 20x",
+  full: 1,
+  knownWeight: false,
+  source: "unknown-plan",
+  revision: "2026-10-30",
+});
+const mixedSample = await sampleWeeks(
+  [regular, regular, regular, regular],
+  {
+    plan: "Max 20x",
+    full: 1,
+    source: "unknown-plan",
+    knownWeight: false,
+    revision: "2026-10-30",
+  },
+  [
+    {
+      account: "codex",
+      provider: "codex",
+      plan: "Plus",
+      windowSeconds,
+      full: 1,
+      unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
+      source: "reference-plan",
+      knownWeight: true,
+      revision: "2026-10-30",
+    },
+    {
+      account: "overview-fixture",
+      provider: "claude",
+      windowSeconds: 18_000,
+      full: 20,
+      source: "published-session-multiplier",
+      knownWeight: true,
+      revision: "2026-10-30",
+    },
+  ],
+);
+
 test("serialized quota samples reach a seasonal service forecast after two weeks and advice after four", async () => {
-  const thin = await sampleWeeks([regular, regular]);
+  const thin = copy(thinSample);
   const learning = await capacityOverview(thin.history, "pool", thin.to - 7 * 24 * hour, thin.to);
   const learned = learning.forecasts.find((forecast) => forecast.provider === "claude");
   assert.equal(learned?.status, "estimated");
@@ -150,7 +203,7 @@ test("serialized quota samples reach a seasonal service forecast after two weeks
   assert.equal(learned?.backtest?.heldOutWeeks, 0);
   assert.equal(learned?.ordinary?.accounts, null);
 
-  const enough = await sampleWeeks([regular, regular, spike, regular]);
+  const enough = copy(enoughSample);
   const advised = await capacityOverview(
     enough.history,
     "pool",
@@ -168,13 +221,7 @@ test("serialized quota samples reach a seasonal service forecast after two weeks
 
 for (const membership of ["connected", "removed", "legacy-removed", "legacy-removed-other"]) {
   test(`retained conservative demand cannot train new weekly weights: ${membership}`, async () => {
-    const retained = await sampleWeeks([regular, regular, regular, regular], {
-      plan: "Max 20x",
-      full: 1,
-      knownWeight: false,
-      source: "unknown-plan",
-      revision: "2026-10-30",
-    });
+    const retained = copy(retainedSample);
     const before = await capacityOverview(retained.history, "pool", start, retained.to);
     assert.equal(before.forecasts[0]?.status, "estimated");
     assert.equal(before.forecasts[0]?.history.completedWeeks, 4);
@@ -287,38 +334,7 @@ for (const membership of ["connected", "removed", "legacy-removed", "legacy-remo
 }
 
 test("mixed mature forecasts retain Codex and five-hour training when Claude weekly changes", async () => {
-  const retained = await sampleWeeks(
-    [regular, regular, regular, regular],
-    {
-      plan: "Max 20x",
-      full: 1,
-      source: "unknown-plan",
-      knownWeight: false,
-      revision: "2026-10-30",
-    },
-    [
-      {
-        account: "codex",
-        provider: "codex",
-        plan: "Plus",
-        windowSeconds,
-        full: 1,
-        unit: { id: "chatgpt-plus-equivalent", label: "Plus-eq" },
-        source: "reference-plan",
-        knownWeight: true,
-        revision: "2026-10-30",
-      },
-      {
-        account: "overview-fixture",
-        provider: "claude",
-        windowSeconds: 18_000,
-        full: 20,
-        source: "published-session-multiplier",
-        knownWeight: true,
-        revision: "2026-10-30",
-      },
-    ],
-  );
+  const retained = copy(mixedSample);
   const before = await capacityOverview(retained.history, "pool", start, retained.to);
   assert.equal(before.forecasts.length, 3);
   assert.ok(

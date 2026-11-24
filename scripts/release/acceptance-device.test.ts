@@ -280,3 +280,37 @@ test("given this run's boot record, accept reads a refusal as the release's, ser
     }
   }
 });
+
+test("a declared restart's boot read on a pool answering 429 says it did not serve, not that it did not answer", async () => {
+  const cwd = await mkdtemp(
+    join(process.env.RUNNER_TEMP ?? join(homedir(), "Library", "Caches"), "acceptance-busy-"),
+  );
+  const pool = createServer((_, response) => {
+    response.writeHead(429, { "content-type": "application/json" });
+    response.end('{"error":{"message":"busy","type":"rate_limit_error"}}');
+  });
+  await new Promise<void>((done) => pool.listen(0, "127.0.0.1", done));
+  try {
+    const boot = await entry(
+      [
+        "boot",
+        "--stage",
+        "test-acceptance-device",
+        "--out",
+        join(cwd, "boot.json"),
+        "--allow-not-serving",
+      ],
+      {
+        POOL_ACCEPTANCE_ORIGIN: `http://127.0.0.1:${(pool.address() as AddressInfo).port}`,
+        ...environment(),
+      },
+    );
+    assert.equal(boot.status, 0, boot.output);
+    assert.match(await readFile(join(cwd, "boot.json"), "utf8"), /"boot": "not-serving"/u);
+    assert.match(boot.output, /did not serve the boot read before the apply/u);
+    assert.doesNotMatch(boot.output, /does not answer/u);
+  } finally {
+    pool.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

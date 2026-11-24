@@ -1,0 +1,94 @@
+{
+  "exa": {
+    "source": "https://api.exa.ai/openapi.json",
+    "openapi": "3.1.0",
+    "operations": {
+      "search": {
+        "method": "post",
+        "path": "/search",
+        "tags": null,
+        "inputSha256": "1c54ee5f068af2b7124be33fb336e5e8c3662667c817e39e06c0894055f33957"
+      },
+      "getContents": {
+        "method": "post",
+        "path": "/contents",
+        "tags": null,
+        "inputSha256": "fc02f24a0d6bb3056fbcfad5f0881255ee974e3010dd475f8225243733a30db5"
+      },
+      "findSimilar": {
+        "method": "post",
+        "path": "/findSimilar",
+        "tags": null,
+        "inputSha256": "060ccfbfb89a708fc99908a0f9ddda5ba875332eee8b0b6e519945972c0240cf"
+      },
+      "answer": {
+        "method": "post",
+        "path": "/answer",
+        "tags": null,
+        "inputSha256": "152eaf75b17e4438a6266fd8d0683baa707a9d80a5868b71fbeee2417f6efdb2"
+      },
+      "websets-preview": {
+        "method": "post",
+        "path": "/v0/websets/preview",
+        "tags": [
+          "Websets Preview"
+        ],
+        "inputSha256": "ffdb94f52de86c1e635ebd50eea7506659d9bd8d09008043bb1ed27abcc792c8"
+      }
+    }
+  },
+  "firecrawl": {
+    "source": "https://docs.firecrawl.dev/api-reference/v2-openapi.json",
+    "openapi": "3.0.0",
+    "operations": {
+      "scrapeAndExtractFromUrl": {
+        "method": "post",
+        "path": "/scrape",
+        "tags": [
+          "Scraping"
+        ],
+        "inputSha256": "eda3063ee411318ed56e60e8f56b0e9f98ea47b7bc28ad71efaefdba89cc511f"
+      },
+      "searchAndScrape": {
+        "method": "post",
+        "path": "/search",
+        "tags": [
+          "Search"
+        ],
+        "inputSha256": "614a8634cbccf495b4a77e228cdf34ac379b886b210af6983ebf1d45a5d344d9"
+      },
+      "mapUrls": {
+        "method": "post",
+        "path": "/map",
+        "tags": [
+          "Mapping"
+        ],
+        "inputSha256": "e5e3ff0f0c87493aa9dda77c3ded6110d43a93afe3627de2b1416bb49bd2251d"
+      },
+      "developerSearchPost": {
+        "method": "post",
+        "path": "/search/developer",
+        "tags": [
+          "Developer"
+        ],
+        "inputSha256": "97af51cbfd0777d4a4a6ad25516aa2964ed961b7965380b4f52f2676156bff6d"
+      },
+      "govSearchPost": {
+        "method": "post",
+        "path": "/search/gov",
+        "tags": [
+          "Government"
+        ],
+        "inputSha256": "f1e069c6d4bdb4246f0c85860e450c8797235ba5e2bfd0ee7ffc5c7ed318889a"
+      },
+      "crawlParamsPreview": {
+        "method": "post",
+        "path": "/crawl/params-preview",
+        "tags": [
+          "Crawling"
+        ],
+        "inputSha256": "3f8c4a80b1331150444a22b2bb2231b02a303df90de779e701568574c80f53bd"
+      }
+    }
+  }
+}

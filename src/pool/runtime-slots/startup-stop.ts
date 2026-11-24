@@ -4,6 +4,8 @@ import { SlotRefused, sameTarget } from "./contract.ts";
 import { isLaunchAuthorization } from "./admission-proof.ts";
 import type { RuntimeWitnessStore } from "./witness-store.ts";
 import type { ControllerState } from "./runtime-state.ts";
+import { stopGracefully } from "./forced-stop.ts";
+import { markStopSent } from "./container-end.ts";
 import {
   StartupStopIntent,
   StartupStopRecord,
@@ -37,7 +39,7 @@ export class RuntimeStartupStop {
     if (record.status === "aborted") return record;
     if (this.ctx.container!.running) return record;
     const next = { ...record, status: "aborted" as const };
-    await this.ctx.storage.put(startupStopKey(intent.target), next);
+    await this.store.end(() => this.ctx.storage.put(startupStopKey(intent.target), next));
     return next;
   }
   async abort(value: StartupStopIntent, signal: AbortSignal) {
@@ -66,12 +68,15 @@ export class RuntimeStartupStop {
       if (await transaction.get(startupStopKey(intent.target))) throw new SlotRefused("uncertain");
       await transaction.put(startupStopKey(intent.target), record);
     });
+    // The pending record already ends the slot, whether or not its stop ever completes.
+    await this.store.dropIfEnded(intent.target);
     if (!this.ctx.container!.running) return this.inspect(intent);
     await this.ctx.storage.put(startupStopKey(intent.target), { ...record, destroySent: true });
     const work = (async () => {
       const monitor = this.ctx.container!.monitor();
       void monitor.catch(() => {});
-      await this.ctx.container!.destroy();
+      await markStopSent(this.ctx);
+      await stopGracefully(this.ctx.container!);
       await monitor.catch((error) => {
         if (!(error instanceof Error) || !Schema.is(Schema.Struct({ exitCode: Schema.Int }))(error))
           throw error;

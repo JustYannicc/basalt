@@ -1,0 +1,416 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { test } from "node:test";
+import { Effect, ErrorReporter, Redacted, Schema } from "effect";
+import { FetchHttpClient, HttpServerRequest } from "effect/http";
+import { TestClock } from "effect/testing";
+import { PoolUsageUnavailable } from "../../.upstream/apps/hosted/server/src/contracts/pool-usage.ts";
+import { load, refusalTag, reported, responseBody, routeTag } from "./pool-app-failure-fixture.ts";
+
+const [summaryUi, poolUi, backend, usage, organizations, ui, sdk] = await Promise.all([
+  load("apps/hosted/server/src/implementation/pool-summary-app-ui.ts"),
+  load("apps/hosted/server/src/implementation/pool-app-ui.ts"),
+  load("apps/hosted/server/src/implementation/pool-backend.ts"),
+  load("apps/hosted/server/src/contracts/pool-usage.ts"),
+  load("apps/hosted/server/src/contracts/organization.ts"),
+  load("packages/apps/src/contracts/ui.ts"),
+  load("packages/sdk/src/core.ts"),
+]);
+// Loaded by the tests that use it, so the other tests fail on their assertions without it.
+const refusals = () => load("apps/hosted/server/src/implementation/pool-refusal.ts");
+
+const version = sdk.VersionId.make("dpl_pool_app_failure");
+const viewer = (userId = "viewer") => ({
+  app: { id: sdk.AppId.make("app_pool_failure"), activeVersion: version },
+  access: {
+    organization: "org_pool_failure",
+    owner: sdk.OwnerId.make("organization:org_pool_failure"),
+    role: "admin" as const,
+    userId,
+  },
+});
+
+const bounds = { from: "2026-11-01T00:00:00Z", to: "2026-11-02T00:00:00Z" };
+/** The page response, as the routes answer it. */
+type Answer = {
+  readonly status: number;
+  readonly body: { readonly _tag: string; readonly body?: Uint8Array };
+};
+type Route = (authorize: Effect.Effect<ReturnType<typeof viewer>, object>) => Effect.Effect<Answer>;
+const routes: Record<string, { readonly route: Route; readonly input: unknown }> = {
+  "pool-usage/summary": { route: summaryUi.poolAppUsageSummary, input: bounds },
+  "pool-usage/series": {
+    route: poolUi.poolAppUsage,
+    input: { ...bounds, bucket: "day", by: [] },
+  },
+  "pool-usage/overview": { route: poolUi.poolAppUsageOverview, input: { ...bounds, days: 7 } },
+  "pool-usage/personal-overview": {
+    route: poolUi.poolAppPersonalUsageOverview,
+    input: { ...bounds, days: 7 },
+  },
+  "pool-usage/account-label": {
+    route: poolUi.poolAppUsageAccountLabel,
+    input: { account: `imported:${"a".repeat(64)}`, label: null },
+  },
+};
+// A read that fails after authorization reaches the same catch-all as this failure does.
+const failing = (route: string, error: object) => routes[route]!.route(Effect.fail(error));
+
+const request = (body: unknown) =>
+  HttpServerRequest.fromWeb(
+    new Request("https://app.example.invalid/_executor/api/pool-usage", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+
+const signed = {
+  origin: "https://pool.example.invalid",
+  key: Redacted.make("ab".repeat(32)),
+};
+/** A failed pool command, as its tag. */
+type PoolError = { readonly _tag: string };
+/** What the real pool command fails with when the pool answers `status` and `body`. */
+const poolAnswer = (status: number, body: unknown, pool = "app_pool_failure") =>
+  Effect.runPromise<PoolError, never>(
+    backend
+      .sendPoolCommand(
+        "poolUsageSummary",
+        { pool, organization: "org_pool_failure", user: "viewer", input: {} },
+        Schema.Unknown,
+      )
+      .pipe(
+        Effect.flip,
+        Effect.provideService(usage.PoolUsageBackend, signed),
+        Effect.provideService(FetchHttpClient.Fetch, async () => Response.json(body, { status })),
+      ),
+  );
+
+const unavailable = { _tag: "UiFailed", reason: "unavailable" };
+const unavailableText = "Pool usage could not be reached. Try again.";
+const failureOf = (event: { exception?: { values?: readonly { type?: unknown }[] } }) =>
+  event.exception?.values?.[0];
+
+test("every mirrored pool refusal code is a code of the pool's contract", async () => {
+  const contract = readFileSync(new URL("../../apps/pool/contract.ts", import.meta.url), "utf8");
+  const union = /export type ControlErrorCode =([^;]+);/.exec(contract)?.[1];
+  assert.ok(union, "apps/pool/contract.ts declares ControlErrorCode");
+  const declared = new Set([...union.matchAll(/"([^"]+)"/g)].map((match) => match[1]));
+  const { poolRefusalCodes } = await refusals();
+  assert.ok(poolRefusalCodes.length > 0);
+  for (const code of poolRefusalCodes) assert.ok(declared.has(code), `${code} is a pool code`);
+});
+
+test("a pool refusal keeps its status and listed code, never its message or wire shape", async () => {
+  const { poolRefusal } = await refusals();
+  const secret = "private pool text for person@example.invalid";
+  const tooLarge = await poolAnswer(503, { error: "history_too_large", message: secret }, "app_a");
+  assert.equal(tooLarge._tag, "PoolUsageUnavailable");
+  assert.deepEqual(poolRefusal(tooLarge), {
+    status: 503,
+    code: "history_too_large",
+    pool: "app_a",
+  });
+  assert.ok(Schema.is(PoolUsageUnavailable)(tooLarge));
+  const encode = Schema.encodeEffect(PoolUsageUnavailable);
+  assert.deepEqual(
+    await Effect.runPromise(encode(tooLarge)),
+    await Effect.runPromise(encode(new PoolUsageUnavailable())),
+  );
+  // An unlisted code keeps only the status.
+  assert.deepEqual(poolRefusal(await poolAnswer(503, { error: "busy", message: secret })), {
+    status: 503,
+    pool: "app_pool_failure",
+  });
+  assert.deepEqual(poolRefusal(await poolAnswer(404, { error: "not_found" })), {
+    status: 404,
+    code: "not_found",
+    pool: "app_pool_failure",
+  });
+  // A failure the pool did not answer stays unnamed.
+  const unreachable = await Effect.runPromise<PoolError, never>(
+    backend.sendPoolCommand("poolUsageSummary", { pool: "app_a" }, Schema.Unknown).pipe(
+      Effect.flip,
+      Effect.provideService(usage.PoolUsageBackend, signed),
+      Effect.provideService(FetchHttpClient.Fetch, async () => {
+        throw new Error("connection refused");
+      }),
+    ),
+  );
+  assert.equal(unreachable._tag, "PoolUsageUnavailable");
+  assert.equal(poolRefusal(unreachable), undefined);
+});
+
+test("each pool app route reports a 503 once, tagged with its route, by type and message", async () => {
+  for (const route of Object.keys(routes)) {
+    const { result, events } = await reported(failing(route, new usage.PoolUsageUnavailable()));
+    assert.equal(result.status, 503, route);
+    assert.deepEqual(responseBody(result), unavailable);
+    assert.equal(events.length, 1, `${route} reports one event`);
+    const [event] = events;
+    // A label is a person's own text, so that route reports no message at all.
+    const value = route === "pool-usage/account-label" ? {} : { value: unavailableText };
+    assert.deepEqual(event!.exception, { values: [{ type: "PoolUsageUnavailable", ...value }] });
+    assert.deepEqual(event!.tags, { [routeTag]: route });
+    assert.deepEqual(event!.fingerprint, ["basalt", "PoolUsageUnavailable", route]);
+    for (const key of ["extra", "request", "breadcrumbs"]) assert.equal(key in event!, false);
+  }
+  // Without the direct sink's projection the event still holds only the reduced failure.
+  const { events } = await reported(
+    failing("pool-usage/summary", new usage.PoolUsageUnavailable()),
+    false,
+  );
+  assert.equal(events.length, 1);
+  assert.equal(failureOf(events[0]!)?.type, "PoolUsageUnavailable");
+  assert.equal(events[0]!.exception?.values?.[0]?.value, unavailableText);
+  assert.equal(events[0]!.tags?.[routeTag], "pool-usage/summary");
+});
+
+test("nothing below 500 reports, though the page still reads a pool refusal as unavailable", async () => {
+  const run = async (effect: Effect.Effect<Answer>, body: unknown = {}) => {
+    const { result, events } = await reported(
+      effect.pipe(Effect.provideService(HttpServerRequest.HttpServerRequest, request(body))),
+    );
+    return { status: result.status, events: events.length };
+  };
+  for (const [name, { route, input }] of Object.entries(routes)) {
+    assert.deepEqual(await run(route(Effect.succeed(viewer("")))), { status: 401, events: 0 });
+    assert.deepEqual(await run(failing(name, new ui.UiForbidden())), { status: 403, events: 0 });
+    assert.deepEqual(await run(failing(name, new organizations.OrganizationForbidden())), {
+      status: 403,
+      events: 0,
+    });
+    assert.deepEqual(await run(route(Effect.succeed(viewer()))), { status: 400, events: 0 });
+    assert.deepEqual(
+      await run(route(Effect.succeed(viewer())), { version: "dpl_other", input }),
+      { status: 409, events: 0 },
+      name,
+    );
+  }
+  for (const [status, error] of [
+    [400, "invalid_query"],
+    [413, "invalid_query"],
+    [401, "unauthorized"],
+    [403, "unauthorized"],
+    [404, "not_found"],
+  ] as const) {
+    const refused = await poolAnswer(status, { error, message: "private" });
+    assert.deepEqual(await run(failing("pool-usage/summary", refused)), { status: 503, events: 0 });
+  }
+  // The same route still reports a pool failure at or above 500.
+  const failed = await poolAnswer(503, { error: "backend_unavailable" });
+  assert.deepEqual(await run(failing("pool-usage/summary", failed)), { status: 503, events: 1 });
+  // A pool answer below 500 with no named refusal still becomes the route's 503, so it reports.
+  for (const [status, body] of [
+    [409, { error: "busy" }],
+    [429, {}],
+  ] as const) {
+    const unnamed = await poolAnswer(status, body);
+    assert.deepEqual(await run(failing("pool-usage/summary", unnamed)), { status: 503, events: 1 });
+  }
+  // A failure marked to be ignored answers the same and is never reported.
+  class Ignored extends Error {
+    readonly [ErrorReporter.ignore] = true;
+  }
+  assert.deepEqual(await run(failing("pool-usage/summary", new Ignored("quiet"))), {
+    status: 503,
+    events: 0,
+  });
+});
+
+test("an account-label failure reports its type and route, never a label or an address", async () => {
+  const label = "Team inbox Alex";
+  const address = "alex.example@example.invalid";
+  const failure = new Error(`saving the label ${label} for ${address} failed`);
+  for (const strictPrivacy of [true, false]) {
+    const { result, events } = await reported(
+      failing("pool-usage/account-label", failure),
+      strictPrivacy,
+    );
+    assert.equal(result.status, 503);
+    assert.deepEqual(responseBody(result), unavailable);
+    assert.equal(events.length, 1);
+    assert.equal(failureOf(events[0]!)?.type, "Error");
+    assert.ok(!events[0]!.exception?.values?.[0]?.value, `no message (${strictPrivacy})`);
+    assert.equal(events[0]!.tags?.[routeTag], "pool-usage/account-label");
+    const text = JSON.stringify(events[0]);
+    for (const secret of [label, address, "example.invalid"])
+      assert.equal(text.includes(secret), false, `${secret} is not reported (${strictPrivacy})`);
+  }
+});
+
+test("a failure with unreadable fields answers unavailable and reports its kind only", async () => {
+  const hostile = new Error("unused");
+  Object.defineProperty(hostile, "message", {
+    get() {
+      throw new Error("a field that throws");
+    },
+  });
+  const { result, events } = await reported(failing("pool-usage/overview", hostile));
+  assert.equal(result.status, 503);
+  assert.deepEqual(responseBody(result), unavailable);
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]!.exception, { values: [{ type: "UnrecognizedFailure" }] });
+});
+
+test("a report never carries a token- or address-shaped message, nor an error's fields", async () => {
+  const token = "tok_4f9a8b7c6d5e4f3a2b1c";
+  const address = "person.name@example.invalid";
+  const defect = new Error(`refresh for ${address} failed with ${token}\nat a private line`);
+  for (const strictPrivacy of [true, false]) {
+    const { result, events } = await reported(
+      failing("pool-usage/overview", defect),
+      strictPrivacy,
+    );
+    assert.equal(result.status, 503);
+    assert.equal(events.length, 1);
+    const text = JSON.stringify(events[0]);
+    for (const secret of [token, address, "example.invalid", "private line"])
+      assert.equal(text.includes(secret), false, `${secret} is not reported (${strictPrivacy})`);
+    assert.equal(failureOf(events[0]!)?.type, "Error");
+    assert.match(String(events[0]!.exception?.values?.[0]?.value), /^refresh for <email> failed/);
+  }
+  // A tagged error is recorded by its tag and declared sentence, never its message or fields.
+  class PrivateFailure extends Error {
+    readonly _tag = "PrivateFailure";
+    readonly detail = token;
+    constructor() {
+      super(`lookup for ${address} refused`);
+    }
+  }
+  const { events } = await reported(failing("pool-usage/series", new PrivateFailure()));
+  assert.equal(events.length, 1);
+  assert.deepEqual(events[0]!.exception, { values: [{ type: "PrivateFailure" }] });
+  assert.equal(JSON.stringify(events[0]).includes(token), false);
+  assert.equal(JSON.stringify(events[0]).includes(address), false);
+  const storage = await reported(failing("pool-usage/series", new sdk.StorageError()));
+  assert.deepEqual(storage.events[0]!.exception, {
+    values: [{ type: "StorageError", value: "Could not read or write saved data." }],
+  });
+});
+
+test("pool failures report on every occurrence; a repeated named refusal once per cause", async () => {
+  const { refusedBy } = await refusals();
+  const count = async (route: string, error: () => object | Promise<object>, times = 2) => {
+    const events = [];
+    for (let attempt = 0; attempt < times; attempt++)
+      events.push(...(await reported(failing(route, await error()))).events);
+    return events;
+  };
+  const unavailableEvents = await count("pool-usage/summary", () =>
+    poolAnswer(503, { error: "backend_unavailable" }),
+  );
+  assert.equal(unavailableEvents.length, 2);
+  for (const event of unavailableEvents)
+    assert.deepEqual(event.tags, {
+      [routeTag]: "pool-usage/summary",
+      [refusalTag]: "backend_unavailable",
+    });
+  const timeout = () =>
+    refusedBy(
+      new usage.PoolUsageTimedOut(),
+      { status: 504, body: { error: "history_timeout", message: "private" } },
+      { pool: "app_pool_failure" },
+    );
+  const timeouts = await count("pool-usage/series", timeout);
+  assert.equal(timeouts.length, 2);
+  assert.equal(failureOf(timeouts[0]!)?.type, "PoolUsageTimedOut");
+  assert.equal(timeouts[0]!.tags?.[refusalTag], "history_timeout");
+  assert.equal((await count("pool-usage/overview", () => new sdk.StorageError())).length, 2);
+
+  const tooLarge = (pool: string) => () =>
+    poolAnswer(503, { error: "history_too_large", message: "private" }, pool);
+  const first = await count("pool-usage/summary", tooLarge("app_too_large_a"), 3);
+  assert.equal(first.length, 1, "one pool's repeated refusal reports once");
+  assert.deepEqual(first[0]!.tags, {
+    [routeTag]: "pool-usage/summary",
+    [refusalTag]: "history_too_large",
+  });
+  assert.equal((await count("pool-usage/summary", tooLarge("app_too_large_b"))).length, 1);
+  // The held-back cause hides no other failure of the same pool.
+  const other = await count("pool-usage/summary", () =>
+    poolAnswer(503, { error: "backend_unavailable" }, "app_too_large_a"),
+  );
+  assert.equal(other.length, 2);
+});
+
+test("a held-back refusal reports again once its hour has passed", async () => {
+  const { refusedBy } = await refusals();
+  const tooLarge = () =>
+    refusedBy(
+      new usage.PoolUsageUnavailable(),
+      { status: 503, body: { error: "history_too_large" } },
+      { pool: "app_too_large_window" },
+    );
+  const reportsAfter = async (minutes: number) =>
+    (
+      await reported(
+        Effect.gen(function* () {
+          yield* TestClock.adjust(minutes * 60_000);
+          return yield* failing("pool-usage/summary", tooLarge());
+        }).pipe(Effect.provide(TestClock.layer())),
+      )
+    ).events.length;
+  assert.equal(await reportsAfter(0), 1);
+  assert.equal(await reportsAfter(59), 0);
+  assert.equal(await reportsAfter(61), 1);
+});
+
+test("held-back refusals are capped at 512, after which the oldest reports again", async () => {
+  const { refusedBy } = await refusals();
+  const { reportPoolAppFailure } = await load(
+    "apps/hosted/server/src/implementation/pool-app-failure.ts",
+  );
+  const tooLarge = (pool: string) =>
+    refusedBy(
+      new usage.PoolUsageUnavailable(),
+      { status: 503, body: { error: "history_too_large" } },
+      { pool },
+    );
+  const summary = async (pool: string) =>
+    (await reported(failing("pool-usage/summary", tooLarge(pool)))).events.length;
+  assert.equal(await summary("app_too_large_oldest"), 1);
+  assert.equal(await summary("app_too_large_oldest"), 0);
+  // Newer causes claim their places whether or not a reporter is listening.
+  for (let index = 0; index < 512; index++)
+    await Effect.runPromise(
+      reportPoolAppFailure("pool-usage/summary", tooLarge(`app_too_large_newer_${index}`)),
+    );
+  assert.equal(await summary("app_too_large_oldest"), 1);
+});
+
+test("strict privacy passes only listed routes, listed refusals and identifier types", async () => {
+  const { poolAppIncident } = await load(
+    "apps/hosted/cloud/src/implementation/pool-app-incident.ts",
+  );
+  const event = (tags: Record<string, string>, type: string) => ({
+    tags,
+    exception: { values: [{ type, value: "refused" }] },
+  });
+  assert.deepEqual(
+    poolAppIncident(event({ [routeTag]: "pool-usage/summary" }, "PoolUsageUnavailable")),
+    {
+      failure: "PoolUsageUnavailable",
+      value: "refused",
+      tags: { [routeTag]: "pool-usage/summary" },
+      fingerprint: ["basalt", "PoolUsageUnavailable", "pool-usage/summary"],
+    },
+  );
+  // The account-label route's value never passes, whatever reached the boundary.
+  assert.deepEqual(
+    poolAppIncident(event({ [routeTag]: "pool-usage/account-label" }, "PoolUsageUnavailable")),
+    {
+      failure: "PoolUsageUnavailable",
+      tags: { [routeTag]: "pool-usage/account-label" },
+      fingerprint: ["basalt", "PoolUsageUnavailable", "pool-usage/account-label"],
+    },
+  );
+  for (const [tags, type] of [
+    [{ [routeTag]: "pool-usage/other" }, "PoolUsageUnavailable"],
+    [{ [routeTag]: "pool-usage/summary", [refusalTag]: "busy" }, "PoolUsageUnavailable"],
+    [{ [routeTag]: "pool-usage/summary" }, "not an identifier"],
+    [{}, "PoolUsageUnavailable"],
+  ] as const)
+    assert.equal(poolAppIncident(event(tags, type)), undefined, JSON.stringify(tags) + type);
+});

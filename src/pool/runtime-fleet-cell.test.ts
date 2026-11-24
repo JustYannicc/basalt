@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { fleetCellFixture as fixture } from "../../scripts/pool-tests/runtime-fleet-cell-fixture.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
+import { startingBoundMs } from "./runtime-fleet/phase-bounds.ts";
 
 test("a fleet cell joins provider reads to the retained actual start witness before it can forward", async (context) => {
   const f = await fixture();
@@ -122,7 +123,8 @@ test("an absent observation secret holds draining capacity without destruction a
     now: Date.now,
   });
   f.secret(null);
-  await assert.rejects(fleet.upkeep(), /provider observation refused/);
+  // The refused provider read settles for its row; the pass itself goes on.
+  await fleet.upkeep();
   assert.equal(f.calls.destroy, 0);
   assert.equal((await state.inspect()).length, 1);
   assert.equal((await state.inspect())[0]?.phase, "draining");
@@ -272,4 +274,72 @@ test("a plain control mutation error is never resent", async (context) => {
   assert.equal(fields.path, "/drain");
   assert.equal(fields.reconnectEligible, false);
   assert.equal(fields.reconnectOutcome, "not_run");
+});
+
+test("a never-served start is abandoned only once its instance stayed absent through a whole start bound", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  await f.cell.start(f.target);
+  assert.equal(await f.cell.abandon(f.target), false, "a listed instance is running");
+  // The container exits on its own, and the provider keeps listing it as inactive.
+  await f.ctx.container!.destroy();
+  assert.equal(
+    await f.cell.abandon(f.target),
+    false,
+    "one absent read just after a start proves nothing: the listing may lag",
+  );
+  context.mock.timers.tick(startingBoundMs - 1_000);
+  assert.equal(await f.cell.abandon(f.target), false);
+  f.revive();
+  assert.equal(await f.cell.abandon(f.target), false, "listed again, so the wait starts over");
+  await f.ctx.container!.destroy();
+  assert.equal(await f.cell.abandon(f.target), false);
+  context.mock.timers.tick(startingBoundMs - 1_000);
+  assert.equal(await f.cell.abandon(f.target), false);
+  context.mock.timers.tick(1_000);
+  assert.equal(await f.cell.abandon(f.target), true);
+});
+
+test("abandon and start never overlap: a start asked for while abandon decides is refused and sends nothing", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const abandoning = f.cell.abandon(f.target);
+  await assert.rejects(f.cell.start(f.target), /selection/);
+  assert.equal(await abandoning, true, "nothing was ever sent");
+  await assert.rejects(f.cell.start(f.target), /selection/, "an abandoned cell never starts again");
+  assert.equal(f.calls.start, 0);
+});
+
+test("a start already in flight when the fence lands is still covered by the absence wait", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  let reached!: () => void;
+  let release!: () => void;
+  const inHealth = new Promise<void>((resolve) => (reached = resolve));
+  const held = new Promise<void>((resolve) => (release = resolve));
+  f.hooks.health = async () => {
+    reached();
+    await held;
+  };
+  // The old controller isolate's start: its intent is written and the compute start is running.
+  const starting = f.cell.start(f.target);
+  await inHealth;
+  const replaced = f.replacedCell();
+  const abandoning = replaced.abandon(f.target);
+  release();
+  // The fence queued behind the compute start, so that start ran; the old isolate's next step is refused.
+  await assert.rejects(starting, /uncertain/);
+  assert.equal(f.ctx.container!.running, true, "the compute that was in flight runs");
+  assert.equal(await abandoning, false, "a running instance is never abandoned");
+  await assert.rejects(
+    f.endpoint.start(f.target, AbortSignal.timeout(2_000)),
+    /selection/,
+    "the fence refuses any later start",
+  );
+  await f.ctx.container!.destroy();
+  assert.equal(await replaced.abandon(f.target), false, "the wait starts once the fence held");
+  context.mock.timers.tick(startingBoundMs);
+  assert.equal(await replaced.abandon(f.target), true);
 });

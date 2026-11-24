@@ -48,6 +48,53 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertTrue(self.health.check())
         self.assertEqual(self.pending, [])
 
+    def test_an_hour_of_quiet_probes_stays_ready_on_one_audit_per_minute(self) -> None:
+        # The supervisor's two-second probe is the only thing happening.
+        for now in range(2, 3602, 2):
+            self.clock.now = now
+            self.assertTrue(self.health.check(), f"readiness lapsed at {now} s")
+            while self.pending:
+                self.finish_audit()
+        self.assertEqual(self.full.call_count, 60)
+
+    def test_a_failed_audit_is_retried_two_seconds_later_and_restores_readiness(self) -> None:
+        self.clock.now = 60
+        self.assertTrue(self.health.check())
+        self.full.return_value = False
+        self.finish_audit()
+        self.clock.now = 61.9
+        self.assertFalse(self.health.check())
+        self.assertEqual(self.pending, [], "no second audit before the retry delay")
+        self.clock.now = 62
+        self.assertFalse(self.health.check(), "readiness waits for the retried audit")
+        self.assertEqual(len(self.pending), 1, "the retry starts two seconds after the failure")
+        self.full.return_value = True
+        self.finish_audit()
+        self.assertTrue(self.health.check())
+        self.clock.now = 121.9
+        self.assertTrue(self.health.check())
+        self.assertEqual(self.pending, [], "a healthy retry returns to the minute cadence")
+        self.clock.now = 122
+        self.assertTrue(self.health.check())
+        self.assertEqual(len(self.pending), 1)
+
+    def test_an_audit_gets_four_seconds_and_readiness_ends_four_seconds_after_a_missed_one(self) -> None:
+        self.clock.now = 60
+        self.assertTrue(self.health.check())
+        self.clock.now = 63.5
+        self.finish_audit()
+        self.assertTrue(self.health.check(), "an audit inside its 4 s budget counts")
+        # The next audit starts at 123.5 and never answers.
+        self.clock.now = 123.5
+        self.assertTrue(self.health.check())
+        self.assertEqual(len(self.pending), 1)
+        self.clock.now = 127.25
+        self.assertTrue(self.health.check(), "readiness holds through the running audit's budget")
+        self.clock.now = 127.5
+        self.assertFalse(self.health.check(), "readiness ends when that budget runs out")
+        self.finish_audit()
+        self.assertFalse(self.health.check(), "an audit that answers past its budget fails closed")
+
     def test_failed_audit_cannot_be_overwritten_by_fast_success(self) -> None:
         self.clock.now = 60
         self.health.check()

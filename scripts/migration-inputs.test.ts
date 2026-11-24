@@ -26,7 +26,7 @@ const exclude = migrationInputs.exclude.map(prepared);
 const inKey = (file: string) =>
   include.some((pattern) => pattern.test(file)) && !exclude.includes(file);
 
-/** Copies of this repository's pool sources. They change only when those sources change. */
+/** Copies of this repository's own sources. They change only when those sources change. */
 const copiedSources = [
   "apps/hosted/server/src/implementation/cloudflare-scopes.ts",
   "apps/hosted/server/src/implementation/native-contract.ts",
@@ -35,6 +35,7 @@ const copiedSources = [
   "apps/hosted/server/src/implementation/pool-provider-capabilities.ts",
   "apps/hosted/server/src/implementation/pool-provider-definitions.ts",
   "apps/hosted/server/src/implementation/pool-token.ts",
+  "packages/sdk/src/implementation/oauth-client-id.ts",
 ];
 
 test("every file preparation writes into the migration's key is named", () => {

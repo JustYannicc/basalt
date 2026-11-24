@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A websocket tunnel client learns each server of its tenant exactly once: in its initial server_list when the server registered first, otherwise as the next server_online. The pool image build's tunnel test accepts either order."
+    }
+  }
+}

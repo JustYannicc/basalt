@@ -1,4 +1,5 @@
 import { codeHandoverHeader } from "./code-handover.ts";
+import type { GatewayFailureDiagnostic } from "./gateway-failure.ts";
 import { runtimeRouteDiagnostic } from "./runtime-route-diagnostic.ts";
 import { nativeRuntimeUnavailable } from "./runtime-unavailable.ts";
 
@@ -46,6 +47,37 @@ export function unsentRefusal(request: Request, error?: unknown) {
   return response;
 }
 
+/**
+ * The controller's answer to a call that ran nowhere, under the id its terminal start was written
+ * with, and its one log line. Every field is closed: the endpoint's trace id, step and reason when
+ * the runtime refused, and the forward's guard and cause, which say where it stopped when it didn't.
+ */
+export function unsentAnswer(
+  request: Request,
+  requestId: string,
+  diagnostic: Pick<
+    GatewayFailureDiagnostic,
+    "runtimeStep" | "runtimeReason" | "runtimeEndpointRequestId" | "guard" | "cause"
+  >,
+  resent = false,
+) {
+  console.error(
+    "POOL_CONTROLLER_UNSENT",
+    JSON.stringify({
+      requestId,
+      endpointRequestId: diagnostic.runtimeEndpointRequestId ?? null,
+      step: diagnostic.runtimeStep ?? null,
+      reason: diagnostic.runtimeReason ?? null,
+      guard: diagnostic.guard,
+      cause: diagnostic.cause,
+      ...(resent ? { resent: true } : {}),
+    }),
+  );
+  const refused = unsentRefusal(request);
+  refused.headers.set("X-Request-Id", requestId);
+  return refused;
+}
+
 export const sentNowhere = (response: Response) =>
   response.status === 503 && response.headers.get(controllerUnsentHeader) === "1";
 
@@ -67,6 +99,7 @@ const poolOnly = [
   "X-Signalbox-Runtime-Failure-Step",
   "X-Signalbox-Runtime-Failure-Reason",
   "X-Signalbox-Runtime-Failure-Cause",
+  "X-Signalbox-Runtime-Failure-Ready",
   "X-Signalbox-Runtime-Defect",
 ];
 

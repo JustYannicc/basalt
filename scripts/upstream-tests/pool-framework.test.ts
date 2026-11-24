@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { Effect } from "effect";
 import { admitFramework } from "../../.upstream/packages/sdk/src/implementation/framework-provenance.ts";
 import { poolFrameworkVersion } from "../pool-app-bundle.ts";
+import { generationName } from "../upstream-dependencies.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
@@ -125,5 +126,31 @@ test(
         assert.deepEqual(body, { ok: true, value: caller });
       }
     }
+  },
+);
+
+test(
+  "every dependency-store path in the built framework carries the key's own name",
+  {
+    skip:
+      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
+        ? "npm run build runs this against its framework assets"
+        : false,
+  },
+  () => {
+    // The framework's chunks name the dependency store's path, and the compiler serves them, so a
+    // store under any other name (a random one) changes its Worker with no source change (#1811).
+    const { key } = JSON.parse(
+      readFileSync(resolve(upstream, ".basalt-dependencies.json"), "utf8"),
+    );
+    const framework = readFileSync(
+      resolve(upstream, ".local/basalt-framework/framework.json"),
+      "utf8",
+    );
+    const names = new Set([...framework.matchAll(/generations\/([^/"\\]+)/gu)].map((m) => m[1]));
+    assert.deepEqual(
+      [...names].filter((name) => name !== generationName(key)),
+      [],
+    );
   },
 );
