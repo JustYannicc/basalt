@@ -105,7 +105,9 @@ export interface FleetCell {
   /** The cell's own stream count, read without draining it; without it a ready count stays as is. */
   activity?(identity: SlotIdentity): Promise<CellCount>;
   /** Releases a draining cell's count that stood still `leakedStreamsMs`; the cell checks both. */
-  releaseStill?(identity: SlotIdentity): Promise<{ released: number; stillMs: number }>;
+  releaseStill?(
+    identity: SlotIdentity,
+  ): Promise<{ released: number; stillMs: number; connections: number | null }>;
   /** Whether the cell is proven gone; false while its stop is still under way. */
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
@@ -442,6 +444,8 @@ export class RuntimeFleet {
       cell: released.released,
       ledgerStillMs,
       cellStillMs: released.stillMs,
+      // Established connections on the cell's 8317 just before the override, or null: evidence only.
+      connections: released.connections,
     };
     console.warn("POOL_FLEET_ROW_RETIRE_OVERRIDE", receipt);
     this.deps.changed?.();

@@ -219,6 +219,8 @@ test("an operator releases a draining count only once it has stood still the lea
   });
   const row = await activity.inspect(identity);
   assert.deepEqual([row?.phase, row?.active, row?.known], ["draining", 0, true]);
+  // A re-send whose first answer was lost finds nothing left to release, and refuses nothing.
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), { released: 0, stillMs: 0 });
   // The ordinary retirement now goes ahead, as for any drained runtime.
   await activity.retire(identity);
   assert.equal((await activity.inspect(identity))?.phase, "retiring");

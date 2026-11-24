@@ -143,6 +143,7 @@ const RetireReceipt = Schema.Struct({
   cell: Schema.Number,
   ledgerStillMs: Schema.Number,
   cellStillMs: Schema.Number,
+  connections: Schema.NullOr(Schema.Number),
 });
 export const retireOperationId = (go: string, key: string) =>
   `fleet-${shortHash("retire", go, key)}`;

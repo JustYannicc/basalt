@@ -73,7 +73,7 @@ async function stuckRow(
       if (options.cellMoved) throw new SlotRefused("draining");
       const released = cellCount;
       cellCount = 0;
-      return { released, stillMs: 2_400_000 };
+      return { released, stillMs: 2_400_000, connections: 0 };
     },
     retire: async (identity, begin) => {
       await begin();
@@ -125,6 +125,7 @@ test("a draining row whose count stood still retires through the ordinary retire
     cell: 6,
     ledgerStillMs: 300_000,
     cellStillMs: 2_400_000,
+    connections: 0,
   };
   assert.deepEqual(receipt, expected);
   assert.deepEqual(

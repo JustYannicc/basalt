@@ -50,6 +50,7 @@ const ActivityCount = Schema.Struct({
 const StillRelease = Schema.Struct({
   released: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  connections: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
 });
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {

@@ -526,7 +526,14 @@ test("retire-row sends one fleet-retire for the named draining row and prints it
         result: {
           before: { key: string; phase: string; active: number }[];
           after: { active: number }[];
-          retired: { overrode: { ledger: number; cell: number; cellStillMs: number } | null };
+          retired: {
+            overrode: {
+              ledger: number;
+              cell: number;
+              cellStillMs: number;
+              connections: number | null;
+            } | null;
+          };
         };
       }
     ).result;
@@ -545,6 +552,11 @@ test("retire-row sends one fleet-retire for the named draining row and prints it
         outcome.retired.overrode?.cellStillMs,
       ],
       [6, 6, 2_400_000],
+    );
+    assert.equal(
+      outcome.retired.overrode?.connections,
+      0,
+      "the 8317 connection read is printed beside the counts",
     );
     assert.doesNotMatch(
       JSON.stringify(result),

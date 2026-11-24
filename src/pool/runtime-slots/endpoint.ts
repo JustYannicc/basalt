@@ -45,7 +45,7 @@ import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
 import { RuntimeActivity, stillFor } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
-import { proveLegacyDrain } from "./legacy-drain.ts";
+import { legacyConnections, proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
@@ -556,10 +556,24 @@ export class RuntimeEndpoint {
       return { stopped: !this.ctx.container!.running };
     });
   }
-  /** The operator's override of a count that stood still on a draining runtime (`fleet-retire`). */
+  /**
+   * The operator's override of a count that stood still on a draining runtime (`fleet-retire`). It
+   * first reads the established connections on 8317 as evidence for the operator, never as a gate:
+   * null when the read fails or is late.
+   */
   releaseStill(identity: SlotIdentity) {
     this.bound(identity);
-    return this.serialize(() => this.activity.releaseStill(identity, leakedStreamsMs));
+    return this.serialize(async () => {
+      const container = this.ctx.container;
+      const read = container?.exec
+        ? legacyConnections({ exec: container.exec.bind(container) })
+        : Promise.reject(new SlotRefused("uncertain"));
+      const connections = await Promise.race([
+        read.catch(() => null),
+        new Promise<null>((late) => setTimeout(() => late(null), 1_500)),
+      ]);
+      return { ...(await this.activity.releaseStill(identity, leakedStreamsMs)), connections };
+    });
   }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {

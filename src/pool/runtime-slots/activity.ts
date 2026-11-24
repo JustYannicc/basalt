@@ -90,6 +90,8 @@ export class RuntimeActivity {
     return this.change(identity, (row) => {
       if (row.phase !== "draining") throw new SlotRefused("selection");
       const { stillMs } = stillFor(row);
+      // Nothing left to release, as after a re-send whose first answer was lost.
+      if (row.active === 0) return { row, result: { released: 0, stillMs } };
       if (stillMs < stillAtLeastMs) throw new SlotRefused("draining");
       return {
         row: { ...row, active: 0, known: true, leases: {}, changedAt: Date.now() },

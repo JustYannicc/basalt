@@ -249,6 +249,7 @@ export async function harness(options: HarnessOptions = {}) {
         cell: 6,
         ledgerStillMs: 300_000,
         cellStillMs: 2_400_000,
+        connections: 0,
       };
     },
     inspectCrash: async (_identity, nonce) => ({

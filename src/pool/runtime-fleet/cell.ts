@@ -132,7 +132,8 @@ export class FleetHandoffCell implements FleetCell {
     return this.deps.driver.activity(identity, AbortSignal.timeout(2_000));
   }
   releaseStill(identity: SlotIdentity) {
-    return this.deps.driver.releaseStill(identity, AbortSignal.timeout(2_000));
+    // Its connection read takes up to 1.5 s before the release itself.
+    return this.deps.driver.releaseStill(identity, AbortSignal.timeout(5_000));
   }
   async abandon(target: SlotTarget) {
     this.abandoned = true;
