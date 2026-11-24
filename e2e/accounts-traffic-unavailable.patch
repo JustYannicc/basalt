@@ -1,11 +1,9 @@
 --- a/e2e/tests/account-traffic.spec.ts
 +++ b/e2e/tests/account-traffic.spec.ts
-@@ -428,7 +428,97 @@
-               ),
-           );
+@@ -430,6 +430,103 @@
            expect(answered, `answered cells at ${width}px`).toEqual(["3", "0", 0, [0, 0, 0]]);
-+        }
-+
+         }
+ 
 +        // When the pool's reads fail, every account of the pool says its count is unavailable:
 +        // never its tool calls alone as if they were its total, never an empty cell that means no
 +        // history. An account outside any pool is unchanged.
@@ -51,14 +49,21 @@
 +                        .locator("[data-account-requests-unavailable]")
 +                        .count(),
 +                      page.locator("[data-account-requests-pending]").count(),
-+                      // "Unavailable" fits its cell on one line: no wrap, nothing clipped.
++                      // "Unavailable" stays inside its cell on one line: a desktop cell aligns right,
++                      // so overflow would spill left, which only the boxes show.
 +                      accountRow(page, "Called account")
 +                        .locator("[data-account-requests-cell]")
-+                        .evaluate(
-+                          (cell) =>
-+                            cell.scrollWidth <= cell.clientWidth &&
-+                            cell.getBoundingClientRect().height < 24,
-+                        ),
++                        .evaluate((cell) => {
++                          const word = cell.querySelector("[data-account-requests-unavailable]");
++                          if (word === null) return false;
++                          const outer = cell.getBoundingClientRect();
++                          const inner = word.getBoundingClientRect();
++                          return (
++                            inner.left >= outer.left - 0.5 &&
++                            inner.right <= outer.right + 0.5 &&
++                            word.getClientRects().length === 1
++                          );
++                        }),
 +                    ]),
 +                  ),
 +              );
@@ -74,7 +79,7 @@
 +            0,
 +            true,
 +          ]);
-         }
++        }
 +        // The pool's next answer brings the counts back on the open page, without a reload.
 +        // Revisions only advance upward, so the later change below publishes 2.
 +        yield* publishUsageChange(app, "1");
@@ -95,10 +100,11 @@
 +            ),
 +        );
 +        expect(restored, "counts after the pool answers again").toEqual(["3", "0", 0]);
- 
++
          // The called account's tool calls go, so that no row is counted by anything but the pool.
          yield* serverControl("stop");
-@@ -448,7 +538,7 @@
+         yield* legacyStorage([
+@@ -448,7 +545,7 @@
          // Once the pool can't map any request, no row has numbers: the column and the ticks go,
          // rather than leaving a column of blank cells. Its committed revision refreshes the view.
          yield* pool.respond(answer(ids, false, anchor));
