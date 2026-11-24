@@ -78,7 +78,6 @@ export default {
 };
 `;
 
-
 async function cellWorker() {
   const bundle = await build({
     stdin: {
@@ -117,7 +116,7 @@ async function countAfterReset(reset: "/reset" | "/cell-reset") {
   try {
     const call = mf
       .dispatchFetch("http://pool/v1/messages", { method: "POST", body: "{}" })
-      .then((response) => response.status)
+      .then((response: Response) => response.status)
       .catch(() => "cut");
     await new Promise((resolve) => setTimeout(resolve, 100));
     const before = await mf.dispatchFetch("http://pool/count");

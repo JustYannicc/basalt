@@ -33,7 +33,15 @@ export interface ModelForward {
 }
 
 type Outcome = "served" | "answered" | "failed_again" | "client_left";
-type Skip = "overloaded" | "client_left" | "ceiling" | "not_replayable" | "body_too_large" | "body_unreadable" | "hold_budget_full" | "too_late";
+type Skip =
+  | "overloaded"
+  | "client_left"
+  | "ceiling"
+  | "not_replayable"
+  | "body_too_large"
+  | "body_unreadable"
+  | "hold_budget_full"
+  | "too_late";
 
 const sleep = (milliseconds: number, signal: AbortSignal) =>
   new Promise<void>((resolve, reject) => {

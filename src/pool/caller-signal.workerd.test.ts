@@ -109,7 +109,7 @@ async function controllerReplacedDuring(headers: Record<string, string>) {
   try {
     const call = mf
       .dispatchFetch("http://pool/v1/messages", { method: "POST", body: "{}", headers })
-      .then((response) => response.text())
+      .then((response: Response) => response.text())
       .catch(() => "cut");
     await new Promise((resolve) => setTimeout(resolve, 100));
     await mf.dispatchFetch("http://pool/reset");

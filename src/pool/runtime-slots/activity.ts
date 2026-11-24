@@ -31,7 +31,9 @@ function reconciled(row: typeof Activity.Type, instance: string) {
   const live = entries.filter(([id, state]) => !over(id, state));
   const owners =
     row.owners &&
-    Object.fromEntries(Object.entries(row.owners).filter(([id]) => live.some(([kept]) => kept === id)));
+    Object.fromEntries(
+      Object.entries(row.owners).filter(([id]) => live.some(([kept]) => kept === id)),
+    );
   return {
     ...row,
     active: row.active - (entries.length - live.length),
