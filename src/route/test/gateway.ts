@@ -18,6 +18,8 @@ export class FakeGateway implements GatewayContainer {
         state: string | null;
         revision: number;
         selection?: { exit_id: string | null; when_down: string };
+        /** The node key expired: the identity is still on disk, but it is signed out. */
+        expired?: boolean;
       }
     | undefined;
   /** What a login turns into; the "state file" the gateway would hand back. */
@@ -29,6 +31,8 @@ export class FakeGateway implements GatewayContainer {
   offFirst = false;
   /** The next start ignores the identity it is given, as an expired or revoked node key would. */
   forgetState = false;
+  /** Identities whose node key expired; the tailnet keeps them expired across restarts. */
+  private expiredStates = new Set<string>();
   /** The next /state read fails once. */
   failStates = 0;
   /** The next reply to this path is not the I1 shape. */
@@ -63,7 +67,9 @@ export class FakeGateway implements GatewayContainer {
   }
   /** The exit the running node routes through, or null while it routes nothing. */
   get appliedExit() {
-    return this.running && this.boot?.state ? (this.boot.selection?.exit_id ?? null) : null;
+    return this.running && this.boot?.state && !this.boot.expired
+      ? (this.boot.selection?.exit_id ?? null)
+      : null;
   }
   private gates = new Map<
     string,
@@ -101,6 +107,7 @@ export class FakeGateway implements GatewayContainer {
     this.destroyed += 1;
     if (this.manual) await this.io("destroy");
     this.instance += 1;
+    this.bury();
     this.running = false;
     this.boot = undefined;
     this.pendingLogin = false;
@@ -108,6 +115,12 @@ export class FakeGateway implements GatewayContainer {
   async setInactivityTimeout(ms: number) {
     if (this.manual) await this.io("warm");
     this.inactivity.push(ms);
+  }
+  /** Closes every tunnel of a container that went away. */
+  private dying = new Set<() => void>();
+  private bury() {
+    for (const close of this.dying) close();
+    this.dying.clear();
   }
   /** Container I/O the scheduler releases; it may let other events in, but never fails here. */
   private async io(path: string) {
@@ -118,6 +131,7 @@ export class FakeGateway implements GatewayContainer {
   /** The container restarted underneath the DO (a deploy, a crash). */
   crash() {
     this.instance += 1;
+    this.bury();
     this.running = false;
     this.boot = undefined;
     this.pendingLogin = false;
@@ -127,19 +141,35 @@ export class FakeGateway implements GatewayContainer {
     if (!this.boot || !this.pendingLogin) throw new Error("No login to approve");
     this.pendingLogin = false;
     this.boot.state = this.loginState;
+    this.boot.expired = false;
+    this.expiredStates.delete(this.loginState);
     this.boot.revision += 1;
   }
+  /** The running node's key expires; a new sign-in issues a link on the same identity. */
+  expireKey() {
+    if (!this.boot?.state) return;
+    this.boot.expired = true;
+    this.expiredStates.add(this.boot.state);
+  }
+  /** Whether the running node is signed out because its key expired. */
+  get keyExpired() {
+    return this.running && !!this.boot?.expired;
+  }
+  /** Tunnels open now: each dies with the container it was opened on. */
+  openTunnels = 0;
 
   private status() {
     const boot = this.boot!;
-    const loggedIn = boot.state !== null;
+    const loggedIn = boot.state !== null && !boot.expired;
     const selection = boot.selection;
     const off = !selection || selection.exit_id === null;
     const down =
       this.offFirst && off
         ? "route_off"
         : !loggedIn
-          ? "route_needs_login"
+          ? boot.expired
+            ? "route_key_expired"
+            : "route_needs_login"
           : off
             ? "route_off"
             : !this.exitOnline
@@ -210,13 +240,18 @@ export class FakeGateway implements GatewayContainer {
       this.starts.push(state);
       this.onStart?.(state);
       this.bootCount += 1;
-      this.boot = { id: `boot-${this.bootCount}`, state, revision: 0 };
+      this.boot = {
+        id: `boot-${this.bootCount}`,
+        state,
+        revision: 0,
+        expired: state !== null && this.expiredStates.has(state),
+      };
       return Response.json({ boot_id: this.boot.id });
     }
     if (!this.boot) return Response.json({ error: "route_gateway_unavailable" }, { status: 409 });
     if (path === "/status" && method === "GET") return Response.json(this.status());
     if (path === "/login" && method === "POST") {
-      if (this.boot.state !== null) return Response.json({ state: "ready" });
+      if (this.boot.state !== null && !this.boot.expired) return Response.json({ state: "ready" });
       this.pendingLogin = true;
       return Response.json({ url: "https://login.example.invalid/a/test" });
     }
@@ -275,12 +310,24 @@ export class FakeGateway implements GatewayContainer {
           };
         }
         const echo = new TransformStream<Uint8Array, Uint8Array>();
-        return {
-          opened: Promise.resolve(),
-          readable: echo.readable,
-          writable: echo.writable,
-          close: async () => {},
+        const instance = this.instance;
+        let open = false;
+        const close = async () => {
+          if (open) this.openTunnels -= 1;
+          open = false;
         };
+        // In manual mode the socket opens only when the scheduler says, like real TCP.
+        const opened = (this.manual ? this.io("connect") : Promise.resolve()).then(() => {
+          if (instance !== this.instance || !this.running) throw new TypeError("connection reset");
+          open = true;
+          this.openTunnels += 1;
+          const tunnelInstance = this.instance;
+          this.dying.add(() => {
+            if (open && tunnelInstance !== this.instance) void close();
+          });
+        });
+        opened.catch(() => {});
+        return { opened, readable: echo.readable, writable: echo.writable, close };
       },
     };
   }

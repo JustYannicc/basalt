@@ -69,6 +69,8 @@ async function sequence(seed: number, trace: string[]) {
   const random = generator(seed);
   const pick = <T>(items: readonly T[]): T => items[Math.floor(random() * items.length)]!;
   const { deps, storage, container, advance } = gatewayDependencies();
+  // The real gateway checks routing off before sign-in.
+  container.offFirst = true;
   const gateway = new RouteGatewayCore(deps);
   await gateway.create({ routeId, owner, app: "tailscale" });
   // Most sequences begin signed in, with an exit on or off, so the walk spends its steps where
@@ -91,6 +93,8 @@ async function sequence(seed: number, trace: string[]) {
   // Every intent event invoked so far; a select that succeeds must have had none after it.
   let intents = 0;
   let signIns = 0;
+  /** Disconnects in flight. */
+  let leavingNow = 0;
   let choices = 0;
   let listings = 0;
   /** Requests the scheduler failed or lost, so a check can tell a refused path from a broken one. */
@@ -101,7 +105,16 @@ async function sequence(seed: number, trace: string[]) {
   let stopped = false;
   /** Since the last switch-off or disconnect, until an exit chosen after it is confirmed. */
   let quiet = false;
+  /** The intent count at which the route went quiet, and choices made since that are in flight. */
+  let quietSince = 0;
+  let newerChoices = 0;
   const value = <T>(key: string) => storage.values.get(key) as T | undefined;
+  // Checks inside hooks and tracked calls record here instead of throwing: a throw there would be
+  // swallowed with the call, or, in a hook, would stop the very launch it means to catch.
+  const violations: string[] = [];
+  const expect = (ok: unknown, message: string) => {
+    if (!ok) violations.push(message);
+  };
 
   // Every launch must be one the table allows: a signed-in route with a reason to run, a sign-in,
   // or a disconnect's one logout node.
@@ -113,13 +126,13 @@ async function sequence(seed: number, trace: string[]) {
       (left !== undefined && !left.done) ||
       (identity && (exit !== null || choices > 0 || listings > 0));
     debug("  launch", allowed ? "" : "NOT ALLOWED");
-    assert.ok(allowed, "a container launched that the state does not call for");
+    expect(allowed, "a container launched that the state does not call for");
     if (left) left.fresh = true;
     if (left?.done) left.launches += 1;
   };
   container.onStart = (state) => {
     debug("  start", state === null ? "null" : "identity", left ? "after disconnect" : "");
-    if (state === null) assert.ok(signIns > 0, "a node with no identity started outside a sign-in");
+    if (state === null) expect(signIns > 0, "a node with no identity started outside a sign-in");
     // A start already sent to the container being torn down may still land; only one on a
     // container launched since the disconnect counts.
     if (left?.fresh && state === null) left.nullStarts += 1;
@@ -154,28 +167,37 @@ async function sequence(seed: number, trace: string[]) {
       };
       const mine = (intents += 1);
       debug("  choose", JSON.stringify(selection));
-      // A choice made after a switch-off may legitimately route; only an older one may not.
-      quiet = false;
+      // A choice made after a switch-off may route once it is confirmed; until then the stopped
+      // route may show it only while it is in flight.
+      const newer = quiet && mine > quietSince;
+      if (newer) newerChoices += 1;
       stopped = false;
       choices += 1;
       track(
         gateway
           .select(caller, selection)
-          .finally(() => (choices -= 1))
+          .finally(() => {
+            choices -= 1;
+            if (newer) newerChoices -= 1;
+          })
           .then(
             () => {
-              assert.equal(intents, mine, "a select succeeded after a later intent event");
-              assert.deepEqual(
-                value("route-v1:selection"),
-                selection,
+              if (mine > quietSince) quiet = false;
+              expect(intents === mine, "a select succeeded after a later intent event");
+              expect(
+                JSON.stringify(value("route-v1:selection")) === JSON.stringify(selection),
                 "a confirmed select is not stored",
               );
-              assert.ok(value("route-v1:state"), "an exit was chosen with no sealed identity");
+              expect(value("route-v1:state"), "an exit was chosen with no sealed identity");
               debug("  choice confirmed", JSON.stringify(selection));
               reached.selected += 1;
             },
             (error: unknown) => {
               debug("  choice refused", JSON.stringify(selection), (error as Error).message);
+              // One an event overtook after it was stored stays in force, refused or not.
+              const stored =
+                JSON.stringify(value("route-v1:selection")) === JSON.stringify(selection);
+              if (stored && mine > quietSince) quiet = false;
               reached.refused += 1;
               throw error;
             },
@@ -192,6 +214,7 @@ async function sequence(seed: number, trace: string[]) {
         gateway.select(caller, { exitId: null, whenDown: "stop" }).then(() => (answered = true)),
       );
       quiet = true;
+      quietSince = intents;
       stopped = !signingIn && !left && signIns === 0;
       after.push(() => {
         assert.ok(answered, "switch-off did not answer without a container reply");
@@ -204,20 +227,27 @@ async function sequence(seed: number, trace: string[]) {
     disconnect() {
       intents += 1;
       quiet = true;
+      quietSince = intents;
       stopped = false;
       const window = { nullStarts: 0, launches: 0, fresh: false, done: false };
+      // A node still signed in from an earlier disconnect's logout belongs to that one.
+      const earlier = leavingNow > 0;
+      leavingNow += 1;
       left = window;
       // A device the tailnet knows must be logged out, unless the container itself failed it.
-      const known = value("route-v1:state") !== undefined || container.signedIn;
+      const known = value("route-v1:state") !== undefined || (container.signedIn && !earlier);
       const logouts = container.logouts;
       const failed = failures;
       track(
-        gateway.disconnect(caller).then(() => {
-          window.done = true;
-          reached.disconnected += 1;
-          if (known && failures === failed)
-            assert.ok(container.logouts > logouts, "a disconnect left a known device signed in");
-        }),
+        gateway
+          .disconnect(caller)
+          .finally(() => (leavingNow -= 1))
+          .then(() => {
+            window.done = true;
+            reached.disconnected += 1;
+            if (known && failures === failed)
+              expect(container.logouts > logouts, "a disconnect left a known device signed in");
+          }),
       );
     },
     reading() {
@@ -236,10 +266,11 @@ async function sequence(seed: number, trace: string[]) {
       track(
         gateway.openTunnel({ owner }).then(async (socket) => {
           const reading = value<Reading>("route-v1:reading");
-          assert.ok(reading && routed.has(reading.state), "a tunnel opened on a route not routed");
-          assert.ok(value<Selection>("route-v1:selection")?.exitId, "a tunnel opened while off");
+          expect(reading && routed.has(reading.state), "a tunnel opened on a route not routed");
+          expect(value<Selection>("route-v1:selection")?.exitId, "a tunnel opened while off");
           reached.tunnels += 1;
-          await socket.close();
+          // A pool keeps its tunnel open; only the gateway or its container ends it.
+          void socket;
         }),
       );
     },
@@ -249,7 +280,13 @@ async function sequence(seed: number, trace: string[]) {
       track(gateway.exits(caller).finally(() => (listings -= 1)));
     },
     crash() {
+      // A crash fails whatever it was running, as a failed request does.
+      if (container.running) failures += 1;
       container.crash();
+    },
+    /** The node key expires while it runs; a sign-in on the same identity follows. */
+    expireKey() {
+      container.expireKey();
     },
     exitDown() {
       container.exitOnline = !container.exitOnline;
@@ -281,6 +318,7 @@ async function sequence(seed: number, trace: string[]) {
     ["crash", 0.6],
     ["exitDown", 2],
     ["wait", 0.5],
+    ["expireKey", 0.6],
     ["drain", 1.5],
     ["answer", 20],
   ];
@@ -295,6 +333,7 @@ async function sequence(seed: number, trace: string[]) {
   let after: Array<() => void> = [];
 
   const check = () => {
+    if (violations.length) assert.fail(violations.join("; "));
     for (const assertion of after) assertion();
     after = [];
     if (left) {
@@ -315,7 +354,7 @@ async function sequence(seed: number, trace: string[]) {
       );
       if (left.done) assert.equal(container.running, false, "compute ran after a disconnect");
     }
-    if (quiet) {
+    if (quiet && newerChoices === 0) {
       const reading = value<Reading>("route-v1:reading");
       assert.ok(!reading || !routed.has(reading.state), "a stale reply turned a stopped route up");
     }
@@ -360,6 +399,9 @@ async function sequence(seed: number, trace: string[]) {
       if (pending.size === 0) {
         matched();
         rested();
+        // Once everything is answered, no tunnel stays open through a stopped route.
+        if (quiet && newerChoices === 0)
+          assert.equal(container.openTunnels, 0, "a tunnel stays open on a stopped route");
       }
       continue;
     }
@@ -382,9 +424,16 @@ async function sequence(seed: number, trace: string[]) {
   // Once quiet, one more read leaves the gateway running exactly what storage says.
   container.manual = false;
   container.exitOnline = true;
-  await gateway.reading(caller).catch(() => {});
+  const last = await gateway.reading(caller).catch(() => undefined);
   const selection = value<Selection>("route-v1:selection");
-  if (value("route-v1:state") && selection?.exitId)
+  // An expired key signs the node out on the tailnet's side; it routes nothing until a new sign-in,
+  // and the reading says so.
+  if (container.keyExpired)
+    assert.ok(
+      last && !["active", "direct_fallback"].includes(last.state),
+      `an expired node reads ${last?.state}`,
+    );
+  if (value("route-v1:state") && selection?.exitId && !container.keyExpired)
     assert.equal(
       container.appliedExit,
       selection.exitId,

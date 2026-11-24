@@ -1,19 +1,27 @@
 import { GatewayControl, RouteRefused, type GatewayContainer } from "./control.ts";
 import type { ReasonCode, Selection } from "./reading.ts";
 
-export type StartPurpose = "route" | "sign-in";
+/**
+ * What a start may boot: a poll only reads a node already up, a route start boots the stored
+ * identity, and a sign-in may boot a node with none.
+ */
+export type StartPurpose = "poll" | "route" | "sign-in";
+const reach: Record<StartPurpose, number> = { poll: 0, route: 1, "sign-in": 2 };
 /** What a fresh node boots with, or why it must not boot. */
-export type BootPlan =
-  | { state: string | null; selection: Selection | undefined }
-  | { refuse: ReasonCode };
+export type BootPlan = { state: string | null } | { refuse: ReasonCode };
 
 export interface RuntimeHost {
   /** The state machine's current epoch; a start asked for in an older one starts nothing. */
   epoch(): number;
   plan(since: number, purpose: StartPurpose, identity: string | undefined): Promise<BootPlan>;
+  /** The selection storage holds now. */
+  selection(): Promise<Selection | undefined>;
 }
 
 const startDeadlineMs = 30_000;
+
+/** A start its plan refused: nothing booted, and nothing was wrong with the gateway. */
+export class Unbootable extends RouteRefused {}
 
 /**
  * A fenced, serial handle on the route's one container. Every start and call belongs to a launch,
@@ -80,6 +88,17 @@ export class GatewayRuntime {
   }
 
   /**
+   * Puts a running gateway back on storage once any start in flight is done, without starting one.
+   * A node that is not up needs nothing: its boot applies storage.
+   */
+  align() {
+    const started = this.starting?.run.catch(() => {}) ?? Promise.resolve();
+    void started.then(() => {
+      if (this.control.running) this.reconcile(this.current, () => this.host.selection());
+    });
+  }
+
+  /**
    * Stops the gateway and abandons any start in flight, so the next caller starts afresh. The
    * destroy is ordered behind earlier ones, and no start launches until it is done, so a late
    * destroy can never take down a container started after it.
@@ -107,8 +126,8 @@ export class GatewayRuntime {
     if (identity === undefined && since !== this.host.epoch())
       throw new RouteRefused("route_gateway_unavailable");
     if (identity === undefined && this.starting) {
-      if (purpose === "route" || this.starting.purpose === "sign-in") return this.starting.run;
-      // A sign-in waits out a route start, which may refuse for want of an identity.
+      if (reach[this.starting.purpose] >= reach[purpose]) return this.starting.run;
+      // A start waits out one that may boot less than it needs, which may refuse.
       await this.starting.run.catch(() => {});
       return this.started(since, purpose);
     }
@@ -132,17 +151,17 @@ export class GatewayRuntime {
     identity: string | undefined,
   ): Promise<number> {
     const deadline = this.now() + startDeadlineMs;
-    // A cold start plans first, so a start that may not boot (no identity, or a seal no key opens)
-    // refuses before launching a container to find that out.
     let planned: BootPlan | undefined;
     await this.stopping;
-    if (!this.control.running) {
-      planned = await this.host.plan(since, purpose, identity);
-      this.live(launch);
-      if ("refuse" in planned) throw new RouteRefused(planned.refuse);
-    }
     for (;;) {
       this.live(launch);
+      // Every launch is planned first, including one after a crash mid-start, so a start that may
+      // not boot (no identity, or a seal no key opens) refuses before launching a container.
+      if (!this.control.running && !planned) {
+        planned = await this.host.plan(since, purpose, identity);
+        this.live(launch);
+        if ("refuse" in planned) throw new Unbootable(planned.refuse);
+      }
       this.control.launch();
       const probe = await this.call(launch, () => this.control.probe());
       this.live(launch);
@@ -156,7 +175,11 @@ export class GatewayRuntime {
     }
   }
 
-  /** Every container start gets the identity and selection its plan names before anything else. */
+  /**
+   * Every container start gets its plan's identity, then the selection storage holds when that call
+   * runs, so a choice or a switch-off made while it booted is the one it applies. A disconnect's
+   * logout node routes nothing.
+   */
   private async boot(
     launch: number,
     since: number,
@@ -168,10 +191,13 @@ export class GatewayRuntime {
     this.live(launch);
     if ("refuse" in plan) {
       await this.control.destroy();
-      throw new RouteRefused(plan.refuse);
+      throw new Unbootable(plan.refuse);
     }
     await this.call(launch, () => this.control.start(plan.state));
-    const { selection } = plan;
-    if (selection) await this.call(launch, () => this.control.select(selection));
+    if (identity !== undefined) return;
+    await this.call(launch, async () => {
+      const selection = await this.host.selection();
+      if (selection) await this.control.select(selection);
+    });
   }
 }

@@ -111,11 +111,14 @@ test("login polls every 2 s and persists the sealed identity once the person app
 });
 
 test("a login nobody approves stops polling after 10 minutes", async () => {
-  const { gateway, storage, advance } = await created();
+  const { gateway, storage, container, advance } = await created();
   await gateway.login(caller);
   advance(10 * 60_000);
   await gateway.alarm();
   assert.equal(storage.alarm, null);
+  // Its node is logged out and stopped, so a late approval leaves no device behind.
+  assert.equal(container.logouts, 1);
+  assert.equal(container.running, false);
   assert.deepEqual(await gateway.joinStatus(caller), {
     state: "failed",
     reason: "route_needs_login",
@@ -783,4 +786,157 @@ test("a choice overtaken while its identity read is in flight is not confirmed",
   held.release();
   await refusedWith(choosing, "route_gateway_unavailable");
   assert.equal((await storage.get<{ exitId: string | null }>("route-v1:selection"))?.exitId, null);
+});
+
+/** Answers the first held request to `path` (the fake in manual mode) and lets the gateway run on. */
+async function answer(
+  container: ReturnType<typeof gatewayDependencies>["container"],
+  path: string,
+  outcome: "ok" | "fail" | "lost" = "ok",
+) {
+  for (let tries = 0; tries < 50 && !container.waiting.some((r) => r.path === path); tries += 1)
+    await settle();
+  const index = container.waiting.findIndex((request) => request.path === path);
+  assert.ok(index >= 0, `nothing waits on ${path}`);
+  container.waiting.splice(index, 1)[0]!.release(outcome);
+  await settle();
+}
+
+const unreadableSeal = async () => ({
+  sealed: await sealRouteState("c".repeat(64), routeId, "lost"),
+  bootId: "boot-x",
+  revision: 1,
+});
+
+test("a tunnel whose route reads down while it starts is refused before it connects", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.manual = true;
+  const reading = gateway.reading(caller);
+  await answer(container, "/status");
+  // The read's status call is in flight; the tunnel still sees the last reading routed.
+  const tunnel = gateway.openTunnel({ owner });
+  tunnel.catch(() => {});
+  await settle();
+  container.exitOnline = false;
+  await answer(container, "/status");
+  assert.equal((await reading).state, "down");
+  await answer(container, "/status");
+  await refusedWith(tunnel, "route_gateway_unavailable");
+  assert.ok(!container.waiting.some((request) => request.path === "connect"));
+});
+
+test("a tunnel whose route reads down while it connects is closed and refused", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.manual = true;
+  const tunnel = gateway.openTunnel({ owner });
+  tunnel.catch(() => {});
+  await answer(container, "/status");
+  container.exitOnline = false;
+  const reading = gateway.reading(caller);
+  await answer(container, "/status");
+  await answer(container, "/status");
+  assert.equal((await reading).state, "down");
+  await answer(container, "connect");
+  await refusedWith(tunnel, "route_gateway_unavailable");
+  assert.equal(container.openTunnels, 0);
+});
+
+test("a start whose container crashes mid-start plans again before it relaunches", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await storage.put("route-v1:state", await unreadableSeal());
+  let launches = 0;
+  container.onLaunch = () => (launches += 1);
+  const held = container.hold("/status");
+  const reading = gateway.reading(caller);
+  await held.reached;
+  container.crash();
+  held.release();
+  assert.equal((await reading).state, "needs_login");
+  assert.equal(launches, 0);
+  assert.equal(container.running, false);
+});
+
+test("switching off during a re-sign-in puts the kept node off and closes its tunnels", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await gateway.openTunnel({ owner });
+  container.expireKey();
+  assert.ok("url" in (await gateway.login(caller)));
+  container.approve();
+  assert.equal(container.appliedExit, "n1");
+  assert.equal(container.openTunnels, 1);
+  assert.equal((await gateway.select(caller, { exitId: null, whenDown: "stop" })).state, "off");
+  await settle();
+  // The sign-in keeps its node, so the person's link still works, but it routes nothing.
+  assert.equal(container.running, true);
+  assert.equal(container.appliedExit, null);
+  assert.equal(container.openTunnels, 0);
+});
+
+test("a node booting while a re-signing route switches off applies off, never the old exit", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.expireKey();
+  assert.ok("url" in (await gateway.login(caller)));
+  container.crash();
+  container.selects = [];
+  const held = container.hold("/start");
+  const reading = gateway.reading(caller);
+  await held.reached;
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  held.release();
+  await reading.catch(() => {});
+  await settle();
+  assert.ok(container.selects.length > 0);
+  assert.ok(container.selects.every((selection) => selection.exit_id === null));
+});
+
+test("a re-sign-in whose node died on an off route ends without a launch", async () => {
+  const { gateway, container, storage } = await joined();
+  container.expireKey();
+  assert.ok("url" in (await gateway.login(caller)));
+  container.crash();
+  let launches = 0;
+  container.onLaunch = () => (launches += 1);
+  assert.deepEqual(await gateway.joinStatus(caller), {
+    state: "failed",
+    reason: "route_needs_login",
+  });
+  assert.equal(launches, 0);
+  assert.equal(await storage.get("route-v1:login-until"), undefined);
+});
+
+test("a choice stored before an event overtook it is refused but still polled", async () => {
+  const { gateway, container, storage } = await joined();
+  await gateway.alarm();
+  assert.equal(storage.alarm, null);
+  const held = container.hold("/state");
+  const choosing = gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await held.reached;
+  const signIn = gateway.login(caller);
+  await settle();
+  held.release();
+  assert.deepEqual(await signIn, { state: "ready" });
+  await refusedWith(choosing, "route_gateway_unavailable");
+  assert.equal((await storage.get<{ exitId: string }>("route-v1:selection"))?.exitId, "n1");
+  assert.notEqual(storage.alarm, null);
+});
+
+test("a seal no key opens forgets its exit too and reads signed out, not down", async () => {
+  const { gateway, container, storage, events } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  await storage.put("route-v1:state", await unreadableSeal());
+  container.crash();
+  assert.equal((await gateway.reading(caller)).state, "needs_login");
+  assert.equal(await storage.get("route-v1:selection"), undefined);
+  assert.deepEqual(events, []);
+  assert.equal(container.running, false);
+  // The next sign-in joins off.
+  await gateway.login(caller);
+  container.approve();
+  assert.equal((await gateway.joinStatus(caller)).state, "connected");
+  assert.equal(container.appliedExit, null);
 });
