@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-change-signal-observed-heads",
+  "file": "0674-change-signal-observed-heads.patch",
+  "content_sha256": "4d12b969e9ccd0043bd839e57ea8f9ae4c023c9a8a9e7a014d5667ca17cd9b91",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

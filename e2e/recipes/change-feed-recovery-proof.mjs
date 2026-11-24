@@ -173,6 +173,19 @@ export const changeFeedRecoveryProof = ({
             progress.contentAfterMs < 15_000,
             true,
           );
+          // Retained rows can stay on screen beside the panel, so content alone does not prove recovery.
+          yield* Effect.promise(() =>
+            failure.waitFor({
+              state: "hidden",
+              timeout: Math.max(1, 15_000 - (Date.now() - started)),
+            }),
+          );
+          progress.clearedAfterMs = Date.now() - started;
+          check(
+            `Controlled ${mode}: the fail-closed panel clears within the unchanged 15-second deadline`,
+            progress.clearedAfterMs < 15_000,
+            true,
+          );
           check(
             `Controlled ${mode}: authoritative receipt interception has no errors`,
             progress.errors,

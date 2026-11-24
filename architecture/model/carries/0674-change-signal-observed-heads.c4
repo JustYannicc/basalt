@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Views reading through one change feed confirm each other: a view confirmed at the handshake without reading reads again when a sibling view's accepted read or moving-head failure on shared topics proves its heads moved, so it either accepts current heads or fails closed instead of staying silently stale after a missed hint. A view that accepts while a settled sibling already holds newer heads reads once more. Only settled views are asked, so failed views keep their bounded recovery and moving heads cannot ping-pong reads. The fail-closed panel clears once heads settle. The feed owns watch heads and should absorb this with the next framework release; the host copy then retires."
+    }
+  }
+}
