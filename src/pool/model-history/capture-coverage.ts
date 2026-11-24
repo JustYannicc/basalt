@@ -1,6 +1,10 @@
 import type { HistoryDatabase } from "./schema.ts";
 import { poolUsageRows, poolUsernamePattern, uncaptured, usageHour } from "./capture-population.ts";
-import { captureSettledAfter, captureSettleHorizon } from "./capture-hours-schema.ts";
+import {
+  captureLookbackStart,
+  captureSettledAfter,
+  captureSettleHorizon,
+} from "./capture-hours-schema.ts";
 
 export interface HomeCaptureCoverage {
   readonly capturedAt: string | null;
@@ -53,7 +57,8 @@ export const capturedHoursStatement = `WITH w AS MATERIALIZED (
   ), stored AS (
     SELECT s.hour, s.usage_requests, s.uncaptured_requests FROM w JOIN basalt_model_capture_hours s
       ON s.pool=$1 AND s.hour >= w.whole_from AND s.hour < w.whole_to
-    WHERE w.ready AND ${captureSettledAfter("s")}
+    -- An hour older than the counts' lookback is never complete: it is no longer recounted.
+    WHERE w.ready AND ${captureSettledAfter("s")} AND s.hour >= ${captureLookbackStart()}
   ), captured AS (
     SELECT p.hour, sum(p.requests) AS n FROM w JOIN basalt_model_usage_people_hourly p
       ON p.pool=$1 AND p.hour >= w.whole_from AND p.hour < w.whole_to

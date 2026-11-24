@@ -6,11 +6,12 @@ import type {
   CaptureHoursStuck,
 } from "./capture-hours-auto.ts";
 import { countCaptureBlock, countCaptureHour } from "./capture-hours-count.ts";
-import { postgresCode } from "./usage-rollup-apply.ts";
 import {
   boundedRead,
   captureBlockHours,
   captureHoursPlanLimitMs,
+  captureHoursReadLimitMs,
+  pruneCaptureHours,
   countedHours,
   pendingHoursOf,
   planCaptureHours,
@@ -45,6 +46,32 @@ const within = (hour: string | undefined, block: CaptureBlock) =>
   Date.parse(hour) >= Date.parse(block.from) &&
   Date.parse(hour) < Date.parse(block.to);
 const blockMs = captureBlockHours * hourMs;
+/**
+ * SQLSTATE classes that describe the database or the session, never one pool's rows: connection
+ * (08), transaction state such as read-only after a failover (25), a schema the code does not match
+ * (42), resources (53), object state (55), operator intervention (57) and system errors (58).
+ */
+const tickClasses = new Set(["08", "25", "42", "53", "55", "57", "58"]);
+
+/**
+ * The SQLSTATE of a Postgres error that failed one pool's count, or undefined for any other
+ * failure. A real Postgres error has a severity and a five-character SQLSTATE; the bounded session
+ * may carry it as the cause of its own error.
+ */
+export function poolCountFailure(error: unknown): string | undefined {
+  const candidates = [
+    error,
+    typeof error === "object" && error !== null && "cause" in error ? error.cause : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const { severity, code } = candidate as { severity?: unknown; code?: unknown };
+    if (typeof severity !== "string" || typeof code !== "string" || !/^[0-9A-Z]{5}$/.test(code))
+      continue;
+    return tickClasses.has(code.slice(0, 2)) ? undefined : code;
+  }
+  return undefined;
+}
 /** A block's hours, newest first. */
 const hoursOf = (block: CaptureBlock) => {
   const hours: string[] = [];
@@ -105,6 +132,15 @@ export async function captureHoursSession(
     stalestCheckedAt:
       (await read(() => stalestCapture(db)).catch(() => undefined)) ?? state().stalestCheckedAt,
   });
+  // Counts older than the lookback are never complete to the summary: a bounded prune each
+  // session keeps them, and the recount's work, from growing. Its failure stops no count.
+  await boundedRead(
+    db,
+    left,
+    () => pruneCaptureHours(db, bounds.lookbackHours),
+    captureHoursReadLimitMs,
+    true,
+  ).catch(() => console.error("POOL_CAPTURE_HOURS_PRUNE_FAILED"));
   const pending = new Map(
     pools.map((pool) => [pool.pool, { blocks: pool.pendingBlocks, hours: pool.pendingHours }]),
   );
@@ -218,10 +254,13 @@ export async function captureHoursSession(
     try {
       return await countBlockOnce(block, recount, until);
     } catch (error) {
-      // A Postgres error names the pool's own statement; anything else (a lost connection) is the
-      // tick's, and pauses it whole.
-      const code = postgresCode(error);
-      if (typeof code !== "string" || !/^[0-9A-Z]{5}$/.test(code)) throw error;
+      // Only Postgres failing the pool's own statement is the pool's: anything else, a socket's code
+      // or a database-wide state, is the tick's, and pauses it whole with no pool named.
+      const code = poolCountFailure(error);
+      if (code === undefined) {
+        progress.working = "";
+        throw error;
+      }
       console.error("POOL_CAPTURE_HOURS_COUNT_FAILED", { code });
       failedPool(block.pool);
       return "rest";

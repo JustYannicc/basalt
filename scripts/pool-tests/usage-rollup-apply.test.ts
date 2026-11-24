@@ -21,7 +21,7 @@ import {
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import { usageRollupLockClass } from "../../src/pool/model-history/usage-rollup-schema.ts";
-import { fillByTicks, hourMs } from "./capture-hours-fixture.ts";
+import { historyCaptureHoursVersion } from "../../src/pool/model-history/capture-hours-schema.ts";
 import { pool as poolName, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -389,8 +389,7 @@ test("a pool becomes ready on v16 by ticks alone, and then its summary and serie
     }
     assert.ok(await ready(f.db, pool), "ready on v16 by ticks alone");
     assert.equal(storage.state()!.rollup, "v16");
-    // Ready on v16, the summary compares the pool's stored capture counts: its own tick fills them.
-    await fillByTicks(f.db, sinceFixture());
+    await withoutCaptureHours(f.db);
     const after = await read(f.db);
     assert.deepEqual(after.rolled, [true, true], "ready: the v16 rollup");
     assert.deepEqual(after.summary, before.summary);
@@ -704,9 +703,13 @@ test("the span end's margin: an install late in its hour ends the span an hour l
 });
 
 /**
- * The lookback that reaches the fixture's January 2026 window: past the 400 days a real tick counts
- * once enough time has passed, so the test widens it to cover the hours the summary reads.
+ * The fixture's January 2026 window reaches past the 400 days capture-hour counts cover, where no
+ * hour reads complete by design. This test proves the rollup equals raw rows, so it reads capture as
+ * before v17, on both sides: v17's table and record dropped.
  */
-function sinceFixture() {
-  return Math.ceil((Date.now() - Date.parse("2025-09-01T00:00:00Z")) / hourMs);
+async function withoutCaptureHours(db: HistoryDatabase) {
+  await db.query("DROP TABLE basalt_model_capture_hours");
+  await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+    historyCaptureHoursVersion,
+  ]);
 }

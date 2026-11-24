@@ -33,3 +33,13 @@ export const captureSettleHorizon =
 /** A stored count of an hour that was taken once the hour settled; an earlier one is uncounted. */
 export const captureSettledAfter = (row: string) =>
   `${row}.checked_at >= ${row}.hour + interval '2 hours'`;
+
+/**
+ * How far back from the settle horizon the counts reach: 400 days. An hour older than that is
+ * never complete to the summary and its stored count is pruned, so the recount's work stays bounded.
+ */
+export const captureHoursLookbackHours = 400 * 24;
+
+/** The first hour the counts cover, in SQL: the settle horizon less the lookback. */
+export const captureLookbackStart = (lookback: string = String(captureHoursLookbackHours)) =>
+  `(${captureSettleHorizon} - ${lookback}::int * interval '1 hour')`;

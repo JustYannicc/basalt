@@ -9,6 +9,7 @@ import {
   type CaptureHoursAutoState,
 } from "../../src/pool/model-history/capture-hours-auto.ts";
 import { countBlockStatement } from "../../src/pool/model-history/capture-hours-count.ts";
+import { recountBlocks } from "../../src/pool/model-history/capture-hours-plan.ts";
 import { captureHoursLockClass } from "../../src/pool/model-history/capture-hours-schema.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
@@ -53,7 +54,8 @@ function timed(
   db: HistoryDatabase,
   clock: { at: number },
   slow?: { pool: string; hour?: string; cost: { ms: number }; blocks?: boolean },
-  fail?: string,
+  /** A pool whose counts fail as Postgres fails one statement, or how every count fails. */
+  fail?: string | { pool?: string; code: string; severity?: string },
   counts: { pool: string; from: number; to: number }[] = [],
 ) {
   let limit = Number.POSITIVE_INFINITY;
@@ -62,8 +64,17 @@ function timed(
       if (text.startsWith("SELECT set_config('statement_timeout'"))
         limit = Number.parseInt(String(values![0]));
       // As Postgres fails a statement: with its SQLSTATE.
-      if (text === countBlockStatement && values![0] === fail)
-        throw Object.assign(new Error("fixture failure"), { code: "XX000" });
+      const failing =
+        typeof fail === "string" ? { pool: fail, code: "XX000", severity: "ERROR" } : fail;
+      if (
+        text === countBlockStatement &&
+        failing &&
+        (failing.pool === undefined || values![0] === failing.pool)
+      )
+        throw Object.assign(new Error("fixture failure"), {
+          code: failing.code,
+          ...(failing.severity ? { severity: failing.severity } : {}),
+        });
       const from = text === countBlockStatement ? Date.parse(String(values![1])) : 0;
       const to = text === countBlockStatement ? Date.parse(String(values![2])) : 0;
       if (text === countBlockStatement) counts.push({ pool: String(values![0]), from, to });
@@ -99,10 +110,10 @@ test("a pool is counted to its settle horizon by ticks alone, each session withi
     for (; ticks < 100; ticks++) {
       state = await captureHoursTick(storage, (work) => work(f.db), {
         now: () => (clock += 1),
-        bounds: { sessionMs: 6, lookbackHours },
+        bounds: { sessionMs: 12, lookbackHours },
       });
       for (const session of state.sessions ?? [])
-        assert.ok(session.ms <= 6 + 4, `a session took ${session.ms} ms of a 6 ms budget`);
+        assert.ok(session.ms <= 12 + 4, `a session took ${session.ms} ms of a 12 ms budget`);
       if (state.lastStop === "complete") break;
       clock += 5 * minute;
     }
@@ -126,12 +137,13 @@ test("the hourly ceiling holds over any sliding hour, across ticks", async () =>
     const start = Date.parse("2026-02-01T00:00:00Z");
     let clock = start;
     const now = () => (clock += 1);
-    const bounds = { hourMs: 30, sessionMs: 20, lookbackHours };
+    // Thirty days of blocks: more than one session's budget takes.
+    const bounds = { hourMs: 300, sessionMs: 200, lookbackHours: 30 * 24 };
     const first = await captureHoursTick(storage, (work) => work(f.db), { now, bounds });
     const spent = (state: CaptureHoursAutoState, from: number) =>
       (state.sessions ?? []).filter((s) => s.at >= from).reduce((sum, s) => sum + s.ms, 0);
     assert.equal(first.sessions?.length, 2);
-    assert.ok(spent(first, start) <= 30 + 3, `${spent(first, start)} ms in its first hour`);
+    assert.ok(spent(first, start) <= 300 + 3, `${spent(first, start)} ms in its first hour`);
     clock = start + 59 * minute;
     const second = await captureHoursTick(storage, (work) => work(f.db), { now, bounds });
     assert.equal(second.lastStop, "ceiling", "59 minutes later the hour is still spent");
@@ -767,33 +779,158 @@ test("a pending block that splits stops at the session's pending share between i
   });
 });
 
-test("hours older than the lookback keep being recounted, since the summary still compares them", async () => {
+test("counts older than the lookback are pruned, at most a thousand a pass, and never recounted", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, minute));
     await c.ready();
     await c.fill();
+    await aged(f);
     const end = await horizon(f);
-    // Counted once while inside a longer lookback, long settled.
-    const old = Math.floor((end - lookbackHours * hour) / block) * block - 2 * block;
+    const first = end - lookbackHours * hour;
+    // 1,500 hours counted while inside a longer lookback, long settled.
     await f.db.query(
       `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
-      SELECT $1, h, 0, 0, h + interval '3 hours' FROM generate_series($2::timestamptz,
-        $2::timestamptz + interval '5 hours', interval '1 hour') h`,
-      [c.poolId, new Date(old).toISOString()],
+      SELECT $1, h, 0, 0, h + interval '3 hours' FROM generate_series($2::timestamptz - interval '1500 hours',
+        $2::timestamptz - interval '1 hour', interval '1 hour') h`,
+      [c.poolId, new Date(first).toISOString()],
     );
-    const before = await f.db.query(
-      "SELECT max(checked_at) AS at FROM basalt_model_capture_hours WHERE pool=$1 AND hour < $2",
-      [c.poolId, new Date(old + block).toISOString()],
+    const old = async () =>
+      Number(
+        (
+          await f.db.query(
+            "SELECT count(*)::int AS n FROM basalt_model_capture_hours WHERE hour < $1",
+            [new Date(first).toISOString()],
+          )
+        ).rows[0]!.n,
+      );
+    // The recount never takes them, though they were counted longest ago.
+    const stale = await recountBlocks(
+      f.db,
+      [c.poolId],
+      100,
+      new Date().toISOString(),
+      lookbackHours,
     );
-    await captureHoursTick(c.storage, (work) => work(f.db), { bounds: { lookbackHours } });
-    const after = await f.db.query(
-      "SELECT min(checked_at) AS at FROM basalt_model_capture_hours WHERE pool=$1 AND hour >= $2 AND hour < $3",
-      [c.poolId, new Date(old).toISOString(), new Date(old + block).toISOString()],
-    );
+    assert.ok(stale.length > 0);
+    // A block of the lookback ends after it starts, past the lookback's first hour.
     assert.ok(
-      (after.rows[0]!.at as Date).getTime() > (before.rows[0]!.at as Date).getTime(),
-      "every hour of the old block was recounted",
+      stale.every(
+        (block) => Date.parse(block.from) >= first && Date.parse(block.to) > Date.parse(block.from),
+      ),
+      "only blocks in the lookback",
     );
+    const counts: { pool: string; from: number; to: number }[] = [];
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    await captureHoursTick(
+      c.storage,
+      (work) => work(timed(f.db, clock, undefined, undefined, counts)),
+      {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      },
+    );
+    assert.equal(await old(), 500, "one pass prunes a thousand");
+    assert.ok(
+      counts.every((count) => count.from >= first && count.to > count.from),
+      "no count older than the lookback",
+    );
+    await captureHoursTick(c.storage, (work) => work(f.db), {
+      now: () => clock.at + 5 * minute,
+      bounds: { lookbackHours },
+    });
+    assert.equal(await old(), 0, "the next pass prunes the rest");
+  });
+});
+
+test("a database-wide fault pauses the tick once with no pool named, while a pool's own error rests only that pool", async (t) => {
+  t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    for (const fail of [
+      // A socket's code, never Postgres's.
+      { code: "EPIPE" },
+      // Read-only after a failover, on every pool.
+      { code: "25006", severity: "ERROR" },
+      // A stale shape.
+      { code: "42703", severity: "ERROR" },
+    ]) {
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const storage = memoryStorage();
+      const tick = () =>
+        captureHoursTick(storage, (work) => work(timed(f.db, clock, undefined, fail)), {
+          now: () => clock.at,
+          bounds: { lookbackHours },
+        });
+      const state = await tick();
+      assert.equal(state.lastStop, "error", fail.code);
+      assert.equal(state.pausedUntil, new Date(clock.at + 3_600_000).toISOString(), fail.code);
+      assert.deepEqual(state.repeat, { pool: "", reason: "error", count: 1 }, fail.code);
+      assert.deepEqual(state.failing ?? [], [], `${fail.code} rests no pool`);
+      clock.at += 30 * minute;
+      assert.deepEqual(await tick(), state, `${fail.code}: paused, the tick does nothing`);
+    }
+    // A pool's own error (an invalid value, an internal error) rests only that pool.
+    for (const code of ["22P02", "XX000"]) {
+      await f.db.query("DELETE FROM basalt_model_capture_hours");
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const state = await captureHoursTick(
+        memoryStorage(),
+        (work) => work(timed(f.db, clock, undefined, { pool: c.poolId, code, severity: "ERROR" })),
+        { now: () => clock.at, bounds: { lookbackHours } },
+      );
+      assert.equal(state.pausedUntil, undefined, code);
+      assert.deepEqual(
+        state.failing?.map((entry) => entry.pool),
+        [c.poolId],
+        code,
+      );
+      const other = await counted(f, c.otherId);
+      assert.equal(other.settled, other.hours, `${code}: the other pool was counted in full`);
+    }
+  });
+});
+
+test("a session the hourly ceiling would cut short of its plan read never starts", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const at0 = Date.parse("2026-02-01T00:00:00Z");
+    const storage = memoryStorage();
+    // 70 ms of a 100 ms hour spent; the last plan read took 40 ms, more than the 30 ms left.
+    await storage.put(captureHoursAutoKey, {
+      planMs: 40,
+      sessions: [{ at: at0 - minute, ms: 70 }],
+    });
+    let sessions = 0;
+    const state = await captureHoursTick(
+      storage,
+      (work) => {
+        sessions++;
+        return work(f.db);
+      },
+      { now: () => at0, bounds: { lookbackHours, hourMs: 100 } },
+    );
+    assert.equal(state.lastStop, "ceiling");
+    assert.equal(sessions, 0, "no session started");
+    assert.equal(state.pausedUntil, undefined, "and the tick is not failing");
+    // With more left than the plan takes, it runs.
+    await storage.put(captureHoursAutoKey, {
+      planMs: 20,
+      sessions: [{ at: at0 - minute, ms: 70 }],
+    });
+    await captureHoursTick(
+      storage,
+      (work) => {
+        sessions++;
+        return work(f.db);
+      },
+      { now: () => at0, bounds: { lookbackHours, hourMs: 100 } },
+    );
+    assert.ok(sessions > 0);
   });
 });

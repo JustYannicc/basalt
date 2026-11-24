@@ -1,5 +1,8 @@
 import type { HistoryDatabase } from "./schema.ts";
 import {
+  captureHoursLockClass,
+  captureHoursLookbackHours,
+  captureLookbackStart,
   captureSettledAfter,
   captureSettleHorizon,
   historyCaptureHoursVersion,
@@ -38,12 +41,7 @@ export interface CaptureHoursPool {
   readonly pendingHours: number;
 }
 
-/**
- * How far back from the settle horizon the tick counts: 400 days. An hour never counted inside it
- * stays unproven; one counted while inside it keeps its stored count, which the summary still
- * compares, since nothing prunes it.
- */
-export const captureHoursLookbackHours = 400 * 24;
+export { captureHoursLookbackHours } from "./capture-hours-schema.ts";
 
 /**
  * The pools to count: every pool ready on v16, imports-only ones included, over the `lookback`
@@ -126,10 +124,9 @@ export async function stalestCapture(db: HistoryDatabase) {
 
 /**
  * The blocks of `pools` to recount, counted longest ago, in one ordered read of the counts' time
- * index: only settled hours counted over an hour ago and before `before`, so a block this tick or
- * the last hour counted is never recounted. Each block comes once, its range clipped to the
- * horizon and, for the block the lookback cuts, to the lookback; blocks wholly older than the
- * lookback are recounted too, since the summary still compares their stored counts.
+ * index: only settled hours inside the lookback counted over an hour ago and before `before`, so a
+ * block this tick or the last hour counted is never recounted. Each block comes once, its range
+ * clipped to the lookback and horizon; hours older than the lookback are pruned, never recounted.
  */
 export async function recountBlocks(
   db: HistoryDatabase,
@@ -141,7 +138,7 @@ export async function recountBlocks(
   if (!pools.length) return [];
   return (
     await db.query(
-      `SELECT k.pool, ${iso(`CASE WHEN k.block + interval '${captureBlockHours} hours' > b.first THEN GREATEST(k.block, b.first) ELSE k.block END`)} AS lo,
+      `SELECT k.pool, ${iso("GREATEST(k.block, b.first)")} AS lo,
         ${iso(`LEAST(k.block + interval '${captureBlockHours} hours', b.horizon)`)} AS hi
       FROM (SELECT ${captureSettleHorizon} AS horizon,
           ${captureSettleHorizon} - $4::int * interval '1 hour' AS first) b
@@ -151,7 +148,7 @@ export async function recountBlocks(
           FROM basalt_model_capture_hours s
           WHERE s.checked_at < LEAST($3::timestamptz, now() - interval '1 hour')
             AND s.pool=ANY($1::text[]) AND ${captureSettledAfter("s")}
-            AND s.hour < b.horizon
+            AND s.hour >= b.first AND s.hour < b.horizon
           ORDER BY s.checked_at LIMIT $2::int * ${captureBlockHours}
         ) o ORDER BY o.pool, o.block, o.checked_at
       ) k
@@ -179,6 +176,31 @@ export async function pendingHoursOf(db: HistoryDatabase, block: CaptureBlock) {
   ).rows.map((row) => String(row.hour));
 }
 
+/** The most stored counts older than the lookback one pass prunes. */
+export const capturePruneRows = 1_000;
+
+/**
+ * Deletes at most `limit` stored counts older than the lookback, in one statement of the caller's
+ * short transaction, only for pools whose lock it takes without waiting, as a count does. Those
+ * hours are never complete to the summary, so nothing reads them. Returns the rows it deleted.
+ */
+export async function pruneCaptureHours(
+  db: HistoryDatabase,
+  lookback: number = captureHoursLookbackHours,
+  limit = capturePruneRows,
+) {
+  const deleted = await db.query(
+    `WITH d AS MATERIALIZED (
+      SELECT s.pool, s.hour FROM basalt_model_capture_hours s
+      WHERE s.hour < ${captureLookbackStart("$1")}
+        AND pg_try_advisory_xact_lock(${captureHoursLockClass},hashtext(s.pool::text))
+      LIMIT $2
+    ) DELETE FROM basalt_model_capture_hours t USING d WHERE t.pool=d.pool AND t.hour=d.hour`,
+    [lookback, limit],
+  );
+  return deleted.rowCount ?? 0;
+}
+
 /** How long one of the tick's reads may run: 1 s, never past what the session has left. */
 export const captureHoursReadLimitMs = 1_000;
 
@@ -194,8 +216,9 @@ export async function boundedRead<T>(
   left: () => number,
   work: () => Promise<T>,
   limitMs = captureHoursReadLimitMs,
+  writes = false,
 ): Promise<T> {
-  await db.query("BEGIN TRANSACTION READ ONLY");
+  await db.query(writes ? "BEGIN" : "BEGIN TRANSACTION READ ONLY");
   try {
     await db.query("SELECT set_config('statement_timeout',$1,true)", [
       `${Math.max(50, Math.min(limitMs, Math.floor(left())))}ms`,

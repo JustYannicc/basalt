@@ -124,6 +124,8 @@ interface AutoStorage {
 }
 type Session = <T>(work: (db: HistoryDatabase) => Promise<T>) => Promise<T>;
 const hourMs = 3_600_000;
+/** The least a session needs for its plan read when no plan's duration is recorded yet. */
+const planFloorMs = 50;
 
 /** One tick. Returns the state it stored; never throws for a counting failure, only logs it. */
 export async function captureHoursTick(
@@ -186,7 +188,9 @@ export async function captureHoursTick(
     const at = now();
     const recent = (state.sessions ?? []).filter((entry) => at - entry.at < hourMs);
     const msLeft = bounds.hourMs - recent.reduce((sum, entry) => sum + entry.ms, 0);
-    if (msLeft <= 0) {
+    // A session the ceiling would cut short of its own plan read never starts: the plan would time
+    // out and fail the tick.
+    if (msLeft <= 0 || msLeft < (state.planMs ?? planFloorMs)) {
       await save({ ...state, sessions: recent, lastStop: "ceiling" });
       break;
     }
@@ -203,7 +207,8 @@ export async function captureHoursTick(
       console.error("POOL_CAPTURE_HOURS_TICK_FAILED", {
         failure: error instanceof Error ? error.name : "unknown",
       });
-      await failed("error", progress.working, {
+      // Whatever reached here is the tick's own: a pool's count failure rests only its pool.
+      await failed("error", "", {
         ...progress.state,
         sessions: [...recent, { at, ms: now() - at }],
       });

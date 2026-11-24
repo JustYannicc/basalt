@@ -703,3 +703,30 @@ test("a block's counts equal its hours counted one by one, to the microsecond at
     assert.deepEqual(of(c.otherId, edge)!.slice(2), [2, 0], "the other pool's own rows only");
   });
 });
+
+test("a stored hour older than the lookback reads unproven, never complete, though its counts agree", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, 60_000));
+    await c.ready();
+    const first = (await horizon(f.db)) - captureHoursLookbackHours * 3_600_000;
+    // Both hours settled long ago, with no usage and no request: equal counts.
+    await f.db.query(
+      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
+      SELECT $1, h, 0, 0, h + interval '3 hours'
+      FROM unnest(ARRAY[$2::timestamptz - interval '1 hour', $2::timestamptz]) h`,
+      [c.poolId, new Date(first).toISOString()],
+    );
+    const key = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
+    const read = await c.coverage(
+      new Date(first - 3_600_000).toISOString(),
+      new Date(first + 3_600_000).toISOString(),
+    );
+    assert.deepEqual(
+      [...read.incomplete!],
+      [key(first - 3_600_000)],
+      "the hour before the lookback only",
+    );
+    assert.equal(read.ranges, undefined);
+  });
+});
