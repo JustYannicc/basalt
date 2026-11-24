@@ -30,6 +30,7 @@ function fixture(
   primary: {
     primary?: PrimaryRoute;
     primaryAvailable?(): boolean;
+    primaryHoldMs?(): number;
     recoverPrimary?(): Promise<void>;
   } = {},
 ) {
@@ -526,6 +527,83 @@ test("with production routing, a fenced root never fails a call a ready cell can
   );
   await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
   assert.equal(f.calls.dispatches, 3);
+  await f.settle();
+});
+
+// The root's restart as a call sees it: the selected boot's record is gone while the new one starts.
+const rootRestarting = () => {
+  const refused = new SlotRefused("identity");
+  rememberRuntimeFailure("endpoint_identity", refused);
+  return refused;
+};
+
+test("while the root recovers, a ready cell takes the call and no call holds for the root", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  assert.equal(await f.fleet.primaryHoldMs(), 200_000, "with no ready cell a call holds");
+  await f.add();
+  assert.equal(await f.fleet.primaryHoldMs(), 0, "a ready cell ends every hold");
+  let rootCalls = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          throw rootRestarting();
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    { rootHoldMs: () => f.fleet.primaryHoldMs() },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(f.calls.dispatches, 1);
+  assert.equal(rootCalls, 0);
+  await f.settle();
+});
+
+test("a cell that becomes ready while a call holds for the root's restart takes that call", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  let rootCalls = 0,
+    pauses = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          throw rootRestarting();
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    {
+      timing: {
+        now: () => pauses * 1_000,
+        pause: async () => {
+          if (++pauses === 3) await f.add();
+        },
+      },
+      rootHoldMs: () => f.fleet.primaryHoldMs(),
+    },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(rootCalls, 3, "the root took every attempt until the cell was ready");
+  assert.equal(f.calls.dispatches, 1);
   await f.settle();
 });
 

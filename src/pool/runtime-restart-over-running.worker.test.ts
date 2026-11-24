@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
-import { leakedStreamsMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import { runtimeRetryTiming } from "./runtime-fleet/retry.ts";
+import {
+  leakedStreamsMs,
+  restartStartBoundMs,
+  unservingBoundMs,
+} from "./runtime-slots/forced-restart-timing.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Inspected {
@@ -33,6 +38,7 @@ async function stuckOverRunningContainer(f: Fixture) {
   const epoch = ((await f.send("inspect")) as Inspected).selection.epoch;
   const start = f.old.ctx.container.start.bind(f.old.ctx.container);
   f.old.crash();
+  const since = Date.now();
   f.old.ctx.container.start = () => {
     f.old.revive();
     throw new Error("synthetic: the previous container is still running");
@@ -40,10 +46,23 @@ async function stuckOverRunningContainer(f: Fixture) {
   await passes(f, 1);
   f.old.ctx.container.start = start;
   await passes(f, 3);
-  return { previous, epoch };
+  return { previous, epoch, since };
 }
 
-async function assertStuck(f: Fixture, previous: { bootId: string }, epoch: number) {
+/** The test's clock, moved only by the test and by a held call's own pauses. */
+function testClock(context: TestContext) {
+  let now = Date.now();
+  context.mock.method(Date, "now", () => now);
+  return (milliseconds: number) => {
+    now += milliseconds;
+  };
+}
+
+async function assertStuck(
+  f: Fixture,
+  { previous, epoch, since }: Awaited<ReturnType<typeof stuckOverRunningContainer>>,
+  advance: (milliseconds: number) => void,
+) {
   assert.equal(f.old.ctx.container.running, true);
   assert.equal(f.old.identity().bootId, previous.bootId, "the old container still runs");
   const refused = await f.command("active-health");
@@ -55,11 +74,19 @@ async function assertStuck(f: Fixture, previous: { bootId: string }, epoch: numb
   const { selection } = (await f.send("inspect")) as Inspected;
   assert.equal(selection.epoch, epoch);
   assert.equal(selection.active.identity.bootId, previous.bootId);
-  // The request ends in the native retry advice once its attempts are spent.
-  const model = await f.model();
-  assert.equal(model.status, 503);
-  assert.equal(model.headers.get("Retry-After") !== null, true);
-  await model.body?.cancel();
+  // A call holds for the restart recovery keeps joining, and gets the native retry advice once the
+  // recovery's bound has passed. Its pauses move the test's clock, and no pass runs meanwhile.
+  const pause = runtimeRetryTiming.pause;
+  runtimeRetryTiming.pause = async (milliseconds) => advance(milliseconds);
+  try {
+    const model = await f.model();
+    assert.equal(model.status, 503);
+    assert.equal(model.headers.get("Retry-After") !== null, true);
+    await model.body?.cancel();
+  } finally {
+    runtimeRetryTiming.pause = pause;
+  }
+  assert.ok(Date.now() - since >= restartStartBoundMs, "never before the recovery's bound");
 }
 
 async function assertHealed(f: Fixture, previous: { bootId: string }, epoch: number) {
@@ -88,13 +115,15 @@ for (const stop of ["graceful", "hard"] as const)
     `a restart admitted over a running container completes after a ${stop} stop`,
     { timeout: 20_000 },
     async (context) => {
+      const advance = testClock(context);
       const f = await fleetWorkerFixture();
       context.after(f.cleanup);
       f.old.hooks.sigtermExits = stop === "graceful";
       const logs = context.mock.method(console, "info", () => {});
       context.mock.method(console, "error", () => {});
-      const { previous, epoch } = await stuckOverRunningContainer(f);
-      await assertStuck(f, previous, epoch);
+      const stuck = await stuckOverRunningContainer(f);
+      const { previous, epoch } = stuck;
+      await assertStuck(f, stuck, advance);
       const phases = logs.mock.calls
         .filter((call) => call.arguments[0] === "POOL_SELECTED_RECOVERY")
         .map((call) => (call.arguments[1] as { phase: string }).phase);
@@ -110,11 +139,13 @@ test(
   "the operator crash route refuses a root stuck over its admitted restart",
   { timeout: 20_000 },
   async (context) => {
+    const advance = testClock(context);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     context.mock.method(console, "info", () => {});
     context.mock.method(console, "error", () => {});
-    const { previous, epoch } = await stuckOverRunningContainer(f);
+    const stuck = await stuckOverRunningContainer(f);
+    const { previous } = stuck;
     const at = Date.now();
     const crash = await f.command("runtime-crash", {
       identity: previous,
@@ -126,7 +157,7 @@ test(
     assert.notEqual(crash.status, 200);
     await crash.body?.cancel();
     assert.deepEqual(f.old.calls.signals, []);
-    await assertStuck(f, previous, epoch);
+    await assertStuck(f, stuck, advance);
   },
 );
 
@@ -134,17 +165,17 @@ test(
   "the stuck record heals by itself once it has refused for the bound, with a graceful stop",
   { timeout: 20_000 },
   async (context) => {
-    let now = Date.now();
-    context.mock.method(Date, "now", () => now);
+    const advance = testClock(context);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     f.old.hooks.sigtermExits = true;
     context.mock.method(console, "info", () => {});
     context.mock.method(console, "error", () => {});
-    const { previous, epoch } = await stuckOverRunningContainer(f);
-    await assertStuck(f, previous, epoch);
+    const stuck = await stuckOverRunningContainer(f);
+    const { previous, epoch } = stuck;
+    await assertStuck(f, stuck, advance);
     assert.deepEqual(f.old.calls.signals, [], "never stopped before the bound");
-    now += unservingBoundMs;
+    advance(unservingBoundMs);
     await assertHealed(f, previous, epoch);
     assert.deepEqual(f.old.calls.signals, [15]);
     assert.equal(f.old.calls.destroy, 0);
@@ -155,20 +186,20 @@ test(
   "the stuck record heals by itself when its pool policy expired long ago",
   { timeout: 30_000 },
   async (context) => {
-    let now = Date.now();
-    context.mock.method(Date, "now", () => now);
+    const advance = testClock(context);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     context.mock.method(console, "info", () => {});
     const errors = context.mock.method(console, "error", () => {});
-    const { previous, epoch } = await stuckOverRunningContainer(f);
+    const stuck = await stuckOverRunningContainer(f);
+    const { previous, epoch } = stuck;
     // A pool policy that is clean but long expired: every install and Home call was refused.
-    now += 3_600_000;
+    advance(3_600_000);
     // A release's new code first sees the refusal with a fresh clock.
     await f.send("recovery-reset", { operationId: "incident-release" });
     await passes(f, 1);
-    await assertStuck(f, previous, epoch);
-    now += unservingBoundMs;
+    await assertStuck(f, stuck, advance);
+    advance(unservingBoundMs);
     try {
       await assertHealed(f, previous, epoch);
     } catch (error) {
@@ -229,21 +260,21 @@ for (const [answer, readiness] of [
     `the stuck record heals when the old container answers readiness with ${answer}`,
     { timeout: 30_000 },
     async (context) => {
-      let now = Date.now();
-      context.mock.method(Date, "now", () => now);
+      const advance = testClock(context);
       const f = await fleetWorkerFixture();
       context.after(f.cleanup);
       context.mock.method(console, "info", () => {});
       context.mock.method(console, "error", () => {});
-      const { previous, epoch } = await stuckOverRunningContainer(f);
+      const stuck = await stuckOverRunningContainer(f);
+      const { previous, epoch } = stuck;
       f.old.hooks.health = async () =>
         f.old.identity().bootId === previous.bootId ? readiness() : undefined;
       // Hours later, past any start the admitted restart could still have in progress.
-      now += 3_600_000;
+      advance(3_600_000);
       await f.send("recovery-reset", { operationId: "incident-release" });
       await passes(f, 1);
-      await assertStuck(f, previous, epoch);
-      now += unservingBoundMs;
+      await assertStuck(f, stuck, advance);
+      advance(unservingBoundMs);
       await assertHealed(f, previous, epoch);
       assert.deepEqual(f.old.calls.signals, [15]);
     },

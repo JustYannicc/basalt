@@ -25,8 +25,9 @@ export const fleetSafeRead = (request: Request) =>
 // Readiness or the policy lease is not current yet: the container's readiness said unhealthy or
 // answered too late, a lease ran out, or the container is stopped and recovery will restart it.
 // These wait. Fenced, deselected and policy refusals throw at once; a replaced boot or an endpoint
-// that does not answer keeps the unpaced six-attempt budget. Only a selected runtime's admission
-// remembers its step and reason; the legacy lifecycle path keeps its bounded retries unchanged.
+// that does not answer keeps the unpaced six-attempt budget, unless it is the root's restart that a
+// call holds for (`restartRefusal`). Only a selected runtime's admission remembers its step and
+// reason; the legacy lifecycle path keeps its bounded retries unchanged.
 const notAdmittingYet = new Set([
   "unhealthy",
   "slot_unhealthy",
@@ -44,11 +45,35 @@ function waitsForAdmission(error: unknown) {
 /** How long an undispatched request waits for admission before the retryable 503. */
 export const runtimeAdmissionWaitMs = 30_000;
 const admissionPace = (waits: number) => Math.min(1_000, 125 * 2 ** waits);
+/**
+ * A held call's deadline sits this far past the end of the root recovery's bound: beyond one
+ * jittered pause and one health read, so the call's own next attempt answers first, and the
+ * deadline only ends an attempt that hangs.
+ */
+const holdBackstopMs = 5_000;
+// What a root's restart shows a call before its new boot is selected: the old boot's record is
+// gone (`slot_identity`), or the endpoint's start found no container to start.
+function restartRefusal(error: unknown) {
+  const { runtimeStep, runtimeReason } = runtimeFailureDiagnostic(error, "fleet_forward");
+  return (
+    runtimeReason === "slot_identity" ||
+    (runtimeStep === "endpoint_route" && runtimeReason === "transport")
+  );
+}
 export interface RetryTiming {
   now(): number;
   pause(milliseconds: number, signal: AbortSignal): Promise<void>;
 }
-const realTiming: RetryTiming = {
+interface RetryOptions {
+  timing?: RetryTiming;
+  /**
+   * What is left of the bound of the root's recovery in progress; 0 when none is, or when a ready
+   * cell can take the call. While it lasts, the call waits for that restart instead of failing.
+   */
+  rootHoldMs?(): Promise<number>;
+}
+/** The waits between attempts; tests replace them instead of sleeping. */
+export const runtimeRetryTiming: RetryTiming = {
   // Monotonic, so tests and callers that move Date.now cannot stretch the wait.
   now: () => performance.now(),
   pause: (milliseconds, signal) =>
@@ -110,13 +135,21 @@ export async function forwardRecoverably(
   attempt: (request: Request, dispatched: () => void) => Promise<Response>,
   beforeDispatch: () => void,
   recover?: () => Promise<void>,
-  timing: RetryTiming = realTiming,
+  { timing = runtimeRetryTiming, rootHoldMs }: RetryOptions = {},
 ) {
   const deadline = new AbortController();
-  const timer = setTimeout(
-    () => deadline.abort(new DOMException("Runtime recovery deadline", "TimeoutError")),
-    runtimeRecoveryBudgetMs,
-  );
+  const expire = () =>
+    deadline.abort(new DOMException("Runtime recovery deadline", "TimeoutError"));
+  let timer = setTimeout(expire, runtimeRecoveryBudgetMs);
+  let expiresAt = timing.now() + runtimeRecoveryBudgetMs;
+  // A call held for the root's restart is never ended by this deadline inside the recovery's bound.
+  const holdUntil = (holdMs: number) => {
+    const until = timing.now() + holdMs + holdBackstopMs;
+    if (until <= expiresAt) return;
+    clearTimeout(timer);
+    expiresAt = until;
+    timer = setTimeout(expire, until - timing.now());
+  };
   const signal = AbortSignal.any([request.signal, deadline.signal]);
   const safe = fleetSafeRead(request);
   let retained = new Request(request, { signal });
@@ -168,7 +201,16 @@ export async function forwardRecoverably(
       } catch (error) {
         failure = error;
         if (!dispatched) void current.body?.cancel().catch(() => {});
-        if (signal.aborted || !recoverable(error)) {
+        // Only a call that never left waits on the root's restart, and only on what it refuses.
+        const holdMs =
+          dispatched ||
+          signal.aborted ||
+          !rootHoldMs ||
+          !(restartRefusal(error) || waitsForAdmission(error))
+            ? 0
+            : await rootHoldMs().catch(() => 0);
+        const restarting = holdMs > 0 && restartRefusal(error);
+        if (signal.aborted || !(restarting || recoverable(error))) {
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
         }
@@ -182,14 +224,19 @@ export async function forwardRecoverably(
           if (recovered || !recover) return nativeRuntimeUnavailable(request, error);
           await tryRecovery();
         }
-        const waiting = waitsForAdmission(error);
+        const waiting = restarting || waitsForAdmission(error);
+        // While the root's recovery is inside its bound, the call waits for it, not for 30 s.
+        const holding = waiting && holdMs > 0;
         if (waiting) {
           waitingSince ??= timing.now();
-          if (timing.now() - waitingSince >= runtimeAdmissionWaitMs) break;
-          // Six hard refusals in a row end the request; a soft one in between restarts the count.
+          if (!holding && timing.now() - waitingSince >= runtimeAdmissionWaitMs) break;
+          // Six hard refusals in a row end the request; a wait in between restarts the count.
           refusals = 0;
         } else if (++refusals >= 6) break;
-        if (++failures === 5 && !recovered && recover) {
+        if (holding) holdUntil(holdMs);
+        // A held call's recovery runs on its own cadence already; joining one of its passes could
+        // keep the call past the bound.
+        if (++failures === 5 && !recovered && recover && !holding) {
           // A restart that finished is used at once; a declined one is followed by the next read.
           await tryRecovery();
           continue;

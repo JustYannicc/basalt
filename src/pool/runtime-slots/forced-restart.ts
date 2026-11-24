@@ -146,7 +146,9 @@ export class RuntimeForcedRestart {
   /** Any refusal: a restart, forced or not, that still hasn't served in its budget has failed. */
   async refused() {
     const now = Date.now();
-    this.report(await this.clock.failedSince(now), now);
+    const state = await this.clock.failedSince(now);
+    this.report(state, now);
+    return state;
   }
   private report(state: UnservingState, now: number) {
     if (state.needsPerson?.at === now)

@@ -280,6 +280,7 @@ export class PoolRuntimeFleet {
       primary: fleetRouting.primary,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
+      primaryHoldMs: () => this.deps.handoff.recoveryHoldMs(),
       primaryDistance: async () => (await this.deps.handoff.status())?.database,
       recoverPrimary: () => this.deps.handoff.supervise(),
       demandAt: (at) => {
@@ -412,11 +413,16 @@ export class PoolRuntimeFleet {
         (current, dispatch) => fleet.forward(current, pool, legacy, dispatch),
         beforeDispatch,
         () => fleet.recoverPrimary(),
+        { rootHoldMs: () => fleet.primaryHoldMs() },
       );
     }
     return stampResumeTarget(
-      await forwardRecoverably(request, legacy, beforeDispatch, () =>
-        this.deps.handoff.supervise(),
+      await forwardRecoverably(
+        request,
+        legacy,
+        beforeDispatch,
+        () => this.deps.handoff.supervise(),
+        { rootHoldMs: async () => this.deps.handoff.recoveryHoldMs() },
       ),
       { kind: "primary" },
     );
