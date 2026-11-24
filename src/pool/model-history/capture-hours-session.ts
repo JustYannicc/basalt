@@ -128,8 +128,12 @@ export async function captureHoursSession(
   const isRead = (entry: { pool: string; hour?: string }) =>
     entry.hour !== undefined && reads.has(`${entry.pool}|${entry.hour}`);
   update({
+    // A stuck hour that left the lookback is never counted again: it drops with it.
     stuck: (state().stuck ?? []).filter(
-      (entry) => entry.pool !== "" && (isRead(entry) || open(entry)),
+      (entry) =>
+        entry.pool !== "" &&
+        (entry.hour === undefined || Date.parse(entry.hour) > oldestBlock) &&
+        (isRead(entry) || open(entry)),
     ),
     slow: (state().slow ?? []).filter(
       (entry) => known.has(entry.pool) && (entry.limit === "read" ? isRead(entry) : open(entry)),
@@ -288,18 +292,38 @@ export async function captureHoursSession(
     resting.add(pool);
   };
   /** Counted: the pool is no longer failing, and its slow or stuck hour in the block is done. */
-  const counted = (block: CaptureBlock) => {
-    // A read's wait is keyed on the block's start, which can sit before the block's own first hour.
-    const cleared = (entry: { pool: string; hour?: string }) =>
-      entry.pool !== block.pool ||
-      (entry.hour !== undefined && !within(entry.hour, block) && entry.hour !== startOf(block));
+  /**
+   * Whether an entry is the read's wait of this block, or the stuck entry it led to: keyed on the
+   * block's start, cleared only by the whole block counted or by its read answering, never by one
+   * of its hours counted alone, as a recount or a cut session counts them.
+   */
+  const readEntry = (block: CaptureBlock, entry: { pool: string; hour?: string; limit?: string }) =>
+    entry.pool === block.pool &&
+    entry.hour === startOf(block) &&
+    (entry.limit === "read" ||
+      (state().slow ?? []).some(
+        (wait) => wait.limit === "read" && wait.pool === block.pool && wait.hour === entry.hour,
+      ));
+  /** The block's read answered: its read's wait, and any stuck entry from it, are over. */
+  const readAnswered = (block: CaptureBlock) =>
+    update({
+      stuck: (state().stuck ?? []).filter((entry) => !readEntry(block, entry)),
+      slow: (state().slow ?? []).filter((entry) => !readEntry(block, entry)),
+    });
+  /** Counted: the whole block, or with `hour` one hour of it. */
+  const counted = (block: CaptureBlock, hour = false) => {
+    const kept = (entry: { pool: string; hour?: string; limit?: string }) => {
+      if (entry.pool !== block.pool) return true;
+      if (readEntry(block, entry)) return hour;
+      return entry.hour !== undefined && !within(entry.hour, block);
+    };
     update({
       // The hour that last stopped a session is named until it is counted.
       ...(state().lastHourPool === block.pool && within(state().lastHour, block)
         ? { lastHour: undefined, lastHourReadMs: undefined, lastHourPool: undefined }
         : {}),
-      stuck: (state().stuck ?? []).filter(cleared),
-      slow: (state().slow ?? []).filter(cleared),
+      stuck: (state().stuck ?? []).filter(kept),
+      slow: (state().slow ?? []).filter(kept),
       failing: (state().failing ?? []).filter((entry) => entry.pool !== block.pool),
       repeat: state().repeat?.pool === block.pool ? undefined : state().repeat,
     });
@@ -396,6 +420,7 @@ export async function captureHoursSession(
       const started = performance.now();
       try {
         hours = await read(() => pendingHoursOf(db, block));
+        readAnswered(block);
       } catch (error) {
         if (postgresCode(error) !== "57014") throw error;
         if (limit < captureHoursReadLimitMs) return "budget";
@@ -435,11 +460,10 @@ export async function captureHoursSession(
         skipped = true;
         continue;
       }
-      counted({
-        pool: block.pool,
-        from: hour,
-        to: new Date(Date.parse(hour) + hourMs).toISOString(),
-      });
+      counted(
+        { pool: block.pool, from: hour, to: new Date(Date.parse(hour) + hourMs).toISOString() },
+        true,
+      );
       countedInBlock++;
     }
     if (skipped) return "skip";
@@ -476,9 +500,10 @@ export async function captureHoursSession(
       countedInBlock = 0;
       const stop = await countBlock(block, false, until);
       update({ nextPool: block.pool });
-      if (stop === "skip" || stop === "mark") {
-        // Some of it waits, or the session's share ran out inside it: the block stays pending,
-        // less the hours it did count. A block the share cut goes back on its queue.
+      if (stop !== undefined) {
+        // Not finished: some of it waits, the session's share or budget ran out inside it, or it
+        // stopped. The block stays pending, less the hours it did count; a block the share cut goes
+        // back on its queue.
         const was = pending.get(block.pool)!;
         pending.set(block.pool, { ...was, hours: Math.max(0, was.hours - countedInBlock) });
         partly.set(blockKey(block), (partly.get(blockKey(block)) ?? 0) + countedInBlock);
@@ -487,11 +512,13 @@ export async function captureHoursSession(
           queues.get(block.pool)!.unshift(block);
           return undefined;
         }
-        skips.set(block.pool, (skips.get(block.pool) ?? 0) + 1);
-        continue;
+        if (stop === "skip") {
+          skips.set(block.pool, (skips.get(block.pool) ?? 0) + 1);
+          continue;
+        }
+        if (stop === "rest") continue;
+        return stop;
       }
-      if (stop === "rest") continue;
-      if (stop) return stop;
       const was = pending.get(block.pool)!;
       pending.set(block.pool, {
         blocks: Math.max(0, was.blocks - 1),

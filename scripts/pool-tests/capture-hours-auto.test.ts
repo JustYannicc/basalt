@@ -1235,24 +1235,89 @@ test("a block the session's share cut is taken up again in the same session, and
     await c.native(at(0, minute));
     await c.ready();
     const end = await horizon(f);
-    // Two whole blocks, both counted hour by hour, each hour 900 ms against its 1 s: the session's
-    // pending share (9 s of 12 s) runs out four hours into the second block.
-    const blocks = [end - 2 * block, end - block].map(key);
+    // Three whole blocks, all counted hour by hour, each hour 900 ms against its 1 s. Newest first:
+    // the first block takes 5.4 s; the session's pending share (9 s of 12 s) runs out four hours
+    // into the second; its last two hours come after the recount's share, before the session's
+    // 12 s run out inside the third.
+    const blocks = [end - 3 * block, end - 2 * block, end - block].map(key);
     const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
     const storage = memoryStorage();
     await storage.put(captureHoursAutoKey, { split: [{ pool: c.poolId, blocks }] });
     const state = await captureHoursTick(
       storage,
       (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 900 } })),
-      { now: () => clock.at, bounds: { lookbackHours: 12, sessions: 1, sessionMs: 12_000 } },
+      { now: () => clock.at, bounds: { lookbackHours: 18, sessions: 1, sessionMs: 12_000 } },
     );
-    const done = await counted(f, c.poolId, 12);
-    assert.deepEqual(done, { hours: 12, settled: 12 }, "every hour, the cut block's last two too");
-    assert.equal(state.lastStop, "complete");
+    const done = await counted(f, c.poolId, 18);
+    const second = await counted(f, c.poolId, 12);
+    assert.deepEqual(
+      second,
+      { hours: 12, settled: 12 },
+      "the two newest blocks whole, the cut one too",
+    );
+    assert.ok(done.settled < 18, `${done.settled} of 18 hours counted`);
+    assert.equal(state.lastStop, "budget");
     assert.deepEqual(
       captureHoursInspect(state).byPool.map((entry) => [entry.pendingBlocks, entry.pendingHours]),
-      [[0, 0]],
-      "nothing pending, counted once each",
+      [[1, 18 - done.settled]],
+      "exactly the hours not counted: each counted hour taken off once",
     );
+  });
+});
+
+test("a recount that counts some hours of a block whose read is stuck leaves it stuck", async () => {
+  await seriesFixture(async (f) => {
+    await clockAt(f, blockPositions()[0]!.at);
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const end = await horizon(f);
+    const newest = end - block;
+    const older = end - 2 * block;
+    // The newest block counted just now; the older one's first five hours long ago, its last not.
+    await f.db.query(
+      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
+      SELECT $1, h, 0, 0, now() FROM generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') h
+      UNION ALL
+      SELECT $1, h, 0, 0, h + interval '3 hours'
+        FROM generate_series($4::timestamptz, $5::timestamptz, interval '1 hour') h`,
+      [
+        c.poolId,
+        new Date(newest).toISOString(),
+        new Date(end - hour).toISOString(),
+        new Date(older).toISOString(),
+        new Date(older + 4 * hour).toISOString(),
+      ],
+    );
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const until = new Date(clock.at + 5 * minute).toISOString();
+    // Its read already stuck, in its wait: the pending path leaves the block, the recount reaches it.
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, {
+      split: [{ pool: c.poolId, blocks: [key(older)] }],
+      slow: [{ pool: c.poolId, hour: key(older), count: 3, until, limit: "read" }],
+      stuck: [{ pool: c.poolId, reason: "slow", hour: key(older), retryAt: until }],
+    });
+    // Each hour 900 ms of a 2.5 s session: the recount counts two of the block's hours, then stops.
+    const state = await captureHoursTick(
+      storage,
+      (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 900 } })),
+      { now: () => clock.at, bounds: { lookbackHours: 12, sessions: 1, sessionMs: 2_500 } },
+    );
+    const recounted = Number(
+      (
+        await f.db.query(
+          "SELECT count(*)::int AS n FROM basalt_model_capture_hours WHERE pool=$1 AND hour>=$2 AND hour<$3 AND checked_at > now() - interval '1 minute'",
+          [c.poolId, new Date(older).toISOString(), new Date(newest).toISOString()],
+        )
+      ).rows[0]!.n,
+    );
+    assert.ok(recounted >= 1 && recounted < 6, `${recounted} of its hours recounted`);
+    assert.deepEqual(
+      state.stuck?.map((entry) => [entry.pool, entry.reason, entry.hour]),
+      [[c.poolId, "slow", key(older)]],
+      "still stuck: its read has not answered",
+    );
+    assert.equal(state.slow?.find((entry) => entry.limit === "read")?.count, 3);
   });
 });
