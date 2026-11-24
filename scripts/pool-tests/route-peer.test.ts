@@ -72,7 +72,7 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 90_000): 
 }
 /**
  * A CA made for this run only, and a certificate it signs for the vendor's token host. Only the
- * pool container trusts it, through SSL_CERT_FILE, so a sign-in can finish against the stand-in.
+ * pool container trusts it, as its system root bundle, so a sign-in can finish against the stand-in.
  */
 function throwawayVendorCertificates(): string {
   const directory = mkdtempSync(join(tmpdir(), "basalt-route-vendor-"));
@@ -107,6 +107,7 @@ function signVendorCertificates(directory: string): string {
     "ca.csr",
     "-signkey",
     "ca-key.pem",
+    "-sha256",
     "-days",
     "1",
     "-extfile",
@@ -134,6 +135,7 @@ function signVendorCertificates(directory: string): string {
     "ca.pem",
     "-CAkey",
     "ca-key.pem",
+    "-sha256",
     "-set_serial",
     "2",
     "-days",
@@ -170,7 +172,7 @@ interface Records {
   connects: { route: string; host: string; port: number; refused: boolean }[];
   dns: string[];
   provider: { from: string; path: string; key: string }[];
-  vendor: { path: string; grant: string | null; presented: string | null; issued: number | null }[];
+  vendor: { grant: string | null; presented: string | null; issued: number | null }[];
 }
 
 test(
@@ -275,12 +277,11 @@ test(
         `POOL_MANAGEMENT_KEY=${managementKey}`,
         "--env",
         "POOL_MANAGEMENT_ALLOW_REMOTE=true",
-        // Test-only: the throwaway CA is the only root this container trusts. Every other phase
-        // refuses or never resolves before TLS, so this changes nothing but the vendor sign-in.
+        // Test-only: the throwaway CA stands in for this container's system roots. SSL_CERT_FILE
+        // can't carry it, because Home gets only the supervisor's own environment. Every other
+        // phase refuses or never resolves before TLS, so this changes nothing but the vendor sign-in.
         "--volume",
-        `${join(vendorCertificates, "ca.pem")}:/fixture/ca.pem:ro`,
-        "--env",
-        "SSL_CERT_FILE=/fixture/ca.pem",
+        `${join(vendorCertificates, "ca.pem")}:/etc/ssl/certs/ca-certificates.crt:ro`,
         image,
       ]);
       containers.push(pool);
@@ -727,12 +728,14 @@ test(
             servingImage: async () => "rig-image",
           },
         );
+        // Each sign-in is its own operation: a repeated one answers with the first attempt.
+        let operation = 0;
         const acquire = async (action: string, input: Record<string, unknown> = {}) => {
           const at = Date.now();
           const envelope = await signEnvelope(signingKey, accountAcquisitionPrefix, {
             owner: "organization:rig",
             provider: "claude",
-            operation: "connect:rig",
+            operation: `connect:rig:${operation}`,
             action,
             at,
             expiresAt: at + 20_000,
@@ -747,6 +750,7 @@ test(
           return (await response.json()) as Record<string, unknown>;
         };
         const signInOnce = async () => {
+          operation += 1;
           await reset();
           const started = await acquire("start", {
             hasRules: true,
@@ -770,7 +774,7 @@ test(
           );
           assert.ok(
             exchange.length > 0,
-            `the code exchange never reached the route: ${JSON.stringify(seen)}`,
+            `the code exchange never reached the route: ${JSON.stringify({ finished, seen })}`,
           );
           for (const item of exchange)
             assert.ok(!seen.dns.includes(item.host), `${item.host} was looked up directly`);
@@ -789,7 +793,7 @@ test(
         // stand-in's own loopback: the gateway is the only way to reach it.
         await fetch(`${control}/vendor`, { method: "POST" });
         const success = await signInOnce();
-        assert.equal(success.finished.state, "connected", JSON.stringify(success.finished));
+        assert.equal(success.finished.state, "connected", JSON.stringify(success));
         const exchanged = success.seen.vendor.filter((item) => item.grant === "authorization_code");
         assert.equal(exchanged.length, 1, JSON.stringify(success.seen));
         // Every dial of the token host is a CONNECT on a route, never refused now; the sign-in's own

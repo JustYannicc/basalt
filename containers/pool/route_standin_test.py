@@ -345,67 +345,100 @@ def control_handler(records: Records):
     return Control
 
 
-def vendor_handler(records: Records):
-    issued = {"count": 0}
+def token_answer(records: Records, issued: dict[str, int], raw: bytes) -> tuple[int, dict[str, object]]:
+    """The vendor's token endpoint: a fresh fixture token for a code or a refresh token."""
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError:
+        payload = {key: values[0] for key, values in parse_qs(raw.decode("latin-1")).items()}
+    if not isinstance(payload, dict):
+        payload = {}
+    grant = payload.get("grant_type")
+    presented = payload.get("refresh_token") if grant == "refresh_token" else None
+    entry = {"grant": grant, "presented": presented, "issued": None}
+    if grant not in ("authorization_code", "refresh_token"):
+        records.add("vendor", entry)
+        return 404, {"error": "not_found"}
+    with records.lock:
+        issued["count"] += 1
+        n = issued["count"]
+    records.add("vendor", {**entry, "issued": n})
+    return 200, {
+        "access_token": f"fixture-access-{n}",
+        "refresh_token": f"fixture-refresh-{n}",
+        # Short-lived on purpose: inside Home's refresh lead, so the next refresh comes soon.
+        "expires_in": 3600,
+        "token_type": "Bearer",
+        "account": {"uuid": "fixture-account", "email_address": ""},
+        "organization": {"uuid": "fixture-organization", "name": "fixture"},
+    }
 
-    class Vendor(BaseHTTPRequestHandler):
-        protocol_version = "HTTP/1.1"
 
-        def log_message(self, *_args) -> None:
-            pass
+def h2_frame(kind: int, flags: int, stream: int, body: bytes = b"") -> bytes:
+    return struct.pack("!I", len(body))[1:] + bytes([kind, flags]) + struct.pack("!I", stream) + body
 
-        def answer(self, status: int, value: object) -> None:
-            body = json.dumps(value).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
 
-        def do_POST(self) -> None:
-            raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            try:
-                payload = json.loads(raw or b"{}")
-            except ValueError:
-                payload = {key: values[0] for key, values in parse_qs(raw.decode("latin-1")).items()}
-            if not isinstance(payload, dict):
-                payload = {}
-            grant = payload.get("grant_type")
-            presented = payload.get("refresh_token") if grant == "refresh_token" else None
-            entry = {"path": self.path, "grant": grant, "presented": presented, "issued": None}
-            if self.path != "/v1/oauth/token" or grant not in ("authorization_code", "refresh_token"):
-                records.add("vendor", entry)
-                self.answer(404, {"error": "not_found"})
-                return
-            with records.lock:
-                issued["count"] += 1
-                n = issued["count"]
-            records.add("vendor", {**entry, "issued": n})
-            # Short-lived on purpose: inside Home's refresh lead, so the next refresh comes soon.
-            self.answer(200, {
-                "access_token": f"fixture-access-{n}",
-                "refresh_token": f"fixture-refresh-{n}",
-                "expires_in": 3600,
-                "token_type": "Bearer",
-                "account": {"uuid": "fixture-account", "email_address": ""},
-                "organization": {"uuid": "fixture-organization", "name": "fixture"},
-            })
-
-        def do_GET(self) -> None:
-            records.add("vendor", {"path": self.path, "grant": None, "presented": None, "issued": None})
-            self.answer(404, {"error": "not_found"})
-
-    return Vendor
+def h2_vendor(connection, records: Records, issued: dict[str, int]) -> None:
+    """Just enough HTTP/2 for Home's Claude client, which speaks nothing else: every request
+    stream is answered by the token endpoint. Header blocks are never decoded; the body says
+    what was asked."""
+    preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+    if exact(connection, len(preface)) != preface:
+        return
+    connection.sendall(h2_frame(4, 0, 0))
+    bodies: dict[int, bytearray] = {}
+    while True:
+        head = exact(connection, 9)
+        size = int.from_bytes(head[:3], "big")
+        kind, flags = head[3], head[4]
+        stream = int.from_bytes(head[5:9], "big") & 0x7FFFFFFF
+        body = exact(connection, size)
+        if kind == 4 and not flags & 1:
+            connection.sendall(h2_frame(4, 1, 0))
+        elif kind == 6 and not flags & 1:
+            connection.sendall(h2_frame(6, 1, 0, body))
+        elif kind == 7:
+            return
+        elif kind in (0, 1):
+            if flags & 8:
+                body = body[1 : len(body) - body[0]]
+            if kind == 1:
+                bodies[stream] = bytearray()
+            else:
+                bodies.setdefault(stream, bytearray()).extend(body)
+                if body:
+                    # Return the credit so a longer body is never stalled.
+                    credit = struct.pack("!I", len(body))
+                    connection.sendall(h2_frame(8, 0, 0, credit))
+                    if not flags & 1:
+                        connection.sendall(h2_frame(8, 0, stream, credit))
+            if flags & 1:
+                status, value = token_answer(records, issued, bytes(bodies.pop(stream, b"")))
+                answer = json.dumps(value).encode()
+                # HPACK: indexed :status (200 is entry 8, 404 is 13), then one literal header.
+                block = bytes([0x88 if status == 200 else 0x8D]) + b"\x00\x0ccontent-type\x10application/json"
+                connection.sendall(h2_frame(1, 4, stream, block) + h2_frame(0, 1, stream, answer))
 
 
 def serve_vendor(records: Records, directory: str) -> None:
     import ssl
 
-    server = ThreadingHTTPServer(("127.0.0.1", int(VENDOR["port"])), vendor_handler(records))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(f"{directory}/vendor.pem", f"{directory}/vendor-key.pem")
-    server.socket = context.wrap_socket(server.socket, server_side=True)
-    server.serve_forever()
+    context.set_alpn_protocols(["h2"])
+    listener = socket.create_server(("127.0.0.1", int(VENDOR["port"])))
+    issued = {"count": 0}
+
+    def serve(client: socket.socket) -> None:
+        try:
+            with context.wrap_socket(client, server_side=True) as connection:
+                h2_vendor(connection, records, issued)
+        except (OSError, EOFError):
+            pass
+
+    while True:
+        client, _ = listener.accept()
+        threading.Thread(target=serve, args=(client,), daemon=True).start()
 
 
 def main() -> None:
