@@ -26,9 +26,6 @@ import {
   streamResumeUpstreamHeader,
   streamResumeVersion,
   resumeLayerPort,
-  streamBootHeader,
-  streamResumeAttempts,
-  streamResumeCuts,
   streamResumeWindowMs,
   type StreamResumeInput,
 } from "./stream-splice.ts";
