@@ -35,6 +35,8 @@ export class Cell extends DurableObject {
       return new Response(null, { status: 204 });
     }
     if (new URL(request.url).pathname === "/count") {
+      // As the cell's count read does: settle what this instance can, then read.
+      await this.activity.unproven(identity);
       const row = await this.activity.inspect(identity);
       return Response.json({ active: row?.active ?? 0 });
     }

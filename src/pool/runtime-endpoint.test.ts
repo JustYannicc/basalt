@@ -20,7 +20,7 @@ import {
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { configurationDigest, runtimeConfiguration } from "./runtime-slots/configuration.ts";
 import { signEnvelope } from "./token.ts";
-import { SlotRefused } from "./runtime-slots/contract.ts";
+import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 
 async function fixture(initial = false) {
@@ -481,4 +481,89 @@ test("a model call whose caller leaves before the container answers stops counti
   answer(new Response("{}"));
   await call;
   assert.equal((await f.endpoint.streamCount(identity)).active, 0);
+});
+
+const unstampedLease = async (f: Awaited<ReturnType<typeof fixture>>, identity: SlotIdentity) => {
+  const key = `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`;
+  const row = (await f.ctx.storage.get(key)) as { active: number; leases?: object };
+  // As code before the stamps left it, and as the stuck cell of 24 Nov holds six.
+  await f.ctx.storage.put(key, {
+    ...row,
+    active: row.active + 1,
+    leases: { ...row.leases, old: "active" },
+  });
+};
+const fresh = (f: Awaited<ReturnType<typeof fixture>>) =>
+  new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
+
+test("an unstamped lease ends only when the container reads no model connection", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  f.hooks.connections = async () => 1;
+  assert.equal((await fresh(f).streamCount(identity)).active, 1, "a live connection keeps it");
+  f.hooks.connections = async () => {
+    throw new Error("probe failed");
+  };
+  assert.equal((await fresh(f).streamCount(identity)).active, 1, "a failed read keeps it");
+  // The read runs once per 30 s per boot: the same endpoint does not read again at once.
+  const reader = fresh(f);
+  f.hooks.connections = async () => 1;
+  await reader.streamCount(identity);
+  f.hooks.connections = async () => 0;
+  assert.equal((await reader.streamCount(identity)).active, 1, "no second read inside 30 s");
+  assert.equal((await fresh(f).streamCount(identity)).active, 0, "a read of 0 ends it");
+  const lines = warned.mock.calls.map((call) => call.arguments);
+  assert.ok(
+    lines.some(
+      ([line, fields]) =>
+        line === "POOL_RUNTIME_LEASES_KEPT" &&
+        (fields as { connections: unknown }).connections === "unknown",
+    ),
+  );
+  const released = lines.find(([line]) => line === "POOL_RUNTIME_LEASES_RELEASED");
+  assert.deepEqual(released?.[1], {
+    key: (released?.[1] as { key: string }).key,
+    ordinal: null,
+    kind: "unstamped",
+    released: 1,
+    connections: 0,
+  });
+  assert.match((released?.[1] as { key: string }).key, /^[0-9a-f]{24}$/);
+});
+
+test("the proof never ends a call this instance holds, nor one it takes during the read", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  const answers: ((response: Response) => void)[] = [];
+  let arrived = () => {};
+  const arrival = () => new Promise<void>((resolve) => (arrived = resolve));
+  f.hooks.model = () =>
+    new Promise<Response>((resolve) => {
+      answers.push(resolve);
+      arrived();
+    });
+  const call = () =>
+    f.endpoint.fetch(identity, new Request("http://pool/v1/messages", { method: "POST" }), 8317);
+  const first = arrival();
+  const held = call();
+  await first;
+  await unstampedLease(f, identity);
+  let late: Promise<Response> | undefined;
+  f.hooks.connections = async () => {
+    const second = arrival();
+    late = call();
+    await second;
+    return 0;
+  };
+  assert.equal((await fresh(f).streamCount(identity)).active, 2);
+  for (const answer of answers) answer(new Response("{}"));
+  await (await held).text();
+  await (await late!).text();
+  await f.settle();
+  assert.equal((await fresh(f).streamCount(identity)).active, 0);
 });
