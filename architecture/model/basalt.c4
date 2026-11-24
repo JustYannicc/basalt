@@ -5,7 +5,7 @@ model {
     router = module "Router" {
       #basalt #v1 #passthrough #port
       description "Forwards the exact signed app-model ingress path to the model gateway without rewriting the envelope. App model declarations and binding APIs stay on the tools gateway."
-      metadata { code "src/router.ts|src/native-model.ts|src/native-access.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|APP_UI_SERVICE=basalt.toolsGateway|ASSETS=basalt.clientAssets|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
+      metadata { code "src/router.ts|src/native-model.ts|src/native-access.ts|src/model-replay.ts"; endpointHosts "app.signalbox.run"; bindings "TOOLS_SERVICE=basalt.toolsGateway|APP_UI_SERVICE=basalt.toolsGateway|ASSETS=basalt.clientAssets|POOL_SERVICE=basalt.modelGateway|CATALOG_SERVICE=basalt.catalog" }
     }
 
     nativeTunnel = module "Native tunnel" {

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { controllerIsolateHeader, isolate } from "./isolate.ts";
+import { routerAttemptHeader, signRouterAttempt } from "./router-attempt.ts";
 import {
   modelCallReplayable,
   upstreamOutcomeUnknown,
@@ -609,4 +611,44 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
     [["retry_advised", "hold_budget_full"]],
   );
   assert.equal(sentry.length, 1);
+});
+
+test("the entry names its isolate before a model call and the controller's on its answer", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const signingKey = "ab".repeat(32);
+  const requestId = "0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e";
+  const own = isolate().id;
+  for (const controller of [own, "11111111-2222-4333-8444-555555555555"]) {
+    lines.mock.resetCalls();
+    const answer = await fetchController(
+      new Request("https://pool.example/v1/messages", {
+        method: "POST",
+        headers: {
+          [routerAttemptHeader]: await signRouterAttempt(signingKey, { requestId, attempt: 2 }),
+        },
+        body: "{}",
+      }),
+      {
+        controller: () => ({
+          fetch: async () =>
+            new Response("{}", { headers: { [controllerIsolateHeader]: controller } }),
+        }),
+        env: {},
+        defer: () => {},
+        signing: { key: signingKey },
+      },
+    );
+    assert.equal(answer.headers.has(controllerIsolateHeader), false, "never reaches a client");
+    await answer.text();
+    const named = lines.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_ENTRY_ISOLATE")
+      .map((call) => call.arguments[1] as Record<string, unknown>);
+    assert.deepEqual(
+      named.map(({ entryAgeMs: _age, ...line }) => line),
+      [
+        { phase: "sent", requestId, attempt: 2, entry: own },
+        { phase: "answered", requestId, entry: own, controller, shared: controller === own },
+      ],
+    );
+  }
 });

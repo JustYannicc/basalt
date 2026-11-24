@@ -1,3 +1,4 @@
+import { detachFromCaller } from "../caller-signal.ts";
 import { runtimeInput } from "./input.ts";
 import { remoteRuntimeDefect, runtimeErrorResponse } from "./request-error.ts";
 import { EndpointTrace, failEndpointResponse } from "../runtime-fleet/endpoint-trace.ts";
@@ -264,6 +265,18 @@ export class BoundSlotDriver implements SlotDriver {
     }
     return response;
   }
+}
+
+/**
+ * A cell follows its caller only for a model call it forwards to its container's model port; every
+ * control action (start, install, drain, retire and the rest) runs to its end, as before the flag.
+ */
+export function runtimeCallerSignal(request: Request): Request {
+  const model =
+    request.headers.has("X-Signalbox-Runtime-Identity") &&
+    request.headers.get("X-Signalbox-Runtime-Port") === "8317" &&
+    request.headers.get("X-Signalbox-Runtime-Read-Only") !== "1";
+  return model ? request : detachFromCaller(request);
 }
 
 /** Only the pool Worker's private DO binding can reach this transport. */

@@ -4,6 +4,12 @@ import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runti
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
+import { legacyConnections } from "./legacy-drain.ts";
+
+/** How often a boot holding a lease no instance vouches for reads its container's connections. */
+export const leaseProofEveryMs = 30_000;
+/** The read's own program stops at 2 s; past this the answer is unknown. */
+const leaseProofLimitMs = 5_000;
 import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
@@ -43,7 +49,7 @@ import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
-import { RuntimeActivity, stillFor } from "./activity.ts";
+import { RuntimeActivity, slotKey, stillFor } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
@@ -94,6 +100,7 @@ export class RuntimeEndpoint {
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
   private modelLifetimes: RuntimeModelLifetimes;
+  private leaseProofs = new Map<string, number>();
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -507,12 +514,21 @@ export class RuntimeEndpoint {
       const { record, configuration } = await this.store.read(identity);
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       request.signal.throwIfAborted();
-      return { configuration, done: await this.activity.acquire(identity) };
+      // A plain HTTP call's answer streams through this instance and ends with it; a socket doesn't.
+      const throughInstance =
+        request.headers.get("Upgrade") === null &&
+        !isModelLifetimePath(new URL(request.url).pathname);
+      return { configuration, done: await this.activity.acquire(identity, throughInstance) };
     }).catch((error: unknown) => refuseRuntime("endpoint_admission", error));
     const release = () => {
       this.ctx.waitUntil(done());
       return true;
     };
+    // A caller gone before the answer holds nothing here, whether or not the container still
+    // answers: nobody would read that answer, so its stream wrapper would never release the count.
+    const left = () => void release();
+    request.signal.addEventListener("abort", left, { once: true });
+    if (request.signal.aborted) left();
     try {
       await this.channel.keepAlive();
       await this.health(identity, request.signal);
@@ -541,6 +557,8 @@ export class RuntimeEndpoint {
     } catch (error) {
       release();
       throw error;
+    } finally {
+      request.signal.removeEventListener("abort", left);
     }
   }
   /**
@@ -555,9 +573,48 @@ export class RuntimeEndpoint {
       return { stopped: !this.ctx.container!.running };
     });
   }
+  /**
+   * A lease no instance can vouch for ends only when the container's own read finds no established
+   * connection on its model port: the legacy drain's read, unchanged. It runs only while such a lease
+   * exists, at most once every 30 s per boot, and a failed, partial or late read ends nothing.
+   */
+  private async settleLeases(identity: SlotIdentity) {
+    const pending = await this.activity.unproven(identity);
+    if (!pending.unstamped.length && !pending.foreignSockets.length) return;
+    const boot = `${identity.slotId}:${identity.bootId}`;
+    const now = Date.now();
+    if (now - (this.leaseProofs.get(boot) ?? -Infinity) < leaseProofEveryMs) return;
+    this.leaseProofs.set(boot, now);
+    const container = this.ctx.container;
+    let connections: number | undefined;
+    if (container?.exec && container.running) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      connections = await Promise.race([
+        legacyConnections({ exec: container.exec.bind(container) }).catch(() => undefined),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), leaseProofLimitMs);
+        }),
+      ]);
+      clearTimeout(timer);
+    }
+    if (connections === 0) {
+      await this.activity.releaseProven(identity, 0);
+      return;
+    }
+    console.warn("POOL_RUNTIME_LEASES_KEPT", {
+      key: await slotKey(identity.slotId),
+      ordinal: identity.homePeerOrdinal ?? null,
+      unstamped: pending.unstamped.length,
+      foreignSockets: pending.foreignSockets.length,
+      connections: connections ?? "unknown",
+    });
+  }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {
     this.bound(identity);
+    // In the background: the read may take longer than the fleet waits for this count, and the next
+    // count read sees what it ended.
+    this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
     const row = await this.activity.inspect(identity);
     return row
       ? { active: row.active, known: row.known, ...stillFor(row) }
@@ -572,6 +629,7 @@ export class RuntimeEndpoint {
         this.serialize(async () => {
           await trace.run("drain_health", () => this.health(identity, signal), fields);
           signal.throwIfAborted();
+          this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
           const state = await trace.run(
             "drain_activity",
             () => this.activity.drain(identity),
