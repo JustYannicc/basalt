@@ -1,12 +1,16 @@
 import { routerAttemptHeader, signRouterAttempt } from "./pool/router-attempt.ts";
-import { openResumeStamp, routerResumeHeader, routerResumePath } from "./pool/router-resume.ts";
+import {
+  openResumeStamp,
+  routerResumeHeader,
+  routerResumePath,
+} from "./pool/router-resume-contract.ts";
 import {
   resumableAnswer,
   streamBootHeader,
   streamResumeHeader,
   streamResumeTargetHeader,
   streamResumeVersion,
-} from "./pool/stream-resume.ts";
+} from "./pool/stream-splice.ts";
 
 /** As the entry waits before each re-attach (controller-reset.ts). */
 export const routerResumeDelayMs = 1_000;
