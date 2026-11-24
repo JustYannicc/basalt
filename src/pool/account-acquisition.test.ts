@@ -391,3 +391,57 @@ test("a routed sign-in whose reachable image changes after its start fails befor
   assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
   assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
 });
+
+/** The image the n-th check reads: the proven one until `from`, then another. */
+function imageChangesAt(from: number) {
+  const recorder = routeRecorder();
+  let reads = 0;
+  return {
+    ...recorder,
+    routes: {
+      ...recorder.routes,
+      servingImage: async () => (++reads >= from ? "fedcba9876543210" : "0123456789abcdef"),
+    },
+  };
+}
+
+test("a routed start whose image changes before Home sees it is refused: route_unsupported, no session", async () => {
+  // Reads 1 and 2 prove the start around the capability check; read 3 is just before auth-url.
+  const recorder = imageChangesAt(3);
+  const f = fixture([], "claude", {}, recorder.routes);
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unsupported" });
+  assert.ok(!f.calls.some((call) => call.path.includes("/oauth/")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a routed start whose image changes while Home starts it ends that session: route_unavailable", async () => {
+  const recorder = imageChangesAt(4);
+  const f = fixture([], "claude", {}, recorder.routes);
+  const refused = await f.send("start", { hasRules: true, route: signInRoute });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(await refused.json(), { error: "route_unavailable" });
+  assert.deepEqual(
+    f.calls
+      .filter((call) => call.path.includes("/oauth/"))
+      .map((call) => `${call.method} ${new URL(call.path, "https://fixture.invalid").pathname}`),
+    ["GET /v8/management/oauth/auth-url", "DELETE /v8/management/oauth/session"],
+  );
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+});
+
+test("a routed device sign-in that loses its image between reads stops on the alarm too", async () => {
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", {}, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  const before = f.calls.length;
+  recorder.fleet.image = "fedcba9876543210";
+  await f.tick();
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+  assert.deepEqual(await body(await f.send("status", { session: started.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+});

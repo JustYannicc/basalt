@@ -731,7 +731,7 @@
     },
     {
       "baselineInputHash": "db58978f6cb20fdf",
-      "candidateInputHash": "4000a2bc0a9e7622",
+      "candidateInputHash": "37c835cef800f522",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [
@@ -745,7 +745,7 @@
     },
     {
       "baselineInputHash": "526fa60bed0df442",
-      "candidateInputHash": "4000a2bc0a9e7622",
+      "candidateInputHash": "37c835cef800f522",
       "fromVersions": [15, 16],
       "targetVersion": 16,
       "requiredIndexes": [

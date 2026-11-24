@@ -198,7 +198,7 @@ class RoutePeers:
             remote.close()
 
     def serve(self, client: socket.socket) -> None:
-        local = remote = None
+        local = remote = relayed = None
         try:
             client.settimeout(HANDSHAKE_SECONDS)
             route_id = authenticate(client)
@@ -218,6 +218,8 @@ class RoutePeers:
                     return
                 self.connections.update((local, remote))
             threading.Thread(target=self.relay, args=(remote, wire), daemon=True).start()
+            # The relay owns its end from here: closing it twice could shut down a reused fd.
+            relayed = remote
             local.settimeout(HANDSHAKE_SECONDS)
             try:
                 local.sendall(b"\x05\x01\x00")
@@ -239,7 +241,7 @@ class RoutePeers:
             pass
         finally:
             for connection in (client, local, remote):
-                if connection is None:
+                if connection is None or connection is relayed:
                     continue
                 try:
                     connection.shutdown(socket.SHUT_RDWR)

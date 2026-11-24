@@ -183,6 +183,9 @@ export class HomeAccountAcquisitions {
         const proxy = route ? `&proxy_url=${encodeURIComponent(routeProxyUrl(route.routeId))}` : "";
         const path = `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`;
         const start = await acquisitionStep("oauth_start", async () => {
+          // The steps above yield; the image is checked again right before Home sees the start.
+          if (route && !(await this.onProvenImage(attempt)))
+            return { kind: "refused", refused: "route_unsupported", status: 409 } as const;
           const start = route
             ? await this.routedStart(path, request.signal)
             : {
@@ -197,6 +200,8 @@ export class HomeAccountAcquisitions {
           // Home created no session: release the route and settle the attempt now. A failed
           // settle is retried by the alarm; the refusal itself still stands.
           attempt.result = { state: "failed", message: start.refused };
+          // Retained before settling, so the alarm can finish what a failed settle left.
+          await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
           try {
             await this.finish(attempt, attempts, request.signal);
           } catch {}
@@ -208,6 +213,22 @@ export class HomeAccountAcquisitions {
         }
         const started = start.started;
         attempt.state = String(started.state);
+        if (route && !(await this.onProvenImage(attempt))) {
+          // The image changed while Home started the session: it may not route it. End the
+          // session where it can be ended; the sign-in fails closed either way.
+          attempt.result = { state: "failed", message: "route_unavailable" };
+          await acquisitionStep("state", () => this.storage.put(storageKey, attempts));
+          try {
+            await this.home.data(`/oauth/session?state=${encodeURIComponent(attempt.state)}`, {
+              method: "DELETE",
+              signal: request.signal,
+            });
+          } catch {}
+          try {
+            await this.finish(attempt, attempts, request.signal);
+          } catch {}
+          return Response.json({ error: "route_unavailable" }, { status: 409 });
+        }
         const expiresIn = started.expires_in;
         if (typeof expiresIn === "number" && Number.isFinite(expiresIn) && expiresIn > 0)
           attempt.expires = Math.min(attempt.expires, this.now() + expiresIn * 1_000);
@@ -352,7 +373,8 @@ export class HomeAccountAcquisitions {
     } catch {
       body = undefined;
     }
-    if (response.ok && object(body)) return { kind: "started" as const, started: body };
+    if (response.ok)
+      return object(body) ? { kind: "started" as const, started: body } : unavailable();
     const error = object(body) ? body.error : undefined;
     if (response.status === 502 && error === "proxy_unavailable")
       return { kind: "refused", refused: "route_unavailable", status: 409 } as const;

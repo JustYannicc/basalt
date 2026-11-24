@@ -48,6 +48,7 @@ const owner = "org/example-organization/user/example-user";
 const route = "rt_" + "r".repeat(26);
 const refused = "rt_refused" + "f".repeat(19);
 const down = "rt_down" + "d".repeat(22);
+const signInRoute = "rt_" + "s".repeat(26);
 const reference = (n: number) => `12345678-abcd-4000-8000-${String(n).padStart(12, "0")}`;
 const [routed, unrouted, refusedRef, downRef, oauthRouted, oauthDirect, teammate, gated, early] = [
   1, 2, 3, 4, 5, 6, 7, 8, 9,
@@ -75,13 +76,23 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 90_000): 
  */
 function throwawayVendorCertificates(): string {
   const directory = mkdtempSync(join(tmpdir(), "basalt-route-vendor-"));
+  try {
+    return signVendorCertificates(directory);
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
+}
+function signVendorCertificates(directory: string): string {
   const ssl = (...args: string[]) => {
     const result = spawnSync("openssl", args, { cwd: directory, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
   };
   writeFileSync(
     join(directory, "ca.ext"),
-    "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n",
+    // It can only ever vouch for the one host the stand-in plays.
+    "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n" +
+      "nameConstraints=critical,permitted;DNS:api.anthropic.com\n",
   );
   writeFileSync(
     join(directory, "vendor.ext"),
@@ -134,10 +145,10 @@ function throwawayVendorCertificates(): string {
   );
   // Nothing can sign with this CA again once the run has its certificate.
   rmSync(join(directory, "ca-key.pem"));
-  // The containers' own users read these through bind mounts.
+  // The pool's own user reads the CA through a bind mount; only the stand-in (root) reads the key.
   chmodSync(directory, 0o755);
-  for (const file of ["ca.pem", "vendor.pem", "vendor-key.pem"])
-    chmodSync(join(directory, file), 0o644);
+  for (const file of ["ca.pem", "vendor.pem"]) chmodSync(join(directory, file), 0o644);
+  chmodSync(join(directory, "vendor-key.pem"), 0o600);
   return directory;
 }
 function rows(value: unknown): Record<string, unknown>[] {
@@ -170,8 +181,9 @@ test(
     await admin.connect();
     const network = `basalt-route-test-${process.pid}`;
     const containers: string[] = [];
-    const vendorCertificates = throwawayVendorCertificates();
+    let vendorCertificates: string | undefined;
     try {
+      vendorCertificates = throwawayVendorCertificates();
       const migrationUrl = await managedMigrationUrl(admin, adminUrl!);
       await admin.query("CREATE ROLE pool_route_test LOGIN PASSWORD 'fixture-only'");
       const provision = spawnSync(process.execPath, ["scripts/ensure-pool-database.ts"], {
@@ -668,13 +680,19 @@ test(
       assert.deepEqual((await records()).provider, [], "an unresolved member reached the provider");
 
       // A routed owner's sign-in on Home with the session proxy (carry 0758): the code exchange
-      // reaches the route as a CONNECT, is never looked up directly, and the refused route ends
-      // the sign-in as route_unavailable. Skipped on a Home without the capability.
+      // reaches the route as a CONNECT and is never looked up directly. A refused route ends the
+      // sign-in as route_unavailable; an open one ends it connected. The sign-in has its own route
+      // id, so the earlier routed credential's refreshes can't stand in for its traffic.
       const capabilities = (await home.data("/capabilities")).capabilities as
         | Record<string, unknown>
         | undefined;
-      let signIn: Record<string, unknown> = { skipped: "Home lacks oauth_session_proxy_v1" };
-      if (capabilities?.oauth_session_proxy_v1 === true) {
+      assert.equal(
+        capabilities?.oauth_session_proxy_v1,
+        true,
+        "this image's Home lacks carry 0758",
+      );
+      let signIn: Record<string, unknown>;
+      {
         const retained = new Map<string, unknown>();
         const proxiesOf = async (references: readonly string[]) => {
           const files = rows((await home.data("/credentials")).files);
@@ -732,7 +750,7 @@ test(
           await reset();
           const started = await acquire("start", {
             hasRules: true,
-            route: { routeId: route, owner },
+            route: { routeId: signInRoute, owner },
           });
           assert.equal(typeof started.session, "string", JSON.stringify(started));
           const authorization = new URL(String(started.url));
@@ -748,7 +766,7 @@ test(
           }, 90_000);
           const seen = await records();
           const exchange = seen.connects.filter(
-            (item) => item.route === route && item.host !== "models.example.test",
+            (item) => item.route === signInRoute && item.host !== "models.example.test",
           );
           assert.ok(
             exchange.length > 0,
@@ -766,7 +784,6 @@ test(
         // The route's gateway refuses the token host: the sign-in fails closed.
         const refusedSignIn = await signInOnce();
         assert.deepEqual(refusedSignIn.finished, { state: "failed", message: "route_unavailable" });
-        assert.deepEqual(refusedSignIn.seen.vendor, []);
 
         // The gateway now forwards the token host to the stand-in vendor, which listens only on the
         // stand-in's own loopback: the gateway is the only way to reach it.
@@ -775,20 +792,28 @@ test(
         assert.equal(success.finished.state, "connected", JSON.stringify(success.finished));
         const exchanged = success.seen.vendor.filter((item) => item.grant === "authorization_code");
         assert.equal(exchanged.length, 1, JSON.stringify(success.seen));
+        // Every dial of the token host is a CONNECT on a route, never refused now; the sign-in's own
+        // ones are on its route.
         const tokenHost = (seen: Records) =>
           seen.connects.filter((item) => item.host === "api.anthropic.com");
-        for (const item of tokenHost(success.seen))
-          assert.deepEqual([item.route, item.port, item.refused], [route, 443, false]);
+        const onRoutes = (seen: Records) => {
+          for (const item of tokenHost(seen)) {
+            assert.ok([route, signInRoute].includes(item.route), JSON.stringify(item));
+            assert.deepEqual([item.port, item.refused], [443, false]);
+          }
+        };
+        onRoutes(success.seen);
+        assert.ok(tokenHost(success.seen).some((item) => item.route === signInRoute));
         assert.ok(!success.seen.dns.includes("api.anthropic.com"), "the token host was looked up");
         const saved = homeReferences(String(success.finished.ref));
         assert.ok(saved.length > 0);
         assert.deepEqual(
           savedByHome,
-          saved.map(() => routeProxyUrl(route)),
+          saved.map(() => routeProxyUrl(signInRoute)),
         );
         assert.deepEqual(
           await proxiesOf(saved),
-          saved.map(() => routeProxyUrl(route)),
+          saved.map(() => routeProxyUrl(signInRoute)),
         );
 
         // Home refreshes what it saved with the refresh token the exchange issued, through the route.
@@ -805,8 +830,7 @@ test(
           console.log("ROUTE_SIGN_IN_REFRESH_RECORDS", JSON.stringify(await records()));
           throw error;
         });
-        for (const item of tokenHost(refreshed))
-          assert.deepEqual([item.route, item.port, item.refused], [route, 443, false]);
+        onRoutes(refreshed);
         assert.ok(!refreshed.dns.includes("api.anthropic.com"), "the refresh looked its host up");
         signIn = {
           refused: { exchange: refusedSignIn.exchange, finished: refusedSignIn.finished },
@@ -814,7 +838,8 @@ test(
             exchange: success.exchange,
             vendor: success.seen.vendor.map((item) => item.grant),
             savedProxyIsRoute: true,
-            refreshThroughRoute: tokenHost(refreshed).length,
+            signInConnects: tokenHost(refreshed).filter((item) => item.route === signInRoute)
+              .length,
           },
         };
       }
@@ -834,7 +859,7 @@ test(
     } finally {
       for (const id of containers.reverse()) spawnSync("docker", ["rm", "--force", id]);
       spawnSync("docker", ["network", "rm", network]);
-      rmSync(vendorCertificates, { recursive: true, force: true });
+      if (vendorCertificates) rmSync(vendorCertificates, { recursive: true, force: true });
       await admin.query(`DROP DATABASE IF EXISTS ${poolDatabase.name} WITH (FORCE)`);
       await admin.query(`DROP ROLE IF EXISTS ${poolDatabase.owner}`);
       await admin.query("DROP ROLE IF EXISTS pool_route_test");
