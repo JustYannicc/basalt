@@ -27,6 +27,7 @@ import { RecoveryRecord } from "../../src/pool/runtime-slots/recovery-record.ts"
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
 import {
   checkRetireRow,
+  codeMismatch,
   configureFleet,
   configureOperationId,
   disableFleet,
@@ -295,11 +296,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     if (Result.isFailure(probe))
       return yield* Effect.fail(
         /slot_identity/u.test(describeError(probe.failure))
-          ? refuse(
-              "controller-code-mismatch",
-              `The controller refused inspect signed for candidate ${access.code.candidate}; the live PoolWorker runs code built from another commit.`,
-              "Dispatch from the main commit the last release deployed, or release main first.",
-            )
+          ? codeMismatch(access, false)
           : probe.failure,
       );
     const read = () =>

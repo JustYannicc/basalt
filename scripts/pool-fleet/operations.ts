@@ -54,10 +54,11 @@ export interface Settle {
 }
 export type Settled<A> = { value: A } | { lagging: FleetLaneRefused };
 
-export const codeMismatch = (access: ControllerAccess) =>
+/** A read the controller refused as slot_identity: it runs other code than this checkout signs for. */
+export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
   refuse(
     "controller-code-mismatch",
-    `The controller refused inspect signed for candidate ${access.code.candidate} for ${controllerSettleMs / 1000} s; the live PoolWorker runs code built from another commit.`,
+    `The controller refused reads signed for candidate ${access.code.candidate}${waited ? ` for ${controllerSettleMs / 1000} s` : ""}; the live PoolWorker runs code built from another commit.`,
     "Dispatch from the main commit the last release deployed, or release main first.",
   );
 
@@ -86,7 +87,7 @@ export const untilSettled = <A>(
         if (failure instanceof FleetLaneRefused || (answer && answer !== "slot_identity"))
           return yield* Effect.fail(failure);
         lagging = answer
-          ? codeMismatch(access)
+          ? codeMismatch(access, true)
           : refuse(
               "controller-not-ready",
               `${describeError(failure)}, still after ${controllerSettleMs / 1000} s; nothing was sent.`,
