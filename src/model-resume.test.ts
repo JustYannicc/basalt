@@ -340,3 +340,84 @@ test("a chat completions stream is not judged by its end, only by a failed read"
   assert.equal(result.text, text);
   assert.deepEqual(result.resumes, []);
 });
+
+test("a cut just before the terminal event's closing blank line is still a cut", async () => {
+  const text = shapes.messages.join("");
+  const whole = encoder.encode(text);
+  // The resumed part ends two bytes short: the terminal event's data is there, its blank line not.
+  const result = await cuttingPool(text, [1, 99], {});
+  assert.equal(result.text, text);
+  const short = await cuttingPoolBytes(text, [whole.byteLength - 2]);
+  assert.equal(short.text, text);
+  assert.equal(short.resumes.length, 1);
+});
+
+test("a ping that carries data after the terminal event leaves a finished stream finished", async () => {
+  const text = shapes.messages.join("") + 'event: ping\ndata: {"type":"ping"}\n\n';
+  const result = await cuttingPool(text, [shapes.messages.length + 2]);
+  assert.equal(result.text, text);
+  assert.deepEqual(result.resumes, []);
+});
+
+test("an event larger than the judge holds is still judged by its type", async () => {
+  const big = `event: response.completed\ndata: {"type":"response.completed","response":{"output":"${"x".repeat(300 * 1024)}"}}\n\n`;
+  const text = shapes.responses.slice(0, 3).join("") + big;
+  const whole = encoder.encode(text).byteLength;
+  const cut = await cuttingPoolBytes(text, [whole - 1000], "/v1/responses");
+  assert.equal(cut.text, text);
+  assert.equal(cut.resumes.length, 1);
+  const finished = await cuttingPoolBytes(text, [whole], "/v1/responses");
+  assert.equal(finished.text, text);
+  assert.equal(finished.resumes.length, 0);
+});
+
+/** As `cuttingPool`, with the first part ending at an exact byte offset. */
+async function cuttingPoolBytes(text: string, offsets: number[], path = "/v1/messages") {
+  const whole = encoder.encode(text);
+  const resumes: number[] = [];
+  const part = (from: number, end: number, headers: Record<string, string>) => {
+    let sent = false;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent) return controller.close();
+          sent = true;
+          controller.enqueue(whole.slice(from, end));
+        },
+      }),
+      { headers },
+    );
+  };
+  const env = {
+    POOL_APP_SIGNING_KEY: signingKey,
+    POOL_SERVICE: {
+      fetch: async (request: Request) => {
+        const named = (await openRouterAttempt(request, signingKey))!;
+        if (new URL(request.url).pathname === routerResumePath)
+          return routerResume(request, { key: signingKey }, async (input) => {
+            resumes.push(input.from);
+            return part(input.from, offsets[resumes.length] ?? whole.byteLength, {
+              [streamResumeHeader]: streamResumeVersion,
+              [streamResumeFromHeader]: String(input.from),
+            });
+          });
+        return part(0, offsets[0] ?? whole.byteLength, {
+          "content-type": "text/event-stream",
+          "X-Request-Id": named.requestId,
+          [routerResumeHeader]: await signResumeStamp(signingKey, {
+            requestId: named.requestId,
+            target,
+            boot: "boot-a",
+          }),
+        });
+      },
+    },
+  };
+  const response = await forwardModelCall(
+    new Request(`https://app.example${path}`, { method: "POST", body: "{}" }),
+    env,
+    undefined,
+    noWait,
+  );
+  return { text: await response.text(), resumes };
+}

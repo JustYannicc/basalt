@@ -123,32 +123,50 @@ function byteStream(source: ReadableStream<Uint8Array>) {
  */
 function terminalJudge() {
   const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
-  // Only the event being read is kept, and only up to a bound; past it the end is not judged.
+  // One event is held up to this; past it only its head, which names its type, is kept.
   const limit = 256 * 1024;
+  const headLength = 4 * 1024;
   let pending = "";
-  let judged = true;
+  let overflow: { head: string; tail: string } | undefined;
+  // Once the terminal event is seen the answer is whole; a ping or comment after it changes nothing.
   let terminal = false;
-  const scan = (text: string) => {
-    if (!judged) return;
-    pending += text;
-    const events = pending.split(/\r?\n\r?\n/);
-    pending = events.pop() ?? "";
-    for (const event of events) {
-      // A comment, a keep-alive or a blank separator carries no data and changes nothing.
-      const data = eventData(event);
-      if (data !== undefined) terminal = isTerminal(data);
-    }
-    if (pending.length > limit) {
-      judged = false;
-      pending = "";
+  const close = (event: string) => {
+    const data = eventData(event);
+    if (data !== undefined && isTerminal(data)) terminal = true;
+  };
+  const scan = (incoming: string) => {
+    let text = incoming;
+    while (text) {
+      if (overflow) {
+        const joined = overflow.tail + text;
+        const end = /\r?\n\r?\n/.exec(joined);
+        if (!end) {
+          overflow.tail = joined.slice(-3);
+          return;
+        }
+        close(overflow.head);
+        overflow = undefined;
+        text = joined.slice(end.index + end[0].length);
+        continue;
+      }
+      pending += text;
+      text = "";
+      const events = pending.split(/\r?\n\r?\n/);
+      pending = events.pop() ?? "";
+      for (const event of events) close(event);
+      if (pending.length > limit) {
+        overflow = { head: pending.slice(0, headLength), tail: pending.slice(-3) };
+        pending = "";
+      }
     }
   };
   return {
     push: (bytes: Uint8Array) => scan(decoder.decode(bytes, { stream: true })),
+    // An event still open at the end was cut before its closing blank line, even a terminal one:
+    // a client's event parser drops it.
     whole() {
       scan(decoder.decode());
-      const data = eventData(pending);
-      return !judged || (data !== undefined ? isTerminal(data) : terminal);
+      return terminal && !overflow && pending.trim() === "";
     },
   };
 }
@@ -180,6 +198,8 @@ function isTerminal(data: string) {
       terminalTypes.has(String((value as { type?: unknown }).type))
     );
   } catch {
-    return false;
+    // Only the head of a very large event is kept; its type comes first.
+    const type = /^\s*\{\s*"type"\s*:\s*"([^"]+)"/.exec(data)?.[1];
+    return type !== undefined && terminalTypes.has(type);
   }
 }
