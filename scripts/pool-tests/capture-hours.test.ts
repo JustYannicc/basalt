@@ -755,11 +755,17 @@ test("a stored hour older than the lookback is read row by row, though its count
       FROM unnest(ARRAY[$2::timestamptz - interval '1 hour', $2::timestamptz]) h`,
       [c.poolId, new Date(first).toISOString()],
     );
+    // A usage row with no request in the old hour: only its row check can find it.
+    await c.usage(new Date(first - 3_600_000 + 60_000).toISOString());
     const read = await c.coverage(
       new Date(first - 3_600_000).toISOString(),
       new Date(first + 3_600_000).toISOString(),
     );
-    assert.deepEqual([...read.incomplete!], []);
+    assert.deepEqual(
+      [...read.incomplete!],
+      [new Date(first - 3_600_000).toISOString().replace(".000Z", "Z")],
+      "the row check found the old hour's missed row, though its stored counts agree",
+    );
     assert.deepEqual(
       spans(read.ranges),
       [[new Date(first - 3_600_000).toISOString(), new Date(first).toISOString()]],
