@@ -29,12 +29,13 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
              ),
        )
        .pipe(
-@@ -108,6 +113,11 @@
+@@ -108,6 +113,12 @@
        let waiting = false;
        for (const page of pages) {
          const result = get(page);
-+        // One page's earlier value never stands in for every page's: a failure has none.
-+        if (AsyncResult.isFailure(result))
++        // One page keeps its earlier, complete value through a failure, as the pools' read does.
++        // Of several, one page's earlier value never stands in for every page's: a failure has none.
++        if (AsyncResult.isFailure(result) && pages.length > 1)
 +          return AsyncResult.failure<Map<AccountId, ToolCallTraffic> | undefined, unknown>(
 +            result.cause,
 +          );
