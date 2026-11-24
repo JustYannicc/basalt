@@ -574,6 +574,82 @@ test("the proof never ends a call this instance holds, nor one it takes during t
   assert.equal(await proven(f, fresh(f), identity), 0);
 });
 
+test("a drain whose health read fails still ends a lease the container shows is over", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  let reads = 0;
+  f.hooks.connections = async () => {
+    reads++;
+    return 0;
+  };
+  f.hooks.health = async () => new Response("policy unavailable", { status: 503 });
+  const endpoint = fresh(f);
+  await assert.rejects(endpoint.drain(identity, AbortSignal.timeout(2_000)));
+  await f.settle();
+  assert.equal(reads, 1, "the container's connections were read");
+  assert.ok(warned.mock.calls.some((call) => call.arguments[0] === "POOL_RUNTIME_LEASES_RELEASED"));
+});
+
+test("a settle whose release fails writes one closed line and keeps the lease", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  // The read proves the lease over, then the write that ends it fails.
+  const original = f.ctx.storage.transaction.bind(f.ctx.storage);
+  let broken = false;
+  context.mock.method(f.ctx.storage, "transaction", (...input: Parameters<typeof original>) =>
+    broken ? Promise.reject(new Error("storage said something private")) : original(...input),
+  );
+  f.hooks.connections = async () => {
+    broken = true;
+    return 0;
+  };
+  await fresh(f).streamCount(identity);
+  await f.settle();
+  broken = false;
+  const failed = warned.mock.calls
+    .map((call) => call.arguments)
+    .filter(([line]) => line === "POOL_RUNTIME_LEASES_SETTLE_FAILED");
+  assert.equal(failed.length, 1);
+  const { key, ...fields } = failed[0]![1] as { key: string };
+  assert.match(key, /^[0-9a-f]{24}$/);
+  assert.deepEqual(
+    { ordinal: null, reason: null, name: "Error", messageClass: "other", isError: true },
+    Object.fromEntries(
+      Object.entries(fields).filter(([name]) =>
+        ["ordinal", "reason", "name", "messageClass", "isError"].includes(name),
+      ),
+    ),
+  );
+  assert.ok(!JSON.stringify(failed).includes("private"), "never the exception text");
+  f.hooks.connections = async () => 1;
+  assert.equal(await proven(f, fresh(f), identity), 1, "the lease is still counted");
+});
+
+test("storage that keeps failing is reported once per proof interval, not on every read", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  context.mock.method(f.ctx.storage, "get", () => Promise.reject(new Error("broken")));
+  const endpoint = fresh(f);
+  for (let read = 0; read < 3; read++) {
+    // The count read fails too; only its background settle's line is under test.
+    await endpoint.streamCount(identity).catch(() => undefined);
+    await f.settle();
+  }
+  const failed = warned.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_RUNTIME_LEASES_SETTLE_FAILED",
+  );
+  assert.equal(failed.length, 1);
+});
+
 test("the proof read waits up to its 5 s, and the operator's read gives up at 1.5 s, on one read", async (context) => {
   const f = await fixture();
   context.after(f.cleanup);
