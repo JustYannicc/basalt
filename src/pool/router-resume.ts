@@ -1,5 +1,6 @@
 import { openRouterAttempt, routerAttemptHeader } from "./router-attempt.ts";
 import { openResumeStamp } from "./router-resume-contract.ts";
+import { boundedLog } from "./bounded-log.ts";
 import { resumeCall, type StreamResumeInput } from "./stream-resume.ts";
 
 export {
@@ -22,7 +23,12 @@ export async function routerResume(
 ): Promise<Response> {
   if (request.method !== "POST") return new Response(null, { status: 405 });
   const named = await openRouterAttempt(request, keys.key, keys.previous);
-  if (!named) return new Response(null, { status: 403 });
+  // One closed line per refusal: which check refused, under the router's own request id.
+  const refused = (reason: "name" | "stamp" | "input") => {
+    boundedLog("POOL_ROUTER_RESUME_REFUSED", { requestId: named?.requestId ?? null, reason });
+    return new Response(null, { status: 403 });
+  };
+  if (!named) return refused("name");
   // A stamp and an offset are a few hundred bytes; nothing larger is read.
   const text = await request.text();
   let body: unknown;
@@ -42,10 +48,8 @@ export async function routerResume(
     keys.key,
     keys.previous,
   );
+  if (!stamp || named.requestId !== stamp.requestId) return refused("stamp");
   if (
-    !named ||
-    !stamp ||
-    named.requestId !== stamp.requestId ||
     typeof from !== "number" ||
     !Number.isSafeInteger(from) ||
     from < 0 ||
@@ -55,7 +59,7 @@ export async function routerResume(
     path.startsWith("//") ||
     path.length > 8_192
   )
-    return new Response(null, { status: 403 });
+    return refused("input");
   const headers = new Headers(request.headers);
   headers.delete(routerAttemptHeader);
   const call = new Request(new URL(path, request.url), { method, headers });

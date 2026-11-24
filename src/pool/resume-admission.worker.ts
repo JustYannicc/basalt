@@ -1,3 +1,4 @@
+import { boundedLog } from "./bounded-log.ts";
 import { isPublicModelPath } from "./lifecycle.ts";
 import { nativeResponse } from "./native-response.worker.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
@@ -10,6 +11,7 @@ interface Admission {
   modelLease?: NativeStreamLease;
   identity?: { pool: string };
 }
+/** Why the controller refused a resume; "handover" is logged when one began during admission. */
 export type ResumeRefusal = "no_call" | "cut" | "refused";
 type Parsed = NonNullable<ReturnType<typeof decodeResumeInput>>;
 
@@ -103,13 +105,19 @@ export async function governedResume(
   if (!parsed || deps.draining()) return resumeGone();
   const admitted = await admitResume(parsed, deps);
   if (typeof admitted === "string") {
-    console.info("POOL_STREAM_RESUME_REFUSED", { requestId: parsed.requestId, reason: admitted });
+    boundedLog("POOL_STREAM_RESUME_REFUSED", { requestId: parsed.requestId, reason: admitted });
     return resumeGone();
   }
   if (deps.draining()) {
     release(admitted);
+    boundedLog("POOL_STREAM_RESUME_REFUSED", { requestId: parsed.requestId, reason: "handover" });
     return resumeGone();
   }
+  boundedLog("POOL_STREAM_RESUME_ADMITTED", {
+    requestId: parsed.requestId,
+    from: parsed.from,
+    target: parsed.target.kind,
+  });
   const request = resumeRequest(parsed);
   const finish = deps.finish(parsed.requestId);
   const resumed = deps.track(request, async () =>
