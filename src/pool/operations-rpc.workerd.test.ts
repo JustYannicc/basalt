@@ -32,14 +32,9 @@ export class Operations extends PoolOperations {
     super(ctx, { ...env, PoolContainer: { jurisdiction: () => env.CONTROLLER } });
   }
 }
-export default {
-  // As a caller of the entrypoint: the request it forwards may carry a signal that can still fire.
-  fetch(request, env) {
-    if (request.headers.get("x-signal") !== "live") return env.OPERATIONS.fetch(request);
-    const caller = new AbortController();
-    return env.OPERATIONS.fetch(new Request(request, { signal: caller.signal }));
-  },
-};
+// The entrypoint's own request is the incoming one: with \`enable_request_signal\` its signal is live
+// and fires when the operations client leaves. A service binding never forwards a caller's signal.
+export default { fetch: (request, env) => env.OPERATIONS.fetch(request) };
 `;
 
 async function pool() {
@@ -98,7 +93,7 @@ async function pool() {
 
 const deploymentKey = "cd".repeat(32);
 
-async function inspect(signal: "incoming" | "live") {
+async function inspect() {
   const mf = await pool();
   try {
     const at = Date.now();
@@ -111,7 +106,7 @@ async function inspect(signal: "incoming" | "live") {
     const response: Response = await mf.dispatchFetch(`http://pool-operations${runtimeHandoffPath}`, {
       method: "POST",
       body: JSON.stringify({ envelope }),
-      headers: { "content-type": "application/json", "x-signal": signal },
+      headers: { "content-type": "application/json" },
     });
     return { status: response.status, body: await response.text() };
   } finally {
@@ -119,19 +114,18 @@ async function inspect(signal: "incoming" | "live") {
   }
 }
 
-for (const signal of ["incoming", "live"] as const)
-  test(
-    `a signed inspect reaches the controller through PoolOperations (${signal} caller signal)`,
-    { timeout: 60_000 },
-    async () => {
-      const { status, body } = await inspect(signal);
-      assert.equal(status, 200, body);
-      // The controller's own inspect: it names the code it runs and its recovery state.
-      const { result } = JSON.parse(body);
-      assert.deepEqual(result.controllerCode, {
-        candidate: productionOpsRelease,
-        workerInput: poolWorkerRevision,
-      });
-      assert.ok(result.recovery, body);
-    },
-  );
+test(
+  "a signed inspect reaches the controller through PoolOperations",
+  { timeout: 60_000 },
+  async () => {
+    const { status, body } = await inspect();
+    assert.equal(status, 200, body);
+    // The controller's own inspect: it names the code it runs and its recovery state.
+    const { result } = JSON.parse(body);
+    assert.deepEqual(result.controllerCode, {
+      candidate: productionOpsRelease,
+      workerInput: poolWorkerRevision,
+    });
+    assert.ok(result.recovery, body);
+  },
+);
