@@ -44,10 +44,12 @@ jobs:
   select:
     needs: reuse
     if: always() && !cancelled() && needs.reuse.outputs.reused != 'true'
-    # Reads the box heartbeat and the hosted load for scripts/ci/box-router.ts.
+    # Reads the box heartbeat, the hosted load and other Checks' box placements for
+    # scripts/ci/box-router.ts.
     permissions:
       contents: read
       actions: read
+      checks: read
     runs-on: ubuntu-latest
     outputs:
       base_sha: ${{ steps.comparison.outputs.base_sha }}

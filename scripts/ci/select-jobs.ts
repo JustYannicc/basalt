@@ -2,7 +2,7 @@ import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
-import { githubObserver, routeBox } from "./box-router.ts";
+import { githubObserver, placementMarker, routeBox } from "./box-router.ts";
 import { fastJobs } from "./gate.ts";
 import { declaredMatrices } from "./shards.ts";
 
@@ -50,6 +50,8 @@ const box = await routeBox(
   }),
 );
 const routed = { ...selection, matrices, boxJobs: box.jobs, boxRouting: box.summary };
+// Other Checks' selects read this to count these jobs before GitHub lists them.
+if (box.jobs.length) console.log(`::notice::${placementMarker}${JSON.stringify(box.jobs)}`);
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, JSON.stringify(routed, null, 2));
 if (process.env.GITHUB_OUTPUT)

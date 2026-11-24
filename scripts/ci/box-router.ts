@@ -8,8 +8,10 @@ import { estimator, readDeclaredDurations, setupMinutes, shardRuns } from "./sha
 //
 // Switch-back: deleting BASALT_CI_BOX_SLOTS, or setting it to 0, sends every job hosted on the
 // next Check. A shard already queued for the box can't move back to hosted; the 10-minute
-// heartbeat window and the free-slot count bound how much work can be stuck there, though two
-// Checks whose select jobs overlap read the same free slots and can each fill them.
+// heartbeat window and the free-slot count bound how much work can be stuck there. A Check waits
+// for the ones that started selecting before it, and counts the jobs they placed before GitHub lists
+// them, so overlapping Checks don't fill the same slots; two whose selects start within GitHub's
+// listing lag, seconds, still can, and the box's own budget then holds back what it has no room for.
 /** Jobs ran at 1.45–1.98× their hosted time on a loaded box (1.06× idle); the timeout check
  * assumes the slow end. */
 export const boxSlowdown = 2.0;
@@ -22,6 +24,15 @@ const staleHeartbeat = "the newest heartbeat is older than 10 minutes";
 const heartbeatRetries = 4;
 const heartbeatRetryMs = 15_000;
 const sampleSkew = 2 * 60_000;
+// A select runs about a minute, so a Check whose select started first has placed by then; a later
+// one waits that long, and a select still running after 5 minutes is stuck, not placing.
+const selectingRetries = 6;
+const selectingRetryMs = 15_000;
+const stuckSelect = 5 * 60_000;
+// After its select ends GitHub lists box-watch within seconds; a minute covers a slow listing.
+const listingLag = 60_000;
+/** How select's annotation naming the jobs it placed on the box begins; a JSON list follows. */
+export const placementMarker = "box placement ";
 // The release runners are self-hosted too, so a broad label could hand CI work to them.
 const sharedLabels = ["self-hosted", "basalt-release"];
 const refusedLabels = [...sharedLabels, "linux", "x64", "arm64"];
@@ -59,13 +70,46 @@ export const namedJobs: Record<
 };
 /** A routable row: its name in box_jobs, its planned hosted minutes and its job timeout. */
 export type BoxShard = { id: string; minutes: number; timeout: number };
+
+/**
+ * The memory a box job holds at its peak, in GiB: the peak measured per job on the box, file cache
+ * included because it counts against the CI slice's limit, rounded up. declared-cloud reaches 14.0
+ * (its slot's cap; 8.5 of it anonymous), browser-install 11.2 and client-connection 1.6. A job kind
+ * not yet measured there takes the declared-cloud price.
+ */
+export const boxMemoryGiB: Record<string, number> = {
+  "declared-cloud": 14,
+  "browser-install": 12,
+  "client-connection": 2,
+};
+const unmeasuredGiB = boxMemoryGiB["declared-cloud"]!;
+const routableKinds = [...declaredJobs, ...Object.keys(namedJobs)].sort(
+  (a, b) => b.length - a.length,
+);
+/** A box job's memory price by its box_jobs id or its job name, such as `declared-cloud-3`. */
+export function memoryPrice(name: string) {
+  const kind = routableKinds.find(
+    (job) => name === job || (/^[-: (]/.test(name.slice(job.length)) && name.startsWith(job)),
+  );
+  return (kind === undefined ? undefined : boxMemoryGiB[kind]) ?? unmeasuredGiB;
+}
 export type Matrices = Record<
   string,
   { include: readonly { shard: string; runs: string; timeout: number }[] }
 >;
 export type Heartbeat = { conclusion: unknown; completedAt: unknown; log: string };
 /** Queued and running jobs outside this Check: on hosted runners, and on the box's label. */
-export type ActiveJobs = { hosted: number; box: number };
+export type ActiveJobs = {
+  hosted: number;
+  box: number;
+  /**
+   * The names of those box jobs, and of the ones other Checks placed that GitHub doesn't list yet
+   * (counted in `box` too): each holds its memory price on the box.
+   */
+  boxJobs?: readonly string[];
+  /** Other Checks that started selecting before this one and may still place box jobs. */
+  selecting?: number;
+};
 export type BoxObserver = { heartbeat(): Promise<Heartbeat>; active(): Promise<ActiveJobs> };
 export type BoxInput = {
   event: string;
@@ -158,8 +202,16 @@ export const boxWaves = 2;
  * on the box for whichever slot frees first, but only when it still ends by `floor` minutes at the
  * keep rule's pace. The box starts a waiting job only when its own budget has room for it.
  */
-export function planBox(shards: readonly BoxShard[], free: number, floor: number) {
+export function planBox(
+  shards: readonly BoxShard[],
+  free: number,
+  floor: number,
+  memoryGiB = Number.POSITIVE_INFINITY,
+) {
   const slots: number[] = Array.from({ length: Math.max(0, free) }, () => 0);
+  // The box starts a waiting job as soon as its own budget has room, not when a slot frees, so
+  // every planned job may run at once: together they fit the memory.
+  let memory = 0;
   const planned: { id: string; minutes: number; wave: 1 | 2 }[] = [];
   const fitting = shards
     .filter(fitsTimeout)
@@ -171,6 +223,9 @@ export function planBox(shards: readonly BoxShard[], free: number, floor: number
     const end = start + shard.minutes * waveSlowdown;
     // A waiting job is taken only on a known plan: no planned minutes or no floor runs it hosted.
     if (start > 0 && !(shard.minutes > 0 && end <= floor)) continue;
+    const price = memoryPrice(shard.id);
+    if (memory + price > memoryGiB) continue;
+    memory += price;
     slots[slot] = end;
     planned.push({ id: shard.id, minutes: shard.minutes, wave: start > 0 ? 2 : 1 });
   }
@@ -225,6 +280,7 @@ export function heartbeatStatus(log: string) {
       healthy: status.healthy,
       budget: status.ci_budget,
       reason: typeof status.ci_budget_reason === "string" ? status.ci_budget_reason : "",
+      memory: status.ci_memory_gib,
     };
   } catch {
     return undefined;
@@ -249,7 +305,16 @@ export function heartbeatBudget(heartbeat: Heartbeat, now: number) {
   if (typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 0)
     return "the box reported no whole-number CI budget";
   if (budget === 0) return zeroBudget + why;
-  return { budget, why };
+  // What the CI slice can give box jobs. A box that publishes none has no memory bound here; one
+  // that publishes something unreadable routes nothing, like any other unreadable status.
+  const memory = status.memory;
+  if (memory !== undefined && (typeof memory !== "number" || !Number.isFinite(memory)))
+    return "the box reported no readable CI memory";
+  return {
+    budget,
+    why,
+    memoryGiB: memory === undefined ? Number.POSITIVE_INFINITY : Math.max(0, memory),
+  };
 }
 
 /** The heartbeat runner's own label, or "" when it is unset or one other runners share. */
@@ -288,11 +353,28 @@ export async function routeBox(
       box = heartbeatBudget(await observe.heartbeat(), now());
     }
     if (typeof box === "string") return none(box);
-    const active = await observe.active();
+    // A Check that started selecting first places first; what it placed counts once its select ends.
+    let active = await observe.active();
+    for (let tries = 0; active.selecting && tries < selectingRetries; tries++) {
+      await wait(selectingRetryMs);
+      active = await observe.active();
+    }
+    if (active.selecting)
+      return none(
+        active.selecting === 1
+          ? "a Check that started selecting first is still placing its box jobs"
+          : `${active.selecting} Checks that started selecting first are still placing their box jobs`,
+      );
     // BASALT_CI_BOX_SLOTS caps what the box's own budget grants.
     const limit = Math.min(settings.slots, box.budget);
     const free = Math.max(0, limit - active.box);
-    const slots = `${free} of ${limit} slots free`;
+    // Every other Check's box job holds its price: queued, running, or placed and not listed yet.
+    const memoryGiB =
+      box.memoryGiB - (active.boxJobs ?? []).reduce((sum, name) => sum + memoryPrice(name), 0);
+    const room = Number.isFinite(memoryGiB)
+      ? `, ${Math.max(0, Math.floor(memoryGiB))} GiB of memory free`
+      : "";
+    const slots = `${free} of ${limit} slots free${room}`;
     const budget = `a CI budget of ${box.budget}${box.why}`;
     if (!free)
       return none(`no box slot is free (${active.box} box jobs are active, ${slots}, ${budget})`);
@@ -303,14 +385,18 @@ export async function routeBox(
     const ownRunner =
       heartbeatRunnerLabel(input.heartbeatLabel) !== "" &&
       input.heartbeatLabel?.toLowerCase() !== settings.label.toLowerCase();
-    const planned = planBox(plan.shards, free, ownRunner ? floor : 0);
+    const planned = planBox(plan.shards, free, ownRunner ? floor : 0, memoryGiB);
     if (!planned.length)
-      return none(`no routable job fits its timeout at ${boxSlowdown}× its planned minutes`);
+      return none(
+        plan.shards.some(fitsTimeout)
+          ? `no routable job fits the box's free memory (${slots}, ${budget})`
+          : `no routable job fits its timeout at ${boxSlowdown}× its planned minutes`,
+      );
     const jobs = planned.map((job) => job.id);
     const waiting = planned.filter((job) => job.wave === 2).length;
     const hosted = plan.shards.length - jobs.length;
     const wave = waiting
-      ? `, ${waiting} of them waiting on the box for a slot that frees by the ${floor.toFixed(0)}-minute floor`
+      ? `; ${waiting} of these jobs wait on the box for a slot that frees by the ${floor.toFixed(0)}-minute floor`
       : "";
     return {
       jobs,
@@ -321,7 +407,7 @@ export async function routeBox(
       floor,
       summary:
         `Box routing: box first. ${jobs.length} ${jobs.length === 1 ? "job goes" : "jobs go"} to the self-hosted runners ` +
-        `(${slots}${wave}) because the box reported healthy with ${budget}; ${hosted} run hosted, ` +
+        `(${slots}) because the box reported healthy with ${budget}${wave}; ${hosted} run hosted, ` +
         `while ${active.hosted} hosted jobs are active elsewhere: ${jobs.join(", ")}.`,
     };
   } catch (error) {
@@ -343,6 +429,7 @@ export function githubObserver(
     heartbeatLabel?: string;
   },
   fetcher: Fetch = fetch,
+  now: () => number = Date.now,
 ): BoxObserver {
   const get = async (path: string) => {
     const response = await fetcher(env.api + "/repos/" + env.repository + path, {
@@ -404,6 +491,23 @@ export function githubObserver(
       ? "hosted"
       : "other";
   };
+  const named = (jobs: readonly Record<string, unknown>[], name: string) =>
+    jobs.find((job) => job.name === name);
+  const started = (job: Record<string, unknown> | undefined) => Date.parse(String(job?.started_at));
+  /** The jobs a finished select placed on the box, from its annotation; undefined when it has none. */
+  const placement = async (select: Record<string, unknown>) => {
+    const id = /\/check-runs\/(\d+)$/.exec(String(select.check_run_url))?.[1];
+    if (id === undefined) return undefined;
+    const notes: unknown = await (await get(`/check-runs/${id}/annotations?per_page=50`)).json();
+    if (!Array.isArray(notes)) throw new Error("GitHub listed no annotations");
+    const message = notes
+      .map((item) => String(record(item).message))
+      .find((text) => text.startsWith(placementMarker));
+    if (message === undefined) return undefined;
+    const jobs: unknown = JSON.parse(message.slice(placementMarker.length));
+    if (!Array.isArray(jobs)) throw new Error("select's box placement is not a list");
+    return jobs.map(String);
+  };
   return {
     async heartbeat() {
       // Triggered heartbeats cancel each other in flight, so a page holds many cancelled runs.
@@ -433,21 +537,72 @@ export function githubObserver(
       // Box-label jobs come only from Check runs (the heartbeat's own short job holds no CI slot),
       // so only their jobs are listed: every same-repository push routes now, and listing every
       // workflow's runs would spend the token's shared hourly request limit.
-      const runs = new Set(
+      const runs = new Map(
         listed
           .flat()
           .filter((run) => String(run.id) !== env.runId && checkRun(run))
-          .map((run) => Number(run.id)),
+          .map((run) => [Number(run.id), run] as const),
       );
-      const jobs = await Promise.all(
-        [...runs].map((id) => list(`/actions/runs/${id}/jobs?filter=latest`, "jobs")),
+      const [own, ...jobs] = await Promise.all(
+        [Number(env.runId), ...runs.keys()].map((id) =>
+          list(`/actions/runs/${id}/jobs?filter=latest`, "jobs"),
+        ),
       );
-      const counts = { hosted: 0, box: 0 };
-      for (const job of jobs.flat()) {
-        if (job.status !== "queued" && job.status !== "in_progress") continue;
-        const kind = runner(job);
-        if (kind === "box") counts.box++;
-        else if (kind === "hosted") counts.hosted++;
+      // This Check's own select start orders it against the others selecting now. One that started
+      // first places first and is waited for; one that started later waits for this one.
+      const ownStart = started(named(own!, "select"));
+      const ownId = Number(env.runId);
+      const first = (start: number, id: number) =>
+        !(start > ownStart) && (start !== ownStart || id < ownId);
+      const counts = { hosted: 0, box: 0, boxJobs: [] as string[], selecting: 0 };
+      const placed = await Promise.all(
+        [...runs].map(async ([id, run], index) => {
+          const runJobs = jobs[index]!;
+          for (const job of runJobs) {
+            if (job.status !== "queued" && job.status !== "in_progress") continue;
+            const kind = runner(job);
+            if (kind === "box") {
+              counts.box++;
+              counts.boxJobs.push(String(job.name));
+            } else if (kind === "hosted") counts.hosted++;
+          }
+          // Only this repository's own first attempts place box jobs.
+          if (
+            Number(run.run_attempt ?? 1) !== 1 ||
+            record(run.head_repository).full_name !== env.repository
+          )
+            return [];
+          const select = named(runJobs, "select");
+          if (select?.status === "in_progress") {
+            const start = started(select);
+            if (first(start, id) && !(now() - start > stuckSelect)) counts.selecting++;
+            return [];
+          }
+          if (select?.conclusion !== "success") return [];
+          // box-watch exists only when select placed box jobs, and ends once each has started.
+          const watch = named(runJobs, "box-watch");
+          if (watch === undefined) {
+            if (now() - Date.parse(String(select.completed_at)) < listingLag) counts.selecting++;
+            return [];
+          }
+          if (watch.status === "completed") return [];
+          // Its box jobs wait for long-started, a hosted job that can queue for minutes, before
+          // GitHub lists them; select's annotation names them meanwhile.
+          const jobsPlaced = await placement(select);
+          if (jobsPlaced === undefined) {
+            // A select from before the annotation existed: unknown until its jobs are listed, and
+            // not held for longer than a select may run.
+            const ended = Date.parse(String(select.completed_at));
+            if (!runJobs.some(onBox) && !(now() - ended > stuckSelect)) counts.selecting++;
+            return [];
+          }
+          const unlisted = Math.max(0, jobsPlaced.length - runJobs.filter(onBox).length);
+          return [...jobsPlaced].sort((a, b) => memoryPrice(b) - memoryPrice(a)).slice(0, unlisted);
+        }),
+      );
+      for (const name of placed.flat()) {
+        counts.box++;
+        counts.boxJobs.push(name);
       }
       return counts;
     },

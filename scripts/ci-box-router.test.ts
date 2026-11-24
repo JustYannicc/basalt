@@ -18,10 +18,13 @@ import {
   fitsTimeout,
   githubObserver,
   heartbeatMarker,
+  memoryPrice,
+  placementMarker,
   heartbeatPath,
   namedJobs,
   routeBox,
   routedJob,
+  type ActiveJobs,
   type BoxInput,
   type BoxObserver,
   type Matrices,
@@ -67,6 +70,8 @@ const observer = (
     conclusion: string;
     hosted: number;
     box: number;
+    boxJobs: string[];
+    selecting: number;
   }> = {},
 ) => {
   const calls = { heartbeat: 0, active: 0 };
@@ -81,7 +86,12 @@ const observer = (
     },
     async active() {
       calls.active++;
-      return { hosted: overrides.hosted ?? 60, box: overrides.box ?? 0 };
+      return {
+        hosted: overrides.hosted ?? 60,
+        box: overrides.box ?? 0,
+        ...(overrides.boxJobs ? { boxJobs: overrides.boxJobs } : {}),
+        ...(overrides.selecting ? { selecting: overrides.selecting } : {}),
+      };
     },
   };
   return { box, calls };
@@ -541,10 +551,16 @@ test("shard rows carry their planned minutes; unknown files take their group's m
 
 test("the REST observer trusts only the box's own heartbeat and counts hosted and box jobs in one pass", async () => {
   const requests: { url: string; authorization: string }[] = [];
-  const job = (status: string, labels: string[], group: string | null = null) => ({
+  const job = (status: string, labels: string[], group: string | null = null, name = "job") => ({
     status,
     labels,
     runner_group_name: group,
+    name,
+  });
+  // A select that ended long ago has listed all its box jobs; one that ended seconds ago may not have.
+  const select = (minutes: number) => ({
+    ...job("completed", ["ubuntu-latest"], "GitHub Actions", "select"),
+    completed_at: minutesAgo(minutes),
   });
   const own = { full_name: "owner/repo" };
   const heartbeatRun = (
@@ -599,10 +615,11 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     },
     "/actions/runs/1/jobs?filter=latest&per_page=50&page=1": {
       jobs: [
+        select(30),
         job("in_progress", ["ubuntu-latest"], "GitHub Actions"),
         job("queued", ["ubuntu-latest"]),
         job("completed", ["ubuntu-latest"], "GitHub Actions"),
-        job("in_progress", ["basalt-box"], "Default"),
+        job("in_progress", ["basalt-box"], "Default", "declared-cloud-3"),
         job("completed", ["basalt-box"], "Default"),
         job("in_progress", ["ubuntu-latest"], "Default"),
         // Release-label jobs hold neither a CI slot nor a hosted runner.
@@ -613,9 +630,20 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     "/actions/runs/2/jobs?filter=latest&per_page=50&page=1": {
       // A queued box job holds a slot just like a running one, whatever its label's case.
       jobs: [
+        select(20),
         job("queued", ["windows-latest"]),
         job("waiting", ["ubuntu-latest"]),
-        job("queued", ["Basalt-Box"]),
+        job("queued", ["Basalt-Box"], null, "client-connection"),
+      ],
+    },
+    // This Check's own run: read for its select's start only.
+    "/actions/runs/99/jobs?filter=latest&per_page=50&page=1": {
+      jobs: [
+        {
+          ...job("in_progress", ["ubuntu-latest"], "GitHub Actions", "select"),
+          started_at: minutesAgo(1),
+        },
+        job("queued", ["basalt-box"], null, "declared-cloud-1"),
       ],
     },
     // The heartbeat's own job in flight doesn't hold a CI slot.
@@ -637,7 +665,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     runId: "99",
     label: "basalt-box",
   };
-  const box = githubObserver(env, fetcher);
+  const box = githubObserver(env, fetcher, () => now);
   assert.deepEqual(await box.heartbeat(), {
     conclusion: "success",
     completedAt: minutesAgo(1),
@@ -647,10 +675,16 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
   for (const id of [12, 10, 9, 8])
     assert.ok(!requests.some((r) => r.url.startsWith(`/actions/runs/${id}/`)));
   assert.ok(!requests.some((r) => r.url === "/actions/jobs/70/logs"));
-  assert.deepEqual(await box.active(), { hosted: 3, box: 2 });
+  // Both selects ended long ago, so every box job they placed is listed: none is still selecting.
+  assert.deepEqual(await box.active(), {
+    hosted: 3,
+    box: 2,
+    boxJobs: ["declared-cloud-3", "client-connection"],
+    selecting: 0,
+  });
   assert.ok(requests.every((request) => request.authorization === "Bearer t"));
-  // This Check's own run is counted from its selection, never from the API.
-  assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/99/")));
+  // This Check's own run is read for its select's start, and its own jobs are never counted.
+  assert.ok(requests.some((request) => request.url.startsWith("/actions/runs/99/jobs")));
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/5/")));
   assert.ok(!requests.some((request) => request.url.startsWith("/actions/runs/3/")));
   // The box's budget of 2 is held by the two box jobs.
@@ -895,7 +929,7 @@ test("no workflow names the box or release runner labels outside the heartbeat's
 
 test("select reads only the routing inputs it needs, and the aggregate holds every routed job", () => {
   const select = workflow.jobs.select;
-  assert.deepEqual(select.permissions, { contents: "read", actions: "read" });
+  assert.deepEqual(select.permissions, { contents: "read", actions: "read", checks: "read" });
   assert.equal(select.outputs.box_jobs, "${{ steps.jobs.outputs.box_jobs }}");
   assert.equal(select.outputs.box_label, "${{ steps.jobs.outputs.box_label }}");
   assert.equal(select.outputs.hosted_jobs, undefined);
@@ -1093,4 +1127,236 @@ test("signed migration proofs stay hosted with both bounded adoption shards", ()
     migrations.run,
     'BASALT_SCOPE_PROOF_PATTERN="$(node scripts/ci/e2e-pattern.ts production-ops:migrations)" node scripts/production-ops/prove-scope.ts',
   );
+});
+
+test("three selects inside a minute place no more than the box's budget", async () => {
+  const log = budgetLog({ ci_budget: 4 });
+  // What one Check's observer reads, read after read: the other Checks as they get there.
+  const reads = (...active: ActiveJobs[]) => {
+    const calls = { active: 0 };
+    const box: BoxObserver = {
+      heartbeat: async () => ({ conclusion: "success", completedAt: minutesAgo(1), log }),
+      active: async () => active[Math.min(calls.active++, active.length - 1)]!,
+    };
+    return { box, calls };
+  };
+  const route = (observe: BoxObserver) =>
+    routeBox(input({ slots: "4" }), observe, () => now, noWait);
+  // A started selecting first and fills the box's four slots.
+  const a = await route(reads({ hosted: 0, box: 0 }).box);
+  assert.equal(a.jobs.length, 4);
+  // B started second. It waits while A selects, then counts A's four jobs from A's annotation:
+  // GitHub lists none of them yet, because they wait for long-started on hosted runners.
+  const b = reads({ hosted: 0, box: 0, selecting: 1 }, { hosted: 0, box: 4, boxJobs: a.jobs });
+  const placedB = await route(b.box);
+  assert.deepEqual(placedB.jobs, []);
+  assert.equal(b.calls.active, 2);
+  // C started third and waits for both.
+  const c = reads(
+    { hosted: 0, box: 0, selecting: 2 },
+    { hosted: 0, box: 0, selecting: 1 },
+    { hosted: 0, box: 4, boxJobs: a.jobs },
+  );
+  const placedC = await route(c.box);
+  assert.deepEqual(placedC.jobs, []);
+  assert.ok(a.jobs.length + placedB.jobs.length + placedC.jobs.length <= 4);
+  // Had A placed two, B would take the other two.
+  const half = reads(
+    { hosted: 0, box: 0, selecting: 1 },
+    { hosted: 0, box: 2, boxJobs: a.jobs.slice(0, 2) },
+  );
+  assert.equal((await route(half.box)).jobs.length, 2);
+  // A Check that never sees the one before it finish runs hosted rather than guess.
+  const stuck = reads({ hosted: 0, box: 0, selecting: 1 });
+  const hosted = await route(stuck.box);
+  assert.deepEqual(hosted.jobs, []);
+  assert.match(
+    hosted.summary,
+    /a Check that started selecting first is still placing its box jobs/,
+  );
+  assert.equal(stuck.calls.active, 7);
+});
+
+test("box jobs stop at the box's free memory, which other Checks' box jobs hold too", async () => {
+  const route = (active: Parameters<typeof observer>[0], fields: Record<string, unknown>) =>
+    routeBox(
+      input({ slots: "4" }),
+      observer({ log: budgetLog({ ci_budget: 4, ...fields }), ...active }).box,
+      () => now,
+      noWait,
+    );
+  const own = await route({}, { ci_memory_gib: 30 });
+  assert.deepEqual(own.jobs, ["declared-cloud-1", "declared-cloud-2"]);
+  assert.match(
+    own.summary,
+    /2 jobs go to the self-hosted runners \(4 of 4 slots free, 30 GiB of memory free\)/,
+  );
+  // Another Check's declared-cloud shard on the box holds 14 GiB of the 30.
+  const shared = await route({ box: 1, boxJobs: ["declared-cloud-7"] }, { ci_memory_gib: 30 });
+  assert.deepEqual(shared.jobs, ["declared-cloud-1"]);
+  // A negative figure counts as none.
+  for (const [memory, shown] of [
+    [5, 5],
+    [-2, 0],
+  ]) {
+    const none = await route({}, { ci_memory_gib: memory });
+    assert.deepEqual(none.jobs, []);
+    assert.match(
+      none.summary,
+      new RegExp(`free memory \\(4 of 4 slots free, ${shown} GiB of memory free`),
+    );
+  }
+  // A box that publishes no memory has no memory bound; one that publishes nonsense routes nothing.
+  assert.equal((await route({}, {})).jobs.length, 4);
+  for (const memory of ["lots", null, true]) {
+    const unreadable = await route({}, { ci_memory_gib: memory });
+    assert.deepEqual(unreadable.jobs, []);
+    assert.match(unreadable.summary, /the box reported no readable CI memory/);
+  }
+});
+
+test("memory prices are the box's measured peaks, and an unmeasured kind takes declared-cloud's", () => {
+  assert.equal(memoryPrice("declared-cloud-3"), 14);
+  assert.equal(memoryPrice("client-connection"), 2);
+  assert.equal(memoryPrice("browser-install"), 12);
+  for (const name of [
+    "declared-local",
+    "declared-self-host-2",
+    "production-ops-identity:credentials",
+    "production-ops-identity (credentials)",
+  ])
+    assert.equal(memoryPrice(name), 14, name);
+});
+
+test("every planned job fits the memory together, since a waiting job may start at once", () => {
+  const shard = (id: string, minutes: number) => ({ id, minutes, timeout: 60 });
+  const shards = [
+    shard("declared-cloud-1", 8),
+    shard("declared-cloud-2", 6),
+    shard("client-connection", 4),
+  ];
+  const plan = (free: number, memory: number) =>
+    planBox(shards, free, 60, memory).map((job) => [job.id, job.wave]);
+  // One slot: the second shard waits for the first, but the box may start it beside the first.
+  assert.deepEqual(plan(1, 28), [
+    ["declared-cloud-1", 1],
+    ["declared-cloud-2", 2],
+  ]);
+  assert.deepEqual(plan(1, 16), [
+    ["declared-cloud-1", 1],
+    ["client-connection", 2],
+  ]);
+  // A slot memory can't fill never costs the jobs that do fit.
+  for (const memory of [14, 16, 28, 30])
+    for (let free = 1; free < 4; free++)
+      assert.ok(plan(free + 1, memory).length >= plan(free, memory).length, `${free} ${memory}`);
+});
+
+test("the REST observer waits for selects that started first and counts the jobs they placed", async () => {
+  const requests: string[] = [];
+  const job = (name: string, status: string, fields: Record<string, unknown> = {}) => ({
+    name,
+    status,
+    labels: ["ubuntu-latest"],
+    runner_group_name: "GitHub Actions",
+    ...fields,
+  });
+  const boxJob = (name: string, status: string) => ({
+    name,
+    status,
+    labels: ["basalt-box"],
+    runner_group_name: "Default",
+  });
+  const selecting = (startedMinutesAgo: number) =>
+    job("select", "in_progress", { started_at: minutesAgo(startedMinutesAgo) });
+  const selected = (endedMinutesAgo: number, checkRun: number) =>
+    job("select", "completed", {
+      conclusion: "success",
+      started_at: minutesAgo(endedMinutesAgo + 1),
+      completed_at: minutesAgo(endedMinutesAgo),
+      check_run_url: `https://api.github.test/repos/owner/repo/check-runs/${checkRun}`,
+    });
+  const watch = (status: string, conclusion?: string) =>
+    job("box-watch", status, conclusion ? { conclusion } : {});
+  const runs: Record<number, { jobs: object[]; fields?: Record<string, unknown> }> = {
+    // This Check: its select started a minute ago.
+    99: { jobs: [selecting(1)] },
+    // Started selecting first and still at it.
+    1: { jobs: [selecting(2)] },
+    // Started after this one: it waits for this Check instead.
+    2: { jobs: [selecting(0.5)] },
+    // Running for ten minutes: stuck, not placing.
+    3: { jobs: [selecting(10)] },
+    // Placed two jobs that wait for long-started, so GitHub doesn't list them yet.
+    4: { jobs: [selected(2, 41), watch("queued"), job("long-started", "queued")] },
+    // Every box job started: box-watch is done and the running one is counted as listed.
+    6: {
+      jobs: [
+        selected(9, 61),
+        watch("completed", "success"),
+        boxJob("declared-cloud (declared-cloud-5)", "in_progress"),
+      ],
+    },
+    // Placed nothing.
+    7: { jobs: [selected(5, 71), watch("completed", "skipped")] },
+    // Ended seconds ago and box-watch isn't listed yet: it may have placed.
+    8: { jobs: [selected(0.2, 81)] },
+    // Placed jobs before select annotated them: unknown until they're listed.
+    9: { jobs: [selected(2, 91), watch("queued"), job("long-started", "queued")] },
+    // A fork's pull request and a re-run never place box jobs.
+    10: { jobs: [selecting(3)], fields: { head_repository: { full_name: "fork/repo" } } },
+    11: { jobs: [selecting(3)], fields: { run_attempt: 2 } },
+  };
+  const annotations: Record<number, object[]> = {
+    41: [
+      { title: "other", message: "[]" },
+      { title: "", message: placementMarker + '["client-connection","declared-cloud-1"]' },
+    ],
+    91: [],
+  };
+  const fetcher = async (url: string) => {
+    const path = url.replace("https://api.github.test/repos/owner/repo", "");
+    requests.push(path);
+    const body = (value: unknown) => new Response(JSON.stringify(value), { status: 200 });
+    if (path.startsWith("/actions/runs?status=in_progress"))
+      return body({
+        workflow_runs: Object.entries(runs).map(([id, run]) => ({
+          id: Number(id),
+          path: ".github/workflows/ci.yml",
+          run_attempt: 1,
+          head_repository: { full_name: "owner/repo" },
+          ...run.fields,
+        })),
+      });
+    if (path.startsWith("/actions/runs?status=queued")) return body({ workflow_runs: [] });
+    const run = /^\/actions\/runs\/(\d+)\/jobs/.exec(path)?.[1];
+    if (run && runs[Number(run)]) return body({ jobs: runs[Number(run)]!.jobs });
+    const check = /^\/check-runs\/(\d+)\/annotations/.exec(path)?.[1];
+    if (check && annotations[Number(check)]) return body(annotations[Number(check)]);
+    return new Response("missing", { status: 404 });
+  };
+  const env = {
+    api: "https://api.github.test",
+    repository: "owner/repo",
+    token: "t",
+    runId: "99",
+    label: "basalt-box",
+  };
+  const active = await githubObserver(env, fetcher, () => now).active();
+  // Runs 1, 8 and 9 may still place jobs nobody can count yet.
+  assert.equal(active.selecting, 3);
+  assert.equal(active.box, 3);
+  assert.deepEqual(active.boxJobs, [
+    "declared-cloud (declared-cloud-5)",
+    "declared-cloud-1",
+    "client-connection",
+  ]);
+  // Only the Checks still waiting on their box jobs have their annotations read.
+  assert.deepEqual(requests.filter((path) => path.startsWith("/check-runs/")).sort(), [
+    "/check-runs/41/annotations?per_page=50",
+    "/check-runs/91/annotations?per_page=50",
+  ]);
+  // A placement that isn't a list fails the read, so nothing routes.
+  annotations[41] = [{ message: placementMarker + '{"jobs":2}' }];
+  await assert.rejects(githubObserver(env, fetcher, () => now).active(), /not a list/);
 });
