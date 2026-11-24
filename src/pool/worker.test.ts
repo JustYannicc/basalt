@@ -1803,11 +1803,23 @@ test("the operator entrypoint writes one closed line when its handoff call throw
   );
   assert.equal(response.status, 500);
   assert.deepEqual(
-    log.mock.calls.map((call) => call.arguments),
+    log.mock.calls.map((call) => [call.arguments[0], JSON.parse(String(call.arguments[1]))]),
     [
       [
         "POOL_OPERATIONS_CALL_FAILED",
-        '{"route":"/runtime-handoff","error":"DataCloneError","status":500}',
+        {
+          route: "/runtime-handoff",
+          status: 500,
+          name: "DataCloneError",
+          code: 25,
+          messageClass: "aborted",
+          isError: true,
+          disconnected: null,
+          retryable: null,
+          overloaded: null,
+          remote: null,
+          durableObjectReset: null,
+        },
       ],
     ],
   );

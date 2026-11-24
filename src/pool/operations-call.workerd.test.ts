@@ -67,13 +67,32 @@ test(
   async () => {
     const mf = await worker();
     try {
-      const failed = await (await mf.dispatchFetch("http://pool/?signal")).json();
-      assert.deepEqual(failed, {
+      const failed = (await (await mf.dispatchFetch("http://pool/?signal")).json()) as {
+        status: number;
+        body: string;
+        lines: string[];
+      };
+      assert.equal(failed.status, 500);
+      assert.equal(failed.body, "");
+      assert.equal(failed.lines.length, 1);
+      const [marker, fields] = failed.lines[0]!.split(" ", 2) as [string, string];
+      assert.equal(marker, "POOL_OPERATIONS_CALL_FAILED");
+      // Closed values only: the platform's message names the AbortSignal, and never appears.
+      assert.doesNotMatch(fields, /serialization/u);
+      // The message class reads aborted because the platform's text names an AbortSignal; the
+      // name says what it was.
+      assert.deepEqual(JSON.parse(fields), {
+        route: "/runtime-handoff",
         status: 500,
-        body: "",
-        lines: [
-          'POOL_OPERATIONS_CALL_FAILED {"route":"/runtime-handoff","error":"DataCloneError","status":500}',
-        ],
+        name: "DataCloneError",
+        code: 25,
+        messageClass: "aborted",
+        isError: true,
+        disconnected: null,
+        retryable: null,
+        overloaded: null,
+        remote: null,
+        durableObjectReset: null,
       });
       // The same call without the signal reaches the controller, and writes nothing.
       const answered = await (await mf.dispatchFetch("http://pool/")).json();
