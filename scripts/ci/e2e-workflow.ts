@@ -9,6 +9,7 @@ export type Workflow = {
   jobs: Record<
     string,
     {
+      needs?: string | string[];
       if?: string | boolean;
       "continue-on-error"?: boolean;
       steps?: Step[];
@@ -29,6 +30,11 @@ const matrixCanRun = (expression: string, matrix: Matrix | string | undefined) =
     .some((candidate) => String(candidate) === value);
 };
 
+/** A step condition true only in the full suite: the affected lane never runs that step. */
+export const fullOnly = "needs.select.outputs.full_suite == 'true'";
+/** The fast job's e2e config step: the full suite, or a lane change that reaches a config. */
+export const configsReached = fullOnly + " || needs.select.outputs.fast_configs != '[]'";
+
 const conditionCanRun = (
   condition: string | boolean | undefined,
   job = false,
@@ -43,8 +49,9 @@ const conditionCanRun = (
       "true",
       "always()",
       "success()",
-      "needs.select.outputs.full_suite == 'true'",
+      fullOnly,
       "needs.select.outputs.full_suite != 'true'",
+      configsReached,
     ].includes(expression) ||
     (job && /^contains\(fromJSON\(needs\.select\.outputs\.jobs\), '[\w-]+'\)$/.test(expression))
   );

@@ -3,11 +3,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, matchesGlob } from "node:path";
 import { fileURLToPath } from "node:url";
 import { changedInputs } from "./affected.ts";
+import { dependents, trackedFiles } from "./import-graph.ts";
+import { reach } from "./reach.ts";
 
-export function selectUnitTests(tests: readonly string[], inputs: readonly string[]) {
+/** `related` are tests that import or read an input, however far away: they run too. */
+export function selectUnitTests(
+  tests: readonly string[],
+  inputs: readonly string[],
+  related: Iterable<string> = [],
+) {
   const selected = new Set(
     tests.filter((file) => /^scripts\/ci(?:-prepare)?\.test\.ts$/.test(file)),
   );
+  for (const file of related) if (tests.includes(file)) selected.add(file);
   for (const input of inputs) {
     if (/^(?:docs\/|architecture\/|scripts\/architecture\/)|\.md$/.test(input)) continue;
     if (tests.includes(input)) {
@@ -32,16 +40,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const patterns = args.filter((arg) => !arg.startsWith("--"));
   if (options.some((option) => !/^--[a-z][a-z-]*(?:=\S+)?$/.test(option)))
     throw new Error("Owned unit options must use --name=value syntax");
-  const tests = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" })
-    .split("\0")
-    .filter((file) => existsSync(file) && patterns.some((pattern) => matchesGlob(file, pattern)));
+  const tests = trackedFiles(root).filter(
+    (file) => existsSync(file) && patterns.some((pattern) => matchesGlob(file, pattern)),
+  );
   if (!tests.length) throw new Error("Owned unit suite contains no test files");
   let selected = tests;
   try {
-    selected = selectUnitTests(
-      tests,
-      changedInputs(root, process.env.BASE_SHA ?? "", process.env.HEAD_SHA ?? "").inputs,
-    );
+    const { inputs } = changedInputs(root, process.env.BASE_SHA ?? "", process.env.HEAD_SHA ?? "");
+    // The affected lane runs no heavy job for a change only these tests reach, so they run here.
+    selected = selectUnitTests(tests, inputs, dependents(reach(root).graph.importers, inputs));
   } catch {
     console.log("Changed unit inputs could not be resolved; running the whole owned unit suite.");
   }

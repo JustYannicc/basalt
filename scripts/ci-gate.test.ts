@@ -29,6 +29,7 @@ const runGate = (
       CI_JOBS: JSON.stringify(selected),
       CI_BOX_JOBS: "[]",
       CI_FULL_SUITE: String(full),
+      CI_LANE: full ? "full" : "fast",
     },
   });
 
