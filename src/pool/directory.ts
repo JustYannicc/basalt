@@ -258,9 +258,14 @@ export class PoolDirectory {
       computer.keyId ??= keys[0];
       computer.state =
         computer.state === "revoked" ? "revoked" : (computer.beforeRemoval?.state ?? "revoking");
+      // Its person may never have revoked it: nothing may treat this `revoking` as their revoke.
+      if (!computer.beforeRemoval && computer.state === "revoking")
+        computer.restoredWithoutHistory = true;
       if (computer.state === "issuing" && (computer.beforeRemoval?.link?.expiresAt ?? 0) > now)
         computer.link = computer.beforeRemoval!.link;
     } else {
+      const before = computer.beforeRemoval?.state;
+      computer.removedFor = before === "revoking" || before === "revoked" ? "revoke" : "access";
       computer.state = "removed";
       computer.removedAt ??= new Date(now).toISOString();
       delete computer.switching;
@@ -407,6 +412,8 @@ export class PoolDirectory {
         await home.revoke(id);
         revoked++;
       }
+      const before = computer.beforeRemoval?.state;
+      computer.removedFor = before === "revoking" || before === "revoked" ? "revoke" : "access";
       computer.state = "removed";
       computer.removedAt ??= new Date(now).toISOString();
       delete computer.removalPending;

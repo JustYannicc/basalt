@@ -23,7 +23,7 @@ test("a healing release's two bounds follow every part they are made of", () => 
   assert.equal(readinessWaitMs, readiness);
   assert.equal(readinessCommandSeconds * 1_000, readiness + 5_000);
   // The numbers the release notes state.
-  assert.deepEqual([acceptance, readiness, readinessCommandSeconds], [658_000, 988_000, 993]);
+  assert.deepEqual([acceptance, readiness, readinessCommandSeconds], [703_000, 1_033_000, 1_038]);
 });
 
 test("a restart is given up to a person only after its slowest healthy path to ready", () => {
@@ -36,5 +36,5 @@ test("a restart is given up to a person only after its slowest healthy path to r
     timing.recoveryWarmMs +
     timing.destroyAndMembershipMs;
   assert.ok(timing.forcedRestartBudgetMs >= fromStopPass);
-  assert.equal(timing.forcedRestartBudgetMs, 354_000);
+  assert.equal(timing.forcedRestartBudgetMs, 399_000);
 });

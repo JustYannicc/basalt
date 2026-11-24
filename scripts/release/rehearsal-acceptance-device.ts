@@ -48,10 +48,12 @@ function rehearsalOnly(stage: string) {
 function stageOrigin(stage: string, value: string) {
   const origin = URL.parse(value);
   if (origin?.protocol !== "https:") throw new Error("Give the stage's https origin");
-  // URL lowercases the host; one trailing dot names the same host, an empty label names none.
-  if (origin.hostname.endsWith("..") || origin.hostname.includes(".."))
-    throw new Error("The origin's host has an empty label");
+  // URL lowercases the host, decodes percent escapes and maps the ideographic and full-width stops
+  // to dots. One trailing dot names the same host; an empty label anywhere, a second trailing dot
+  // included, names none.
   const host = origin.hostname.replace(/\.$/u, "");
+  const labels = host.split(".");
+  if (labels.includes("")) throw new Error("The origin's host has an empty label");
   const label = stage.replace(/^test-/u, "");
   const production = new Set([
     brand.zone,
@@ -65,7 +67,7 @@ function stageOrigin(stage: string, value: string) {
       host !== `app.${label}.${brand.zone}`)
   )
     throw new Error("The origin is production's host or under its zone");
-  if (!host.split(".").includes(stage.replace(/^test-/u, "")))
+  if (!labels.includes(label))
     throw new Error("The origin's host does not carry the stage's label (rehearsal-<n>)");
   origin.hostname = host;
   return origin;

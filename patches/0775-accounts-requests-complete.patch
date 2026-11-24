@@ -1,0 +1,184 @@
+diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/web/src/contracts/connector-traffic.ts
+--- a/apps/hosted/web/src/contracts/connector-traffic.ts
++++ b/apps/hosted/web/src/contracts/connector-traffic.ts
+@@ -1,11 +1,12 @@
+ /**
+  * The tool calls each visible account served, following its authorized committed changes. The host
+  * leaves out accounts the caller may not inspect and accounts no call used, so either gets no
+- * numbers, never 0. A failed read gives nothing at all.
++ * numbers, never 0. A refused read gives nothing at all; any other failure stays a failure, so a
++ * pool account's count, which these calls are part of, reads as unavailable rather than partial.
+  */
+ import { browserOnly } from "@executor-js/ui/contracts/http";
+ import type { TrafficTick } from "@executor-js/ui/dashboard/account-traffic";
+-import { Effect, Semaphore } from "effect";
++import { Effect, Predicate, Semaphore } from "effect";
+ import { AsyncResult, Atom } from "effect/reactivity";
+ import type { AccountId } from "@executor-js/sdk";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+@@ -73,7 +74,11 @@
+           ? Effect.succeed(undefined)
+           : read(parsed).pipe(
+               requests.withPermits(1),
+-              Effect.catch(() => Effect.succeed(undefined)),
++              Effect.catch((error) =>
++                Predicate.isTagged(error, "OrganizationForbidden")
++                  ? Effect.succeed(undefined)
++                  : Effect.fail(error),
++              ),
+             ),
+       )
+       .pipe(
+@@ -108,6 +113,12 @@
+       let waiting = false;
+       for (const page of pages) {
+         const result = get(page);
++        // One page keeps its earlier, complete value through a failure, as the pools' read does.
++        // Of several, one page's earlier value never stands in for every page's: a failure has none.
++        if (AsyncResult.isFailure(result) && pages.length > 1)
++          return AsyncResult.failure<Map<AccountId, ToolCallTraffic> | undefined, unknown>(
++            result.cause,
++          );
+         if (!AsyncResult.isSuccess(result) || result.value === undefined) return result;
+         values.push(result.value);
+         waiting ||= result.waiting;
+diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/web/src/contracts/pool-usage-series.ts
+--- a/apps/hosted/web/src/contracts/pool-usage-series.ts
++++ b/apps/hosted/web/src/contracts/pool-usage-series.ts
+@@ -132,24 +132,34 @@
+     // The visible accounts bound the reads, so a large pool never pages past its cap. One account
+     // the caller may not inspect refuses the filtered read, so it falls back to the whole pool,
+     // where such accounts are only other accounts' counts. Any other failure is the pool's.
+-    const [week, hours] = yield* accounts.length > 0 && accounts.length <= maxAccounts
+-      ? read({ accounts }).pipe(Effect.catchTag("OrganizationForbidden", () => read({})))
+-      : read({});
++    // The last-success lookup goes out with the series, not after them: it needs the series only
++    // when it is refused, to retry with the accounts they named.
++    const series =
++      accounts.length > 0 && accounts.length <= maxAccounts
++        ? read({ accounts }).pipe(Effect.catchTag("OrganizationForbidden", () => read({})))
++        : read({});
++    const lastOfAll = lastSuccess(organization, pool, accounts).pipe(
++      Effect.map((found) => ({ refused: false as const, found })),
++      Effect.catchTag("OrganizationForbidden", () =>
++        Effect.succeed({ refused: true as const, found: undefined }),
++      ),
++    );
++    const [[week, hours], first] = yield* Effect.all([series, lastOfAll], {
++      concurrency: "unbounded",
++    });
+     const traffic = new Map<AccountId, PoolAccountTraffic>();
+     if (week === undefined) return { readable: false, traffic };
+     // An account this caller may not inspect refuses the lookup for all, so retry with the accounts
+     // the series already named; refused again, last success stays unread. Any other failure is the
+     // pool's: an idle account it would have proven would otherwise read as having no history.
+     const named = accounts.filter((account) => week.has(account));
+-    const last = yield* lastSuccess(organization, pool, accounts).pipe(
+-      Effect.catchTag("OrganizationForbidden", () =>
+-        named.length === accounts.length
+-          ? Effect.succeed(undefined)
+-          : lastSuccess(organization, pool, named).pipe(
+-              Effect.catchTag("OrganizationForbidden", () => Effect.succeed(undefined)),
+-            ),
+-      ),
+-    );
++    const last = !first.refused
++      ? first.found
++      : named.length === accounts.length
++        ? undefined
++        : yield* lastSuccess(organization, pool, named).pipe(
++            Effect.catchTag("OrganizationForbidden", () => Effect.succeed(undefined)),
++          );
+     for (const account of accounts) {
+       const buckets = week.get(account);
+       const at = last?.get(account);
+diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+--- a/apps/hosted/web/src/implementation/pages/account-traffic.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+@@ -25,6 +25,19 @@
+ } from "../../contracts/pool-usage-series.ts";
+ import { toolCallTrafficAtom } from "../../contracts/connector-traffic.ts";
+ 
++/** A read starting, or waiting with nothing read before. */
++const notAnswered = (result: AsyncResult.AsyncResult<unknown, unknown>) =>
++  AsyncResult.isInitial(result) ||
++  (AsyncResult.isWaiting(result) && Option.isNone(AsyncResult.value(result)));
++
++/** A read that failed with nothing read before, unless the caller was refused. */
++const failedUnread = (result: AsyncResult.AsyncResult<unknown, unknown>) =>
++  AsyncResult.isFailure(result) &&
++  Option.isNone(AsyncResult.value(result)) &&
++  !Option.exists(Cause.findErrorOption(result.cause), (error) =>
++    Predicate.isTagged(error, "OrganizationForbidden"),
++  );
++
+ /** Who counted an account's tool calls, as its Details line names it. */
+ const toolCalls = "tool calls";
+ 
+@@ -70,16 +83,10 @@
+   const counted = Option.getOrUndefined(AsyncResult.value(pools));
+   // The pools' read has not answered yet: it is starting, or waiting with nothing read before. A
+   // failed read has answered: its pool accounts then read as unavailable, never as counting.
+-  const unanswered =
+-    AsyncResult.isInitial(pools) || (AsyncResult.isWaiting(pools) && counted === undefined);
++  const unanswered = notAnswered(pools);
+   // The whole read failed with nothing read before, so no pool's count is known. A refusal still
+   // shows nothing.
+-  const unread =
+-    AsyncResult.isFailure(pools) &&
+-    counted === undefined &&
+-    !Option.exists(Cause.findErrorOption(pools.cause), (error) =>
+-      Predicate.isTagged(error, "OrganizationForbidden"),
+-    );
++  const unread = failedUnread(pools);
+   // Token reads only for accounts the series named, in the pools that named them.
+   const named = useMemo(
+     () => ({
+@@ -98,32 +105,37 @@
+     () => ({ organization, accounts: [...new Set((rows ?? []).map((row) => row.id))].sort() }),
+     [organization, rows],
+   );
+-  const called = Option.getOrUndefined(
+-    AsyncResult.value(useAtomValue(toolCallTrafficAtom(toolCallKey))),
+-  );
++  const calls = useAtomValue(toolCallTrafficAtom(toolCallKey));
++  const called = Option.getOrUndefined(AsyncResult.value(calls));
++  // A pool account's count is its pool's requests and the tool calls it served: until both reads
++  // answer, either alone is part of it, and reads as counting; if either fails, as unavailable.
++  const callsUnanswered = notAnswered(calls);
++  const callsUnread = failedUnread(calls);
+   const needs = useAtomValue(windowNeedsAtom(named));
+   const tokens = Option.getOrUndefined(AsyncResult.value(useAtomValue(windowTokensAtom(needs))));
+ 
+   // Callers who may read no visible pool's series and have no counted tool call get no Requests
+-  // column at all, rather than a column of blank cells; it appears once a read answers.
++  // column at all once both reads answer, rather than a column of blank cells. While either read is
++  // out, a page with pool accounts shows the column with them counting, never a blank cell.
+   // A pool that failed to answer counts too: its accounts then say they couldn't be counted.
+   const readable =
+-    (unread && accountPools.size > 0) ||
++    (accountPools.size > 0 && (unanswered || callsUnanswered || unread || callsUnread)) ||
+     (counted !== undefined &&
+       [...counted.values()].some((pool) => pool.readable || pool.failed === true)) ||
+     (called !== undefined && called.size > 0);
+-  // Until the pools' read answers, a pool account's count is unknown: its tool calls alone would
+-  // read as its total, and no count at all as no history. Its Requests cell reads as counting, and
+-  // its Health and Details show no traffic until then.
++  // Until both reads answer, a pool account's count is unknown: its tool calls alone, or its pool's
++  // requests alone, would read as its total, and no count at all as no history. Its Requests cell
++  // reads as counting, and its Health and Details show no traffic until then.
+   const pending = (accounts: readonly AccountSummary[]) =>
+-    unanswered && accounts.some((account) => (accountPools.get(account.id)?.length ?? 0) > 0);
++    (unanswered || callsUnanswered) &&
++    accounts.some((account) => (accountPools.get(account.id)?.length ?? 0) > 0);
+   // A pool carrying the account failed to answer: what else counted it is only part of its count,
+   // so its Requests cell, Health and Details show none of it until a read answers.
+   const unavailable = (accounts: readonly AccountSummary[]) =>
+     !pending(accounts) &&
+     accounts.some((account) =>
+       (accountPools.get(account.id) ?? []).some(
+-        (pool) => unread || counted?.get(pool)?.failed === true,
++        (pool) => unread || callsUnread || counted?.get(pool)?.failed === true,
+       ),
+     );
+   const traffic = readable

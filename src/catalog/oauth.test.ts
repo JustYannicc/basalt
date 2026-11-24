@@ -25,6 +25,8 @@ test("reviewed carried sources match the packages the catalog serves", async () 
     "elevenlabs",
     "github",
     "gitlab",
+    "gmail",
+    "google",
     "miro",
     "notion",
     "planetscale",

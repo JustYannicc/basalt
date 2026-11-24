@@ -1,6 +1,19 @@
 import peerProgram from "./home-peer-program.json" with { type: "json" };
 import { stripModelLifetimeRequest } from "./model-lifetime-contract.ts";
 import { historyImportCompletionPath } from "./model-history/import-completion-contract.ts";
+import { historyUsageRollupPath } from "./model-history/usage-rollup-backfill.ts";
+import {
+  usageRollupAutoState,
+  usageRollupInspect,
+  usageRollupStuckPools,
+  usageRollupTick,
+} from "./model-history/usage-rollup-auto.ts";
+import {
+  captureHoursAutoState,
+  captureHoursInspect,
+  captureHoursStuckPools,
+  captureHoursTick,
+} from "./model-history/capture-hours-auto.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -28,6 +41,7 @@ import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
 import { runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
+import { throughController } from "./operations-call.ts";
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
@@ -70,6 +84,8 @@ import { probePool, type ProbeRuntimeIdentity } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { availabilityRuntime } from "./availability-runtime.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { watchRunningContainer } from "./runtime-slots/container-end.ts";
+import { AvailabilityEpisodes, type AvailabilityEpisode } from "./availability-episode.ts";
 import { observeAutomaticPool } from "./automatic-observation.ts";
 import { automaticRecoveryAuthority } from "./automatic-authority.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
@@ -88,7 +104,6 @@ import {
 import {
   handleModelHistoryOperation,
   historyBackfillPath,
-  historySchemaApplyPath,
   historySchemaCatalogPath,
   historyJournalActivationPath,
 } from "./model-history/operator.ts";
@@ -108,12 +123,12 @@ import { HomeMembership } from "./home-membership.ts";
 import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
-import { forwardPoolRequest } from "./forward.worker.ts";
+import { admitModelCall, forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { containerAnswer } from "./controller-unsent.ts";
 import { readinessReadMs } from "./runtime-slots/forced-restart-timing.ts";
-import { captureError } from "../telemetry/sentry.ts";
+import { captureAllowanceExpiry, captureError } from "../telemetry/sentry.ts";
 import { brand } from "../../brand.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { importRemovalPath } from "./import-removal/contract.ts";
@@ -134,20 +149,18 @@ import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
+import { detachFromCaller, followsCaller } from "./caller-signal.ts";
+import { isolate } from "./isolate.ts";
+import { routerResume, routerResumePath } from "./router-resume.ts";
 import {
   CodeHandover,
   decodeControllerCode,
   HandoverCount,
   handoverRefusal,
 } from "./code-handover.ts";
-import {
-  decodeResumeInput,
-  resumeGone,
-  resumeRequest,
-  resumeRoute,
-  toLayer,
-} from "./stream-resume.ts";
-import { resumedAnswer } from "./stream-resume.worker.ts";
+import { resumeGone, resumeRoute, toLayer } from "./stream-resume.ts";
+import { governedResume } from "./resume-admission.worker.ts";
+import { boundedLog } from "./bounded-log.ts";
 import { resumedTerminal } from "./terminal-recording.worker.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
@@ -178,8 +191,6 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   TOOLS_SERVICE: Fetcher;
 }
 
-// Random values are refused at global scope, so the isolate is named on its first construction.
-let controllerIsolate: { id: string; startedAt: number } | undefined;
 let controllerConstructions = 0;
 
 export class PoolContainer extends DurableObject<PoolEnvironment> {
@@ -217,7 +228,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
     // A new isolate means the platform replaced it; a later construction in one rebuilt the object.
-    controllerIsolate ??= { id: crypto.randomUUID(), startedAt: Date.now() };
+    const controllerIsolate = isolate();
     console.info("POOL_CONTROLLER_INSTANCE", {
       at: Date.now(),
       isolate: controllerIsolate.id,
@@ -225,6 +236,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       construction: ++controllerConstructions,
       containerRunning: ctx.container?.running ?? null,
     });
+    watchRunningContainer(ctx);
     this.bookmarks = new StorageBookmarks({
       storage: ctx.storage,
       port: {
@@ -328,6 +340,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       namespaces: () => this.fleetNamespaces(),
       provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
       currentRequests: () => this.modelStreams.active,
+      handingOver: () => this.handover.draining,
       wrap: nativeResponse,
       schedule: (at) => this.alarms.schedule("fleet", at),
       legacyPeers: {
@@ -664,6 +677,21 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     });
   }
 
+  /** Where the pool's own usage rollup backfill is: its last tick, stop, pause and stuck hour. */
+  usageRollupAutoState() {
+    return usageRollupAutoState(this.ctx.storage);
+  }
+  /** Where the pool's own capture-hour counts are: last tick, stop, pause and stuck hour. */
+  captureHoursAutoState() {
+    return captureHoursAutoState(this.ctx.storage);
+  }
+  /** The minute check's failures already reported, so a continuing one is reported once. */
+  availabilityEpisode() {
+    return new AvailabilityEpisodes(this.ctx.storage).read();
+  }
+  recordAvailabilityEpisode(episode: AvailabilityEpisode) {
+    return new AvailabilityEpisodes(this.ctx.storage).write(episode);
+  }
   /** The minute check-in's request reliability, computed once per five-minute capture. */
   async reliabilitySlo(pool: string) {
     return capturedReliability(this.ctx.storage, pool, (now) => {
@@ -703,7 +731,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
             .catch(() => console.error("POOL_RUNTIME_FLEET_UPKEEP_PENDING"));
         if (due.home) this.deferHomeUpkeep();
       } finally {
-        await trace.run("rearm", () => this.alarms.rearm());
+        await trace.run("rearm", async () => {
+          await this.restoreDeadlines().catch(() => console.error("POOL_ALARM_RESTORE_PENDING"));
+          await this.alarms.rearm();
+        });
         trace.event("deadlines", await this.alarms.inspect());
       }
     });
@@ -712,6 +743,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const trace = new PoolUpkeepTrace("home");
     if (this.homeUpkeepTask) {
       trace.event("home_shared");
+      // The native lease lasts 12 s and a held Home pass reaches its renewal only once, so every
+      // Home deadline renews beside it; a renewal already running is joined, never started twice.
+      this.ctx.waitUntil(
+        trace
+          .run("memberships", () => this.memberships.tick())
+          .catch(() => console.error("POOL_MEMBERSHIP_RENEWAL_PENDING")),
+      );
       // The alarm consumed this deadline; retain a wake-up even if the shared task has already scheduled its next pass.
       this.ctx.waitUntil(
         this.alarms
@@ -761,7 +799,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     );
     await trace.run("control", () => this.control.expire());
     this.ctx.waitUntil(
-      this.allowances.refresh().catch(() => console.error("POOL_PLAN_ALLOWANCE_REFRESH_PENDING")),
+      this.allowances
+        .refresh()
+        .catch(() => console.error("POOL_PLAN_ALLOWANCE_REFRESH_PENDING"))
+        .then(() =>
+          this.allowances.reportExpiring((rows) => captureAllowanceExpiry(this.env, rows)),
+        )
+        .catch(() => console.error("POOL_PLAN_ALLOWANCE_EXPIRY_ALERT_FAILED")),
     );
     await trace.run("prices", () => this.prices.run());
     await trace.run("overview_prices", () => this.overviewPrices.refresh());
@@ -799,6 +843,29 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
                   now,
                 ),
               ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
+            // Last, and only after a capture that committed: the pool backfills its own usage
+            // rollup in bounded sessions, so nothing above waits behind it. It runs within this
+            // Home pass, which the alarm keeps alive through waitUntil (up to 15 minutes in a
+            // Durable Object). A code handover ends it after the hour in flight, so the handover
+            // waits for one hour's recompute, never the whole tick.
+            await usageRollupTick(
+              this.ctx.storage,
+              (work) =>
+                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
+                  totalTimeoutMs: 20_000,
+                }),
+              { stopped: () => this.handover.draining },
+            ).catch(() => console.error("POOL_USAGE_ROLLUP_TICK_PENDING"));
+            // After the rollup's, in sessions of its own: the pool counts each settled hour's Home
+            // usage rows, so the summary compares counts instead of probing every usage row.
+            await captureHoursTick(
+              this.ctx.storage,
+              (work) =>
+                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
+                  totalTimeoutMs: 20_000,
+                }),
+              { stopped: () => this.handover.draining },
+            ).catch(() => console.error("POOL_CAPTURE_HOURS_TICK_PENDING"));
           }),
         );
       } catch {
@@ -863,6 +930,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.fleet,
         this.candidateProbe,
         this.bookmarks,
+        () => this.allowances.alertDelivery(),
+        () => this.usageRollupAutoState().then(usageRollupInspect),
+        () => this.captureHoursAutoState().then(captureHoursInspect),
       );
     } finally {
       this.handoffsInFlight--;
@@ -870,42 +940,66 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   /** The rest of an answer an earlier instance of this object was streaming when it ended (#1642). */
-  async resume(input: unknown): Promise<Response> {
-    const parsed = decodeResumeInput(input);
-    // While this object hands over, a resume answers gone, so the stream ends with today's terminal.
-    if (!parsed || this.handover.draining) return resumeGone();
-    const request = resumeRequest(parsed);
-    return this.handoverCount.track(request, async () => {
-      const container = this.ctx.container;
-      const answer =
-        parsed.target.kind === "runtime"
-          ? await this.fleet.resume(parsed.target.identity, request)
-          : await this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
-              // A stopped container's answers went with it; never start one to look.
-              if (!container?.running) return resumeGone();
-              // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
-              // out a restart.
-              const status = await readRuntimeHealth(
-                container.getTcpPort(8318),
-                this.env.POOL_MANAGEMENT_KEY,
-                AbortSignal.timeout(readinessReadMs),
-              ).catch(() => undefined);
-              const routed = resumeRoute(forwarded, 8317, status);
-              if (routed === "gone") return resumeGone();
-              prepared();
-              return toLayer(
-                routed.request,
-                (request, port) => container.getTcpPort(port).fetch(request),
-                () => container.running,
-              );
-            });
-      if (answer.status !== 200) return answer;
-      return resumedAnswer(answer, {
-        from: parsed.from,
-        lease: this.modelStreams.acquire(crypto.randomUUID(), "", request.signal),
-        finish: resumedTerminal(this.env, parsed.requestId, (work) => this.ctx.waitUntil(work)),
-      });
+  resume(input: unknown): Promise<Response> {
+    return governedResume(input, {
+      draining: () => this.handover.draining,
+      cut: (requestId) => this.modelStreams.wasCut(requestId) || this.computers.wasCut(requestId),
+      // A resume never starts or recovers a container: no admission recovery here.
+      admit: (call, requestId) => admitModelCall(call, this.admission(undefined, false), requestId),
+      track: (request, work) => this.handoverCount.track(request, work),
+      serve: async (parsed, request) => {
+        if (parsed.target.kind === "runtime")
+          return this.fleet.resume(parsed.target.identity, request);
+        const container = this.ctx.container;
+        return this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
+          // A stopped container's answers went with it; never start one to look.
+          if (!container?.running) return resumeGone();
+          // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
+          // out a restart.
+          const status = await readRuntimeHealth(
+            container.getTcpPort(8318),
+            this.env.POOL_MANAGEMENT_KEY,
+            AbortSignal.timeout(readinessReadMs),
+          ).catch(() => undefined);
+          const routed = resumeRoute(forwarded, 8317, status);
+          if (routed === "gone") return resumeGone();
+          prepared();
+          return toLayer(
+            routed.request,
+            async (request, port) =>
+              containerAnswer(await container.getTcpPort(port).fetch(request)),
+            () => container.running,
+          );
+        });
+      },
+      fallback: (requestId, signal) =>
+        this.modelStreams.acquire(crypto.randomUUID(), "", signal, requestId),
+      finish: (requestId) =>
+        resumedTerminal(this.env, requestId, (work) => this.ctx.waitUntil(work)),
     });
+  }
+
+  /**
+   * `take()` clears a due deadline before its pass runs, and only the pass re-arms it, so a reset
+   * that cuts the pass leaves its owner none; the alarm the other owner keeps set hides that from
+   * `ensure()`. A missing deadline comes back from each owner's own durable condition: the fleet's
+   * rows and selection, so an empty fleet stays asleep, and Home's live memberships while a runtime
+   * is selected, so a Home with nothing to renew stays asleep too.
+   */
+  private async restoreDeadlines() {
+    const { homeDeadline, fleetDeadline } = await this.alarms.inspect();
+    if (fleetDeadline === null) await this.fleet.reschedule();
+    // With nothing selected, Home stays unarmed, as in `ensure()`: a pass inside the call that built
+    // the object would move the change revisions a view reads around its query. A cut pass already
+    // lost one renewal against a 12 s lease, so a live pool's Home is due at once.
+    if (
+      homeDeadline === null &&
+      !this.homeUpkeepTask &&
+      (await this.ctx.storage.get(slotSelectionKey)) !== undefined &&
+      (await this.memberships.live())
+    )
+      await this.alarms.schedule("home", Date.now());
+    await this.alarms.rearm();
   }
 
   /** Arms the upkeep alarm if nothing has, without holding the caller. */
@@ -917,10 +1011,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const work = this.alarms.ensure(
       async () => (await this.ctx.storage.get(slotSelectionKey)) !== undefined,
     );
-    if (work) this.ctx.waitUntil(work.catch(() => console.error("POOL_ALARM_ENSURE_PENDING")));
+    if (work)
+      this.ctx.waitUntil(
+        work
+          .then(() => this.restoreDeadlines())
+          .catch(() => console.error("POOL_ALARM_ENSURE_PENDING")),
+      );
   }
 
   async fetch(request: Request): Promise<Response> {
+    request = followsCaller(request);
     this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
@@ -1128,18 +1228,27 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return this.handoverCount.track(request, () => this.forwardPool(request, port));
   }
 
+  /** What a first call and a resume of one are both admitted by (`admitModelCall`). */
+  private admission(appModel?: ModelIdentity, recover = true) {
+    return {
+      ...(appModel === undefined ? {} : { appModel }),
+      env: this.env,
+      computers: this.computers,
+      memberships: this.memberships,
+      ...(recover
+        ? { recoverAdmission: (signal: AbortSignal) => this.fleet.recoverAdmission(signal) }
+        : {}),
+      streams: this.modelStreams,
+    };
+  }
+
   private forwardPool(
     request: Request,
     port: ReturnType<typeof poolPort>,
     appModel?: ModelIdentity,
   ): Promise<Response> {
     return forwardPoolRequest(request, port, {
-      ...(appModel === undefined ? {} : { appModel }),
-      env: this.env,
-      computers: this.computers,
-      memberships: this.memberships,
-      recoverAdmission: (signal) => this.fleet.recoverAdmission(signal),
-      streams: this.modelStreams,
+      ...this.admission(appModel),
       lifecycle: this.lifecycle,
       protection: this.protection,
       databasePool: this.homeDatabasePool,
@@ -1174,9 +1283,16 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
   defer: (work: Promise<unknown>) => void = (work) => void work.catch(() => {}),
 ): Promise<Response> {
+  const readmit = async (call: Request) => !(await homeKeyRefusal(call, env, lookupHomeApiKey));
   const controller = (forwarded: Request) =>
-    fetchController(forwarded, { controller: () => singleton(env), env, defer });
-  request = stripModelLifetimeRequest(request);
+    fetchController(forwarded, {
+      controller: () => singleton(env),
+      env,
+      defer,
+      signing: { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+      readmit,
+    });
+  request = followsCaller(stripModelLifetimeRequest(request));
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)
     return routeBulkImport(request, {
@@ -1184,6 +1300,23 @@ export async function handlePoolWorkerRequest(
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       jobs: env.BulkUsageImport,
     });
+  // The router resumes a stream whose entry went down; it names the call it carried (router-resume.ts).
+  if (pathname === routerResumePath)
+    return routerResume(
+      request,
+      { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+      async (input, call) => {
+        if (!(await readmit(call))) {
+          boundedLog("POOL_ROUTER_RESUME_REFUSED", {
+            requestId: input.requestId,
+            reason: "credentials",
+          });
+          return resumeGone();
+        }
+        const resumed: Response = await singleton(env).resume(input);
+        return resumed;
+      },
+    );
   // Answered here, without waking the container.
   if (pathname === poolReleasePath)
     return poolRelease(request, env, undefined, () => singleton(env).imageReleaseReady());
@@ -1207,20 +1340,34 @@ export async function handlePoolWorkerRequest(
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {
-    if (request.headers.has(nativeModelHeader)) return controller(request);
-    const { supplied, values } = homeApiKeyCandidates(request);
-    if (!supplied) return modelAuthResponse(401, "Missing API key");
-    if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
-    try {
-      const connectionString = env.POOL_AUTH_DATABASE?.connectionString;
-      if (!connectionString) return modelAuthResponse(503, "Authentication service unavailable");
-      if (!(await lookupHomeApiKey(connectionString, values)))
-        return modelAuthResponse(401, "Invalid API key");
-    } catch {
-      return modelAuthResponse(503, "Authentication service unavailable");
-    }
+    const refused = await homeKeyRefusal(request, env, lookupHomeApiKey);
+    if (refused) return refused;
   }
   return controller(request);
+}
+
+/**
+ * The entry's check of a direct model call's Home API key, for a first call and for a resume of
+ * one alike. A device call carries its own assertion, which the controller checks.
+ */
+async function homeKeyRefusal(
+  request: Request,
+  env: PoolEnvironment,
+  lookupHomeApiKey: HomeApiKeyLookup,
+): Promise<Response | undefined> {
+  if (request.headers.has(nativeModelHeader)) return undefined;
+  const { supplied, values } = homeApiKeyCandidates(request);
+  if (!supplied) return modelAuthResponse(401, "Missing API key");
+  if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
+  try {
+    const connectionString = env.POOL_AUTH_DATABASE?.connectionString;
+    if (!connectionString) return modelAuthResponse(503, "Authentication service unavailable");
+    if (!(await lookupHomeApiKey(connectionString, values)))
+      return modelAuthResponse(401, "Invalid API key");
+  } catch {
+    return modelAuthResponse(503, "Authentication service unavailable");
+  }
+  return undefined;
 }
 
 function modelAuthResponse(status: 401 | 503, error: string): Response {
@@ -1230,6 +1377,7 @@ function modelAuthResponse(status: 401 | 503, error: string): Response {
 /** Only a service binding that explicitly selects this named entrypoint can invoke it. */
 export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
   async fetch(request: Request): Promise<Response> {
+    request = detachFromCaller(request);
     const path = new URL(request.url).pathname;
     if (path === "/automatic-recovery-observation") {
       if (request.method !== "GET") return new Response(null, { status: 405 });
@@ -1256,7 +1404,10 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         headers: { "Cache-Control": "no-store" },
       });
     }
-    if (path === runtimeHandoffPath) return singleton(this.env).runtimeHandoff(request);
+    if (path === runtimeHandoffPath)
+      return throughController(runtimeHandoffPath, () =>
+        singleton(this.env).runtimeHandoff(request),
+      );
     if (path === deploymentReadinessPath)
       return handleDeploymentReadiness(
         request,
@@ -1280,13 +1431,17 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
       [
         historySchemaCatalogPath,
         historyJournalActivationPath,
-        historySchemaApplyPath,
         historyBackfillPath,
         historyTrafficPath,
         historyImportCompletionPath,
+        historyUsageRollupPath,
       ].includes(path)
     )
-      return handleModelHistoryOperation(request, this.env.POOL_AUTH_DATABASE?.connectionString);
+      return handleModelHistoryOperation(
+        request,
+        this.env.POOL_AUTH_DATABASE?.connectionString,
+        () => singleton(this.env).usageRollupAutoState(),
+      );
     if (path !== "/codex-websockets") return new Response(null, { status: 404 });
     try {
       let approved: Pick<CodexWebSocketPlan, "digest" | "pending"> | undefined;
@@ -1326,6 +1481,12 @@ export default {
         (pool) => singleton(env).availabilityProbe(pool, true),
         (pool) => singleton(env).reliabilitySlo(pool),
         productionOpsRelease,
+        {
+          read: () => singleton(env).availabilityEpisode(),
+          write: (episode) => singleton(env).recordAvailabilityEpisode(episode),
+        },
+        () => singleton(env).usageRollupAutoState().then(usageRollupStuckPools),
+        () => singleton(env).captureHoursAutoState().then(captureHoursStuckPools),
       );
       return;
     }

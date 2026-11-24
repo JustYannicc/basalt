@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The released-retirement proofs wait out a retryable operation_busy answer, as an operator would, every 250 ms for at most ten seconds: the operation takes its organization, account and connection rows NOWAIT, so any transaction holding one for an instant answers busy. An answer still busy after the bound fails, so a busy refusal never satisfies a check that expects a different refusal. The race proof's deliberate busy check is sent once."
+    }
+  }
+}

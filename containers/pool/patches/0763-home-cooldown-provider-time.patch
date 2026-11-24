@@ -1,0 +1,330 @@
+diff --git a/internal/cliproxy/auth/basalt_cooldown_provider_time_test.go b/internal/cliproxy/auth/basalt_cooldown_provider_time_test.go
+new file mode 100644
+index 0000000..5666de1
+--- /dev/null
++++ b/internal/cliproxy/auth/basalt_cooldown_provider_time_test.go
+@@ -0,0 +1,94 @@
++package auth
++
++import (
++	"context"
++	"testing"
++	"testing/synctest"
++	"time"
++)
++
++// A quota cooldown ends when the provider says, for every provider, and never later on the blind
++// backoff; the backoff only decides when the provider gives no time.
++func TestBasaltCooldownEndsAtTheProviderTime(t *testing.T) {
++	now := time.Date(2026, 11, 22, 16, 0, 0, 0, time.UTC)
++	ninety := 90 * time.Second
++	threeDays := 72 * time.Hour
++	tiny := 100 * time.Millisecond
++	short := 5 * time.Second
++	reset := now.Add(2 * time.Hour)
++	cases := []struct {
++		name   string
++		quota  QuotaState
++		result Result
++		want   time.Duration
++		level  int
++	}{
++		{"a Claude retry time ends a high backoff at that time", QuotaState{BackoffLevel: 11}, Result{Provider: "claude", RetryAfter: &ninety}, ninety, 11},
++		{"a Claude reset ends the cooldown at the reset", QuotaState{}, Result{Provider: "claude", ResetAt: &reset}, 2 * time.Hour, 1},
++		{"a really limited account stays out until the provider's time", QuotaState{BackoffLevel: 2}, Result{Provider: "claude", RetryAfter: &threeDays}, threeDays, 3},
++		{"a short provider time never undercuts the escalating backoff", QuotaState{BackoffLevel: 11}, Result{Provider: "codex", RetryAfter: &tiny}, quotaBackoffMax, 11},
++		{"a short provider time still waits at least that long", QuotaState{}, Result{Provider: "claude", RetryAfter: &short}, short, 1},
++		{"without a provider time the backoff still grows", QuotaState{BackoffLevel: 3}, Result{Provider: "claude"}, 8 * time.Second, 4},
++		{"without a provider time a high level still waits the cap", QuotaState{BackoffLevel: 11}, Result{Provider: "claude"}, quotaBackoffMax, 11},
++	}
++	for _, c := range cases {
++		deadline, level := quotaCooldownAfterFailure(c.quota, now, c.result)
++		if got := deadline.Sub(now); got != c.want || level != c.level {
++			t.Errorf("%s: cools %s at level %d, want %s at level %d", c.name, got, level, c.want, c.level)
++		}
++	}
++
++	// Two limits can hold at once: a shorter time from another 429 never shortens an open window.
++	open := QuotaState{Exceeded: true, NextRecoverAt: now.Add(time.Hour), BackoffLevel: 4}
++	five := 5 * time.Second
++	if deadline, level := quotaCooldownAfterFailure(open, now, Result{Provider: "claude", RetryAfter: &five}); !deadline.Equal(open.NextRecoverAt) || level != 4 {
++		t.Errorf("a shorter provider time shortened an open window to %s at level %d", deadline.Sub(now), level)
++	}
++	// A provider that keeps saying "retry in a second" while still refusing is not called every
++	// second: the backoff keeps escalating, as upstream's own regression requires.
++	quota := QuotaState{}
++	at := now
++	one := time.Second
++	for index, want := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second} {
++		deadline, level := quotaCooldownAfterFailure(quota, at, Result{Provider: "claude", RetryAfter: &one})
++		if got := deadline.Sub(at); got != want {
++			t.Fatalf("a repeating 1 s provider time, failure %d: cooled %s, want %s", index+1, got, want)
++		}
++		quota = QuotaState{NextRecoverAt: deadline, BackoffLevel: level}
++		at = deadline.Add(time.Nanosecond)
++	}
++	later := now.Add(3 * time.Hour)
++	if deadline, _ := quotaCooldownAfterFailure(open, now, Result{Provider: "claude", ResetAt: &later}); !deadline.Equal(later) {
++		t.Errorf("a later provider reset did not extend an open window: %s", deadline.Sub(now))
++	}
++}
++
++// End to end through MarkResult: a Claude account at a high backoff level is selectable again at
++// the provider's time.
++func TestBasaltClaudeCooldownEndsAtTheProviderRetryTime(t *testing.T) {
++	synctest.Test(t, func(t *testing.T) {
++		ctx := context.Background()
++		manager := NewManager(nil, nil, nil)
++		account := &Auth{ID: "busy-claude", Provider: "claude", ModelStates: map[string]*ModelState{
++			"claude-opus-5-5": {Quota: QuotaState{BackoffLevel: 11}},
++		}}
++		if _, errRegister := manager.Register(ctx, account); errRegister != nil {
++			t.Fatalf("Register: %v", errRegister)
++		}
++		retry := 90 * time.Second
++		result := quotaResult(account.ID, "claude-opus-5-5")
++		result.Provider = "claude"
++		result.RetryAfter = &retry
++		manager.MarkResult(ctx, result)
++		time.Sleep(retry - time.Nanosecond)
++		current, _ := manager.GetByID(account.ID)
++		if blocked, _, _ := isAuthBlockedForModel(current, "claude-opus-5-5", time.Now()); !blocked {
++			t.Fatal("the account is selectable before the provider's time")
++		}
++		time.Sleep(time.Nanosecond)
++		current, _ = manager.GetByID(account.ID)
++		if blocked, _, next := isAuthBlockedForModel(current, "claude-opus-5-5", time.Now()); blocked {
++			t.Fatalf("at the provider's time the account is still cooling for another %s", next.Sub(time.Now()))
++		}
++	})
++}
+diff --git a/internal/cliproxy/auth/basalt_quiet_cooldown_reset_test.go b/internal/cliproxy/auth/basalt_quiet_cooldown_reset_test.go
+new file mode 100644
+index 0000000..faee20d
+--- /dev/null
++++ b/internal/cliproxy/auth/basalt_quiet_cooldown_reset_test.go
+@@ -0,0 +1,42 @@
++package auth
++
++import (
++	"context"
++	"testing"
++	"testing/synctest"
++	"time"
++)
++
++// quotaCooldownAfterFailure documents a future provider reset as authoritative. An account whose
++// earlier windows raised its backoff must still be selectable once the provider says it resets.
++func TestBasaltQuietCodexCooldownEndsAtTheProviderReset(t *testing.T) {
++	synctest.Test(t, func(t *testing.T) {
++		ctx := context.Background()
++		manager := NewManager(nil, nil, nil)
++		account := &Auth{
++			ID:       "quiet-codex",
++			Provider: "codex",
++			ModelStates: map[string]*ModelState{
++				"gpt-5": {Quota: QuotaState{BackoffLevel: 11}},
++			},
++		}
++		if _, errRegister := manager.Register(ctx, account); errRegister != nil {
++			t.Fatalf("Register: %v", errRegister)
++		}
++		reset := time.Now().Add(time.Minute)
++		result := quotaResult(account.ID, "gpt-5")
++		result.ResetAt = &reset
++		manager.MarkResult(ctx, result)
++		time.Sleep(time.Minute - time.Nanosecond)
++		current, _ := manager.GetByID(account.ID)
++		if blocked, _, _ := isAuthBlockedForModel(current, "gpt-5", time.Now()); !blocked {
++			t.Fatalf("the account is selectable before the provider's reset")
++		}
++		time.Sleep(time.Nanosecond)
++		current, _ = manager.GetByID(account.ID)
++		blocked, _, next := isAuthBlockedForModel(current, "gpt-5", time.Now())
++		if blocked {
++			t.Fatalf("at the provider's reset the account is still cooling for another %s", next.Sub(time.Now()))
++		}
++	})
++}
+diff --git a/internal/cliproxy/auth/result.go b/internal/cliproxy/auth/result.go
+index b60559a..cde6a90 100644
+--- a/internal/cliproxy/auth/result.go
++++ b/internal/cliproxy/auth/result.go
+@@ -980,25 +980,44 @@ func quotaCooldownAfterFailure(quota QuotaState, now time.Time, result Result) (
+ 		nextLevel = level
+ 	}
+ 
+-	provider := strings.ToLower(strings.TrimSpace(result.Provider))
+-	if provider != "antigravity" && provider != "codex" {
++	providerAt, given := providerQuotaTime(result, now)
++	if !given {
+ 		return deadline, nextLevel
+ 	}
+-	if result.ResetAt != nil && result.ResetAt.After(now) {
+-		resetAt := result.ResetAt.UTC()
+-		if resetAt.Sub(now) <= providerQuotaHintMaxHorizon {
+-			if resetAt.After(deadline) {
+-				deadline = resetAt
+-			}
+-			return deadline, nextLevel
++	if windowOpen {
++		// Two limits can hold at once: another 429's time only ever extends an open window.
++		if providerAt.After(deadline) {
++			deadline = providerAt
+ 		}
++		return deadline, nextLevel
+ 	}
+-	if result.RetryAfter != nil && *result.RetryAfter > 0 && *result.RetryAfter <= providerQuotaHintMaxHorizon {
+-		if retryAt := now.Add(*result.RetryAfter); retryAt.After(deadline) {
+-			deadline = retryAt
++	// A provider that keeps answering "retry in a moment" while still refusing would be called
++	// every second (#5265 upstream), so a short time only ever lengthens the escalating backoff.
++	if providerAt.Sub(now) < providerQuotaTimeTrustedFrom {
++		if providerAt.After(deadline) {
++			deadline = providerAt
+ 		}
++		return deadline, nextLevel
++	}
++	// A provider time of this length is authoritative, for every provider: the cooldown ends then
++	// and never later on the blind backoff, which decides only when the provider gives no time.
++	return providerAt, nextLevel
++}
++
++// providerQuotaTimeTrustedFrom is the shortest provider time that ends a cooldown exactly; the
++// same floor upstream puts on a pool's retry time.
++const providerQuotaTimeTrustedFrom = 10 * time.Second
++
++// providerQuotaTime is when the provider says a limited account may be used again: its reset,
++// else its retry delay, within the horizon a provider hint is trusted for.
++func providerQuotaTime(result Result, now time.Time) (time.Time, bool) {
++	if result.ResetAt != nil && result.ResetAt.After(now) && result.ResetAt.Sub(now) <= providerQuotaHintMaxHorizon {
++		return result.ResetAt.UTC(), true
++	}
++	if result.RetryAfter != nil && *result.RetryAfter > 0 && *result.RetryAfter <= providerQuotaHintMaxHorizon {
++		return now.Add(*result.RetryAfter), true
+ 	}
+-	return deadline, nextLevel
++	return time.Time{}, false
+ }
+ 
+ // NewUsageResult creates a new usage result.
+diff --git a/internal/home/usage_result.go b/internal/home/usage_result.go
+index c2b9478..29031cb 100644
+--- a/internal/home/usage_result.go
++++ b/internal/home/usage_result.go
+@@ -2,12 +2,19 @@ package home
+ 
+ import (
+ 	"context"
++	"math"
++	"net/http"
+ 	"strings"
++	"time"
+ 
+ 	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
+ 	"github.com/tidwall/gjson"
+ )
+ 
++// usageRetryAfterMax is the longest provider retry time Home trusts from a node, the same horizon
++// it trusts any provider hint for; a longer one is treated as no time at all.
++const usageRetryAfterMax = 60 * 24 * time.Hour
++
+ // RecordUsagePayload applies downstream usage status to the scheduler auth state.
+ func (r *Runtime) RecordUsagePayload(ctx context.Context, payload string) {
+ 	// Validate input data before converting it into runtime state.
+@@ -41,6 +48,27 @@ func (r *Runtime) RecordUsagePayload(ctx context.Context, payload string) {
+ 	body := gjson.Get(payload, "fail.body").String()
+ 
+ 	result := coreauth.NewUsageResult(authIndex, provider, model, statusCode, body)
++	// The node's number stands in for a body that gave no usable time; a reset already passed is none.
++	bodyReset := result.ResetAt != nil && result.ResetAt.After(time.Now())
++	bodyRetry := result.RetryAfter != nil && *result.RetryAfter > 0
++	if statusCode == http.StatusTooManyRequests && !bodyReset && !bodyRetry {
++		if retryAfter, ok := usageRetryAfter(gjson.Get(payload, "fail.retry_after_ms")); ok {
++			result.RetryAfter = &retryAfter
++		}
++	}
+ 	result.AccessTokenSHA256 = strings.TrimSpace(gjson.Get(payload, "access_token_sha256").String())
+ 	r.coreManager.MarkResult(ctx, result)
+ }
++
++// usageRetryAfter reads the node's fail.retry_after_ms: the provider's own retry time for a 429,
++// as a whole positive number of milliseconds. Anything else means the provider gave no time.
++func usageRetryAfter(value gjson.Result) (time.Duration, bool) {
++	if value.Type != gjson.Number {
++		return 0, false
++	}
++	ms := value.Float()
++	if ms <= 0 || ms != math.Trunc(ms) || ms > float64(usageRetryAfterMax/time.Millisecond) {
++		return 0, false
++	}
++	return time.Duration(ms) * time.Millisecond, true
++}
+diff --git a/internal/home/usage_retry_after_test.go b/internal/home/usage_retry_after_test.go
+new file mode 100644
+index 0000000..261aed5
+--- /dev/null
++++ b/internal/home/usage_retry_after_test.go
+@@ -0,0 +1,62 @@
++package home
++
++import (
++	"context"
++	"fmt"
++	"testing"
++	"time"
++
++	coreauth "github.com/router-for-me/CLIProxyAPIHome/internal/cliproxy/auth"
++)
++
++// The node reports a 429 through the usage queue with no body and no headers, only the closed
++// number fail.retry_after_ms taken from the provider's own retry time. Home ends the cooldown
++// then; a missing, zero or unparsable number means the provider gave no time.
++func TestRecordUsagePayloadEndsTheCooldownAtTheProviderRetryTime(t *testing.T) {
++	payload := func(index string, retry string) string {
++		fail := `"status_code": 429`
++		if retry != "" {
++			fail += `, "retry_after_ms": ` + retry
++		}
++		return fmt.Sprintf(`{"auth_index": %q, "provider": "claude", "model": "claude-opus-5-5", "failed": true, "fail": {%s}}`, index, fail)
++	}
++	cooling := func(t *testing.T, id, retry string) time.Duration {
++		t.Helper()
++		auth := &coreauth.Auth{ID: id, Index: id, Provider: "claude", Status: coreauth.StatusActive,
++			ModelStates: map[string]*coreauth.ModelState{"claude-opus-5-5": {Quota: coreauth.QuotaState{BackoffLevel: 11}}}}
++		rt := newUsageResultTestRuntime(t, auth)
++		before := time.Now()
++		rt.RecordUsagePayload(context.Background(), payload(id, retry))
++		got, ok := rt.coreManager.GetByID(id)
++		if !ok || got == nil || got.ModelStates["claude-opus-5-5"] == nil {
++			t.Fatalf("%s: no model state after the 429", id)
++		}
++		return got.ModelStates["claude-opus-5-5"].NextRetryAfter.Sub(before)
++	}
++	if got := cooling(t, "timed", "90000"); got < 89*time.Second || got > 91*time.Second {
++		t.Fatalf("a Claude 429 with the provider's 90 s cooled for %s", got)
++	}
++	for _, retry := range []string{"", "0", "-5", `"90000"`, "1.5e12", "90000.5"} {
++		if got := cooling(t, "untimed"+retry, retry); got < 29*time.Minute {
++			t.Fatalf("retry_after_ms %q was taken as a provider time: cooled %s", retry, got)
++		}
++	}
++}
++
++// A body whose reset has already passed gives no time, so it never hides the node's number.
++func TestRecordUsagePayloadPrefersTheNodeTimeOverAPassedBodyReset(t *testing.T) {
++	id := "codex-stale-reset"
++	auth := &coreauth.Auth{ID: id, Index: id, Provider: "codex", Status: coreauth.StatusActive,
++		ModelStates: map[string]*coreauth.ModelState{"gpt-5": {Quota: coreauth.QuotaState{BackoffLevel: 11}}}}
++	rt := newUsageResultTestRuntime(t, auth)
++	passed := time.Now().Add(-time.Hour).Unix()
++	before := time.Now()
++	rt.RecordUsagePayload(context.Background(), fmt.Sprintf(`{"auth_index": %q, "provider": "codex", "model": "gpt-5", "failed": true, "fail": {"status_code": 429, "retry_after_ms": 90000, "body": "{\"error\":{\"type\":\"usage_limit_reached\",\"resets_at\":%d}}"}}`, id, passed))
++	got, ok := rt.coreManager.GetByID(id)
++	if !ok || got == nil || got.ModelStates["gpt-5"] == nil {
++		t.Fatal("no model state after the 429")
++	}
++	if cooled := got.ModelStates["gpt-5"].NextRetryAfter.Sub(before); cooled < 89*time.Second || cooled > 91*time.Second {
++		t.Fatalf("a passed body reset hid the node's 90 s: cooled %s", cooled)
++	}
++}

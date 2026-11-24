@@ -45,6 +45,8 @@ export interface HandoffFleet {
   disable?(operationId: string, expectedDigest: string): Promise<unknown>;
   assertPrimaryChange?(action: string): Promise<void>;
   replace?(operationId: string, identity: SlotIdentity): Promise<unknown>;
+  retireRow?(operationId: string, go: string, key: string): Promise<unknown>;
+  retireCheck?(key: string): Promise<unknown>;
   prepareImage?(intent: ImageUpdateIntent): ReturnType<RuntimeImageUpdate["prepare"]>;
   inspectImage?(operationId: string): ReturnType<RuntimeImageUpdate["inspect"]>;
   cancelImage?(operationId: string): ReturnType<RuntimeImageUpdate["cancel"]>;
@@ -59,12 +61,27 @@ export async function handleRuntimeHandoff(
   fleet?: HandoffFleet,
   probe?: RuntimeCandidateProbe,
   bookmarks?: Pick<StorageBookmarks, "read" | "restore">,
+  /** While Sentry refuses the pool's expiry alert: since when and its last status. */
+  alertDelivery?: () => Promise<{ refusedSince: number; lastStatus?: number } | undefined>,
+  /** The pool's own usage rollup backfill, from the object's storage alone. */
+  usageRollup?: () => Promise<unknown>,
+  /** The pool's own capture-hour counts, from the object's storage alone. */
+  captureHours?: () => Promise<unknown>,
 ) {
-  if (request.method !== "POST") return new Response(null, { status: 405 });
   let command: RefusedCommand | undefined;
+  // Every answer but a 200 logs one line, so a lane that sees no Worker line knows the bridge answered.
+  const answered = (response: Response) => {
+    try {
+      logRuntimeCommandRefusal(response, command, handoff.databasePool());
+    } catch {
+      // The line is a diagnostic; it never changes the answer.
+    }
+    return response;
+  };
+  if (request.method !== "POST") return answered(new Response(null, { status: 405 }));
   try {
     const text = await request.text();
-    if (text.length > 256 * 1024) return new Response(null, { status: 413 });
+    if (text.length > 256 * 1024) return answered(new Response(null, { status: 413 }));
     const { envelope } = runtimeInput(() =>
       Schema.decodeUnknownSync(Schema.Struct({ envelope: Schema.String }), {
         onExcessProperty: "error",
@@ -164,8 +181,26 @@ export async function handleRuntimeHandoff(
         if (!fleet?.replace) throw new Error("Runtime fleet unavailable");
         result = await fleet.replace(value.operationId, value.identity);
         break;
+      case "fleet-retire-check":
+        if (!fleet?.retireCheck) throw new Error("Runtime fleet unavailable");
+        result = await fleet.retireCheck(value.key);
+        break;
+      case "fleet-retire":
+        if (!fleet?.retireRow) throw new Error("Runtime fleet unavailable");
+        result = await fleet.retireRow(value.operationId, value.go, value.key);
+        break;
       case "inspect":
-        result = { ...(await handoff.slots.inspect()), recovery: await handoff.recoveryState() };
+        result = {
+          ...(await handoff.slots.inspect()),
+          recovery: await handoff.recoveryState(),
+          lastEnd: await handoff.primaryEnd().catch(() => null),
+          lastRecovery: await handoff.lastRecovery().catch(() => null),
+          // A diagnostic: its read failing must not fail the inspect release flows rely on.
+          alertDelivery: (await alertDelivery?.().catch(() => undefined)) ?? null,
+          // So is the backfill's state, which a blind monitor would otherwise keep from everyone.
+          usageRollup: (await usageRollup?.().catch(() => undefined)) ?? null,
+          captureHours: (await captureHours?.().catch(() => undefined)) ?? null,
+        };
         break;
       case "recovery-reset":
         result = await handoff.resetRecovery();
@@ -227,10 +262,7 @@ export async function handleRuntimeHandoff(
     }
     return Response.json({ result: result ?? null }, { headers: { "Cache-Control": "no-store" } });
   } catch (error) {
-    const response = runtimeErrorResponse(error, "handoff");
-    if (response.status === 409)
-      logRuntimeCommandRefusal(response, command, handoff.databasePool());
-    return response;
+    return answered(runtimeErrorResponse(error, "handoff"));
   }
 }
 
@@ -240,7 +272,10 @@ interface RefusedCommand {
   operationId: string | null;
 }
 
-/** One closed-vocabulary line per refused command, so a refusal is diagnosable from Workers logs. */
+/**
+ * One closed-vocabulary line per command not answered 200, with its status, so a refusal or a
+ * defect is diagnosable from Workers logs.
+ */
 export function logRuntimeCommandRefusal(
   response: Response,
   command: RefusedCommand | undefined,
@@ -255,6 +290,7 @@ export function logRuntimeCommandRefusal(
         action: command?.action ?? null,
         candidate: command?.candidate ?? null,
         operationId: command?.operationId ?? null,
+        status: response.status,
         step: diagnostic?.runtimeStep ?? null,
         reason: diagnostic?.runtimeReason ?? null,
         ...(runtimeCause ? { runtimeCause } : {}),

@@ -1,0 +1,872 @@
+--- a/README.md
++++ b/README.md
+@@ -6,6 +6,10 @@
+ 
+ The top-level tools are shaped for agents, after [gogcli](https://github.com/openclaw/gogcli)'s typed tool set: `search` (Gmail search syntax, returning thread summaries with sender, subject, date and snippet), `readThread`, `readMessage` and `attachment` (decoded text instead of MIME), `labels` (with unread counts), `send` and `draft` (plain fields; replies keep the thread, subject and references, with reply-all), and `modify` (archive, read, star, trash and labels by name). Reads span every linked account at once unless `account` names one; writes need `account` only when several accounts are linked, and ask for approval. Results name the account they came from by its address, read from the Gmail profile and cached for a day. Their code is `tools/`, copied from `shared/google-tools` by `node scripts/google-vendor.ts`, which also gives the same tools to the all-in-one `google` package. The generated tools described below are under `api`, each taking an `accountId`.
+ 
++`send` and `draft` take `attachments`, each from one source: `contentBase64`, an https `url` the file downloads from without signing in (nothing is sent to it but the request), or `messageId` with `attachmentId` to forward a file from another message. Together they may total 25 MB, Gmail's limit. The message is built as multipart/mixed and sent as JSON `raw` up to 5 MB; above that it goes by Gmail's resumable upload (`uploadType=resumable`), which also keeps a reply's `threadId`.
++
++Gmail's API cannot schedule a send; that is a Gmail web feature. `send` with `sendAt` (RFC 3339, or a local time with `timeZone`) instead saves the message as a draft and starts the `sendLater` workflow, which sleeps until the time and sends the draft with `drafts.send` from the account that scheduled it. The draft stays in Gmail's Drafts until then, and edits made there go out too. `scheduleDraft` schedules an existing draft or moves a scheduled one, `scheduled` lists them with their state, and `cancelScheduled` stops one and keeps the draft. A draft sent or deleted by hand ends its run quietly. If Gmail refuses the send, the workflow asks the person in Human in the loop whether to send it again or keep the draft. Scheduled sends are recorded in the app's database (`migrations/`) so they can be listed; `scheduled` shows a caller only the sends of their own linked accounts.
++
+ ## Interface
+ 
+ OpenAPI, vendored as `gmail-openapi.json`. Google publishes the Gmail API only as a Discovery document, so `discovery-to-openapi.mjs` (derived from `google-drive`'s converter, with Gmail's settings) converts Google's own document (`https://gmail.googleapis.com/$discovery/rest?version=v1`, **revision 20261109**) into OpenAPI 3. The output is checked in so any upstream change shows up in review. To refresh: `curl -s 'https://gmail.googleapis.com/$discovery/rest?version=v1' -o /tmp/g.json && node packages/gmail/discovery-to-openapi.mjs /tmp/g.json > packages/gmail/gmail-openapi.json`, update the revision here and in `openapi.ts`, then run `node scripts/google-vendor.ts`. The output is sorted, because Google returns the document's keys in a different order on each fetch. Every operation keeps Google's standard query parameters (`fields`, `quotaUser`, `prettyPrint` and the rest) except the credential ones (`access_token`, `oauth_token`, `key`): the account supplies credentials, and a value given as a tool argument would land in the request URL and the approval prompt. Request bodies are optional, as before, except for the six methods that take a whole message. Every operation is tagged with its Discovery resource, so the tools stay under `users` as before, and carries a plain bearer requirement.
+@@ -27,4 +31,4 @@
+ - 3 need the restricted `https://mail.google.com/` scope (permanent delete): `messages.delete`, `messages.batchDelete`, `threads.delete`. Trash instead.
+ - 7 are administrative `gmail.settings.sharing` or service-account-only operations that need domain-wide delegation: `delegates.list/get/create/delete` (4), `forwardingAddresses.create/delete` (2), `settings.updateAutoForwarding` (1).
+ - The `settings.cse.*` tools only work on Workspace accounts with client-side encryption.
+-- Uploads (the `<method>Media` tools) are simple uploads only, so they are no help for large messages: the message travels inside the tool call, as it does for the JSON operations, and metadata such as `threadId` or `labelIds` needs the JSON operation. Multipart and resumable uploads are not exposed.
++- The generated upload tools (the `<method>Media` tools) are simple uploads only, so they are no help for large messages: the message travels inside the tool call, as it does for the JSON operations, and metadata such as `threadId` or `labelIds` needs the JSON operation. The curated `send` and `draft` use the resumable upload for large messages.
+--- a/index.ts
++++ b/index.ts
+@@ -14,6 +14,7 @@
+ import { icons } from "./icon.js";
+ import { addresses } from "./tools/shared.js";
+ import { gmail as gmailTools } from "./tools/gmail.js";
++import { sendLater, sendLaterName } from "./tools/schedule.js";
+ import { options } from "./openapi.js";
+ 
+ const Profile = object({ emailAddress: string() });
+@@ -43,8 +44,10 @@
+   },
+ });
+ 
++const requirements = { user: { accounts: { gmail: gmail.many() } }, icons };
++
+ export default defineApp(
+-  { user: { accounts: { gmail: gmail.many() } }, icons },
++  requirements,
+   async ({ user, cache, fetch, signal }) => {
+     const curated = gmailTools({ accounts: user?.accounts.gmail ?? [], address: addresses.gmail, api: () => "api" });
+     return {
+@@ -74,6 +77,8 @@
+           icons,
+         },
+       ),
++      // Scheduled emails are drafts this workflow sends at their time; it is the editable behaviour.
++      workflows: { [sendLaterName]: sendLater<typeof requirements>((step) => step.user.accounts.gmail) },
+     };
+   },
+ );
+--- a/package.json
++++ b/package.json
+@@ -7,6 +7,6 @@
+     "title": "Gmail"
+   },
+   "dependencies": {
+-    "apps": "0.0.1-beta.140"
++    "apps": "0.0.1-beta.104-basalt.15"
+   }
+ }
+--- a/tools/gmail.ts
++++ b/tools/gmail.ts
+@@ -1,11 +1,12 @@
+ // Generated by scripts/google-vendor.ts from shared/google-tools; edit the original and rerun it.
++// Basalt's catalog carries edits to this copy (src/catalog/*.patch); re-vendoring must keep them.
+ // Gmail tools shaped for agents: search returns readable thread summaries across every linked
+ // account, reads return decoded text, and writes take plain fields instead of raw MIME.
+-import { array, boolean, mutation, number, object, query, string } from "apps";
++import { array, boolean, mutation, number, object, query, string, type MutationContext, type QueryContext } from "apps";
+ import { always } from "apps/operations/approval";
++import { Attachments, attachmentsHelp, deliver, encodeMessage, resolveAttachments, type AttachmentInput } from "./mime.js";
++import { scheduleDraft, scheduleTools, sendTime } from "./schedule.js";
+ import {
+-  base64Lines,
+-  base64url,
+   decodeBody,
+   encodeHeader,
+   fanOut,
+@@ -15,10 +16,8 @@
+   select,
+   single,
+   type Base,
+-  type Context,
+   type Source,
+   type Target,
+-  type WriteContext,
+ } from "./shared.js";
+ 
+ const base = "https://gmail.googleapis.com/gmail/v1/users/me";
+@@ -115,6 +114,7 @@
+   replyToMessageId: string().optional(),
+   replyAll: boolean().optional(),
+   from: string().optional(),
++  attachments: Attachments,
+ };
+ type ComposeInput = {
+   readonly account?: string;
+@@ -127,6 +127,7 @@
+   readonly replyToMessageId?: string;
+   readonly replyAll?: boolean;
+   readonly from?: string;
++  readonly attachments?: readonly AttachmentInput[];
+ };
+ 
+ const addresses = (value: string | undefined) =>
+@@ -137,8 +138,8 @@
+ const bare = (address: string) => (/<([^>]+)>/.exec(address)?.[1] ?? address).trim().toLowerCase();
+ 
+ /**
+- * Builds the RFC 2822 message. A reply takes the original's thread, subject and references, and
+- * addresses its sender (and, with replyAll, everyone else on it except this account).
++ * Builds the RFC 2822 message with its attachments. A reply takes the original's thread, subject
++ * and references, and addresses its sender (and, with replyAll, everyone else on it except this account).
+  */
+ const compose = async (ctx: Base, target: Target, input: ComposeInput) => {
+   let to = [...(input.to ?? [])];
+@@ -172,20 +173,17 @@
+       }
+     }
+   }
+-  const lines = [
++  const headers = [
+     ...(input.from ? [`From: ${input.from}`] : []),
+     ...(to.length ? [`To: ${to.join(", ")}`] : []),
+     ...(cc.length ? [`Cc: ${cc.join(", ")}`] : []),
+     ...(input.bcc?.length ? [`Bcc: ${input.bcc.join(", ")}`] : []),
+     `Subject: ${encodeHeader(subject ?? "")}`,
+     ...extra,
+-    "MIME-Version: 1.0",
+-    `Content-Type: ${input.html ? "text/html" : "text/plain"}; charset="UTF-8"`,
+-    "Content-Transfer-Encoding: base64",
+-    "",
+-    base64Lines(input.body),
+   ];
+-  return { raw: base64url(lines.join("\r\n")), threadId, to, cc, subject: subject ?? "" };
++  const files = await resolveAttachments(ctx, target, input.attachments);
++  const message = encodeMessage(headers, input.body, input.html ?? false, files);
++  return { message, threadId, to, cc, subject: subject ?? "", attachments: files.map((file) => file.filename) };
+ };
+ 
+ /** Matching threads across targets, newest first, each summarised by its latest message. */
+@@ -225,7 +223,7 @@
+           max: number().optional(),
+         }),
+       },
+-      async (ctx: Context, input) =>
++      async (ctx: QueryContext, input) =>
+         searchMail(ctx, await select(ctx, source, input.account), input.query, Math.min(Math.max(input.max ?? 20, 1), 100)),
+     ),
+     readThread: query(
+@@ -233,7 +231,7 @@
+         description: "Read a whole thread as decoded text: every message's headers, body and attachment list, oldest first.",
+         input: object({ account, threadId: string({ minLength: 1 }) }),
+       },
+-      async (ctx: Context, input) => {
++      async (ctx: QueryContext, input) => {
+         const target = await single(ctx, source, input.account);
+         const [thread, names] = await Promise.all([
+           google(ctx, target, `${base}/threads/${encodeURIComponent(input.threadId)}`, { search: { format: "full" } }),
+@@ -247,7 +245,7 @@
+         description: "Read one message as decoded text: headers, body (HTML converted to text) and attachment list.",
+         input: object({ account, messageId: string({ minLength: 1 }) }),
+       },
+-      async (ctx: Context, input) => {
++      async (ctx: QueryContext, input) => {
+         const target = await single(ctx, source, input.account);
+         const [message, names] = await Promise.all([
+           google(ctx, target, `${base}/messages/${encodeURIComponent(input.messageId)}`, { search: { format: "full" } }),
+@@ -261,7 +259,7 @@
+         description: "List each account's labels with their unread and total counts.",
+         input: object({ account }),
+       },
+-      async (ctx: Context, input) =>
++      async (ctx: QueryContext, input) =>
+         fanOut(await select(ctx, source, input.account), async (target) => {
+           const { labels = [] } = await google(ctx, target, `${base}/labels`);
+           return mapLimit(labels as { id: string; name: string; type: string }[], 10, async (label) => {
+@@ -279,38 +277,45 @@
+     ),
+     send: mutation(
+       {
+-        description:
+-          "Send an email. For a reply, pass replyToMessageId: it stays in the thread, gets a Re: subject and goes to the original sender unless `to` is given; replyAll also copies the other recipients. `from` must be one of the account's send-as aliases.",
+-        input: object(Compose),
++        description: `Send an email, now or later. For a reply, pass replyToMessageId: it stays in the thread, gets a Re: subject and goes to the original sender unless \`to\` is given; replyAll also copies the other recipients. \`from\` must be one of the account's send-as aliases. To send later, pass sendAt: an RFC 3339 time (2026-11-20T09:00:00+01:00), or a local time (2026-11-20T09:00) read in timeZone (an IANA name, default UTC), at most a year ahead. The message is then saved as a draft and sent at that time; see it with scheduled, move it with scheduleDraft and stop it with cancelScheduled. ${attachmentsHelp}`,
++        input: object({ ...Compose, sendAt: string().optional(), timeZone: string().optional() }),
+         approval: always(),
+       },
+-      async (ctx: WriteContext, input) => {
++      async (ctx: MutationContext, input) => {
++        const at = input.sendAt === undefined ? undefined : sendTime(input.sendAt, input.timeZone);
+         const target = await single(ctx, source, input.account);
+         const message = await compose(ctx, target, input);
+         if (message.to.length === 0 && message.cc.length === 0 && !input.bcc?.length) throw new Error("Pass at least one recipient.");
+-        const sent = await google(ctx, target, `${base}/messages/send`, {
+-          method: "POST",
+-          body: { raw: message.raw, ...(message.threadId ? { threadId: message.threadId } : {}) },
+-        });
+-        return { account: target.email, messageId: sent.id, threadId: sent.threadId, to: message.to, cc: message.cc, subject: message.subject };
++        const summary = { to: message.to, cc: message.cc, subject: message.subject, attachments: message.attachments };
++        if (at !== undefined) {
++          const draft = await deliver(ctx, target, "draft", message.message, message.threadId);
++          const to = [...message.to, ...message.cc, ...(input.bcc ?? [])].join(", ");
++          return { ...(await scheduleDraft(ctx, target, { id: draft.id, subject: message.subject, to }, at)), ...summary };
++        }
++        const sent = await deliver(ctx, target, "send", message.message, message.threadId);
++        return { account: target.email, messageId: sent.id, threadId: sent.threadId, ...summary };
+       },
+     ),
+     draft: mutation(
+       {
+-        description: "Save a draft without sending it. Takes the same fields as send, and recipients may be left out.",
++        description: `Save a draft without sending it. Takes the same fields as send, and recipients may be left out. ${attachmentsHelp}`,
+         input: object(Compose),
+         approval: always(),
+       },
+-      async (ctx: WriteContext, input) => {
++      async (ctx: MutationContext, input) => {
+         const target = await single(ctx, source, input.account);
+         const message = await compose(ctx, target, input);
+-        const draft = await google(ctx, target, `${base}/drafts`, {
+-          method: "POST",
+-          body: { message: { raw: message.raw, ...(message.threadId ? { threadId: message.threadId } : {}) } },
+-        });
+-        return { account: target.email, draftId: draft.id, messageId: draft.message?.id, threadId: draft.message?.threadId };
++        const draft = await deliver(ctx, target, "draft", message.message, message.threadId);
++        return {
++          account: target.email,
++          draftId: draft.id,
++          messageId: draft.message?.id,
++          threadId: draft.message?.threadId,
++          attachments: message.attachments,
++        };
+       },
+     ),
++    ...scheduleTools(source),
+     modify: mutation(
+       {
+         description:
+@@ -327,7 +332,7 @@
+         }),
+         approval: always(),
+       },
+-      async (ctx: WriteContext, input) => {
++      async (ctx: MutationContext, input) => {
+         const target = await single(ctx, source, input.account);
+         const names = await labelNames(ctx, target);
+         const add = labelIds(names, input.addLabels ?? []);
+@@ -355,7 +360,7 @@
+           "Read an attachment listed by readMessage or readThread. Text attachments (text/*, JSON, CSV, XML) come back as text; others as base64.",
+         input: object({ account, messageId: string({ minLength: 1 }), attachmentId: string({ minLength: 1 }), mimeType: string().optional() }),
+       },
+-      async (ctx: Context, input) => {
++      async (ctx: QueryContext, input) => {
+         const target = await single(ctx, source, input.account);
+         const { data = "", size } = await google(
+           ctx,
+@@ -370,6 +375,6 @@
+   meta: {
+     title: "Gmail",
+     description: "Search, read and send mail across every linked Google account.",
+-    instructions: `search spans every linked account unless \`account\` (an address) is given; its results carry the account, and reads and writes take that account. Writes need \`account\` only when several accounts are linked. The full Gmail API is under ${source.api("gmail")}.`,
++    instructions: `search spans every linked account unless \`account\` (an address) is given; its results carry the account, and reads and writes take that account. Writes need \`account\` only when several accounts are linked. send and draft take attachments; send with sendAt schedules the message, and scheduled, scheduleDraft and cancelScheduled see, move and stop scheduled ones. The full Gmail API is under ${source.api("gmail")}.`,
+   },
+ });
+--- a/tools/shared.ts
++++ b/tools/shared.ts
+@@ -1,12 +1,11 @@
+ // Generated by scripts/google-vendor.ts from shared/google-tools; edit the original and rerun it.
++// Basalt's catalog carries edits to this copy (src/catalog/*.patch); re-vendoring must keep them.
+ // Helpers for the curated tools: choosing accounts, calling Google with one of them, running a read
+ // across every linked account, and the encodings Gmail and Calendar need.
+-import { decodeJson, json, object, string, type MutationContext, type QueryContext } from "apps";
++import { decodeJson, json, object, string, type QueryContext } from "apps";
+ 
+-export type Context = QueryContext;
+-export type WriteContext = MutationContext;
+ /** What the helpers use of a query or mutation context. */
+-export type Base = Pick<Context, "fetch" | "signal" | "cache">;
++export type Base = Pick<QueryContext, "fetch" | "signal" | "cache">;
+ /** A linked Google account, as any of the Google packages' slots provides it. */
+ export interface Account {
+   readonly id: string;
+@@ -14,7 +13,7 @@
+ }
+ 
+ /** How a package reads an account's address with the scopes it already has. */
+-export type Address = (load: { readonly fetch: typeof fetch; readonly signal: AbortSignal }, account: Account) => Promise<string>;
++export type Address = (load: Pick<QueryContext, "fetch" | "signal">, account: Account) => Promise<string>;
+ 
+ /** The accounts a package's curated tools run with, and how it names them. */
+ export interface Source {
+--- /dev/null
++++ b/migrations/0001_scheduled_sends.sql
+@@ -0,0 +1,14 @@
++-- One row per scheduled send, so people and agents can list what waits. The run is the schedule;
++-- its status says whether it is waiting, sent, failed or cancelled.
++CREATE TABLE scheduled_sends (
++  run_id TEXT PRIMARY KEY NOT NULL,
++  account_id TEXT NOT NULL,
++  account TEXT NOT NULL,
++  draft_id TEXT NOT NULL,
++  send_at INTEGER NOT NULL,
++  subject TEXT NOT NULL,
++  recipients TEXT NOT NULL,
++  created_at INTEGER NOT NULL
++);
++CREATE INDEX scheduled_sends_draft ON scheduled_sends (account_id, draft_id);
++CREATE INDEX scheduled_sends_time ON scheduled_sends (account_id, send_at);
+--- /dev/null
++++ b/tools/mime.ts
+@@ -0,0 +1,316 @@
++// Attachments and delivery for Gmail writes. Files come inline, from a link or from another
++// message; the message is a multipart/mixed RFC 2822 document built straight into bytes, sent as
++// JSON `raw` while small and by Gmail's resumable upload above that.
++import { array, decodeJson, json, object, string } from "apps";
++import { encodeHeader, google, type Base, type Target } from "./shared.js";
++
++const base = "https://gmail.googleapis.com/gmail/v1/users/me";
++const upload = "https://gmail.googleapis.com/upload/gmail/v1/users/me";
++
++/** Gmail refuses mail whose attachments add up to more than 25 MB. */
++export const attachmentLimit = 25 * 1024 * 1024;
++/** Google documents its JSON and simple-upload paths for 5 MB or less; larger messages are uploaded resumably. */
++export const uploadThreshold = 5 * 1024 * 1024;
++
++export const Attachment = object({
++  filename: string().optional(),
++  mimeType: string().optional(),
++  contentBase64: string().optional(),
++  url: string().optional(),
++  messageId: string().optional(),
++  attachmentId: string().optional(),
++});
++export const Attachments = array(Attachment).optional();
++
++export type AttachmentInput = {
++  readonly filename?: string;
++  readonly mimeType?: string;
++  readonly contentBase64?: string;
++  readonly url?: string;
++  readonly messageId?: string;
++  readonly attachmentId?: string;
++};
++
++export const attachmentsHelp =
++  "attachments: files to attach, each from exactly one source: `contentBase64` (the file's bytes as base64, such as an uploaded file or one the agent has open; needs `filename`), `url` (an https link the file downloads from without signing in; nothing but the request is sent to it) or `messageId` with `attachmentId` (an attachment of another message, as readMessage lists it). `filename` and `mimeType` are read from the source when left out. Together the files may total 25 MB, Gmail's limit; pass files over a few MB by `url`, since inline content travels inside the tool call.";
++
++interface File {
++  readonly filename: string;
++  readonly mimeType: string;
++  readonly bytes: Uint8Array;
++}
++
++const types: Record<string, string> = {
++  pdf: "application/pdf",
++  png: "image/png",
++  jpg: "image/jpeg",
++  jpeg: "image/jpeg",
++  gif: "image/gif",
++  webp: "image/webp",
++  svg: "image/svg+xml",
++  txt: "text/plain",
++  md: "text/markdown",
++  csv: "text/csv",
++  html: "text/html",
++  json: "application/json",
++  ics: "text/calendar",
++  zip: "application/zip",
++  doc: "application/msword",
++  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
++  xls: "application/vnd.ms-excel",
++  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
++  ppt: "application/vnd.ms-powerpoint",
++  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
++  mp3: "audio/mpeg",
++  mp4: "video/mp4",
++  mov: "video/quicktime",
++};
++const generic = "application/octet-stream";
++const guess = (filename: string) => types[/\.([a-z0-9]+)$/i.exec(filename)?.[1]?.toLowerCase() ?? ""] ?? generic;
++/** A MIME type that cannot break the part's headers, else the generic one. */
++const mimeType = (value: string | undefined) => {
++  const type = value?.split(";")[0]?.trim().toLowerCase();
++  return type && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(type) ? type : undefined;
++};
++/** A file name without line breaks, quotes or path separators, so it stays one header parameter. */
++const filename = (value: string) => value.replace(/[\r\n"\\/]+/g, " ").trim().slice(0, 255) || "attachment";
++
++const tooBig = () =>
++  new Error(`Attachments add up to more than 25 MB, Gmail's limit. Share a link to large files in the body instead.`);
++
++const decodeBase64 = (value: string) => {
++  const text = value.replace(/^data:[^,]*;base64,/i, "").replace(/\s+/g, "").replaceAll("-", "+").replaceAll("_", "/");
++  let binary: string;
++  try {
++    binary = atob(text);
++  } catch {
++    throw new Error("contentBase64 is not valid base64.");
++  }
++  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
++};
++
++const decoded = (value: string) => {
++  try {
++    return decodeURIComponent(value);
++  } catch {
++    return value;
++  }
++};
++
++/** Reads a link's body, stopping as soon as it passes the remaining budget. */
++const download = async (ctx: Base, url: URL, remaining: number) => {
++  // No credentials go with the request: the link alone must grant the file.
++  const response = await ctx.fetch(url.toString(), { signal: ctx.signal, redirect: "follow" });
++  if (!response.ok) throw new Error(`Downloading ${url.hostname} answered ${response.status}.`);
++  if (response.redirected && new URL(response.url).protocol !== "https:") throw new Error(`${url.hostname} redirected the download away from https.`);
++  if (Number(response.headers.get("content-length") ?? 0) > remaining) throw tooBig();
++  const chunks: Uint8Array[] = [];
++  let size = 0;
++  const reader = response.body?.getReader();
++  for (;;) {
++    const next = await reader?.read();
++    if (!next || next.done) break;
++    size += next.value.byteLength;
++    if (size > remaining) {
++      await reader?.cancel();
++      throw tooBig();
++    }
++    chunks.push(next.value);
++  }
++  const bytes = new Uint8Array(size);
++  let at = 0;
++  for (const chunk of chunks) {
++    bytes.set(chunk, at);
++    at += chunk.byteLength;
++  }
++  // Only `filename*` and URL paths are percent-encoded; a plain `filename="50% off.pdf"` is literal.
++  const disposition = response.headers.get("content-disposition") ?? "";
++  const extended = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(disposition)?.[1];
++  const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(disposition)?.[1];
++  const named = extended ? decoded(extended) : (plain ?? decoded(url.pathname.split("/").at(-1) ?? ""));
++  const served = mimeType(response.headers.get("content-type") ?? undefined);
++  return { bytes, filename: named, mimeType: served === generic ? undefined : served };
++};
++
++interface Part {
++  readonly filename?: string;
++  readonly mimeType?: string;
++  readonly body?: { readonly attachmentId?: string };
++  readonly parts?: readonly Part[];
++}
++const findPart = (part: Part | undefined, id: string): Part | undefined =>
++  part?.body?.attachmentId === id ? part : (part?.parts ?? []).map((child) => findPart(child, id)).find(Boolean);
++
++const resolve = async (ctx: Base, target: Target, input: AttachmentInput, remaining: number): Promise<File> => {
++  const sources = [input.contentBase64 !== undefined, input.url !== undefined, input.messageId !== undefined || input.attachmentId !== undefined];
++  if (sources.filter(Boolean).length !== 1)
++    throw new Error("Give each attachment exactly one source: contentBase64, url, or messageId with attachmentId.");
++  if (input.contentBase64 !== undefined) {
++    if (!input.filename) throw new Error("An attachment given as contentBase64 needs a filename.");
++    const bytes = decodeBase64(input.contentBase64);
++    if (bytes.byteLength > remaining) throw tooBig();
++    const declared = /^data:([^;,]+)/i.exec(input.contentBase64)?.[1];
++    return { bytes, filename: filename(input.filename), mimeType: mimeType(input.mimeType) ?? mimeType(declared) ?? guess(input.filename) };
++  }
++  if (input.url !== undefined) {
++    const url = URL.parse(input.url);
++    if (url === null || url.protocol !== "https:") throw new Error(`Attachment links must be https URLs: ${input.url}`);
++    const file = await download(ctx, url, remaining);
++    const name = filename(input.filename ?? file.filename);
++    return { bytes: file.bytes, filename: name, mimeType: mimeType(input.mimeType) ?? file.mimeType ?? guess(name) };
++  }
++  if (!input.messageId || !input.attachmentId) throw new Error("An attachment from another message needs both messageId and attachmentId.");
++  const message = encodeURIComponent(input.messageId);
++  const [{ data = "" }, original] = await Promise.all([
++    google(ctx, target, `${base}/messages/${message}/attachments/${encodeURIComponent(input.attachmentId)}`),
++    google(ctx, target, `${base}/messages/${message}`, { search: { format: "full" } }),
++  ]);
++  const bytes = decodeBase64(data);
++  if (bytes.byteLength > remaining) throw tooBig();
++  // Gmail can renumber attachment ids between reads; the caller's filename then names the file.
++  const part = findPart(original.payload, input.attachmentId);
++  const name = filename(input.filename ?? part?.filename ?? "attachment");
++  return { bytes, filename: name, mimeType: mimeType(input.mimeType) ?? mimeType(part?.mimeType) ?? guess(name) };
++};
++
++/** Every attachment's bytes, in order, within Gmail's 25 MB. */
++export const resolveAttachments = async (ctx: Base, target: Target, inputs: readonly AttachmentInput[] = []) => {
++  const files: File[] = [];
++  let total = 0;
++  for (const input of inputs) {
++    const file = await resolve(ctx, target, input, attachmentLimit - total);
++    total += file.bytes.byteLength;
++    files.push(file);
++  }
++  return files;
++};
++
++const alphabet = new TextEncoder().encode("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
++const crlf = [13, 10];
++/** Base64 in 76-character lines, each ending in CRLF. */
++const base64Length = (size: number) => {
++  const chars = Math.ceil(size / 3) * 4;
++  return chars + Math.ceil(chars / 76) * 2;
++};
++const writeBase64 = (bytes: Uint8Array, out: Uint8Array, start: number) => {
++  let at = start;
++  let column = 0;
++  for (let i = 0; i < bytes.length; i += 3) {
++    const a = bytes[i]!;
++    const b = bytes[i + 1];
++    const c = bytes[i + 2];
++    out[at++] = alphabet[a >> 2]!;
++    out[at++] = alphabet[((a & 3) << 4) | ((b ?? 0) >> 4)]!;
++    out[at++] = b === undefined ? 61 : alphabet[((b & 15) << 2) | ((c ?? 0) >> 6)]!;
++    out[at++] = c === undefined ? 61 : alphabet[c & 63]!;
++    column += 4;
++    if (column === 76) {
++      out.set(crlf, at);
++      at += 2;
++      column = 0;
++    }
++  }
++  if (column > 0) {
++    out.set(crlf, at);
++    at += 2;
++  }
++  return at;
++};
++
++/**
++ * The RFC 2822 message: `headers`, then the body alone, or with files a multipart/mixed whose
++ * first part is the body. The bytes are built once, so a 25 MB attachment is never copied as text.
++ */
++export const encodeMessage = (headers: readonly string[], body: string, html: boolean, files: readonly File[]) => {
++  const text = new TextEncoder();
++  const bodyType = `Content-Type: ${html ? "text/html" : "text/plain"}; charset="UTF-8"\r\nContent-Transfer-Encoding: base64\r\n`;
++  const boundary = `basalt-${crypto.randomUUID()}`;
++  const head = text.encode(
++    [...headers, "MIME-Version: 1.0", ...(files.length ? [`Content-Type: multipart/mixed; boundary="${boundary}"`, "", `--${boundary}`] : [])].join("\r\n") +
++      "\r\n" +
++      bodyType +
++      "\r\n",
++  );
++  const bodyBytes = text.encode(body);
++  const parts = files.map((file) => {
++    const name = encodeHeader(file.filename);
++    return text.encode(
++      `--${boundary}\r\nContent-Type: ${file.mimeType}; name="${name}"\r\nContent-Disposition: attachment; filename="${name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n`,
++    );
++  });
++  const close = text.encode(files.length ? `--${boundary}--\r\n` : "");
++  const size =
++    head.length + base64Length(bodyBytes.length) + parts.reduce((sum, part, i) => sum + part.length + base64Length(files[i]!.bytes.length), 0) + close.length;
++  const out = new Uint8Array(size);
++  out.set(head, 0);
++  let at = writeBase64(bodyBytes, out, head.length);
++  parts.forEach((part, i) => {
++    out.set(part, at);
++    at = writeBase64(files[i]!.bytes, out, at + part.length);
++  });
++  out.set(close, at);
++  return out;
++};
++
++const base64url = (bytes: Uint8Array) => {
++  let binary = "";
++  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
++  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
++};
++
++/** What Gmail answers for a sent message (`id` is the message) or a saved draft (`id` is the draft). */
++export interface Delivered {
++  readonly id: string;
++  readonly threadId?: string;
++  readonly message?: { readonly id?: string; readonly threadId?: string };
++}
++const delivered = (value: unknown): Delivered => {
++  if (typeof (value as { id?: unknown } | null)?.id !== "string") throw new Error("Gmail answered without an id.");
++  return value as Delivered;
++};
++
++/**
++ * Sends a message or saves a draft. Up to 5 MB the message goes as JSON `raw`; above that by
++ * Gmail's resumable upload, which also carries the thread, since a simple upload cannot.
++ */
++export const deliver = async (
++  ctx: Base,
++  target: Target,
++  kind: "send" | "draft",
++  message: Uint8Array<ArrayBuffer>,
++  threadId: string | undefined,
++): Promise<Delivered> => {
++  const thread = threadId ? { threadId } : {};
++  if (message.length <= uploadThreshold) {
++    const raw = { raw: base64url(message), ...thread };
++    return delivered(
++      kind === "send"
++        ? await google(ctx, target, `${base}/messages/send`, { method: "POST", body: raw })
++        : await google(ctx, target, `${base}/drafts`, { method: "POST", body: { message: raw } }),
++    );
++  }
++  const authorization = `Bearer ${target.account.fields.access_token}`;
++  const start = await ctx.fetch(`${upload}/${kind === "send" ? "messages/send" : "drafts"}?uploadType=resumable`, {
++    method: "POST",
++    signal: ctx.signal,
++    headers: {
++      Authorization: authorization,
++      "content-type": "application/json; charset=UTF-8",
++      "X-Upload-Content-Type": "message/rfc822",
++      "X-Upload-Content-Length": String(message.length),
++    },
++    body: JSON.stringify(kind === "send" ? thread : { message: thread }),
++  });
++  const location = start.headers.get("location");
++  if (!start.ok || !location) throw new Error(`Gmail did not start the upload (${start.status}): ${(await start.text()).slice(0, 300)}`);
++  const session = new URL(location, upload);
++  // The session URL's upload id authorises the bytes; the account's credential goes only to Gmail.
++  const own = session.origin === new URL(upload).origin;
++  const response = await ctx.fetch(session.toString(), {
++    method: "PUT",
++    signal: ctx.signal,
++    headers: { ...(own ? { Authorization: authorization } : {}), "content-type": "message/rfc822" },
++    body: message,
++  });
++  return delivered(await decodeJson(response, json()));
++};
+--- /dev/null
++++ b/tools/schedule.ts
+@@ -0,0 +1,241 @@
++// Scheduled send. Gmail's API has no send-later (it is a Gmail web feature), so a scheduled
++// message is a saved draft that the `sendLater` workflow sends at its time, from the account that
++// scheduled it. The workflow is the behaviour a person can open and edit; `scheduled` lists what
++// waits and `cancelScheduled` stops it, leaving the draft where it was.
++import {
++  NonRetryableError,
++  boolean,
++  mutation,
++  number,
++  object,
++  query,
++  string,
++  workflow,
++  type AppRequirements,
++  type MutationContext,
++  type QueryContext,
++  type WorkflowContext,
++  type WorkflowReads,
++  type WorkflowStepContext,
++} from "apps";
++import { always } from "apps/operations/approval";
++import { google, mapLimit, parseTime, select, single, type Account, type Source, type Target } from "./shared.js";
++
++const base = "https://gmail.googleapis.com/gmail/v1/users/me";
++const account = string().optional();
++const day = 86_400_000;
++
++export const sendLaterName = "sendLater";
++
++/** The workflow, for a package whose linked Google accounts `accounts` reads from a step. */
++export const sendLater = <Requirements extends AppRequirements>(
++  accounts: (step: WorkflowStepContext<Requirements>) => readonly Account[],
++) =>
++  workflow(
++    {
++      description:
++        "Sends a scheduled Gmail draft at its time from the account that scheduled it. A draft already sent or deleted by hand ends the run quietly; if Gmail refuses the send, the person is asked in Human in the loop whether to send it again or keep it as a draft.",
++      input: object({
++        accountId: string({ minLength: 1 }),
++        draftId: string({ minLength: 1 }),
++        sendAt: number(),
++        subject: string(),
++        to: string(),
++      }),
++    },
++    async (ctx: WorkflowContext<Requirements>, input) => {
++      await ctx.step.sleepUntil("wait for the send time", input.sendAt);
++      const send = (name: string) =>
++        ctx.step.do(name, { retries: { limit: 3, delay: "1 minute", backoff: "exponential" }, timeout: "2 minutes" }, async (step) => {
++          const linked = accounts(step).find((candidate) => candidate.id === input.accountId);
++          if (!linked) throw new NonRetryableError("The Gmail account that scheduled this email is no longer linked to the app.");
++          const response = await step.fetch(`${base}/drafts/send`, {
++            method: "POST",
++            signal: step.signal,
++            headers: { Authorization: `Bearer ${linked.fields.access_token}`, "content-type": "application/json" },
++            body: JSON.stringify({ id: input.draftId }),
++          });
++          // Sent or deleted by hand before its time: nothing is left to send.
++          if (response.status === 404) return { outcome: "gone" };
++          const text = await response.text();
++          const failure = `Gmail answered ${response.status}: ${text.slice(0, 300)}`;
++          if (response.status === 429 || response.status >= 500) throw new Error(failure);
++          if (!response.ok) throw new NonRetryableError(failure);
++          const sent = JSON.parse(text) as { id?: string; threadId?: string };
++          return { outcome: "sent", messageId: sent.id ?? "", threadId: sent.threadId ?? "" };
++        });
++      try {
++        return await send("send the draft");
++      } catch (error) {
++        const reason = error instanceof Error ? error.message : String(error);
++        const question = await ctx.step.requestInput("ask what to do with the unsent email", {
++          timeoutMs: 7 * day,
++          display: { kind: "choice" },
++          form: {
++            mode: "form",
++            message: `Your scheduled email "${input.subject}" to ${input.to} was not sent: ${reason}. It is still in your Gmail drafts.`,
++            requestedSchema: {
++              type: "object",
++              properties: { choice: { type: "string", title: "What should happen?", enum: ["Send it now", "Keep it as a draft"] } },
++              required: ["choice"],
++            },
++          },
++        });
++        const answer = await ctx.step.waitForInput("wait for the person's answer", question);
++        if (answer.status === "expired") return { outcome: "kept" };
++        if (answer.status === "answered" && answer.response.action === "accept" && answer.response.content?.choice === "Send it now")
++          return send("send the draft again");
++        return { outcome: "kept" };
++      }
++    },
++  );
++
++/** A time a person or model is likely to give, checked: not past, at most a year away. */
++export const sendTime = (sendAt: string, timeZone: string | undefined, now = Date.now()) => {
++  const zone = timeZone ?? "UTC";
++  try {
++    new Intl.DateTimeFormat("en-US", { timeZone: zone });
++  } catch {
++    throw new Error(`Unknown time zone ${zone}. Use an IANA name such as Europe/Zurich.`);
++  }
++  const at = parseTime(sendAt, zone, now);
++  if (at < now - 60_000) throw new Error(`${sendAt} has already passed. Use send without sendAt to send it now.`);
++  if (at > now + 365 * day) throw new Error("A message can be scheduled at most a year ahead.");
++  return Math.max(at, now);
++};
++
++type WorkflowRun = Awaited<ReturnType<WorkflowReads["get"]>>;
++
++const active = new Set<WorkflowRun["status"]>(["queued", "running", "waiting", "paused", "waitingForPause"]);
++
++type Row = { run_id: string; account: string; draft_id: string; send_at: number; subject: string; recipients: string };
++
++/** Ends the draft's waiting schedules; returns how many there were. */
++const cancelDraft = async (ctx: MutationContext, target: Target, draftId: string) => {
++  const rows = ctx.sql
++    .exec<Pick<Row, "run_id">>("SELECT run_id FROM scheduled_sends WHERE account_id = ? AND draft_id = ?", target.account.id, draftId)
++    .toArray();
++  let cancelled = 0;
++  for (const row of rows) {
++    // A run the host no longer knows is not waiting either.
++    const run = await ctx.workflows.get({ run: row.run_id }).catch(() => undefined);
++    if (run === undefined || !active.has(run.status)) continue;
++    await ctx.workflows.terminate({ run: row.run_id });
++    cancelled++;
++  }
++  return cancelled;
++};
++
++/** Schedules a saved draft, replacing its earlier schedule, and records it for `scheduled`. */
++export const scheduleDraft = async (
++  ctx: MutationContext,
++  target: Target,
++  draft: { readonly id: string; readonly subject: string; readonly to: string },
++  sendAt: number,
++) => {
++  const replaced = await cancelDraft(ctx, target, draft.id);
++  const run = await ctx.workflows.start({
++    workflow: sendLaterName,
++    input: { accountId: target.account.id, draftId: draft.id, sendAt, subject: draft.subject, to: draft.to },
++  });
++  try {
++    ctx.sql.exec(
++      "INSERT INTO scheduled_sends (run_id, account_id, account, draft_id, send_at, subject, recipients, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
++      run.id,
++      target.account.id,
++      target.email,
++      draft.id,
++      sendAt,
++      draft.subject,
++      draft.to,
++      Date.now(),
++    );
++  } catch (error) {
++    // An unrecorded run could be neither listed nor cancelled, so it must not wait.
++    await ctx.workflows.terminate({ run: run.id });
++    throw error;
++  }
++  return { account: target.email, draftId: draft.id, runId: run.id, sendAt: new Date(sendAt).toISOString(), replacedSchedules: replaced };
++};
++
++const outcomes: Record<string, string> = { sent: "sent", gone: "draft gone", kept: "kept as draft" };
++const state = (run: WorkflowRun | undefined, sendAt: number) => {
++  if (run === undefined) return "unknown";
++  if (run.status === "terminated") return "cancelled";
++  if (run.status === "errored") return "failed";
++  if (run.status === "complete") return outcomes[(run.output as { outcome?: string } | null)?.outcome ?? ""] ?? "unknown";
++  if (sendAt > Date.now()) return "scheduled";
++  // Past its time a run waits only on the person's answer about a refused send.
++  return run.status === "waiting" ? "needs you" : "sending";
++};
++
++interface DraftHeader {
++  readonly message?: { readonly payload?: { readonly headers?: readonly { readonly name: string; readonly value: string }[] } };
++}
++const draftHeader = (draft: DraftHeader, name: string) =>
++  draft.message?.payload?.headers?.find((h) => h.name.toLowerCase() === name.toLowerCase())?.value ?? "";
++
++/** The scheduling tools; `send` also schedules when given `sendAt`. */
++export const scheduleTools = (source: Source) => ({
++  scheduleDraft: mutation(
++    {
++      description:
++        "Schedule a saved draft to be sent later, or move an already scheduled draft to a new time. sendAt is an RFC 3339 time (2026-11-20T09:00:00+01:00), or a local time (2026-11-20T09:00) read in timeZone (an IANA name, default UTC), at most a year ahead. The draft stays in Gmail's Drafts until then and is sent as it reads at that time, so edits made in Gmail go out too. Gmail's own Scheduled folder is not used: its API cannot schedule.",
++      input: object({ account, draftId: string({ minLength: 1 }), sendAt: string({ minLength: 1 }), timeZone: string().optional() }),
++      approval: always(),
++    },
++    async (ctx: MutationContext, input) => {
++      const at = sendTime(input.sendAt, input.timeZone);
++      const target = await single(ctx, source, input.account);
++      const draft: DraftHeader = await google(ctx, target, `${base}/drafts/${encodeURIComponent(input.draftId)}`, {
++        search: { format: "metadata", metadataHeaders: ["To", "Cc", "Bcc", "Subject"] },
++      });
++      const to = ["To", "Cc", "Bcc"].map((name) => draftHeader(draft, name)).filter(Boolean).join(", ");
++      if (!to) throw new Error("That draft has no recipients yet. Add them before scheduling it.");
++      return scheduleDraft(ctx, target, { id: input.draftId, subject: draftHeader(draft, "Subject"), to }, at);
++    },
++  ),
++  scheduled: query(
++    {
++      description:
++        "List scheduled emails, soonest first: each with its account, draft, recipients and subject as scheduled, send time and state: scheduled, sending, needs you (Gmail refused it and Human in the loop asks what to do), sent, draft gone (sent or deleted by hand first), kept as draft (after a refusal), failed or cancelled. Shows only scheduled, sending and needs-you ones unless `all` is true.",
++      input: object({ account, all: boolean().optional() }),
++    },
++    async (ctx: QueryContext, input) => {
++      const ids = (await select(ctx, source, input.account)).map((target) => target.account.id);
++      const rows = ctx.sql
++        .exec<Row>(
++          `SELECT run_id, account, draft_id, send_at, subject, recipients FROM scheduled_sends WHERE account_id IN (${ids.map(() => "?").join(", ")}) ORDER BY send_at DESC LIMIT 100`,
++          ...ids,
++        )
++        .toArray();
++      const listed = await mapLimit(rows, 10, async (row) => {
++        const run = await ctx.workflows.get({ run: row.run_id }).catch(() => undefined);
++        return {
++          account: row.account,
++          draftId: row.draft_id,
++          runId: row.run_id,
++          to: row.recipients,
++          subject: row.subject,
++          sendAt: new Date(row.send_at).toISOString(),
++          state: state(run, row.send_at),
++        };
++      });
++      const shown = input.all ? listed : listed.filter((item) => ["scheduled", "sending", "needs you"].includes(item.state));
++      return { scheduled: shown.sort((a, b) => a.sendAt.localeCompare(b.sendAt)) };
++    },
++  ),
++  cancelScheduled: mutation(
++    {
++      description: "Cancel a scheduled email. It is not sent, and its draft stays in Gmail's Drafts to edit, schedule again or send.",
++      input: object({ account, draftId: string({ minLength: 1 }) }),
++      approval: always(),
++    },
++    async (ctx: MutationContext, input) => {
++      const target = await single(ctx, source, input.account);
++      const cancelled = await cancelDraft(ctx, target, input.draftId);
++      if (cancelled === 0) throw new Error("No scheduled send of that draft is waiting. List them with scheduled.");
++      return { account: target.email, draftId: input.draftId, cancelled, draft: "kept in Drafts" };
++    },
++  ),
++});

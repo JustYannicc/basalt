@@ -229,7 +229,17 @@ test("the controller resumes a call through its container's front layer and refu
         }),
       )
     ).text();
-  const input = { requestId, from: 42, target: "primary", boot: "fixture-boot" };
+  const input = {
+    requestId,
+    from: 42,
+    target: "primary",
+    boot: "fixture-boot",
+    call: {
+      method: "POST",
+      path: "/v1/responses",
+      headers: [["authorization", "Bearer private-model-request-key-73"]] as [string, string][],
+    },
+  };
 
   // No advert: the call goes to the node's port unmarked, as today, and nothing is resumed.
   await modelCall();
@@ -258,7 +268,10 @@ test("the controller resumes a call through its container's front layer and refu
     assert.equal(refused.headers.get("X-Basalt-Resume-State"), "gone");
   }
 
-  // A stopped container's answers went with it, and it is not started to look.
+  // A stopped container's answers went with it, and it is not started to look. Earlier calls'
+  // background work (their first-use observation reads Home) finishes first, so only the resume
+  // could start it here.
+  await drain();
   container.running = false;
   assert.equal((await worker.resume(input)).status, 410);
   assert.equal(container.running, false);

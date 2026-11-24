@@ -156,7 +156,10 @@ test("acceptance that could not test says so to the steps after it, and still en
   // After a rollback, the read of the version rolled back to says which of the two it was.
   writeFileSync(join(bin, "bun"), '#!/bin/sh\n[ "$2" = accept ] && exit "$ACCEPT_RC"\nexit 0\n');
   for (const [accept, said] of [
-    ["4", /could not test the rolled-back version: the release's acceptance device was refused/u],
+    [
+      "4",
+      /could not test the rolled-back version: the release's acceptance device hit its user's cap/u,
+    ],
     ["1", /The rolled-back version also fails acceptance/u],
   ] as const) {
     const rolled = runStep(
@@ -166,10 +169,13 @@ test("acceptance that could not test says so to the steps after it, and still en
     );
     assert.equal(rolled.status, 1, "a rollback ends red");
     assert.match(rolled.stdout, said, accept);
+    // The re-accept ran admitted, so exit 4 is only ever the cap, never a registration.
+    assert.doesNotMatch(rolled.stdout, /still registered/u, accept);
   }
   const stop = runStep(script("Stop on an acceptance that could not test"), {}, dir);
   assert.equal(stop.status, 1, "the run is never green");
-  assert.match(stop.stdout, /^::error::ACCEPTANCE COULD NOT TEST/mu);
+  assert.match(stop.stdout, /^::error::ACCEPTANCE COULD NOT TEST.*hit its user's cap/mu);
+  assert.doesNotMatch(stop.stdout, /still registered/u);
 });
 
 test("a declared root restart's boot read lets the pool not answer; others need its boot", () => {
@@ -230,11 +236,20 @@ test("a failed healing release names its outcome, the apply and the app smoke", 
   assert.match(run({ outcome: "not-serving" }, "failure", "1"), /^::error::NOT SERVING/mu);
   const untested = run({ outcome: "could-not-test" }, "success", "0");
   assert.match(untested, /^::error::COULD NOT TEST/mu);
-  assert.match(
-    untested,
-    /the release's acceptance device was refused: check that it is still registered and allowed/u,
+  assert.match(untested, /the release's acceptance device hit its user's cap: check the cap/u);
+  assert.doesNotMatch(untested, /NOT SERVING|still registered/u);
+  // Every model call served, but no boot was read before the release to show the root restarted.
+  const unconfirmed = run(
+    { outcome: "serving-restart-unconfirmed", restart: { ready: true } },
+    "success",
+    "0",
   );
-  assert.doesNotMatch(untested, /NOT SERVING/u);
+  assert.match(
+    unconfirmed,
+    /^::error::SERVING, RESTART UNCONFIRMED: the root's boot before the release could not be read/mu,
+  );
+  assert.match(unconfirmed, /the apply succeeded and the public app smoke passed/u);
+  assert.doesNotMatch(unconfirmed, /HEALED|NOT SERVING|NOT CHECKED/u);
   // No record, or one without an outcome, means nobody read the pool: it never says not serving.
   for (const record of [undefined, {}]) {
     const unread = run(record, "failure", "");

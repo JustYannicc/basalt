@@ -15,6 +15,7 @@ import { unsentRefusal } from "./controller-unsent.ts";
 import { rootFallbackRefused } from "./runtime-fleet/root-fallback.ts";
 import { fixture, owner, pool, signingKey } from "./test/computers.ts";
 import { signEnvelope } from "./token.ts";
+import { routerAttemptHeader, signRouterAttempt } from "./router-attempt.ts";
 
 const mark = "X-Signalbox-Controller-Unsent";
 const attemptHeader = "X-Signalbox-Unsent-Attempt";
@@ -157,10 +158,19 @@ const nodeAnswer: Route = async (request, ...rest) => {
 
 test("a call never sent and then sent again is recorded once, by the answer its client got", async (context) => {
   const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
   const refused = await h.send(await h.call(), unsentAnswer);
   assert.equal(refused.status, 503);
   const attempt = refused.headers.get("X-Request-Id");
   assert.ok(attempt);
+  // The route failure names the endpoint's trace and the attempt its client sees, so both match.
+  const [route] = logged.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_RUNTIME_ROUTE_FAILURE",
+  );
+  assert.ok(route);
+  const routed = route.arguments[1] as { requestId: string; attemptRequestId?: string };
+  assert.equal(routed.requestId, "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d");
+  assert.equal(routed.attemptRequestId, attempt);
   await refused.text();
   await h.settle();
   assert.deepEqual(h.finishes, [], "the attempt that never ran records no outcome");
@@ -176,10 +186,13 @@ test("a call never sent and then sent again is recorded once, by the answer its 
 
 test("a call refused by its runtime's endpoint before the send records no outcome either", async (context) => {
   const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
+  const trace = "1c2d3e4f-5a6b-4c7d-8e9f-0a1b2c3d4e5f";
   const refused = await h.send(await h.call(), async (_request, ...rest) => {
     (rest[3] as () => void)();
     const error = new Error("endpoint readiness refused");
     rememberRuntimeFailure("endpoint_health", error);
+    correlateEndpointRequest(error, trace);
     throw error;
   });
   assert.equal(refused.status, 503);
@@ -187,6 +200,17 @@ test("a call refused by its runtime's endpoint before the send records no outcom
   await refused.text();
   await h.settle();
   assert.deepEqual(h.finishes, []);
+  // Its one line names the endpoint's trace beside the attempt, so the two can be matched.
+  const lines = logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT");
+  assert.equal(lines.length, 1);
+  assert.deepEqual(JSON.parse(String(lines[0]!.arguments[1])), {
+    requestId: refused.headers.get("X-Request-Id"),
+    endpointRequestId: trace,
+    step: "endpoint_health",
+    reason: "transport",
+    guard: "upstream_dispatch",
+    cause: "Error",
+  });
 });
 
 test("a re-send refused again before its own send stays the one request, with no second record", async (context) => {
@@ -205,7 +229,45 @@ test("a re-send refused again before its own send stays the one request, with no
   assert.deepEqual(h.finishes, []);
   const lines = logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT");
   assert.equal(lines.length, 1);
-  assert.equal(JSON.parse(String(lines[0]!.arguments[1])).requestId, attempt);
+  // Refused outside the runtime, the line still says where: the forward's guard and cause.
+  assert.deepEqual(JSON.parse(String(lines[0]!.arguments[1])), {
+    requestId: attempt,
+    endpointRequestId: null,
+    step: null,
+    reason: null,
+    guard: "runtime_port",
+    cause: "Error",
+    resent: true,
+  });
+});
+
+test("a re-send whose client has left adds no record either", async (context) => {
+  const h = await forwarding(context);
+  const logged = context.mock.method(console, "error", () => {});
+  const attempt = "6a5b4c3d-2e1f-4a9b-8c7d-6e5f4a3b2c1d";
+  const left = new AbortController();
+  left.abort();
+  const request = new Request(await h.call({ [attemptHeader]: attempt }), {
+    signal: left.signal,
+  });
+  const refused = await h.send(request, async () => {
+    throw new Error("protection refused before the send");
+  });
+  assert.equal(refused.status, 503);
+  assert.equal(refused.headers.get(mark), "1");
+  assert.equal(refused.headers.get("X-Request-Id"), attempt);
+  await refused.text();
+  await h.settle();
+  assert.deepEqual(h.starts, []);
+  assert.deepEqual(h.finishes, []);
+  assert.equal(
+    logged.mock.calls.filter((call) => call.arguments[0] === "POOL_CONTROLLER_UNSENT").length,
+    1,
+  );
+  assert.equal(
+    logged.mock.calls.filter((call) => call.arguments[0] === "POOL_GATEWAY_FAILURE").length,
+    0,
+  );
 });
 
 test("a call the root's cap refused, then sent again under its own name, is recorded once", async (context) => {
@@ -239,4 +301,72 @@ test("a call the root's cap refused, then sent again under its own name, is reco
     [attempt, attempt],
     "every refused attempt of the one call carries its one id",
   );
+});
+
+test("a call the router sends again after the pool was lost finishes the row its first send started", async (context) => {
+  const h = await forwarding(context);
+  const requestId = "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e";
+  const named = async (attempt: number, key = signingKey) =>
+    h.call({ [routerAttemptHeader]: await signRouterAttempt(key, { requestId, attempt }) });
+  // The first send is dispatched, then the isolate under it is gone: no answer, no catch.
+  let dispatched!: () => void;
+  const reached = new Promise<void>((resolve) => (dispatched = resolve));
+  void h.send(await named(1), async (_request, ...rest) => {
+    (rest[3] as () => void)();
+    dispatched();
+    return new Promise<never>(() => {});
+  });
+  await reached;
+  const answered = await h.send(await named(2), nodeAnswer);
+  assert.equal(answered.status, 200);
+  assert.equal(answered.headers.get("X-Request-Id"), requestId);
+  await answered.text();
+  await h.settle();
+  assert.deepEqual(new Set(h.starts), new Set([requestId]));
+  assert.deepEqual(h.finishes, [{ id: requestId, outcome: "complete", status: 200 }]);
+  // A name the router did not sign is no name: the call gets its own id.
+  const forged = await h.send(await named(1, "ef".repeat(32)), nodeAnswer);
+  assert.notEqual(forged.headers.get("X-Request-Id"), requestId);
+  await forged.text();
+});
+
+test("a caller who left before its answer is recorded as client_closed once the answer comes", async (context) => {
+  const h = await forwarding(context);
+  const caller = new AbortController();
+  const request = new Request(await h.call(), { signal: caller.signal });
+  const answered = await h.send(request, async (forwarded, ...rest) => {
+    (rest[3] as () => void)();
+    caller.abort();
+    return nodeAnswer(forwarded, ...rest);
+  });
+  await answered.text().catch(() => {});
+  await h.settle();
+  assert.equal(h.finishes.length, 1);
+  assert.equal(h.finishes[0]!.outcome, "client_closed");
+});
+
+test("a router-named call whose caller left before its answer leaves the row to the router's next send", async (context) => {
+  const h = await forwarding(context);
+  const requestId = "6c7d8e9f-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+  const named = async (attempt: number, signal?: AbortSignal) =>
+    new Request(
+      await h.call({
+        [routerAttemptHeader]: await signRouterAttempt(signingKey, { requestId, attempt }),
+      }),
+      signal ? { signal } : {},
+    );
+  // Only the entry went down: the controller sees its caller leave, and its answer comes anyway.
+  const entry = new AbortController();
+  const lost = await h.send(await named(1, entry.signal), async (forwarded, ...rest) => {
+    (rest[3] as () => void)();
+    entry.abort();
+    return nodeAnswer(forwarded, ...rest);
+  });
+  await lost.text().catch(() => {});
+  await h.settle();
+  assert.deepEqual(h.finishes, [], "no outcome from the send the caller left");
+  const replayed = await h.send(await named(2), nodeAnswer);
+  await replayed.text();
+  await h.settle();
+  assert.deepEqual(h.finishes, [{ id: requestId, outcome: "complete", status: 200 }]);
 });

@@ -29,7 +29,7 @@ before(
         "127.0.0.1::5432",
         "--env",
         "POSTGRES_HOST_AUTH_METHOD=trust",
-        "postgres:17",
+        "mirror.gcr.io/library/postgres:17@sha256:156d40cfa063d6babb15d329a8e15b26a8d0690ebb6084c956084f3b025c3b30",
       ],
       { encoding: "utf8" },
     ).trim();

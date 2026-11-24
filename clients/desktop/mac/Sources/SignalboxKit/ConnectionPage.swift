@@ -28,8 +28,8 @@ struct ConnectionPage: View {
             GridRow {
               Text("Models from").foregroundStyle(.secondary)
               VStack(alignment: .leading, spacing: 2) {
-                Text(modelsFrom(view, presentation))
-                if view?.mode == .device {
+                Text(presentation.modelsFrom)
+                if presentation.choosesPool {
                   Button("Choose pool in browser") {
                     Task { await model.perform(.signIn(origin: view?.origin ?? model.server)) }
                   }
@@ -124,12 +124,6 @@ struct ConnectionPage: View {
       .padding(.horizontal, 8)
       .padding(.bottom, 12)
     }
-  }
-
-  private func modelsFrom(_ view: ConnectionView?, _ presentation: Presentation) -> String {
-    if presentation.connected && !presentation.modelAccess { return "Not included in this connection" }
-    if let pool = view?.display?.pool.name.nonEmpty { return pool }
-    return view?.mode == .direct ? "Your direct key" : "Reconnect to load pool details"
   }
 }
 

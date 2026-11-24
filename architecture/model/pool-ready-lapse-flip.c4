@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "/ready carries the runtime's last policy-lease or node-audit lapse (the step that was slow and its duration) and its last readiness flip (the state it moved to, a closed reason and how long the state before lasted), with two counters since the supervisor started. Each record is closed vocabulary and integers, holds only the last of each, and appears once there has been one, so older readers and images agree. One line per lapse and per flip also goes to the container's error output."
+    }
+  }
+}

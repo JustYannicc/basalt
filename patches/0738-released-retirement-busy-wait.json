@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-released-retirement-busy-wait",
+  "file": "0738-released-retirement-busy-wait.patch",
+  "content_sha256": "8123c1da76d35a912b284c5985f15170e22fd55d15889bb53236f775281475b5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -46,6 +46,7 @@ test("an applied plan with cyclic props summarises instead of throwing", () => {
       type: "Cloudflare.Worker",
       action: "update",
       changedProps: ["bindings", "compatibility"],
+      waitsOn: {},
       bindings: [{ sid: "POOL", action: "update" }],
     },
   ]);

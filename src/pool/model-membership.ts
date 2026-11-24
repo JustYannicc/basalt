@@ -30,6 +30,8 @@ export async function modelMembership(
   streams: NativeStreams,
   native?: ModelIdentity,
   recoverAdmission?: (signal: AbortSignal) => Promise<boolean>,
+  /** The model call's request id, so a deliberate end of its lease is remembered. */
+  call?: string,
 ): Promise<{
   request: Request;
   identity?: RefusalIdentity;
@@ -54,7 +56,7 @@ export async function modelMembership(
     ...((native?.keyId ?? scope?.keyId) ? { keyId: native?.keyId ?? scope?.keyId } : {}),
   };
   // Register before authority and signing so a concurrent veto cannot miss this admission.
-  const lease = streams.acquire(crypto.randomUUID(), pool, cleaned.signal);
+  const lease = streams.acquire(crypto.randomUUID(), pool, cleaned.signal, call);
   try {
     let policy;
     try {

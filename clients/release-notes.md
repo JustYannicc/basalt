@@ -1,5 +1,15 @@
 The Signalbox apps connect your Mac, PC or phone to your Signalbox models and tools. Sign in with your Signalbox account at app.signalbox.run.
 
+## What's new in {version}
+
+- **Waking from sleep no longer leaves you stuck.** If your computer or phone went to sleep while Signalbox was renewing its sign-in, the connection now picks up again by itself. When the renewal can't be completed anymore, Signalbox asks you to sign in again, instead of telling your agents to retry shortly over and over.
+- **Claude Code keeps going when a request is cut off.** If the connection drops after Claude Code sends a request but before the answer starts, Claude Code is told to try again rather than ending its turn.
+- **Tools-only devices show no pool.** A device you connected for tools only no longer shows a pool or offers one to choose. On Mac, Windows and Linux, models read **Not included in this connection**.
+- **A connection log for problem reports.** The Mac, Windows and Linux apps keep one; see **If the connection drops** below.
+- **Other apps on your computer can get their own key.** `signalbox-client agent add <id> models tools` gives an app such as a dictation or writing app its own local key, and prints it once with the addresses to put in that app's settings. If the command line has no profile of its own, it now uses the desktop app's connection, so the new key works in the running app at once.
+
+Signalbox 0.2.1 or later updates itself to this version: on a Mac automatically, on an Android phone after you tap **Install** in the app. Otherwise, download the file for your system below.
+
 These builds aren't signed by Apple, Microsoft or Google yet. Each system shows a warning the first time you open one; the steps below get you past it.
 
 ## Mac
@@ -72,10 +82,6 @@ The Mac, Windows and Linux apps keep a private log of connection warnings, `conn
 - Linux: `~/.config/Signalbox Client/connection/`
 
 They hold no sign-in tokens, keys or request contents, and together they stay under about 1 MB.
-
-## Known issue in this release
-
-One acceptance search exceeded 45 seconds because the server MCP session waited 54.2 seconds. The Android connection recovered and remained usable. A separate MCP latency fix owns this server issue.
 
 ## Check a download
 
