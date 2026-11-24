@@ -27,7 +27,8 @@ test("logical database persists across runtime-role rotation and excludes unrela
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
   try {
-    // The budget fixture creates this role too and keeps it; this proof must not depend on file order.
+    // Other contract files create this role too and keep it (history-fixture, through
+    // capture-schema-compat); this proof must not depend on file order.
     const owner = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = 'basalt_pool_owner'");
     if (!owner.rowCount) await admin.query("CREATE ROLE basalt_pool_owner NOLOGIN");
     const migrationUrl = await managedMigrationUrl(admin, adminUrl!);

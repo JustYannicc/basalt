@@ -89,7 +89,8 @@ if (process.env.GITHUB_OUTPUT)
       "matrices=" +
       JSON.stringify(matrices) +
       "\n" +
-      // The fast job's e2e configs whose specs the change reaches; the step runs when any is.
+      // The fast e2e configs this change reaches, for the run's record; fast's own lane step
+      // computes the same list, so fast need not wait for select.
       "fast_configs=" +
       JSON.stringify(configs) +
       "\n",
