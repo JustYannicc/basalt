@@ -164,10 +164,13 @@ export class SlotRefused extends Error {
 export class HealthLeaseElapsed extends SlotRefused {
   readonly roundTripMs: number;
   readonly leaseMs: number;
-  constructor(roundTripMs: number, leaseMs: number) {
+  /** The lease the caller counted from its send, which decided the refusal. */
+  readonly countedMs: number;
+  constructor(roundTripMs: number, leaseMs: number, countedMs = leaseMs) {
     super("unhealthy");
     this.roundTripMs = roundTripMs;
     this.leaseMs = leaseMs;
+    this.countedMs = countedMs;
   }
 }
 /**
