@@ -50,6 +50,7 @@ import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
 import { RuntimeActivity, slotKey, stillFor } from "./activity.ts";
+import { shape } from "../error-shape.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
@@ -101,6 +102,7 @@ export class RuntimeEndpoint {
   private startupStop: RuntimeStartupStop;
   private modelLifetimes: RuntimeModelLifetimes;
   private leaseProofs = new Map<string, number>();
+  private settleFailures = new Map<string, number>();
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -209,6 +211,14 @@ export class RuntimeEndpoint {
   /** How this object's container last ended, once it has; a boot found gone ends here. */
   private lastEnd() {
     return lastContainerEnd(this.ctx);
+  }
+  private routed(target: SlotTarget) {
+    try {
+      this.bound(target);
+      return true;
+    } catch {
+      return false;
+    }
   }
   private bound(target: SlotTarget) {
     const applicationId =
@@ -609,12 +619,31 @@ export class RuntimeEndpoint {
       connections: connections ?? "unknown",
     });
   }
+  /**
+   * In the background: the read may take longer than its caller waits, and the next count read sees
+   * what it ended. A settle that fails says so, at most once per proof interval per boot, since a
+   * row that keeps failing fails on every read.
+   */
+  private settleInBackground(identity: SlotIdentity) {
+    this.ctx.waitUntil(
+      this.settleLeases(identity).catch(async (error: unknown) => {
+        const boot = `${identity.slotId}:${identity.bootId}`;
+        const now = Date.now();
+        if (now - (this.settleFailures.get(boot) ?? -Infinity) < leaseProofEveryMs) return;
+        this.settleFailures.set(boot, now);
+        console.warn("POOL_RUNTIME_LEASES_SETTLE_FAILED", {
+          key: await slotKey(identity.slotId).catch(() => null),
+          ordinal: identity.homePeerOrdinal ?? null,
+          reason: error instanceof SlotRefused ? error.reason : null,
+          ...shape(error),
+        });
+      }),
+    );
+  }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {
     this.bound(identity);
-    // In the background: the read may take longer than the fleet waits for this count, and the next
-    // count read sees what it ended.
-    this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
+    this.settleInBackground(identity);
     const row = await this.activity.inspect(identity);
     return row
       ? { active: row.active, known: row.known, ...stillFor(row) }
@@ -627,9 +656,11 @@ export class RuntimeEndpoint {
       "drain_queue",
       () =>
         this.serialize(async () => {
+          // Before the health read, so a drain whose health read fails still ends the leases the
+          // container shows are over. That read refuses a misrouted drain, which settles nothing.
+          if (this.routed(identity)) this.settleInBackground(identity);
           await trace.run("drain_health", () => this.health(identity, signal), fields);
           signal.throwIfAborted();
-          this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
           const state = await trace.run(
             "drain_activity",
             () => this.activity.drain(identity),
