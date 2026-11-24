@@ -30,10 +30,14 @@ export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
 }
 
 /**
- * Whether the root container and every runtime the slot selection names (active, candidate,
- * draining) run one image input: any of them can take a sign-in's management calls.
+ * Whether every runtime that can take a sign-in's management calls runs one image input: the root
+ * container, the bound blue and green cell applications, and every runtime the slot selection names
+ * (active, candidate, draining). Unbound applications are absent and don't count.
  */
-export function servesOneImage(rootImage: string, selection: unknown) {
+export function servesOneImage(images: readonly (string | undefined)[], selection: unknown) {
+  const bound = images.filter((image): image is string => Boolean(image));
+  const root = bound[0];
+  if (root === undefined || bound.some((image) => image !== root)) return false;
   if (selection === undefined) return true;
   let decoded: SlotSelection;
   try {
@@ -42,6 +46,6 @@ export function servesOneImage(rootImage: string, selection: unknown) {
     return false;
   }
   return [decoded.active, decoded.candidate, decoded.draining].every(
-    (record) => record === undefined || record.target.imageInput === rootImage,
+    (record) => record === undefined || record.target.imageInput === root,
   );
 }

@@ -1,0 +1,290 @@
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -97,6 +97,7 @@ import {
+   clientMetadataDocumentPath,
+   hostedWebhookCallback,
+   catalogLive,
++  CatalogAppFeed,
+   hostedMiddlewareLive,
+   mcpProtectedResource,
+   mcpAuthorizationServer,
+@@ -603,6 +604,8 @@ export default Api.make(
+           catalogFeedUrl,
+         ),
+       ),
++      // Each release sweeps this feed's installed copies, so Settings says those take its updates.
++      HttpRouter.provideRequest(Layer.succeed(CatalogAppFeed, catalogFeedUrl)),
+       Layer.provide(schedules.layer),
+       Layer.provide(billing),
+       Layer.provide(removals),
+diff --git a/apps/hosted/server/src/contracts/apps.ts b/apps/hosted/server/src/contracts/apps.ts
+--- a/apps/hosted/server/src/contracts/apps.ts
++++ b/apps/hosted/server/src/contracts/apps.ts
+@@ -101,6 +101,9 @@ export const CatalogAppUpdate = /* @__PURE__ */ (() =>
+     ),
+     touched: Schema.Boolean,
+   }))();
++/** Whether this host's releases update the app from the catalog, and the update held back. */
++export const CatalogAppStatus = /* @__PURE__ */ (() =>
++  Schema.Struct({ catalog: Schema.Boolean, update: Schema.NullOr(CatalogAppUpdate) }))();
+ /** No catalog update is offered, the workspace has changes, or the app changed meanwhile. */
+ export const CatalogUpdateUnavailable = /* @__PURE__ */ (() =>
+   ApiError.define({
+@@ -250,13 +253,13 @@ export const HostedApps = /* @__PURE__ */ (() =>
+     .add(
+       HttpApiEndpoint.get("catalogUpdate", `${prefix}/:app/catalog-update`, {
+         params: app,
+-        success: Schema.NullOr(CatalogAppUpdate),
++        success: CatalogAppStatus,
+         error: [StorageError, AppNotFound, OrganizationForbidden],
+       })
+         .annotate(RequiredAction, "read")
+         .annotate(
+           OpenApi.Description,
+-          "A newer catalog source held back for this app, or null. Catalog apps update by themselves unless someone changed them or the update would leave linked accounts or requirements unusable: reconnect counts the linked accounts that stop working, reasons says why, and touched means applying it replaces the app's current version. apps.applyCatalogUpdate applies it.",
++          "Whether this app takes the catalog's updates, and a newer catalog source held back for it. catalog is true for a copy of a catalog app that this deployment's releases update. Those update by themselves unless someone changed them or the update would leave linked accounts or requirements unusable; then update holds the offer, which only people who manage the app see, and is null otherwise: reconnect counts the linked accounts that stop working, reasons says why, and touched means applying it replaces the app's current version. apps.applyCatalogUpdate applies it.",
+         ),
+     )
+     .add(
+diff --git a/apps/hosted/server/src/contracts/catalog-app-updates.ts b/apps/hosted/server/src/contracts/catalog-app-updates.ts
+--- a/apps/hosted/server/src/contracts/catalog-app-updates.ts
++++ b/apps/hosted/server/src/contracts/catalog-app-updates.ts
+@@ -5,3 +5,10 @@ export const catalogAppJobPrefix = "basalt-catalog-apps:";
+ export const CatalogAppSweep = Context.Reference<boolean>("hosted/CatalogAppSweep", {
+   defaultValue: () => false,
+ });
++/**
++ * The feed whose installed copies this host's release sweep updates. A host that runs no sweep
++ * leaves it unset, so none of its apps is described as taking catalog updates.
++ */
++export const CatalogAppFeed = Context.Reference<string | undefined>("hosted/CatalogAppFeed", {
++  defaultValue: () => undefined,
++});
+diff --git a/apps/hosted/server/src/implementation/apps.ts b/apps/hosted/server/src/implementation/apps.ts
+--- a/apps/hosted/server/src/implementation/apps.ts
++++ b/apps/hosted/server/src/implementation/apps.ts
+@@ -8,7 +8,7 @@ import {
+ } from "./service-install-records.ts";
+ import { unknownEntryRecovery } from "@executor-js/catalog/contracts";
+ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/source-display";
+-import { policyDatabase, requireAppAccess } from "./resource-policy.ts";
++import { policyDatabase, requireAppAccess, requireCurrentAppAccess } from "./resource-policy.ts";
+ /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
+ import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
+ import { appUiIndicator } from "./app-ui.ts";
+@@ -29,7 +29,8 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { McpAuthentication } from "../contracts/mcp.ts";
+ import { recordUsage } from "../contracts/product-analytics.ts";
+ import { appManagerOwner, currentOwner } from "./access.ts";
+-import { applyCatalogAppOffer, catalogAppOffer } from "./catalog-app-offers.ts";
++import { applyCatalogAppOffer, catalogAppStatus } from "./catalog-app-offers.ts";
++import { CatalogAppFeed } from "../contracts/catalog-app-updates.ts";
+ import { SqlClient } from "effect/sql";
+ 
+ /** Install a catalog entry as a new app without replacing an existing name. */
+@@ -168,13 +169,17 @@ export const appSource = (owner: OwnerId, app: AppId, version?: VersionId) =>
+       ...(version === undefined ? {} : { version }),
+     });
+   });
+-/** A catalog update held back for this app, which a manager may apply. */
+-export const catalogUpdate = (owner: OwnerId, app: AppId) =>
++/**
++ * Whether this host's releases update the app from the catalog, which anyone who reads the app
++ * sees, and the update held back for it, which a manager may apply.
++ */
++export const catalogUpdate = (owner: OwnerId, app: AppId, manager: boolean) =>
+   Effect.gen(function* () {
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const { organization } = yield* CurrentOrganization;
+     const current = yield* executor.apps.get({ owner, app });
+-    return yield* catalogAppOffer(organization, current).pipe(
++    const feed = yield* CatalogAppFeed;
++    return yield* catalogAppStatus(organization, current, { feed, manager }).pipe(
+       Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
+     );
+   });
+@@ -295,7 +300,11 @@ export const hostedAppHandlers = HttpApiBuilder.group(HostedApi, "apps", (handle
+         versionDisplayFile(params, query.path),
+       )
+       .handle("catalogUpdate", ({ params }) =>
+-        Effect.flatMap(appManagerOwner(params.app), (owner) => catalogUpdate(owner, params.app)),
++        Effect.flatMap(requireCurrentAppAccess(params.app, "read"), ({ access }) =>
++          Effect.flatMap(currentOwner, (owner) =>
++            catalogUpdate(owner, params.app, access.canManage),
++          ),
++        ),
+       )
+       .handle("applyCatalogUpdate", ({ params }) =>
+         Effect.andThen(appManagerOwner(params.app), applyCatalogUpdate(params.app)),
+diff --git a/apps/hosted/server/src/implementation/catalog-app-offers.ts b/apps/hosted/server/src/implementation/catalog-app-offers.ts
+--- a/apps/hosted/server/src/implementation/catalog-app-offers.ts
++++ b/apps/hosted/server/src/implementation/catalog-app-offers.ts
+@@ -20,6 +20,7 @@ import {
+   sourceDigest,
+   type Saved,
+ } from "./catalog-app-records.ts";
++import { catalogEntryId } from "./catalog-app-updates.ts";
+ 
+ /**
+  * Deploy an offered catalog source at a manager's request, under the same workspace guard and
+@@ -80,6 +81,23 @@ export const catalogAppOffer = (organization: OrganizationId, app: App) =>
+     return { reconnect: offer.reconnect, reasons: offer.reasons, touched: offer.touched };
+   }).pipe(Effect.mapError(() => new StorageError()));
+ 
++/**
++ * Whether the release sweep of `feed`, this host's, updates the app, by the sweep's own rule, and
++ * the update it holds back, which only a manager reads. A host without a sweep has no feed.
++ */
++export const catalogAppStatus = (
++  organization: OrganizationId,
++  app: App,
++  input: { readonly feed: string | undefined; readonly manager: boolean },
++) =>
++  Effect.gen(function* () {
++    const catalog =
++      input.feed !== undefined &&
++      catalogEntryId(app.copiedFrom?.reference, input.feed) !== undefined;
++    const update = catalog && input.manager ? yield* catalogAppOffer(organization, app) : null;
++    return { catalog, update };
++  });
++
+ /** Apply the held-back update: read the catalog's current source, deploy it and record it. */
+ export const applyCatalogAppOffer = (
+   executor: Executor,
+diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+--- a/apps/hosted/server/src/index.ts
++++ b/apps/hosted/server/src/index.ts
+@@ -7,6 +7,7 @@ export { HostedApi } from "./contracts/api.ts";
+ export { HostedCatalog } from "./contracts/catalog.ts";
+ export { hostedHandlers } from "./implementation/api.ts";
+ export { catalogLive, catalogReadLive } from "./implementation/catalog.ts";
++export { CatalogAppFeed } from "./contracts/catalog-app-updates.ts";
+ export {
+   hostedApiDocumentRoute,
+   lazyHostedApiDocument,
+diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+--- a/apps/hosted/web/src/contracts/apps.ts
++++ b/apps/hosted/web/src/contracts/apps.ts
+@@ -658,7 +658,7 @@ export const versionsAtom = (key: {
+   readonly organization: OrganizationReference;
+   readonly app: AppId;
+ }) => versionsQuery(new AppKey(key));
+-/** A newer catalog version waiting in Versions, or null. */
++/** Whether releases update the app from the catalog, and a newer version waiting in Versions. */
+ export const catalogUpdateAtom = (key: {
+   readonly organization: OrganizationReference;
+   readonly app: AppId;
+diff --git a/apps/hosted/web/src/contracts/catalog-copy.ts b/apps/hosted/web/src/contracts/catalog-copy.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/contracts/catalog-copy.ts
+@@ -0,0 +1,9 @@
++import { independentCopyNote } from "@executor-js/ui/contracts/app-copy";
++
++/** What Settings says about a copy of a catalog app that each release updates. */
++export const catalogCopyNote =
++  "This app takes the catalog's updates at each release. Updates that need someone to step in, such as reconnecting accounts, wait in Versions.";
++
++/** Settings' note on how an installed copy changes, from what the server says about it. */
++export const copiedFromNote = (status: { readonly catalog: boolean }) =>
++  status.catalog ? catalogCopyNote : independentCopyNote;
+diff --git a/apps/hosted/web/src/implementation/pages/app-detail.tsx b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-detail.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-detail.tsx
+@@ -79,6 +79,7 @@ import {
+   VaultDevicesSection,
+ } from "./obsidian-devices.tsx";
+ import { AppSource, AppVersions } from "./app-source.tsx";
++import { CopiedFromNote } from "./copied-from-note.tsx";
+ import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+ import { appDisplayName } from "@executor-js/ui/contracts/product-brand";
+ import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+@@ -387,6 +388,7 @@ export function AppDetailPage({
+               return (
+                 <AppSettings
+                   app={current}
++                  copyNote={<CopiedFromNote app={current} />}
+                   copyAction={
+                     canManage ? (
+                       <CopyApp
+diff --git a/apps/hosted/web/src/implementation/pages/app-source.tsx b/apps/hosted/web/src/implementation/pages/app-source.tsx
+--- a/apps/hosted/web/src/implementation/pages/app-source.tsx
++++ b/apps/hosted/web/src/implementation/pages/app-source.tsx
+@@ -36,7 +36,7 @@ export function AppVersions({ app }: { readonly app: App }) {
+   const { organization } = useOrganizationRoute();
+   const [selected, setSelected] = useState<VersionId>();
+   const update = useAtomValue(catalogUpdateAtom({ organization, app: app.id }));
+-  const waiting = AsyncResult.isSuccess(update) ? update.value : null;
++  const waiting = AsyncResult.isSuccess(update) ? update.value.update : null;
+   const version = selected ?? app.activeVersion;
+   if (version === null)
+     return (
+diff --git a/apps/hosted/web/src/implementation/pages/copied-from-note.tsx b/apps/hosted/web/src/implementation/pages/copied-from-note.tsx
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/web/src/implementation/pages/copied-from-note.tsx
+@@ -0,0 +1,16 @@
++import { useAtomValue } from "@effect/atom-react";
++import type { App } from "@executor-js/sdk";
++import { AsyncResult } from "effect/reactivity";
++import { catalogUpdateAtom } from "../../contracts/apps.ts";
++import { copiedFromNote } from "../../contracts/catalog-copy.ts";
++import { useOrganizationRoute } from "../components/organization.tsx";
++
++/**
++ * How an installed copy changes, once the server says whether releases update it from the catalog.
++ * Until then it says nothing, rather than calling a catalog copy independent.
++ */
++export function CopiedFromNote({ app }: { readonly app: App }) {
++  const { organization } = useOrganizationRoute();
++  const status = useAtomValue(catalogUpdateAtom({ organization, app: app.id }));
++  return AsyncResult.isSuccess(status) ? copiedFromNote(status.value) : null;
++}
+diff --git a/packages/ui/src/contracts/app-copy.ts b/packages/ui/src/contracts/app-copy.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/contracts/app-copy.ts
+@@ -0,0 +1,3 @@
++/** What Settings says about an installed copy when its host names no way it updates. */
++export const independentCopyNote =
++  "This app is an independent copy. Changes to the original do not update it.";
+diff --git a/packages/ui/src/implementation/dashboard/app-settings.tsx b/packages/ui/src/implementation/dashboard/app-settings.tsx
+--- a/packages/ui/src/implementation/dashboard/app-settings.tsx
++++ b/packages/ui/src/implementation/dashboard/app-settings.tsx
+@@ -2,6 +2,7 @@ import type { App } from "@executor-js/sdk";
+ import type { ReactNode } from "react";
+ import { useProductBrand } from "../hooks/product-brand.ts";
+ import { appDisplayName } from "../../contracts/product-brand.ts";
++import { independentCopyNote } from "../../contracts/app-copy.ts";
+ 
+ /** App metadata and removal live together; products supply only the actions they authorize. */
+ export function AppSettings({
+@@ -10,6 +11,7 @@ export function AppSettings({
+   deleteAction,
+   copyAction,
+   notice,
++  copyNote = independentCopyNote,
+   children,
+ }: {
+   readonly app: App;
+@@ -17,6 +19,8 @@ export function AppSettings({
+   readonly deleteAction?: ReactNode;
+   readonly copyAction?: ReactNode;
+   readonly notice?: ReactNode;
++  /** How a copied app changes after it was copied, when its host updates it. */
++  readonly copyNote?: ReactNode;
+   readonly children?: ReactNode;
+ }) {
+   const brand = useProductBrand();
+@@ -55,9 +59,7 @@ export function AppSettings({
+                 </>
+               )}
+             </p>
+-            <p className="mt-3 text-xs text-muted-foreground">
+-              This app is an independent copy. Changes to the original do not update it.
+-            </p>
++            <p className="mt-3 text-xs text-muted-foreground">{copyNote}</p>
+           </section>
+         )}
+         {copyAction && (

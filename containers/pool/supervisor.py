@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import signal
@@ -24,6 +25,7 @@ from .child_signals import (
 from .child_signals import (
     privacy_audit_line as privacy_audit_line,
 )
+from .output import OUTPUT, emit
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
 from .policy_monitor import PolicyHealthMonitor
 from .pool_contract import (
@@ -42,8 +44,10 @@ from .pool_contract import (
     home_database_distance,
     management_ready,
     require_tmpfs,
+    resume_layer_healthy,
 )
 from .readiness import Readiness, start_ready_server
+from .resume_layer import RESUME_BINARY, ResumeLayer
 from .service_health import ServiceHealth
 from .recovery import HomeExited, HomeRecovery
 from .recovery_deadline import RecoveryCancelled, current_deadline, operation_timeout
@@ -61,6 +65,20 @@ HOME_BINARY = "/usr/local/bin/cliproxy-home"
 NODE_BINARY = "/usr/local/bin/cliproxy-node"
 BOOTSTRAP_MARKER = "database config is empty; run with -import first"
 STARTUP_TIMEOUT_SECONDS = 180
+# Whatever force-stops the container must wait longer than this grace plus the 1 s kill wait.
+# Home drains claimed credential refreshes on SIGTERM for up to 45 s (carry 0695) after a 5 s
+# HTTP shutdown; killing it sooner can lose a refresh token the provider has already rotated.
+CHILD_STOP_GRACE_SECONDS = 60
+# Processing one child line takes microseconds; this long inside one means the reader is stuck.
+READER_STALL_SECONDS = 10
+
+
+class ContainerEnding(StartupError):
+    """A selected runtime that cannot serve ends its container so the controller restarts it."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class Child:
@@ -80,6 +98,7 @@ class Child:
         self._fuse_parser = NativePolicyFuseParser()
         self._policy_probe_parser = NativePolicyProbeParser()
         self.config_empty = threading.Event()
+        self._processing_since: float | None = None
         self.process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -100,28 +119,125 @@ class Child:
             return
         oversized = False
         while line := stream.readline(MAX_INPUT_CHARS):
-            if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
-                oversized = not line.endswith("\n")
-                continue
-            if self.diagnostics is not None:
-                self.diagnostics.append(line)
-            if BOOTSTRAP_MARKER in line:
-                self.config_empty.set()
-            fused = self._fuse_parser.feed(self.name, line)
-            if fused is not None:
-                print(fused, flush=True)
-                if self._on_policy_fused is not None:
-                    self._on_policy_fused()
-                continue
-            probe_nonce = self._policy_probe_parser.feed(self.name, line)
-            if probe_nonce is not None:
-                if self._on_policy_probe is not None:
-                    self._on_policy_probe(probe_nonce)
-                continue
-            # Provider errors can contain full responses. Do not forward them.
-            safe = safe_child_output_line(self.name, line)
-            if safe is not None:
-                print(safe, flush=True)
+            self._processing_since = time.monotonic()
+            try:
+                oversized = self._handle_line(line, oversized)
+            finally:
+                self._processing_since = None
+
+    def _handle_line(self, line: str, oversized: bool) -> bool:
+        """Project one physical line; returns whether the next read continues an oversized line."""
+        if oversized or (len(line) >= MAX_INPUT_CHARS and not line.endswith("\n")):
+            return not line.endswith("\n")
+        if self.diagnostics is not None:
+            self.diagnostics.append(line)
+        if BOOTSTRAP_MARKER in line:
+            self.config_empty.set()
+        fused = self._fuse_parser.feed(self.name, line)
+        if fused is not None:
+            emit(fused)
+            if self._on_policy_fused is not None:
+                self._on_policy_fused()
+            return False
+        probe_nonce = self._policy_probe_parser.feed(self.name, line)
+        if probe_nonce is not None:
+            if self._on_policy_probe is not None:
+                self._on_policy_probe(probe_nonce)
+            return False
+        # Provider errors can contain full responses. Do not forward them.
+        safe = safe_child_output_line(self.name, line)
+        if safe is not None:
+            emit(safe)
+        return False
+
+    def discard_output(self) -> None:
+        """Drain a child whose reader died or stuck, so its writes never block while it stops."""
+        stream = getattr(self.process, "stdout", None)
+        if stream is None:
+            return
+        try:
+            fd = stream.fileno()
+        except (OSError, ValueError):
+            return
+
+        def drain() -> None:
+            try:
+                while os.read(fd, 1 << 16):
+                    pass
+            except OSError:
+                pass
+
+        threading.Thread(target=drain, daemon=True).start()
+
+    def reader_failure(self, now: float) -> str | None:
+        """Why this child's output is no longer drained, if it is not."""
+        if self.process.poll() is not None:
+            return None
+        if not self._reader.is_alive():
+            # A pipe EOF can arrive just before the exit is reapable; then the exit path reports it.
+            try:
+                self.process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                return "reader_dead"
+            return None
+        started = self._processing_since
+        if started is not None and now - started > READER_STALL_SECONDS:
+            return "reader_blocked"
+        return None
+
+    def status(self) -> dict[str, object]:
+        exit_code = self.process.poll()
+        return {
+            "name": self.name,
+            "state": "running" if exit_code is None else "killed" if exit_code < 0 else "exited",
+            **({} if exit_code is None else {"exit_code": exit_code}),
+        }
+
+
+SERVING_FAILURES = ("child_exit", "policy_fused", "monitor_dead", "reader_dead", "reader_blocked")
+
+
+def serving_failure(
+    children: list[Child],
+    monitor: threading.Thread | None,
+    readiness: Readiness,
+    now: float,
+) -> str | None:
+    """A child that is alive but can never serve again, in a fixed order of precedence."""
+    # Latched: the main loop polls every 2 s and a reloaded plugin instance clears the level.
+    if readiness.policy_fused() or readiness.fuse_seen():
+        return "policy_fused"
+    if monitor is not None and not monitor.is_alive():
+        return "monitor_dead"
+    for child in children:
+        reason = child.reader_failure(now)
+        if reason is not None:
+            return reason
+    return None
+
+
+def report_stop(reason: str) -> None:
+    if reason in SERVING_FAILURES:
+        emit("POOL_SUPERVISOR_STOP " + json.dumps({"reason": reason}, separators=(",", ":")), err=True)
+
+
+def diagnostics(
+    readiness: Readiness,
+    children: list[Child],
+    stop_state: dict[str, str],
+    after: int,
+) -> dict[str, object]:
+    """Closed state for one read before a stop destroys it; every line was already forwardable."""
+    home = next((child for child in children if child.name == "home"), None)
+    tail = home.diagnostics.snapshot() if home is not None and home.diagnostics is not None else []
+    return {
+        "boot_id": readiness.boot_id,
+        "children": [child.status() for child in children],
+        **({"stop_reason": stop_state["reason"]} if "reason" in stop_state else {}),
+        "crash_tail": tail,
+        "signals": [{"seq": seq, "line": line} for seq, line in OUTPUT.lines_after(after)],
+        "dropped": OUTPUT.dropped_total(),
+    }
 
 
 def report_exit(child: Child, exit_code: int, category: FailureCategory) -> None:
@@ -141,9 +257,13 @@ def wait_for_home(
     child: Child,
     management_key: str,
     stop: threading.Event,
+    failure: Callable[[], str | None] | None = None,
 ) -> str:
     deadline = time.monotonic() + STARTUP_TIMEOUT_SECONDS
     while not stop.is_set() and time.monotonic() < deadline:
+        reason = failure() if failure is not None else None
+        if reason is not None:
+            raise ContainerEnding(reason)
         exit_code = child.process.poll()
         if exit_code is not None:
             try:
@@ -211,7 +331,9 @@ def terminate_children(children: list[Child]) -> None:
     for child in children:
         if child.process.poll() is None:
             child.process.terminate()
-    grace_until = time.monotonic() + remaining(14 if deadline else 15)
+    grace_until = time.monotonic() + remaining(
+        CHILD_STOP_GRACE_SECONDS - 1 if deadline else CHILD_STOP_GRACE_SECONDS
+    )
     for child in children:
         try:
             child.process.wait(
@@ -224,6 +346,8 @@ def terminate_children(children: list[Child]) -> None:
     # Kill every remaining owned child before waiting for any one of them.
     for child in children:
         if child.process.poll() is None:
+            # Home killed here may lose a refresh token its provider already rotated.
+            emit("POOL_CHILD_KILLED " + json.dumps({"child": child.name}, separators=(",", ":")), err=True)
             child.process.kill()
     for child in children:
         child.process.wait(timeout=remaining(1) if deadline else 1)
@@ -237,10 +361,12 @@ def main(stop: threading.Event | None = None) -> int:
     policy_monitor_thread = None
     home_peers = None
     route_peers = None
+    resume: ResumeLayer | None = None
     stop = threading.Event() if stop is None else stop
     original_signals: dict[int, Any] = {}
     category = FailureCategory.CONFIGURATION
     recovery_cleanup_done = False
+    stop_state: dict[str, str] = {}
     try:
         management_key = env_required("POOL_MANAGEMENT_KEY")
         database_url = env_required("POOL_DATABASE_URL")
@@ -253,6 +379,10 @@ def main(stop: threading.Event | None = None) -> int:
             management_key,
             launch_generation=os.environ.get("POOL_LAUNCH_GENERATION"),
             launch_token=os.environ.get("POOL_LAUNCH_TOKEN"),
+        )
+        selected = bool(readiness.launch_headers())
+        readiness.set_diagnostics(
+            lambda after: diagnostics(readiness, children, stop_state, after)
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
@@ -284,6 +414,22 @@ def main(stop: threading.Event | None = None) -> int:
         except OSError:
             route_peers = None
 
+        def startup_failure() -> str | None:
+            if not selected:
+                return None
+            reason = serving_failure(children, policy_monitor_thread, readiness, time.monotonic())
+            # A stop in progress also ends the monitor; that is a stop, not a failure.
+            return None if stop.is_set() else reason
+
+        def boot_home(child: Child) -> str:
+            try:
+                return wait_for_home(child, management_key, stop, startup_failure)
+            except HomeExited:
+                if selected:
+                    # The controller refuses a boot it did not start; a stopped container restarts.
+                    raise ContainerEnding("child_exit") from None
+                raise
+
         def launch_generation(recovering: bool = False) -> tuple[str, int]:
             """Reuse boot, child capture and health gates; import only on first boot."""
             nonlocal category
@@ -306,7 +452,7 @@ def main(stop: threading.Event | None = None) -> int:
                 )
                 children.append(home_child)
                 readiness.enable_policy_observations()
-                home_state = wait_for_home(home_child, management_key, stop)
+                home_state = boot_home(home_child)
             if home_state == "stop":
                 raise RecoveryCancelled()
             if home_state == "empty" and recovering:
@@ -335,7 +481,7 @@ def main(stop: threading.Event | None = None) -> int:
                     )
                     children[-1] = home_child
                     readiness.enable_policy_observations()
-                    home_state = wait_for_home(home_child, management_key, stop)
+                    home_state = boot_home(home_child)
                 if home_state == "stop":
                     raise RecoveryCancelled()
                 if home_state != "ready":
@@ -379,10 +525,16 @@ def main(stop: threading.Event | None = None) -> int:
                     if failed:
                         for child, exit_code in failed:
                             report_exit(child, exit_code, category)
+                        if selected:
+                            raise ContainerEnding("child_exit")
                         if len(failed) == 1 and failed[0][0].name == "home":
                             raise HomeExited(failed[0][1])
                         raise StartupError("Pool child exited before initial health")
                     operation_timeout(STARTUP_TIMEOUT_SECONDS)
+                    # Waiting out the startup timeout would only delay the same ending.
+                    reason = startup_failure()
+                    if reason is not None:
+                        raise ContainerEnding(reason)
                     if recovering and readiness.policy_fused():
                         raise StartupError("Policy fused during recovery")
                     audit_revision = readiness.service_audit_revision()
@@ -401,17 +553,45 @@ def main(stop: threading.Event | None = None) -> int:
             return node_id, successful_audit_revision
 
         node_id, audit_revision = launch_generation()
-        health = ServiceHealth(management_key, node_id)
+        health = ServiceHealth(
+            management_key,
+            node_id,
+            observe=readiness.note_refresh_in_flight,
+            on_audit=readiness.note_node_audit,
+        )
         recovery = HomeRecovery()
         category = FailureCategory.RUNTIME
+        def spawn_resume_layer() -> Child:
+            # An image without the layer never advertises resume; the controller keeps today's path.
+            if not os.access(RESUME_BINARY, os.X_OK):
+                raise FileNotFoundError(RESUME_BINARY)
+            return Child(
+                "resume",
+                [RESUME_BINARY],
+                child_environment("resume", management_key, node_boot_id=readiness.boot_id),
+                ROOT / "resume",
+            )
+
+        # Outside `children`: the layer's exit never ends the container or a Home generation.
+        resume = ResumeLayer(
+            spawn_resume_layer,
+            lambda child, exit_code: report_exit(child, exit_code, FailureCategory.RUNTIME),
+        )
         while not stop.wait(2):
             observed_at = time.monotonic()
+            running = resume.tick()
+            readiness.set_resume_available(
+                resume.observe_health(running and resume_layer_healthy())
+            )
             failed = [(child, child.process.poll()) for child in children]
             failed = [(child, code) for child, code in failed if code is not None]
             if failed:
                 readiness.set_ready(False)
                 for child, exit_code in failed:
                     report_exit(child, exit_code, category)
+                if selected:
+                    # A boot rotated in place is refused by the controller; a stopped one restarts.
+                    raise ContainerEnding("child_exit")
                 if len(failed) != 1 or failed[0][0].name != "home" or failed[0][1] != 1:
                     raise StartupError("Pool child exited unexpectedly")
 
@@ -432,14 +612,22 @@ def main(stop: threading.Event | None = None) -> int:
                                 readiness.begin_recovery()
                                 continue
                             episode.recovered()
-                            health = ServiceHealth(management_key, node_id)
+                            health = ServiceHealth(
+                                management_key,
+                                node_id,
+                                observe=readiness.note_refresh_in_flight,
+                                on_audit=readiness.note_node_audit,
+                            )
                             break
                     except BaseException:
                         # Retain the absolute episode deadline through terminal cleanup.
                         readiness.set_ready(False)
+                        readiness.set_resume_available(False)
                         stop.set()
                         try:
-                            terminate_children(children)
+                            # One stop wait for Home, the node and the resume layer.
+                            layer = [resume.child] if resume.child is not None else []
+                            terminate_children([*children, *layer])
                         finally:
                             recovery_cleanup_done = True
                             if policy_monitor_thread is not None:
@@ -458,6 +646,14 @@ def main(stop: threading.Event | None = None) -> int:
                                 ready_server.server_close()
                         raise
                 continue
+            if selected:
+                reason = serving_failure(
+                    children, policy_monitor_thread, readiness, observed_at
+                )
+                # A SIGTERM landing here also ends the monitor; that is a stop, not a failure.
+                if reason is not None and not stop.is_set():
+                    readiness.set_ready(False)
+                    raise ContainerEnding(reason)
             current_revision = readiness.service_audit_revision()
             if current_revision != audit_revision:
                 health.invalidate()
@@ -466,12 +662,26 @@ def main(stop: threading.Event | None = None) -> int:
         return 0
     except RecoveryCancelled:
         return 0
+    except ContainerEnding as ending:
+        if ending.reason in ("reader_dead", "reader_blocked"):
+            # Nothing reads that child's pipe any more. Drain it raw, or its log writes, and with them
+            # a refresh's write-back, block through the stop grace and the rotated token is lost.
+            now = time.monotonic()
+            for child in children:
+                if child.reader_failure(now) is not None:
+                    child.discard_output()
+        stop_state["reason"] = ending.reason
+        report_stop(ending.reason)
+        report_failure(category)
+        return 1
     except Exception:
         report_failure(category)
         return 1
     finally:
         if readiness is not None:
             readiness.set_ready(False)
+            # /ready keeps answering through the stop grace; a stopping layer is not resumable.
+            readiness.set_resume_available(False)
         stop.set()
         if home_peers is not None:
             home_peers.close()
@@ -479,11 +689,19 @@ def main(stop: threading.Event | None = None) -> int:
             route_peers.close()
         if not recovery_cleanup_done and policy_monitor_thread is not None:
             policy_monitor_thread.join(timeout=1)
-        if not recovery_cleanup_done and ready_server is not None:
-            ready_server.shutdown()
-            ready_server.server_close()
-        if not recovery_cleanup_done:
-            terminate_children(children)
+        try:
+            # One shared stop grace: the controller's supervisor stop bound covers a single wait.
+            # The legacy recovery cleanup already stopped all of them in its own single wait.
+            owned = [] if recovery_cleanup_done else list(children)
+            if not recovery_cleanup_done and resume is not None and resume.child is not None:
+                owned.append(resume.child)
+            if owned:
+                terminate_children(owned)
+        finally:
+            # Serve /diagnostics and the stop reason through Home's stop grace, then close.
+            if not recovery_cleanup_done and ready_server is not None:
+                ready_server.shutdown()
+                ready_server.server_close()
         (ROOT / "bootstrap.yaml").unlink(missing_ok=True)
         (ROOT / "cluster.yaml").unlink(missing_ok=True)
         for signum, handler in original_signals.items():
@@ -492,4 +710,13 @@ def main(stop: threading.Event | None = None) -> int:
 
 if __name__ == "__main__":
     install_error_handlers()
-    sys.exit(main())
+    code = 1
+    try:
+        code = main()
+    except BaseException as error:
+        sys.excepthook(type(error), error, error.__traceback__)
+    finally:
+        # A blocked container stdout must not hold the exit: write what fits, then leave without
+        # the interpreter's final flush, which would wait on that stdout.
+        OUTPUT.drain(2)
+        os._exit(code)

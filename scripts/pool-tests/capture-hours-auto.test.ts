@@ -1,0 +1,1494 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import pg from "pg";
+import {
+  captureHoursAutoKey,
+  captureHoursInspect,
+  captureHoursStuckPools,
+  captureHoursTick,
+  type CaptureHoursAutoState,
+} from "../../src/pool/model-history/capture-hours-auto.ts";
+import { countBlockStatement } from "../../src/pool/model-history/capture-hours-count.ts";
+import { recountBlocks } from "../../src/pool/model-history/capture-hours-plan.ts";
+import { captureHoursLockClass } from "../../src/pool/model-history/capture-hours-schema.ts";
+import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
+import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
+import {
+  at,
+  blockPositions,
+  captureFixture,
+  clockAt,
+  lookbackHours,
+  memoryStorage,
+} from "./capture-hours-fixture.ts";
+import { pool, seriesFixture } from "./series-fixture.ts";
+import { summaryPrices } from "./usage-summary-fixture.ts";
+
+const minute = 60_000;
+type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
+
+/** The pool's hours over the fixture's lookback, and how many of them have a settled count. */
+async function counted(f: Fixture, pool: string, hours = lookbackHours) {
+  const row = (
+    await f.db.query(
+      `SELECT count(*)::int AS hours, count(s.hour)::int AS settled
+      FROM generate_series(date_trunc('hour',now() - interval '2 hours','UTC') - $2 * interval '1 hour',
+        date_trunc('hour',now() - interval '2 hours','UTC') - interval '1 hour', interval '1 hour') h(at)
+      LEFT JOIN basalt_model_capture_hours s ON s.pool=$1 AND s.hour=h.at
+        AND s.checked_at >= s.hour + interval '2 hours'`,
+      [pool, hours],
+    )
+  ).rows[0]!;
+  return { hours: Number(row.hours), settled: Number(row.settled) };
+}
+
+/** The settle horizon, as the database computes it. */
+async function horizon(f: Fixture) {
+  const row = await f.db.query("SELECT date_trunc('hour',now() - interval '2 hours','UTC') AS at");
+  return (row.rows[0]!.at as Date).getTime();
+}
+const hour = 3_600_000;
+const block = 6 * hour;
+const key = (at: number) => new Date(at).toISOString().replace(".000Z", "Z");
+
+/**
+ * The test's clock, as production spends it: a count of a range of `slow`'s pool holding its hour
+ * (or any of its ranges, without one) costs `cost.ms`, never more than the limit it was given, past
+ * which Postgres cancels it; with `blocks`, only a range of more than one hour costs it. `fail`
+ * makes every count of its pool fail outright. `counts` records every count's range, and `limits`
+ * each count's start and the limit it ran under.
+ */
+function timed(
+  db: HistoryDatabase,
+  clock: { at: number },
+  slow?: { pool: string; hour?: string; cost: { ms: number }; blocks?: boolean },
+  /** A pool whose counts fail as Postgres fails one statement, or how every count fails. */
+  fail?: string | { pool?: string; code: string; severity?: string },
+  counts: { pool: string; from: number; to: number }[] = [],
+  limits: { pool: string; from: number; to: number; limit: number }[] = [],
+) {
+  let limit = Number.POSITIVE_INFINITY;
+  return {
+    query: async (text: string, values?: unknown[]) => {
+      if (text.startsWith("SELECT set_config('statement_timeout'"))
+        limit = Number.parseInt(String(values![0]));
+      // As Postgres fails a statement: with its SQLSTATE.
+      const failing =
+        typeof fail === "string" ? { pool: fail, code: "XX000", severity: "ERROR" } : fail;
+      if (
+        text === countBlockStatement &&
+        failing &&
+        (failing.pool === undefined || values![0] === failing.pool)
+      )
+        throw Object.assign(new Error("fixture failure"), {
+          code: failing.code,
+          ...(failing.severity ? { severity: failing.severity } : {}),
+        });
+      const from = text === countBlockStatement ? Date.parse(String(values![1])) : 0;
+      const to = text === countBlockStatement ? Date.parse(String(values![2])) : 0;
+      if (text === countBlockStatement) {
+        counts.push({ pool: String(values![0]), from, to });
+        limits.push({ pool: String(values![0]), from, to, limit });
+      }
+      if (
+        text === countBlockStatement &&
+        slow &&
+        values![0] === slow.pool &&
+        (slow.hour === undefined ||
+          (Date.parse(slow.hour) >= from && Date.parse(slow.hour) < to)) &&
+        (!slow.blocks || to - from > hour)
+      ) {
+        clock.at += Math.min(slow.cost.ms, limit);
+        if (limit < slow.cost.ms)
+          throw Object.assign(new Error("canceling statement due to statement timeout"), {
+            code: "57014",
+          });
+      }
+      return db.query(text, values);
+    },
+  } satisfies HistoryDatabase;
+}
+
+test("a pool is counted to its settle horizon by ticks alone, each session within its budget", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(20, minute));
+    await c.ready();
+    const storage = memoryStorage();
+    let clock = Date.parse("2026-02-01T00:00:00Z");
+    let ticks = 0;
+    let state: CaptureHoursAutoState = {};
+    // Thirteen or fourteen six-hour blocks, wherever the horizon falls in the six-hour grid: more
+    // than two ticks' budget. A multiple of six would make it twelve on the grid, which two take.
+    const hours = lookbackHours + 6;
+    for (; ticks < 100; ticks++) {
+      state = await captureHoursTick(storage, (work) => work(f.db), {
+        now: () => (clock += 1),
+        bounds: { sessionMs: 12, lookbackHours: hours },
+      });
+      for (const session of state.sessions ?? [])
+        assert.ok(session.ms <= 12 + 4, `a session took ${session.ms} ms of a 12 ms budget`);
+      if (state.lastStop === "complete") break;
+      clock += 5 * minute;
+    }
+    assert.ok(ticks > 2, `it took ${ticks} ticks`);
+    const done = await counted(f, c.poolId, hours);
+    assert.equal(done.hours, hours);
+    assert.deepEqual(done, { hours: done.hours, settled: done.hours }, "fully counted");
+    assert.equal(state.pendingHours, 0);
+    assert.equal(state.pendingBlocks, 0);
+    assert.equal(state.pools, 0);
+    assert.deepEqual([...(await c.coverage(at(0), at(24))).incomplete!], []);
+  });
+});
+
+test("the hourly ceiling holds over any sliding hour, across ticks", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const storage = memoryStorage();
+    const start = Date.parse("2026-02-01T00:00:00Z");
+    let clock = start;
+    const now = () => (clock += 1);
+    // Thirty days of blocks: more than one session's budget takes.
+    const bounds = { hourMs: 300, sessionMs: 200, lookbackHours: 30 * 24 };
+    const first = await captureHoursTick(storage, (work) => work(f.db), { now, bounds });
+    const spent = (state: CaptureHoursAutoState, from: number) =>
+      (state.sessions ?? []).filter((s) => s.at >= from).reduce((sum, s) => sum + s.ms, 0);
+    assert.equal(first.sessions?.length, 2);
+    assert.ok(spent(first, start) <= 300 + 3, `${spent(first, start)} ms in its first hour`);
+    clock = start + 59 * minute;
+    const second = await captureHoursTick(storage, (work) => work(f.db), { now, bounds });
+    assert.equal(second.lastStop, "ceiling", "59 minutes later the hour is still spent");
+    clock = start + 61 * minute;
+    const third = await captureHoursTick(storage, (work) => work(f.db), { now, bounds });
+    assert.notEqual(third.lastStop, "ceiling", "an hour later it runs again");
+  });
+});
+
+test("a code handover ends the tick at the next hour boundary, with every counted hour committed", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    // Hours committed: a COMMIT right after a count, never a read's.
+    let commits = 0,
+      counting = false;
+    const db: HistoryDatabase = {
+      query: async (text, values) => {
+        const result = await f.db.query(text, values);
+        if (text === "COMMIT" && counting) commits++;
+        counting = text === countBlockStatement;
+        return result;
+      },
+    };
+    // The three blocks before the settle horizon, as the database computes it: the newest one
+    // ends at the horizon, the two before it are whole.
+    const end = await horizon(f);
+    const newest: string[] = [];
+    for (let at = Math.floor((end - hour) / block) * block - 2 * block; at < end; at += hour)
+      newest.push(key(at));
+    const state = await captureHoursTick(memoryStorage(), (work) => work(db), {
+      stopped: () => commits >= 3,
+      bounds: { lookbackHours },
+    });
+    assert.equal(state.lastStop, "handover");
+    // The newest blocks come first, so the overview's usual windows are proven first.
+    assert.deepEqual(Object.keys(await c.stored()), newest);
+    // No transaction is left open behind it.
+    await f.db.query("BEGIN");
+    await f.db.query("ROLLBACK");
+  });
+});
+
+for (const position of blockPositions())
+  test(`a count past its own limit is slow: only that hour waits while its pool goes on, three in a row is stuck and loud once, and it is retried alone under longer limits after its waits (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.native(at(1, minute), true);
+      await c.ready();
+      // Newest first: the pool's first block holds the hour before the settle horizon. Its block
+      // runs out its limit and splits; then that hour, alone, runs out its own and is slow.
+      const slowHour = key((await horizon(f)) - hour);
+      const cost = { ms: 5_000 };
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const storage = memoryStorage();
+      // The slow pool's turn comes first, so the other pool counts the same hours after it stops.
+      await storage.put(captureHoursAutoKey, { nextPool: c.otherId });
+      const tick = () =>
+        captureHoursTick(
+          storage,
+          (work) => work(timed(f.db, clock, { pool: c.poolId, hour: slowHour, cost })),
+          { now: () => clock.at, bounds: { lookbackHours } },
+        );
+      const first = await tick();
+      const other = await counted(f, c.otherId);
+      assert.equal(other.settled, other.hours, "the other pool went on in the same tick");
+      const mine = await counted(f, c.poolId);
+      assert.equal(mine.settled, mine.hours - 1, "and so did the slow pool, all but its slow hour");
+      assert.equal(first.lastStop, "slow");
+      // Each slow count is one closed line: the pool by its place, the hour, the limit, the repeat.
+      const ordinal = [c.poolId, c.otherId].sort().indexOf(c.poolId) + 1;
+      const slowLines = () =>
+        logged.mock.calls
+          .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_SLOW")
+          .map((call) => call.arguments[1]);
+      const lines = slowLines() as { elapsedMs: number }[];
+      assert.equal(lines.length, 1);
+      assert.ok(Number.isInteger(lines[0]!.elapsedMs) && lines[0]!.elapsedMs >= 0, "as measured");
+      const block = new Date(Math.floor(Date.parse(slowHour) / (6 * hour)) * 6 * hour)
+        .toISOString()
+        .replace(".000Z", "Z");
+      assert.deepEqual(
+        { ...lines[0]!, elapsedMs: 0 },
+        { pool: ordinal, hour: slowHour, block, limit: "count", elapsedMs: 0, repeat: 1 },
+      );
+      assert.deepEqual(
+        {
+          ...captureHoursInspect(first).byPool.find((entry) => entry.slow.length)!.lastSlow!,
+          at: null,
+          elapsedMs: 0,
+        },
+        { at: null, hour: slowHour, block, limit: "count", elapsedMs: 0, repeat: 1 },
+        "inspect keeps the same last slow stop",
+      );
+      // Inspect names the pool by the same place, with its own pending and its waiting hour.
+      const places = captureHoursInspect(first).byPool;
+      assert.deepEqual(
+        places.map((entry) => [entry.ordinal, entry.pendingHours, entry.slow.map((w) => w.hour)]),
+        [c.poolId, c.otherId]
+          .sort()
+          .map((pool, n) => [
+            n + 1,
+            pool === c.poolId ? 1 : 0,
+            pool === c.poolId ? [slowHour] : [],
+          ]),
+      );
+      assert.deepEqual(
+        [first.lastHour, first.lastHourPool],
+        [slowHour, c.poolId],
+        "another pool counting the same hour keeps the slow pool's stop hour",
+      );
+      assert.equal(first.pausedUntil, undefined, "a slow count never pauses the tick");
+      assert.deepEqual(first.slow, [
+        {
+          pool: c.poolId,
+          hour: slowHour,
+          count: 1,
+          until: new Date(clock.at + 10 * minute).toISOString(),
+        },
+      ]);
+      clock.at += 5 * minute;
+      const waiting = await tick();
+      assert.equal(waiting.lastStop, "waiting");
+      assert.equal(waiting.slow?.[0]?.count, 1, "not tried while it waits");
+      clock.at += 5 * minute + 1_000;
+      assert.equal((await tick()).slow?.[0]?.count, 2);
+      clock.at += 10 * minute + 1_000;
+      const stuck = await tick();
+      assert.deepEqual(captureHoursStuckPools(stuck), [c.poolId]);
+      assert.deepEqual(stuck.stuck, [
+        { pool: c.poolId, reason: "slow", hour: slowHour, retryAt: stuck.slow![0]!.until },
+      ]);
+      const inspected = captureHoursInspect(stuck);
+      assert.deepEqual([inspected.lastHour, inspected.lastHourReadMs], [slowHour, 1_000]);
+      clock.at += 10 * minute + 1_000;
+      assert.equal((await tick()).slow?.[0]?.count, 4, "retried after its wait");
+      const loud = logged.mock.calls.filter(
+        (call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK",
+      );
+      assert.deepEqual(
+        loud.map((call) => call.arguments[1]),
+        [{ reason: "slow", hour: slowHour }],
+        "loud once, naming the hour",
+      );
+      // Once the hour fits, the tick after the wait counts it and clears the pool.
+      cost.ms = 0;
+      clock.at += 10 * minute + 1_000;
+      const done = await tick();
+      assert.deepEqual(captureHoursStuckPools(done), []);
+      assert.deepEqual(done.slow, []);
+      const pool = await counted(f, c.poolId);
+      assert.equal(pool.settled, pool.hours);
+    });
+  });
+
+/**
+ * A pool whose hour before the settle horizon costs `ms` to count, ticked through three slow counts
+ * at the first-try limit, ten minutes and a second apart, so that hour is stuck.
+ */
+async function stuckHour(f: Fixture, position: { at: number }, ms: number) {
+  await clockAt(f, position.at);
+  const c = await captureFixture(f);
+  await c.native(at(0, minute));
+  await c.native(at(1, minute), true);
+  await c.ready();
+  const slowHour = key((await horizon(f)) - hour);
+  const cost = { ms };
+  const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+  const storage = memoryStorage();
+  const limits: { pool: string; from: number; to: number; limit: number }[] = [];
+  const tick = () =>
+    captureHoursTick(
+      storage,
+      (work) =>
+        work(timed(f.db, clock, { pool: c.poolId, hour: slowHour, cost }, undefined, [], limits)),
+      { now: () => clock.at, bounds: { lookbackHours } },
+    );
+  let state = await tick();
+  for (let n = 0; n < 2; n++) {
+    clock.at += 10 * minute + 1_000;
+    state = await tick();
+  }
+  assert.deepEqual(captureHoursStuckPools(state), [c.poolId], "three slow counts: stuck");
+  // The tries of that hour alone, as the limits they ran under.
+  const tries = () =>
+    limits
+      .filter((entry) => entry.pool === c.poolId && entry.from === Date.parse(slowHour))
+      .filter((entry) => entry.to - entry.from === hour)
+      .map((entry) => entry.limit);
+  return { c, slowHour, cost, clock, tick, tries, limits, state, storage };
+}
+
+for (const position of blockPositions())
+  test(`a stuck hour is retried alone under a longer limit, counted there, and says the limit and its time, while every other hour keeps the first-try limit (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      // It takes 2.5 s: past the first-try 1 s, inside the first retry limit.
+      const s = await stuckHour(f, position, 2_500);
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000]);
+      // Inside its wait it is not tried, nor counted with its block's other hours.
+      s.clock.at += 5 * minute;
+      await s.tick();
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000], "not tried while it waits");
+      s.clock.at += 5 * minute + 1_000;
+      const done = await s.tick();
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000], "retried once, at 3 s");
+      assert.deepEqual(captureHoursStuckPools(done), []);
+      assert.deepEqual(done.slow, []);
+      const pool = await counted(f, s.c.poolId);
+      assert.equal(pool.settled, pool.hours, "the stuck hour is counted");
+      const lines = logged.mock.calls
+        .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK_COUNTED")
+        .map((call) => call.arguments[1] as { elapsedMs: number; readMs: number });
+      assert.equal(lines.length, 1, "one closed line");
+      assert.ok(Number.isInteger(lines[0]!.elapsedMs) && lines[0]!.elapsedMs >= 0, "as measured");
+      const ordinal = [s.c.poolId, s.c.otherId].sort().indexOf(s.c.poolId) + 1;
+      assert.deepEqual(
+        { ...lines[0]!, elapsedMs: 0, readMs: 0 },
+        { pool: ordinal, hour: s.slowHour, limitMs: 3_000, elapsedMs: 0, readMs: 0 },
+      );
+      // Every other count, of either pool, ran at the first-try limit.
+      const others = s.limits.filter(
+        (entry) => !(entry.pool === s.c.poolId && entry.from === Date.parse(s.slowHour)),
+      );
+      assert.ok(others.length > 0);
+      assert.deepEqual([...new Set(others.map((entry) => entry.limit))], [1_000]);
+    });
+  });
+
+test("a stuck hour left by the earlier code, slow seven times with no longer retry yet, is retried at the first longer limit, and its pool reads stuck from its wait alone", async (t) => {
+  t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const s = await stuckHour(f, blockPositions()[0]!, 2_500);
+    // As production holds it now: seven in a row, never retried under a longer limit.
+    const before = (await s.storage.get<CaptureHoursAutoState>(captureHoursAutoKey))!;
+    const legacy = before.slow!.map((wait) => ({ ...wait, count: 7 }));
+    await s.storage.put(captureHoursAutoKey, { ...before, slow: legacy });
+    // A pool keeps one stuck entry, so another hour can replace it: its waits still name it.
+    assert.deepEqual(captureHoursStuckPools({ stuck: [], slow: legacy }), [s.c.poolId]);
+    s.clock.at += 10 * minute + 1_000;
+    const done = await s.tick();
+    assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000]);
+    assert.deepEqual(captureHoursStuckPools(done), []);
+    const pool = await counted(f, s.c.poolId);
+    assert.equal(pool.settled, pool.hours);
+  });
+});
+
+for (const position of blockPositions())
+  test(`a stuck hour slower than the last retry limit is given up: it stays stuck, inspect says so, and it is not tried again (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      // Slower than every limit.
+      const s = await stuckHour(f, position, 60_000);
+      s.clock.at += 10 * minute + 1_000;
+      await s.tick();
+      s.clock.at += 10 * minute + 1_000;
+      const gaveUp = await s.tick();
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000, 10_000], "3 s, then the 10 s cap");
+      assert.deepEqual(captureHoursStuckPools(gaveUp), [s.c.poolId], "it stays stuck");
+      assert.equal(gaveUp.stuck?.[0]?.gaveUp, true);
+      const waits = captureHoursInspect(gaveUp).byPool.flatMap((entry) => entry.slow);
+      assert.deepEqual(
+        waits.map((wait) => [wait.hour, wait.retries, wait.gaveUp]),
+        [[s.slowHour, 2, true]],
+        "inspect names the hour, its two retries, and that it was given up",
+      );
+      const ordinal = [s.c.poolId, s.c.otherId].sort().indexOf(s.c.poolId) + 1;
+      assert.deepEqual(
+        logged.mock.calls
+          .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_GAVE_UP")
+          .map((call) => ({ ...(call.arguments[1] as object), elapsedMs: 0 })),
+        [{ pool: ordinal, hour: s.slowHour, limitMs: 10_000, elapsedMs: 0 }],
+        "loud once",
+      );
+      // Waits later, it is never tried again, at the cap or any limit, and its pool goes on.
+      for (let n = 0; n < 3; n++) {
+        s.clock.at += 10 * minute + 1_000;
+        await s.tick();
+      }
+      assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000, 10_000]);
+      const pool = await counted(f, s.c.poolId);
+      assert.equal(pool.settled, pool.hours - 1, "all but the given-up hour");
+    });
+  });
+
+test("a count the session's budget cuts short of its own limit is a budget stop, never slow", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const state = await captureHoursTick(
+      memoryStorage(),
+      (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 700 } })),
+      { now: () => clock.at, bounds: { sessions: 1, sessionMs: 500, lookbackHours } },
+    );
+    assert.equal(state.lastStop, "budget");
+    assert.equal(state.pausedUntil, undefined);
+    assert.deepEqual(state.slow ?? [], []);
+    assert.deepEqual(captureHoursStuckPools(state), []);
+  });
+});
+
+test("a pool another session holds is a lock stop: the tick never waits, pauses an hour, and six in a row is stuck", async (t) => {
+  const logged = t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const url = new URL(process.env.POOL_TEST_ADMIN_URL!);
+    const holder = new pg.Client({ connectionString: url.toString() });
+    await holder.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock($1,hashtext($2))", [
+        captureHoursLockClass,
+        c.poolId,
+      ]);
+      let clock = Date.parse("2026-02-01T00:00:00Z");
+      const storage = memoryStorage();
+      const tick = () =>
+        captureHoursTick(storage, (work) => work(f.db), {
+          now: () => clock,
+          bounds: { lookbackHours },
+        });
+      const started = performance.now();
+      const first = await tick();
+      assert.ok(performance.now() - started < 1_500, "it never queues behind the holder");
+      assert.equal(first.lastStop, "lock");
+      assert.equal(first.pausedUntil, new Date(clock + 3_600_000).toISOString());
+      assert.deepEqual(first.repeat, { pool: c.poolId, reason: "lock", count: 1 });
+      assert.deepEqual(await c.stored(), {}, "a refused count writes nothing");
+      clock += 30 * minute;
+      assert.deepEqual(await tick(), first, "paused: the tick does nothing");
+      let state = first;
+      for (let n = 2; n <= 6; n++) {
+        clock += 61 * minute;
+        state = await tick();
+      }
+      assert.deepEqual(state.stuck, [
+        { pool: c.poolId, reason: "lock", retryAt: state.pausedUntil },
+      ]);
+      assert.deepEqual(captureHoursStuckPools(state), [c.poolId]);
+      assert.deepEqual(
+        logged.mock.calls
+          .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK")
+          .map((call) => call.arguments[1]),
+        [{ reason: "lock" }],
+        "loud once",
+      );
+      // A stuck or paused tick leaves the overview readable, the hours it never counted read row by
+      // row as before v17.
+      const summary = await poolUsageSummary(
+        f.db,
+        { pool, from: at(-24 * 30), to: at(24), by: "model", authority: c.authority },
+        async () => ({ prices: summaryPrices, issues: [] }),
+        Date.parse(at(24)),
+      );
+      assert.equal(summary.homeCapture.status, "unavailable");
+      assert.equal(summary.partial, true);
+      const read = await c.coverage(at(0), at(24));
+      assert.deepEqual([...read.incomplete!], [], "the row check found every request");
+      assert.deepEqual(
+        read.ranges?.map((range) => [Date.parse(range.f), Date.parse(range.t)]),
+        [[Date.parse(at(0)), Date.parse(at(24))]],
+        "the uncounted day, row by row",
+      );
+      await holder.query("COMMIT");
+      clock += 61 * minute;
+      const done = await tick();
+      assert.deepEqual(captureHoursStuckPools(done), []);
+      assert.equal(done.repeat, undefined);
+      assert.deepEqual([...(await c.coverage(at(0), at(24))).incomplete!], []);
+    } finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      await holder.end();
+    }
+  });
+});
+
+test("a pool whose count fails rests alone: six in a row is stuck and loud once, it is retried after each rest, and clears once it counts", async (t) => {
+  const logged = t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const storage = memoryStorage();
+    let fail: string | undefined = c.poolId;
+    const tick = () =>
+      captureHoursTick(storage, (work) => work(timed(f.db, clock, undefined, fail)), {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      });
+    const first = await tick();
+    assert.equal(first.pausedUntil, undefined, "the tick goes on");
+    assert.equal(first.repeat, undefined, "the tick itself is not failing");
+    assert.deepEqual(first.failing, [
+      { pool: c.poolId, count: 1, until: new Date(clock.at + 3_600_000).toISOString() },
+    ]);
+    const other = await counted(f, c.otherId);
+    assert.equal(other.settled, other.hours, "the other pool was counted in full");
+    clock.at += 30 * minute;
+    assert.equal((await tick()).failing?.[0]?.count, 1, "not tried while it rests");
+    let state = first;
+    for (let n = 2; n <= 6; n++) {
+      clock.at += 61 * minute;
+      state = await tick();
+      assert.equal(state.failing?.[0]?.count, n, "retried after each rest");
+    }
+    assert.deepEqual(state.stuck, [
+      { pool: c.poolId, reason: "error", retryAt: state.failing![0]!.until },
+    ]);
+    assert.deepEqual(captureHoursStuckPools(state), [c.poolId]);
+    assert.deepEqual(
+      logged.mock.calls
+        .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK")
+        .map((call) => call.arguments[1]),
+      [{ reason: "error" }],
+      "loud once",
+    );
+    // Its count works again: after the rest it counts, and nothing stays stuck.
+    fail = undefined;
+    clock.at += 61 * minute;
+    const recovered = await tick();
+    assert.deepEqual(captureHoursStuckPools(recovered), []);
+    assert.deepEqual(recovered.failing, []);
+    const mine = await counted(f, c.poolId);
+    assert.equal(mine.settled, mine.hours);
+  });
+});
+
+test("a pool whose every count fails never stops the others: over eight passes the healthy pool is counted in full", async (t) => {
+  t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const storage = memoryStorage();
+    // The failing pool's turn comes first, every pass.
+    await storage.put(captureHoursAutoKey, { nextPool: c.otherId });
+    for (let pass = 0; pass < 8; pass++) {
+      await captureHoursTick(storage, (work) => work(timed(f.db, clock, undefined, c.poolId)), {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      });
+      clock.at += 5 * minute;
+    }
+    const healthy = await counted(f, c.otherId);
+    assert.equal(healthy.settled, healthy.hours, "the healthy pool's every hour was counted");
+    assert.equal((await counted(f, c.poolId)).settled, 0);
+  });
+});
+
+test("a tick that fails before reaching any pool pauses whole, and six in a row is stuck naming none", async (t) => {
+  const logged = t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const storage = memoryStorage();
+    let state = await captureHoursTick(storage, () => Promise.reject(new Error("connect")), {
+      now: () => clock.at,
+    });
+    assert.equal(state.lastStop, "error");
+    assert.deepEqual(state.repeat, { pool: "", reason: "error", count: 1 });
+    assert.equal(state.pausedUntil, new Date(clock.at + 3_600_000).toISOString());
+    for (let n = 1; n < 6; n++) {
+      clock.at += 61 * minute;
+      state = await captureHoursTick(storage, () => Promise.reject(new Error("connect")), {
+        now: () => clock.at,
+      });
+    }
+    assert.deepEqual(captureHoursStuckPools(state), [""]);
+    assert.equal(captureHoursInspect(state).stuck[0]?.pool, null);
+    assert.ok(
+      logged.mock.calls.some((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_TICK_FAILED"),
+    );
+    clock.at += 61 * minute;
+    const recovered = await captureHoursTick(storage, (work) => work(f.db), {
+      now: () => clock.at,
+      bounds: { lookbackHours },
+    });
+    assert.deepEqual(captureHoursStuckPools(recovered), []);
+    assert.equal(recovered.lastStop, "complete");
+  });
+});
+
+/** Every hour's count time, by hour, oldest hour first. */
+async function checkedAt(f: Fixture, pool: string) {
+  return (
+    await f.db.query(
+      "SELECT hour, checked_at FROM basalt_model_capture_hours WHERE pool=$1 ORDER BY hour",
+      [pool],
+    )
+  ).rows.map((row) => [(row.hour as Date).toISOString(), (row.checked_at as Date).getTime()]);
+}
+
+/** Every count settled long ago, the oldest hour counted longest ago. */
+const aged = (f: Fixture) =>
+  f.db.query("UPDATE basalt_model_capture_hours SET checked_at=hour + interval '3 hours'");
+
+/** A clock that every count moves by `ms`, and a database that records each count's range. */
+function costly(f: Fixture, ms: number) {
+  const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+  const counts: { pool: string; from: number; to: number }[] = [];
+  const db: HistoryDatabase = {
+    query: (text, values) => {
+      if (text === countBlockStatement) {
+        clock.at += ms;
+        counts.push({
+          pool: String(values![0]),
+          from: Date.parse(String(values![1])),
+          to: Date.parse(String(values![2])),
+        });
+      }
+      return f.db.query(text, values);
+    },
+  };
+  return { clock, counts, db };
+}
+
+test("older blocks are reached when the newest pending ones overflow every session, the pools in turn", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    // Thirty days counted long ago, then the newest five days' counts gone: 20 pending blocks a
+    // pool, far more than a session's pending share takes.
+    const lookback = 30 * 24;
+    await c.fill(lookback);
+    await aged(f);
+    const end = await horizon(f);
+    await f.db.query("DELETE FROM basalt_model_capture_hours WHERE hour >= $1", [
+      new Date(end - 5 * 24 * hour).toISOString(),
+    ]);
+    // Each count costs 10 ms of a 100 ms session: about ten blocks, at most 7.5 of them pending.
+    const { clock, counts, db } = costly(f, 10);
+    const storage = memoryStorage();
+    const old = (count: { from: number }) => count.from < end - 5 * 24 * hour;
+    for (let pass = 1; pass <= 6; pass++) {
+      const before = counts.length;
+      await captureHoursTick(storage, (work) => work(db), {
+        now: () => clock.at,
+        bounds: { lookbackHours: lookback, sessions: 1, sessionMs: 100 },
+      });
+      const these = counts.slice(before);
+      assert.ok(these.some(old), `pass ${pass} recounted an older block`);
+      assert.ok(
+        these.filter((count) => !old(count)).length <= 8,
+        `pass ${pass}: the pending share stays within three quarters of the session`,
+      );
+      clock.at += 5 * minute;
+    }
+    const pending = counts.filter((count) => !old(count));
+    // The pools in turn, newest block first for each.
+    const turns = pending.map((count) => count.pool);
+    for (let n = 1; n < Math.min(turns.length, 12); n++)
+      assert.notEqual(turns[n], turns[n - 1], "no pool waits for another to finish");
+    for (const pool of [c.poolId, c.otherId]) {
+      const mine = pending.filter((count) => count.pool === pool).map((count) => count.from);
+      assert.deepEqual(
+        mine,
+        [...mine].sort((a, b) => b - a),
+        "each pool's newest block first",
+      );
+    }
+    assert.ok(counts.filter(old).length >= 12, "six passes reached at least twelve older blocks");
+  });
+});
+
+for (const position of blockPositions())
+  test(`with the session to spare, the recount takes every block counted over an hour ago, and none counted since (${position.label})`, async () => {
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.ready();
+      await c.fill();
+      // Just counted: nothing is recounted.
+      const fresh = costly(f, 0);
+      await captureHoursTick(c.storage, (work) => work(fresh.db), { bounds: { lookbackHours } });
+      assert.deepEqual(fresh.counts, [], "a block counted within the last hour is not recounted");
+      // Every count taken the moment its hour settled: over an hour ago for every hour, the newest
+      // one's too, wherever the horizon stands in its block.
+      await f.db.query(
+        "UPDATE basalt_model_capture_hours SET checked_at=hour + interval '2 hours'",
+      );
+      const before = await checkedAt(f, c.poolId);
+      const state = await captureHoursTick(c.storage, (work) => work(f.db), {
+        bounds: { lookbackHours },
+      });
+      assert.equal(state.lastStop, "complete");
+      // Read at the plan: the oldest settled count before this tick's recount.
+      assert.equal(
+        state.stalestCheckedAt,
+        new Date(Date.parse(String(before[0]![0])) + 2 * 3_600_000).toISOString(),
+      );
+      const after = await checkedAt(f, c.poolId);
+      assert.ok(
+        after.every(([, at], n) => at !== before[n]![1]),
+        "every hour was recounted",
+      );
+      assert.equal(state.recountPosition?.pool, c.poolId);
+      assert.equal(captureHoursInspect(state).recountPosition?.block, state.recountPosition?.block);
+      const next = await captureHoursTick(c.storage, (work) => work(f.db), {
+        bounds: { lookbackHours },
+      });
+      assert.ok(Date.parse(next.stalestCheckedAt!) > Date.parse(state.stalestCheckedAt!));
+    });
+  });
+
+for (const position of blockPositions())
+  test(`a block past its own limit splits into hours, counted in the same pass, and the tick moves on to the next block (${position.label})`, async () => {
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.ready();
+      const end = await horizon(f);
+      const newest = Math.floor((end - hour) / block) * block;
+      // The newest block with more than one settled hour: one hour alone never splits.
+      const dense = end - newest > hour ? newest : newest - block;
+      const denseEnd = Math.min(end, dense + block);
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const counts: { pool: string; from: number; to: number }[] = [];
+      const storage = memoryStorage();
+      // That block, whole, costs 5 s; each of its hours alone costs nothing.
+      const slow = { pool: c.poolId, hour: key(dense), cost: { ms: 5_000 }, blocks: true };
+      const state = await captureHoursTick(
+        storage,
+        (work) => work(timed(f.db, clock, slow, undefined, counts)),
+        { now: () => clock.at, bounds: { lookbackHours } },
+      );
+      assert.deepEqual(state.split, [{ pool: c.poolId, blocks: [key(dense)] }]);
+      assert.deepEqual(state.slow ?? [], [], "a split block is not slow");
+      const ranges = counts.map((count) => [count.from, count.to]);
+      // A newer block of one settled hour first; then the dense one tried whole once, then hour by
+      // hour, newest first; then the next block, whole.
+      const singles: number[][] = [];
+      for (let at = denseEnd - hour; at >= dense; at -= hour) singles.push([at, at + hour]);
+      const expected = [
+        ...(dense === newest ? [] : [[newest, end]]),
+        [dense, denseEnd],
+        ...singles,
+        [dense - block, dense],
+      ];
+      assert.deepEqual(ranges.slice(0, expected.length), expected);
+      const stored = await c.stored();
+      for (let at = dense; at < denseEnd; at += hour) assert.equal(stored[key(at)], 0, key(at));
+      // Never whole again: a recount of it goes hour by hour too.
+      await aged(f);
+      const later = counts.length;
+      await captureHoursTick(storage, (work) => work(timed(f.db, clock, slow, undefined, counts)), {
+        now: () => clock.at + 2 * hour,
+        bounds: { lookbackHours },
+      });
+      const recounted = counts
+        .slice(later)
+        .filter((count) => count.from >= dense && count.from < denseEnd);
+      assert.ok(recounted.length > 0, "the split block was recounted");
+      assert.ok(
+        recounted.every((count) => count.to - count.from === hour),
+        "hour by hour",
+      );
+    });
+  });
+
+test("the tick waits while v17 is not applied", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    await f.db.query(
+      "DELETE FROM basalt_model_history_migrations WHERE name='model_request_history_v17_capture_hours'",
+    );
+    const state = await captureHoursTick(memoryStorage(), (work) => work(f.db));
+    assert.equal(state.lastStop, "not_applied");
+    assert.deepEqual(await c.stored(), {});
+  });
+});
+
+test("the tick's plan runs under its own 3 s limit, and its other reads under 1 s", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    await c.fill();
+    await aged(f);
+    let limit: number | undefined;
+    const reads: { text: string; limit?: number }[] = [];
+    const db: HistoryDatabase = {
+      query: (text, values) => {
+        if (text.startsWith("BEGIN")) limit = undefined;
+        if (text.startsWith("SELECT set_config('statement_timeout'"))
+          limit = Number.parseInt(String(values![0]));
+        if (/basalt_model_capture_hours s|basalt_model_usage_people_ready p/.test(text))
+          reads.push({ text, limit });
+        return f.db.query(text, values);
+      },
+    };
+    await captureHoursTick(c.storage, (work) => work(db), { bounds: { lookbackHours } });
+    const kinds = ["usage_people_ready p", "min(s.checked_at)", "DISTINCT ON (o.pool, o.block)"];
+    for (const kind of kinds)
+      assert.ok(
+        reads.some((read) => read.text.includes(kind)),
+        `the tick read ${kind}`,
+      );
+    // The plan, whose cost grows with the pools, under its own 3 s; every other read under 1 s.
+    for (const read of reads.filter((entry) => entry.text !== countBlockStatement)) {
+      const plan = read.text.includes("usage_people_ready p");
+      assert.ok(
+        read.limit !== undefined &&
+          read.limit <= (plan ? 3_000 : 1_000) &&
+          read.limit > (plan ? 1_000 : 0),
+        `${read.text.slice(0, 60)}: ${read.limit}`,
+      );
+    }
+  });
+});
+
+for (const position of blockPositions())
+  test(`each pool keeps its own split blocks, bounded by its lookback, so no split block is retried whole (${position.label})`, async () => {
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.native(at(0, minute), true);
+      await c.ready();
+      const end = await horizon(f);
+      const newest = Math.floor((end - hour) / block) * block;
+      // Each pool's newest block with more than one settled hour: one hour alone never splits.
+      const dense = end - newest > hour ? newest : newest - block;
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const counts: { pool: string; from: number; to: number }[] = [];
+      const storage = memoryStorage();
+      // A block of each pool is dense; and the state still names a block long past the lookback.
+      const ancient = key(newest - 400 * 24 * hour);
+      await storage.put(captureHoursAutoKey, {
+        split: [{ pool: c.poolId, blocks: [ancient] }],
+      });
+      const denseAt = (pool: string, at: number) => ({
+        pool,
+        hour: key(at),
+        cost: { ms: 5_000 },
+        blocks: true,
+      });
+      const both: HistoryDatabase = timed(
+        timed(f.db, clock, denseAt(c.otherId, dense - block), undefined, counts),
+        clock,
+        denseAt(c.poolId, dense),
+      );
+      const state = await captureHoursTick(storage, (work) => work(both), {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      });
+      const split = Object.fromEntries(
+        (state.split ?? []).map((entry) => [entry.pool, entry.blocks]),
+      );
+      assert.deepEqual(split, { [c.poolId]: [key(dense)], [c.otherId]: [key(dense - block)] });
+      // Recounted later, both go hour by hour: neither pool's split forgot the other's.
+      await aged(f);
+      const later = counts.length;
+      await captureHoursTick(storage, (work) => work(both), {
+        now: () => clock.at + 2 * hour,
+        bounds: { lookbackHours },
+      });
+      for (const [pool, from] of [
+        [c.poolId, dense],
+        [c.otherId, dense - block],
+      ] as const) {
+        const mine = counts
+          .slice(later)
+          .filter(
+            (count) => count.pool === pool && count.from >= from && count.from < from + block,
+          );
+        assert.ok(mine.length > 0, `${pool}'s split block was recounted`);
+        assert.ok(
+          mine.every((count) => count.to - count.from === hour),
+          "hour by hour",
+        );
+      }
+    });
+  });
+
+test("a pending block that splits stops at the session's pending share between its hours", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const end = await horizon(f);
+    const newest = Math.floor((end - hour) / block) * block;
+    // The block before the newest, a whole six hours, runs out its 1 s limit; each of its hours
+    // then costs 400 ms of a 4 s session, whose pending share is 3 s: five fit, the sixth waits.
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const started = clock.at;
+    let recountAt: number | undefined;
+    const base = timed(f.db, clock, {
+      pool: c.poolId,
+      hour: key(newest - block),
+      cost: { ms: 5_000 },
+      blocks: true,
+    });
+    const db: HistoryDatabase = {
+      query: async (text, values) => {
+        if (
+          text === countBlockStatement &&
+          Date.parse(String(values![2])) - Date.parse(String(values![1])) === hour
+        )
+          clock.at += 400;
+        if (text.includes("DISTINCT ON (o.pool, o.block)") && recountAt === undefined)
+          recountAt = clock.at - started;
+        return base.query(text, values);
+      },
+    };
+    await captureHoursTick(memoryStorage(), (work) => work(db), {
+      now: () => clock.at,
+      bounds: { lookbackHours, sessions: 1, sessionMs: 4_000 },
+    });
+    assert.ok(recountAt !== undefined, "the recount had its turn");
+    assert.ok(recountAt <= 3_000, `the pending share ran to ${recountAt} ms of 3,000`);
+  });
+});
+
+test("counts older than the lookback are pruned, at most a thousand a pass, and never recounted", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    await c.fill();
+    await aged(f);
+    const end = await horizon(f);
+    const first = end - lookbackHours * hour;
+    // 1,500 hours counted while inside a longer lookback, long settled.
+    await f.db.query(
+      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
+      SELECT $1, h, 0, 0, h + interval '3 hours' FROM generate_series($2::timestamptz - interval '1500 hours',
+        $2::timestamptz - interval '1 hour', interval '1 hour') h`,
+      [c.poolId, new Date(first).toISOString()],
+    );
+    const old = async () =>
+      Number(
+        (
+          await f.db.query(
+            "SELECT count(*)::int AS n FROM basalt_model_capture_hours WHERE hour < $1",
+            [new Date(first).toISOString()],
+          )
+        ).rows[0]!.n,
+      );
+    // The recount never takes them, though they were counted longest ago.
+    const stale = await recountBlocks(
+      f.db,
+      [c.poolId],
+      100,
+      new Date().toISOString(),
+      lookbackHours,
+    );
+    assert.ok(stale.length > 0);
+    // A block of the lookback ends after it starts, past the lookback's first hour.
+    assert.ok(
+      stale.every(
+        (block) => Date.parse(block.from) >= first && Date.parse(block.to) > Date.parse(block.from),
+      ),
+      "only blocks in the lookback",
+    );
+    const counts: { pool: string; from: number; to: number }[] = [];
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    await captureHoursTick(
+      c.storage,
+      (work) => work(timed(f.db, clock, undefined, undefined, counts)),
+      {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      },
+    );
+    assert.equal(await old(), 500, "one pass prunes a thousand");
+    assert.ok(
+      counts.every((count) => count.from >= first && count.to > count.from),
+      "no count older than the lookback",
+    );
+    await captureHoursTick(c.storage, (work) => work(f.db), {
+      now: () => clock.at + 5 * minute,
+      bounds: { lookbackHours },
+    });
+    assert.equal(await old(), 0, "the next pass prunes the rest");
+  });
+});
+
+test("a database-wide fault pauses the tick once with no pool named, while a pool's own error rests only that pool", async (t) => {
+  t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    for (const fail of [
+      // A socket's code, never Postgres's.
+      { code: "EPIPE" },
+      // Read-only after a failover, on every pool.
+      { code: "25006", severity: "ERROR" },
+      // A stale shape.
+      { code: "42703", severity: "ERROR" },
+    ]) {
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const storage = memoryStorage();
+      const tick = () =>
+        captureHoursTick(storage, (work) => work(timed(f.db, clock, undefined, fail)), {
+          now: () => clock.at,
+          bounds: { lookbackHours },
+        });
+      const state = await tick();
+      assert.equal(state.lastStop, "error", fail.code);
+      assert.equal(state.pausedUntil, new Date(clock.at + 3_600_000).toISOString(), fail.code);
+      assert.deepEqual(state.repeat, { pool: "", reason: "error", count: 1 }, fail.code);
+      assert.deepEqual(state.failing ?? [], [], `${fail.code} rests no pool`);
+      clock.at += 30 * minute;
+      assert.deepEqual(await tick(), state, `${fail.code}: paused, the tick does nothing`);
+    }
+    // A pool's own error (an invalid value, an internal error) rests only that pool.
+    for (const code of ["22P02", "XX000"]) {
+      await f.db.query("DELETE FROM basalt_model_capture_hours");
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const state = await captureHoursTick(
+        memoryStorage(),
+        (work) => work(timed(f.db, clock, undefined, { pool: c.poolId, code, severity: "ERROR" })),
+        { now: () => clock.at, bounds: { lookbackHours } },
+      );
+      assert.equal(state.pausedUntil, undefined, code);
+      assert.deepEqual(
+        state.failing?.map((entry) => entry.pool),
+        [c.poolId],
+        code,
+      );
+      const other = await counted(f, c.otherId);
+      assert.equal(other.settled, other.hours, `${code}: the other pool was counted in full`);
+    }
+  });
+});
+
+test("a session the hourly ceiling would cut short of its plan read never starts", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const at0 = Date.parse("2026-02-01T00:00:00Z");
+    const storage = memoryStorage();
+    // 70 ms of a 100 ms hour spent; the last plan read took 40 ms, more than the 30 ms left.
+    await storage.put(captureHoursAutoKey, {
+      planMs: 40,
+      sessions: [{ at: at0 - minute, ms: 70 }],
+    });
+    let sessions = 0;
+    const state = await captureHoursTick(
+      storage,
+      (work) => {
+        sessions++;
+        return work(f.db);
+      },
+      { now: () => at0, bounds: { lookbackHours, hourMs: 100 } },
+    );
+    assert.equal(state.lastStop, "ceiling");
+    assert.equal(sessions, 0, "no session started");
+    assert.equal(state.pausedUntil, undefined, "and the tick is not failing");
+    // With more left than the plan takes, it runs.
+    await storage.put(captureHoursAutoKey, {
+      planMs: 20,
+      sessions: [{ at: at0 - minute, ms: 70 }],
+    });
+    await captureHoursTick(
+      storage,
+      (work) => {
+        sessions++;
+        return work(f.db);
+      },
+      { now: () => at0, bounds: { lookbackHours, hourMs: 100 } },
+    );
+    assert.ok(sessions > 0);
+  });
+});
+
+test("a statement timeout in a split block's own read is that pool's: it waits, or stops on budget, and never pauses the tick", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    const end = await horizon(f);
+    const newest = key(Math.floor((end - hour) / block) * block);
+    // The pool's newest block is split, and the read of its pending hours times out.
+    const timesOut: HistoryDatabase = {
+      query: (text, values) => {
+        if (text.includes("ORDER BY h.at DESC") && values![0] === c.poolId)
+          return Promise.reject(
+            Object.assign(new Error("canceling statement due to statement timeout"), {
+              code: "57014",
+              severity: "ERROR",
+            }),
+          );
+        return f.db.query(text, values);
+      },
+    };
+    const seeded = async () => {
+      const storage = memoryStorage();
+      await storage.put(captureHoursAutoKey, {
+        nextPool: c.otherId,
+        split: [{ pool: c.poolId, blocks: [newest] }],
+      });
+      return storage;
+    };
+    const state = await captureHoursTick(await seeded(), (work) => work(timesOut), {
+      bounds: { lookbackHours },
+    });
+    assert.equal(state.pausedUntil, undefined, "the tick goes on");
+    assert.deepEqual(
+      state.slow?.map((entry) => [entry.pool, entry.hour]),
+      [[c.poolId, newest]],
+      "the pool waits like a slow hour",
+    );
+    const other = await counted(f, c.otherId);
+    assert.equal(other.settled, other.hours, "the other pool was counted in full");
+    // With the session's budget cutting that read short, it is a budget stop, never slow.
+    await f.db.query("DELETE FROM basalt_model_capture_hours");
+    const cut = await captureHoursTick(await seeded(), (work) => work(timesOut), {
+      bounds: { lookbackHours, sessions: 1, sessionMs: 500 },
+    });
+    assert.equal(cut.pausedUntil, undefined);
+    assert.deepEqual(cut.slow ?? [], []);
+    assert.equal(cut.lastStop, "budget");
+  });
+});
+
+for (const position of blockPositions())
+  test(`a block whose read of its pending hours ran out its limit is not read again until its own wait ends (${position.label})`, async (t) => {
+    t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.native(at(0, minute), true);
+      await c.ready();
+      const end = await horizon(f);
+      const newest = key(Math.floor((end - hour) / block) * block);
+      let reads = 0;
+      const timesOut: HistoryDatabase = {
+        query: (text, values) => {
+          if (text.includes("ORDER BY h.at DESC") && values![0] === c.poolId) {
+            reads++;
+            return Promise.reject(
+              Object.assign(new Error("canceling statement due to statement timeout"), {
+                code: "57014",
+                severity: "ERROR",
+              }),
+            );
+          }
+          return f.db.query(text, values);
+        },
+      };
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const storage = memoryStorage();
+      await storage.put(captureHoursAutoKey, {
+        nextPool: c.otherId,
+        split: [{ pool: c.poolId, blocks: [newest] }],
+      });
+      const tick = () =>
+        captureHoursTick(storage, (work) => work(timesOut), {
+          now: () => clock.at,
+          bounds: { lookbackHours },
+        });
+      const first = await tick();
+      assert.equal(reads, 1, "read once, in the first of the tick's sessions");
+      assert.deepEqual(
+        first.slow?.map((entry) => [entry.hour, entry.count, entry.limit]),
+        [[newest, 1, "read"]],
+      );
+      clock.at += 5 * minute;
+      await tick();
+      assert.equal(reads, 1, "not read again while its own wait lasts");
+      clock.at += 5 * minute + 1_000;
+      const again = await tick();
+      assert.equal(reads, 2, "read again once it ends");
+      assert.equal(again.slow?.find((entry) => entry.hour === newest)?.count, 2);
+      clock.at += 10 * minute + 1_000;
+      const stuck = await tick();
+      assert.deepEqual(
+        stuck.stuck?.map((entry) => [entry.pool, entry.reason, entry.hour]),
+        [[c.poolId, "slow", newest]],
+        "three in a row is stuck, after a wait each",
+      );
+    });
+  });
+
+test("a session that counted the plan's listed blocks, with more pending past them, stops on budget", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    // Two hundred blocks pending; the plan lists a pool's newest hundred.
+    const state = await captureHoursTick(memoryStorage(), (work) => work(f.db), {
+      bounds: {
+        lookbackHours: 200 * 6,
+        sessions: 1,
+        sessionMs: 600_000,
+        hourMs: Number.POSITIVE_INFINITY,
+      },
+    });
+    assert.equal(state.lastStop, "budget", "the blocks past the plan's list are still to count");
+    assert.ok((state.pendingBlocks ?? 0) >= 100, `${state.pendingBlocks} blocks pending`);
+  });
+});
+
+for (const position of blockPositions())
+  test(`a pool's second slow count in a session ends its turn, and the other pool keeps its own (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.native(at(1, minute), true);
+      await c.ready();
+      const end = await horizon(f);
+      const hours = [1, 2, 3].map((n) => key(end - n * hour));
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const slowAt = (db: HistoryDatabase, slowHour: string) =>
+        timed(db, clock, { pool: c.poolId, hour: slowHour, cost: { ms: 5_000 } });
+      const db = slowAt(slowAt(slowAt(f.db, hours[0]!), hours[1]!), hours[2]!);
+      const storage = memoryStorage();
+      await storage.put(captureHoursAutoKey, { nextPool: c.otherId });
+      const state = await captureHoursTick(storage, (work) => work(db), {
+        now: () => clock.at,
+        bounds: { lookbackHours, sessions: 1 },
+      });
+      const lines = logged.mock.calls.filter(
+        (call) => call.arguments[0] === "POOL_CAPTURE_HOURS_SLOW",
+      );
+      assert.equal(lines.length, 2, "two slow counts, then the pool's turn ended");
+      assert.deepEqual(
+        state.slow?.map((entry) => entry.hour).sort(),
+        [hours[0]!, hours[1]!].sort(),
+        "its third slow hour waits for the next session",
+      );
+      const other = await counted(f, c.otherId);
+      assert.equal(other.settled, other.hours, "the other pool was counted in full");
+    });
+  });
+
+for (const position of blockPositions())
+  test(`a block read that keeps running out its limit stays stuck, though the block's first hour is counted (${position.label})`, async (t) => {
+    t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.ready();
+      const end = await horizon(f);
+      // A whole, settled block before the newest: its first hour already has its settled count,
+      // taken just now, so no recount reaches the block and only its pending read does.
+      const older = Math.floor((end - hour) / block) * block - block;
+      await f.db.query(
+        `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
+        VALUES ($1,$2,0,0,now())`,
+        [c.poolId, new Date(older).toISOString()],
+      );
+      const timesOut: HistoryDatabase = {
+        query: (text, values) =>
+          text.includes("ORDER BY h.at DESC") && values![0] === c.poolId
+            ? Promise.reject(
+                Object.assign(new Error("canceling statement due to statement timeout"), {
+                  code: "57014",
+                  severity: "ERROR",
+                }),
+              )
+            : f.db.query(text, values),
+      };
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const storage = memoryStorage();
+      await storage.put(captureHoursAutoKey, { split: [{ pool: c.poolId, blocks: [key(older)] }] });
+      const tick = () =>
+        captureHoursTick(storage, (work) => work(timesOut), {
+          now: () => clock.at,
+          bounds: { lookbackHours },
+        });
+      for (let n = 0; n < 3; n++) {
+        await tick();
+        clock.at += 10 * minute + 1_000;
+      }
+      const stuck = (state: CaptureHoursAutoState) =>
+        state.stuck?.map((entry) => [entry.pool, entry.reason, entry.hour]);
+      clock.at -= 5 * minute;
+      // Inside the third wait: the tick reads nothing of that block, and its stuck entry stands.
+      const held = await tick();
+      assert.deepEqual(stuck(held), [[c.poolId, "slow", key(older)]]);
+      assert.equal(held.slow?.find((entry) => entry.limit === "read")?.count, 3);
+    });
+  });
+
+test("a block the session's share cut is taken up again in the same session, and its pool's pending is exact", async () => {
+  await seriesFixture(async (f) => {
+    await clockAt(f, blockPositions()[0]!.at);
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const end = await horizon(f);
+    // Three whole blocks, all counted hour by hour, each hour 900 ms against its 1 s. Newest first:
+    // the first block takes 5.4 s; the session's pending share (9 s of 12 s) runs out four hours
+    // into the second; its last two hours come after the recount's share, before the session's
+    // 12 s run out inside the third.
+    const blocks = [end - 3 * block, end - 2 * block, end - block].map(key);
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, { split: [{ pool: c.poolId, blocks }] });
+    const state = await captureHoursTick(
+      storage,
+      (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 900 } })),
+      { now: () => clock.at, bounds: { lookbackHours: 18, sessions: 1, sessionMs: 12_000 } },
+    );
+    const done = await counted(f, c.poolId, 18);
+    const second = await counted(f, c.poolId, 12);
+    assert.deepEqual(
+      second,
+      { hours: 12, settled: 12 },
+      "the two newest blocks whole, the cut one too",
+    );
+    assert.ok(done.settled < 18, `${done.settled} of 18 hours counted`);
+    assert.equal(state.lastStop, "budget");
+    assert.deepEqual(
+      captureHoursInspect(state).byPool.map((entry) => [entry.pendingBlocks, entry.pendingHours]),
+      [[1, 18 - done.settled]],
+      "exactly the hours not counted: each counted hour taken off once",
+    );
+  });
+});
+
+test("a recount that counts some hours of a block whose read is stuck leaves it stuck", async () => {
+  await seriesFixture(async (f) => {
+    await clockAt(f, blockPositions()[0]!.at);
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const end = await horizon(f);
+    const newest = end - block;
+    const older = end - 2 * block;
+    // The newest block counted just now; the older one's first five hours long ago, its last not.
+    await f.db.query(
+      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
+      SELECT $1, h, 0, 0, now() FROM generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') h
+      UNION ALL
+      SELECT $1, h, 0, 0, h + interval '3 hours'
+        FROM generate_series($4::timestamptz, $5::timestamptz, interval '1 hour') h`,
+      [
+        c.poolId,
+        new Date(newest).toISOString(),
+        new Date(end - hour).toISOString(),
+        new Date(older).toISOString(),
+        new Date(older + 4 * hour).toISOString(),
+      ],
+    );
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const until = new Date(clock.at + 5 * minute).toISOString();
+    // Its read already stuck, in its wait: the pending path leaves the block, the recount reaches it.
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, {
+      split: [{ pool: c.poolId, blocks: [key(older)] }],
+      slow: [{ pool: c.poolId, hour: key(older), count: 3, until, limit: "read" }],
+      stuck: [{ pool: c.poolId, reason: "slow", hour: key(older), retryAt: until }],
+    });
+    // Each hour 900 ms of a 2.5 s session: the recount counts two of the block's hours, then stops.
+    const state = await captureHoursTick(
+      storage,
+      (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 900 } })),
+      { now: () => clock.at, bounds: { lookbackHours: 12, sessions: 1, sessionMs: 2_500 } },
+    );
+    const recounted = Number(
+      (
+        await f.db.query(
+          "SELECT count(*)::int AS n FROM basalt_model_capture_hours WHERE pool=$1 AND hour>=$2 AND hour<$3 AND checked_at > now() - interval '1 minute'",
+          [c.poolId, new Date(older).toISOString(), new Date(newest).toISOString()],
+        )
+      ).rows[0]!.n,
+    );
+    assert.ok(recounted >= 1 && recounted < 6, `${recounted} of its hours recounted`);
+    assert.deepEqual(
+      state.stuck?.map((entry) => [entry.pool, entry.reason, entry.hour]),
+      [[c.poolId, "slow", key(older)]],
+      "still stuck: its read has not answered",
+    );
+    assert.equal(state.slow?.find((entry) => entry.limit === "read")?.count, 3);
+  });
+});
+
+test("a block's read that answers clears its read's wait, and never a count's wait on the same hour", async () => {
+  await seriesFixture(async (f) => {
+    await clockAt(f, blockPositions()[0]!.at);
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const end = await horizon(f);
+    const older = key(end - 2 * block);
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const later = new Date(clock.at + 5 * minute).toISOString();
+    const earlier = new Date(clock.at - minute).toISOString();
+    // The block's first hour is in its count's wait; the block's read timed out once, its wait over.
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, {
+      split: [{ pool: c.poolId, blocks: [older] }],
+      slow: [
+        { pool: c.poolId, hour: older, count: 2, until: later },
+        { pool: c.poolId, hour: older, count: 1, until: earlier, limit: "read" },
+      ],
+    });
+    const state = await captureHoursTick(storage, (work) => work(f.db), {
+      now: () => clock.at,
+      bounds: { lookbackHours: 12, sessions: 1 },
+    });
+    assert.deepEqual(
+      state.slow?.map((entry) => [entry.hour, entry.count, entry.until, entry.limit]),
+      [[older, 2, later, undefined]],
+      "the read's wait is over; the hour's count still waits, its repeats kept",
+    );
+    // The block's other hours were counted; its first hour waits.
+    const hours = await counted(f, c.poolId, 12);
+    assert.deepEqual(hours, { hours: 12, settled: 11 });
+  });
+});

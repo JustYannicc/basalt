@@ -1,0 +1,106 @@
+diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+--- a/patches/alchemy@2.0.0-beta.80.patch
++++ b/patches/alchemy@2.0.0-beta.80.patch
+@@ -8995,3 +8995,102 @@
+              }).pipe(Effect.catchTag("ContainerApplicationNotFound", () => Effect.void));
+          }),
+          read: Effect.fn(function* ({ id, olds, output }) {
++diff --git a/src/Cloudflare/Containers/ContainerProvider.ts b/src/Cloudflare/Containers/ContainerProvider.ts
++--- a/src/Cloudflare/Containers/ContainerProvider.ts
+++++ b/src/Cloudflare/Containers/ContainerProvider.ts
++@@ -130,6 +130,20 @@
++   return isRegistryDigest(digest) ? digest : undefined;
++ };
++ 
+++// The reference an application keeps while its image input is unchanged: the one it runs, when
+++// that names the recorded digest. A publication shared before its key held the repository pushed
+++// the digest to another application's repository only, so this one's own may not hold it.
+++const unchangedImageRef = (
+++  existing: { readonly configuration?: { readonly image?: unknown } },
+++  imageRef: string,
+++  digest: string,
+++) => {
+++  const running = existing.configuration?.image;
+++  return typeof running === "string" && digestFromImageRef(running) === digest
+++    ? running
+++    : `${repositoryFromImageRef(imageRef)}@${digest}`;
+++};
+++
++ export const LiveContainerProvider = () =>
++   Provider.effect(
++     ContainerPlatform,
++@@ -716,6 +730,9 @@
++           accountId,
++           props.registryId ?? "registry.cloudflare.com",
++           props.publish?.repository,
+++          // The repository this caller pushes to: applications built from one context share an
+++          // image hash, and a publication shared between them pushed to one repository only.
+++          repositoryFromImageRef(imageRef),
++           publicationPlatform,
++           build.kind,
++           imageHash,
++@@ -972,7 +989,7 @@
++             build = { kind: "external", ...frozen };
++           }
++           return imageHash === existing.hash?.image && existing.hash?.digest !== undefined && isRegistryDigest(existing.hash.digest)
++-            ? { imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`, digest: existing.hash.digest }
+++            ? { imageRef: unchangedImageRef(existing, imageRef, existing.hash.digest), digest: existing.hash.digest }
++             : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);
++         }));
++         const deploymentImageRef = published.imageRef;
++@@ -1456,7 +1473,7 @@
++               existing.hash?.digest !== undefined &&
++               isRegistryDigest(existing.hash.digest)
++                 ? {
++-                    imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`,
+++                    imageRef: unchangedImageRef(existing, imageRef, existing.hash.digest),
++                     digest: existing.hash.digest,
++                   }
++                 : yield* buildAndPushImage(
++diff --git a/lib/Cloudflare/Containers/ContainerProvider.js b/lib/Cloudflare/Containers/ContainerProvider.js
++--- a/lib/Cloudflare/Containers/ContainerProvider.js
+++++ b/lib/Cloudflare/Containers/ContainerProvider.js
++@@ -75,6 +75,15 @@
++         return undefined;
++     const digest = imageRef.slice(separator + 1);
++     return isRegistryDigest(digest) ? digest : undefined;
+++};
+++// The reference an application keeps while its image input is unchanged: the one it runs, when
+++// that names the recorded digest. A publication shared before its key held the repository pushed
+++// the digest to another application's repository only, so this one's own may not hold it.
+++const unchangedImageRef = (existing, imageRef, digest) => {
+++    const running = existing.configuration?.image;
+++    return typeof running === "string" && digestFromImageRef(running) === digest
+++        ? running
+++        : `${repositoryFromImageRef(imageRef)}@${digest}`;
++ };
++ export const LiveContainerProvider = () => Provider.effect(ContainerPlatform, Effect.gen(function* () {
++     const { dotAlchemy } = yield* AlchemyContext;
++@@ -493,6 +502,9 @@
++             accountId,
++             props.registryId ?? "registry.cloudflare.com",
++             props.publish?.repository,
+++            // The repository this caller pushes to: applications built from one context share an
+++            // image hash, and a publication shared between them pushed to one repository only.
+++            repositoryFromImageRef(imageRef),
++             publicationPlatform,
++             build.kind,
++             imageHash,
++@@ -638,7 +650,7 @@
++                 build = { kind: "external", ...frozen };
++             }
++             return imageHash === existing.hash?.image && existing.hash?.digest !== undefined && isRegistryDigest(existing.hash.digest)
++-                ? { imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`, digest: existing.hash.digest }
+++                ? { imageRef: unchangedImageRef(existing, imageRef, existing.hash.digest), digest: existing.hash.digest }
++                 : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);
++         }));
++         const deploymentImageRef = published.imageRef;
++@@ -977,7 +989,7 @@
++                     existing.hash?.digest !== undefined &&
++                     isRegistryDigest(existing.hash.digest)
++                     ? {
++-                        imageRef: `${repositoryFromImageRef(imageRef)}@${existing.hash.digest}`,
+++                        imageRef: unchangedImageRef(existing, imageRef, existing.hash.digest),
++                         digest: existing.hash.digest,
++                     }
++                     : yield* buildAndPushImage(id, news, build, imageRef, imageHash, undefined, session);

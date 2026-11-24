@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
+import { detachFromCaller } from "./caller-signal.ts";
 import { HomePeerAccess, HomePeerSource, peerTarget } from "./runtime-slots/peer-access.ts";
 import {
   SlotRefused,
@@ -22,6 +23,7 @@ declare global {
 /** Only a container-bound loopback supplies the source; no request header selects its identity. */
 export class PoolHomePeer extends WorkerEntrypoint<PoolEnvironment, { source: HomePeerSource }> {
   async fetch(request: Request) {
+    request = detachFromCaller(request);
     const url = new URL(request.url);
     const match = /^\/peer\/(0|[1-9][0-9]{0,2})$/.exec(url.pathname);
     if (

@@ -65,11 +65,11 @@ test("publisher requests are read-only and never receive person credentials", as
 });
 
 test("source reads preserve official app bytes and never follow redirects", async () => {
-  const document = '{"package":"@example/gmail","files":[]}';
+  const document = '{"package":"@example/google-calendar","files":[]}';
   const response = await handleCatalog(
-    new Request("https://app.signalbox.run/catalog/apps/gmail.json"),
+    new Request("https://app.signalbox.run/catalog/apps/google-calendar.json"),
     async (input) => {
-      assert.equal(String(input), "https://catalog.executor.sh/apps/gmail.json");
+      assert.equal(String(input), "https://catalog.executor.sh/apps/google-calendar.json");
       return new Response(document);
     },
   );

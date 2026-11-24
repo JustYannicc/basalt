@@ -99,8 +99,9 @@ test("the retry count runs after every gate verdict but can never change it", ()
     step.with?.name?.startsWith("check-e2e-retries-"),
   );
   assert.ok(gate >= 0 && gate < download && download < count && count < upload);
-  // Downloads within the run need no token scope beyond the workflow's read-only default.
-  assert.equal(job.permissions, undefined);
+  // Downloads within the run need no more than read-only contents; actions: read only lets a re-run
+  // attempt find the flake-rerun.yml run that started it.
+  assert.deepEqual(job.permissions, { actions: "read", contents: "read" });
   assert.equal(job.steps[gate].if, undefined);
   assert.equal(job.steps[gate]["continue-on-error"], undefined);
   for (const step of [job.steps[download], job.steps[count], job.steps[upload]]) {

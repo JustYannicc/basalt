@@ -7,6 +7,7 @@ import { digest } from "./computer-home.ts";
 import { setupTtl } from "./setup-links.ts";
 import { signEnvelope, signPoolToken } from "./token.ts";
 import { HomeClient } from "./control.ts";
+import { BackendFailure } from "./json.ts";
 
 const signingKey = "ab".repeat(32);
 const owner = "tools-user-1";
@@ -552,9 +553,9 @@ test("switch changes the pool on the existing key and clears evidence from the p
   ]);
 });
 
-test("failed mint remains recoverable by the Home display tag before tools access is returned", async () => {
+test("a failed mint keeps no row and upkeep revokes the key by its Home display tag", async () => {
   const f = await fixture();
-  f.home.mintFailure = new Error("backend timed out after create");
+  f.home.mintFailure = new BackendFailure(504);
   f.home.orphanKeyIds = [91];
   const setup = await f.context();
   const intent = String(setup.value.intent);
@@ -567,16 +568,12 @@ test("failed mint remains recoverable by the Home display tag before tools acces
   assert.equal(f.home.mints.length, 1);
   f.home.mintFailure = undefined;
 
-  const pendingList = await f.action("computers", owner, intent);
-  assert.equal(pendingList.status, 200);
-  const computer = ((await pendingList.json()) as { computers: { id: string; state: string }[] })
-    .computers[0]!;
-  assert.equal(computer.state, "issuing");
-  const revoked = await f.action("revoke", owner, intent, { id: computer.id });
-  assert.equal(revoked.status, 200, await revoked.clone().text());
-  assert.deepEqual(f.home.found, [computer.id]);
+  const list = await f.action("computers", owner, intent);
+  assert.equal(list.status, 200);
+  assert.deepEqual(((await list.json()) as { computers: unknown[] }).computers, []);
+  await f.computers.expire();
+  assert.deepEqual(f.home.found, [f.home.mints[0]!.computer]);
   assert.deepEqual(f.home.revoked, [91]);
-  assert.deepEqual(await revoked.json(), { toolsKeyId });
 });
 
 test("scheduled observation does not wait an extra period behind a newer list cache", async () => {

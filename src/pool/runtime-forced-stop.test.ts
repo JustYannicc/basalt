@@ -30,8 +30,18 @@ test("the timing module has no imports and matches the values the runtime enforc
   );
   assert.equal(runtimeStartupMs, poolLifecycle.startupTimeoutMs);
   assert.equal(readinessReadMs, policyHealthLeaseMs);
-  assert.equal(forcedRestartServesWithinMs, 298_000);
-  assert.equal(forcedRestartServesWithinHeldStreamsMs, 538_000);
+  assert.equal(forcedRestartServesWithinMs, 343_000);
+  assert.equal(forcedRestartServesWithinHeldStreamsMs, 583_000);
+});
+
+test("the controller's startup allowance is the supervisor's own startup budget", async () => {
+  const supervisor = await readFile(
+    new URL("../../containers/pool/supervisor.py", import.meta.url),
+    "utf8",
+  );
+  const budget = /^STARTUP_TIMEOUT_SECONDS = (\d+)$/mu.exec(supervisor);
+  assert.ok(budget, "the supervisor's startup budget moved: update runtimeStartupMs with it");
+  assert.equal(runtimeStartupMs, Number(budget[1]) * 1_000);
 });
 
 test("a forced stop waits longer than the supervisor's own shutdown grace", async () => {
@@ -39,12 +49,14 @@ test("a forced stop waits longer than the supervisor's own shutdown grace", asyn
     new URL("../../containers/pool/supervisor.py", import.meta.url),
     "utf8",
   );
-  // terminate_children: SIGTERM, a grace, then kill and a one-second wait.
-  const grace =
-    /grace_until = time\.monotonic\(\) \+ remaining\(\d+ if deadline else (\d+)\)/u.exec(
-      supervisor,
-    );
+  // terminate_children: SIGTERM, the named grace, then kill and a one-second wait.
+  const grace = /^CHILD_STOP_GRACE_SECONDS = (\d+)$/mu.exec(supervisor);
   assert.ok(grace, "the supervisor's child grace moved: update supervisorStopGraceMs with it");
+  assert.match(
+    supervisor,
+    /def terminate_children[\s\S]*?CHILD_STOP_GRACE_SECONDS - 1 if deadline else CHILD_STOP_GRACE_SECONDS/u,
+    "terminate_children must use the named grace",
+  );
   assert.equal(supervisorStopGraceMs, (Number(grace[1]) + 1) * 1_000);
   assert.ok(
     forcedStopGraceMs > supervisorStopGraceMs,

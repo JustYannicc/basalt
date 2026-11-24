@@ -60,25 +60,29 @@ export class RuntimeForcedRestart {
     this.driver = driver;
     this.clock = new UnservingClock(storage);
   }
-  /** One recovery pass, after its warm refused: returns true once the container was stopped. */
-  async consider(pass: Pass, signal: AbortSignal) {
+  /**
+   * One recovery pass, after its warm refused: "stopped" once the container was stopped, "stalled"
+   * when it runs, refuses and nothing will stop it until a person acts, "declined" otherwise.
+   */
+  async consider(pass: Pass, signal: AbortSignal): Promise<"stopped" | "stalled" | "declined"> {
     const reason = runtimeFailureDiagnostic(pass.refusal, "slot_health").runtimeReason;
     // A single `running: false` read proves nothing, so it neither stops nor restarts the bound.
-    if (!pass.retained.running) return false;
+    if (!pass.retained.running) return "declined";
     if (!notServing.has(reason) || !holdsSelectedBoot(pass.retained, pass.previous)) {
       // The bound counts only an unbroken stretch of a running, refusing selected boot.
       this.declined = undefined;
       await this.clock.notRefusing();
-      return false;
+      return "declined";
     }
     const now = Date.now();
     const state = await this.clock.refusing(pass.previous, now);
     // A forced restart that hasn't served yet is never stopped again: whatever runs is its own
     // start, slow or stuck, and its budget ends it in needs-a-person.
-    if (state.restartedAt !== undefined) return false;
+    if (state.restartedAt !== undefined) return state.needsPerson ? "stalled" : "declined";
     const decision = unservingDecision(state, now);
     if (decision === "restart_limit") this.report(await this.clock.needsPerson(decision, now), now);
-    if (decision !== "stop") return false;
+    if (decision === "needs_person" || decision === "restart_limit") return "stalled";
+    if (decision !== "stop") return "declined";
     // A fence, candidate or policy edit committed since the pass began must win over the stop.
     const unchanged = await this.storage.transact(async (latest) => {
       const selection = latest.selection;
@@ -92,7 +96,7 @@ export class RuntimeForcedRestart {
         !selection.draining
       );
     });
-    if (!unchanged) return false;
+    if (!unchanged) return "declined";
     let result: Awaited<ReturnType<BoundSlotDriver["stopRefusing"]>>;
     try {
       result = await this.driver.stopRefusing(pass.previous, state.since ?? now, signal);
@@ -110,7 +114,7 @@ export class RuntimeForcedRestart {
         });
       this.declined = declined;
       if (state.streams) await this.clock.notWaiting();
-      return false;
+      return "declined";
     }
     this.declined = undefined;
     if (!result.waiting && state.streams) await this.clock.notWaiting();
@@ -128,11 +132,11 @@ export class RuntimeForcedRestart {
           activeStreams: result.waiting.active,
           stillSince: result.waiting.stillSince,
         });
-      return false;
+      return "declined";
     }
     if (result.limited) this.report(await this.clock.needsPerson("restart_limit", now), now);
     else if (!result.stopped) this.report(await this.clock.needsPerson("stop_failed", now), now);
-    if (!result.stopped) return false;
+    if (!result.stopped) return "stalled";
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "stopped",
       at: now,
@@ -141,12 +145,14 @@ export class RuntimeForcedRestart {
       hard: result.hard,
     });
     await this.clock.restarted(now);
-    return true;
+    return "stopped";
   }
   /** Any refusal: a restart, forced or not, that still hasn't served in its budget has failed. */
   async refused() {
     const now = Date.now();
-    this.report(await this.clock.failedSince(now), now);
+    const state = await this.clock.failedSince(now);
+    this.report(state, now);
+    return state;
   }
   private report(state: UnservingState, now: number) {
     if (state.needsPerson?.at === now)

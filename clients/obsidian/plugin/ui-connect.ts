@@ -1,6 +1,6 @@
 import { Modal } from "obsidian";
 import type { SyncHost } from "./host.ts";
-import type { ConnectRequest } from "../link.ts";
+import { linkedToOtherVault, type ConnectRequest } from "../link.ts";
 import { formatBytes } from "../status.ts";
 
 type Scope =
@@ -137,7 +137,7 @@ export class ConnectModal extends Modal {
         : "This Mac becomes the source: everything above uploads once, and the import resumes if interrupted. Phones join the cloud copy afterwards.",
     });
 
-    if (request.vaultName && request.vaultName !== host.vaultName)
+    if (linkedToOtherVault(request.vaultName, host.vaultName))
       contentEl.createDiv({
         cls: "basalt-sync-callout is-warn",
         text: `This link was made for the vault “${request.vaultName}”. You're in “${host.vaultName}”. Only continue if this is the vault you want in Signalbox.`,

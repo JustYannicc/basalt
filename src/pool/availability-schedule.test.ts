@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
-import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { runAvailabilityProbe, type EpisodeMemory } from "./availability-schedule.ts";
 import { capturePoolMonitor, startPoolMonitor } from "../telemetry/pool-monitor.ts";
 import { availabilityCron } from "./availability-config.ts";
+import { AvailabilityEpisodes } from "./availability-episode.ts";
+import type { ProbeFailure, ProbeResult } from "./availability.ts";
 
 const env = {
   POOL_AVAILABILITY_TARGET: "fixture-pool",
@@ -541,4 +543,285 @@ test("a session failure the read already logged is not logged again by the check
     messages.find((item) => item.type === "event")?.payload.message ?? "",
     /request_reliability:collection_unavailable/,
   );
+});
+
+function episodeFixture(t: TestContext) {
+  const messages: ReturnType<typeof unpack>[] = [];
+  let refused: "event" | "check_in" | undefined;
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    const message = unpack(init);
+    messages.push(message);
+    return new Response(null, { status: message.type === refused ? 429 : 202 });
+  });
+  t.mock.method(console, "error", () => {});
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const minute = async (
+    failures: ProbeFailure[],
+    options: { reliabilityFails?: boolean; episodes?: EpisodeMemory; pool?: string } = {},
+  ) => {
+    const before = messages.length;
+    await runAvailabilityProbe(
+      { ...env, POOL_AVAILABILITY_TARGET: options.pool ?? env.POOL_AVAILABILITY_TARGET },
+      async (): Promise<ProbeResult> => ({ ok: failures.length === 0, failures }),
+      options.reliabilityFails
+        ? async (): Promise<PoolReliabilitySlo> => {
+            throw new Error("history read failed");
+          }
+        : undefined,
+      undefined,
+      options.episodes ?? memory,
+    ).catch(() => {});
+    return messages
+      .slice(before)
+      .filter((item) => item.type === "event")
+      .map((item) => item.payload.tags.error_code);
+  };
+  return { messages, minute, refuse: (type?: "event" | "check_in") => (refused = type) };
+}
+const overdue: ProbeFailure = { guard: "membership", reason: "renewal_overdue" };
+const unavailable: ProbeFailure = { guard: "runtime", reason: "unavailable" };
+
+test("a failure that continues is reported once, until a passing run ends its episode", async (t) => {
+  const { messages, minute } = episodeFixture(t);
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"]);
+  // The same failure a minute later is the same episode: 2 events a minute drained the quota.
+  assert.deepEqual(await minute([overdue]), []);
+  assert.deepEqual(await minute([]), []);
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"], "the pass ended it");
+  assert.deepEqual(
+    await minute([overdue, unavailable]),
+    ["pool_availability_failure"],
+    "a changed set of failures starts a new episode",
+  );
+  assert.equal(messages.filter((item) => item.payload.status === "error").length, 4);
+});
+
+test("a failing reliability reason is reported once, and again once it has stopped", async (t) => {
+  const { minute } = episodeFixture(t);
+  const reliable = ["pool_request_reliability_unavailable"];
+  assert.deepEqual(await minute([], { reliabilityFails: true }), reliable);
+  assert.deepEqual(await minute([], { reliabilityFails: true }), []);
+  assert.deepEqual(await minute([]), []);
+  assert.deepEqual(await minute([], { reliabilityFails: true }), reliable);
+});
+
+test("an episode start whose events Sentry refused is sent again the next minute", async (t) => {
+  const { minute, refuse } = episodeFixture(t);
+  refuse("event");
+  assert.deepEqual(await minute([overdue], { reliabilityFails: true }), [
+    "pool_availability_failure",
+    "pool_request_reliability_unavailable",
+  ]);
+  refuse();
+  assert.deepEqual(await minute([overdue], { reliabilityFails: true }), [
+    "pool_availability_failure",
+    "pool_request_reliability_unavailable",
+  ]);
+  assert.deepEqual(await minute([overdue], { reliabilityFails: true }), []);
+});
+
+test("a refused check-in alone does not send an accepted episode start again", async (t) => {
+  const { minute, refuse } = episodeFixture(t);
+  refuse("check_in");
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"]);
+  assert.deepEqual(await minute([overdue]), []);
+});
+
+test("another pool's same failure is its own episode", async (t) => {
+  const { minute } = episodeFixture(t);
+  assert.deepEqual(await minute([overdue]), ["pool_availability_failure"]);
+  assert.deepEqual(await minute([overdue], { pool: "other-pool" }), ["pool_availability_failure"]);
+});
+
+test("with its memory unreachable, a failing run reports on the quarter hour only", async (t) => {
+  const { messages, minute } = episodeFixture(t);
+  const unreachable: EpisodeMemory = {
+    read: () => Promise.reject(new Error("pool object unavailable")),
+    write: () => Promise.reject(new Error("pool object unavailable")),
+  };
+  let clock = Date.parse("2026-11-23T03:14:00Z");
+  t.mock.method(Date, "now", () => clock);
+  const reported: number[] = [];
+  for (let i = 0; i < 31; i++, clock += 60_000)
+    if ((await minute([unavailable], { episodes: unreachable })).length) reported.push(i);
+  assert.deepEqual(reported, [1, 16], "03:15 and 03:30 only");
+  assert.equal(messages.filter((item) => item.payload.status === "error").length, 31);
+});
+
+test("a stuck usage rollup is one event per pool's episode, names the pool and keeps the check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => void errors.push(args));
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const first = "0123456789abcdef";
+  const second = "fedcba9876543210";
+  const minute = async (stuck: () => Promise<readonly string[]>) => {
+    const before = messages.length;
+    await runAvailabilityProbe(
+      env,
+      async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+      undefined,
+      undefined,
+      memory,
+      stuck,
+    );
+    const sent = messages.slice(before);
+    const checkIn = sent.find(
+      (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+    );
+    assert.equal(checkIn?.payload.status, "ok", "the check-in stays ok");
+    const events = sent.filter((item) => item.type === "event");
+    for (const event of events)
+      assert.deepEqual(
+        event.payload.contexts.pool_probe.failures.filter(
+          (failure: { guard: string }) => failure.guard !== "request_reliability",
+        ),
+        [],
+        "no availability failure",
+      );
+    return events.map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]);
+  };
+  const event = (pool: string) => ["pool_usage_rollup_stuck", pool];
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "one event, naming the pool");
+  assert.deepEqual(await minute(async () => [first]), [], "the same episode a minute later");
+  assert.deepEqual(
+    await minute(async () => {
+      throw new Error("state unreadable");
+    }),
+    [],
+    "an unreadable state keeps the episode instead of ending it",
+  );
+  assert.deepEqual(await minute(async () => [first]), [], "still the same episode");
+  assert.deepEqual(
+    await minute(async () => [first, second]),
+    [event(second)],
+    "a second pool's stuck rollup is its own episode",
+  );
+  assert.deepEqual(await minute(async () => []), [], "cleared: the episodes end");
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "stuck again is a new one");
+  assert.equal(
+    errors.some(([line]) => line === "POOL_AVAILABILITY_FAILURE"),
+    false,
+    "the availability failures list stays empty",
+  );
+  // The event carries the closed reason and the pool's own 16-hex id, nothing else of the pool's.
+  const stuckEvent = messages.find(
+    (item) => item.payload.tags?.error_code === "pool_usage_rollup_stuck",
+  );
+  assert.deepEqual(stuckEvent?.payload.contexts.pool_probe.failures, [
+    { guard: "request_reliability", reason: "usage_rollup_stuck", pool: first },
+  ]);
+  assert.equal(stuckEvent?.payload.contexts.request_reliability, undefined);
+  assertNoPrivateDiagnostics(messages);
+});
+
+test("a usage rollup stuck before reaching any pool is reported without a pool, check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  await runAvailabilityProbe(
+    env,
+    async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+    undefined,
+    undefined,
+    undefined,
+    async () => [""],
+  );
+  const checkIn = messages.find(
+    (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+  );
+  assert.equal(checkIn?.payload.status, "ok");
+  const events = messages.filter((item) => item.type === "event");
+  assert.deepEqual(
+    events.map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]),
+    [["pool_usage_rollup_stuck", undefined]],
+  );
+});
+
+test("stuck capture-hour counts are their own closed reason, one event per pool's episode, check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => void errors.push(args));
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const first = "0123456789abcdef";
+  const second = "fedcba9876543210";
+  const minute = async (
+    capture: () => Promise<readonly string[]>,
+    rollup: () => Promise<readonly string[]> = async () => [],
+  ) => {
+    const before = messages.length;
+    await runAvailabilityProbe(
+      env,
+      async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+      undefined,
+      undefined,
+      memory,
+      rollup,
+      capture,
+    );
+    const sent = messages.slice(before);
+    const checkIn = sent.find(
+      (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+    );
+    assert.equal(checkIn?.payload.status, "ok", "the check-in stays ok");
+    return sent
+      .filter((item) => item.type === "event")
+      .map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]);
+  };
+  const event = (pool: string) => ["pool_capture_hours_stuck", pool];
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "one event, naming the pool");
+  assert.deepEqual(await minute(async () => [first]), [], "the same episode a minute later");
+  assert.deepEqual(
+    await minute(async () => {
+      throw new Error("state unreadable");
+    }),
+    [],
+    "an unreadable state keeps the episode instead of ending it",
+  );
+  assert.deepEqual(
+    await minute(
+      async () => [first, second],
+      async () => [first],
+    ),
+    [["pool_usage_rollup_stuck", first], event(second)],
+    "another pool, and the rollup's own reason on the same pool, are episodes of their own",
+  );
+  assert.deepEqual(await minute(async () => []), [], "cleared: the episodes end");
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "stuck again is a new one");
+  assert.deepEqual(await minute(async () => [""]), [["pool_capture_hours_stuck", undefined]]);
+  assert.equal(
+    errors.some(([line]) => line === "POOL_AVAILABILITY_FAILURE"),
+    false,
+    "the availability failures list stays empty",
+  );
+  const stuckEvent = messages.find(
+    (item) => item.payload.tags?.error_code === "pool_capture_hours_stuck",
+  );
+  assert.deepEqual(stuckEvent?.payload.contexts.pool_probe.failures, [
+    { guard: "request_reliability", reason: "capture_hours_stuck", pool: first },
+  ]);
+  assert.equal(stuckEvent?.payload.contexts.request_reliability, undefined);
+  assertNoPrivateDiagnostics(messages);
 });

@@ -304,6 +304,8 @@ export const rootSettles = (input: RootSettleInput) =>
 
     // Copied from ContainerProvider.ts (`computeImage`, `upsertApplication`): a pre-pushed image
     // keeps the recorded digest while its hash is unchanged, and deploys the reference's otherwise.
+    // While unchanged, the application keeps the reference it runs when that names the recorded
+    // digest (carry 0767).
     const image = String(news.image);
     const publish = record(news.publish) ? news.publish : {};
     const imageName =
@@ -314,10 +316,8 @@ export const rootSettles = (input: RootSettleInput) =>
     const prepushed = image.startsWith(`${registryId}/`)
       ? normalizePrepushedRef(image, registryId, input.accountId)
       : undefined;
-    const digest =
-      imageHash === hash.image && isRegistryDigest(hash.digest)
-        ? hash.digest
-        : prepushed && digestFromImageRef(prepushed);
+    const unchanged = imageHash === hash.image && isRegistryDigest(hash.digest);
+    const digest = unchanged ? hash.digest : prepushed && digestFromImageRef(prepushed);
     if (!prepushed || !digest)
       return yield* refuse(
         "root-apply-unknown",
@@ -325,11 +325,14 @@ export const rootSettles = (input: RootSettleInput) =>
         "The root's image is not a digest reference in the account's registry, so the apply would push it or ask the registry for its digest.",
         "Pin the root to the digest reference State records.",
       );
+    const running = record(existing.configuration) ? existing.configuration.image : undefined;
     const env = makeContainerEnv(news as AnyContainerApplicationProps, input.accountId, bindings);
     const configuration = desiredConfiguration(
       news,
       env,
-      `${repositoryFromImageRef(prepushed)}@${digest}`,
+      unchanged && typeof running === "string" && digestFromImageRef(running) === digest
+        ? running
+        : `${repositoryFromImageRef(prepushed)}@${digest}`,
     );
     if (
       equalContainerValues(existing.configuration, configuration) &&

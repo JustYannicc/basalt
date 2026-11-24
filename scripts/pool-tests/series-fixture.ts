@@ -6,6 +6,7 @@ import { digest } from "../../src/pool/backend-users.ts";
 import { reference, timestamp, type ModelRequest } from "../../src/pool/model-history/record.ts";
 import { migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { insertRequests } from "../../src/pool/model-history/store.ts";
+import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import type {
   PoolUsageSeriesInput,
   SeriesAuthority,
@@ -50,12 +51,14 @@ export async function seriesFixture(
     let sequence = 0;
     const source = await digest("fixture-import");
     const poolId = (await digest(pool)).slice(0, 16);
+    // Keyed as every writer keys a request: the digest of its final source and record.
     const row = async (overrides: Partial<ModelRequest> = {}): Promise<ModelRequest> => {
-      const sourceRecord = await digest(String(++sequence));
+      const recordOf = overrides.sourceRecord ?? (await digest(String(++sequence)));
+      const sourceOf = overrides.source ?? source;
       return {
-        id: await digest(`${source}:${sourceRecord}`),
+        id: await digest(JSON.stringify([sourceOf, recordOf])),
         source,
-        sourceRecord,
+        sourceRecord: recordOf,
         timestamp: timestamp("2026-01-01T00:45:00Z"),
         pool: poolId,
         person: null,
@@ -115,3 +118,26 @@ export async function accountAuthority() {
   };
   return { source, visible, hidden, authority };
 }
+
+/**
+ * A database as history migration v15 left it: v16's trigger, functions and tables dropped and its
+ * step unrecorded, so a test proves v15's own backfill, or applies v16 to existing history.
+ */
+export async function withoutPeopleRollup(db: HistoryDatabase) {
+  await db.query("DROP TRIGGER basalt_model_usage_people_rollup ON basalt_model_requests");
+  await db.query(`DROP FUNCTION basalt_model_usage_people_rollup(),
+    basalt_model_usage_people_recompute(varchar,timestamptz,timestamptz),
+    basalt_model_usage_people_apply(varchar,timestamptz,bigint,jsonb)`);
+  await db.query(`DROP TABLE basalt_model_usage_people_hourly, basalt_model_usage_people_hours,
+    basalt_model_usage_people_ready`);
+  await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+    historyUsagePeopleRollupVersion,
+  ]);
+}
+
+/** The series fixture without v16, for the tests of v15's own backfill and tick. */
+export const v15Fixture = (work: Parameters<typeof seriesFixture>[0]) =>
+  seriesFixture(async (f) => {
+    await withoutPeopleRollup(f.db);
+    await work(f);
+  });

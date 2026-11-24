@@ -36,7 +36,7 @@
     },
     "appAccountContinueAnywayCloses": {
       "fixtures": "actors",
-      "title": "Continue anyway saves a rejected key, closes the Connect dialog and the next click opens the new row's menu",
+      "title": "Continue anyway saves a rejected key and checks it once, closes the Connect dialog and the next click opens the new row's menu",
       "targets": {
         "self-host": {
           "status": "scheduled"

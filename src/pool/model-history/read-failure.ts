@@ -9,7 +9,8 @@ export type HistoryReadAction =
   | "poolUsageSummary"
   | "poolOverview"
   | "poolPersonalOverview"
-  | "lastSuccessAt";
+  | "lastSuccessAt"
+  | "poolUsageHistory";
 
 /** Which part of the summary a statement belongs to; ordinals shift with the data, these don't. */
 export type HistoryReadStep =
@@ -22,7 +23,10 @@ export type HistoryReadStep =
   | "incidents"
   | "commit"
   | "rollback"
-  | "connect";
+  | "connect"
+  /** The request history's page of rows, then the prices of that page. */
+  | "page"
+  | "prices";
 
 /** The first Postgres code in the error or the causes it carries; never the message. */
 function sqlstate(error: unknown) {
@@ -53,7 +57,7 @@ function readFailure(error: unknown) {
  */
 export function watchHistoryRead(
   action: HistoryReadAction,
-  phases: "series" | "summary" | undefined,
+  phases: "series" | "summary" | "requests" | undefined,
   now: () => number = () => performance.now(),
 ) {
   const started = now();

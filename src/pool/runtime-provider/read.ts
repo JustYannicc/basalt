@@ -25,9 +25,51 @@ const Envelope = Schema.Struct({
 const Instance = Schema.Struct({
   id: Schema.NonEmptyString,
   application_id: Schema.NonEmptyString,
-  status: Schema.Struct({ state: Schema.Literal("running") }),
+  status: Schema.Struct({ state: Schema.NonEmptyString }),
   image: Schema.NonEmptyString,
 });
+/**
+ * Cloudflare's API reference for GET .../containers/applications/{id}/instances-v2 enumerates
+ * `status.state`. The list's own `state=active` filter is another axis: a destroyed instance stays
+ * listed there as "inactive" (seen on production on 22 Nov 2026, over an hour after the destroy).
+ */
+const documentedStates = new Set([
+  "provisioning",
+  "running",
+  "failed",
+  "stopping",
+  "stopped",
+  "unhealthy",
+  "inactive",
+  "unknown",
+]);
+/**
+ * The closed stopped list is exactly "inactive", the state production reported for a destroyed
+ * instance. The reference does not say what inactive means or whether such an instance can start
+ * again; it reports the application's configured image for an instance without a placement, which
+ * suggests inactive means no placement. That is an assumption. "stopped" and "failed" are not in
+ * it: their Durable Object can start them again, so they count as present, each with its own
+ * reason. What keeps a retired instance stopped is the endpoint's retired record, which its start
+ * refuses; an admit over that record is not refused, and no current path reaches it.
+ */
+const stopped = (state: string) => state === "inactive";
+/** Any other instance that may still run refuses the whole read, as any answer but running did. */
+const unsettled = (state: string) => state !== "running" && !stopped(state);
+/** Given only by a caller whose driver independently reported this exact boot stopped. */
+export interface DriverStopped {
+  readonly driverStopped: true;
+}
+/** Why an absence proof failed, as one closed value. */
+type AbsenceRefusal =
+  | "invalid"
+  | "read"
+  | "proof"
+  | "instances"
+  | "unknown_state"
+  | "slow"
+  | "stopped"
+  | "failed"
+  | "listed";
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
 export class ProviderObservationRefused extends Error {
   readonly status = "unknown";
@@ -37,6 +79,10 @@ export class ProviderObservationRefused extends Error {
     this.code = code;
   }
 }
+/** A state outside the documented list: never absent, never proof, and named on its own. */
+class UndocumentedInstanceState extends ProviderObservationRefused {}
+/** No credential, or one the provider refuses: nothing reads it again until a person acts. */
+export class ProviderCredentialRefused extends ProviderObservationRefused {}
 
 /** A read-only credential observes actual provider state; desired bindings never stand in for it. */
 export class RuntimeProviderReader {
@@ -84,7 +130,7 @@ export class RuntimeProviderReader {
     try {
       // Resolve on each observation so provisioning or rotation needs no Worker restart.
       const token = await this.credential(signal);
-      if (!token) throw new ProviderObservationRefused();
+      if (!token) throw new ProviderCredentialRefused();
       const response = await this.fetchResponse(url, {
         method: "GET",
         redirect: "manual",
@@ -93,6 +139,8 @@ export class RuntimeProviderReader {
       });
       if (response.status !== 200 || !response.body) {
         await response.body?.cancel();
+        if (response.status === 401 || response.status === 403)
+          throw new ProviderCredentialRefused();
         throw new ProviderObservationRefused();
       }
       const reader = response.body.getReader();
@@ -141,8 +189,14 @@ export class RuntimeProviderReader {
       const before = await application();
       let instances: string[] | undefined;
       if (instanceId !== undefined) {
-        instances = await this.instances(base, expected, signal);
-        if (!instances.includes(instanceId)) throw new ProviderObservationRefused();
+        const listed = await this.instances(base, expected, signal);
+        // The named instance must run; an inactive sibling holds no compute, any other refuses.
+        if (
+          !listed.some((value) => value.id === instanceId && value.state === "running") ||
+          listed.some((value) => value.id !== instanceId && unsettled(value.state))
+        )
+          throw new ProviderObservationRefused();
+        instances = listed.filter((value) => !stopped(value.state)).map((value) => value.id);
         const after = await application();
         if (canonicalProviderValue(before) !== canonicalProviderValue(after))
           throw new ProviderObservationRefused();
@@ -177,38 +231,69 @@ export class RuntimeProviderReader {
     )
       throw new ProviderObservationRefused();
   }
+  /**
+   * Absent means not listed. With the driver's own report that this boot stopped, an instance the
+   * provider lists only as inactive is absent too; nothing else stands in for the provider.
+   */
   async absent(
     expected: RuntimeProviderTarget,
     instanceId: string,
     signal = AbortSignal.timeout(15_000),
+    driver?: DriverStopped,
   ) {
     if (!instanceId) return false;
-    return this.absence(expected, signal, instanceId);
+    return this.absence(expected, signal, instanceId, driver?.driverStopped === true);
   }
   empty(expected: RuntimeProviderTarget, signal = AbortSignal.timeout(15_000)) {
     return this.absence(expected, signal);
   }
-  private async absence(expected: RuntimeProviderTarget, signal: AbortSignal, instanceId?: string) {
+  private async absence(
+    expected: RuntimeProviderTarget,
+    signal: AbortSignal,
+    instanceId?: string,
+    driverStopped = false,
+  ) {
+    const refusal = await this.absenceRefusal(expected, signal, instanceId, driverStopped);
+    // Retirement polls this every fleet tick; the reason is closed and names no runtime.
+    if (refusal) console.info("POOL_PROVIDER_ABSENCE", { reason: refusal });
+    return refusal === undefined;
+  }
+  private async absenceRefusal(
+    expected: RuntimeProviderTarget,
+    signal: AbortSignal,
+    instanceId: string | undefined,
+    driverStopped: boolean,
+  ): Promise<AbsenceRefusal | undefined> {
+    let stage: AbsenceRefusal = "invalid";
     try {
-      if (!/^[a-f0-9]{32}$/u.test(expected.accountId) || !expected.applicationId) return false;
+      if (!/^[a-f0-9]{32}$/u.test(expected.accountId) || !expected.applicationId) return "invalid";
+      stage = "read";
       const at = this.now();
       const base = `https://api.cloudflare.com/client/v4/accounts/${expected.accountId}/containers/applications/${encodeURIComponent(expected.applicationId)}`;
       const before = decodeProviderApplication((await this.read(base, signal)).result);
+      stage = "proof";
       await this.prove(before, expected);
-      const instances = await this.instances(base, expected, signal);
+      stage = "instances";
+      const listed = await this.instances(base, expected, signal);
+      stage = "read";
       const after = decodeProviderApplication((await this.read(base, signal)).result);
+      stage = "proof";
       await this.prove(after, expected);
-      return (
-        this.now() - at <= 30_000 &&
-        canonicalProviderValue(before) === canonicalProviderValue(after) &&
-        (instanceId === undefined ? instances.length === 0 : !instances.includes(instanceId))
-      );
-    } catch {
-      return false;
+      if (canonicalProviderValue(before) !== canonicalProviderValue(after)) return "proof";
+      if (this.now() - at > 30_000) return "slow";
+      // An empty application has no listed instance at all, a stopped one included.
+      if (instanceId === undefined) return listed.length > 0 ? "listed" : undefined;
+      if (listed.some((value) => value.id !== instanceId && unsettled(value.state)))
+        return "instances";
+      const target = listed.find((value) => value.id === instanceId);
+      if (!target || (driverStopped && stopped(target.state))) return undefined;
+      return target.state === "stopped" || target.state === "failed" ? target.state : "listed";
+    } catch (error) {
+      return error instanceof UndocumentedInstanceState ? "unknown_state" : stage;
     }
   }
   private async instances(base: string, expected: RuntimeProviderTarget, signal: AbortSignal) {
-    const ids = new Set<string>(),
+    const states = new Map<string, string>(),
       tokens = new Set<string>();
     let token: string | undefined;
     for (let page = 0; page < 100; page++) {
@@ -216,16 +301,20 @@ export class RuntimeProviderReader {
       if (token) query.set("page_token", token);
       const reply = await this.read(`${base}/instances-v2?${query}`, signal);
       for (const value of Schema.decodeUnknownSync(Schema.Array(Instance))(reply.result)) {
+        const state = value.status.state;
+        if (!documentedStates.has(state)) throw new UndocumentedInstanceState();
         if (
-          ids.has(value.id) ||
+          states.has(value.id) ||
           value.application_id !== expected.applicationId ||
-          !value.image.endsWith(`@${expected.imageDigest}`)
+          // A running instance must run the admitted image; the callers judge every other state.
+          (state === "running" && !value.image.endsWith(`@${expected.imageDigest}`))
         )
           throw new ProviderObservationRefused();
-        ids.add(value.id);
+        states.set(value.id, value.status.state);
       }
       const next = Schema.decodeUnknownSync(Pagination)(reply.result_info).next_page_token;
-      if (next === undefined || next === "") return [...ids].sort();
+      if (next === undefined || next === "")
+        return [...states.keys()].sort().map((id) => ({ id, state: states.get(id)! }));
       if (tokens.has(next)) throw new ProviderObservationRefused();
       tokens.add(next);
       token = next;

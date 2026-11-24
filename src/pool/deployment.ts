@@ -1,3 +1,4 @@
+import { poolWorkerCompatibility } from "./worker-compatibility.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -55,7 +56,10 @@ export const poolWorker = Effect.gen(function* () {
   const worker = yield* Cloudflare.Worker("PoolWorker", {
     main: fileURLToPath(new URL("./worker.ts", import.meta.url)),
     workersDev: false,
-    compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+    compatibility: {
+      date: poolWorkerCompatibility.date,
+      flags: [...poolWorkerCompatibility.flags],
+    },
     crons: ["*/5 * * * *", inventoryCron, ...(probeTarget ? [availabilityCron] : [])],
     observability: workerObservability,
     env: {

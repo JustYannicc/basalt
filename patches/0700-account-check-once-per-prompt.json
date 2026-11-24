@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-account-check-once-per-prompt",
+  "file": "0700-account-check-once-per-prompt.patch",
+  "content_sha256": "ba8c06c90c6c19f42bd31b6cad5faa656c4fce7952cf739ad91377cb616ac1c5",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

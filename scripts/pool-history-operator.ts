@@ -17,9 +17,19 @@ import {
   historyJournalReaderVersion,
   historyBackfillPath,
   historyBackfillVersion,
-  historySchemaApplyPath,
   historySchemaCatalogPath,
 } from "../src/pool/model-history/operator.ts";
+import {
+  historyUsageRollupBackfillVersion,
+  historyUsageRollupPath,
+  usageRollupHoldLimitMs,
+  usageRollupHourLimitMs,
+  usageRollupWalPerCall,
+} from "../src/pool/model-history/usage-rollup-backfill.ts";
+
+/** The whole backfill's write-ahead-log cap, and the pause that lets checkpoints recycle it. */
+export const usageRollupWalTotal = 1024 * 1024 * 1024;
+const usageRollupPauseMs = () => Number(process.env.USAGE_ROLLUP_PAUSE_MS ?? 2_000);
 
 import {
   historyJournalActivationMigration,
@@ -69,17 +79,22 @@ export function historyOperatorOptions(args: string[]) {
     !values.worker ||
     !/^[a-z0-9][a-z0-9-]{0,62}$/.test(values.worker) ||
     !values.plan ||
-    (operation !== "schema" && operation !== "backfill" && operation !== "journal-activation") ||
+    (operation !== "schema" &&
+      operation !== "backfill" &&
+      operation !== "journal-activation" &&
+      operation !== "usage-rollup") ||
     (values["readers-ready"] !== undefined &&
       (operation !== "journal-activation" ||
         values["readers-ready"] !== historyJournalReaderVersion)) ||
     (operation === "journal-activation" &&
       values.apply === true &&
       values["readers-ready"] !== historyJournalReaderVersion) ||
+    // Schema steps are applied only by a release's database step; this operator plans them.
+    (operation === "schema" && values.apply === true) ||
     Boolean(values.apply) !== Boolean(values.go)
   )
     throw new Error(
-      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation] [--apply --go] [--readers-ready checkpoint-count-v1]",
+      "Use --worker <deployed-script> --plan <private-file> [--operation schema|backfill|journal-activation|usage-rollup] [--apply --go for backfill, journal-activation or usage-rollup] [--readers-ready checkpoint-count-v1]",
     );
   return {
     worker: values.worker,
@@ -90,7 +105,7 @@ export function historyOperatorOptions(args: string[]) {
   } satisfies {
     worker: string;
     plan: string;
-    operation: "schema" | "backfill" | "journal-activation";
+    operation: "schema" | "backfill" | "journal-activation" | "usage-rollup";
     apply: boolean;
     readersReady?: string;
   };
@@ -207,10 +222,19 @@ function pendingMigrations(
 }
 
 function approvalFor(
-  operation: "schema" | "backfill" | "journal-activation",
+  operation: "schema" | "backfill" | "journal-activation" | "usage-rollup",
   report: Record<string, unknown>,
 ) {
   if (operation === "schema") return hashes(report);
+  if (operation === "usage-rollup") {
+    if (
+      report.version !== historyUsageRollupBackfillVersion ||
+      typeof report.digest !== "string" ||
+      !/^[a-f0-9]{64}$/.test(report.digest)
+    )
+      throw new Error("Invalid usage rollup plan");
+    return { digest: report.digest, plan: historyObject(report.plan) };
+  }
   if (operation === "journal-activation")
     return { ...hashes(report), readersReady: historyJournalReaderVersion };
   if (
@@ -237,6 +261,8 @@ export async function runHistoryOperator(
     throw new Error(
       "Verify deployed reader inventory, then acknowledge --readers-ready checkpoint-count-v1",
     );
+  if (options.operation === "schema" && options.apply)
+    throw new Error("History schema steps are applied only by a release");
   if (!/^[a-f0-9]{32}$/.test(accountId)) throw new Error("CLOUDFLARE_ACCOUNT_ID is required");
   let approval: ReturnType<typeof approvalFor> | undefined;
   let approvedSchemaState: string | undefined;
@@ -250,7 +276,7 @@ export async function runHistoryOperator(
       throw new Error("History schema plan target changed");
     const report = historyObject(saved.report);
     approval = approvalFor(options.operation, report);
-    if (options.operation !== "backfill") {
+    if (options.operation !== "backfill" && options.operation !== "usage-rollup") {
       const preview = schemaPreview(report, options.operation);
       if (
         JSON.stringify(report.pendingDdl) !== JSON.stringify(preview.pendingDdl) ||
@@ -321,8 +347,8 @@ export async function runHistoryOperator(
         ? historyJournalActivationPath
         : options.operation === "backfill"
           ? historyBackfillPath
-          : approval
-            ? historySchemaApplyPath
+          : options.operation === "usage-rollup"
+            ? historyUsageRollupPath
             : historySchemaCatalogPath;
     const operations = platform.env.POOL_OPERATIONS;
     const response = await historyOperatorStep("operator.request", () =>
@@ -343,6 +369,78 @@ export async function runHistoryOperator(
     let report = await historyOperatorStep("operator.response.json", async () =>
       historyObject(await response.json()),
     );
+    // Each rollup request recomputes hours within its time and write-ahead-log budget; the same
+    // approval resumes the rest. The run stops at a total WAL cap, or after 100 calls in a row that
+    // writers held off; either stop is at an hour boundary, so a later run resumes it.
+    if (options.operation === "usage-rollup" && approval) {
+      let wal = 0,
+        lost = 0;
+      for (let run = 1; report.status === "progress"; run++) {
+        if (run > 10_000 || !("digest" in approval) || report.digest !== approval.digest)
+          throw new Error("Invalid usage rollup progress");
+        // A response without a numeric WAL figure or a known stop fails closed: the caps depend on it.
+        const pools = report.pools;
+        const callWal = report.walBytes;
+        if (
+          !Array.isArray(pools) ||
+          typeof callWal !== "number" ||
+          !Number.isSafeInteger(callWal) ||
+          callWal < 0 ||
+          !["budget", "wal", "lock", "slow_hour", "slow_hold"].includes(String(report.stopped))
+        )
+          throw new Error("Invalid usage rollup progress");
+        wal += callWal;
+        const recomputed = pools.reduce((n: number, item: unknown) => {
+          const hours = historyObject(item).recomputedHours;
+          if (typeof hours !== "number" || !Number.isSafeInteger(hours) || hours < 0)
+            throw new Error("Invalid usage rollup progress");
+          return n + hours;
+        }, 0);
+        // A call that gets no hour through counts toward the stop, whatever held it up.
+        lost = recomputed === 0 ? lost + 1 : 0;
+        console.error(
+          JSON.stringify({
+            run,
+            stopped: report.stopped,
+            ...(typeof report.slowHour === "string" ? { slowHour: report.slowHour } : {}),
+            walBytes: wal,
+            pools,
+          }),
+        );
+        if (report.stopped === "slow_hour")
+          throw new Error(
+            `Usage rollup stopped: hour ${String(report.slowHour)} took longer than its ${usageRollupHourLimitMs} ms limit three times; a person decides how to recompute it`,
+          );
+        if (report.stopped === "slow_hold")
+          throw new Error(
+            `Usage rollup stopped: hour ${String(report.slowHour)} held the pool longer than ${usageRollupHoldLimitMs} ms, past which writers could time out; a person decides whether to resume`,
+          );
+        if (wal >= usageRollupWalTotal)
+          throw new Error(
+            `Usage rollup stopped at its ${usageRollupWalTotal} byte WAL cap; resume with a fresh dry run, a new --plan path and a new GO`,
+          );
+        if (lost >= 100)
+          throw new Error(
+            "Usage rollup stopped: 100 calls in a row got no hour through (writers held the pool, or the time budget ran out); resume later",
+          );
+        await new Promise((resolve) => setTimeout(resolve, usageRollupPauseMs()));
+        const next = await historyOperatorStep("operator.request", () =>
+          operations.fetch(
+            new Request(`http://pool-operations${path}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                ...approval,
+                go: true,
+                walBudgetBytes: Math.min(usageRollupWalPerCall, usageRollupWalTotal - wal),
+              }),
+            }),
+          ),
+        );
+        if (!next.ok) throw new HistoryOperatorFailure("operator.response.status", next.status);
+        report = historyObject(await next.json());
+      }
+    }
     if (approval) {
       if (
         report.status !== "complete" ||
@@ -351,7 +449,8 @@ export async function runHistoryOperator(
             typeof report.applied !== "boolean" ||
             (options.operation === "journal-activation" &&
               report.readersReady !== historyJournalReaderVersion)
-          : report.digest !== approval.digest || report.activated !== true)
+          : report.digest !== approval.digest ||
+            (options.operation === "usage-rollup" ? false : report.activated !== true))
       )
         throw new Error("Invalid history apply response");
       await writeFile(receipt, JSON.stringify(report), { mode: 0o600 });
@@ -359,10 +458,15 @@ export async function runHistoryOperator(
       approvalFor(options.operation, report);
       if (report.status !== "dry-run") throw new HistoryOperatorFailure("report.status");
       if (report.writes !== false) throw new HistoryOperatorFailure("report.writes");
-      if (options.operation !== "backfill" && report.automaticBackfill !== false)
+      const schemaOperation =
+        options.operation !== "backfill" && options.operation !== "usage-rollup";
+      if (schemaOperation && report.automaticBackfill !== false)
         throw new HistoryOperatorFailure("report.automaticBackfill");
-      if (options.operation !== "backfill")
-        report = { ...report, ...schemaPreview(report, options.operation) };
+      if (schemaOperation)
+        report = {
+          ...report,
+          ...schemaPreview(report, options.operation as "schema" | "journal-activation"),
+        };
       await writeFile(
         options.plan,
         JSON.stringify({ accountId, worker: options.worker, operation: options.operation, report }),
