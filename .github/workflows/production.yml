@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: plan prints each row's name, type and action; deploy plans, applies and smokes
+        description: plan prints each row's name, type, action and why it is in the plan; deploy plans, applies and smokes
         required: true
         type: choice
         options: [plan, deploy]

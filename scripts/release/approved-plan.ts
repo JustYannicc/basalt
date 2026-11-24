@@ -6,15 +6,19 @@ import { createHash } from "node:crypto";
  * deploy compares its own plan with the one approved and refuses on any difference before it writes.
  *
  * The digest covers the commit, whether the fleet's classes are declared, and every write the plan
- * prints: each changed resource row and stack action as production.ts prints them, the Durable
- * Object classes it creates, and the Workers it re-points forward. Each is sorted, so the plan's own
- * order never matters.
+ * prints: each changed resource row with why it is in the plan and each stack action, as
+ * production.ts prints them, the Durable Object classes it creates, and the Workers it re-points
+ * forward. Each is sorted, so the plan's own order never matters.
  */
 export interface PlanRow {
   readonly fqn: string;
   readonly resourceType: string;
   readonly action: string;
-  readonly bindings?: readonly { readonly action: string }[];
+  readonly bindings?: readonly { readonly sid?: string; readonly action: string }[];
+  /** The names of the top-level props Alchemy's own diff calls changed; never their values. */
+  readonly changedProps?: readonly string[];
+  /** For a changed prop that only waits on resources this plan changes: those resources' names. */
+  readonly waitsOn?: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface PlanAction {
@@ -33,13 +37,47 @@ export interface PlanReading {
 }
 
 /**
- * A resource row as the plan prints it, or nothing when it changes nothing. A noop row whose
- * bindings change still writes, as the repository's own changed-row reading counts it.
+ * A resource row as the plan prints it, with why it is in the plan, or nothing when it changes
+ * nothing. A noop row whose bindings change still writes, as the repository's own changed-row
+ * reading counts it. Names only: a prop's or a binding's value can hold a secret.
  */
 export const rowLine = (row: PlanRow) => {
-  const bindings = (row.bindings ?? []).some((binding) => binding.action !== "noop");
-  if (row.action !== "noop") return `${row.fqn} ${row.resourceType} ${row.action}`;
-  return bindings ? `${row.fqn} ${row.resourceType} noop, bindings changed` : undefined;
+  const bindings = (row.bindings ?? [])
+    .filter((binding) => binding.action !== "noop")
+    .map((binding) => `${binding.sid ?? "unnamed"} ${binding.action}`)
+    .sort();
+  const props = [...(row.changedProps ?? [])].sort().map((prop) => {
+    const upstreams = row.waitsOn?.[prop] ?? [];
+    return upstreams.length ? `${prop} (waits on ${[...upstreams].sort().join(", ")})` : prop;
+  });
+  const head = `${row.fqn} ${row.resourceType} ${row.action}`;
+  const bound = bindings.length ? `bindings ${bindings.join(", ")}` : "";
+  if (row.action === "noop")
+    return bindings.length ? `${head}, bindings changed: ${bound}` : undefined;
+  // A new or removed resource is all new or all gone, so only a change names its props.
+  if (row.action !== "update") return head;
+  if (!props.length)
+    return bindings.length
+      ? `${head} only by its bindings, no prop changes: ${bound}`
+      : `${head} by the provider's own diff (code, assets or metadata), no prop or binding changes`;
+  return `${head}: props ${props.join(", ")}${bound ? `; ${bound}` : ""}`;
+};
+
+/** Each plan row with the names of its changed props, from the repository's changed-row reading. */
+export const withReasons = <Row extends PlanRow>(
+  rows: readonly Row[],
+  changed: readonly {
+    readonly fqn: string;
+    readonly changedProps: readonly string[];
+    readonly waitsOn?: Readonly<Record<string, readonly string[]>>;
+  }[],
+) => {
+  const why = new Map(changed.map((row) => [row.fqn, row]));
+  return rows.map((row) => ({
+    ...row,
+    changedProps: why.get(row.fqn)?.changedProps ?? [],
+    waitsOn: why.get(row.fqn)?.waitsOn ?? {},
+  }));
 };
 
 /** A stack action as the plan prints it, or nothing when it does not run. */

@@ -28,8 +28,34 @@ const changed = (before: unknown, after: unknown) => {
 };
 
 /**
- * Non-noop rows, with only the names of changed top-level props (values can be secrets) and the
- * changed binding ids. Read it before apply: apply rewrites the plan it was handed.
+ * The upstream resources a value still waits on at plan time, by name: a prop that only refers to a
+ * resource this plan changes is unresolved, and Alchemy's diff calls it changed for that alone.
+ */
+const waitsOn = (value: unknown) => {
+  const upstreams = new Set<string>();
+  const seen = new Set<unknown>();
+  const walk = (part: unknown, depth: number) => {
+    if (Output.isExpr(part) && !isResolved(part)) {
+      for (const upstream of Object.keys(Output.upstreamAny(part))) upstreams.add(upstream);
+      return;
+    }
+    if (!part || typeof part !== "object" || seen.has(part) || depth > 12) return;
+    seen.add(part);
+    const parts = Array.isArray(part)
+      ? part
+      : Object.getPrototypeOf(part) === Object.prototype
+        ? Object.values(part)
+        : [];
+    for (const next of parts) walk(next, depth + 1);
+  };
+  walk(value, 0);
+  return [...upstreams].sort();
+};
+
+/**
+ * Non-noop rows, with only the names of changed top-level props (values can be secrets), the
+ * resources each still waits on, and the changed binding ids. Read it before apply: apply rewrites
+ * the plan it was handed.
  */
 export const changedRows = (snapshot: Snapshot) =>
   snapshot.resources
@@ -40,13 +66,20 @@ export const changedRows = (snapshot: Snapshot) =>
       const node = snapshot.native.resources[row.fqn] ?? snapshot.native.deletions[row.fqn];
       const before: Record<string, unknown> = node?.state?.props ?? {};
       const after: Record<string, unknown> = (node && "props" in node ? node.props : {}) ?? {};
+      const changedProps = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+        .filter((key) => changed(before[key], after[key]))
+        .sort();
       return {
         fqn: row.fqn,
         type: row.resourceType,
         action: row.action,
-        changedProps: [...new Set([...Object.keys(before), ...Object.keys(after)])]
-          .filter((key) => changed(before[key], after[key]))
-          .sort(),
+        changedProps,
+        waitsOn: Object.fromEntries(
+          changedProps.flatMap((key) => {
+            const upstreams = waitsOn(after[key]);
+            return upstreams.length ? [[key, upstreams] as const] : [];
+          }),
+        ),
         bindings: row.bindings
           .filter((binding) => binding.action !== "noop")
           .map(({ sid, action }) => ({ sid, action })),
