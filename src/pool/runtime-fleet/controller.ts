@@ -5,7 +5,7 @@ import {
   runtimeFailureDiagnostic,
   runtimeRouteDiagnostic,
 } from "../runtime-route-diagnostic.ts";
-import { errorClass } from "../pending-failure.ts";
+import { errorClass, providerFields } from "../pending-failure.ts";
 import type { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
@@ -198,6 +198,7 @@ function growthRefusal(error: unknown) {
       (error instanceof SlotRefused || error instanceof FleetRefused ? error.reason : null),
     cause: runtimeFailureCause(error) ?? null,
     error: error instanceof FleetRefused ? "FleetRefused" : errorClass(error),
+    ...providerFields(error),
   };
 }
 

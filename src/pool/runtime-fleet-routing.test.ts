@@ -19,6 +19,7 @@ import {
 import { forwardRecoverably, markRootFallbackCap } from "./runtime-fleet/retry.ts";
 import { rootFallbackBurst, rootFallbackPerSecond } from "./runtime-fleet/root-fallback.ts";
 import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
+import { ProviderObservationRefused } from "./runtime-provider/read.ts";
 import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 const responseModule = "./native-response.worker.ts";
@@ -1420,6 +1421,37 @@ test("growth logs its refusal once per change of reason, and again after a launc
     [local("identity"), local("selection"), local("identity"), local("identity")],
   );
   assert.equal(f.calls.starts, 1);
+});
+
+test("growth keeps a provider refusal's closed code beside its class", async (context) => {
+  const f = fixture(3, 1);
+  const log = context.mock.method(console, "warn", () => {});
+  let refuse = true;
+  const reserve = f.state.reserve.bind(f.state);
+  context.mock.method(f.state, "reserve", async (...args: Parameters<typeof f.state.reserve>) => {
+    if (refuse) throw new ProviderObservationRefused("provider_fetch_failed");
+    return reserve(...args);
+  });
+  f.pressure(3);
+  f.advance(300);
+  await f.fleet.upkeep();
+  await f.settle();
+  refuse = false;
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments),
+    [
+      [
+        "POOL_FLEET_GROWTH_REFUSED",
+        {
+          step: null,
+          reason: null,
+          cause: null,
+          error: "ProviderObservationRefused",
+          provider: "provider_fetch_failed",
+        },
+      ],
+    ],
+  );
 });
 
 test("growth logs the runtime's step, reason and cause with the error's class, and again when any of them changes", async (context) => {
