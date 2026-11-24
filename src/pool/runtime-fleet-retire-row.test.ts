@@ -24,6 +24,8 @@ async function stuckRow(
     stillMs?: number;
     cellMoved?: boolean;
     sibling?: boolean;
+    // One of the six calls' releases lands while the cell's override is under way.
+    releaseDuring?: boolean;
   } = {},
 ) {
   const warnings = context.mock.method(console, "warn", () => {});
@@ -31,6 +33,7 @@ async function stuckRow(
   let clock = 1_000_000;
   const state = new RuntimeFleetState(new SlotMemory(), 4, () => clock);
   const identities: SlotIdentity[] = [];
+  const held: { release(): Promise<void> }[] = [];
   for (const [index, slotId] of (options.sibling
     ? ["slot-stuck", "slot-other"]
     : ["slot-stuck"]
@@ -53,7 +56,7 @@ async function stuckRow(
     identities.push(identity);
     // Six calls whose releases never arrive.
     if (index === 0)
-      for (let call = 0; call < 6; call++) await state.acquire(Number.MAX_SAFE_INTEGER);
+      for (let call = 0; call < 6; call++) held.push(await state.acquire(Number.MAX_SAFE_INTEGER));
   }
   const stuck = identities[0]!;
   if ((options.phase ?? "draining") === "draining") await state.drain(stuck);
@@ -71,6 +74,7 @@ async function stuckRow(
     activity: async () => ({ active: cellCount, known: true, stillMs: 2_400_000 }),
     releaseStill: async () => {
       if (options.cellMoved) throw new SlotRefused("draining");
+      if (options.releaseDuring) await held[0]!.release();
       const released = cellCount;
       cellCount = 0;
       return { released, stillMs: 2_400_000, connections: 0 };
@@ -103,7 +107,10 @@ async function stuckRow(
       .map((call) => call.arguments[1]);
   const row = async () =>
     (await state.inspect()).find((value) => value.target.slotId === "slot-stuck");
-  return { fleet, state, retired, overrides, row, key: keyOf("slot-stuck") };
+  const advance = (ms: number) => {
+    clock += ms;
+  };
+  return { fleet, state, retired, overrides, row, advance, key: keyOf("slot-stuck") };
 }
 
 test("a draining row whose count stood still retires through the ordinary retirement once the operator overrides it", async (context) => {
@@ -125,6 +132,7 @@ test("a draining row whose count stood still retires through the ordinary retire
     cell: 6,
     ledgerStillMs: 300_000,
     cellStillMs: 2_400_000,
+    ledgerLowered: true,
     connections: 0,
   };
   assert.deepEqual(receipt, expected);
@@ -155,4 +163,16 @@ test("the operator's retirement refuses a ready row, a count that moved, and a k
     await f.fleet.upkeep();
     assert.deepEqual(f.retired, [], `${name}: nothing retires`);
   }
+});
+
+test("a ledger that moves during the override still gets its line, and upkeep's reconcile finishes it", async (context) => {
+  const f = await stuckRow(context, { releaseDuring: true });
+  const receipt = await f.fleet.retireRow("fleet-retire-1", go, f.key);
+  assert.equal(receipt.ledgerLowered, false, "the ledger moved, so the override doesn't lower it");
+  assert.deepEqual(f.overrides(), [receipt], "the cell's override stands, so its line is written");
+  assert.equal((await f.row())?.active, 5);
+  // Once the ledger stands still again, the ordinary reconcile lowers it to the cell's 0.
+  f.advance(300_000);
+  await f.fleet.upkeep();
+  assert.deepEqual(f.retired, ["slot-stuck"]);
 });

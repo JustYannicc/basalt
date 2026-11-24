@@ -249,7 +249,10 @@ export async function harness(options: HarnessOptions = {}) {
         cell: 6,
         ledgerStillMs: 300_000,
         cellStillMs: 2_400_000,
+        ledgerLowered: true,
         connections: 0,
+        // The real receipt names the slot; the lane must keep it out of its output.
+        slot: cell.slotId,
       };
     },
     inspectCrash: async (_identity, nonce) => ({

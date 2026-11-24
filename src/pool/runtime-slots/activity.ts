@@ -38,6 +38,10 @@ export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
   };
 }
 
+// Leases this isolate acquired and hasn't released: their streams can still be live. A lease taken by
+// another isolate died with it, as `legacy-activity.ts` treats a dead isolate's count.
+const liveLeases = new Set<string>();
+
 /** Lost request receipts remain counted. Reconstruction cannot invent an empty runtime. */
 export class RuntimeActivity {
   private storage: TransactionStorage;
@@ -83,16 +87,24 @@ export class RuntimeActivity {
 
   /**
    * An operator's override of a count that no stream has moved for `stillAtLeastMs`. A lease whose
-   * release was lost with its object's isolate is released by nothing else. Only a draining count
-   * qualifies, so nothing new can be admitted on it. Returns what it released and how long it stood.
+   * release was lost with its object's isolate is released by nothing else. Only a draining, known
+   * count with no lease this isolate still holds qualifies, so nothing new can be admitted on it and
+   * no stream this isolate serves is cut. Returns what it released and how long it stood.
    */
-  releaseStill(identity: SlotIdentity, stillAtLeastMs: number) {
+  releaseStill(identity: SlotIdentity, stillAtLeastMs: number, signal?: AbortSignal) {
     return this.change(identity, (row) => {
+      // A caller that gave up never sees this commit, so it never commits.
+      signal?.throwIfAborted();
       if (row.phase !== "draining") throw new SlotRefused("selection");
+      // An unknown count stays the drain's own proof (`drain_unproven`), never an override's.
+      if (!row.known) throw new SlotRefused("uncertain");
       const { stillMs } = stillFor(row);
       // Nothing left to release, as after a re-send whose first answer was lost.
       if (row.active === 0) return { row, result: { released: 0, stillMs } };
       if (stillMs < stillAtLeastMs) throw new SlotRefused("draining");
+      // A stream this isolate still holds may be live however long it has run.
+      if (Object.keys(row.leases ?? {}).some((lease) => liveLeases.has(lease)))
+        throw new SlotRefused("draining");
       return {
         row: { ...row, active: 0, known: true, leases: {}, changedAt: Date.now() },
         result: { released: row.active, stillMs },
@@ -127,6 +139,7 @@ export class RuntimeActivity {
       },
       true,
     );
+    liveLeases.add(id);
     let pending: Promise<void> | undefined;
     return () =>
       (pending ??= this.release(identity, id).catch((error) => {
@@ -136,6 +149,7 @@ export class RuntimeActivity {
   }
 
   private async release(identity: SlotIdentity, id: string) {
+    liveLeases.delete(id);
     // Commit completion separately from decrement. A rejected decrement remains recoverable after reconstruction.
     await this.change(
       identity,

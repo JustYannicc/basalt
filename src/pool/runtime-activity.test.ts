@@ -200,19 +200,35 @@ for (const failure of ["before", "after"] as const) {
   });
 }
 
-test("an operator releases a draining count only once it has stood still the leaked-streams bound", async (context) => {
+// The count a lost release leaves: six leases another isolate took, whose closures died with it.
+const leakedRow = (changedAt: number) => ({
+  identity,
+  phase: "draining",
+  active: 6,
+  known: true,
+  leases: Object.fromEntries(Array.from({ length: 6 }, (_, index) => [`dead-${index}`, "active"])),
+  changedAt,
+});
+const activityKey = `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`;
+
+test("an operator releases a dead isolate's draining count only once it has stood still the leaked-streams bound", async (context) => {
   context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const storage = new RuntimeSqlite();
   context.after(() => storage.close());
   const activity = new RuntimeActivity(storage);
-  await activity.initialize(identity, true);
-  // Six releases lost with their isolate: nothing else ever lowers this count.
-  for (let call = 0; call < 6; call++) await activity.acquire(identity);
+  await storage.put(activityKey, { ...leakedRow(Date.now()), phase: "open" });
   await assert.rejects(activity.releaseStill(identity, 300_000), /selection/, "an open count");
-  await activity.drain(identity);
+  await storage.put(activityKey, leakedRow(Date.now()));
   context.mock.timers.tick(299_999);
   await assert.rejects(activity.releaseStill(identity, 300_000), /draining/, "still moving");
   context.mock.timers.tick(1);
+  const aborted = AbortSignal.abort();
+  await assert.rejects(activity.releaseStill(identity, 300_000, aborted), /abort/iu);
+  assert.equal(
+    (await activity.inspect(identity))?.active,
+    6,
+    "a caller that gave up commits nothing",
+  );
   assert.deepEqual(await activity.releaseStill(identity, 300_000), {
     released: 6,
     stillMs: 300_000,
@@ -224,4 +240,21 @@ test("an operator releases a draining count only once it has stood still the lea
   // The ordinary retirement now goes ahead, as for any drained runtime.
   await activity.retire(identity);
   assert.equal((await activity.inspect(identity))?.phase, "retiring");
+});
+
+test("an operator never releases a lease this isolate still holds, nor an unknown count", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await activity.initialize(identity, true);
+  // One long stream this isolate serves: its count stands still, but the stream is live.
+  const done = await activity.acquire(identity);
+  await activity.drain(identity);
+  context.mock.timers.tick(3_600_000);
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/, "a live lease");
+  await done();
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), { released: 0, stillMs: 0 });
+  await storage.put(activityKey, { ...leakedRow(0), known: false });
+  await assert.rejects(activity.releaseStill(identity, 300_000), /uncertain/, "an unknown count");
 });

@@ -50,7 +50,6 @@ type PlacementDecision =
   | "admit_replacement"
   | "redraw";
 
-/** One closed line per admission decision, so where each runtime landed is visible. */
 /** The lane's key for a row: the first 24 hex digits of its slot's SHA-256. */
 async function rowKey(slotId: string) {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(slotId));
@@ -60,6 +59,7 @@ async function rowKey(slotId: string) {
     .slice(0, 24);
 }
 
+/** One closed line per admission decision, so where each runtime landed is visible. */
 function logPlacement(
   identity: SlotIdentity,
   database: RuntimeDistance | undefined,
@@ -107,6 +107,7 @@ export interface FleetCell {
   /** Releases a draining cell's count that stood still `leakedStreamsMs`; the cell checks both. */
   releaseStill?(
     identity: SlotIdentity,
+    operationId: string,
   ): Promise<{ released: number; stillMs: number; connections: number | null }>;
   /** Whether the cell is proven gone; false while its stop is still under way. */
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
@@ -430,10 +431,12 @@ export class RuntimeFleet {
     if (ledgerStillMs < countStillMs) throw new FleetRefused("draining");
     const cell = this.cell(row.target);
     if (!cell.releaseStill) throw new FleetRefused("uncertain");
-    const released = await cell.releaseStill(row.identity);
-    // The ledger is lowered only while it is exactly what was read, as any reconcile is.
-    if (row.active > 0 && !(await this.deps.state.reconcileActive(row.identity, row, 0)))
-      throw new FleetRefused("uncertain");
+    const released = await cell.releaseStill(row.identity, operationId);
+    // From here the cell's override stands, so the line is always written. The ledger is lowered only
+    // while it is exactly what was read, as any reconcile is; otherwise upkeep's reconcile lowers it
+    // to the cell's 0 once it stands still.
+    const ledgerLowered =
+      row.active === 0 || (await this.deps.state.reconcileActive(row.identity, row, 0));
     const receipt = {
       operationId,
       go,
@@ -444,6 +447,7 @@ export class RuntimeFleet {
       cell: released.released,
       ledgerStillMs,
       cellStillMs: released.stillMs,
+      ledgerLowered,
       // Established connections on the cell's 8317 just before the override, or null: evidence only.
       connections: released.connections,
     };

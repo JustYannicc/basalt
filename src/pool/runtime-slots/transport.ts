@@ -228,8 +228,8 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(identity, "activity", { identity }, signal);
     return Schema.decodeUnknownSync(ActivityCount)(await response.json());
   }
-  async releaseStill(identity: SlotIdentity, signal: AbortSignal) {
-    const response = await this.call(identity, "release-still", { identity }, signal);
+  async releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
+    const response = await this.call(identity, "release-still", { identity, operationId }, signal);
     return Schema.decodeUnknownSync(StillRelease)(await response.json());
   }
   async retirement(identity: SlotIdentity, signal: AbortSignal) {
@@ -385,10 +385,15 @@ export async function runtimeRequest(
       );
       return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
     } else if (action === "/release-still") {
-      const { identity } = runtimeInput(() =>
-        Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
+      const { identity, operationId } = runtimeInput(() =>
+        Schema.decodeUnknownSync(
+          Schema.Struct({
+            identity: SlotIdentity,
+            operationId: Schema.String.check(Schema.isPattern(/^[A-Za-z0-9-]{1,128}$/u)),
+          }),
+        )(value),
       );
-      return Response.json(await endpoint.releaseStill(identity));
+      return Response.json(await endpoint.releaseStill(identity, operationId, request.signal));
     } else if (action === "/drain" || action === "/activity") {
       const { identity } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),

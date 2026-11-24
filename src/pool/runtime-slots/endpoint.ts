@@ -561,9 +561,10 @@ export class RuntimeEndpoint {
    * first reads the established connections on 8317 as evidence for the operator, never as a gate:
    * null when the read fails or is late.
    */
-  releaseStill(identity: SlotIdentity) {
+  releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
     this.bound(identity);
     return this.serialize(async () => {
+      signal.throwIfAborted();
       const container = this.ctx.container;
       const read = container?.exec
         ? legacyConnections({ exec: container.exec.bind(container) })
@@ -572,7 +573,18 @@ export class RuntimeEndpoint {
         read.catch(() => null),
         new Promise<null>((late) => setTimeout(() => late(null), 1_500)),
       ]);
-      return { ...(await this.activity.releaseStill(identity, leakedStreamsMs)), connections };
+      const released = {
+        ...(await this.activity.releaseStill(identity, leakedStreamsMs, signal)),
+        connections,
+      };
+      // The cell's own record, so a release whose answer never reached the controller still shows.
+      console.warn("POOL_RUNTIME_STILL_RELEASED", {
+        operationId,
+        slot: identity.slotId,
+        ordinal: identity.homePeerOrdinal ?? null,
+        ...released,
+      });
+      return released;
     });
   }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */

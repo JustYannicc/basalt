@@ -143,6 +143,7 @@ const RetireReceipt = Schema.Struct({
   cell: Schema.Number,
   ledgerStillMs: Schema.Number,
   cellStillMs: Schema.Number,
+  ledgerLowered: Schema.Boolean,
   connections: Schema.NullOr(Schema.Number),
 });
 export const retireOperationId = (go: string, key: string) =>
@@ -191,16 +192,15 @@ export const retireRow = (access: ControllerAccess, go: string, key: string) =>
       ),
     );
     // The controller's receipt names what it overrode; only closed numbers and the key leave.
-    const receipt = yield* call(async () => {
-      const kept = JSON.parse(await readFile(sent.receiptPath, "utf8")) as { result?: unknown };
-      return Schema.decodeUnknownOption(RetireReceipt)(
-        (kept.result as { result?: unknown } | undefined)?.result,
-      );
-    });
+    const receipt = yield* call(async () =>
+      Schema.decodeUnknownOption(
+        Schema.Struct({ result: Schema.Struct({ result: RetireReceipt }) }),
+      )(JSON.parse(await readFile(sent.receiptPath, "utf8"))),
+    );
     return {
       operationId,
       status: sent.status,
-      overrode: receipt._tag === "Some" ? receipt.value : null,
+      overrode: receipt._tag === "Some" ? receipt.value.result.result : null,
     };
   });
 

@@ -560,7 +560,7 @@ test("retire-row sends one fleet-retire for the named draining row and prints it
     );
     assert.doesNotMatch(
       JSON.stringify(result),
-      /slot-|cell-boot/u,
+      /runtime-cell-1|cell-boot/u,
       "only keys leave, never slot ids",
     );
   } finally {
