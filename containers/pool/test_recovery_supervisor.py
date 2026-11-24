@@ -132,11 +132,11 @@ class SupervisorTests(unittest.TestCase):
             boot_ids.append(ready.generation())
             return True
 
-        def make_service_health(*args):
+        def make_service_health(*args, **kwargs):
             if invalidate_startup_audit:
                 ready_instances[0].invalidate_policy()
                 ready_instances[0].refresh_policy_lease("b" * 32)
-            return service_health(*args, health, health)
+            return service_health(*args, health, health, **kwargs)
 
         def advance_phase(phase):
             if sum(child.name == "home" for child in launched) > 1:
@@ -354,7 +354,9 @@ class SupervisorTests(unittest.TestCase):
     def test_main_exhaustion_does_not_start_fresh_cleanup_grace(self):
         result, children, ready, records, _, terminations, *_ = self.run_supervisor(
             actual_cleanup=True,
-            recovery_phase_delays={"home": 80, "config": 83},
+            # The first teardown spends the child stop grace; the phases then end just inside
+            # the 180-second episode, so only a fresh cleanup grace could pass 182.
+            recovery_phase_delays={"home": 95 - supervisor.CHILD_STOP_GRACE_SECONDS, "config": 83},
         )
         self.assertEqual(result, 1)
         # One initial teardown and one terminal cleanup, with no third finally teardown.
@@ -426,3 +428,87 @@ class SupervisorTests(unittest.TestCase):
             [row["state"] for marker, row in records if marker == "POOL_HOME_RECOVERY"],
             ["attempt", "exhausted"],
         )
+
+
+class FirstBootStartupBoundTests(unittest.TestCase):
+    """A first boot is the quiet case: no recovery episode, only the startup budget."""
+
+    def first_boot(self, answers_at: float | None) -> tuple[SimpleNamespace, Clock, Stop]:
+        clock = Clock()
+        stop = Stop(clock)
+        child = SimpleNamespace(
+            name="home",
+            process=Mock(poll=Mock(return_value=None)),
+            config_empty=threading.Event(),
+        )
+
+        def ready(_key: str) -> bool:
+            return answers_at is not None and clock.now >= answers_at
+
+        self.enterContext(patch.object(supervisor, "time", SimpleNamespace(monotonic=clock)))
+        self.enterContext(patch.object(supervisor, "management_ready", side_effect=ready))
+        return child, clock, stop
+
+    def test_a_home_that_never_answers_gets_exactly_the_startup_budget(self) -> None:
+        child, clock, stop = self.first_boot(None)
+        with self.assertRaises(supervisor.StartupError):
+            supervisor.wait_for_home(child, "fixture", stop)
+        # runtime-forced-stop.test.ts keeps this equal to the controller's runtimeStartupMs.
+        self.assertEqual(clock.now, 180)
+        self.assertEqual(set(stop.waits), {0.5})
+
+    def test_a_home_that_answers_inside_the_budget_is_ready_at_its_first_answer(self) -> None:
+        child, clock, stop = self.first_boot(179.5)
+        self.assertEqual(supervisor.wait_for_home(child, "fixture", stop), "ready")
+        self.assertEqual(clock.now, 179.5)
+
+    def test_a_home_and_node_that_never_become_healthy_get_exactly_the_startup_budget(self) -> None:
+        clock = Clock()
+        stop = Stop(clock)
+        health_reads: list[float] = []
+
+        def make_child(name, *_args):
+            return SimpleNamespace(
+                name=name,
+                process=SimpleNamespace(
+                    poll=lambda: None,
+                    wait=lambda timeout=None: -9,
+                    terminate=lambda: None,
+                    kill=lambda: None,
+                    returncode=None,
+                ),
+                config_empty=threading.Event(),
+            )
+
+        def never_healthy(*_args) -> bool:
+            health_reads.append(clock.now)
+            return False
+
+        with ExitStack() as stack:
+            root = stack.enter_context(tempfile.TemporaryDirectory())
+            mocks = {
+                "ROOT": pathlib.Path(root),
+                "env_required": Mock(return_value="fixture"),
+                "require_tmpfs": Mock(),
+                "child_environment": Mock(return_value={}),
+                "start_ready_server": Mock(return_value=None),
+                "Child": make_child,
+                "wait_for_home": Mock(return_value="ready"),
+                "apply_pool_config": Mock(),
+                "home_database_distance": Mock(return_value=None),
+                "create_node_jwt": Mock(return_value=("node", "jwt")),
+                "check_services": never_healthy,
+                "PolicyHealthMonitor": Mock(return_value=SimpleNamespace(run=lambda _: None)),
+                "terminate_children": Mock(),
+                "time": SimpleNamespace(monotonic=clock),
+            }
+            for name, value in mocks.items():
+                stack.enter_context(patch.object(supervisor, name, value))
+            stack.enter_context(patch.object(supervisor.signal, "signal", Mock(return_value=None)))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            errors = stack.enter_context(redirect_stderr(io.StringIO()))
+            result = supervisor.main(stop)
+        self.assertEqual(result, 1)
+        self.assertEqual((health_reads[0], health_reads[-1], len(health_reads)), (0, 179.5, 360))
+        self.assertEqual(clock.now, 180)
+        self.assertIn('POOL_RUNTIME_FAILURE {"category":4,"count":1}', errors.getvalue())

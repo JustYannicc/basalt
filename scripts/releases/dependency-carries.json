@@ -1,0 +1,130 @@
+{
+  "about": "Every carry that patches a third-party dependency names the upstream issue or pull request that would make it unnecessary, and who follows it. Entries recorded without one when this list started may only be completed or removed.",
+  "carries": {
+    "0003-eu-durable-objects": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0116-compiler-request-ownership": {
+      "packages": ["@cloudflare/worker-bundler", "esbuild-wasm"],
+      "upstream": null,
+      "owner": null
+    },
+    "0138-auth-security-hardening": {
+      "packages": ["@better-auth/core", "better-auth"],
+      "upstream": null,
+      "owner": null
+    },
+    "0170-container-image-drift": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0229-independent-compiler-sessions": {
+      "packages": ["@cloudflare/worker-bundler"],
+      "upstream": null,
+      "owner": null
+    },
+    "0309-normalized-container-resources": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0311-container-publication-outputs": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0329-declared-container-instances": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0370-alchemy-worker-upload-hook": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0381-alchemy-patch-source-map": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0386-alchemy-container-publication-hook": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0404-alchemy-read-only-state": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0423-alchemy-script-settings-projection": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0433-alchemy-state-credentials-export": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0535-oauth-refresh-transient": {
+      "packages": ["@better-auth/oauth-provider"],
+      "upstream": null,
+      "owner": null
+    },
+    "0542-compiler-package-imports": {
+      "packages": ["@cloudflare/worker-bundler"],
+      "upstream": null,
+      "owner": null
+    },
+    "0673-alchemy-asset-session-renewal": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0677-alchemy-lazy-entrypoint": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0696-alchemy-unchanged-container": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0707-alchemy-location-free-source-maps": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0726-alchemy-same-cycle-rendezvous": {
+      "packages": ["alchemy"],
+      "upstream": null,
+      "owner": null
+    },
+    "0740-alchemy-uploaded-binding-metadata": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/pull/3641",
+      "owner": "restart-proof owner"
+    },
+    "0745-astro-dependency-scoped-ids": {
+      "packages": ["astro"],
+      "upstream": null,
+      "owner": null
+    },
+    "0761-alchemy-container-precreate-no-application": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/pull/3265",
+      "owner": "release owner"
+    },
+    "0767-alchemy-container-publication-repository": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/issues/3653",
+      "owner": "release owner"
+    }
+  }
+}

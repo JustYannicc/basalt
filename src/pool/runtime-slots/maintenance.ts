@@ -35,7 +35,11 @@ export class RuntimeMaintenance {
       this.deps.checked(record, health);
       await channel.keepAlive();
     } finally {
-      if (ctx.container.running) await ctx.storage.setAlarm(Date.now() + poolLifecycle.refreshMs);
+      if (ctx.container.running) {
+        await ctx.storage.setAlarm(Date.now() + poolLifecycle.refreshMs);
+        // An abort or a recovered retirement isn't queued behind this alarm and may end the slot.
+        await store.dropIfEnded(target);
+      }
     }
   }
   async failed(identity: SlotIdentity, signal: AbortSignal) {
@@ -48,7 +52,7 @@ export class RuntimeMaintenance {
     signal.throwIfAborted();
     if (ctx.container!.running) return { identity, stopped: false };
     // Retain interrupted activity as unknown; only the dead compute identity is retired.
-    await store.put(identity, { ...record, retired: true, failed: true });
+    await store.retire(identity, { ...record, retired: true, failed: true });
     return { identity, stopped: true };
   }
 }

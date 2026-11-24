@@ -1,0 +1,215 @@
+diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
+index 669583d..20977fa 100644
+--- a/internal/redisqueue/plugin.go
++++ b/internal/redisqueue/plugin.go
+@@ -314,6 +314,8 @@ type failDetail struct {
+ 	Body       string `json:"body"`
+ 	Type       string `json:"type,omitempty"`
+ 	Code       string `json:"code,omitempty"`
++	// RetryAfterMS is the provider's retry time for a 429; absent when it gave none.
++	RetryAfterMS int64 `json:"retry_after_ms,omitempty"`
+ }
+ 
+ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
+@@ -323,6 +325,9 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
+ 		Type:       strings.TrimSpace(record.Fail.Type),
+ 		Code:       strings.TrimSpace(record.Fail.Code),
+ 	}
++	if record.Fail.StatusCode == 429 && record.Fail.RetryAfterMS > 0 {
++		fail.RetryAfterMS = record.Fail.RetryAfterMS
++	}
+ 	if !failed {
+ 		return failDetail{StatusCode: 200}
+ 	}
+diff --git a/internal/runtime/executor/basalt_provider_retry_time_test.go b/internal/runtime/executor/basalt_provider_retry_time_test.go
+new file mode 100644
+index 0000000..3040b89
+--- /dev/null
++++ b/internal/runtime/executor/basalt_provider_retry_time_test.go
+@@ -0,0 +1,86 @@
++package executor
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"strconv"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++// Home cools a credential only from the usage record the node sends it, which in metadata-only
++// mode carries no body and no headers. A 429 from each provider must still put the provider's own
++// retry time on that wire, as the one closed number fail.retry_after_ms.
++func TestBasaltProviderRetryTimeReachesHomeOnTheWire(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	wasEnabled, wasCounted := redisqueue.Enabled(), redisqueue.UsageStatisticsEnabled()
++	redisqueue.SetEnabled(false)
++	redisqueue.SetEnabled(true)
++	redisqueue.SetUsageStatisticsEnabled(true)
++	t.Cleanup(func() {
++		redisqueue.SetEnabled(false)
++		redisqueue.SetEnabled(wasEnabled)
++		redisqueue.SetUsageStatisticsEnabled(wasCounted)
++	})
++
++	now := time.Now()
++	claudeHeaders := http.Header{}
++	claudeHeaders.Set("Anthropic-Ratelimit-Unified-Status", "rejected")
++	claudeHeaders.Set("Anthropic-Ratelimit-Unified-5h-Status", "rejected")
++	claudeHeaders.Set("Anthropic-Ratelimit-Unified-5h-Reset", strconv.FormatInt(now.Add(2*time.Hour).Unix(), 10))
++	claudeHeaders.Set("Anthropic-Ratelimit-Unified-Reset", strconv.FormatInt(now.Add(2*time.Hour).Unix(), 10))
++	cases := []struct {
++		provider string
++		err      error
++	}{
++		{"claude", classifyClaudeUpstreamError(http.StatusTooManyRequests, claudeHeaders, []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."}}`))},
++		{"codex", newCodexStatusErrWithHeaders(http.StatusTooManyRequests, nil, []byte(`{"error":{"type":"usage_limit_reached","resets_at":`+strconv.FormatInt(now.Add(time.Hour).Unix(), 10)+`}}`))},
++		{"antigravity", newAntigravityStatusErr(http.StatusTooManyRequests, []byte(`{"error":{"code":429,"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"45s"}]}}`))},
++	}
++	for _, c := range cases {
++		provider, ok := c.err.(interface{ RetryAfter() *time.Duration })
++		if !ok || provider.RetryAfter() == nil {
++			t.Fatalf("%s: the executor's 429 carries no provider retry time", c.provider)
++		}
++		// Whole milliseconds, rounded up so the cooldown never ends before the provider's time.
++		retry := *provider.RetryAfter()
++		want := int64((retry + time.Millisecond - 1) / time.Millisecond)
++		redisqueue.PopOldest(1 << 10)
++		ctx := context.Background()
++		reporter := helps.NewUsageReporter(ctx, c.provider, "limited-model", &cliproxyauth.Auth{ID: "limited-" + c.provider, Index: "limited-" + c.provider, Provider: c.provider})
++		reporter.PublishFailure(ctx, c.err)
++		payload := popUsagePayload(t)
++		var sent struct {
++			Fail            map[string]any `json:"fail"`
++			ResponseHeaders map[string]any `json:"response_headers"`
++		}
++		if errDecode := json.Unmarshal(payload, &sent); errDecode != nil {
++			t.Fatalf("%s: usage payload: %v", c.provider, errDecode)
++		}
++		if got, _ := sent.Fail["retry_after_ms"].(float64); int64(got) != want {
++			t.Fatalf("%s: fail.retry_after_ms = %v, want %d", c.provider, sent.Fail["retry_after_ms"], want)
++		}
++		if body, _ := sent.Fail["body"].(string); body != "" || len(sent.ResponseHeaders) != 0 {
++			t.Fatalf("%s: the provider's body or headers left the node: %v", c.provider, string(payload))
++		}
++	}
++}
++
++func popUsagePayload(t *testing.T) []byte {
++	t.Helper()
++	deadline := time.Now().Add(5 * time.Second)
++	for time.Now().Before(deadline) {
++		if items := redisqueue.PopOldest(1); len(items) == 1 {
++			return items[0]
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	t.Fatal("no usage payload reached the queue")
++	return nil
++}
+diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
+index 64a2d7d..e19bdf7 100644
+--- a/internal/runtime/executor/helps/usage_helpers.go
++++ b/internal/runtime/executor/helps/usage_helpers.go
+@@ -803,8 +803,10 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
+ 		if err == nil {
+ 			continue
+ 		}
++		status := clienterror.HTTPStatusFromError(err)
++		retryAfterMS := usage.ProviderRetryAfterMS(status, providerRetryAfter(err))
+ 		if diagnostics.MetadataOnlyEnabled() {
+-			return usage.Failure{StatusCode: clienterror.HTTPStatusFromError(err)}
++			return usage.Failure{StatusCode: status, RetryAfterMS: retryAfterMS}
+ 		}
+ 		body := strings.TrimSpace(err.Error())
+ 		type responseBodyProvider interface {
+@@ -817,8 +819,9 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
+ 			}
+ 		}
+ 		fail := usage.Failure{
+-			Body:       body,
+-			StatusCode: clienterror.HTTPStatusFromError(err),
++			Body:         body,
++			StatusCode:   status,
++			RetryAfterMS: retryAfterMS,
+ 		}
+ 		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
+ 			fail.Code = usage.FailureStreamTruncatedCode
+@@ -836,6 +839,15 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
+ 	return usage.Failure{}
+ }
+ 
++// providerRetryAfter is the retry time the executor parsed from the provider's own response.
++func providerRetryAfter(err error) *time.Duration {
++	var provider interface{ RetryAfter() *time.Duration }
++	if errors.As(err, &provider) && provider != nil {
++		return provider.RetryAfter()
++	}
++	return nil
++}
++
+ func (r *UsageReporter) latency() time.Duration {
+ 	if r == nil || r.requestedAt.IsZero() {
+ 		return 0
+diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
+index 04be8d7..f24745f 100644
+--- a/sdk/cliproxy/usage/manager.go
++++ b/sdk/cliproxy/usage/manager.go
+@@ -104,6 +104,26 @@ type Failure struct {
+ 	// across usage sinks so downstream schedulers do not treat locally
+ 	// synthesized statuses as received upstream refusals.
+ 	Code string
++	// RetryAfterMS is the provider's own retry time for a 429, in whole milliseconds, or 0 when the
++	// provider gave none. Home ends the credential's cooldown then instead of guessing.
++	RetryAfterMS int64
++}
++
++// providerRetryAfterMax is the longest provider retry time passed on, the same horizon Home trusts
++// a provider hint for. A longer one is dropped rather than shortened, so it reads as no time.
++const providerRetryAfterMax = 60 * 24 * time.Hour
++
++// ProviderRetryAfterMS is a 429's provider retry time as the closed number Home reads: whole
++// milliseconds rounded up, so the cooldown never ends before the provider's time; 0 for none.
++func ProviderRetryAfterMS(statusCode int, retryAfter *time.Duration) int64 {
++	if statusCode != 429 || retryAfter == nil || *retryAfter <= 0 || *retryAfter > providerRetryAfterMax {
++		return 0
++	}
++	ms := int64(*retryAfter / time.Millisecond)
++	if *retryAfter%time.Millisecond != 0 {
++		ms++
++	}
++	return ms
+ }
+ 
+ // Detail holds the token and structured usage breakdown captured from an upstream response.
+diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
+index ccf829a..40c4a86 100644
+--- a/sdk/cliproxy/usage/metadata_only.go
++++ b/sdk/cliproxy/usage/metadata_only.go
+@@ -126,7 +126,8 @@ func RedactForMetadataOnly(ctx context.Context, record Record) (context.Context,
+ 		if record.Fail.Code == FailureStreamTruncatedCode {
+ 			failureCode = FailureStreamTruncatedCode
+ 		}
+-		record.Fail = Failure{StatusCode: status, Type: failureType, Code: failureCode}
++		// The provider's retry time is one closed number; no body or header leaves the node.
++		record.Fail = Failure{StatusCode: status, Type: failureType, Code: failureCode, RetryAfterMS: closedRetryAfterMS(status, record.Fail.RetryAfterMS)}
+ 	} else {
+ 		record.Fail = Failure{}
+ 	}
+@@ -231,3 +232,10 @@ func safeAuthType(value string) string {
+ 		return ""
+ 	}
+ }
++
++func closedRetryAfterMS(status int, ms int64) int64 {
++	if status != 429 || ms <= 0 || ms > int64(providerRetryAfterMax/time.Millisecond) {
++		return 0
++	}
++	return ms
++}

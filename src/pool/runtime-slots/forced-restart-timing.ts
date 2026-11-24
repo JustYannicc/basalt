@@ -16,12 +16,18 @@ export const forcedStopsPerHour = 3;
  */
 export const leakedStreamsMs = 300_000;
 /**
- * After SIGTERM the supervisor gives its children 15 s, then kills them and waits 1 s
- * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step.
+ * After SIGTERM the supervisor gives its children `CHILD_STOP_GRACE_SECONDS` (60 s, which covers
+ * Home's HTTP shutdown and its 45 s refresh drain), then kills them and waits 1 s for each
+ * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step. With the
+ * few seconds the supervisor spends before and after that grace, a stop still ends inside
+ * `forcedStopGraceMs`.
  */
-export const supervisorStopGraceMs = 16_000;
-/** How long SIGTERM gets before `destroy()`: longer than the supervisor's own grace. */
-export const forcedStopGraceMs = 30_000;
+export const supervisorStopGraceMs = 61_000;
+/**
+ * How long SIGTERM gets before `destroy()`: longer than the supervisor's own grace, so a forced stop
+ * never cuts Home's drain of a rotated refresh token short.
+ */
+export const forcedStopGraceMs = 75_000;
 /** The wait between the two "not running" reads that admit a restart, and again before its start. */
 export const exitConfirmationMs = 2_000;
 /** The container's startup allowance (`poolLifecycle.startupTimeoutMs`; a test keeps them equal). */

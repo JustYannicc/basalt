@@ -8,12 +8,16 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { Crypto, Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { sdk } from "./provider-destinations-modules.ts";
+import { pullTestDatabaseImage } from "../test-database-image.ts";
 import type { Executor } from "../../.upstream/packages/sdk/src/core.ts";
 
+const image =
+  "mirror.gcr.io/library/postgres:17@sha256:156d40cfa063d6babb15d329a8e15b26a8d0690ebb6084c956084f3b025c3b30";
 let container: string | undefined;
 let port: number;
 before(
   async () => {
+    pullTestDatabaseImage(image);
     container = execFileSync(
       "docker",
       [
@@ -24,7 +28,7 @@ before(
         "127.0.0.1::5432",
         "--env",
         "POSTGRES_HOST_AUTH_METHOD=trust",
-        "postgres:17",
+        image,
       ],
       { encoding: "utf8" },
     ).trim();
@@ -50,7 +54,8 @@ before(
     assert.match(bound, /^127\.0\.0\.1:\d+$/);
     port = Number(bound.split(":")[1]);
   },
-  { timeout: 30_000 },
+  // pullTestDatabaseImage may wait 60 to 90 s on rate or quota refusals before the database starts.
+  { timeout: 180_000 },
 );
 after(() => {
   if (container)

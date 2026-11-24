@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A limit caught while holding a stream's opening events leaves, for the one call, a failed 429 usage record on the limited account and a completed one on the account that served it, both under the call's request_id, so request history shows the call moving between accounts."
+    }
+  }
+}

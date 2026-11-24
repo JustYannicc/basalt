@@ -12,8 +12,9 @@ export async function summaryCoverage(
   db: HistoryDatabase,
   selection: Awaited<ReturnType<typeof summarySelection>>,
   authority: SeriesAuthority,
+  coverageQuery: typeof summaryCoverageQuery = summaryCoverageQuery,
 ) {
-  const query = summaryCoverageQuery(selection);
+  const query = coverageQuery(selection);
   const rows = (await db.query(query.text, query.values)).rows;
   if (rows.length > 500) throw new Error("Usage source coverage exceeds its bound");
   // Read one indexed timestamp bucket. Too many microsecond ties leave the exact start unknown.
@@ -30,7 +31,7 @@ export async function summaryCoverage(
       LEFT JOIN basalt_model_history_cursor c ON c.source=$1 LEFT JOIN LATERAL (
         SELECT timestamp_exact FROM basalt_model_requests
         WHERE source=c.source AND c.forward_id<>0 AND source_record=
-          encode(sha256(convert_to('["usage","'||c.forward_id::text||'"]','UTF8')),'hex')
+          encode(sha256(convert_to('["usage","'||c.forward_id::text||'"]','UTF8')),'hex')::character(64)
         LIMIT 1
       ) r ON true
       LEFT JOIN LATERAL (

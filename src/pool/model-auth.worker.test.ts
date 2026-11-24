@@ -584,6 +584,8 @@ test("a model stream cut at the Worker entry resumes through the object's own re
       from: new TextEncoder().encode(first).byteLength,
       target: "primary",
       boot: "boot-1",
+      // The resume is admitted with the call's own credentials, as a first call is.
+      call: { method: "POST", path: "/v1/messages", headers: [["x-api-key", "valid-home-key"]] },
     },
   ]);
 });

@@ -1,0 +1,2087 @@
+diff --git a/config.example.yaml b/config.example.yaml
+index 9f7c05d..097c5df 100644
+--- a/config.example.yaml
++++ b/config.example.yaml
+@@ -523,6 +523,12 @@ upstream:
+     # permanently and session-date-pin-days is ignored.
+     session-date-pin-days: 7
+ 
++    # Hold message_start, ping and empty block starts until the first generating event, so a
++    # rate_limit_error Anthropic sends inside a 200 stream fails over to another account before
++    # the caller sees a byte. Trade-off: the first byte waits for generation, at most 5s.
++    # Default: true
++    stream-bootstrap-hold: true
++
+     # When true, disable Claude request cloaking on OAuth and API-key CLI profiles (the Claude Code CLI disguise and
+     # system prompt replacement), so the original system prompt is passed through to Claude as-is.
+     # Credential attributes and explicit per-key cloak modes override this shared default.
+diff --git a/internal/config/basalt_stream_bootstrap_hold_test.go b/internal/config/basalt_stream_bootstrap_hold_test.go
+new file mode 100644
+index 0000000..c697bd5
+--- /dev/null
++++ b/internal/config/basalt_stream_bootstrap_hold_test.go
+@@ -0,0 +1,37 @@
++package config
++
++import (
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++)
++
++// The hold defaults on, so an explicit false is its off switch and must survive a save that adds it.
++func TestBasaltStreamBootstrapHoldExplicitFalseSurvivesSave(t *testing.T) {
++	configPath := filepath.Join(t.TempDir(), "config.yaml")
++	if errWrite := os.WriteFile(configPath, []byte("port: 8317\n"), 0o600); errWrite != nil {
++		t.Fatalf("os.WriteFile() error = %v", errWrite)
++	}
++	off := false
++	if errSave := SaveConfigPreserveComments(configPath, &Config{Claude: ClaudeConfig{StreamBootstrapHold: &off}}); errSave != nil {
++		t.Fatalf("SaveConfigPreserveComments() error = %v", errSave)
++	}
++	savedBytes, errRead := os.ReadFile(configPath)
++	if errRead != nil {
++		t.Fatalf("os.ReadFile() error = %v", errRead)
++	}
++	if !strings.Contains(string(savedBytes), "stream-bootstrap-hold: false") {
++		t.Fatalf("saved YAML missing 'stream-bootstrap-hold: false':\n%s", savedBytes)
++	}
++	loaded, errLoad := LoadConfigOptional(configPath, false)
++	if errLoad != nil {
++		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
++	}
++	if loaded.Claude.StreamBootstrapHoldEnabled() {
++		t.Fatal("the hold is on after reloading an explicit false")
++	}
++	if !(ClaudeConfig{}).StreamBootstrapHoldEnabled() {
++		t.Fatal("the hold is off when unset, want on")
++	}
++}
+diff --git a/internal/config/config_types.go b/internal/config/config_types.go
+index eec98f3..2864df0 100644
+--- a/internal/config/config_types.go
++++ b/internal/config/config_types.go
+@@ -136,6 +136,20 @@ type ClaudeConfig struct {
+ 	// KV) is active, session date pins are persisted permanently and
+ 	// session-date-pin-days is ignored.
+ 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
++	// StreamBootstrapHold holds back the stream events that carry no generated
++	// output yet (message_start, ping, an empty text or thinking block start)
++	// until the first generating event. Anthropic can answer a 200 stream with a
++	// rate_limit_error event right after message_start; while nothing has reached
++	// the caller, that becomes a 429 the conductor fails over to another account.
++	// Trade-off: the caller's first byte waits for the first generating event, up
++	// to 5s, 48 frames or 1 MiB, whichever comes first. Unset means on.
++	StreamBootstrapHold *bool `yaml:"stream-bootstrap-hold,omitempty" json:"stream-bootstrap-hold,omitempty"`
++}
++
++// StreamBootstrapHoldEnabled reports whether Claude streams hold their
++// pre-generation events. Unset defaults to true.
++func (c ClaudeConfig) StreamBootstrapHoldEnabled() bool {
++	return c.StreamBootstrapHold == nil || *c.StreamBootstrapHold
+ }
+ 
+ // DefaultClaudeSessionDatePinDays is the session date pin retention applied
+diff --git a/internal/config/config_yaml.go b/internal/config/config_yaml.go
+index bd168b9..e00b356 100644
+--- a/internal/config/config_yaml.go
++++ b/internal/config/config_yaml.go
+@@ -468,7 +468,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+ 	}
+ 
+ 	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved.
+-	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
++	// stream-bootstrap-hold defaults on, so an explicit false is its off switch.
++	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "stream-bootstrap-hold") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+ 		return false
+ 	}
+ 
+@@ -478,6 +479,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+ 		if pinIdx := findMapKeyIndex(node, "session-date-pin-days"); pinIdx >= 0 {
+ 			return false
+ 		}
++		if holdIdx := findMapKeyIndex(node, "stream-bootstrap-hold"); holdIdx >= 0 {
++			return false
++		}
+ 	}
+ 
+ 	// First check if it's a zero value
+diff --git a/internal/runtime/executor/basalt_claude_bootstrap_hold_test.go b/internal/runtime/executor/basalt_claude_bootstrap_hold_test.go
+new file mode 100644
+index 0000000..2c50aba
+--- /dev/null
++++ b/internal/runtime/executor/basalt_claude_bootstrap_hold_test.go
+@@ -0,0 +1,511 @@
++package executor
++
++import (
++	"bytes"
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"regexp"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
++)
++
++func basaltHoldEvent(name, data string) string {
++	return "event: " + name + "\ndata: " + data + "\n\n"
++}
++
++var (
++	basaltHoldMessageStart = basaltHoldEvent("message_start", `{"type":"message_start","message":{"id":"msg_hold_1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}}`)
++	basaltHoldPing         = basaltHoldEvent("ping", `{"type": "ping"}`)
++	basaltHoldRateLimit    = basaltHoldEvent("error", `{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."}}`)
++	basaltHoldOverloaded   = basaltHoldEvent("error", `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
++	basaltHoldTextStart    = basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`)
++	basaltHoldTextDelta    = basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}`)
++	basaltHoldTextDelta2   = basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" world"}}`)
++	basaltHoldBlockStop    = basaltHoldEvent("content_block_stop", `{"type":"content_block_stop","index":0}`)
++	basaltHoldMessageEnd   = basaltHoldEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":2}}`) +
++		basaltHoldEvent("message_stop", `{"type":"message_stop"}`)
++)
++
++func basaltHoldTextEvents() []string {
++	return []string{basaltHoldMessageStart, basaltHoldPing, basaltHoldTextStart, basaltHoldTextDelta, basaltHoldTextDelta2, basaltHoldBlockStop, basaltHoldMessageEnd}
++}
++
++func basaltHoldToolUseEvents() []string {
++	return []string{
++		basaltHoldMessageStart,
++		basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_hold_1","name":"get_weather","input":{}}}`),
++		basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\":"}}`),
++		basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"Paris\"}"}}`),
++		basaltHoldBlockStop,
++		basaltHoldEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":9}}`),
++		basaltHoldEvent("message_stop", `{"type":"message_stop"}`),
++	}
++}
++
++func basaltHoldThinkingEvents() []string {
++	return []string{
++		basaltHoldMessageStart,
++		basaltHoldPing,
++		basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
++		basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me think."}}`),
++		basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"c2lnbmF0dXJl"}}`),
++		basaltHoldBlockStop,
++		basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`),
++		basaltHoldEvent("content_block_delta", `{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Done."}}`),
++		basaltHoldEvent("content_block_stop", `{"type":"content_block_stop","index":1}`),
++		basaltHoldMessageEnd,
++	}
++}
++
++// basaltHoldServer writes each event in its own flushed write, the way the
++// upstream delivers them.
++func basaltHoldServer(t *testing.T, header http.Header, events []string) *httptest.Server {
++	t.Helper()
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++		for name, values := range header {
++			w.Header()[name] = values
++		}
++		w.Header().Set("Content-Type", "text/event-stream")
++		w.WriteHeader(http.StatusOK)
++		flusher, _ := w.(http.Flusher)
++		for _, event := range events {
++			_, _ = io.WriteString(w, event)
++			if flusher != nil {
++				flusher.Flush()
++			}
++		}
++	}))
++	t.Cleanup(server.Close)
++	return server
++}
++
++func basaltHoldExecutor(hold bool) *ClaudeExecutor {
++	return NewClaudeExecutor(&config.Config{Claude: config.ClaudeConfig{StreamBootstrapHold: &hold}})
++}
++
++func basaltHoldAuth(serverURL string) *cliproxyauth.Auth {
++	return &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "key-bootstrap-hold", "base_url": serverURL}}
++}
++
++func basaltHoldStream(t *testing.T, exec *ClaudeExecutor, serverURL string, format sdktranslator.Format) *cliproxyexecutor.StreamResult {
++	t.Helper()
++	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
++	t.Cleanup(cancel)
++	result, err := exec.ExecuteStream(ctx, basaltHoldAuth(serverURL), cliproxyexecutor.Request{
++		Model:   "claude-opus-5",
++		Payload: []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`),
++	}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, ResponseFormat: format, Stream: true})
++	if err != nil {
++		t.Fatalf("ExecuteStream() error = %v", err)
++	}
++	return result
++}
++
++type basaltHoldOutput struct {
++	payloads []string
++	err      error
++}
++
++func basaltHoldDrain(result *cliproxyexecutor.StreamResult) basaltHoldOutput {
++	var output basaltHoldOutput
++	for chunk := range result.Chunks {
++		if chunk.Err != nil {
++			output.err = chunk.Err
++			continue
++		}
++		output.payloads = append(output.payloads, string(chunk.Payload))
++	}
++	return output
++}
++
++var basaltHoldCreated = regexp.MustCompile(`"created":\d+`)
++
++// basaltHoldComparable removes the translator's wall-clock created stamp, the
++// only field that differs between two otherwise identical runs.
++func basaltHoldComparable(payloads []string) []string {
++	normalized := make([]string, len(payloads))
++	for i, payload := range payloads {
++		normalized[i] = basaltHoldCreated.ReplaceAllString(payload, `"created":0`)
++	}
++	return normalized
++}
++
++func basaltHoldErrorSummary(err error) string {
++	if err == nil {
++		return "<nil>"
++	}
++	status := 0
++	var coder interface{ StatusCode() int }
++	if errors.As(err, &coder) {
++		status = coder.StatusCode()
++	}
++	return fmt.Sprintf("%d %s", status, err.Error())
++}
++
++func basaltHoldFormats() []sdktranslator.Format {
++	return []sdktranslator.Format{sdktranslator.FormatClaude, sdktranslator.FormatOpenAI}
++}
++
++// Item 1: a 200 stream that is the account's rate limit becomes one 429 error
++// chunk carrying the retry time of the 200's headers, and nothing else.
++func TestBasaltClaudeBootstrapHoldRateLimitFailsWithoutPayload(t *testing.T) {
++	header := http.Header{
++		"Retry-After":                           {"120"},
++		"Anthropic-Ratelimit-Unified-Status":    {"rejected"},
++		"Anthropic-Ratelimit-Unified-5h-Status": {"rejected"},
++	}
++	for _, format := range basaltHoldFormats() {
++		t.Run(format.String(), func(t *testing.T) {
++			pluginName := "test-basalt-claude-bootstrap-hold-" + format.String()
++			plugin := &captureClaudeUsagePlugin{records: make(chan usage.Record, 4)}
++			usage.RegisterNamedPlugin(pluginName, plugin)
++			t.Cleanup(func() { usage.RegisterNamedPlugin(pluginName, noopClaudeUsagePlugin{}) })
++
++			server := basaltHoldServer(t, header, []string{basaltHoldMessageStart, basaltHoldPing, basaltHoldRateLimit})
++			var chunks []cliproxyexecutor.StreamChunk
++			for chunk := range basaltHoldStream(t, basaltHoldExecutor(true), server.URL, format).Chunks {
++				chunks = append(chunks, chunk)
++			}
++			if len(chunks) != 1 || len(chunks[0].Payload) != 0 || chunks[0].Err == nil {
++				t.Fatalf("chunks = %#v, want exactly one error chunk and no payload", chunks)
++			}
++			errLimit := chunks[0].Err
++			var coder interface{ StatusCode() int }
++			if !errors.As(errLimit, &coder) || coder.StatusCode() != http.StatusTooManyRequests {
++				t.Fatalf("error = %T %v, want 429", errLimit, errLimit)
++			}
++			var retry interface{ RetryAfter() *time.Duration }
++			if !errors.As(errLimit, &retry) || retry.RetryAfter() == nil {
++				t.Fatalf("error = %T %v, want a retry time from the response headers", errLimit, errLimit)
++			}
++			// Retry-After 120s plus the parser's 1-30s fuzz.
++			if got := *retry.RetryAfter(); got < 119*time.Second || got > 151*time.Second {
++				t.Fatalf("RetryAfter = %v, want 120s plus fuzz", got)
++			}
++			var provider interface{ IsProviderErrorPayload() bool }
++			if !errors.As(errLimit, &provider) || !provider.IsProviderErrorPayload() {
++				t.Fatalf("error = %T %v, want providerErrorPayload so the submission is not outcome-unknown", errLimit, errLimit)
++			}
++			if !strings.Contains(errLimit.Error(), "rate_limit_error") {
++				t.Fatalf("error = %v, want the upstream error payload", errLimit)
++			}
++			select {
++			case record := <-plugin.records:
++				if !record.Failed {
++					t.Fatal("usage record not marked failed")
++				}
++				// Home reads the provider's retry time from this record and ends the cooldown there.
++				if record.Fail.StatusCode != http.StatusTooManyRequests || record.Fail.RetryAfterMS < 119_000 || record.Fail.RetryAfterMS > 151_000 {
++					t.Fatalf("usage failure = %d after %d ms, want 429 with the 200's retry time", record.Fail.StatusCode, record.Fail.RetryAfterMS)
++				}
++			case <-time.After(3 * time.Second):
++				t.Fatal("timed out waiting for failed usage record")
++			}
++		})
++	}
++
++	t.Run("hold off forwards in-stream as before", func(t *testing.T) {
++		server := basaltHoldServer(t, header, []string{basaltHoldMessageStart, basaltHoldPing, basaltHoldRateLimit})
++		output := basaltHoldDrain(basaltHoldStream(t, basaltHoldExecutor(false), server.URL, sdktranslator.FormatClaude))
++		if len(output.payloads) == 0 || output.payloads[0] != basaltHoldMessageStart || output.err == nil {
++			t.Fatalf("hold off output = %#v, want message_start forwarded then an in-stream error", output)
++		}
++	})
++}
++
++// Item 3: nothing generates within the time bound, so every held frame goes
++// out at the bound while the upstream is silent. The rest of the stream, a
++// rate_limit_error after release included, is what it is without the hold.
++func TestBasaltClaudeBootstrapHoldReleasesAtTimeBound(t *testing.T) {
++	const bound = 150 * time.Millisecond
++	t.Cleanup(setClaudeBootstrapHoldTimeBoundForTest(bound))
++	tail := []string{basaltHoldTextStart, basaltHoldTextDelta, basaltHoldRateLimit}
++
++	run := func(t *testing.T, hold bool, format sdktranslator.Format) (time.Duration, basaltHoldOutput) {
++		proceed := make(chan struct{})
++		var once sync.Once
++		release := func() { once.Do(func() { close(proceed) }) }
++		t.Cleanup(release)
++		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			w.Header().Set("Content-Type", "text/event-stream")
++			flusher := w.(http.Flusher)
++			_, _ = io.WriteString(w, basaltHoldMessageStart)
++			flusher.Flush()
++			select {
++			case <-proceed:
++			case <-r.Context().Done():
++				return
++			case <-time.After(10 * time.Second):
++				return
++			}
++			for _, event := range tail {
++				_, _ = io.WriteString(w, event)
++				flusher.Flush()
++			}
++		}))
++		t.Cleanup(server.Close)
++
++		start := time.Now()
++		result := basaltHoldStream(t, basaltHoldExecutor(hold), server.URL, format)
++		var first cliproxyexecutor.StreamChunk
++		select {
++		case first = <-result.Chunks:
++		case <-time.After(5 * time.Second):
++			t.Fatal("no chunk while the upstream is silent: the time bound did not fire")
++		}
++		elapsed := time.Since(start)
++		// The upstream sends nothing more until the first chunk is seen.
++		release()
++		output := basaltHoldDrain(result)
++		if first.Err != nil {
++			t.Fatalf("first chunk error = %v", first.Err)
++		}
++		output.payloads = append([]string{string(first.Payload)}, output.payloads...)
++		return elapsed, output
++	}
++
++	for _, format := range basaltHoldFormats() {
++		t.Run(format.String(), func(t *testing.T) {
++			elapsedOn, on := run(t, true, format)
++			if elapsedOn < bound {
++				t.Fatalf("first chunk after %v, want the hold to keep it for the %v bound", elapsedOn, bound)
++			}
++			_, off := run(t, false, format)
++			if got, want := basaltHoldComparable(on.payloads), basaltHoldComparable(off.payloads); strings.Join(got, "\x00") != strings.Join(want, "\x00") {
++				t.Fatalf("payloads with hold differ from without:\n on=%q\noff=%q", got, want)
++			}
++			if format == sdktranslator.FormatClaude {
++				want := append([]string{basaltHoldMessageStart}, tail...)
++				if strings.Join(on.payloads, "") != strings.Join(want, "") {
++					t.Fatalf("payloads = %q, want every upstream event once, in order", on.payloads)
++				}
++			}
++			if basaltHoldErrorSummary(on.err) != basaltHoldErrorSummary(off.err) {
++				t.Fatalf("stream error with hold = %s, without = %s", basaltHoldErrorSummary(on.err), basaltHoldErrorSummary(off.err))
++			}
++			var coder interface{ StatusCode() int }
++			if on.err == nil || (errors.As(on.err, &coder) && coder.StatusCode() == http.StatusTooManyRequests) {
++				t.Fatalf("stream error = %v, want today's in-stream error after release, not a failover 429", on.err)
++			}
++		})
++	}
++}
++
++// Item 4: what the hold costs the caller's first byte when generation starts
++// 800ms after message_start.
++func TestClaudeBootstrapHoldFirstByteCost(t *testing.T) {
++	const gap = 800 * time.Millisecond
++	measure := func(hold bool) time.Duration {
++		sent := make(chan time.Time, 1)
++		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++			w.Header().Set("Content-Type", "text/event-stream")
++			flusher := w.(http.Flusher)
++			sent <- time.Now()
++			_, _ = io.WriteString(w, basaltHoldMessageStart)
++			flusher.Flush()
++			time.Sleep(gap)
++			for _, event := range []string{basaltHoldTextStart, basaltHoldTextDelta, basaltHoldBlockStop, basaltHoldMessageEnd} {
++				_, _ = io.WriteString(w, event)
++				flusher.Flush()
++			}
++		}))
++		defer server.Close()
++		result := basaltHoldStream(t, basaltHoldExecutor(hold), server.URL, sdktranslator.FormatClaude)
++		first := <-result.Chunks
++		firstAt := time.Now()
++		if first.Err != nil || len(first.Payload) == 0 {
++			t.Fatalf("first chunk = %#v", first)
++		}
++		basaltHoldDrain(result)
++		return firstAt.Sub(<-sent)
++	}
++	off := measure(false)
++	on := measure(true)
++	t.Logf("first chunk after message_start, first content_block_delta %v later: hold off %v, hold on %v", gap, off, on)
++	if on < gap-50*time.Millisecond || on <= off {
++		t.Fatalf("hold on %v, hold off %v: want the hold to wait for the first generating event", on, off)
++	}
++}
++
++// Item 5: with no limit, the hold changes nothing the caller receives.
++func TestBasaltClaudeBootstrapHoldByteIdentity(t *testing.T) {
++	cases := []struct {
++		name   string
++		events []string
++	}{
++		{name: "text", events: basaltHoldTextEvents()},
++		{name: "tool_use first", events: basaltHoldToolUseEvents()},
++		{name: "extended thinking", events: basaltHoldThinkingEvents()},
++		// Not a limit: released, then forwarded and failed in-stream as today.
++		{name: "overloaded while holding", events: []string{basaltHoldMessageStart, basaltHoldPing, basaltHoldOverloaded}},
++		{name: "eof while holding", events: []string{basaltHoldMessageStart, basaltHoldPing}},
++	}
++	for _, tc := range cases {
++		for _, format := range basaltHoldFormats() {
++			t.Run(tc.name+"/"+format.String(), func(t *testing.T) {
++				server := basaltHoldServer(t, nil, tc.events)
++				on := basaltHoldDrain(basaltHoldStream(t, basaltHoldExecutor(true), server.URL, format))
++				off := basaltHoldDrain(basaltHoldStream(t, basaltHoldExecutor(false), server.URL, format))
++				if len(on.payloads) == 0 {
++					t.Fatal("no payload")
++				}
++				got, want := basaltHoldComparable(on.payloads), basaltHoldComparable(off.payloads)
++				if len(got) != len(want) {
++					t.Fatalf("chunk count with hold %d, without %d:\n on=%q\noff=%q", len(got), len(want), got, want)
++				}
++				for i := range got {
++					if got[i] != want[i] {
++						t.Fatalf("chunk %d differs:\n on=%q\noff=%q", i, got[i], want[i])
++					}
++				}
++				if format == sdktranslator.FormatClaude && strings.Join(on.payloads, "") != strings.Join(tc.events, "") {
++					t.Fatalf("passthrough bytes = %q, want the upstream bytes", strings.Join(on.payloads, ""))
++				}
++				if basaltHoldErrorSummary(on.err) != basaltHoldErrorSummary(off.err) {
++					t.Fatalf("stream error with hold = %s, without = %s", basaltHoldErrorSummary(on.err), basaltHoldErrorSummary(off.err))
++				}
++			})
++		}
++	}
++
++	// The hold is stream-only: a non-streamed call reads the same upstream the
++	// same way with it on or off.
++	t.Run("non-stream", func(t *testing.T) {
++		message := `{"id":"msg_hold_json","type":"message","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"Hello"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}`
++		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++			body, _ := io.ReadAll(r.Body)
++			if bytes.Contains(body, []byte(`"stream":true`)) {
++				w.Header().Set("Content-Type", "text/event-stream")
++				_, _ = io.WriteString(w, strings.Join(basaltHoldTextEvents(), ""))
++				return
++			}
++			w.Header().Set("Content-Type", "application/json")
++			_, _ = io.WriteString(w, message)
++		}))
++		defer server.Close()
++		for _, format := range basaltHoldFormats() {
++			execute := func(hold bool) string {
++				resp, err := basaltHoldExecutor(hold).Execute(context.Background(), basaltHoldAuth(server.URL), cliproxyexecutor.Request{
++					Model:   "claude-opus-5",
++					Payload: []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`),
++				}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, ResponseFormat: format})
++				if err != nil {
++					t.Fatalf("%s Execute(hold=%v) error = %v", format, hold, err)
++				}
++				return basaltHoldComparable([]string{string(resp.Payload)})[0]
++			}
++			if on, off := execute(true), execute(false); on != off || on == "" {
++				t.Fatalf("%s non-stream response with hold = %q, without = %q", format, on, off)
++			}
++		}
++	})
++}
++
++func TestBasaltClaudeBootstrapHoldClassification(t *testing.T) {
++	cases := []struct {
++		name  string
++		event string
++		want  claudeBootstrapEventKind
++	}{
++		{name: "message_start", event: basaltHoldMessageStart, want: claudeBootstrapEventHoldable},
++		{name: "ping", event: basaltHoldPing, want: claudeBootstrapEventHoldable},
++		{name: "comment", event: ": keepalive\n\n", want: claudeBootstrapEventHoldable},
++		{name: "blank", event: "\n", want: claudeBootstrapEventHoldable},
++		{name: "empty text start", event: basaltHoldTextStart, want: claudeBootstrapEventHoldable},
++		{name: "empty thinking start", event: basaltHoldThinkingEvents()[2], want: claudeBootstrapEventHoldable},
++		{name: "signed thinking start", event: basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":"c2ln"}}`), want: claudeBootstrapEventGeneration},
++		{name: "text with content", event: basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"x"}}`), want: claudeBootstrapEventGeneration},
++		{name: "tool_use start", event: basaltHoldToolUseEvents()[1], want: claudeBootstrapEventGeneration},
++		{name: "server_tool_use start", event: basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}}`), want: claudeBootstrapEventGeneration},
++		{name: "web_search_tool_result start", event: basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":1,"content_block":{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[]}}`), want: claudeBootstrapEventGeneration},
++		{name: "redacted_thinking start", event: basaltHoldEvent("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"abc"}}`), want: claudeBootstrapEventGeneration},
++		{name: "text delta", event: basaltHoldTextDelta, want: claudeBootstrapEventGeneration},
++		{name: "message_delta", event: basaltHoldEvent("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn"}}`), want: claudeBootstrapEventGeneration},
++		{name: "message_stop", event: basaltHoldEvent("message_stop", `{"type":"message_stop"}`), want: claudeBootstrapEventGeneration},
++		{name: "unknown event", event: basaltHoldEvent("future_event", `{"type":"future_event"}`), want: claudeBootstrapEventGeneration},
++		{name: "rate_limit_error", event: basaltHoldRateLimit, want: claudeBootstrapEventRateLimit},
++		{name: "overloaded_error", event: basaltHoldOverloaded, want: claudeBootstrapEventError},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got, payload := classifyClaudeBootstrapEvent([]byte(tc.event))
++			if got != tc.want {
++				t.Fatalf("classifyClaudeBootstrapEvent(%q) = %d, want %d", tc.event, got, tc.want)
++			}
++			if got == claudeBootstrapEventRateLimit && !bytes.Contains(payload, []byte(`"rate_limit_error"`)) {
++				t.Fatalf("rate limit payload = %q", payload)
++			}
++		})
++	}
++}
++
++// A real 200 carries no Retry-After and an allowed unified status, so the limit
++// inside it has no retry time; it still fails over as the account's 429. A
++// limit that is the last event, without its blank line, is caught the same way
++// on both paths, and a non-streamed translated call that buffers the stream
++// answers the account's 429 instead of a 502.
++func TestBasaltClaudeBootstrapHoldRealisticLimits(t *testing.T) {
++	realistic := http.Header{"Anthropic-Ratelimit-Unified-Status": {"allowed"}}
++	lastWithoutBlank := strings.TrimSuffix(basaltHoldRateLimit, "\n")
++	cases := []struct {
++		name   string
++		events []string
++	}{
++		{name: "realistic headers", events: []string{basaltHoldMessageStart, basaltHoldPing, basaltHoldRateLimit}},
++		{name: "last event without blank line", events: []string{basaltHoldMessageStart, basaltHoldPing, lastWithoutBlank}},
++	}
++	for _, tc := range cases {
++		for _, format := range basaltHoldFormats() {
++			t.Run(tc.name+"/"+format.String(), func(t *testing.T) {
++				server := basaltHoldServer(t, realistic, tc.events)
++				var chunks []cliproxyexecutor.StreamChunk
++				for chunk := range basaltHoldStream(t, basaltHoldExecutor(true), server.URL, format).Chunks {
++					chunks = append(chunks, chunk)
++				}
++				if len(chunks) != 1 || len(chunks[0].Payload) != 0 || chunks[0].Err == nil {
++					t.Fatalf("chunks = %#v, want exactly one error chunk and no payload", chunks)
++				}
++				var coder interface{ StatusCode() int }
++				if !errors.As(chunks[0].Err, &coder) || coder.StatusCode() != http.StatusTooManyRequests {
++					t.Fatalf("error = %T %v, want 429", chunks[0].Err, chunks[0].Err)
++				}
++				var provider interface{ IsProviderErrorPayload() bool }
++				if !errors.As(chunks[0].Err, &provider) || !provider.IsProviderErrorPayload() {
++					t.Fatalf("error = %T %v, want providerErrorPayload", chunks[0].Err, chunks[0].Err)
++				}
++			})
++		}
++	}
++
++	t.Run("non-stream translated", func(t *testing.T) {
++		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
++			w.Header().Set("Content-Type", "text/event-stream")
++			_, _ = io.WriteString(w, basaltHoldMessageStart+basaltHoldPing+basaltHoldRateLimit)
++		}))
++		defer server.Close()
++		_, err := basaltHoldExecutor(true).Execute(context.Background(), basaltHoldAuth(server.URL), cliproxyexecutor.Request{
++			Model:   "claude-opus-5",
++			Payload: []byte(`{"model":"claude-opus-5","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}`),
++		}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, ResponseFormat: sdktranslator.FormatOpenAI})
++		var coder interface{ StatusCode() int }
++		if err == nil || !errors.As(err, &coder) || coder.StatusCode() != http.StatusTooManyRequests {
++			t.Fatalf("Execute() error = %T %v, want the account's 429", err, err)
++		}
++		var provider interface{ IsProviderErrorPayload() bool }
++		if !errors.As(err, &provider) || !provider.IsProviderErrorPayload() {
++			t.Fatalf("error = %T %v, want providerErrorPayload", err, err)
++		}
++	})
++}
+diff --git a/internal/runtime/executor/claude_executor_bootstrap_hold.go b/internal/runtime/executor/claude_executor_bootstrap_hold.go
+new file mode 100644
+index 0000000..d03a4f1
+--- /dev/null
++++ b/internal/runtime/executor/claude_executor_bootstrap_hold.go
+@@ -0,0 +1,281 @@
++package executor
++
++import (
++	"bytes"
++	"sync"
++	"sync/atomic"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++// Claude counterpart of the Codex stream bootstrap buffering. Anthropic can
++// answer a 200 stream with message_start and ping and then a rate_limit_error
++// event. While nothing has reached the caller, that error can still fail over
++// to another account; once one byte went out it cannot.
++const (
++	claudeBootstrapHoldMaxFrames = 48
++	claudeBootstrapHoldMaxBytes  = 1 << 20
++)
++
++var (
++	claudeBootstrapHoldBoundMu sync.RWMutex
++	// claudeBootstrapHoldTimeBound caps how long the caller's first byte may
++	// wait, measured from the first held frame. Tests shorten it.
++	claudeBootstrapHoldTimeBound = 5 * time.Second
++)
++
++func currentClaudeBootstrapHoldTimeBound() time.Duration {
++	claudeBootstrapHoldBoundMu.RLock()
++	defer claudeBootstrapHoldBoundMu.RUnlock()
++	return claudeBootstrapHoldTimeBound
++}
++
++func setClaudeBootstrapHoldTimeBoundForTest(bound time.Duration) func() {
++	claudeBootstrapHoldBoundMu.Lock()
++	previous := claudeBootstrapHoldTimeBound
++	claudeBootstrapHoldTimeBound = bound
++	claudeBootstrapHoldBoundMu.Unlock()
++	return func() {
++		claudeBootstrapHoldBoundMu.Lock()
++		claudeBootstrapHoldTimeBound = previous
++		claudeBootstrapHoldBoundMu.Unlock()
++	}
++}
++
++func claudeStreamBootstrapHoldEnabled(cfg *config.Config) bool {
++	return cfg == nil || cfg.Claude.StreamBootstrapHoldEnabled()
++}
++
++type claudeBootstrapEventKind int
++
++const (
++	claudeBootstrapEventHoldable claudeBootstrapEventKind = iota
++	claudeBootstrapEventGeneration
++	claudeBootstrapEventRateLimit
++	claudeBootstrapEventError
++)
++
++// classifyClaudeBootstrapEvent sorts one complete SSE event. Only events that
++// cannot have produced output or started server-side work are holdable; the
++// list is closed, so anything unknown releases the stream. server_tool_use and
++// web_search_tool_result starts are never held: failing over after them would
++// run the search again on another account.
++func classifyClaudeBootstrapEvent(rawEvent []byte) (claudeBootstrapEventKind, []byte) {
++	var dataLines [][]byte
++	sawField := false
++	for _, line := range bytes.Split(rawEvent, []byte("\n")) {
++		trimmed := bytes.TrimSpace(line)
++		switch {
++		case len(trimmed) == 0, trimmed[0] == ':':
++			continue
++		case bytes.HasPrefix(trimmed, []byte("data:")):
++			if payload := bytes.TrimSpace(trimmed[len("data:"):]); len(payload) > 0 {
++				dataLines = append(dataLines, payload)
++			}
++		case bytes.HasPrefix(trimmed, []byte("event:")), bytes.HasPrefix(trimmed, []byte("id:")), bytes.HasPrefix(trimmed, []byte("retry:")):
++			sawField = true
++		default:
++			return claudeBootstrapEventGeneration, nil
++		}
++	}
++	if len(dataLines) == 0 {
++		if sawField {
++			// A named event without data is not something this list knows.
++			return claudeBootstrapEventGeneration, nil
++		}
++		return claudeBootstrapEventHoldable, nil
++	}
++	payload := bytes.TrimSpace(bytes.Join(dataLines, []byte("\n")))
++	if !ojson.ValidBytes(payload) {
++		return claudeBootstrapEventGeneration, nil
++	}
++	root := ojson.ParseBytes(payload)
++	switch root.Get("type").String() {
++	case "message_start", "ping":
++		return claudeBootstrapEventHoldable, nil
++	case "content_block_start":
++		if isClaudeEmptyBootstrapBlock(root.Get("content_block")) {
++			return claudeBootstrapEventHoldable, nil
++		}
++		return claudeBootstrapEventGeneration, nil
++	case "error":
++		if root.Get("error.type").String() == "rate_limit_error" {
++			return claudeBootstrapEventRateLimit, payload
++		}
++		return claudeBootstrapEventError, nil
++	default:
++		return claudeBootstrapEventGeneration, nil
++	}
++}
++
++// isClaudeSSEFieldLine reports whether a line belongs to an SSE event that is
++// still being assembled, so it can wait for the event's classification.
++func isClaudeSSEFieldLine(line []byte) bool {
++	trimmed := bytes.TrimSpace(line)
++	if len(trimmed) == 0 || trimmed[0] == ':' {
++		return true
++	}
++	for _, field := range [][]byte{[]byte("data:"), []byte("event:"), []byte("id:"), []byte("retry:")} {
++		if bytes.HasPrefix(trimmed, field) {
++			return true
++		}
++	}
++	return false
++}
++
++func isClaudeEmptyBootstrapBlock(block ojson.Result) bool {
++	switch block.Get("type").String() {
++	case "text":
++		return block.Get("text").String() == ""
++	case "thinking":
++		return block.Get("thinking").String() == "" && block.Get("signature").String() == ""
++	default:
++		return false
++	}
++}
++
++// claudeStreamRateLimitError is a rate_limit_error event inside a 200 stream
++// that a non-streamed call buffered whole. The caller classifies it like a 429
++// on the wire, with the 200's headers, instead of a 502.
++type claudeStreamRateLimitError struct {
++	payload []byte
++}
++
++func (e claudeStreamRateLimitError) Error() string {
++	return "claude executor: upstream returned error event: rate_limit_error"
++}
++
++type claudeStreamAction int
++
++const (
++	claudeStreamNext claudeStreamAction = iota
++	claudeStreamBreak
++	claudeStreamReturn
++)
++
++// claudeBootstrapHold keeps the frames that precede generation. The stream
++// goroutine does every per-line step inside Do while the hold is open, and the
++// time bound releases from a timer goroutine under the same lock, so the bound
++// fires even while the scanner blocks on an upstream that sends nothing.
++type claudeBootstrapHold struct {
++	mu       sync.Mutex
++	finished atomic.Bool
++	exited   atomic.Bool
++	items    [][]byte
++	frames   int
++	bytes    int
++	bound    time.Duration
++	timer    *time.Timer
++	// release sends items in order, through the same code live frames use, and
++	// returns claudeStreamReturn when the stream goroutine must stop.
++	release func([][]byte) claudeStreamAction
++}
++
++func newClaudeBootstrapHold(enabled bool, release func([][]byte) claudeStreamAction) *claudeBootstrapHold {
++	if !enabled {
++		return nil
++	}
++	return &claudeBootstrapHold{bound: currentClaudeBootstrapHoldTimeBound(), release: release}
++}
++
++// Do runs one step of the stream goroutine. While the hold is open it runs
++// under the lock the timer release takes.
++func (h *claudeBootstrapHold) Do(step func() claudeStreamAction) claudeStreamAction {
++	if h == nil {
++		return step()
++	}
++	if h.finished.Load() {
++		if h.exited.Load() {
++			return claudeStreamReturn
++		}
++		return step()
++	}
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	if h.exited.Load() {
++		return claudeStreamReturn
++	}
++	return step()
++}
++
++// Holding reports whether frames are still being held. Call it inside Do.
++func (h *claudeBootstrapHold) Holding() bool {
++	return h != nil && !h.finished.Load()
++}
++
++// Hold keeps one frame that spans lines upstream lines. Call it inside Do
++// while Holding. It releases everything once a bound is reached.
++func (h *claudeBootstrapHold) Hold(item []byte, lines int) claudeStreamAction {
++	h.items = append(h.items, item)
++	h.frames += lines
++	h.bytes += len(item)
++	if h.frames >= claudeBootstrapHoldMaxFrames || h.bytes >= claudeBootstrapHoldMaxBytes {
++		return h.Release()
++	}
++	if h.timer == nil && h.bound > 0 {
++		h.timer = time.AfterFunc(h.bound, h.releaseOnTimeout)
++	}
++	return claudeStreamNext
++}
++
++// Release sends what is held and stops holding. Call it inside Do.
++func (h *claudeBootstrapHold) Release() claudeStreamAction {
++	if !h.Holding() {
++		return claudeStreamNext
++	}
++	h.stopTimer()
++	items := h.items
++	h.items = nil
++	action := claudeStreamNext
++	if len(items) > 0 {
++		action = h.release(items)
++	}
++	if action == claudeStreamReturn {
++		h.exited.Store(true)
++	}
++	h.finished.Store(true)
++	return action
++}
++
++// Abandon drops what is held without sending it, for a failover. Call it inside Do.
++func (h *claudeBootstrapHold) Abandon() {
++	h.stopTimer()
++	h.items = nil
++	h.finished.Store(true)
++}
++
++// Finish releases what is still held once the upstream stopped, before the
++// end-of-stream handling runs. It is called outside Do.
++func (h *claudeBootstrapHold) Finish() claudeStreamAction {
++	if h == nil {
++		return claudeStreamNext
++	}
++	return h.Do(h.Release)
++}
++
++// Close keeps a pending timer from sending after the stream goroutine returns.
++func (h *claudeBootstrapHold) Close() {
++	if h == nil {
++		return
++	}
++	h.mu.Lock()
++	h.stopTimer()
++	h.items = nil
++	h.finished.Store(true)
++	h.mu.Unlock()
++}
++
++func (h *claudeBootstrapHold) releaseOnTimeout() {
++	h.mu.Lock()
++	defer h.mu.Unlock()
++	h.Release()
++}
++
++func (h *claudeBootstrapHold) stopTimer() {
++	if h.timer != nil {
++		h.timer.Stop()
++		h.timer = nil
++	}
++}
+diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
+index d06d0fa..60c6440 100644
+--- a/internal/runtime/executor/claude_executor_execute.go
++++ b/internal/runtime/executor/claude_executor_execute.go
+@@ -3,6 +3,7 @@ package executor
+ import (
+ 	"bytes"
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -375,6 +376,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 	threadMessageID := ""
+ 	if upstreamStream {
+ 		if errValidate := validateClaudeStreamingResponse(data); errValidate != nil {
++			var limit claudeStreamRateLimitError
++			if errors.As(errValidate, &limit) {
++				errValidate = classifyClaudeUpstreamErrorWithCooling(http.StatusTooManyRequests, httpResp.Header, limit.payload, e.modelLevelCooling())
++			}
+ 			helps.RecordAPIResponseError(ctx, e.cfg, errValidate)
+ 			return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errValidate)
+ 		}
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+index b16f4f9..8779d79 100644
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -355,6 +355,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 		return nil, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, err)
+ 	}
+ 	out := make(chan cliproxyexecutor.StreamChunk, 1)
++	// A fast request's errors are request-scoped and never fail over, so holding would only
++	// turn its in-stream limit into a different error.
++	holdEnabled := claudeStreamBootstrapHoldEnabled(e.cfg) && !fastRequest
+ 	go func() {
+ 		defer close(out)
+ 		defer func() {
+@@ -395,6 +398,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 			case <-ctx.Done():
+ 			}
+ 		}
++		// A rate_limit_error before anything reached the caller is the account's
++		// own 429: classified like one on the wire, with the 200's rate-limit
++		// headers, so the conductor fails over instead of forwarding it.
++		emitBootstrapRateLimit := func(errorPayload []byte) claudeStreamAction {
++			emitResponseError(classifyClaudeUpstreamErrorWithCooling(http.StatusTooManyRequests, httpResp.Header, errorPayload, e.modelLevelCooling()))
++			return claudeStreamReturn
++		}
+ 
+ 		streamBody := threadBetas.StreamReader(decodedBody, func(messageID string) {
+ 			commitClaudeContinuity(diagnosticsState, messageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
+@@ -408,46 +418,88 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 			var upstreamMessageID string
+ 			var upstreamStreamErr error
+ 			upstreamCompleted := false
+-			flushEvent := func() bool {
++			sendEvent := func(payload []byte) claudeStreamAction {
++				select {
++				case out <- cliproxyexecutor.StreamChunk{Payload: payload}:
++					return claudeStreamNext
++				case <-ctx.Done():
++					emitCancellation(ctx.Err())
++					return claudeStreamReturn
++				}
++			}
++			hold := newClaudeBootstrapHold(holdEnabled, func(held [][]byte) claudeStreamAction {
++				for _, payload := range held {
++					if action := sendEvent(payload); action != claudeStreamNext {
++						return action
++					}
++				}
++				return claudeStreamNext
++			})
++			defer hold.Close()
++			flushEvent := func() claudeStreamAction {
+ 				if event.Len() == 0 {
+-					return true
++					return claudeStreamNext
+ 				}
+ 				observeClaudeSSEEvent(event.Bytes(), &upstreamMessageID, &upstreamCompleted, &upstreamStreamErr)
+ 				streamUsage.ObserveClaudeSSEEvent(event.Bytes())
+ 				cloned := bytes.Clone(event.Bytes())
+ 				event.Reset()
+-				select {
+-				case out <- cliproxyexecutor.StreamChunk{Payload: cloned}:
+-					return true
+-				case <-ctx.Done():
+-					return false
++				if hold.Holding() {
++					kind, errorPayload := classifyClaudeBootstrapEvent(cloned)
++					switch {
++					case kind == claudeBootstrapEventRateLimit:
++						hold.Abandon()
++						return emitBootstrapRateLimit(errorPayload)
++					case kind == claudeBootstrapEventHoldable && !upstreamCompleted && upstreamStreamErr == nil:
++						return hold.Hold(cloned, bytes.Count(cloned, []byte("\n")))
++					}
++					if action := hold.Release(); action != claudeStreamNext {
++						return action
++					}
+ 				}
++				return sendEvent(cloned)
+ 			}
+ 			for scanner.Scan() {
+-				line := scanner.Bytes()
+-				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+-				reporter.ObserveResponseModel(line)
+-				streamUsage.ObserveClaudeStream(line)
+-				restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
+-				if errRestore != nil {
+-					emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
+-					return
+-				}
+-				line = e.restoreResponseModel(restoredLine, req.Model)
+-				event.Write(line)
+-				event.WriteByte('\n')
+-				if len(bytes.TrimSpace(line)) == 0 {
+-					if !flushEvent() {
+-						emitCancellation(ctx.Err())
+-						return
++				action := hold.Do(func() claudeStreamAction {
++					line := scanner.Bytes()
++					helps.AppendAPIResponseChunk(ctx, e.cfg, line)
++					reporter.ObserveResponseModel(line)
++					streamUsage.ObserveClaudeStream(line)
++					restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
++					if errRestore != nil {
++						if action := hold.Release(); action != claudeStreamNext {
++							return action
++						}
++						emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
++						return claudeStreamReturn
+ 					}
+-					if upstreamCompleted || (upstreamStreamErr != nil && !clienterror.IsClaudePolicyRefusalError(upstreamStreamErr)) {
+-						break
++					line = e.restoreResponseModel(restoredLine, req.Model)
++					event.Write(line)
++					event.WriteByte('\n')
++					if len(bytes.TrimSpace(line)) == 0 {
++						if action := flushEvent(); action != claudeStreamNext {
++							return action
++						}
++						if upstreamCompleted || (upstreamStreamErr != nil && !clienterror.IsClaudePolicyRefusalError(upstreamStreamErr)) {
++							return claudeStreamBreak
++						}
+ 					}
++					return claudeStreamNext
++				})
++				if action == claudeStreamReturn {
++					return
+ 				}
++				if action == claudeStreamBreak {
++					break
++				}
++			}
++			// A last event without its blank line is classified like any other;
++			// then the upstream stopped, so whatever is still held goes out
++			// before the end of the stream is handled exactly as without the hold.
++			if hold.Do(flushEvent) == claudeStreamReturn {
++				return
+ 			}
+-			if !flushEvent() {
+-				emitCancellation(ctx.Err())
++			if hold.Finish() == claudeStreamReturn {
+ 				return
+ 			}
+ 			if !upstreamCompleted || upstreamStreamErr != nil {
+@@ -488,24 +540,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 		var upstreamStreamErr error
+ 		var eventBuf bytes.Buffer
+ 		upstreamCompleted := false
+-		for scanner.Scan() {
+-			line := scanner.Bytes()
+-			eventBuf.Write(line)
+-			eventBuf.WriteByte('\n')
+-			if len(bytes.TrimSpace(line)) == 0 {
+-				observeClaudeSSEEvent(eventBuf.Bytes(), &upstreamMessageID, &upstreamCompleted, &upstreamStreamErr)
+-				streamUsage.ObserveClaudeSSEEvent(eventBuf.Bytes())
+-				eventBuf.Reset()
+-			}
+-			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
+-			reporter.ObserveResponseModel(line)
+-			streamUsage.ObserveClaudeStream(line)
+-			restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
+-			if errRestore != nil {
+-				emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
+-				return
+-			}
+-			line = e.restoreResponseModel(restoredLine, req.Model)
++		// translateLine is the one path every Claude line takes to the caller, so
++		// held lines are translated exactly like live ones, in order.
++		translateLine := func(line []byte) claudeStreamAction {
+ 			helps.RecordClaudeWebSearchResultsContext(ctx, webSearchSessionKey, line, webSearchTTL, webSearchLimit)
+ 			chunks := sdktranslator.TranslateStream(
+ 				ctx,
+@@ -535,16 +572,106 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 					if !upstreamCompleted {
+ 						emitCancellation(ctx.Err())
+ 					}
+-					return
++					return claudeStreamReturn
+ 				}
+ 			}
+ 			if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
++				return claudeStreamReturn
++			}
++			return claudeStreamNext
++		}
++		hold := newClaudeBootstrapHold(holdEnabled, func(held [][]byte) claudeStreamAction {
++			for _, line := range held {
++				if action := translateLine(line); action != claudeStreamNext {
++					return action
++				}
++			}
++			return claudeStreamNext
++		})
++		defer hold.Close()
++		for scanner.Scan() {
++			action := hold.Do(func() claudeStreamAction {
++				line := scanner.Bytes()
++				eventBuf.Write(line)
++				eventBuf.WriteByte('\n')
++				var completedEvent []byte
++				if len(bytes.TrimSpace(line)) == 0 {
++					observeClaudeSSEEvent(eventBuf.Bytes(), &upstreamMessageID, &upstreamCompleted, &upstreamStreamErr)
++					streamUsage.ObserveClaudeSSEEvent(eventBuf.Bytes())
++					if hold.Holding() {
++						completedEvent = bytes.Clone(eventBuf.Bytes())
++					}
++					eventBuf.Reset()
++				}
++				helps.AppendAPIResponseChunk(ctx, e.cfg, line)
++				reporter.ObserveResponseModel(line)
++				streamUsage.ObserveClaudeStream(line)
++				restoredLine, errRestore := restoreClaudeOAuthToolNamesFromStreamLine(line, oauthToolNamesReverseMap)
++				if errRestore != nil {
++					if action := hold.Release(); action != claudeStreamNext {
++						return action
++					}
++					emitResponseError(fmt.Errorf("restore Claude OAuth tool name from streaming response: %w", errRestore))
++					return claudeStreamReturn
++				}
++				line = e.restoreResponseModel(restoredLine, req.Model)
++				if hold.Holding() {
++					// Lines wait for the blank line that completes their event,
++					// which decides whether the event is held, fails over or
++					// releases the stream.
++					kind := claudeBootstrapEventGeneration
++					var errorPayload []byte
++					switch {
++					case completedEvent != nil:
++						kind, errorPayload = classifyClaudeBootstrapEvent(completedEvent)
++					case isClaudeSSEFieldLine(line):
++						kind = claudeBootstrapEventHoldable
++					}
++					switch {
++					case kind == claudeBootstrapEventRateLimit:
++						hold.Abandon()
++						return emitBootstrapRateLimit(errorPayload)
++					case kind == claudeBootstrapEventHoldable && !upstreamCompleted && upstreamStreamErr == nil:
++						return hold.Hold(bytes.Clone(line), 1)
++					}
++					if action := hold.Release(); action != claudeStreamNext {
++						return action
++					}
++				}
++				if action := translateLine(line); action != claudeStreamNext {
++					return action
++				}
++				if upstreamCompleted || (upstreamStreamErr != nil && !clienterror.IsClaudePolicyRefusalError(upstreamStreamErr)) {
++					return claudeStreamBreak
++				}
++				return claudeStreamNext
++			})
++			if action == claudeStreamReturn {
+ 				return
+ 			}
+-			if upstreamCompleted || (upstreamStreamErr != nil && !clienterror.IsClaudePolicyRefusalError(upstreamStreamErr)) {
++			if action == claudeStreamBreak {
+ 				break
+ 			}
+ 		}
++		// A last event without its blank line is classified like any other, as the
++		// passthrough does. Then the upstream stopped while holding: what was held
++		// goes out first, and the end of the stream is handled exactly as without
++		// the hold.
++		if hold.Do(func() claudeStreamAction {
++			if !hold.Holding() || eventBuf.Len() == 0 {
++				return claudeStreamNext
++			}
++			if kind, errorPayload := classifyClaudeBootstrapEvent(eventBuf.Bytes()); kind == claudeBootstrapEventRateLimit {
++				hold.Abandon()
++				return emitBootstrapRateLimit(errorPayload)
++			}
++			return claudeStreamNext
++		}) == claudeStreamReturn {
++			return
++		}
++		if hold.Finish() == claudeStreamReturn {
++			return
++		}
+ 		if eventBuf.Len() > 0 {
+ 			observeClaudeSSEEvent(eventBuf.Bytes(), &upstreamMessageID, &upstreamCompleted, &upstreamStreamErr)
+ 			streamUsage.ObserveClaudeSSEEvent(eventBuf.Bytes())
+@@ -612,6 +739,9 @@ func validateClaudeStreamingResponse(data []byte) error {
+ 		root := util.ParseGJSONBytesNoCopy(payload)
+ 		switch root.Get("type").String() {
+ 		case "error":
++			if root.Get("error.type").String() == "rate_limit_error" {
++				return claudeStreamRateLimitError{payload: bytes.Clone(payload)}
++			}
+ 			message := strings.TrimSpace(root.Get("error.message").String())
+ 			if message == "" {
+ 				message = strings.TrimSpace(root.Get("error.type").String())
+diff --git a/sdk/api/handlers/openai/basalt_claude_bootstrap_hold_failover_test.go b/sdk/api/handlers/openai/basalt_claude_bootstrap_hold_failover_test.go
+new file mode 100644
+index 0000000..31611c2
+--- /dev/null
++++ b/sdk/api/handlers/openai/basalt_claude_bootstrap_hold_failover_test.go
+@@ -0,0 +1,121 @@
++package openai
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/ojson"
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
++)
++
++// Item 2: account a answers a streamed call with message_start, ping and then
++// its own rate limit inside the 200. With the hold on (the default), nothing of
++// a reached the caller, so the conductor serves the call from b and the caller
++// only ever sees b's bytes.
++func TestBasaltClaudeBootstrapHoldStreamFailsOverToSecondAccount(t *testing.T) {
++	const accountA = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_account_a\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
++		"event: ping\ndata: {\"type\": \"ping\"}\n\n" +
++		"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"}}\n\n"
++	const accountB = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_account_b\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-opus-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
++		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
++		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"served-by-b\"}}\n\n" +
++		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
++		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":1}}\n\n" +
++		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
++
++	var submissionsA, submissionsB atomic.Int32
++	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		body, errRead := io.ReadAll(r.Body)
++		if errRead != nil || r.URL.Path != "/v1/messages" || ojson.GetBytesNoCopy(body, "stream").Type != ojson.True {
++			t.Errorf("unexpected upstream request: path=%s err=%v body=%s", r.URL.Path, errRead, body)
++			return
++		}
++		key := r.Header.Get("x-api-key") + r.Header.Get("Authorization")
++		w.Header().Set("Content-Type", "text/event-stream")
++		w.Header().Set("Retry-After", "30")
++		w.WriteHeader(http.StatusOK)
++		flusher := w.(http.Flusher)
++		events := accountB
++		if strings.Contains(key, "synthetic-a") {
++			submissionsA.Add(1)
++			events = accountA
++		} else {
++			submissionsB.Add(1)
++		}
++		for _, event := range strings.SplitAfter(events, "\n\n") {
++			_, _ = io.WriteString(w, event)
++			flusher.Flush()
++		}
++	}))
++	defer upstream.Close()
++
++	manager := coreauth.NewManager(nil, &coreauth.FillFirstSelector{}, nil)
++	manager.RegisterExecutor(runtimeexecutor.NewClaudeExecutor(&config.Config{}))
++	model := "claude-bootstrap-hold-" + strings.ReplaceAll(t.Name(), "/", "-")
++	for _, suffix := range []string{"a", "b"} {
++		auth := &coreauth.Auth{
++			ID: model + "-" + suffix, Provider: "claude", Status: coreauth.StatusActive,
++			ProxyURL: "direct", Attributes: map[string]string{"base_url": upstream.URL, "api_key": "synthetic-" + suffix},
++		}
++		if _, errRegister := manager.Register(context.Background(), auth); errRegister != nil {
++			t.Fatal(errRegister)
++		}
++		registry.GetGlobalRegistry().RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
++		authID := auth.ID
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(authID) })
++	}
++	base := handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, manager)
++	router := gin.New()
++	router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
++	public := httptest.NewServer(router)
++	defer public.Close()
++
++	requestDoc := ojson.NewDoc([]byte(`{"messages":[{"role":"user","content":"hello"}],"max_tokens":64,"stream":true}`))
++	_ = requestDoc.Set("model", model)
++	request, errRequest := http.NewRequest(http.MethodPost, public.URL+"/v1/chat/completions", strings.NewReader(requestDoc.String()))
++	if errRequest != nil {
++		t.Fatal(errRequest)
++	}
++	request.Header.Set("Content-Type", "application/json")
++	client := public.Client()
++	client.Timeout = 15 * time.Second
++	response, errResponse := client.Do(request)
++	if errResponse != nil {
++		t.Fatal(errResponse)
++	}
++	defer func() { _ = response.Body.Close() }()
++	body, errRead := io.ReadAll(response.Body)
++	if errRead != nil {
++		t.Fatal(errRead)
++	}
++	t.Logf("status=%d a=%d b=%d body=%s", response.StatusCode, submissionsA.Load(), submissionsB.Load(), body)
++
++	if submissionsA.Load() != 1 || submissionsB.Load() != 1 {
++		t.Fatalf("upstream submissions a=%d b=%d, want one each: a fails over to b", submissionsA.Load(), submissionsB.Load())
++	}
++	if response.StatusCode != http.StatusOK {
++		t.Fatalf("status = %d, want 200", response.StatusCode)
++	}
++	text := string(body)
++	if !strings.Contains(text, "served-by-b") || !strings.Contains(text, "msg_account_b") {
++		t.Fatalf("body is missing account b's stream: %s", text)
++	}
++	for _, leaked := range []string{"msg_account_a", "rate_limit"} {
++		if strings.Contains(text, leaked) {
++			t.Fatalf("caller saw %q from account a: %s", leaked, text)
++		}
++	}
++}
+diff --git a/sdk/cliproxy/auth/basalt_home_redispatch.go b/sdk/cliproxy/auth/basalt_home_redispatch.go
+new file mode 100644
+index 0000000..132a0f3
+--- /dev/null
++++ b/sdk/cliproxy/auth/basalt_home_redispatch.go
+@@ -0,0 +1,129 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// A credential that hit its limit while another one is eligible must not surface
++// a Home bookkeeping error to the caller; the helpers below keep re-routes going.
++
++// homeReleaseAckTimeoutMessage prefixes the error endHomeSelectionBeforeRedispatch
++// returns when Home did not acknowledge a release in time. A pick that fails this
++// way comes from a retained-selection target change, which keeps its wait.
++const homeReleaseAckTimeoutMessage = "Home did not acknowledge credential release: "
++
++// homeDispatcherHonoursExclusions reports whether the next pick sends
++// excluded_auth_ids. It mirrors the dispatcher switch in pickHomeDispatchSelection;
++// the plain RPopAuth and RPopAuthWithPolicy variants carry no exclusions.
++func (m *Manager) homeDispatcherHonoursExclusions(ctx context.Context) bool {
++	bundle := m.HomeDispatchBundle()
++	if bundle == nil || bundle.client == nil {
++		return false
++	}
++	client := bundle.client
++	if _, ok := client.(homeDispatchSessionHierarchyDispatcher); ok {
++		return true
++	}
++	if credentialPolicyFromContext(ctx) == "" {
++		if _, ok := client.(homeDispatchRetryRoundConstraintsDispatcher); ok {
++			return true
++		}
++		_, ok := client.(homeDispatchConstraintsDispatcher)
++		return ok
++	}
++	if _, ok := client.(homeCredentialPolicyRetryRoundConstraintsDispatcher); ok {
++		return true
++	}
++	if _, ok := client.(homeCredentialPolicyDispatcher); ok {
++		_, okConstraints := client.(homeCredentialPolicyConstraintsDispatcher)
++		return okConstraints
++	}
++	return false
++}
++
++// endHomeSelectionBeforeExcludedRedispatch ends selection and waits for Home to
++// acknowledge the release, like endHomeSelectionBeforeRedispatch. When the
++// credential is excluded from the next pick and the dispatcher honours that, Home
++// cannot hand it back, so a release acknowledgement that outlives CPACancelBound
++// no longer ends the call. The release stays queued in the flusher as a cumulative
++// sequence and Home applies it when it lands; nothing is resent or counted twice.
++// A cancelled caller still gets today's error.
++func (m *Manager) endHomeSelectionBeforeExcludedRedispatch(ctx context.Context, selection *HomeDispatchSelection, reason string, excluded map[string]struct{}) error {
++	if selection == nil {
++		return nil
++	}
++	authID := ""
++	if auth := selection.CloneAuth(); auth != nil {
++		authID = strings.TrimSpace(auth.ID)
++	}
++	if _, isExcluded := excluded[authID]; isExcluded && authID != "" && !selection.Active() && m.homeDispatcherHonoursExclusions(ctx) {
++		// A websocket session keeps its selection after the failure path ended it, and that
++		// path already waited for the release. Waiting on the same ticket again would only
++		// turn a slow acknowledgement into a 503 for a credential Home can't hand back.
++		return nil
++	}
++	errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, reason)
++	if errEnd == nil || authID == "" || (ctx != nil && ctx.Err() != nil) {
++		return errEnd
++	}
++	if _, isExcluded := excluded[authID]; !isExcluded || !m.homeDispatcherHonoursExclusions(ctx) {
++		return errEnd
++	}
++	logEntryWithRequestID(ctx).Warnf("home: release of excluded credential %s not acknowledged within the cancel bound (%s); redispatching, release stays pending", authID, reason)
++	return nil
++}
++
++// shouldRedispatchAfterHomeUnavailable reports whether a failed pick is a
++// transient dispatch failure worth one more dispatch. An ambiguous dispatch
++// fences the client and drops its heartbeat, so that retry fails fast with a
++// non-retryable home_unavailable instead of reaching Home.
++func shouldRedispatchAfterHomeUnavailable(errPick, lastErr error) bool {
++	if errPick == nil || lastErr == nil {
++		return false
++	}
++	var authErr *Error
++	if !errors.As(errPick, &authErr) || authErr == nil || !authErr.Retryable {
++		return false
++	}
++	if !strings.EqualFold(strings.TrimSpace(authErr.Code), "home_unavailable") {
++		return false
++	}
++	return !strings.HasPrefix(authErr.Message, homeReleaseAckTimeoutMessage)
++}
++
++// redispatchAfterHomeUnavailable runs the one extra pick within the caller's
++// remaining deadline, capped at one CPACancelBound. pickHomeDispatchSelection
++// keeps no reference to the context it is given, so the bound ends with the call.
++func (m *Manager) redispatchAfterHomeUnavailable(ctx context.Context, model string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	pickCtx, cancelPick := context.WithTimeout(ctx, m.homeCPACancelBound())
++	defer cancelPick()
++	return m.pickHomeDispatchSelection(pickCtx, model, opts)
++}
++
++// homeRedispatchFailureError is what the caller gets when the extra pick also
++// fails because Home is unavailable: the account's own 429 with its retry time,
++// so a client backs off instead of seeing a 503 for a Home hiccup. It is nil
++// when the extra pick failed any other way, such as Home saying no account is
++// free yet, or for any other lastErr, which keeps today's pick-failure handling
++// and its retry rounds.
++func homeRedispatchFailureError(ctx context.Context, errPick, lastErr, upstreamErr error, timing *homeRetryRoundTiming) error {
++	if ctx != nil && ctx.Err() != nil {
++		return nil
++	}
++	var pickErr *Error
++	if !errors.As(errPick, &pickErr) || pickErr == nil || !strings.EqualFold(strings.TrimSpace(pickErr.Code), "home_unavailable") {
++		return nil
++	}
++	if statusCodeFromError(lastErr) != http.StatusTooManyRequests {
++		return nil
++	}
++	return markHomeRetryRoundExhausted(preferredExecutionAttemptError(lastErr, upstreamErr), timing.RetryAfter(), false)
++}
+diff --git a/sdk/cliproxy/auth/basalt_home_redispatch_test.go b/sdk/cliproxy/auth/basalt_home_redispatch_test.go
+new file mode 100644
+index 0000000..585f688
+--- /dev/null
++++ b/sdk/cliproxy/auth/basalt_home_redispatch_test.go
+@@ -0,0 +1,432 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"net/http"
++	"reflect"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/MoeForge/moego/json"
++	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++const (
++	basaltAccountA  = "home-retry-a"
++	basaltAccountB  = "home-retry-b"
++	basaltRetryTime = 7 * time.Second
++)
++
++// basaltAccountedDispatcher hands out accounted credentials in order, honours
++// excluded_auth_ids like a current Home, and can fail chosen dispatch calls.
++type basaltAccountedDispatcher struct {
++	mu       sync.Mutex
++	authIDs  []string
++	calls    int
++	excluded [][]string
++	fail     func(call int) error
++}
++
++func (*basaltAccountedDispatcher) HeartbeatOK() bool { return true }
++
++func (d *basaltAccountedDispatcher) RPopAuth(ctx context.Context, model string, sessionID string, headers http.Header, count int) ([]byte, error) {
++	return d.RPopAuthWithConstraints(ctx, model, sessionID, headers, count, nil, "")
++}
++
++func (d *basaltAccountedDispatcher) RPopAuthWithConstraints(_ context.Context, model string, _ string, _ http.Header, _ int, excludedAuthIDs []string, _ string) ([]byte, error) {
++	d.mu.Lock()
++	d.calls++
++	call := d.calls
++	d.excluded = append(d.excluded, append([]string(nil), excludedAuthIDs...))
++	d.mu.Unlock()
++	if d.fail != nil {
++		if errFail := d.fail(call); errFail != nil {
++			return nil, errFail
++		}
++	}
++	excluded := make(map[string]struct{}, len(excludedAuthIDs))
++	for _, authID := range excludedAuthIDs {
++		excluded[authID] = struct{}{}
++	}
++	for _, authID := range d.authIDs {
++		if _, skip := excluded[authID]; skip {
++			continue
++		}
++		return json.Marshal(struct {
++			Concurrency homeConcurrencyTuple `json:"concurrency"`
++			Model       string               `json:"model"`
++			AuthIndex   string               `json:"auth_index"`
++			Auth        Auth                 `json:"auth"`
++		}{
++			Concurrency: homeConcurrencyTuple{Accounted: true, CredentialID: authID, Model: model},
++			Model:       model,
++			AuthIndex:   authID,
++			Auth:        Auth{ID: authID, Provider: "home-retry-contract", Status: StatusActive},
++		})
++	}
++	return nil, home.ErrAuthNotFound
++}
++
++func (*basaltAccountedDispatcher) AbortAmbiguousDispatch() {}
++
++func (d *basaltAccountedDispatcher) Calls() int {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	return d.calls
++}
++
++func (d *basaltAccountedDispatcher) Excluded() [][]string {
++	d.mu.Lock()
++	defer d.mu.Unlock()
++	result := make([][]string, len(d.excluded))
++	for index := range d.excluded {
++		result[index] = append([]string(nil), d.excluded[index]...)
++	}
++	return result
++}
++
++// basaltReleaseSink acknowledges every release at once except the ones for
++// blockedCredential, which complete only when ack closes (nil: never).
++func basaltReleaseSink(blockedCredential string, ack <-chan struct{}, blocked *atomic.Int32) executionregistry.ReleaseSink {
++	acknowledged := make(chan struct{})
++	close(acknowledged)
++	if ack == nil {
++		// A ticket with a nil done channel counts as acknowledged.
++		ack = make(chan struct{})
++	}
++	return func(group executionregistry.ReleaseGroup, sequence int64) *executionregistry.ReleaseTicket {
++		done := (<-chan struct{})(acknowledged)
++		if group.CredentialID == blockedCredential {
++			blocked.Add(1)
++			done = ack
++		}
++		return executionregistry.NewReleaseTicket(group, sequence, done)
++	}
++}
++
++func newBasaltRedispatchManager(dispatcher homeAuthDispatcher, executor *retryContractHomeExecutor, sink executionregistry.ReleaseSink) (*Manager, *executionregistry.Registry) {
++	registry := executionregistry.New()
++	registry.SetReleaseSink(sink)
++	manager := NewManager(nil, nil, nil)
++	manager.SetConfig(&internalconfig.Config{
++		Home:                  internalconfig.HomeConfig{Enabled: true},
++		CredentialConcurrency: internalconfig.CredentialConcurrencyConfig{CPACancelBound: 10 * time.Millisecond},
++	})
++	// No extra request rounds: everything below must resolve inside one round.
++	manager.SetRetryConfig(0, time.Second, 0)
++	manager.PublishHomeDispatch(dispatcher, registry, 1)
++	manager.RegisterExecutor(executor)
++	return manager, registry
++}
++
++func newBasaltRateLimitedExecutor(streamBootstrap bool) *retryContractHomeExecutor {
++	return &retryContractHomeExecutor{
++		failures:        map[string]error{basaltAccountA: retryContractRateLimitError{retryAfter: basaltRetryTime}},
++		streamBootstrap: streamBootstrap,
++	}
++}
++
++// basaltStreamOutcome drains a stream and returns its payloads and the first
++// error, whether it came back from ExecuteStream or as an in-stream chunk.
++func basaltStreamOutcome(result *cliproxyexecutor.StreamResult, errStream error) ([]string, error) {
++	if errStream != nil {
++		return nil, errStream
++	}
++	if result == nil || result.Chunks == nil {
++		return nil, errors.New("nil stream result")
++	}
++	var payloads []string
++	var firstErr error
++	for chunk := range result.Chunks {
++		if chunk.Err != nil {
++			if firstErr == nil {
++				firstErr = chunk.Err
++			}
++			continue
++		}
++		payloads = append(payloads, string(chunk.Payload))
++	}
++	return payloads, firstErr
++}
++
++func basaltIsHomeUnavailable(err error) bool {
++	var homeErr *Error
++	return errors.As(err, &homeErr) && homeErr != nil && homeErr.Code == "home_unavailable"
++}
++
++func basaltRun(manager *Manager, stream bool) ([]string, error) {
++	if stream {
++		result, errStream := manager.ExecuteStream(context.Background(), []string{"home-retry-contract"}, cliproxyexecutor.Request{Model: "gpt"}, cliproxyexecutor.Options{Stream: true})
++		return basaltStreamOutcome(result, errStream)
++	}
++	response, errExecute := manager.Execute(context.Background(), []string{"home-retry-contract"}, cliproxyexecutor.Request{Model: "gpt"}, cliproxyexecutor.Options{})
++	if errExecute != nil {
++		return nil, errExecute
++	}
++	return []string{string(response.Payload)}, nil
++}
++
++// Item 6: account a answers 429 and Home never acknowledges a's release. a is
++// excluded from the redispatch, so the call is served by b instead of 503.
++func TestBasaltHomeRedispatchSkipsAckWaitForExcludedCredential(t *testing.T) {
++	tests := []struct {
++		name            string
++		stream          bool
++		streamBootstrap bool
++	}{
++		{name: "stream start error", stream: true},
++		{name: "stream bootstrap error chunk", stream: true, streamBootstrap: true},
++		{name: "nonstream", stream: false},
++	}
++	for _, test := range tests {
++		t.Run(test.name, func(t *testing.T) {
++			var blocked atomic.Int32
++			dispatcher := &basaltAccountedDispatcher{authIDs: []string{basaltAccountA, basaltAccountB}}
++			executor := newBasaltRateLimitedExecutor(test.streamBootstrap)
++			manager, registry := newBasaltRedispatchManager(dispatcher, executor, basaltReleaseSink(basaltAccountA, nil, &blocked))
++
++			payloads, errRun := basaltRun(manager, test.stream)
++			if errRun != nil {
++				t.Fatalf("call error = %T %v, want b to serve it (home_unavailable=%v)", errRun, errRun, basaltIsHomeUnavailable(errRun))
++			}
++			if !reflect.DeepEqual(payloads, []string{basaltAccountB}) {
++				t.Fatalf("payloads = %q, want only account b", payloads)
++			}
++			if blocked.Load() != 1 {
++				t.Fatalf("unacknowledged releases of a = %d, want 1", blocked.Load())
++			}
++			if calls := executor.Calls(); !reflect.DeepEqual(calls, []string{basaltAccountA, basaltAccountB}) {
++				t.Fatalf("executor calls = %v, want a then b", calls)
++			}
++			if excluded := dispatcher.Excluded(); len(excluded) != 2 || !reflect.DeepEqual(excluded[1], []string{basaltAccountA}) {
++				t.Fatalf("dispatch exclusions = %v, want the redispatch to exclude a", excluded)
++			}
++			if active := registry.FreezeInFlight(time.Time{}).Executions; len(active) != 0 {
++				t.Fatalf("execution scopes leaked: %v", active)
++			}
++		})
++	}
++}
++
++// Item 7: after a's 429, one dispatch fails with home_unavailable. One more
++// dispatch inside the bound serves the call; if that also fails, the caller
++// gets a's 429 with its retry time, and any other lastErr keeps today's 503.
++func TestBasaltHomeRedispatchAfterHomeUnavailable(t *testing.T) {
++	errDispatch := errors.New("home connection reset")
++	for _, stream := range []bool{true, false} {
++		mode := map[bool]string{true: "stream", false: "nonstream"}[stream]
++
++		t.Run(mode+"/second dispatch serves b", func(t *testing.T) {
++			var blocked atomic.Int32
++			dispatcher := &basaltAccountedDispatcher{
++				authIDs: []string{basaltAccountA, basaltAccountB},
++				fail: func(call int) error {
++					if call == 2 {
++						return errDispatch
++					}
++					return nil
++				},
++			}
++			executor := newBasaltRateLimitedExecutor(false)
++			manager, _ := newBasaltRedispatchManager(dispatcher, executor, basaltReleaseSink("", nil, &blocked))
++
++			payloads, errRun := basaltRun(manager, stream)
++			if errRun != nil {
++				t.Fatalf("call error = %T %v, want b to serve it", errRun, errRun)
++			}
++			if !reflect.DeepEqual(payloads, []string{basaltAccountB}) {
++				t.Fatalf("payloads = %q, want only account b", payloads)
++			}
++			if got := dispatcher.Calls(); got != 3 {
++				t.Fatalf("dispatch calls = %d, want a, the failed dispatch, and exactly one more", got)
++			}
++		})
++
++		t.Run(mode+"/second dispatch fails returns a's 429", func(t *testing.T) {
++			var blocked atomic.Int32
++			dispatcher := &basaltAccountedDispatcher{
++				authIDs: []string{basaltAccountA, basaltAccountB},
++				fail: func(call int) error {
++					if call >= 2 {
++						return errDispatch
++					}
++					return nil
++				},
++			}
++			executor := newBasaltRateLimitedExecutor(false)
++			manager, _ := newBasaltRedispatchManager(dispatcher, executor, basaltReleaseSink("", nil, &blocked))
++
++			_, errRun := basaltRun(manager, stream)
++			if errRun == nil {
++				t.Fatal("call error = nil, want a's 429")
++			}
++			if basaltIsHomeUnavailable(errRun) {
++				t.Fatalf("call error = %v, want a's 429 instead of home_unavailable", errRun)
++			}
++			if status := statusCodeFromError(errRun); status != http.StatusTooManyRequests {
++				t.Fatalf("status = %d (%T %v), want 429", status, errRun, errRun)
++			}
++			// The stream path turns a's retry time into a local deadline, so it reports what is left of it.
++			if retryAfter := retryAfterFromError(errRun); retryAfter == nil || *retryAfter > basaltRetryTime || *retryAfter <= basaltRetryTime-time.Second {
++				t.Fatalf("retry after = %v, want what is left of a's %v", retryAfter, basaltRetryTime)
++			}
++			if got := dispatcher.Calls(); got != 3 {
++				t.Fatalf("dispatch calls = %d, want exactly one extra dispatch", got)
++			}
++			if calls := executor.Calls(); !reflect.DeepEqual(calls, []string{basaltAccountA}) {
++				t.Fatalf("executor calls = %v, want only a", calls)
++			}
++		})
++
++		t.Run(mode+"/non-429 last error keeps home_unavailable", func(t *testing.T) {
++			var blocked atomic.Int32
++			dispatcher := &basaltAccountedDispatcher{
++				authIDs: []string{basaltAccountA, basaltAccountB},
++				fail: func(call int) error {
++					if call >= 2 {
++						return errDispatch
++					}
++					return nil
++				},
++			}
++			executor := &retryContractHomeExecutor{failures: map[string]error{
++				basaltAccountA: &Error{HTTPStatus: http.StatusBadGateway, Message: "upstream unavailable"},
++			}}
++			manager, _ := newBasaltRedispatchManager(dispatcher, executor, basaltReleaseSink("", nil, &blocked))
++
++			_, errRun := basaltRun(manager, stream)
++			if !basaltIsHomeUnavailable(errRun) {
++				t.Fatalf("call error = %T %v, want today's home_unavailable", errRun, errRun)
++			}
++			if got := dispatcher.Calls(); got != 3 {
++				t.Fatalf("dispatch calls = %d, want exactly one extra dispatch", got)
++			}
++		})
++	}
++}
++
++// Item 8: 25 concurrent requests all land on a, which answers 429 to each;
++// Home acknowledges a's releases only long after CPACancelBound. Every request
++// is served by b and none fails.
++func TestBasaltHomeRedispatchBurstServedByB(t *testing.T) {
++	const requests = 25
++	var blocked atomic.Int32
++	lateAck := make(chan struct{})
++	dispatcher := &basaltAccountedDispatcher{authIDs: []string{basaltAccountA, basaltAccountB}}
++	executor := newBasaltRateLimitedExecutor(false)
++	manager, registry := newBasaltRedispatchManager(dispatcher, executor, basaltReleaseSink(basaltAccountA, lateAck, &blocked))
++
++	var wg sync.WaitGroup
++	failures := make(chan error, requests)
++	for range requests {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			payloads, errRun := basaltRun(manager, true)
++			if errRun != nil {
++				failures <- errRun
++				return
++			}
++			if !reflect.DeepEqual(payloads, []string{basaltAccountB}) {
++				failures <- fmt.Errorf("payloads = %q, want only account b", payloads)
++			}
++		}()
++	}
++	wg.Wait()
++	close(lateAck)
++	close(failures)
++	for errRun := range failures {
++		t.Errorf("request failed: %T %v (home_unavailable=%v)", errRun, errRun, basaltIsHomeUnavailable(errRun))
++	}
++	if got := blocked.Load(); got != requests {
++		t.Fatalf("unacknowledged releases of a = %d, want %d", got, requests)
++	}
++	calls := executor.Calls()
++	counts := map[string]int{}
++	for _, authID := range calls {
++		counts[authID]++
++	}
++	if counts[basaltAccountA] != requests || counts[basaltAccountB] != requests || len(calls) != 2*requests {
++		t.Fatalf("executor calls = %v, want %d on a and %d on b", counts, requests, requests)
++	}
++	if got := dispatcher.Calls(); got != 2*requests {
++		t.Fatalf("dispatch calls = %d, want %d", got, 2*requests)
++	}
++	if active := registry.FreezeInFlight(time.Time{}).Executions; len(active) != 0 {
++		t.Fatalf("execution scopes leaked: %v", active)
++	}
++}
++
++// A websocket session keeps a's selection after a's 429 ended it, and Home
++// never acknowledges a's release. The next pick excludes a, so finding a's old
++// selection must not wait on that release a second time and answer 503.
++func TestBasaltHomeRedispatchWebsocketSessionDoesNotWaitTwiceForAnExcludedRelease(t *testing.T) {
++	var blocked atomic.Int32
++	dispatcher := &basaltAccountedDispatcher{authIDs: []string{basaltAccountA, basaltAccountB}}
++	manager, _ := newBasaltRedispatchManager(dispatcher, newBasaltRateLimitedExecutor(false), basaltReleaseSink(basaltAccountA, nil, &blocked))
++	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
++	opts := cliproxyexecutor.Options{Stream: true, Metadata: map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "basalt-ws-session"}}
++
++	selectionA, errPick := manager.pickHomeDispatchSelection(ctx, "gpt", opts)
++	if errPick != nil || selectionA == nil || selectionA.CloneAuth().ID != basaltAccountA {
++		t.Fatalf("first pick = %v, %v; want account a", selectionA, errPick)
++	}
++	routeModel, ok := validCanonicalHomeConcurrencyModelKey("gpt")
++	if !ok {
++		t.Fatal("no route model key")
++	}
++	manager.mu.Lock()
++	manager.homeSessionSelections = map[string]map[homeSessionSelectionKey]*HomeDispatchSelection{
++		"basalt-ws-session": {{credentialID: basaltAccountA, routeModel: routeModel}: selectionA},
++	}
++	manager.mu.Unlock()
++
++	excluded := map[string]struct{}{basaltAccountA: {}}
++	// The failure path after a's 429: the release is not acknowledged within the bound.
++	if errEnd := manager.endHomeSelectionBeforeExcludedRedispatch(ctx, selectionA, "stream_start_failed", excluded); errEnd != nil {
++		t.Fatalf("failure path end = %v, want the excluded release tolerated", errEnd)
++	}
++	selectionB, errRedispatch := manager.pickHomeDispatchSelection(ctx, "gpt", withHomeExcludedAuthIDs(opts, excluded))
++	if errRedispatch != nil {
++		t.Fatalf("redispatch = %T %v (home_unavailable=%v), want b", errRedispatch, errRedispatch, basaltIsHomeUnavailable(errRedispatch))
++	}
++	if selectionB == nil || selectionB.CloneAuth().ID != basaltAccountB {
++		t.Fatalf("redispatch picked %v, want b", selectionB)
++	}
++	selectionB.End("test_done")
++	if got := blocked.Load(); got != 1 {
++		t.Fatalf("unacknowledged releases of a = %d, want the one release, not a second", got)
++	}
++}
++
++// Only a second home_unavailable turns into the account's own 429. Any other
++// failure of the extra pick, such as Home saying no account is free yet, keeps
++// today's handling and its retry rounds.
++func TestBasaltHomeRedispatchFailureErrorOnlyForHomeUnavailable(t *testing.T) {
++	limited := retryContractRateLimitError{retryAfter: basaltRetryTime}
++	var timing homeRetryRoundTiming
++	timing.Observe(limited)
++	unavailable := &Error{Code: "home_unavailable", Message: "Home dispatch failed", Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
++	if errAccount := homeRedispatchFailureError(context.Background(), unavailable, limited, nil, &timing); statusCodeFromError(errAccount) != http.StatusTooManyRequests {
++		t.Fatalf("after a second home_unavailable = %v, want a's 429", errAccount)
++	}
++	for _, errPick := range []error{
++		&Error{Code: "auth_unavailable", Message: "no credential is free", Retryable: true, HTTPStatus: http.StatusServiceUnavailable},
++		&Error{Code: "auth_not_found", Message: "no auth available"},
++		errors.New("plain failure"),
++	} {
++		if errAccount := homeRedispatchFailureError(context.Background(), errPick, limited, nil, &timing); errAccount != nil {
++			t.Fatalf("after %v = %v, want today's handling", errPick, errAccount)
++		}
++	}
++	if errAccount := homeRedispatchFailureError(context.Background(), unavailable, errors.New("upstream unavailable"), nil, &timing); errAccount != nil {
++		t.Fatalf("after a non-429 = %v, want today's 503", errAccount)
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+index cd1b16f..89477fe 100644
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -1129,6 +1129,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 	homeSameAuthRetries := make(map[string]int)
+ 	lastHomeAuthID := ""
+ 	homeSameAuthRetryPending := false
++	homeRedispatched := false
+ 	attempted := make(map[string]struct{})
+ 	var lastErr error
+ 	var upstreamErr error
+@@ -1160,6 +1161,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 		var errPick error
+ 		if homeMode {
+ 			selection, errPick = m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
++			if !homeRedispatched && shouldRedispatchAfterHomeUnavailable(errPick, lastErr) {
++				homeRedispatched = true
++				selection, errPick = m.redispatchAfterHomeUnavailable(ctx, routeModel, pickOpts)
++				if errPick != nil {
++					if errAccount := homeRedispatchFailureError(ctx, errPick, lastErr, upstreamErr, &roundTiming); errAccount != nil {
++						return nil, errAccount
++					}
++				}
++			}
+ 			if selection != nil {
+ 				auth = selection.CloneAuthForRoute(routeModel)
+ 				executor = selection.Executor
+@@ -1289,7 +1299,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 				lastHomeAuthID = auth.ID
+ 				homeSameAuthRetryPending = false
+ 				releaseAttempt()
+-				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "no_execution_models"); errEnd != nil {
++				if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "no_execution_models", homeExcludedAuthIDs); errEnd != nil {
+ 					return nil, errEnd
+ 				}
+ 			}
+@@ -1335,7 +1345,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 				roundTiming.Observe(lastErr)
+ 			}
+ 			if selection != nil {
+-				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
++				if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "prepare_failed", homeExcludedAuthIDs); errEnd != nil {
+ 					return nil, errEnd
+ 				}
+ 			}
+@@ -1429,7 +1439,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 			}
+ 			if selection != nil {
+ 				releaseAttempt()
+-				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "stream_start_failed"); errEnd != nil {
++				if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "stream_start_failed", homeExcludedAuthIDs); errEnd != nil {
+ 					return nil, errEnd
+ 				}
+ 			}
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+index 4f297ce..c9e3b0c 100644
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -604,7 +604,7 @@ func (m *Manager) retainedHomeSessionSelection(ctx context.Context, opts cliprox
+ 	m.mu.Unlock()
+ 
+ 	for _, selection := range ended {
+-		if errWait := m.endHomeSelectionBeforeRedispatch(ctx, selection, "target_changed"); errWait != nil {
++		if errWait := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "target_changed", excludedAuthIDs); errWait != nil {
+ 			return nil, false, errWait
+ 		}
+ 	}
+@@ -671,24 +671,28 @@ func (m *Manager) endHomeSelectionBeforeRedispatch(ctx context.Context, selectio
+ 		return nil
+ 	}
+ 
+-	bound := internalconfig.CredentialConcurrencyConfig{}.WithDefaults().CPACancelBound
+-	if m != nil {
+-		if cfg, ok := m.runtimeConfig.Load().(*internalconfig.Config); ok && cfg != nil {
+-			bound = cfg.CredentialConcurrency.WithDefaults().CPACancelBound
+-		}
+-	}
+ 	waitCtx := ctx
+ 	if waitCtx == nil {
+ 		waitCtx = context.Background()
+ 	}
+-	waitCtx, cancelWait := context.WithTimeout(waitCtx, bound)
++	waitCtx, cancelWait := context.WithTimeout(waitCtx, m.homeCPACancelBound())
+ 	defer cancelWait()
+ 	if errWait := ticket.Wait(waitCtx); errWait != nil {
+-		return &Error{Code: "home_unavailable", Message: "Home did not acknowledge credential release: " + errWait.Error(), Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
++		return &Error{Code: "home_unavailable", Message: homeReleaseAckTimeoutMessage + errWait.Error(), Retryable: true, HTTPStatus: http.StatusServiceUnavailable}
+ 	}
+ 	return nil
+ }
+ 
++func (m *Manager) homeCPACancelBound() time.Duration {
++	bound := internalconfig.CredentialConcurrencyConfig{}.WithDefaults().CPACancelBound
++	if m != nil {
++		if cfg, ok := m.runtimeConfig.Load().(*internalconfig.Config); ok && cfg != nil {
++			bound = cfg.CredentialConcurrency.WithDefaults().CPACancelBound
++		}
++	}
++	return bound
++}
++
+ func (m *Manager) retainHomeWebsocketSelection(ctx context.Context, opts cliproxyexecutor.Options, model string, selection *HomeDispatchSelection) bool {
+ 	if m == nil || selection == nil || !selection.Retained() || !cliproxyexecutor.DownstreamWebsocket(ctx) {
+ 		return false
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+index f962ac2..3034010 100644
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -80,6 +80,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 	var lastErr error
+ 	var upstreamErr error
+ 	var roundTiming homeRetryRoundTiming
++	homeRedispatched := false
+ 	for homeAuthCount := 1; ; homeAuthCount++ {
+ 		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
+ 			if lastErr != nil {
+@@ -91,6 +92,15 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 		pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
+ 		pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
+ 		selection, errSelection := m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
++		if !homeRedispatched && shouldRedispatchAfterHomeUnavailable(errSelection, lastErr) {
++			homeRedispatched = true
++			selection, errSelection = m.redispatchAfterHomeUnavailable(ctx, routeModel, pickOpts)
++			if errSelection != nil {
++				if errAccount := homeRedispatchFailureError(ctx, errSelection, lastErr, upstreamErr, &roundTiming); errAccount != nil {
++					return cliproxyexecutor.Response{}, errAccount
++				}
++			}
++		}
+ 		if errSelection != nil {
+ 			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
+ 			var homeCooldown *homeDispatchRetryAfterError
+@@ -155,7 +165,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 		}
+ 		if len(models) == 0 {
+ 			releaseAttempt()
+-			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "no_execution_models"); errEnd != nil {
++			if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "no_execution_models", tried); errEnd != nil {
+ 				return cliproxyexecutor.Response{}, errEnd
+ 			}
+ 			lastErr = &Error{Code: "auth_not_found", Message: "no execution models available"}
+@@ -170,7 +180,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			}
+ 			m.reportHomeResult(execCtx, Result{AuthID: auth.ID, Provider: selection.Provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: opts}, auth)
+ 			releaseAttempt()
+-			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
++			if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "prepare_failed", tried); errEnd != nil {
+ 				return cliproxyexecutor.Response{}, errEnd
+ 			}
+ 			lastErr = errPrepare
+@@ -312,7 +322,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 		}
+ 		roundTiming.Observe(lastErr)
+ 		releaseAttempt()
+-		if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "execution_failed"); errEnd != nil {
++		if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "execution_failed", tried); errEnd != nil {
+ 			return cliproxyexecutor.Response{}, errEnd
+ 		}
+ 		if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {

@@ -4,6 +4,7 @@ import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import { run } from "./process.ts";
 import { checkAppPagesRuntimeBundle } from "./app-pages-runtime-bundle.ts";
 import { checkMcpRuntimeBundle } from "./mcp-runtime-bundle.ts";
+import { checkSsoRuntimeBundle } from "./sso-runtime-bundle.ts";
 
 const upstream = fileURLToPath(new URL("../.upstream/", import.meta.url));
 const cloud = fileURLToPath(new URL("../.upstream/apps/hosted/cloud/", import.meta.url));
@@ -45,3 +46,4 @@ run("bun", [".local/basalt-worker-sizes.ts"], cloud, {
 });
 checkMcpRuntimeBundle();
 checkAppPagesRuntimeBundle();
+checkSsoRuntimeBundle();
