@@ -94,8 +94,16 @@ export interface CaptureHoursAutoState {
   readonly recountPosition?: { readonly pool: string; readonly block: string };
   /** The pool whose block was counted last: the next session starts with the one after it. */
   readonly nextPool?: string;
-  /** Blocks that ran out their own limit, counted hour by hour from then on. */
-  readonly split?: readonly { readonly pool: string; readonly from: string; readonly to: string }[];
+  /** Each pool's blocks that ran out their own limit, by start, counted hour by hour from then on. */
+  readonly split?: readonly { readonly pool: string; readonly blocks: readonly string[] }[];
+  /** Pools whose counts failed in Postgres: each rests until `until`, and `count` in a row. */
+  readonly failing?: readonly {
+    readonly pool: string;
+    readonly count: number;
+    readonly until: string;
+  }[];
+  /** How long the last plan read took, which grows with the pools against its 3 s limit. */
+  readonly planMs?: number;
   /** The oldest time any settled count was taken: how far the rolling recount lags. */
   readonly stalestCheckedAt?: string;
   readonly pausedUntil?: string;

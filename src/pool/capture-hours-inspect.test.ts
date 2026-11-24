@@ -16,6 +16,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     pendingBlocks: 16,
     pendingHours: 96,
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
+    planMs: 812.04,
     recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z", host: "x" },
     split: [{ pool: "0123456789abcdef", from: "2026-08-01T00:00:00Z", to: "x" }],
     slow: [{ pool: "0123456789abcdef", hour: "2026-08-01T03:00:00Z", count: 3, until: "x" }],
@@ -53,6 +54,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     lastHour: "2026-08-01T03:00:00Z",
     lastHourReadMs: 1_000,
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
+    planMs: 812,
     recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z" },
   });
   // Free text never passes: a lenient date, an unknown stop or reason, a negative count.
@@ -66,6 +68,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       pools: -1,
       pendingHours: 1.5,
       pendingBlocks: "3",
+      planMs: "fast",
       recountPosition: { pool: "fixture-pool-name", block: "2026-08-01T00:00:00Z" },
       stuck: [{ pool: "0123456789abcdef", reason: "drop", retryAt: "soon" }],
     } as unknown as CaptureHoursAutoState),
@@ -80,6 +83,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
       lastHour: null,
       lastHourReadMs: null,
       stalestCheckedAt: null,
+      planMs: null,
       recountPosition: null,
     },
   );

@@ -445,6 +445,7 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
     lastHourReadMs: 1_000,
     pools: 1,
     pendingBlocks: 5,
+    planMs: 412.5,
     pendingHours: 30,
     stalestCheckedAt: "2026-11-20T01:00:00.000Z",
     recountPosition: { pool: "0123456789abcdef", block: "2026-11-01T00:00:00Z" },
@@ -464,6 +465,7 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
     lastHourReadMs: _ms,
     stalestCheckedAt: _stalest,
     pendingBlocks: _blocks,
+    planMs: _planMs,
     recountPosition: _position,
     ...older
   } = captureHours;
@@ -474,6 +476,7 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
     // A shape this lane doesn't know is dropped, and the lane still answers.
     [{ ...captureHours, stuck: [{ pool: "fixture-pool-name" }] }, null],
     [{ ...captureHours, recountPosition: { pool: "fixture-pool-name", block: "x" } }, null],
+    [{ ...captureHours, planMs: "fast" }, null],
     [{ lastStop: 7 }, null],
   ] as const) {
     const lane = await harness(reported === undefined ? {} : { captureHours: reported });

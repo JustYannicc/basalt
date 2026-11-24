@@ -33,6 +33,7 @@ export function captureHoursInspect(state: CaptureHoursAutoState) {
     lastHour: iso(state.lastHour),
     lastHourReadMs: milliseconds(state.lastHourReadMs),
     stalestCheckedAt: iso(state.stalestCheckedAt),
+    planMs: milliseconds(state.planMs),
     recountPosition:
       typeof state.recountPosition?.pool === "string" &&
       hex16.test(state.recountPosition.pool) &&

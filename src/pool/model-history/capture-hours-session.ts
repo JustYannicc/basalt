@@ -6,8 +6,11 @@ import type {
   CaptureHoursStuck,
 } from "./capture-hours-auto.ts";
 import { countCaptureBlock, countCaptureHour } from "./capture-hours-count.ts";
+import { postgresCode } from "./usage-rollup-apply.ts";
 import {
   boundedRead,
+  captureBlockHours,
+  captureHoursPlanLimitMs,
   countedHours,
   pendingHoursOf,
   planCaptureHours,
@@ -41,8 +44,7 @@ const within = (hour: string | undefined, block: CaptureBlock) =>
   hour !== undefined &&
   Date.parse(hour) >= Date.parse(block.from) &&
   Date.parse(hour) < Date.parse(block.to);
-/** The most split blocks the state keeps: the newest. */
-const maxSplit = 1_000;
+const blockMs = captureBlockHours * hourMs;
 /** A block's hours, newest first. */
 const hoursOf = (block: CaptureBlock) => {
   const hours: string[] = [];
@@ -50,8 +52,6 @@ const hoursOf = (block: CaptureBlock) => {
     hours.push(new Date(at).toISOString().replace(".000Z", "Z"));
   return hours;
 };
-const sameBlock = (a: { pool: string; from: string }, b: { pool: string; from: string }) =>
-  a.pool === b.pool && Date.parse(a.from) === Date.parse(b.from);
 
 /**
  * One session's counting. Pending blocks go round-robin across pools, each pool's newest first, for
@@ -67,9 +67,17 @@ export async function captureHoursSession(
     progress.state = { ...progress.state, ...change };
   };
   const state = () => progress.state;
-  // Each read runs under 1 s, and never past what the session has left.
+  // Each read runs under 1 s, and never past what the session has left; the plan, whose cost grows
+  // with the pools, under its own 3 s.
   const read = <T>(work: () => Promise<T>) => boundedRead(db, left, work);
-  const plan = await read(() => planCaptureHours(db, bounds.lookbackHours));
+  const planStarted = performance.now();
+  const plan = await boundedRead(
+    db,
+    left,
+    () => planCaptureHours(db, bounds.lookbackHours),
+    captureHoursPlanLimitMs,
+  );
+  update({ planMs: Math.round((performance.now() - planStarted) * 10) / 10 });
   if (!plan) return "not_applied";
   const { pools, plannedAt } = plan;
   // The tick reached its database and plan, so it is no longer failing as a whole.
@@ -83,15 +91,17 @@ export async function captureHoursSession(
     stuck: (state().stuck ?? []).filter((entry) => entry.pool !== "" && open(entry)),
     slow: (state().slow ?? []).filter(open),
     repeat: state().repeat?.pool === "" ? undefined : state().repeat,
-    // A split block stays split while its pool is counted and it is inside the lookback, so a
-    // recount of it goes hour by hour too.
-    split: (state().split ?? [])
-      .filter(
-        (entry) =>
-          known.has(entry.pool) &&
-          Date.parse(entry.to) > Date.parse(plannedAt) - (bounds.lookbackHours + 3) * hourMs,
-      )
-      .slice(-maxSplit),
+    // A split block stays split while its pool is counted and the block is inside the lookback, so
+    // a recount of it goes hour by hour too: each pool keeps its own, at most its lookback's blocks.
+    split: (state().split ?? []).flatMap((entry) => {
+      const oldest = Date.parse(plannedAt) - (bounds.lookbackHours + 3 + blockMs / hourMs) * hourMs;
+      const blocks = (Array.isArray(entry?.blocks) ? entry.blocks : []).filter(
+        (start) => typeof start === "string" && Date.parse(start) > oldest,
+      );
+      return known.has(entry.pool) && blocks.length ? [{ pool: entry.pool, blocks }] : [];
+    }),
+    // A pool whose rest after an error is over is retried; its count stands until it counts.
+    failing: (state().failing ?? []).filter((entry) => known.has(entry.pool)),
     stalestCheckedAt:
       (await read(() => stalestCapture(db)).catch(() => undefined)) ?? state().stalestCheckedAt,
   });
@@ -107,9 +117,10 @@ export async function captureHoursSession(
     });
   };
   tally();
+  // A pool in its slow wait, or resting after an error, is left alone.
   const waiting = () =>
     new Set(
-      (state().slow ?? [])
+      [...(state().slow ?? []), ...(state().failing ?? [])]
         .filter((entry) => Date.parse(entry.until) > now())
         .map((entry) => entry.pool),
     );
@@ -144,6 +155,27 @@ export async function captureHoursSession(
     slowed = true;
     resting.add(pool);
   };
+  /**
+   * A count of this pool failed in Postgres: only the pool rests, an hour, while the others go on;
+   * six in a row is stuck, loud once, and it is retried after each rest.
+   */
+  const failedPool = (pool: string) => {
+    const before = (state().failing ?? []).find((entry) => entry.pool === pool);
+    const count = (before?.count ?? 0) + 1;
+    const until = new Date(now() + bounds.pauseMs).toISOString();
+    if (count === bounds.failingAfter)
+      console.error("POOL_CAPTURE_HOURS_STUCK", { reason: "error" });
+    update({
+      failing: [
+        ...(state().failing ?? []).filter((entry) => entry.pool !== pool),
+        { pool, count, until },
+      ],
+      ...(count >= bounds.failingAfter
+        ? { stuck: stuckWith({ pool, reason: "error", retryAt: until }) }
+        : {}),
+    });
+    resting.add(pool);
+  };
   /** Counted: the pool is no longer failing, and its slow or stuck hour in the block is done. */
   const counted = (block: CaptureBlock) => {
     const cleared = (entry: { pool: string; hour?: string }) =>
@@ -155,20 +187,51 @@ export async function captureHoursSession(
         : {}),
       stuck: (state().stuck ?? []).filter(cleared),
       slow: (state().slow ?? []).filter(cleared),
+      failing: (state().failing ?? []).filter((entry) => entry.pool !== block.pool),
       repeat: state().repeat?.pool === block.pool ? undefined : state().repeat,
     });
   };
+  const startOf = (block: CaptureBlock) =>
+    new Date(Math.floor(Date.parse(block.from) / blockMs) * blockMs)
+      .toISOString()
+      .replace(".000Z", "Z");
   const isSplit = (block: CaptureBlock) =>
-    (state().split ?? []).some((entry) => sameBlock(entry, block));
+    (state().split ?? []).some(
+      (entry) => entry.pool === block.pool && entry.blocks.includes(startOf(block)),
+    );
+  const markSplit = (block: CaptureBlock) => {
+    const others = (state().split ?? []).filter((entry) => entry.pool !== block.pool);
+    const mine = (state().split ?? []).find((entry) => entry.pool === block.pool)?.blocks ?? [];
+    update({ split: [...others, { pool: block.pool, blocks: [...mine, startOf(block)] }] });
+  };
 
   /**
    * One block, whole or hour by hour. Returns the session's stop, "rest" to leave the pool for the
-   * session, or undefined once the block is counted.
+   * session, "mark" once the session has spent `until` between two of its hours, or undefined once
+   * the block is counted. A count that fails in Postgres rests only its pool.
    */
   const countBlock = async (
     block: CaptureBlock,
     recount = false,
-  ): Promise<CaptureHoursAutoStop | "rest" | undefined> => {
+    until = budget,
+  ): Promise<CaptureHoursAutoStop | "rest" | "mark" | undefined> => {
+    try {
+      return await countBlockOnce(block, recount, until);
+    } catch (error) {
+      // A Postgres error names the pool's own statement; anything else (a lost connection) is the
+      // tick's, and pauses it whole.
+      const code = postgresCode(error);
+      if (typeof code !== "string" || !/^[0-9A-Z]{5}$/.test(code)) throw error;
+      console.error("POOL_CAPTURE_HOURS_COUNT_FAILED", { code });
+      failedPool(block.pool);
+      return "rest";
+    }
+  };
+  const countBlockOnce = async (
+    block: CaptureBlock,
+    recount: boolean,
+    until: number,
+  ): Promise<CaptureHoursAutoStop | "rest" | "mark" | undefined> => {
     if (stopped()) return "handover";
     if (left() <= 0) return "budget";
     progress.working = block.pool;
@@ -195,15 +258,15 @@ export async function captureHoursSession(
         return "rest";
       }
       // Past its own limit: from now on hour by hour, starting in this session if time is left.
-      update({
-        split: [...(state().split ?? []), { pool: block.pool, from: block.from, to: block.to }],
-      });
+      markSplit(block);
     }
     // A recount takes every hour of it; a pending one only the hours without a settled count.
     const hours = recount ? hoursOf(block) : await read(() => pendingHoursOf(db, block));
     for (const hour of hours) {
       if (stopped()) return "handover";
       if (left() <= 0) return "budget";
+      // A split block never takes the session past its share: the rest of it waits its turn.
+      if (budget - left() >= until) return "mark";
       const result = await countCaptureHour(db, block.pool, hour, left, bounds.countLimitMs);
       if (result.kind === "budget") return "budget";
       if (result.kind === "lock") {
@@ -245,9 +308,10 @@ export async function captureHoursSession(
     while (budget - left() < until) {
       const block = nextPending();
       if (!block) return undefined;
-      const stop = await countBlock(block);
+      const stop = await countBlock(block, false, until);
       update({ nextPool: block.pool });
       if (stop === "rest") continue;
+      if (stop === "mark") return undefined;
       if (stop) return stop;
       const was = pending.get(block.pool)!;
       pending.set(block.pool, {
@@ -268,7 +332,7 @@ export async function captureHoursSession(
   for (const block of stale) {
     if (waiting().has(block.pool) || resting.has(block.pool)) continue;
     const stop = await countBlock(block, true);
-    if (stop === "budget") break;
+    if (stop === "budget" || stop === "mark") break;
     if (stop === "rest") continue;
     if (stop) return stop;
     update({ recountPosition: { pool: block.pool, block: block.from } });

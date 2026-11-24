@@ -90,6 +90,7 @@ export const CaptureHours = Schema.Struct({
   lastHourReadMs: Schema.optional(Schema.NullOr(Schema.Number)),
   stalestCheckedAt: Schema.optional(Schema.NullOr(Schema.String)),
   pendingBlocks: Schema.optional(Schema.NullOr(Schema.Number)),
+  planMs: Schema.optional(Schema.NullOr(Schema.Number)),
   recountPosition: Schema.optional(
     Schema.NullOr(
       Schema.Struct({

@@ -84,6 +84,7 @@ test("the controller's inspect carries the capture-hour counts' stored state bes
     lastHour: null,
     lastHourReadMs: null,
     stalestCheckedAt: null,
+    planMs: null,
     recountPosition: null,
   });
   await f.old.storage.put(captureHoursAutoKey, {
@@ -98,6 +99,7 @@ test("the controller's inspect carries the capture-hour counts' stored state bes
     recountPosition: { pool: "0123456789abcdef", block: "2026-11-01T00:00:00Z" },
     split: [{ pool: "0123456789abcdef", from: "2026-11-01T00:00:00Z", to: "2026-11-01T06:00:00Z" }],
     nextPool: "0123456789abcdef",
+    planMs: 31.2,
     sessions: [{ at: 1, ms: 12_000 }],
     stuck: [
       {
@@ -128,6 +130,7 @@ test("the controller's inspect carries the capture-hour counts' stored state bes
     lastHour: "2026-11-01T03:00:00Z",
     lastHourReadMs: 1_000,
     stalestCheckedAt: "2026-11-20T01:00:00.000Z",
+    planMs: 31.2,
     recountPosition: { pool: "0123456789abcdef", block: "2026-11-01T00:00:00Z" },
   });
 });

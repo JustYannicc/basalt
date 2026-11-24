@@ -127,8 +127,9 @@ export async function stalestCapture(db: HistoryDatabase) {
 /**
  * The blocks of `pools` to recount, counted longest ago, in one ordered read of the counts' time
  * index: only settled hours counted over an hour ago and before `before`, so a block this tick or
- * the last hour counted is never recounted. Each block comes once, with its whole range clipped to
- * the lookback and horizon.
+ * the last hour counted is never recounted. Each block comes once, its range clipped to the
+ * horizon and, for the block the lookback cuts, to the lookback; blocks wholly older than the
+ * lookback are recounted too, since the summary still compares their stored counts.
  */
 export async function recountBlocks(
   db: HistoryDatabase,
@@ -140,7 +141,7 @@ export async function recountBlocks(
   if (!pools.length) return [];
   return (
     await db.query(
-      `SELECT k.pool, ${iso("GREATEST(k.block, b.first)")} AS lo,
+      `SELECT k.pool, ${iso(`CASE WHEN k.block + interval '${captureBlockHours} hours' > b.first THEN GREATEST(k.block, b.first) ELSE k.block END`)} AS lo,
         ${iso(`LEAST(k.block + interval '${captureBlockHours} hours', b.horizon)`)} AS hi
       FROM (SELECT ${captureSettleHorizon} AS horizon,
           ${captureSettleHorizon} - $4::int * interval '1 hour' AS first) b
@@ -150,7 +151,7 @@ export async function recountBlocks(
           FROM basalt_model_capture_hours s
           WHERE s.checked_at < LEAST($3::timestamptz, now() - interval '1 hour')
             AND s.pool=ANY($1::text[]) AND ${captureSettledAfter("s")}
-            AND s.hour >= b.first AND s.hour < b.horizon
+            AND s.hour < b.horizon
           ORDER BY s.checked_at LIMIT $2::int * ${captureBlockHours}
         ) o ORDER BY o.pool, o.block, o.checked_at
       ) k
@@ -181,16 +182,23 @@ export async function pendingHoursOf(db: HistoryDatabase, block: CaptureBlock) {
 /** How long one of the tick's reads may run: 1 s, never past what the session has left. */
 export const captureHoursReadLimitMs = 1_000;
 
-/** `work`'s reads in one read-only transaction, each statement under the read limit. */
+/**
+ * How long the plan may run: its cost grows with the pools, about 31 ms a pool at production's
+ * speed, so it gets more than the other reads, still capped by what the session has left.
+ */
+export const captureHoursPlanLimitMs = 3_000;
+
+/** `work`'s reads in one read-only transaction, each statement under `limitMs`. */
 export async function boundedRead<T>(
   db: HistoryDatabase,
   left: () => number,
   work: () => Promise<T>,
+  limitMs = captureHoursReadLimitMs,
 ): Promise<T> {
   await db.query("BEGIN TRANSACTION READ ONLY");
   try {
     await db.query("SELECT set_config('statement_timeout',$1,true)", [
-      `${Math.max(50, Math.min(captureHoursReadLimitMs, Math.floor(left())))}ms`,
+      `${Math.max(50, Math.min(limitMs, Math.floor(left())))}ms`,
     ]);
     const result = await work();
     await db.query("COMMIT");

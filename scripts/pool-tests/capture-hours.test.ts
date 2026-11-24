@@ -6,6 +6,7 @@ import { homeCaptureCoverage } from "../../src/pool/model-history/capture-covera
 import {
   countCaptureHour,
   countBlockStatement,
+  countCaptureBlock,
 } from "../../src/pool/model-history/capture-hours-count.ts";
 import {
   captureHoursLookbackHours,
@@ -627,5 +628,78 @@ test("the plan reads in two statements, whatever the pools and the hours each on
       "INSERT INTO basalt_model_usage_people_ready (pool,through) VALUES ('aaaaaaaaaaaaaaaa',now()),('bbbbbbbbbbbbbbbb',now())",
     );
     assert.deepEqual(await statements(captureHoursLookbackHours), [2, 3], "pools add none");
+  });
+});
+
+test("a block's counts equal its hours counted one by one, to the microsecond at its edges", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    const edge = Math.floor(Date.parse(at(30)) / (6 * 3_600_000)) * 6 * 3_600_000;
+    const t = (ms: number, micro = "000") =>
+      new Date(edge + ms).toISOString().replace("Z", `${micro}Z`);
+    // Both sides of the block's start and end, inside it, and one past it.
+    const times = [
+      t(-1, "999"),
+      t(0),
+      t(1),
+      t(3 * 3_600_000 - 1, "999"),
+      t(6 * 3_600_000 - 1, "999"),
+      t(6 * 3_600_000),
+    ];
+    for (const at of times) {
+      await c.native(at);
+      await c.usage(at);
+      await c.native(at, true);
+    }
+    const charged = await c.usage(t(2 * 3_600_000), "not-a-key");
+    await f.db.query("INSERT INTO billing_charge (id,usage_id,user_id) VALUES ($1,$2,7)", [
+      String(charged),
+      charged,
+    ]);
+    const rows = async () =>
+      (
+        await f.db.query(
+          `SELECT pool, hour, usage_requests, uncaptured_requests FROM basalt_model_capture_hours
+          ORDER BY pool, hour`,
+        )
+      ).rows.map((row) => [
+        row.pool,
+        (row.hour as Date).toISOString(),
+        row.usage_requests,
+        row.uncaptured_requests,
+      ]);
+    const blocks = [edge - 6 * 3_600_000, edge, edge + 6 * 3_600_000];
+    for (const pool of [c.poolId, c.otherId])
+      for (const from of blocks)
+        assert.equal(
+          (
+            await countCaptureBlock(
+              f.db,
+              pool,
+              new Date(from).toISOString(),
+              new Date(from + 6 * 3_600_000).toISOString(),
+              lots,
+            )
+          ).kind,
+          "done",
+        );
+    const byBlock = await rows();
+    await f.db.query("DELETE FROM basalt_model_capture_hours");
+    for (const pool of [c.poolId, c.otherId])
+      for (let at = blocks[0]!; at < blocks[2]! + 6 * 3_600_000; at += 3_600_000)
+        assert.equal(
+          (await countCaptureHour(f.db, pool, new Date(at).toISOString(), lots)).kind,
+          "done",
+        );
+    assert.deepEqual(byBlock, await rows());
+    // The edges land where they should: the hour before the block holds its last microsecond, the
+    // block's first hour its two start rows.
+    const of = (pool: string, at: number) =>
+      byBlock.find((row) => row[0] === pool && row[1] === new Date(at).toISOString());
+    assert.deepEqual(of(c.poolId, edge - 3_600_000)!.slice(2), [2, 1]);
+    assert.deepEqual(of(c.poolId, edge)!.slice(2), [4, 2]);
+    // The third hour: its last microsecond's captured and uncaptured rows, and the charged one.
+    assert.deepEqual(of(c.poolId, edge + 2 * 3_600_000)!.slice(2), [3, 2]);
+    assert.deepEqual(of(c.otherId, edge)!.slice(2), [2, 0], "the other pool's own rows only");
   });
 });
