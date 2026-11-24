@@ -197,7 +197,12 @@ export async function harness(options: HarnessOptions = {}) {
   const retires: { operationId: string; go: string; key: string }[] = [];
   const checks: string[] = [];
   // What the cell's 8317 read returns to the next fleet-retire.
-  const retireRead = { connections: 0 as number | null, gone: undefined as number | undefined };
+  const retireRead = {
+    connections: 0 as number | null,
+    leases: undefined as
+      | { currentCalls: number; currentSockets: number; foreignSockets: number; unstamped: number }
+      | undefined,
+  };
   let restart = 0;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
   const providerRequests: string[] = [];
@@ -254,6 +259,8 @@ export async function harness(options: HarnessOptions = {}) {
         cellStillMs: 2_400_000,
         ledgerLowered: true,
         connections: retireRead.connections,
+        unstamped: 6,
+        foreignSockets: 0,
         // The real receipt names the slot; the lane must keep it out of its output.
         slot: cell.slotId,
       };
@@ -275,7 +282,12 @@ export async function harness(options: HarnessOptions = {}) {
             ledgerStillMs: 300_000,
             cell: row.active,
             cellStillMs: 2_400_000,
-            leases: { current: 0, gone: retireRead.gone ?? row.active },
+            leases: retireRead.leases ?? {
+              currentCalls: 0,
+              currentSockets: 0,
+              foreignSockets: 0,
+              unstamped: row.active,
+            },
             connections: retireRead.connections,
             // The real record carries no slot either; this one does, so the lane's decode must drop it.
             slot: cell.slotId,

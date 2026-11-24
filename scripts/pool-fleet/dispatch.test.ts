@@ -723,7 +723,7 @@ test("retire-check takes any go text, reports what retire-row would do and whose
     );
     assert.equal(
       outcome.check.leaseOwner,
-      "none of the cell's 6 leases is held by its current isolate; only a model socket can outlive the isolate that took it",
+      "none of the cell's leases is held by its current instance: 6 unstamped leases from before the stamps; the proof release ends these only when 8317 reads 0",
     );
     assert.equal(outcome.warning, "1 connections are open on this cell; the override may cut them");
     assert.deepEqual(lane.checks, [key]);
@@ -784,7 +784,7 @@ test("retire-check on a ready row reports the refusal and warns about nothing", 
   }
 });
 
-test("retire-check says so when part of the cell's count carries no lease record", async () => {
+test("retire-check names model sockets, unstamped leases and a count with no lease record apart", async () => {
   const lane = await harness();
   try {
     assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
@@ -795,12 +795,45 @@ test("retire-check says so when part of the cell's count carries no lease record
       "runtime-fleet-v1:resources",
       rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
     );
-    lane.retireRead.gone = 4;
+    lane.retireRead.leases = {
+      currentCalls: 0,
+      currentSockets: 0,
+      foreignSockets: 1,
+      unstamped: 3,
+    };
     const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
     const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
     assert.equal(
       (result as unknown as { result: { check: { leaseOwner: string } } }).result.check.leaseOwner,
-      "2 of the cell's count carry no lease record, so nothing says which isolate took them",
+      "none of the cell's leases is held by its current instance: 1 model sockets another instance took, which can outlive it, 3 unstamped leases from before the stamps, 2 counted with no lease record; the proof release ends these only when 8317 reads 0",
+    );
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check says when the cell's current instance holds leases, by kind", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    lane.retireRead.leases = {
+      currentCalls: 2,
+      currentSockets: 1,
+      foreignSockets: 0,
+      unstamped: 3,
+    };
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(
+      (result as unknown as { result: { check: { leaseOwner: string } } }).result.check.leaseOwner,
+      "3 of the cell's leases belong to its current instance (2 calls, 1 model sockets), so their streams may be live; the override refuses them",
     );
   } finally {
     await lane.close();

@@ -4,6 +4,14 @@ import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runti
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
+import { legacyConnections } from "./legacy-drain.ts";
+
+/** How often a boot holding a lease no instance vouches for reads its container's connections. */
+export const leaseProofEveryMs = 30_000;
+/** The read's own program stops at 2 s; past this the answer is unknown. */
+const leaseProofLimitMs = 5_000;
+/** The operator's commands answer inside the cell call's 5 s, so their read stops sooner. */
+const operatorReadLimitMs = 1_500;
 import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
@@ -43,9 +51,9 @@ import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
-import { RuntimeActivity, stillFor } from "./activity.ts";
+import { RuntimeActivity, slotKey, stillFor } from "./activity.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
-import { legacyConnections, proveLegacyDrain } from "./legacy-drain.ts";
+import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
@@ -95,6 +103,7 @@ export class RuntimeEndpoint {
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
   private modelLifetimes: RuntimeModelLifetimes;
+  private leaseProofs = new Map<string, number>();
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -508,12 +517,21 @@ export class RuntimeEndpoint {
       const { record, configuration } = await this.store.read(identity);
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       request.signal.throwIfAborted();
-      return { configuration, done: await this.activity.acquire(identity) };
+      // A plain HTTP call's answer streams through this instance and ends with it; a socket doesn't.
+      const throughInstance =
+        request.headers.get("Upgrade") === null &&
+        !isModelLifetimePath(new URL(request.url).pathname);
+      return { configuration, done: await this.activity.acquire(identity, throughInstance) };
     }).catch((error: unknown) => refuseRuntime("endpoint_admission", error));
     const release = () => {
       this.ctx.waitUntil(done());
       return true;
     };
+    // A caller gone before the answer holds nothing here, whether or not the container still
+    // answers: nobody would read that answer, so its stream wrapper would never release the count.
+    const left = () => void release();
+    request.signal.addEventListener("abort", left, { once: true });
+    if (request.signal.aborted) left();
     try {
       await this.channel.keepAlive();
       await this.health(identity, request.signal);
@@ -542,6 +560,8 @@ export class RuntimeEndpoint {
     } catch (error) {
       release();
       throw error;
+    } finally {
+      request.signal.removeEventListener("abort", left);
     }
   }
   /**
@@ -557,15 +577,40 @@ export class RuntimeEndpoint {
     });
   }
   /**
-   * The operator's override of a count that stood still on a draining runtime (`fleet-retire`). It
-   * first reads the established connections on 8317 as evidence for the operator, never as a gate:
-   * null when the read fails or is late.
+   * A lease no instance can vouch for ends only when the container's own read finds no established
+   * connection on its model port: the legacy drain's read, unchanged. It runs only while such a lease
+   * exists, at most once every 30 s per boot, and a failed, partial or late read ends nothing.
+   */
+  private async settleLeases(identity: SlotIdentity) {
+    const pending = await this.activity.unproven(identity);
+    if (!pending.unstamped.length && !pending.foreignSockets.length) return;
+    const boot = `${identity.slotId}:${identity.bootId}`;
+    const now = Date.now();
+    if (now - (this.leaseProofs.get(boot) ?? -Infinity) < leaseProofEveryMs) return;
+    this.leaseProofs.set(boot, now);
+    const connections = await this.openConnections(leaseProofLimitMs);
+    if (connections === 0) {
+      await this.activity.releaseProven(identity, 0);
+      return;
+    }
+    console.warn("POOL_RUNTIME_LEASES_KEPT", {
+      key: await slotKey(identity.slotId),
+      ordinal: identity.homePeerOrdinal ?? null,
+      unstamped: pending.unstamped.length,
+      foreignSockets: pending.foreignSockets.length,
+      connections: connections ?? "unknown",
+    });
+  }
+  /**
+   * The operator's override of a count that stood still on a draining runtime (`fleet-retire`), for
+   * when the proof release above can't end it. It first takes the same 8317 read, as evidence for
+   * the operator and never as a gate: null when the read fails or is late.
    */
   releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
     this.bound(identity);
     return this.serialize(async () => {
       signal.throwIfAborted();
-      const connections = await this.openConnections();
+      const connections = await this.openConnections(operatorReadLimitMs);
       const released = {
         ...(await this.activity.releaseStill(identity, leakedStreamsMs, signal)),
         connections,
@@ -585,24 +630,28 @@ export class RuntimeEndpoint {
     this.bound(identity);
     return this.serialize(async () => ({
       ...(await this.activity.checkStill(identity, leakedStreamsMs)),
-      connections: await this.openConnections(),
+      connections: await this.openConnections(operatorReadLimitMs),
     }));
   }
-  /** Established connections on 8317, or null when the read fails or takes over 1.5 s. */
-  private async openConnections() {
+  /**
+   * The legacy drain's read of established connections on the model port, for the proof release and
+   * the operator alike: null when there's no running container, or the read fails or passes `limitMs`.
+   */
+  private async openConnections(limitMs: number) {
     const container = this.ctx.container;
-    const read = container?.exec
-      ? legacyConnections({ exec: container.exec.bind(container) })
-      : Promise.reject(new SlotRefused("uncertain"));
+    if (!container?.exec || !container.running) return null;
     let timer: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
-      read.catch(() => null),
-      new Promise<null>((late) => (timer = setTimeout(() => late(null), 1_500))),
+      legacyConnections({ exec: container.exec.bind(container) }).catch(() => null),
+      new Promise<null>((late) => (timer = setTimeout(() => late(null), limitMs))),
     ]).finally(() => clearTimeout(timer));
   }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {
     this.bound(identity);
+    // In the background: the read may take longer than the fleet waits for this count, and the next
+    // count read sees what it ended.
+    this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
     const row = await this.activity.inspect(identity);
     return row
       ? { active: row.active, known: row.known, ...stillFor(row) }
@@ -617,6 +666,7 @@ export class RuntimeEndpoint {
         this.serialize(async () => {
           await trace.run("drain_health", () => this.health(identity, signal), fields);
           signal.throwIfAborted();
+          this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
           const state = await trace.run(
             "drain_activity",
             () => this.activity.drain(identity),

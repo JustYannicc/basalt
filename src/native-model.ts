@@ -1,5 +1,5 @@
 import { readNativeAuthorization } from "./native-access.ts";
-import { upstreamOutcomeUnknown } from "../clients/contracts/model-error.ts";
+import { forwardModelCall } from "./model-replay.ts";
 import {
   nativeAuthenticationHeader,
   nativeModelHeader,
@@ -63,16 +63,15 @@ export async function nativeModelRequest(
       return refused(503);
     if (access.policy.models !== true) return refused(403);
     const url = new URL(request.url);
-    const assertion = await signEnvelope(env.POOL_APP_SIGNING_KEY, nativeModelPrefix, {
+    const claims = {
       user: access.userId,
       grant: access.id,
       computer: access.policy.computer,
       pool: access.policy.pool,
       method: request.method,
       path: url.pathname + url.search,
-      expiresAt: Date.now() + hostAssertionTtlMs,
       ...(drain ? { modelDrain: modelDrainProtocol } : {}),
-    });
+    };
     const headers = new Headers(request.headers);
     for (const name of [
       nativeAuthenticationHeader,
@@ -83,21 +82,26 @@ export async function nativeModelRequest(
       nativeModelHeader,
     ])
       headers.delete(name);
-    headers.set(nativeModelHeader, assertion);
-    return forwardModelRequest(new Request(request, { headers }), env);
+    // Signed per send: a replay after a long first send needs an assertion that is still live.
+    return await forwardModelCall(new Request(request, { headers }), env, async (sent) =>
+      sent.set(
+        nativeModelHeader,
+        await signEnvelope(env.POOL_APP_SIGNING_KEY, nativeModelPrefix, {
+          ...claims,
+          expiresAt: Date.now() + hostAssertionTtlMs,
+        }),
+      ),
+    );
   } catch {
     return refused(503);
   }
 }
 
-/** Once a binding send starts, a rejected promise leaves the upstream outcome unknown. */
+/** A direct model call; a send the pool lost is sent again where that is safe (model-replay.ts). */
 export async function forwardModelRequest(
   request: Request,
-  env: Pick<Environment, "POOL_SERVICE">,
+  env: Pick<Environment, "POOL_SERVICE" | "POOL_APP_SIGNING_KEY">,
 ): Promise<Response> {
-  try {
-    return await env.POOL_SERVICE.fetch(request);
-  } catch {
-    return upstreamOutcomeUnknown(undefined, new URL(request.url).pathname);
-  }
+  // Only the router's own signing can throw before a send; the caller then gets the retryable 503.
+  return forwardModelCall(request, env).catch(() => refused(503));
 }

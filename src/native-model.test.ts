@@ -162,7 +162,7 @@ test("tools-only native grants cannot enter the model gateway", async () => {
 });
 
 for (const native of [false, true])
-  test(`an uncertain ${native ? "native" : "direct"} model binding send asks the client to retry without a second send`, async () => {
+  test(`an uncertain ${native ? "native" : "direct"} model binding send lost twice asks the client to retry`, async () => {
     let sends = 0;
     const env: RouterEnv = {
       POOL_APP_SIGNING_KEY: signingKey,
@@ -196,7 +196,7 @@ for (const native of [false, true])
     assert.equal(body.error.code, "upstream_outcome_unknown");
     assert.equal(body.error.retryable, true);
     assert.match(body.error.message, /Retry it/u);
-    assert.equal(sends, 1);
+    assert.equal(sends, 2);
   });
 
 test("a definite Home refusal retains its retryable 503 through model ingress", async () => {
@@ -230,3 +230,45 @@ test("a definite Home refusal retains its retryable 503 through model ingress", 
     assert.deepEqual(await response.json(), { error: "auth_unavailable" });
   }
 });
+
+// 24 Nov 03:14Z: the platform replaced the pool controller's isolate and every hop inside the pool
+// Worker was cancelled with it, the entry that holds and replays included. Only the router outlived
+// it, and its binding send rejected. The controller was back 1.4 s later.
+for (const native of [false, true])
+  test(`a ${native ? "native" : "direct"} model call whose pool send is cancelled before its answer is sent again and served`, async () => {
+    const bodies: string[] = [];
+    const assertions: (string | null)[] = [];
+    const env: RouterEnv = {
+      POOL_APP_SIGNING_KEY: signingKey,
+      TOOLS_SERVICE: { fetch: async () => Response.json(grant) },
+      CATALOG_SERVICE: { fetch: async () => new Response(null, { status: 404 }) },
+      POOL_SERVICE: {
+        fetch: async (request) => {
+          bodies.push(await request.text());
+          assertions.push(request.headers.get(nativeModelHeader));
+          if (bodies.length === 1) throw new Error("The script will never generate a response.");
+          return Response.json({ id: "msg_synthetic" });
+        },
+      },
+    };
+    const response = await handleRequest(
+      new Request("https://app.signalbox.run/v1/messages", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer synthetic",
+          ...(native ? { [nativeAuthenticationHeader]: "1" } : {}),
+        },
+        body: '{"model":"synthetic","messages":[]}',
+      }),
+      env,
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.deepEqual(await response.json(), { id: "msg_synthetic" });
+    assert.deepEqual(bodies, Array(2).fill('{"model":"synthetic","messages":[]}'));
+    if (native) {
+      const second = (await openEnvelope(signingKey, nativeModelPrefix, assertions[1]!)) as {
+        expiresAt: number;
+      };
+      assert.ok(second.expiresAt > Date.now());
+    }
+  });

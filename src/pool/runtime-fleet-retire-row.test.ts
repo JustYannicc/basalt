@@ -80,7 +80,7 @@ async function stuckRow(
         refusal: options.cellMoved ? "still_moving" : null,
         active: cellCount,
         stillMs: 2_400_000,
-        leases: { current: 0, gone: cellCount },
+        leases: { currentCalls: 0, currentSockets: 0, foreignSockets: 0, unstamped: cellCount },
         connections: 0,
       };
     },
@@ -89,7 +89,13 @@ async function stuckRow(
       if (options.releaseDuring) await held[0]!.release();
       const released = cellCount;
       cellCount = 0;
-      return { released, stillMs: 2_400_000, connections: 0 };
+      return {
+        released,
+        stillMs: 2_400_000,
+        unstamped: released,
+        foreignSockets: 0,
+        connections: 0,
+      };
     },
     retire: async (identity, begin) => {
       await begin();
@@ -146,6 +152,8 @@ test("a draining row whose count stood still retires through the ordinary retire
     cellStillMs: 2_400_000,
     ledgerLowered: true,
     connections: 0,
+    unstamped: 6,
+    foreignSockets: 0,
   };
   assert.deepEqual(receipt, expected);
   assert.deepEqual(
@@ -203,7 +211,7 @@ test("the operator's check runs every refusal test and the cell's read, and over
     refusal: null,
     cell: 6,
     cellStillMs: 2_400_000,
-    leases: { current: 0, gone: 6 },
+    leases: { currentCalls: 0, currentSockets: 0, foreignSockets: 0, unstamped: 6 },
     connections: 0,
   });
   assert.equal((await f.row())?.active, 6, "the ledger keeps its count");

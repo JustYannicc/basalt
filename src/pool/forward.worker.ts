@@ -26,6 +26,8 @@ import {
 import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
 import { nativeModelHeader } from "./native-contract.ts";
+import { openRouterAttempt, routerAttemptHeader } from "./router-attempt.ts";
+import { controllerIsolateHeader, isolate } from "./isolate.ts";
 import { modelDrainProtocol } from "./model-drain-contract.ts";
 import { nativeResponse } from "./native-response.worker.ts";
 import {
@@ -59,7 +61,10 @@ import type { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
 interface Dependencies {
   terminal?: TerminalRecorder;
   appModel?: import("./model-membership.ts").ModelIdentity;
-  env: Parameters<typeof gatewayUnavailable>[0] & { POOL_APP_SIGNING_KEY: string };
+  env: Parameters<typeof gatewayUnavailable>[0] & {
+    POOL_APP_SIGNING_KEY: string;
+    POOL_APP_SIGNING_KEY_PREVIOUS?: string;
+  };
   computers: Pick<Computers, "nativeModel" | "observeUsage">;
   memberships: NativeMemberships;
   recoverAdmission?(signal: AbortSignal): Promise<boolean>;
@@ -93,9 +98,20 @@ export async function forwardPoolRequest(
   const pathname = new URL(request.url).pathname;
   if (isModelLifetimePath(pathname)) return new Response(null, { status: 404 });
   request = stripModelLifetimeRequest(request);
-  // A re-send of a call never sent keeps that attempt's id, so both count as one request.
+  // A re-send of a call never sent keeps that attempt's id, so both count as one request. The
+  // router names every send of one call alike, so its re-send after a lost pool does the same.
   const resent = unsentAttempt(request.headers.get(unsentAttemptHeader));
-  const requestId = resent ?? crypto.randomUUID();
+  const routed = await openRouterAttempt(
+    request,
+    deps.env.POOL_APP_SIGNING_KEY,
+    deps.env.POOL_APP_SIGNING_KEY_PREVIOUS,
+  );
+  if (routed && routed.attempt > 1)
+    console.info("POOL_ROUTER_REPLAY_RECEIVED", {
+      requestId: routed.requestId,
+      attempt: routed.attempt,
+    });
+  const requestId = resent ?? routed?.requestId ?? crypto.randomUUID();
   const endpoint = endpointMetadata(pathname);
   const modelCall =
     (request.method === "POST" &&
@@ -217,6 +233,7 @@ export async function forwardPoolRequest(
     const outboundHeaders = new Headers(request.headers);
     outboundHeaders.delete("X-Basalt-Request-Id");
     outboundHeaders.delete(unsentAttemptHeader);
+    outboundHeaders.delete(routerAttemptHeader);
     if (modelCall || (socketCall && observing)) {
       outboundHeaders.set("X-Request-Id", requestId);
       outboundHeaders.set("X-Basalt-Request-Id", requestId);
@@ -307,6 +324,7 @@ export async function forwardPoolRequest(
     stripRuntimeFailureHeaders(headers);
     // An unsent answer names this call's own id, the one its terminal start was written under,
     // so the entry's re-send can finish that same row.
+    if (modelCall) headers.set(controllerIsolateHeader, isolate().id);
     if (modelCall || runtimeRefusal)
       headers.set(
         "X-Request-Id",
@@ -319,6 +337,9 @@ export async function forwardPoolRequest(
       statusText: response.statusText,
       headers,
     });
+    // A caller the router named that left before this answer may be sent again under the same id,
+    // when only the entry went down; that send's own outcome finishes the row.
+    if (terminal && routed && request.signal.aborted) terminal = undefined;
     const observed = terminal
       ? terminalResponse(
           forwarded,
@@ -364,7 +385,8 @@ export async function forwardPoolRequest(
     )
       return unsentAnswer(request, requestId, diagnostic);
     if (dispatched && isPublicModelPath(pathname)) {
-      terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
+      if (!(routed && request.signal.aborted))
+        terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
       return gatewayOutcomeUnknown(
         deps.env,
         request,

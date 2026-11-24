@@ -148,7 +148,39 @@ const RetireReceipt = Schema.Struct({
   cellStillMs: Schema.Number,
   ledgerLowered: Schema.Boolean,
   connections: Schema.NullOr(Schema.Number),
+  unstamped: Schema.Number,
+  foreignSockets: Schema.Number,
 });
+/**
+ * Whose leases a cell's count holds, by #1871's stamps: this object instance's own (live as far as
+ * anyone knows), sockets other instances took (a model socket outlives its instance), unstamped ones
+ * from before the stamps, and any count with no lease record at all.
+ */
+const leaseOwnerLine = (
+  count: number,
+  leases: {
+    currentCalls: number;
+    currentSockets: number;
+    foreignSockets: number;
+    unstamped: number;
+  },
+) => {
+  const current = leases.currentCalls + leases.currentSockets;
+  const unrecorded = count - current - leases.foreignSockets - leases.unstamped;
+  if (current > 0)
+    return `${current} of the cell's leases belong to its current instance (${leases.currentCalls} calls, ${leases.currentSockets} model sockets), so their streams may be live; the override refuses them`;
+  const parts = [
+    leases.foreignSockets
+      ? `${leases.foreignSockets} model sockets another instance took, which can outlive it`
+      : "",
+    leases.unstamped ? `${leases.unstamped} unstamped leases from before the stamps` : "",
+    unrecorded > 0 ? `${unrecorded} counted with no lease record` : "",
+  ].filter(Boolean);
+  return parts.length
+    ? `none of the cell's leases is held by its current instance: ${parts.join(", ")}; the proof release ends these only when 8317 reads 0`
+    : "the cell holds no lease";
+};
+
 /**
  * The check before retire-row: the controller's refusal tests and the cell's own check and 8317
  * read for the named row, with nothing overridden. Any go text will do, as for inspect.
@@ -170,13 +202,7 @@ export const checkRetireRow = (access: ControllerAccess, key: string) =>
       // Whose isolate took the row's cell leases: a gone one's may only be a model socket.
       leaseOwner: !leases
         ? "the cell's leases weren't read"
-        : leases.current > 0
-          ? `${leases.current} of the cell's leases belong to its current isolate, so their streams may be live; the override refuses them`
-          : (checked.cell ?? 0) > leases.gone
-            ? `${(checked.cell ?? 0) - leases.gone} of the cell's count carry no lease record, so nothing says which isolate took them`
-            : leases.gone > 0
-              ? `none of the cell's ${leases.gone} leases is held by its current isolate; only a model socket can outlive the isolate that took it`
-              : "the cell holds no lease",
+        : leaseOwnerLine(checked.cell ?? 0, leases),
     };
   });
 

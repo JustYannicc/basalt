@@ -38,6 +38,7 @@ import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { failureIgnored, failureRead, readSuspect } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
+import { slotKey } from "../runtime-slots/activity.ts";
 import {
   distanceClass,
   neededFarMs,
@@ -62,15 +63,6 @@ type PlacementDecision =
   | "admit_replacement"
   | "admit_needed"
   | "redraw";
-
-/** The lane's key for a row: the first 24 hex digits of its slot's SHA-256. */
-async function rowKey(slotId: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(slotId));
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 24);
-}
 
 /** One closed line per admission decision, so where each runtime landed is visible. */
 function logPlacement(
@@ -121,13 +113,24 @@ export interface FleetCell {
   releaseStill?(
     identity: SlotIdentity,
     operationId: string,
-  ): Promise<{ released: number; stillMs: number; connections: number | null }>;
+  ): Promise<{
+    released: number;
+    stillMs: number;
+    unstamped: number;
+    foreignSockets: number;
+    connections: number | null;
+  }>;
   /** `releaseStill`'s rules and its connection read for the operator's check, nothing written. */
   checkStill?(identity: SlotIdentity): Promise<{
     refusal: string | null;
     active: number;
     stillMs: number;
-    leases: { current: number; gone: number };
+    leases: {
+      currentCalls: number;
+      currentSockets: number;
+      foreignSockets: number;
+      unstamped: number;
+    };
     connections: number | null;
   }>;
   /** Whether the cell is proven gone; false while its stop is still under way. */
@@ -465,7 +468,7 @@ export class RuntimeFleet {
     const rows = await this.deps.state.inspect();
     const matches: FleetRow[] = [];
     for (const row of rows)
-      if ((await rowKey(row.target.slotId)).startsWith(key)) matches.push(row);
+      if ((await slotKey(row.target.slotId)).startsWith(key)) matches.push(row);
     const row = matches[0];
     if (matches.length !== 1 || !row) throw new FleetRefused("identity");
     if (row.phase !== "draining" || !row.identity) throw new SlotRefused("selection");
@@ -483,7 +486,7 @@ export class RuntimeFleet {
     const receipt = {
       operationId,
       go,
-      key: await rowKey(row.target.slotId),
+      key: await slotKey(row.target.slotId),
       slot: row.target.slotId,
       ordinal: row.target.homePeerOrdinal ?? null,
       ledger: row.active,
@@ -493,6 +496,9 @@ export class RuntimeFleet {
       ledgerLowered,
       // Established connections on the cell's 8317 just before the override, or null: evidence only.
       connections: released.connections,
+      // What kind of leases it ended: #1871's proof release ends the same ones when 8317 reads 0.
+      unstamped: released.unstamped,
+      foreignSockets: released.foreignSockets,
     };
     console.warn("POOL_FLEET_ROW_RETIRE_OVERRIDE", receipt);
     this.deps.changed?.();
@@ -507,14 +513,14 @@ export class RuntimeFleet {
     const rows = await this.deps.state.inspect();
     const matches: FleetRow[] = [];
     for (const row of rows)
-      if ((await rowKey(row.target.slotId)).startsWith(key)) matches.push(row);
+      if ((await slotKey(row.target.slotId)).startsWith(key)) matches.push(row);
     const row = matches[0];
     if (matches.length !== 1 || !row)
       return { wouldProceed: false, refusal: "key_matches", matches: matches.length };
     const ledgerStillMs = this.deps.now() - row.lastUsedAt;
     const named = {
       matches: 1,
-      key: await rowKey(row.target.slotId),
+      key: await slotKey(row.target.slotId),
       ordinal: row.target.homePeerOrdinal ?? null,
       phase: row.phase,
       ledger: row.active,

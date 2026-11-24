@@ -191,7 +191,16 @@ const RetireCheck = Schema.Struct({
     ledgerStillMs: Schema.optional(Schema.Number),
     cell: Schema.optional(Schema.NullOr(Count)),
     cellStillMs: Schema.optional(Schema.NullOr(Schema.Number)),
-    leases: Schema.optional(Schema.NullOr(Schema.Struct({ current: Count, gone: Count }))),
+    leases: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          currentCalls: Count,
+          currentSockets: Count,
+          foreignSockets: Count,
+          unstamped: Count,
+        }),
+      ),
+    ),
     connections: Schema.optional(Schema.NullOr(Count)),
   }),
 });
