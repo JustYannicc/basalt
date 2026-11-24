@@ -6,6 +6,7 @@ import type {
   CaptureHoursStuck,
 } from "./capture-hours-auto.ts";
 import { countCaptureBlock, countCaptureHour } from "./capture-hours-count.ts";
+import { postgresCode } from "./usage-rollup-apply.ts";
 import {
   boundedRead,
   captureBlockHours,
@@ -299,8 +300,22 @@ export async function captureHoursSession(
       // Past its own limit: from now on hour by hour, starting in this session if time is left.
       markSplit(block);
     }
-    // A recount takes every hour of it; a pending one only the hours without a settled count.
-    const hours = recount ? hoursOf(block) : await read(() => pendingHoursOf(db, block));
+    // A recount takes every hour of it; a pending one only the hours without a settled count. A
+    // statement timeout in that read is this pool's own: it waits like a slow hour, unless the
+    // session's budget cut the read short, which is a budget stop.
+    let hours: string[];
+    if (recount) hours = hoursOf(block);
+    else {
+      const limit = Math.floor(left());
+      try {
+        hours = await read(() => pendingHoursOf(db, block));
+      } catch (error) {
+        if (postgresCode(error) !== "57014") throw error;
+        if (limit < captureHoursReadLimitMs) return "budget";
+        slowHour(block.pool, block.from, captureHoursReadLimitMs);
+        return "rest";
+      }
+    }
     for (const hour of hours) {
       if (stopped()) return "handover";
       if (left() <= 0) return "budget";

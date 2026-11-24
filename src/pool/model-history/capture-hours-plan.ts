@@ -181,8 +181,10 @@ export const capturePruneRows = 1_000;
 
 /**
  * Deletes at most `limit` stored counts older than the lookback, in one statement of the caller's
- * short transaction, only for pools whose lock it takes without waiting, as a count does. Those
- * hours are never complete to the summary, so nothing reads them. Returns the rows it deleted.
+ * short transaction. It finds the pools in the counts by one probe of the primary key each, reads
+ * each pool's old hours as a range of that key, and try-locks, as a count does, only the pools that
+ * have any, so with nothing old it takes no lock and reads no count. Those hours are never complete
+ * to the summary, so nothing reads them. Returns the rows it deleted.
  */
 export async function pruneCaptureHours(
   db: HistoryDatabase,
@@ -190,11 +192,22 @@ export async function pruneCaptureHours(
   limit = capturePruneRows,
 ) {
   const deleted = await db.query(
-    `WITH d AS MATERIALIZED (
-      SELECT s.pool, s.hour FROM basalt_model_capture_hours s
-      WHERE s.hour < ${captureLookbackStart("$1")}
-        AND pg_try_advisory_xact_lock(${captureHoursLockClass},hashtext(s.pool::text))
-      LIMIT $2
+    `WITH RECURSIVE pools AS (
+      SELECT min(pool) AS pool FROM basalt_model_capture_hours
+      UNION ALL
+      SELECT (SELECT min(s.pool) FROM basalt_model_capture_hours s WHERE s.pool > pools.pool)
+      FROM pools WHERE pools.pool IS NOT NULL
+    ), cut AS MATERIALIZED (SELECT ${captureLookbackStart("$1")} AS at),
+    old AS MATERIALIZED (
+      SELECT o.pool, o.hour FROM pools CROSS JOIN cut CROSS JOIN LATERAL (
+        SELECT s.pool, s.hour FROM basalt_model_capture_hours s
+        WHERE s.pool=pools.pool AND s.hour < cut.at ORDER BY s.hour LIMIT $2
+      ) o WHERE pools.pool IS NOT NULL
+    ), held AS MATERIALIZED (
+      SELECT k.pool FROM (SELECT DISTINCT pool FROM old) k
+      WHERE pg_try_advisory_xact_lock(${captureHoursLockClass},hashtext(k.pool::text))
+    ), d AS MATERIALIZED (
+      SELECT old.pool, old.hour FROM old JOIN held ON held.pool=old.pool LIMIT $2
     ) DELETE FROM basalt_model_capture_hours t USING d WHERE t.pool=d.pool AND t.hour=d.hour`,
     [lookback, limit],
   );

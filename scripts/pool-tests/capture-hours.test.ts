@@ -11,10 +11,24 @@ import {
 import {
   captureHoursLookbackHours,
   planCaptureHours,
+  pruneCaptureHours,
 } from "../../src/pool/model-history/capture-hours-plan.ts";
 import { poolUsernamePattern } from "../../src/pool/model-history/capture-population.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
-import { at, captureFixture, hourKey, lookbackHours, recording } from "./capture-hours-fixture.ts";
+import {
+  at,
+  captureFixture,
+  fillByTicks,
+  hourKey,
+  lookbackHours,
+  recording,
+} from "./capture-hours-fixture.ts";
+import { summaryPrices } from "./usage-summary-fixture.ts";
+import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
+import {
+  captureHoursLockClass,
+  historyCaptureHoursVersion,
+} from "../../src/pool/model-history/capture-hours-schema.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 
 const lots = () => 60_000;
@@ -728,5 +742,104 @@ test("a stored hour older than the lookback reads unproven, never complete, thou
       "the hour before the lookback only",
     );
     assert.equal(read.ranges, undefined);
+  });
+});
+
+test("with nothing older than the lookback, the prune takes no capture lock and reads no counts", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, 60_000));
+    await c.native(at(0, 60_000), true);
+    await c.ready();
+    await c.fill();
+    const stored = Number(
+      (await f.db.query("SELECT count(*)::int AS n FROM basalt_model_capture_hours")).rows[0]!.n,
+    );
+    assert.ok(stored >= 2 * lookbackHours);
+    const read = recording(f.db);
+    const held = async () =>
+      Number(
+        (
+          await f.db.query(
+            `SELECT count(*)::int AS n FROM pg_locks WHERE locktype='advisory' AND classid=$1
+            AND pid=pg_backend_pid()`,
+            [captureHoursLockClass],
+          )
+        ).rows[0]!.n,
+      );
+    await f.db.query("BEGIN");
+    try {
+      assert.equal(await pruneCaptureHours(read.db, lookbackHours), 0);
+      assert.equal(await held(), 0, "no pool's capture lock was taken");
+    } finally {
+      await f.db.query("ROLLBACK");
+    }
+    const prune = read.seen.find((entry) =>
+      entry.text.includes("DELETE FROM basalt_model_capture_hours"),
+    )!;
+    const found = await shape(f.db, prune.text, prune.values);
+    // One probe of the key per pool and one past the last, never the stored hours themselves.
+    assert.ok(
+      (found.reads.basalt_model_capture_hours ?? 0) <= 2 * 2 + 2,
+      `the prune read ${found.reads.basalt_model_capture_hours} of ${stored} stored counts`,
+    );
+    // With old hours in one pool, only that pool's lock is taken.
+    const first = (await horizon(f.db)) - lookbackHours * 3_600_000;
+    await f.db.query(
+      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
+      SELECT $1, h, 0, 0, h + interval '3 hours' FROM generate_series($2::timestamptz - interval '10 hours',
+        $2::timestamptz - interval '1 hour', interval '1 hour') h`,
+      [c.otherId, new Date(first).toISOString()],
+    );
+    await f.db.query("BEGIN");
+    try {
+      assert.equal(await pruneCaptureHours(f.db, lookbackHours), 10);
+      assert.equal(await held(), 1, "only the pool with old hours was locked");
+    } finally {
+      await f.db.query("ROLLBACK");
+    }
+  });
+});
+
+test("a fully counted pool's summary reads the same complete hours, known days and partial as the per-row check", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    const now = Date.now();
+    // Three weeks of requests, one every seven hours, and one usage row the capture missed.
+    for (let at = now - 21 * 86_400_000; at < now - 3_600_000; at += 7 * 3_600_000)
+      await c.native(new Date(at).toISOString());
+    await c.usage(new Date(now - 10 * 86_400_000 + 1_800_000).toISOString());
+    const forward = Number((await f.db.query("SELECT max(id)::int AS id FROM usage")).rows[0]!.id);
+    await c.cursor(forward);
+    await c.ready();
+    await fillByTicks(f.db, captureHoursLookbackHours);
+    const summary = () =>
+      poolUsageSummary(
+        f.db,
+        {
+          pool,
+          from: new Date(now - 14 * 86_400_000).toISOString(),
+          to: new Date(now).toISOString(),
+          authority: c.authority,
+        },
+        async () => ({ prices: summaryPrices, issues: [] }),
+        now,
+      );
+    const view = (result: Awaited<ReturnType<typeof summary>>) => ({
+      status: result.homeCapture.status,
+      completeHours: result.homeCapture.completeHours,
+      knownDays: result.historyCoverage.knownDays,
+      gapDays: result.historyCoverage.gapDays,
+      partial: result.partial,
+    });
+    const counted = view(await summary());
+    assert.equal(counted.status, "partial", "the missed row's hour is incomplete");
+    assert.ok(counted.completeHours.length > 300, `${counted.completeHours.length} complete hours`);
+    // The per-row check, as before v17.
+    await f.db.query("DROP TABLE basalt_model_capture_hours");
+    await f.db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+      historyCaptureHoursVersion,
+    ]);
+    assert.deepEqual(counted, view(await summary()));
   });
 });

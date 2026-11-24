@@ -934,3 +934,54 @@ test("a session the hourly ceiling would cut short of its plan read never starts
     assert.ok(sessions > 0);
   });
 });
+
+test("a statement timeout in a split block's own read is that pool's: it waits, or stops on budget, and never pauses the tick", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    const end = await horizon(f);
+    const newest = key(Math.floor((end - hour) / block) * block);
+    // The pool's newest block is split, and the read of its pending hours times out.
+    const timesOut: HistoryDatabase = {
+      query: (text, values) => {
+        if (text.includes("ORDER BY h.at DESC") && values![0] === c.poolId)
+          return Promise.reject(
+            Object.assign(new Error("canceling statement due to statement timeout"), {
+              code: "57014",
+              severity: "ERROR",
+            }),
+          );
+        return f.db.query(text, values);
+      },
+    };
+    const seeded = async () => {
+      const storage = memoryStorage();
+      await storage.put(captureHoursAutoKey, {
+        nextPool: c.otherId,
+        split: [{ pool: c.poolId, blocks: [newest] }],
+      });
+      return storage;
+    };
+    const state = await captureHoursTick(await seeded(), (work) => work(timesOut), {
+      bounds: { lookbackHours },
+    });
+    assert.equal(state.pausedUntil, undefined, "the tick goes on");
+    assert.deepEqual(
+      state.slow?.map((entry) => [entry.pool, entry.hour]),
+      [[c.poolId, newest]],
+      "the pool waits like a slow hour",
+    );
+    const other = await counted(f, c.otherId);
+    assert.equal(other.settled, other.hours, "the other pool was counted in full");
+    // With the session's budget cutting that read short, it is a budget stop, never slow.
+    await f.db.query("DELETE FROM basalt_model_capture_hours");
+    const cut = await captureHoursTick(await seeded(), (work) => work(timesOut), {
+      bounds: { lookbackHours, sessions: 1, sessionMs: 500 },
+    });
+    assert.equal(cut.pausedUntil, undefined);
+    assert.deepEqual(cut.slow ?? [], []);
+    assert.equal(cut.lastStop, "budget");
+  });
+});
