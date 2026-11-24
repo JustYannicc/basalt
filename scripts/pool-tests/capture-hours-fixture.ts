@@ -1,5 +1,9 @@
 import { backendUserName, digest } from "../../src/pool/backend-users.ts";
-import { homeCaptureCoverage } from "../../src/pool/model-history/capture-coverage.ts";
+import {
+  homeCaptureCoverage,
+  isRowCheck,
+  rowCheckRanges,
+} from "../../src/pool/model-history/capture-coverage.ts";
 import { captureHoursTick } from "../../src/pool/model-history/capture-hours-auto.ts";
 import { timestamp } from "../../src/pool/model-history/record.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
@@ -41,12 +45,8 @@ export function recording(db: HistoryDatabase) {
     } satisfies HistoryDatabase,
     /** The ranges the per-row check read, or undefined when it did not run. */
     ranges: () => {
-      const read = seen.filter((entry) => entry.text.includes("AS w(f text, t text)"));
-      return read.length
-        ? read.flatMap(
-            (entry) => JSON.parse(String(entry.values![1])) as { f: string; t: string }[],
-          )
-        : undefined;
+      const read = seen.filter((entry) => isRowCheck(entry.text));
+      return read.length ? read.flatMap((entry) => rowCheckRanges(entry.values!)) : undefined;
     },
   };
 }
