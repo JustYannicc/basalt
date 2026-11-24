@@ -44,6 +44,9 @@ type Prices = (
 ) => Promise<OverviewPriceTable>;
 
 /** A bounded manager summary owns one snapshot; legacy overview and series pagination are not called. */
+/** Three missed capture runs: a capture further behind than this is behind, not merely lagging. */
+export const summaryCaptureLagMs = 15 * 60_000;
+
 export async function poolUsageSummary(
   db: HistoryDatabase,
   raw: unknown,
@@ -149,17 +152,21 @@ export async function poolUsageSummary(
       priceUnavailableReason,
     );
     const incidentTo = timestamp(new Date(now).toISOString());
-    // The check stops at the capture's own recorded position, the request of its forward position:
-    // a usage row after it is not captured yet, never missing, and one before it with no request
-    // still makes its hour missing. Without a position the check runs to now, as before.
+    // The capture ingests on every model-history pass, about every five minutes, so its newest
+    // minutes are normally not captured yet. The check runs to the later of the capture's recorded
+    // position and three missed runs ago, and never past the window or now: a usage row in that
+    // normal lag is not captured yet, never missing, while one older than it with no request is
+    // missing, so a capture that has fallen behind reads partial. A window that ended before that
+    // is checked whole, as before. Without a recorded position the check runs to now, as before.
+    // Every bound is normalised by timestamp(), so the comparisons are exact.
     const capturedThrough = observed.coverage.capturedThrough;
-    const captureTo =
-      capturedThrough === null
-        ? [input.to, incidentTo].sort().at(-1)!
-        : [readFrom, [input.to, incidentTo, capturedThrough].sort()[0]!].sort().at(-1)!;
-    // Only an hour the capture has passed whole can be complete; the rest are not captured yet.
-    const capturedMs =
-      capturedThrough === null ? Number.POSITIVE_INFINITY : Date.parse(capturedThrough);
+    const settled = timestamp(new Date(now - summaryCaptureLagMs).toISOString());
+    const end = [input.to, incidentTo].sort().at(-1)!;
+    const checkedThrough =
+      capturedThrough === null ? end : [end, [capturedThrough, settled].sort().at(-1)!].sort()[0]!;
+    const captureTo = [readFrom, checkedThrough].sort().at(-1)!;
+    // Only an hour or a day the check has passed whole can be complete; the rest are not yet.
+    const capturedMs = Date.parse(captureTo);
     mark("capture");
     const capture = await homeCaptureCoverage(
       db,
@@ -178,7 +185,13 @@ export async function poolUsageSummary(
       groups: history.series,
       next: null,
     };
-    const historyCoverage = summaryKnownDays(readFrom, input.to, observed.coverage, capture);
+    const historyCoverage = summaryKnownDays(
+      readFrom,
+      input.to,
+      observed.coverage,
+      capture,
+      captureTo,
+    );
     const hourlySelection = await summarySelection(
       pool,
       [input.from, heatmapFrom].sort()[0]!,
