@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A model provider subscription account refused 429 gets one forced quota reading, at most once per account and model in 5 minutes once the collector accepted it, the collector's own backoff after a failed probe, and never on the report's path, so its reading shows the limit and the funding filter ranks it behind every account with quota left until its reset. Until that reading lands, a 429 without a provider time cools on the escalating backoff as before."
+    }
+  }
+}
