@@ -288,7 +288,7 @@ export class RuntimeFleet {
       this.growthRefusal = undefined;
     }
   }
-  /** How many cells the demand of this moment wants. */
+  /** Growth starts cells up to this count, and a far draw is kept while ready cells are fewer. */
   private async demandedCells(rows: readonly FleetRow[]) {
     const active = Math.max(
       this.deps.currentRequests(),

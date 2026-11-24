@@ -171,7 +171,10 @@ test("fleet upkeep records each cell's reported distance where the operator read
 
 function redrawFleet(draws: object[], serving: boolean, active: () => number = () => 0) {
   let rootServing = serving;
-  const state = new RuntimeFleetState(new SlotMemory(), 4, () => 100);
+  let clock = 100;
+  const unhealthy = new Set<string>();
+  const memory = new SlotMemory();
+  const state = new RuntimeFleetState(memory, 4, () => clock);
   const placements: Record<string, unknown>[] = [];
   const retired: string[] = [];
   let index = 0;
@@ -198,10 +201,15 @@ function redrawFleet(draws: object[], serving: boolean, active: () => number = (
   };
   return {
     state,
+    memory,
     placements,
     retired,
     reserveNext,
     distances,
+    unhealthy,
+    advance: (ms: number) => {
+      clock += ms;
+    },
     stopRoot: () => {
       rootServing = false;
     },
@@ -214,7 +222,10 @@ function redrawFleet(draws: object[], serving: boolean, active: () => number = (
           start: async (target) => ({ ...target, bootId: `boot-${target.slotId}` }),
           observe: async () => undefined,
           selected: async () => undefined,
-          healthy: async (identity) => readinessDistance(distances.get(identity.slotId)),
+          healthy: async (identity) => {
+            if (unhealthy.has(identity.slotId)) throw new Error("unhealthy");
+            return readinessDistance(distances.get(identity.slotId));
+          },
           forward: never,
           install: async () => {},
           abortPool: () => {},
@@ -234,7 +245,7 @@ function redrawFleet(draws: object[], serving: boolean, active: () => number = (
         maximum: 4,
         defer: () => {},
         wrap: (response) => response,
-        now: () => 100,
+        now: () => clock,
         primary: "balanced",
         primaryAvailable: () => rootServing,
       });
@@ -354,14 +365,34 @@ test("with demand for two cells, the first far draw beside a ready cell serves a
     ["slot-1", "admit", 1],
     ["slot-2", "admit_needed", 1],
   ]);
+  // Among the cells, with the near one fenced off, the far cell is the one that takes the call.
   const reservation = await f.state.acquire(
     Number.MAX_SAFE_INTEGER,
-    "balanced",
+    undefined,
     placement("unknown"),
+    (identity) => identity.slotId === "slot-1",
   );
-  assert.equal(reservation.kind, "runtime", "the far cell takes calls");
+  assert.equal(reservation.identity.slotId, "slot-2");
   await reservation.release();
   assert.deepEqual(f.retired, []);
+});
+
+test("a far draw beside a cell that is fenced, with only the root serving, is redrawn", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  context.mock.method(console, "warn", () => {});
+  const f = redrawFleet([frankfurt, athens], true, () => 4);
+  const runtime = await f.build();
+  const first = await f.reserveNext();
+  await runtime.upkeep();
+  // Its reads fail from here on, so it stays suspect and takes no call.
+  f.unhealthy.add(first.slotId);
+  await f.state.suspect({ ...first, bootId: `boot-${first.slotId}` }, () => ({ suspect: {} }));
+  await f.reserveNext();
+  await runtime.upkeep();
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "admit", 1],
+    ["slot-2", "redraw", 1],
+  ]);
 });
 
 test("a far draw the demand no longer wants at admit is redrawn and retired as before", async (context) => {
@@ -436,6 +467,30 @@ test("the draw count survives a controller reset, so resets can't redraw past th
     ["slot-4", "admit_after_limit", 4],
   ]);
   assert.equal(await f.state.placementDraws(), 0, "the admission ends the run of redraws");
+});
+
+test("a run of redraws left by demand that stopped starts over, and so does an unreadable count", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens, athens, athens, athens, athens], true);
+  const runtime = await f.build();
+  for (let draw = 0; draw < 3; draw++) {
+    await f.reserveNext();
+    await runtime.upkeep();
+  }
+  // Two start bounds later, the next far draw is the first of a new run, not the fourth.
+  f.advance(2 * 240_000 + 1);
+  await f.reserveNext();
+  await runtime.upkeep();
+  await f.memory.put("runtime-fleet-v1:placement-draws", { count: "three" });
+  await f.reserveNext();
+  await runtime.upkeep();
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "redraw", 1],
+    ["slot-2", "redraw", 2],
+    ["slot-3", "redraw", 3],
+    ["slot-4", "redraw", 1],
+    ["slot-5", "redraw", 1],
+  ]);
 });
 
 test("without distances the order is today's on both sides of the growth target", async () => {
