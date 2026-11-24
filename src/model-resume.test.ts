@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { forwardModelCall } from "./model-replay.ts";
+import { TunnelOperation } from "./tunnel/operation.ts";
+import { tunnelLimits, type TunnelServerFrame } from "../clients/contracts/tunnel.ts";
 import {
   openRouterAttempt,
   routerAttemptHeader,
@@ -148,3 +150,52 @@ test("a stamp resumes only the call its router named", async () => {
   assert.equal(await ask(await named(requestId), { stamp, from: 10 }), 200);
   assert.equal(resumed, 1);
 });
+
+for (const [shape, frames] of Object.entries(shapes))
+  test(`a ${shape} stream through the device tunnel is resumed by the router, every byte once`, async () => {
+    const p = await pool(frames, 1);
+    const sent: TunnelServerFrame[] = [];
+    const operation = new TunnelOperation(
+      {
+        v: 1,
+        type: "open",
+        id: 3,
+        operation: { service: "models", method: "GET", path: "/v1/responses", transport: "http" },
+        headers: {},
+      },
+      (frame) => {
+        sent.push(frame);
+        if (frame.type === "data")
+          operation.output.grant(Buffer.from(frame.bytes, "base64").length);
+      },
+      () => {},
+    );
+    operation.output.grant(tunnelLimits.windowBytes);
+    await operation.run(
+      new Request("https://router.example/native/v1/tunnel", {
+        headers: { authorization: "Bearer synthetic" },
+      }),
+      {
+        POOL_APP_SIGNING_KEY: signingKey,
+        TOOLS_SERVICE: {
+          fetch: async () =>
+            Response.json({
+              id: "native:test",
+              userId: "test",
+              policy: { kind: "native", computer: "test", pool: "test", models: true },
+            }),
+        },
+        POOL_SERVICE: p.env.POOL_SERVICE,
+      },
+    );
+    assert.equal(
+      sent.some((frame) => frame.type === "error"),
+      false,
+    );
+    const bytes = Buffer.concat(
+      sent.flatMap((frame) => (frame.type === "data" ? [Buffer.from(frame.bytes, "base64")] : [])),
+    );
+    assert.equal(bytes.toString("utf8"), p.whole);
+    assert.equal(sent.at(-1)?.type, "end");
+    assert.equal(p.resumes.length, 1);
+  });

@@ -43,7 +43,7 @@ export async function resumeThroughRouter(
   headers.set(streamResumeTargetHeader, stamp.target);
   headers.set(streamBootHeader, stamp.boot);
   headers.set("X-Request-Id", requestId);
-  return resumableAnswer(new Response(response.body, init), {
+  const spliced = resumableAnswer(new Response(response.body, init), {
     resume: async (input) =>
       env.POOL_SERVICE.fetch(
         new Request(new URL(routerResumePath, request.url), {
@@ -66,5 +66,32 @@ export async function resumeThroughRouter(
     now: Date.now,
     delayMs: routerResumeDelayMs,
     signal: request.signal,
+  });
+  if (!spliced.body) return spliced;
+  return new Response(byteStream(spliced.body), {
+    status: spliced.status,
+    statusText: spliced.statusText,
+    headers: spliced.headers,
+  });
+}
+
+/** The device tunnel reads with a BYOB reader, which only a byte stream serves. */
+function byteStream(source: ReadableStream<Uint8Array>) {
+  const reader = source.getReader();
+  return new ReadableStream({
+    type: "bytes",
+    async pull(controller) {
+      const next = await reader.read();
+      if (next.done) {
+        controller.close();
+        // A pending BYOB read is answered with nothing once the stream has closed.
+        controller.byobRequest?.respond(0);
+        return;
+      }
+      controller.enqueue(new Uint8Array(next.value));
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
   });
 }
