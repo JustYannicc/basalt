@@ -96,8 +96,12 @@ export class Computers {
   nativeSession(request: Request) {
     return this.native.session(request);
   }
-  nativeModel(request: Request) {
-    return this.native.model(request);
+  nativeModel(request: Request, call?: string) {
+    return this.native.model(request, call);
+  }
+  /** Whether a revocation here deliberately ended the call with this request id. */
+  wasCut(call: string) {
+    return this.native.wasCut(call);
   }
   abortPool(pool: string) {
     this.native.abortPool(pool);

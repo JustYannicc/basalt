@@ -1,4 +1,3 @@
-import { routerAttemptHeader, signRouterAttempt } from "./pool/router-attempt.ts";
 import {
   openResumeStamp,
   routerResumeHeader,
@@ -33,7 +32,8 @@ export async function resumeThroughRouter(
   request: Request,
   env: Resumer,
   requestId: string,
-  nextAttempt: () => number,
+  /** This call's headers for its next send, as a first send builds them: its own credentials. */
+  callHeaders: () => Promise<Headers>,
   wait: (milliseconds: number, signal: AbortSignal) => Promise<void>,
 ): Promise<Response> {
   const value = response.headers.get(routerResumeHeader);
@@ -55,18 +55,23 @@ export async function resumeThroughRouter(
     /\/(?:messages|responses|chat\/completions)$/.test(new URL(request.url).pathname);
   const spliced = resumableAnswer(new Response(response.body, init), {
     ...(judged ? { complete: terminalJudge() } : {}),
+    // The pool admits a resume as it admits a new call, so it carries the call's own credentials.
     resume: async (input) => {
+      const headers = await callHeaders();
+      for (const name of ["content-length", "content-encoding", "transfer-encoding"])
+        headers.delete(name);
+      headers.set("content-type", "application/json");
+      const url = new URL(request.url);
       const answer = await env.POOL_SERVICE.fetch(
         new Request(new URL(routerResumePath, request.url), {
           method: "POST",
-          headers: {
-            "content-type": "application/json",
-            [routerAttemptHeader]: await signRouterAttempt(env.POOL_APP_SIGNING_KEY, {
-              requestId,
-              attempt: nextAttempt(),
-            }),
-          },
-          body: JSON.stringify({ stamp: value, from: input.from }),
+          headers,
+          body: JSON.stringify({
+            stamp: value,
+            from: input.from,
+            method: request.method,
+            path: url.pathname + url.search,
+          }),
           signal: request.signal,
         }),
       );

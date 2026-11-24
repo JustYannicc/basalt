@@ -23,6 +23,8 @@ export interface ResumeStamp {
   requestId: string;
   target: string;
   boot: string;
+  /** The pool the call was admitted under; its resume is admitted under that pool only. */
+  pool?: string;
 }
 
 export function signResumeStamp(secret: string, stamp: ResumeStamp) {
@@ -39,7 +41,7 @@ export async function openResumeStamp(
     () => undefined,
   );
   if (typeof payload !== "object" || payload === null) return undefined;
-  const { requestId, target, boot, expiresAt } = payload as Record<string, unknown>;
+  const { requestId, target, boot, pool, expiresAt } = payload as Record<string, unknown>;
   if (
     typeof requestId !== "string" ||
     !uuid.test(requestId) ||
@@ -48,8 +50,9 @@ export async function openResumeStamp(
     typeof boot !== "string" ||
     !/^[A-Za-z0-9._:-]{1,200}$/.test(boot) ||
     typeof expiresAt !== "number" ||
-    expiresAt <= Date.now()
+    expiresAt <= Date.now() ||
+    (pool !== undefined && (typeof pool !== "string" || !pool || pool.length > 200))
   )
     return undefined;
-  return { requestId, target, boot };
+  return { requestId, target, boot, ...(typeof pool === "string" ? { pool } : {}) };
 }

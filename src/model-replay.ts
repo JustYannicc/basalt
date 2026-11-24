@@ -113,7 +113,7 @@ export async function forwardModelCall(
   // Sends are attempts 1 and 2; each resume of a cut stream takes the next number.
   let resumes = routerSends;
   const resumable = (answer: Response) =>
-    resumeThroughRouter(answer, request, env, requestId, () => ++resumes, wait);
+    resumeThroughRouter(answer, request, env, requestId, () => headersFor(++resumes), wait);
   try {
     // Built before the send: a device assertion that cannot be signed is not a lost pool, and the
     // native path answers it as before.

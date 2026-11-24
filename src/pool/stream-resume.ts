@@ -28,6 +28,7 @@ import {
   resumeLayerPort,
   streamResumeWindowMs,
   type StreamResumeInput,
+  type ResumeCall,
 } from "./stream-splice.ts";
 /** A body kept for a refused connect's resend stays inside the entry's own bounds for a held copy. */
 const spareBytes = 4 * 1024 * 1024;
@@ -91,7 +92,50 @@ export function decodeResumeInput(value: unknown) {
     !target
   )
     return undefined;
-  return { requestId: input.requestId, from: input.from, boot: input.boot, target };
+  const call = input.call === undefined ? undefined : decodeResumeCall(input.call);
+  if (input.call !== undefined && !call) return undefined;
+  return {
+    requestId: input.requestId,
+    from: input.from,
+    boot: input.boot,
+    target,
+    ...(call ? { call } : {}),
+  };
+}
+
+/** As a model call's own request is bounded where the pool reads it; anything else is refused. */
+function decodeResumeCall(value: unknown): ResumeCall | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { method, path, headers, pool } = value as Record<string, unknown>;
+  if (
+    (method !== "POST" && method !== "GET") ||
+    typeof path !== "string" ||
+    !path.startsWith("/") ||
+    path.startsWith("//") ||
+    path.length > 8_192 ||
+    !Array.isArray(headers) ||
+    headers.length > 128 ||
+    (pool !== undefined && (typeof pool !== "string" || !pool || pool.length > 200))
+  )
+    return undefined;
+  let bytes = 0;
+  for (const pair of headers) {
+    if (
+      !Array.isArray(pair) ||
+      pair.length !== 2 ||
+      typeof pair[0] !== "string" ||
+      typeof pair[1] !== "string"
+    )
+      return undefined;
+    bytes += pair[0].length + pair[1].length;
+  }
+  if (bytes > 64 * 1024) return undefined;
+  return {
+    method,
+    path,
+    headers: headers as [string, string][],
+    ...(typeof pool === "string" ? { pool } : {}),
+  };
 }
 
 /** The front layer's read for the rest of an answer, from the offset the entry delivered. */

@@ -20,8 +20,10 @@ import {
 } from "./controller-unsent.ts";
 import {
   resumableAnswer,
+  resumeCall,
   streamBootHeader,
   streamResumeHeader,
+  streamResumePoolHeader,
   streamResumeTargetHeader,
   streamResumeVersion,
   type StreamResumeInput,
@@ -30,6 +32,8 @@ import { routerResumeHeader, signResumeStamp } from "./router-resume.ts";
 import { heldBytes, holdBody, type HeldBody } from "./held-body.ts";
 import { controllerIsolateHeader, isolate } from "./isolate.ts";
 import { openRouterAttempt } from "./router-attempt.ts";
+import { nativeModelHeader, nativeModelPrefix } from "./native-contract.ts";
+import { hostAssertionTtlMs, openEnvelope, signEnvelope } from "./token.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -72,6 +76,8 @@ export interface ControllerHop {
   holdBudgetBytes?: number;
   /** Verifies the router's name for a call, so the entry's isolate line carries that id. */
   signing?: { key: string; previous?: string };
+  /** The entry's own admission of a call, run again before its resume; false refuses it. */
+  readmit?: (call: Request) => Promise<boolean>;
 }
 
 type Outcome =
@@ -384,14 +390,21 @@ async function forwardHeld(
   // Signed before the entry's own splice strips what it is made of: if this entry goes down with
   // the controller mid-body, the router resumes the call itself.
   const stamp = hop.signing ? await routerStamp(response, hop.signing.key) : undefined;
+  // The pool the controller admitted the call under; its resume is admitted under that pool only.
+  const pool = response.headers.get(streamResumePoolHeader) ?? undefined;
   // A resumable answer is re-attached through the new instance first; only an answer it cannot
   // resume reaches the retry terminal below, unchanged.
   const answer = resumableAnswer(response, {
-    resume: (input) => {
+    // The resume is admitted as a new call is, with this call's own credentials.
+    resume: async (input) => {
+      const call = await resumedCall(request, hop.signing);
+      if (hop.readmit && !(await hop.readmit(call))) return new Response(null, { status: 410 });
       const controller = hop.controller();
-      return controller.resume
-        ? controller.resume(input)
-        : Promise.reject(new Error("This controller cannot resume a stream"));
+      if (!controller.resume) throw new Error("This controller cannot resume a stream");
+      return controller.resume({
+        ...input,
+        call: { ...resumeCall(call), ...(pool ? { pool } : {}) },
+      });
     },
     ended: controllerInstanceEnded,
     wait: hop.wait ?? sleep,
@@ -420,11 +433,38 @@ async function forwardHeld(
   });
 }
 
+/**
+ * The call as its caller made it, for its resume. A device's assertion lives 25 s, which a long
+ * answer outlasts, so the entry signs the claims the router asserted afresh, unchanged otherwise;
+ * the controller's registry still decides whether the device may go on.
+ */
+async function resumedCall(request: Request, signing: ControllerHop["signing"]) {
+  const call = new Request(request.url, { method: request.method, headers: request.headers });
+  const assertion = request.headers.get(nativeModelHeader);
+  if (!assertion || !signing) return call;
+  const claims = await openEnvelope(
+    signing.key,
+    nativeModelPrefix,
+    assertion,
+    signing.previous,
+  ).catch(() => undefined);
+  if (typeof claims !== "object" || claims === null) return call;
+  call.headers.set(
+    nativeModelHeader,
+    await signEnvelope(signing.key, nativeModelPrefix, {
+      ...claims,
+      expiresAt: Date.now() + hostAssertionTtlMs,
+    }),
+  );
+  return call;
+}
+
 /** What a resume needs, for an answer the front layer marked and the controller stamped. */
 async function routerStamp(response: Response, key: string) {
   const requestId = response.headers.get("X-Request-Id") ?? "";
   const target = response.headers.get(streamResumeTargetHeader) ?? "";
   const boot = response.headers.get(streamBootHeader) ?? "";
+  const pool = response.headers.get(streamResumePoolHeader) ?? undefined;
   if (
     !response.ok ||
     !response.body ||
@@ -434,5 +474,7 @@ async function routerStamp(response: Response, key: string) {
     !boot
   )
     return undefined;
-  return signResumeStamp(key, { requestId, target, boot }).catch(() => undefined);
+  return signResumeStamp(key, { requestId, target, boot, ...(pool ? { pool } : {}) }).catch(
+    () => undefined,
+  );
 }

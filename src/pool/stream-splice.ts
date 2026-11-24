@@ -12,6 +12,8 @@ export const streamResumeFromHeader = "X-Basalt-Resume-From";
 export const streamResumeBootHeader = "X-Basalt-Resume-Boot";
 export const streamResumeStateHeader = "X-Basalt-Resume-State";
 export const streamBootHeader = "X-Signalbox-Pool-Boot";
+/** The pool a call was admitted under, so a resume is admitted under that pool only. */
+export const streamResumePoolHeader = "X-Basalt-Resume-Pool";
 /** The layer's answer when it could not reach the node: no request byte reached the node. */
 export const streamResumeUpstreamHeader = "X-Basalt-Resume-Upstream";
 export const streamResumePath = "/__basalt/resume/v1/";
@@ -29,7 +31,12 @@ export const streamResumeWindowMs = 20_000;
 /** Cuts one answer is resumed from, each only after the delivered offset moved. */
 export const streamResumeCuts = 5;
 export const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const internalHeaders = [streamResumeHeader, streamResumeTargetHeader, streamResumeStateHeader];
+const internalHeaders = [
+  streamResumeHeader,
+  streamResumeTargetHeader,
+  streamResumeStateHeader,
+  streamResumePoolHeader,
+];
 /**
  * The events that end a messages or responses stream, for the entry's retry terminal and the
  * router's cut judge alike. `response.done` is what some providers' executors pass through
@@ -46,11 +53,42 @@ export const streamTerminalTypes: ReadonlySet<string> = new Set([
 /** The opaque value a resume hands back; only its shape is checked before the pool decodes it. */
 export const resumeTargetShape = /^(?:primary|runtime:[A-Za-z0-9_-]{1,4096})$/;
 
+/**
+ * The call a resume continues, as its caller made it: method, path and headers, credentials
+ * included, as plain values so it crosses RPC. The pool admits it as it admits a new call.
+ */
+export interface ResumeCall {
+  method: string;
+  path: string;
+  headers: [string, string][];
+  /** The pool the call was admitted under, when it had one. */
+  pool?: string;
+}
+
 export interface StreamResumeInput {
   requestId: string;
   from: number;
   target: string;
   boot: string;
+  call?: ResumeCall;
+}
+
+// Framing of the original upload, not part of who made the call.
+const framing = new Set([
+  "content-length",
+  "content-type",
+  "content-encoding",
+  "transfer-encoding",
+]);
+
+/** The call a resume continues, from the request its caller sent. */
+export function resumeCall(request: Request, headers: Headers = request.headers): ResumeCall {
+  const url = new URL(request.url);
+  return {
+    method: request.method,
+    path: url.pathname + url.search,
+    headers: [...headers].filter(([name]) => !framing.has(name)),
+  };
 }
 
 export interface SpliceDeps {

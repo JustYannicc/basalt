@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { forwardModelCall } from "./model-replay.ts";
+import type { StreamResumeInput } from "./pool/stream-splice.ts";
 import { signEnvelope } from "./pool/token.ts";
 import { TunnelOperation } from "./tunnel/operation.ts";
 import { tunnelLimits, type TunnelServerFrame } from "../clients/contracts/tunnel.ts";
@@ -58,6 +59,7 @@ async function pool(
   const cut = encoder.encode(frames.slice(0, cutAfter).join("")).byteLength;
   let requestId = "";
   const resumes: { requestId: string; from: number; attempt: number }[] = [];
+  const calls: (StreamResumeInput["call"] | undefined)[] = [];
   const env = {
     POOL_APP_SIGNING_KEY: signingKey,
     POOL_SERVICE: {
@@ -67,6 +69,7 @@ async function pool(
         if (new URL(request.url).pathname === routerResumePath)
           return routerResume(request, { key: signingKey }, async (input) => {
             resumes.push({ requestId: input.requestId, from: input.from, attempt: named.attempt });
+            calls.push(input.call);
             return new Response(whole.slice(input.from), {
               headers: {
                 [streamResumeHeader]: streamResumeVersion,
@@ -107,8 +110,32 @@ async function pool(
       },
     },
   };
-  return { env, whole: frames.join(""), resumes, requestId: () => requestId, cut };
+  return { env, whole: frames.join(""), resumes, calls, requestId: () => requestId, cut };
 }
+
+test("the router's resume carries the call's own method, path and credentials, signed afresh", async () => {
+  const p = await pool(shapes.messages, 2);
+  let signed = 0;
+  const response = await forwardModelCall(
+    new Request("https://app.example/v1/messages?beta=true", {
+      method: "POST",
+      headers: { "x-api-key": "caller-key", "content-type": "application/json" },
+      body: "{}",
+    }),
+    p.env,
+    // As a device call's assertion is signed for each send.
+    async (headers) => headers.set("x-fixture-assertion", String(++signed)),
+    noWait,
+  );
+  assert.equal(await response.text(), p.whole);
+  const [call] = p.calls;
+  assert.equal(call?.method, "POST");
+  assert.equal(call?.path, "/v1/messages?beta=true");
+  const headers = new Headers(call?.headers);
+  assert.equal(headers.get("x-api-key"), "caller-key");
+  assert.equal(headers.get("x-fixture-assertion"), "2", "a send of its own, signed for the resume");
+  assert.equal(headers.has(routerAttemptHeader), false, "the router's name is not the caller's");
+});
 
 for (const [shape, frames] of Object.entries(shapes))
   test(`a ${shape} stream cut when the entry goes down is resumed by the router, every byte once`, async () => {
@@ -152,15 +179,20 @@ test("a stamp resumes only the call its router named", async () => {
   const named = async (id: string, key = signingKey) => ({
     [routerAttemptHeader]: await signRouterAttempt(key, { requestId: id, attempt: 2 }),
   });
-  // Another caller's router name, a forged name, no name, a forged stamp, a bad offset.
-  assert.equal(await ask(await named(other), { stamp, from: 10 }), 403);
-  assert.equal(await ask(await named(requestId, "ef".repeat(32)), { stamp, from: 10 }), 403);
-  assert.equal(await ask({}, { stamp, from: 10 }), 403);
+  const callOf = { method: "POST", path: "/v1/messages" };
+  // Another caller's router name, a forged name, no name, a forged stamp, a bad offset, no call.
+  assert.equal(await ask(await named(other), { stamp, from: 10, ...callOf }), 403);
+  assert.equal(
+    await ask(await named(requestId, "ef".repeat(32)), { stamp, from: 10, ...callOf }),
+    403,
+  );
+  assert.equal(await ask({}, { stamp, from: 10, ...callOf }), 403);
   const forged = await signResumeStamp("ef".repeat(32), { requestId, target, boot: "boot-a" });
-  assert.equal(await ask(await named(requestId), { stamp: forged, from: 10 }), 403);
-  assert.equal(await ask(await named(requestId), { stamp, from: -1 }), 403);
+  assert.equal(await ask(await named(requestId), { stamp: forged, from: 10, ...callOf }), 403);
+  assert.equal(await ask(await named(requestId), { stamp, from: -1, ...callOf }), 403);
+  assert.equal(await ask(await named(requestId), { stamp, from: 10 }), 403);
   assert.equal(resumed, 0);
-  assert.equal(await ask(await named(requestId), { stamp, from: 10 }), 200);
+  assert.equal(await ask(await named(requestId), { stamp, from: 10, ...callOf }), 200);
   assert.equal(resumed, 1);
 });
 
