@@ -61,6 +61,9 @@ const Ledger = Schema.Array(Row);
 const key = "runtime-fleet-v1:resources";
 const primaryKey = "runtime-fleet-v1:primary-active";
 const replacementKey = "runtime-fleet-v1:replacement-demand";
+// Far draws redrawn since the last admitted cell. Durable, so a controller reset can't restart the
+// count and redraw past the limit.
+const drawsKey = "runtime-fleet-v1:placement-draws";
 const retiredKey = (slot: string) => `runtime-fleet-v1:retired:${slot}`;
 /** The ends of the cells that left last, newest first, which the fleet inspect returns. */
 const recentEndsKey = "runtime-fleet-v1:recent-ends";
@@ -260,7 +263,7 @@ export class RuntimeFleetState {
    */
   redraw(value: SlotIdentity, database: RuntimeDistance | undefined) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
-    return this.change((rows) => {
+    return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
       if (row.phase === "draining" && row.redrawn && sameIdentity(row.identity, identity))
         return false;
@@ -280,8 +283,12 @@ export class RuntimeFleetState {
         lastUsedAt: this.now(),
         ...(database ? { database } : {}),
       };
+      await transaction.put(drawsKey, (await this.placementDraws(transaction)) + 1);
       return true;
     });
+  }
+  async placementDraws(storage: SlotStorage = this.storage) {
+    return Schema.decodeUnknownSync(Count)((await storage.get(drawsKey)) ?? 0);
   }
   /** A redrawn cell nobody used comes back when the runtime that justified the redraw stopped. */
   restoreRedrawn(value: SlotIdentity) {
@@ -335,6 +342,8 @@ export class RuntimeFleetState {
         lastUsedAt: row.phase === "ready" ? row.lastUsedAt : this.now(),
         ...(database ? { database } : {}),
       };
+      // An admitted cell ends the run of redraws.
+      if ((await this.placementDraws(transaction)) !== 0) await transaction.put(drawsKey, 0);
     });
   }
   async promoteGeneration(primary: SlotTarget, transaction: SlotStorage) {

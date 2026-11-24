@@ -38,7 +38,12 @@ import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { failureIgnored, failureRead, readSuspect } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
-import { distanceClass, type DistanceClass, type RuntimeDistance } from "../runtime-distance.ts";
+import {
+  distanceClass,
+  neededFarMs,
+  type DistanceClass,
+  type RuntimeDistance,
+} from "../runtime-distance.ts";
 
 /** A far cell is started again at most this many times before it serves from its last draw. */
 export const placementDraws = 4;
@@ -48,6 +53,7 @@ type PlacementDecision =
   | "admit_alone"
   | "admit_after_limit"
   | "admit_replacement"
+  | "admit_needed"
   | "redraw";
 
 /** One closed line per admission decision, so where each runtime landed is visible. */
@@ -172,9 +178,6 @@ export class RuntimeFleet {
   private atCapacity = false;
   private primaryFailed = false;
   private primaryPlace: DistanceClass = "unknown";
-  // Far draws since the last admitted cell, any admission resetting it; in memory, so an isolate
-  // restart allows at most one more round.
-  private draws = 0;
   // Only this controller's own latest health read of the root counts as the root serving.
   private primaryServing = false;
   private primaryFailure = 0;
@@ -266,16 +269,8 @@ export class RuntimeFleet {
       if (this.deps.enabled?.() === false) return;
       const rows = await this.deps.state.inspect();
       const physical = await this.deps.state.physicalCount();
-      const active = Math.max(
-        this.deps.currentRequests(),
-        (await this.deps.legacyActive()) + rows.reduce((sum, row) => sum + row.active, 0),
-      );
       if (physical >= this.deps.maximum) this.atCapacity = true;
-      const minimum = this.deps.now() < ((await this.deps.recentDemandUntil?.()) ?? 0) ? 1 : 0;
-      const desired = Math.min(
-        this.deps.maximum,
-        Math.max(minimum, Math.floor(active / this.deps.targetActive)),
-      );
+      const desired = await this.demandedCells(rows);
       const replacements = await this.deps.state.replacements();
       if (physical >= this.deps.maximum) return;
       // A quarantined row holds its place but serves nothing, so it never stands in for a new cell.
@@ -292,6 +287,18 @@ export class RuntimeFleet {
       await this.start(target);
       this.growthRefusal = undefined;
     }
+  }
+  /** How many cells the demand of this moment wants. */
+  private async demandedCells(rows: readonly FleetRow[]) {
+    const active = Math.max(
+      this.deps.currentRequests(),
+      (await this.deps.legacyActive()) + rows.reduce((sum, row) => sum + row.active, 0),
+    );
+    const minimum = this.deps.now() < ((await this.deps.recentDemandUntil?.()) ?? 0) ? 1 : 0;
+    return Math.min(
+      this.deps.maximum,
+      Math.max(minimum, Math.floor(active / this.deps.targetActive)),
+    );
   }
   private async start(target: SlotTarget) {
     await this.deps.state.dispatch(target);
@@ -335,8 +342,9 @@ export class RuntimeFleet {
   }
   /**
    * Reads a started cell's distance before it can take a request. A far cell is redrawn only while
-   * another runtime serves and draws remain: it goes straight to draining, so nothing is routed to it,
-   * and the ordinary drain and retirement stop it gracefully once it has no activity.
+   * another runtime serves, draws remain and the fleet doesn't need it now: it goes straight to
+   * draining, so nothing is routed to it, and the ordinary drain and retirement stop it gracefully
+   * once it has no activity.
    */
   private async admit(cell: FleetCell, identity: SlotIdentity) {
     const row = (await this.deps.state.inspect()).find(
@@ -353,7 +361,7 @@ export class RuntimeFleet {
       .healthy?.(identity)
       .then((value) => value ?? undefined)
       .catch(() => undefined);
-    const draw = this.draws + 1;
+    const draw = (await this.deps.state.placementDraws()) + 1;
     const place = distanceClass(database);
     // A replacement keeps the demand that reserved it, so it serves wherever it landed.
     const replacing = row.replaces !== undefined || row.replacement === true;
@@ -368,16 +376,33 @@ export class RuntimeFleet {
               ? "admit_after_limit"
               : !(await this.othersServing(identity))
                 ? "admit_alone"
-                : "redraw";
+                : (await this.neededNow(identity, database))
+                  ? "admit_needed"
+                  : "redraw";
     if (decision === "redraw") {
       if (!(await this.deps.state.redraw(identity, database))) return;
-      this.draws = draw;
       logPlacement(identity, database, decision, draw);
       return;
     }
     await this.deps.state.ready(identity, database);
-    this.draws = 0;
     logPlacement(identity, database, decision, draw);
+  }
+  /**
+   * A far cell serves at once when the fleet needs it now: another cell already serves, fewer cells
+   * are ready than the demand of this moment wants, and the cell is within `neededFarMs`. The first
+   * cell, beside only the root, keeps the redraw rule.
+   */
+  private async neededNow(identity: SlotIdentity, database: RuntimeDistance | undefined) {
+    if (database?.state !== "measured" || (database.rttMs ?? Infinity) > neededFarMs) return false;
+    const rows = await this.deps.state.inspect();
+    const ready = rows.filter(
+      (row) =>
+        row.phase === "ready" &&
+        this.serves(row) &&
+        row.identity &&
+        !sameIdentity(row.identity, identity),
+    ).length;
+    return ready > 0 && ready < (await this.demandedCells(rows));
   }
   private async othersServing(identity: SlotIdentity) {
     if (this.primaryServing && this.deps.primaryAvailable?.() !== false && !this.primaryFailed)
@@ -798,7 +823,12 @@ export class RuntimeFleet {
       if (row.redrawn === true && !(await this.othersServing(identity))) {
         // The runtime that justified the redraw stopped serving: keep the far one instead.
         if (await this.deps.state.restoreRedrawn(identity))
-          logPlacement(identity, row.database, "admit_alone", this.draws);
+          logPlacement(
+            identity,
+            row.database,
+            "admit_alone",
+            await this.deps.state.placementDraws(),
+          );
         return;
       }
       await this.retireDrained(cell, row, identity, now);
