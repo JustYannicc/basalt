@@ -162,9 +162,23 @@ export class EndpointTrace {
       !this.attempts.some((attempt) => attempt.outcome === "error")
     )
       return;
+    const path = new URL(this.request.url).pathname;
+    // A health read its own caller gave up on, such as the guard's probe at its deadline, is that
+    // caller's to report: the guard keeps its own outcome and elapsed time. Only when nothing but
+    // that abort happened: a send that failed first is still the endpoint's failure.
+    if (
+      path === "/health" &&
+      !(result instanceof Response) &&
+      this.request.signal.aborted &&
+      this.attempts.every(
+        (attempt) =>
+          attempt.outcome === "pending" ||
+          (attempt.outcome === "error" && attempt.error?.name === "AbortError"),
+      )
+    )
+      return;
     this.logged = true;
     if (object(result)) correlateEndpointRequest(result, this.requestId);
-    const path = new URL(this.request.url).pathname;
     console.error(
       "POOL_RUNTIME_ENDPOINT_FAILURE",
       JSON.stringify({
