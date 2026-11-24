@@ -6,7 +6,7 @@ import { availableModels, tryModel } from "../clients/connection/models.ts";
 import { connectTools } from "../clients/connection/tools.ts";
 
 /** Actual mobile controller against the built Router, hosted grants and deployed app tools. */
-export async function verifyNativeMobile({ origin, owner, app, receipt }) {
+export async function verifyNativeMobile({ origin, owner, app, receipt, intent }) {
   let saved;
   const store = {
     read: async () => saved,
@@ -30,7 +30,7 @@ export async function verifyNativeMobile({ origin, owner, app, receipt }) {
         method: "POST",
         headers: {
           ...owner,
-          "x-basalt-native-intent": "approved-native-intent",
+          "x-basalt-native-intent": await intent(),
           "x-basalt-native-name": "Phone controller proof",
           "x-basalt-native-pool": "pool-native-client",
           "x-basalt-native-models": "true",

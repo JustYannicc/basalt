@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-native-tools-only-connect-row",
+  "file": "0727-native-tools-only-connect-row.patch",
+  "content_sha256": "16d228ccbb7c64b2da3a49dba6dbb3b7c5a137a9ef90d38b63932c457341b52b",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

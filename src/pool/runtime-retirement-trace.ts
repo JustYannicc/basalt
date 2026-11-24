@@ -15,10 +15,11 @@ type Phase =
   | "activity_read"
   | "monitor_attach"
   | "monitor"
-  | "destroy"
+  | "stop"
   | "retired_record";
 interface Fields {
   exit?: "normal" | "nonzero";
+  stopped?: "exited" | "destroyed";
   retired?: boolean;
   running?: boolean;
   identityMatches?: boolean;

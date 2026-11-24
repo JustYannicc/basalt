@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A model provider stream that opens with message_start, other than a fast request, holds message_start, ping and empty block starts until the first generating event, for at most 48 frames, 1 MiB or 5 s, so a rate limit the provider sends inside a 200 becomes that account's own 429 and fails over before the caller sees a byte; anything else, the end of the stream or the bound releases what was held, in order and unchanged. A limit after content was sent still reaches the caller. In Home mode a re-route goes ahead when Home has not acknowledged the release of a credential the next pick excludes, never waiting for that release twice, and a retryable home_unavailable gets one more pick within one cancel bound before the caller sees the account's own 429."
+    }
+  }
+}

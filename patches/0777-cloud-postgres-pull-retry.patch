@@ -1,0 +1,227 @@
+diff --git a/e2e/cloud-postgres.config.ts b/e2e/cloud-postgres.config.ts
+index 4679419..3be3f3c 100644
+--- a/e2e/cloud-postgres.config.ts
++++ b/e2e/cloud-postgres.config.ts
+@@ -2,5 +2,6 @@ import { defineConfig } from "vitest/config";
+ 
+ /** Real Docker startup and cleanup, without building a Cloud Worker. */
+ export default defineConfig({
+-  test: { include: ["e2e/tests/cloud-postgres.spec.ts"], testTimeout: 120_000, maxWorkers: 1 },
++  // A real start may first wait 60 to 90 s on rate or quota refusals of the image pull.
++  test: { include: ["e2e/tests/cloud-postgres.spec.ts"], testTimeout: 240_000, maxWorkers: 1 },
+ });
+diff --git a/e2e/support/cloud-postgres-fixtures.ts b/e2e/support/cloud-postgres-fixtures.ts
+index ae621d0..f58d2a7 100644
+--- a/e2e/support/cloud-postgres-fixtures.ts
++++ b/e2e/support/cloud-postgres-fixtures.ts
+@@ -64,3 +64,56 @@ esac
+       dockerEnv: { PATH: directory, DOCKER_HOST: "unix:///synthetic", DOCKER_CONFIG: directory },
+     };
+   });
++
++/**
++ * Refuse the first `refusals` image pulls with `refusal`, counting every pull in `pulls`. After
++ * that, hand each call to the real Docker named by `real`, or answer like an empty daemon. A pull of
++ * an image the real daemon already has answers at once, so the proof never waits on a registry.
++ */
++export const refusingPulls = (
++  refusal: string,
++  refusals: number,
++  real?: {
++    readonly docker: string;
++    readonly dockerEnv: {
++      readonly PATH: string;
++      readonly DOCKER_HOST: string;
++      readonly DOCKER_CONFIG: string;
++    };
++  },
++) =>
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const directory = yield* fs.makeTempDirectoryScoped();
++    yield* fs.writeFileString(`${directory}/refusal`, `${refusal}\n`);
++    yield* fs.writeFileString(
++      `${directory}/docker`,
++      `#!/bin/sh
++case "$1" in
++  image) exit 1 ;;
++  pull)
++    n=0
++    [ -f "${directory}/pulls" ] && read -r n < "${directory}/pulls"
++    n=$((n + 1))
++    printf '%s\n' "$n" > "${directory}/pulls"
++    if [ "$n" -le ${refusals} ]; then
++      while IFS= read -r line; do printf '%s\n' "$line" >&2; done < "${directory}/refusal"
++      exit 1
++    fi ;;
++esac
++${real ? `[ "$1" = pull ] && "${real.docker}" image inspect "$2" >/dev/null 2>&1 && exit 0\nexec "${real.docker}" "$@"` : `case "$1" in rm) : > "${directory}/removed" ;; esac\nexit 0`}
++`,
++      { mode: 0o700 },
++    );
++    // Only shell builtins: the synthetic daemon's PATH holds nothing but this script.
++    const pulls = fs
++      .readFileString(`${directory}/pulls`)
++      .pipe(Effect.map((text) => Number(text.trim())));
++    return {
++      directory,
++      pulls,
++      dockerEnv: real
++        ? { ...real.dockerEnv, PATH: `${directory}:${real.dockerEnv.PATH}` }
++        : { PATH: directory, DOCKER_HOST: "unix:///synthetic", DOCKER_CONFIG: directory },
++    };
++  });
+diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
+index dd87177..50bfb8a 100644
+--- a/e2e/support/cloud-postgres.ts
++++ b/e2e/support/cloud-postgres.ts
+@@ -28,6 +28,13 @@ const staleAfterMs = 5 * 60_000;
+ // postgres:17: anonymous Docker Hub pulls hit its rate limit when several runs start at once.
+ const postgresImage =
+   "mirror.gcr.io/library/postgres:17@sha256:156d40cfa063d6babb15d329a8e15b26a8d0690ebb6084c956084f3b025c3b30";
++// A registry refusing a pull for its rate or quota usually answers again within that window (the
++// mirror counts requests per minute), so such a refusal is pulled again after growing waits that
++// together span a minute.
++// Any other refusal, such as a missing image or a digest mismatch, fails at once.
++const pullRefusal =
++  /\b429\b|too many requests|toomanyrequests|rate.?limit|quota exceeded|resource.?exhausted/i;
++const pullTries = 5;
+ 
+ const Containers = Schema.fromJsonString(
+   Schema.Array(
+@@ -150,6 +157,11 @@ export const startCloudPostgres = (input: {
+    */
+   readonly runtimePassword?: string;
+   readonly dockerEnv: DockerEnv;
++  /**
++   * The first wait after a rate or quota refusal; each later wait doubles (5, 10, 20, 40 s), and each
++   * varies by up to a fifth so jobs refused together do not all try again together.
++   */
++  readonly pullBackoffMs?: number;
+   /** Receives the server's output. */
+   readonly log: string;
+ }) =>
+@@ -174,8 +186,25 @@ export const startCloudPostgres = (input: {
+     const namespace = yield* pidNamespace;
+     if (namespace !== undefined) yield* removeAbandoned(dockerEnv, namespace);
+     const image = yield* command.run(["image", "inspect", "--format", "{{.Id}}", postgresImage]);
+-    if (image.code !== 0)
+-      yield* command.checked("Pull the Postgres image", ["pull", postgresImage]);
++    const backoffMs = input.pullBackoffMs ?? 5_000;
++    const pull = (attempt: number): ReturnType<typeof command.checked> =>
++      command
++        .checked(
++          attempt === 1
++            ? "Pull the Postgres image"
++            : `Pull the Postgres image (try ${attempt} of ${pullTries})`,
++          ["pull", postgresImage],
++        )
++        .pipe(
++          Effect.catchTag("CloudPostgresFailed", (failed) =>
++            attempt < pullTries && pullRefusal.test(failed.operation)
++              ? Effect.sleep(
++                  `${Math.round(backoffMs * 2 ** (attempt - 1) * (0.8 + Math.random() * 0.4))} millis`,
++                ).pipe(Effect.andThen(pull(attempt + 1)))
++              : Effect.fail(failed),
++          ),
++        );
++    if (image.code !== 0) yield* pull(1);
+     // Acquisition is uninterruptible, so an interrupted run still learns whether Docker created
+     // the container before it removes it. Removal by name is a no-op when nothing was created.
+     const created = yield* Effect.acquireRelease(
+diff --git a/e2e/tests/cloud-postgres.spec.ts b/e2e/tests/cloud-postgres.spec.ts
+index 83c0e88..d4bd2d6 100644
+--- a/e2e/tests/cloud-postgres.spec.ts
++++ b/e2e/tests/cloud-postgres.spec.ts
+@@ -7,6 +7,7 @@ import {
+   failedDocker,
+   localDocker,
+   postgresHandshake,
++  refusingPulls,
+ } from "../support/cloud-postgres-fixtures.ts";
+ import { holdPort } from "../support/ports.ts";
+ import { productionOpsDatabaseProxy } from "../support/production-ops-database-proxy.ts";
+@@ -137,4 +138,83 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cloud Postgres", (it)
+       }).pipe(Effect.scoped),
+     );
+   }
++
++  const quotaRefusal =
++    "error from registry: Quota exceeded for quota metric 'Requests per project in the US multi-region' and limit 'Requests per project in the US multi-region per minute'";
++
++  it.effect("pulls again after a rate or quota refusal and starts", () =>
++    Effect.gen(function* () {
++      const local = yield* localDocker;
++      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
++      const docker = (yield* processes.string(
++        ChildProcess.make("sh", ["-c", "command -v docker"]),
++      )).trim();
++      const refused = yield* refusingPulls(quotaRefusal, 1, { docker, dockerEnv: local.dockerEnv });
++      const log = `${local.directory}/postgres.log`;
++      yield* Effect.scoped(
++        Effect.gen(function* () {
++          const { databasePort } = yield* startCloudPostgres({
++            container: `executor-e2e-pull-retry-${process.pid}`,
++            dockerEnv: refused.dockerEnv,
++            databasePassword: "synthetic-retry-password",
++            pullBackoffMs: 10,
++            log,
++          });
++          expect(yield* postgresHandshake(databasePort)).toBe("N");
++        }),
++      );
++      expect(yield* refused.pulls).toBe(2);
++      expect(yield* (yield* FileSystem.FileSystem).readFileString(log)).toContain("Quota exceeded");
++    }).pipe(Effect.scoped),
++  );
++
++  for (const refusal of [
++    "manifest for mirror.gcr.io/library/postgres@sha256:0000 not found: manifest unknown",
++    "filesystem layer verification failed for digest sha256:0000",
++  ])
++    it.effect(`fails at once on another pull refusal: ${refusal.slice(-24)}`, () =>
++      Effect.gen(function* () {
++        const refused = yield* refusingPulls(refusal, 5);
++        const result = yield* Effect.exit(
++          Effect.scoped(
++            startCloudPostgres({
++              container: "synthetic-postgres",
++              dockerEnv: refused.dockerEnv,
++              databasePassword: "synthetic-refusal-password",
++              pullBackoffMs: 1,
++              log: `${refused.directory}/postgres.log`,
++            }),
++          ),
++        );
++        expect(Exit.isFailure(result)).toBe(true);
++        if (Exit.isFailure(result))
++          expect(Cause.pretty(result.cause)).toContain(
++            `Pull the Postgres image (docker pull, exit 1): ${refusal}`,
++          );
++        expect(yield* refused.pulls).toBe(1);
++      }).pipe(Effect.scoped),
++    );
++
++  it.effect("names its tries and the last refusal when every pull is refused for quota", () =>
++    Effect.gen(function* () {
++      const refused = yield* refusingPulls(quotaRefusal, 5);
++      const result = yield* Effect.exit(
++        Effect.scoped(
++          startCloudPostgres({
++            container: "synthetic-postgres",
++            dockerEnv: refused.dockerEnv,
++            databasePassword: "synthetic-quota-password",
++            pullBackoffMs: 1,
++            log: `${refused.directory}/postgres.log`,
++          }),
++        ),
++      );
++      expect(Exit.isFailure(result)).toBe(true);
++      if (Exit.isFailure(result))
++        expect(Cause.pretty(result.cause)).toContain(
++          `Pull the Postgres image (try 5 of 5) (docker pull, exit 1): ${quotaRefusal}`,
++        );
++      expect(yield* refused.pulls).toBe(5);
++    }).pipe(Effect.scoped),
++  );
+ });

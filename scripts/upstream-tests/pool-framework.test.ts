@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { test } from "node:test";
 import { Effect } from "effect";
 import { poolFrameworkVersion } from "../pool-app-bundle.ts";
+import { generationName } from "../upstream-dependencies.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(pathToFileURL(resolve(upstream, path)).href);
@@ -42,7 +43,12 @@ test("the hosted compiler selects its configured patched framework without npm",
       },
     }),
   );
-  assert.equal(await Effect.runPromise((dependencies as { framework: Effect.Effect<boolean, unknown> }).framework), true);
+  assert.equal(
+    await Effect.runPromise(
+      (dependencies as { framework: Effect.Effect<boolean, unknown> }).framework,
+    ),
+    true,
+  );
   assert.equal(reads, 1);
   // framework.release returns this shared host version.
   const { appsVersion } = await load("packages/app-templates/src/implementation/files.ts");
@@ -108,5 +114,31 @@ test(
         assert.deepEqual(body, { ok: true, value: caller });
       }
     }
+  },
+);
+
+test(
+  "every dependency-store path in the built framework carries the key's own name",
+  {
+    skip:
+      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
+        ? "npm run build runs this against its framework assets"
+        : false,
+  },
+  () => {
+    // The framework's chunks name the dependency store's path, and the compiler serves them, so a
+    // store under any other name (a random one) changes its Worker with no source change (#1811).
+    const { key } = JSON.parse(
+      readFileSync(resolve(upstream, ".basalt-dependencies.json"), "utf8"),
+    );
+    const framework = readFileSync(
+      resolve(upstream, ".local/basalt-framework/framework.json"),
+      "utf8",
+    );
+    const names = new Set([...framework.matchAll(/generations\/([^/"\\]+)/gu)].map((m) => m[1]));
+    assert.deepEqual(
+      [...names].filter((name) => name !== generationName(key)),
+      [],
+    );
   },
 );

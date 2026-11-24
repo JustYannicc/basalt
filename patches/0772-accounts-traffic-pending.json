@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-accounts-traffic-pending",
+  "file": "0772-accounts-traffic-pending.patch",
+  "content_sha256": "9afcea82158d9d00eebd27c896f5e15101adfeb7968abb70f0166be1f165dc56",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

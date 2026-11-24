@@ -22,6 +22,8 @@ export function summaryKnownDays(
   to: string,
   coverage: SeriesCoverage,
   capture: HomeCaptureCoverage,
+  /** How far the capture check reached; a day it hasn't passed whole isn't known on the native path. */
+  checkedThrough?: string,
 ) {
   const start = timestamp(from),
     end = timestamp(to);
@@ -43,7 +45,8 @@ export function summaryKnownDays(
     const certified =
       imports.length > 0 &&
       imports.every((range) => range !== undefined && range.from <= lower && range.to >= upper);
-    if ((native && !missing.has(day)) || certified) known.add(day);
+    const checked = checkedThrough === undefined || upper <= checkedThrough;
+    if ((native && checked && !missing.has(day)) || certified) known.add(day);
     else gaps.push(day);
   }
   return { known, gaps };

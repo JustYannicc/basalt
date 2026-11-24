@@ -2,12 +2,13 @@ import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/impl
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import { DurableObject } from "cloudflare:workers";
 import { RuntimeEndpoint, type EndpointEnvironment } from "./runtime-slots/endpoint.ts";
-import { runtimeRequest } from "./runtime-slots/transport.ts";
+import { runtimeCallerSignal, runtimeRequest } from "./runtime-slots/transport.ts";
 import { nativeResponse, nativeControlPair } from "./native-response.worker.ts";
 import { RuntimeHomePeerTransport } from "./home-peer.worker.ts";
 import type { HomePeerSource } from "./runtime-slots/peer-access.ts";
 import type { SlotTarget } from "./runtime-slots/contract.ts";
 import { handleHomePeerUpgrade, homePeerPath } from "./home-peer-transport.ts";
+import { watchRunningContainer } from "./runtime-slots/container-end.ts";
 
 /** Code only. The admitted release path must separately create and bind this class. */
 export class PoolRuntime extends DurableObject<EndpointEnvironment> {
@@ -29,12 +30,15 @@ export class PoolRuntime extends DurableObject<EndpointEnvironment> {
       nativeResponse,
       {
         controlPair: nativeControlPair,
+        ownStorage: ctx.storage,
         beforeStart: (witness) => this.peers.configure({ kind: "runtime", witness }),
       },
     );
     ctx.waitUntil(this.peers.restore().catch(() => {}));
+    watchRunningContainer(ctx);
   }
   fetch(request: Request) {
+    request = runtimeCallerSignal(request);
     if (new URL(request.url).pathname.startsWith(`${homePeerPath}/`))
       return handleHomePeerUpgrade(request, {
         open: (source) => {

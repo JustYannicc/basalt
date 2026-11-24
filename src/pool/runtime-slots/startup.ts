@@ -85,6 +85,7 @@ export async function startRuntime(
         await store.read(target);
       },
     },
+    store.refresh(target),
   );
   const pending = await ledger.current();
   if (

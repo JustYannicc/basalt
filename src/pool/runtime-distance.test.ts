@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import type { SlotIdentity } from "./runtime-slots/contract.ts";
 import { distanceClass, readinessDistance } from "./runtime-distance.ts";
@@ -169,9 +169,17 @@ test("fleet upkeep records each cell's reported distance where the operator read
   assert.deepEqual(row?.database, { state: "measured", rttMs: 44, location: "ath01" });
 });
 
-function redrawFleet(draws: object[], serving: boolean) {
+function redrawFleet(
+  draws: object[],
+  serving: boolean,
+  active: () => number = () => 0,
+  primary: "balanced" | "last" = "balanced",
+) {
   let rootServing = serving;
-  const state = new RuntimeFleetState(new SlotMemory(), 4, () => 100);
+  let clock = 100;
+  const unhealthy = new Set<string>();
+  const memory = new SlotMemory();
+  const state = new RuntimeFleetState(memory, 4, () => clock);
   const placements: Record<string, unknown>[] = [];
   const retired: string[] = [];
   let index = 0;
@@ -198,10 +206,15 @@ function redrawFleet(draws: object[], serving: boolean) {
   };
   return {
     state,
+    memory,
     placements,
     retired,
     reserveNext,
     distances,
+    unhealthy,
+    advance: (ms: number) => {
+      clock += ms;
+    },
     stopRoot: () => {
       rootServing = false;
     },
@@ -210,31 +223,35 @@ function redrawFleet(draws: object[], serving: boolean) {
       return new RuntimeFleet({
         state,
         target: never,
-        cell: () => ({
+        cell: (target) => ({
           start: async (target) => ({ ...target, bootId: `boot-${target.slotId}` }),
           observe: async () => undefined,
-          selected: async () => undefined,
-          healthy: async (identity) => readinessDistance(distances.get(identity.slotId)),
-          forward: never,
+          selected: async () => ({ ...target, bootId: `boot-${target.slotId}` }),
+          healthy: async (identity) => {
+            if (unhealthy.has(identity.slotId)) throw new Error("unhealthy");
+            return readinessDistance(distances.get(identity.slotId));
+          },
+          forward: async () => new Response("cell"),
           install: async () => {},
           abortPool: () => {},
           drain: async () => ({ active: 0, known: true }),
           retire: async (identity, begin) => {
             await begin();
             retired.push(identity.slotId);
+            return true;
           },
           retired: async () => true,
           failed: async () => false,
         }),
         legacyActive: async () => 0,
-        currentRequests: () => 0,
+        currentRequests: active,
         targetActive: 2,
         idleMilliseconds: 3_600_000,
         maximum: 4,
         defer: () => {},
         wrap: (response) => response,
-        now: () => 100,
-        primary: "balanced",
+        now: () => clock,
+        primary,
         primaryAvailable: () => rootServing,
       });
     },
@@ -321,6 +338,279 @@ test("a lone far cell serves, a near draw is admitted, and the fourth far draw s
     ["redraw", 3],
     ["admit_after_limit", 4],
   ]);
+});
+
+const placementDecisions = (log: { mock: { calls: { arguments: unknown[] }[] } }) =>
+  log.mock.calls
+    .filter((call) => call.arguments[0] === "POOL_RUNTIME_PLACEMENT")
+    .map((call) => {
+      const line = call.arguments[1] as { slot: string; decision: string; draw: number };
+      return [line.slot, line.decision, line.draw];
+    });
+const phaseOf = async (f: ReturnType<typeof redrawFleet>, slot: string) =>
+  (await f.state.inspect()).find((row) => row.target.slotId === slot)?.phase;
+
+test("with demand for two cells, the first far draw beside a ready cell serves at once", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  context.mock.method(console, "warn", () => {});
+  // Four calls in flight at two per cell: the demand of the moment wants two cells.
+  const f = redrawFleet([frankfurt, athens, athens, athens, athens], true, () => 4);
+  const runtime = await f.build();
+  await f.reserveNext();
+  await runtime.upkeep();
+  let draws = 0;
+  while (draws < 4) {
+    draws++;
+    const target = await f.reserveNext();
+    await runtime.upkeep();
+    if ((await phaseOf(f, target.slotId)) === "ready") break;
+  }
+  assert.equal(draws, 1, "the far cell the fleet needs serves on its first draw, not its fourth");
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "admit", 1],
+    ["slot-2", "admit_needed", 1],
+  ]);
+  // Among the cells, with the near one fenced off, the far cell is the one that takes the call.
+  const reservation = await f.state.acquire(
+    Number.MAX_SAFE_INTEGER,
+    undefined,
+    placement("unknown"),
+    (identity) => identity.slotId === "slot-1",
+  );
+  assert.equal(reservation.identity.slotId, "slot-2");
+  await reservation.release();
+  assert.deepEqual(f.retired, []);
+});
+
+test("a far draw beside a cell that is fenced, with only the root serving and nobody waiting at its cap, is redrawn", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  context.mock.method(console, "warn", () => {});
+  const f = redrawFleet([frankfurt, athens], true, () => 4);
+  const runtime = await f.build();
+  const first = await f.reserveNext();
+  await runtime.upkeep();
+  // Its reads fail from here on, so it stays suspect and takes no call.
+  f.unhealthy.add(first.slotId);
+  await f.state.suspect({ ...first, bootId: `boot-${first.slotId}` }, () => ({ suspect: {} }));
+  await f.reserveNext();
+  await runtime.upkeep();
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "admit", 1],
+    ["slot-2", "redraw", 1],
+  ]);
+});
+
+test("a far draw the demand no longer wants at admit is redrawn and retired as before", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  context.mock.method(console, "warn", () => {});
+  let inFlight = 4;
+  const f = redrawFleet([frankfurt, athens], true, () => inFlight);
+  const runtime = await f.build();
+  await f.reserveNext();
+  await runtime.upkeep();
+  await f.reserveNext();
+  inFlight = 2;
+  await runtime.upkeep();
+  assert.equal(await phaseOf(f, "slot-2"), "draining");
+  await runtime.upkeep();
+  assert.deepEqual(f.retired, ["slot-2"]);
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "admit", 1],
+    ["slot-2", "redraw", 1],
+  ]);
+});
+
+/**
+ * Callers on a cold fleet behind the root's real fallback cap, its first draw admitted at `admitAt`.
+ * A caller the cap turns away comes back each second, as the entry re-sends it, until served.
+ */
+async function coldCallers(
+  context: TestContext,
+  draw: object,
+  arrivals: number[],
+  admitAt: number,
+) {
+  const log = context.mock.method(console, "info", () => {});
+  for (const method of ["warn", "error"] as const) context.mock.method(console, method, () => {});
+  const f = redrawFleet([draw], true, () => 0, "last");
+  const runtime = await f.build();
+  const waiting: number[] = [];
+  const waits: number[] = [];
+  let next = 0;
+  let heldAtAdmit = 0;
+  for (let t = 0; t <= admitAt + 60_000; t += 1_000) {
+    while (next < arrivals.length && arrivals[next]! <= t) waiting.push(arrivals[next++]!);
+    for (const arrived of waiting.splice(0)) {
+      const answer = await runtime.forward(
+        new Request("https://pool.test/v1/messages", { method: "POST", body: "{}" }),
+        "pool",
+        async () => new Response("root"),
+        () => {},
+      );
+      if (answer.status === 200) waits.push(t - arrived);
+      else waiting.push(arrived);
+    }
+    if (t === admitAt) {
+      heldAtAdmit = waiting.length;
+      await f.reserveNext();
+      await runtime.upkeep();
+    }
+    if (t >= admitAt && next === arrivals.length && waiting.length === 0) break;
+    f.advance(1_000);
+  }
+  return { decisions: placementDecisions(log), waits, heldAtAdmit, unserved: waiting.length };
+}
+const steady = (perSecond: number, seconds: number) =>
+  Array.from({ length: perSecond * seconds }, (_, index) =>
+    Math.floor((index * 1_000) / perSecond),
+  );
+
+test("a far first cell is kept while the root's cap turns callers away", async (context) => {
+  // The cap serves 10 at once and 1.2 a second, so a burst of 50 waits only on a quick start (20 s);
+  // the steady rates are admitted 70 s in, a cell start's usual time.
+  for (const [name, arrivals, admitAt] of [
+    ["a burst of 50", Array<number>(50).fill(0), 20_000],
+    ["a steady 3 a second", steady(3, 90), 70_000],
+    ["a steady 1.5 a second, just over the cap", steady(1.5, 90), 70_000],
+  ] as const) {
+    const cold = await coldCallers(context, athens, [...arrivals], admitAt);
+    assert.deepEqual(cold.decisions, [["slot-1", "admit_needed", 1]], name);
+    assert.equal(cold.unserved, 0, name);
+    assert.equal(cold.waits.length, arrivals.length, name);
+    assert.ok(
+      Math.max(...cold.waits) <= admitAt + 1_000,
+      `${name}: no caller waits past the first start`,
+    );
+    assert.ok(cold.heldAtAdmit > 0, `${name}: callers were waiting at the admission`);
+  }
+});
+
+test("a far first cell is still redrawn when the root's cap turned nobody away lately", async (context) => {
+  for (const [name, arrivals] of [
+    // The cap's burst of 10 and its 1.2 a second drain this within 2 s.
+    ["a burst of 12", Array<number>(12).fill(0)],
+    ["a steady 1 a second, below the cap", steady(1, 90)],
+  ] as const) {
+    const cold = await coldCallers(context, athens, [...arrivals], 70_000);
+    assert.deepEqual(cold.decisions, [["slot-1", "redraw", 1]], name);
+    assert.equal(cold.heldAtAdmit, 0, name);
+    assert.equal(cold.unserved, 0, name);
+  }
+});
+
+test("a first far cell beside only the root keeps the redraw rule when nobody waits at the cap", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  context.mock.method(console, "warn", () => {});
+  const f = redrawFleet([athens, athens, lisbon, athens], true, () => 10);
+  const runtime = await f.build();
+  for (let draw = 0; draw < 4; draw++) {
+    await f.reserveNext();
+    await runtime.upkeep();
+  }
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "redraw", 1],
+    ["slot-2", "redraw", 2],
+    ["slot-3", "redraw", 3],
+    ["slot-4", "admit_after_limit", 4],
+  ]);
+});
+
+test("a needed far draw serves only within neededFarMs; farther or held draws are redrawn", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  context.mock.method(console, "warn", () => {});
+  const decisionFor = async (draw: object) => {
+    log.mock.resetCalls();
+    const f = redrawFleet([frankfurt, draw], true, () => 4);
+    const runtime = await f.build();
+    await f.reserveNext();
+    await runtime.upkeep();
+    await f.reserveNext();
+    await runtime.upkeep();
+    return placementDecisions(log)[1]?.[1];
+  };
+  assert.equal(await decisionFor({ ...athens, db_rtt_ms: 50 }), "admit_needed");
+  assert.equal(await decisionFor({ ...athens, db_rtt_ms: 51 }), "redraw");
+  assert.equal(await decisionFor({ ...athens, db_rtt_ms: 150 }), "redraw");
+  assert.equal(await decisionFor({ ...athens, db_rtt_state: "held" }), "redraw");
+});
+
+test("the draw count survives a controller reset, so resets can't redraw past the limit", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens, athens, athens, athens], true);
+  for (let draw = 0; draw < 4; draw++) {
+    // Each draw is admitted by a fresh controller on the same durable state.
+    const runtime = await f.build();
+    await f.reserveNext();
+    await runtime.upkeep();
+  }
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "redraw", 1],
+    ["slot-2", "redraw", 2],
+    ["slot-3", "redraw", 3],
+    ["slot-4", "admit_after_limit", 4],
+  ]);
+  assert.equal(await f.state.placementDraws(), 0, "the admission ends the run of redraws");
+});
+
+test("a slow run of redraws keeps its count: draws 300 s apart still reach the limit", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens, athens, athens, athens], true);
+  const runtime = await f.build();
+  for (let draw = 0; draw < 4; draw++) {
+    // A retirement's 60 s bound and the next start's 240 s bound: the slowest back-to-back draws.
+    if (draw) f.advance(300_000);
+    await f.reserveNext();
+    await runtime.upkeep();
+  }
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "redraw", 1],
+    ["slot-2", "redraw", 2],
+    ["slot-3", "redraw", 3],
+    ["slot-4", "admit_after_limit", 4],
+  ]);
+});
+
+test("a run of redraws left by demand that stopped starts over, and so does an unreadable count", async (context) => {
+  const log = context.mock.method(console, "info", () => {});
+  const f = redrawFleet([athens, athens, athens, athens, athens, frankfurt], true);
+  const runtime = await f.build();
+  for (let draw = 0; draw < 3; draw++) {
+    await f.reserveNext();
+    await runtime.upkeep();
+  }
+  // Two start bounds later, the next far draw is the first of a new run, not the fourth.
+  f.advance(2 * 240_000 + 1);
+  await f.reserveNext();
+  await runtime.upkeep();
+  await f.memory.put("runtime-fleet-v1:placement-draws", { count: "three" });
+  await f.reserveNext();
+  await runtime.upkeep();
+  // An admission over a count it can't read clears it rather than refusing.
+  await f.memory.put("runtime-fleet-v1:placement-draws", { count: "three" });
+  await f.reserveNext();
+  await runtime.upkeep();
+  assert.deepEqual(placementDecisions(log), [
+    ["slot-1", "redraw", 1],
+    ["slot-2", "redraw", 2],
+    ["slot-3", "redraw", 3],
+    ["slot-4", "redraw", 1],
+    ["slot-5", "redraw", 1],
+    ["slot-6", "admit", 1],
+  ]);
+  assert.equal(await phaseOf(f, "slot-6"), "ready");
+  assert.deepEqual(await f.memory.get("runtime-fleet-v1:placement-draws"), {
+    count: 0,
+    at: 100 + 480_001,
+  });
+});
+
+test("with only the root serving, a refusal inside rootWaitingMs keeps a far draw and one past it doesn't", async (context) => {
+  // A burst of 11: the cap serves 10 and refuses one at 0 s, which it serves a second later.
+  const kept = await coldCallers(context, athens, Array<number>(11).fill(0), 4_000);
+  assert.deepEqual(kept.decisions, [["slot-1", "admit_needed", 1]]);
+  context.mock.restoreAll();
+  const redrawn = await coldCallers(context, athens, Array<number>(11).fill(0), 6_000);
+  assert.deepEqual(redrawn.decisions, [["slot-1", "redraw", 1]]);
 });
 
 test("without distances the order is today's on both sides of the growth target", async () => {

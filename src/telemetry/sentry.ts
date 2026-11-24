@@ -1,4 +1,10 @@
-import { eventId, sendEnvelope, type Attachment } from "./sentry-envelope.ts";
+import {
+  deliverEnvelope,
+  eventId,
+  sendEnvelope,
+  type Attachment,
+  type Delivery,
+} from "./sentry-envelope.ts";
 import { isAccountId } from "./product.ts";
 import { errorCode, pageTemplate, recentErrors } from "./privacy.ts";
 import { type SentryEnv, validSentryDsn } from "./sentry-target.ts";
@@ -148,15 +154,26 @@ export function allowanceExpiryEvents(rows: readonly ExpiringPlan[]) {
   });
 }
 
-/** Send each plan's event; false when any delivery failed, so the caller tries again. */
+/**
+ * Send each plan's event. Delivered only when every one was; a refusal carries Sentry's status and
+ * the longest wait it asked for, so the caller backs off instead of resending into it.
+ */
 export async function captureAllowanceExpiry(
   env: SentryEnv,
   rows: readonly ExpiringPlan[],
-): Promise<boolean> {
-  const sent = await Promise.all(
+): Promise<Delivery> {
+  const deliveries = await Promise.all(
     allowanceExpiryEvents(rows).map((payload) =>
-      sendEnvelope(env, { id: payload.event_id, type: "event", payload }),
+      deliverEnvelope(env, { id: payload.event_id, type: "event", payload }),
     ),
   );
-  return sent.every(Boolean);
+  const refused = deliveries.filter((delivery) => !delivery.delivered);
+  if (refused.length === 0) return { delivered: true };
+  const status = refused.find((delivery) => delivery.status !== undefined)?.status;
+  const wait = Math.max(0, ...refused.map((delivery) => delivery.retryAfterMs ?? 0));
+  return {
+    delivered: false,
+    ...(status !== undefined ? { status } : {}),
+    ...(wait > 0 ? { retryAfterMs: wait } : {}),
+  };
 }

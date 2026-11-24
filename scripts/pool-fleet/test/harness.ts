@@ -89,6 +89,16 @@ export interface HarnessOptions {
   deviceOnly?: boolean;
   /** The account the pool's owner usage records name; a foreign one must fail the usage check. */
   usageAccount?: string;
+  /** What the controller's inspect reports for the pool's own usage rollup backfill. */
+  usageRollup?: unknown;
+  /** What the controller's inspect reports for the pool's own capture-hour counts. */
+  captureHours?: unknown;
+  /** What the controller's inspect reports as the root's last recovery. */
+  lastRecovery?: unknown;
+  /** While true, the controller still holds blue's image input from before the settings' deploy. */
+  bindingsLag?: () => boolean;
+  /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
+  handoffFailure?: (action: string) => Error | Response | undefined;
 }
 
 /** The acceptance device's own Home key, as the device usage read reports it. */
@@ -182,6 +192,13 @@ export async function harness(options: HarnessOptions = {}) {
     applicationId: colours[color].id,
     imageInput: colours[color].input,
   }));
+  // As in production, the configuration and fleet-inspect read the controller's one set of bindings.
+  const currentBindings = () =>
+    options.bindingsLag?.()
+      ? bindings.map((binding) =>
+          binding.color === "blue" ? { ...binding, imageInput: "0".repeat(64) } : binding,
+        )
+      : bindings;
   // The controller observes providers exactly as in production; only the host is local.
   const provider = new RuntimeProviderReader("observation-token", (input, init) =>
     fetch(input.replace("https://api.cloudflare.com", cloudflare.origin), init),
@@ -190,7 +207,7 @@ export async function harness(options: HarnessOptions = {}) {
     storage,
     controllerId,
     code,
-    bindings: () => bindings,
+    bindings: () => currentBindings(),
     legacy: async () => primary,
     occupied: (transaction) => state.inspect(transaction),
     provider,
@@ -216,6 +233,15 @@ export async function harness(options: HarnessOptions = {}) {
   };
   const actions: string[] = [];
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
+  const retires: { operationId: string; go: string; key: string }[] = [];
+  const checks: string[] = [];
+  // What the cell's 8317 read returns to the next fleet-retire.
+  const retireRead = {
+    connections: 0 as number | null,
+    leases: undefined as
+      | { currentCalls: number; currentSockets: number; foreignSockets: number; unstamped: number }
+      | undefined,
+  };
   let restart = 0;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
   const providerRequests: string[] = [];
@@ -242,7 +268,8 @@ export async function harness(options: HarnessOptions = {}) {
       return {
         permission: await configuration.inspect(operationId),
         resources: await state.inspect(),
-        bindings,
+        bindings: currentBindings(),
+        recentEnds: await state.recentEnds(),
       };
     },
     crash: async (command) => {
@@ -253,6 +280,64 @@ export async function harness(options: HarnessOptions = {}) {
       ]);
       restart = 3;
       return { signalled: true };
+    },
+    // The controller's own rules are src/pool/runtime-fleet-retire-row.test.ts's; this records the send
+    // and leaves the row as the override does: count 0, then retired by upkeep.
+    retireRow: async (operationId, go, key) => {
+      retires.push({ operationId, go, key });
+      const rows = (await state.inspect()).map((row) => ({ ...row, active: 0 }));
+      storage.values.set("runtime-fleet-v1:resources", rows);
+      return {
+        operationId,
+        go,
+        key,
+        ordinal: 1,
+        ledger: 6,
+        cell: 6,
+        ledgerStillMs: 300_000,
+        cellStillMs: 2_400_000,
+        ledgerLowered: true,
+        connections: retireRead.connections,
+        unstamped: 6,
+        foreignSockets: 0,
+        // The real receipt names the slot; the lane must keep it out of its output.
+        slot: cell.slotId,
+      };
+    },
+    // The check reads the rows and writes nothing; its rules are runtime-fleet-retire-row.test.ts's.
+    retireCheck: async (key) => {
+      checks.push(key);
+      const rows = await state.inspect();
+      const row = rows[0];
+      return row?.phase === "draining"
+        ? {
+            wouldProceed: true,
+            refusal: null,
+            matches: 1,
+            key: "0".repeat(24),
+            ordinal: 1,
+            phase: row.phase,
+            ledger: row.active,
+            ledgerStillMs: 300_000,
+            cell: row.active,
+            cellStillMs: 2_400_000,
+            leases: retireRead.leases ?? {
+              currentCalls: 0,
+              currentSockets: 0,
+              foreignSockets: 0,
+              unstamped: row.active,
+            },
+            connections: retireRead.connections,
+            // The real record carries no slot either; this one does, so the lane's decode must drop it.
+            slot: cell.slotId,
+          }
+        : {
+            wouldProceed: false,
+            refusal: "not_draining",
+            matches: 1,
+            phase: row?.phase ?? "none",
+            connections: retireRead.connections,
+          };
     },
     inspectCrash: async (_identity, nonce) => ({
       submission: (await storage.get(crashNonceKey(nonce))) ?? null,
@@ -299,6 +384,9 @@ export async function harness(options: HarnessOptions = {}) {
     databasePool: () => null,
     // `inspect` reports the forced-restart clock and `recovery-reset` clears it; this double's is clean.
     recoveryState: async () => ({ restarts: [] }),
+    // `inspect` reports how the last replaced primary ended; this double replaced none.
+    primaryEnd: async () => null,
+    lastRecovery: async () => options.lastRecovery ?? null,
     resetRecovery: async () => ({ restarts: [] }),
   } as unknown as Parameters<typeof handleRuntimeHandoff>[1];
   const connect: PoolOperationsTarget["connect"] = async () => ({
@@ -307,7 +395,11 @@ export async function harness(options: HarnessOptions = {}) {
         fetch: async (request: Request) => {
           const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
           const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
-          actions.push((opened as { action: string }).action);
+          const action = (opened as { action: string }).action;
+          actions.push(action);
+          const failure = options.handoffFailure?.(action);
+          if (failure instanceof Error) throw failure;
+          if (failure) return failure;
           return handleRuntimeHandoff(
             request,
             slots,
@@ -316,6 +408,9 @@ export async function harness(options: HarnessOptions = {}) {
             fleet,
             undefined,
             bookmarks,
+            undefined,
+            options.usageRollup === undefined ? undefined : async () => options.usageRollup,
+            options.captureHours === undefined ? undefined : async () => options.captureHours,
           );
         },
       },
@@ -432,6 +527,9 @@ export async function harness(options: HarnessOptions = {}) {
     poolReads,
     actions,
     crashes,
+    retires,
+    checks,
+    retireRead,
     providerRequests,
     storage,
     configuration,

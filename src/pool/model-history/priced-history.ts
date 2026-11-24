@@ -6,18 +6,63 @@ import { digest } from "../backend-users.ts";
 import { officialPriceRows } from "./official-cost.ts";
 import { pricedRowsSql } from "./overview-sql.ts";
 import { withHistoryDatabase } from "./database.ts";
+import type { HistoryReadStep } from "./read-failure.ts";
+import type { HistoryDatabase } from "./schema.ts";
+import type { HistorySeriesDiagnostics } from "./series-diagnostics.ts";
 import { readRequests, type HistoryQuery } from "./store.ts";
 
 export type HistoryPrices = (
   targets: readonly { provider: string; model: string }[],
 ) => Promise<OverviewPriceTable>;
 
+/**
+ * The longest one history statement may run. The driver gives up at 6 s on its side; below that,
+ * Postgres cancels the statement itself instead of running on after the caller has left.
+ */
+export const historyStatementLimitMs = 5_000;
+
+type HistoryWatch = {
+  diagnostics?: HistorySeriesDiagnostics | undefined;
+  mark: (step: HistoryReadStep) => void;
+};
+
+/** One read-only session, labelled `step`, whose statements Postgres cancels past the limit. */
+function boundedRead<T>(
+  connectionString: string | undefined,
+  step: HistoryReadStep,
+  work: (db: HistoryDatabase) => Promise<T>,
+  watch: HistoryWatch | undefined,
+) {
+  watch?.mark(step);
+  return withHistoryDatabase(
+    connectionString,
+    async (db) => {
+      await db.query("BEGIN READ ONLY");
+      try {
+        await db.query("SELECT set_config('statement_timeout',$1,true)", [
+          `${historyStatementLimitMs}ms`,
+        ]);
+        const result = await work(db);
+        await db.query("COMMIT");
+        return result;
+      } catch (error) {
+        // The rollback is not the read's last word: the failed statement keeps the blame.
+        watch?.mark("rollback");
+        await db.query("ROLLBACK").catch(() => {});
+        throw error;
+      }
+    },
+    watch?.diagnostics ? { diagnostics: watch.diagnostics } : {},
+  );
+}
+
 export async function readPricedRequests(
   connectionString: string | undefined,
   query: HistoryQuery,
   currentPrices?: HistoryPrices,
+  watch?: HistoryWatch,
 ) {
-  const page = await withHistoryDatabase(connectionString, (db) => readRequests(db, query));
+  const page = await boundedRead(connectionString, "page", (db) => readRequests(db, query), watch);
   if (!page.records.length) return { ...page, records: [] };
   const source = await digest("home-local-v1");
   const targets = [
@@ -60,9 +105,12 @@ export async function readPricedRequests(
     }
   }
   // Price only the already-authorized page IDs. Each lookup uses the ledger's primary key.
-  const result = await withHistoryDatabase(connectionString, (db) =>
-    db.query(
-      `WITH selected AS (
+  const result = await boundedRead(
+    connectionString,
+    "prices",
+    (db) =>
+      db.query(
+        `WITH selected AS (
       SELECT r.* FROM unnest($1::character(64)[]) AS ids(id)
       CROSS JOIN LATERAL (SELECT * FROM basalt_model_requests
         WHERE id=ids.id AND pool=$4 AND ($5::text IS NULL OR person=$5) LIMIT 1) r
@@ -70,14 +118,15 @@ export async function readPricedRequests(
     SELECT id,round(api_cost,12)::text AS amount,token_count_estimate,
       public_price_version,public_price_as_of,public_price_basis,public_price_refresh_failed
     FROM priced`,
-      [
-        page.records.map((row) => row.id),
-        JSON.stringify(officialPriceRows(table.prices)),
-        source,
-        query.pool,
-        query.person ?? null,
-      ],
-    ),
+        [
+          page.records.map((row) => row.id),
+          JSON.stringify(officialPriceRows(table.prices)),
+          source,
+          query.pool,
+          query.person ?? null,
+        ],
+      ),
+    watch,
   );
   const estimates = new Map(result.rows.map((row) => [row.id, row]));
   return {

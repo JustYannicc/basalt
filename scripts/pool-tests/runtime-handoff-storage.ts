@@ -92,6 +92,9 @@ export class RuntimeSqlite implements SqliteTransaction {
   async setAlarm(at: number) {
     await this.put("fixture-alarm", at);
   }
+  async deleteAlarm() {
+    await this.delete("fixture-alarm");
+  }
   transaction<T>(work: (transaction: SqliteTransaction) => Promise<T>) {
     const pending = this.queue.then(async () => {
       this.database.exec("BEGIN IMMEDIATE");

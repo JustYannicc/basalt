@@ -1,0 +1,136 @@
+diff --git a/apps/hosted/web/src/implementation/pages/computer-rows.tsx b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
+index 0cb1dbf..50ca18a 100644
+--- a/apps/hosted/web/src/implementation/pages/computer-rows.tsx
++++ b/apps/hosted/web/src/implementation/pages/computer-rows.tsx
+@@ -48,6 +48,7 @@ function ComputerRow({
+   const [busy, setBusy] = useState(false);
+   const [problem, setProblem] = useState<string>();
+   const id = encodeURIComponent(computer.id);
++  const toolsOnly = computer.models === false;
+   const run = async (work: (intent: string) => Promise<unknown>, closes = true) => {
+     setBusy(true);
+     setProblem(undefined);
+@@ -65,11 +66,23 @@ function ComputerRow({
+       <div className="min-w-0 flex-1">
+         <p className="truncate text-[13px] font-medium">{computer.name}</p>
+         <p className="mt-0.5 truncate text-xs text-muted-foreground">
+-          {poolLabel(pools.find(({ id: pool }) => pool === computer.poolId))}
+-          {computer.tools === false ? " · Models" : " · Tools and models"}
++          {/* A tools-only device uses no pool: its grant alone authorizes its tools, while its
++              person belongs to its organization. It is set up once approved. */}
++          {toolsOnly ? (
++            "Tools only"
++          ) : (
++            <>
++              {poolLabel(pools.find(({ id: pool }) => pool === computer.poolId))}
++              {computer.tools === false ? " · Models" : " · Tools and models"}
++            </>
++          )}
+           {computer.state === "removed" || computer.removedAt ? (
+-            " · No access to this pool"
+-          ) : isConnected(computer) ? (
++            toolsOnly ? (
++              " · No access to its organization"
++            ) : (
++              " · No access to this pool"
++            )
++          ) : toolsOnly || isConnected(computer) ? (
+             <>
+               {" · Set up "}
+               <LocalTime value={computer.createdAt} options={shortMoment} />
+@@ -94,7 +107,7 @@ function ComputerRow({
+         >
+           Rename
+         </DropdownMenuItem>
+-        {pools.length > 1 && (
++        {pools.length > 1 && !toolsOnly && (
+           <DropdownMenuSub>
+             <DropdownMenuSubTrigger>Pool</DropdownMenuSubTrigger>
+             <DropdownMenuSubContent>
+diff --git a/apps/hosted/web/src/implementation/pages/pool-setup.tsx b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+index 35114ae..74d055d 100644
+--- a/apps/hosted/web/src/implementation/pages/pool-setup.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-setup.tsx
+@@ -26,6 +26,8 @@ export interface Computer {
+   readonly revokedAt: string | null;
+   readonly removedAt?: string | null;
+   readonly tools?: boolean;
++  /** False for a device approved for tools only, which uses no pool. */
++  readonly models?: boolean;
+   /** Its setup link lapsed unclaimed, so it can never be set up. */
+   readonly lapsed?: true;
+ }
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+index d870f59..6ddf03b 100644
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -29,12 +29,14 @@ interface FakeComputer {
+   firstToolCallAt: string | null;
+   revokedAt: string | null;
+   tools: boolean;
++  models?: boolean;
+   lapsed?: true;
+ }
+ 
+ /** The setup service's routes, enough for the page: one person, two pools and their computers. */
+-function setupService() {
++function setupService(extra: readonly FakeComputer[] = []) {
+   const computers: FakeComputer[] = [
++    ...extra,
+     {
+       id: "existing",
+       name: "Work laptop",
+@@ -177,7 +179,20 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+       Effect.gen(function* () {
+         const actors = yield* Actors,
+           browser = yield* Browser;
+-        const service = setupService();
++        const service = setupService([
++          {
++            id: "tools-only",
++            name: "Phone",
++            poolId: "own",
++            createdAt: "2026-10-20T10:00:00.000Z",
++            state: "active",
++            firstModelRequestAt: null,
++            firstToolCallAt: null,
++            revokedAt: null,
++            tools: true,
++            models: false,
++          },
++        ]);
+         yield* browser.login(actors.owner);
+         yield* browser.use("Show the dashboard in dark mode", (page) =>
+           page.emulateMedia({ colorScheme: "dark" }),
+@@ -274,6 +289,31 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Computers join the connected agents", (page) =>
+           rows(page).filter({ hasText: "Work laptop" }).filter({ hasText: "Team pool" }).waitFor(),
+         );
++        // A tools-only device uses no pool, so its row names none and offers no pool to switch to.
++        const phone = (page: Page) => rows(page).filter({ hasText: "Phone" });
++        yield* browser.use("A tools-only device says what it is and that it is set up", (page) =>
++          phone(page).filter({ hasText: "Tools only · Set up" }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Its row names no pool", (page) =>
++            phone(page).filter({ hasText: /pool/i }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.use("Open the tools-only device's menu", (page) =>
++          page.getByRole("button", { name: "Manage Phone" }).click(),
++        );
++        yield* browser.use("Its menu opens", (page) =>
++          page.getByRole("menuitem", { name: "Rename" }).waitFor(),
++        );
++        expect(
++          yield* browser.use("Its menu offers no pool", (page) =>
++            page.getByRole("menuitem", { name: "Pool" }).count(),
++          ),
++        ).toBe(0);
++        yield* browser.use("Close its menu", (page) => page.keyboard.press("Escape"));
++        yield* browser.use("Its menu is gone", (page) =>
++          page.getByRole("menu").waitFor({ state: "detached" }),
++        );
+         yield* browser.use("Open a computer's menu", (page) =>
+           page.getByRole("button", { name: "Manage Work laptop" }).click(),
+         );

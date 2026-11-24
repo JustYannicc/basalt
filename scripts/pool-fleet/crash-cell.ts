@@ -87,10 +87,14 @@ export const crashReadyCell = (input: CrashInput) =>
     if (prior !== null) return { status: "already-submitted" as const, nonce };
     const fleet = yield* call(() => inspectFleet(access));
     const targetActive = fleet.permission?.configuration.targetActive ?? 0;
+    // A cell takes calls while it is ready and not fenced by a read that wasn't good.
     const cells = (rows: typeof fleet.resources) =>
       rows.filter(
         (row) =>
-          row.phase === "ready" && row.identity && row.target.instanceId !== primary.instanceId,
+          row.phase === "ready" &&
+          row.suspect === undefined &&
+          row.identity &&
+          row.target.instanceId !== primary.instanceId,
       );
     const ready = cells(fleet.resources).filter((row) => row.active < targetActive);
     if (!fleet.permission?.enabled || !ready.length)

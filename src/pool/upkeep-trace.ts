@@ -1,3 +1,4 @@
+import type { FleetFailureRead } from "./runtime-fleet/failure-record.ts";
 import {
   type RuntimeRouteDiagnostic,
   runtimeFailureDiagnostic,
@@ -40,8 +41,13 @@ type Phase =
   | "drain_queue"
   | "drain_health"
   | "drain_activity"
-  | "legacy_drain_proof";
+  | "legacy_drain_proof"
+  | "health_miss";
 interface Fields {
+  // A failed health read's closed cause, its measured round trip and, against a lease, what was left.
+  cause?: FleetFailureRead["cause"];
+  roundTripMs?: number;
+  leaseLeftMs?: number;
   ordinal?: number;
   active?: number;
   known?: boolean;

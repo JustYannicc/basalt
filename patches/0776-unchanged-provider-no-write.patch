@@ -1,0 +1,394 @@
+diff --git a/e2e/support/provider-adoption-fixture.ts b/e2e/support/provider-adoption-fixture.ts
+--- a/e2e/support/provider-adoption-fixture.ts
++++ b/e2e/support/provider-adoption-fixture.ts
+@@ -1,5 +1,5 @@
+ import { expect } from "@effect/vitest";
+-import { Effect, Schema } from "effect";
++import { Context, Effect, Schema } from "effect";
+ import { Actors } from "./actors.ts";
+ import { Api, body } from "./api.ts";
+ import { Resource } from "./contracts.ts";
+@@ -21,12 +21,21 @@
+ const Viewer = Schema.Struct({ userId: Schema.String });
+ const poolReference = "https://github.com/JustYannicc/basalt/tree/main/apps/pool";
+ 
++/**
++ * The pool's legacy provider name. Its row is shared by every organization that deploys the same
++ * definition, so a proof that pauses or writes that row names its own provider instead.
++ */
++export const LegacyProvider = Context.Reference<string>("e2e/provider-adoption/LegacyProvider", {
++  defaultValue: () => "Subscription",
++});
++
+ /** Public sign-in creates encrypted references; only predecessor metadata is seeded in disposable SQL. */
+ export const providerAdoptionFixture = Effect.gen(function* () {
+   const api = yield* Api,
+     actors = yield* Actors,
+     database = yield* cloudLocks;
+   const catalog = yield* providerAppsCatalog;
++  const legacyProvider = yield* LegacyProvider;
+   const prefix = `/api/organizations/${actors.organization.id}`;
+   const actor = (yield* body(Viewer, yield* api.request(actors.owner, "GET", "/api/viewer")))
+     .userId;
+@@ -116,7 +125,7 @@
+       path: "index.ts",
+       content: `import { defineApp, defineProvider, interactive, object, query, router } from "apps";
+ import { providers } from "./providers.ts";
+-const legacy = defineProvider({ name: "Subscription", auth: {
++const legacy = defineProvider({ name: ${JSON.stringify(legacyProvider)}, auth: {
+   codex: interactive({ label: "ChatGPT subscription" }),
+   claude: interactive({ label: "Claude subscription" })
+ } });
+@@ -242,5 +251,5 @@
+     (select jsonb_agg(to_jsonb(a) order by account) from executor_account_acquisitions a where account = any($1::text[])) as acquisitions`,
+     params: [`{${accounts.join(",")}}`],
+   });
+-  return { api, actors, database, prefix, pool, second, request, snapshot };
++  return { api, actors, database, prefix, pool, second, poolFiles, request, snapshot };
+ });
+diff --git a/e2e/support/provider-writes.ts b/e2e/support/provider-writes.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/provider-writes.ts
+@@ -0,0 +1,175 @@
++/**
++ * Provider rows are shared by every organization. A deploy must write one only when its definition
++ * changes, and concurrent deploys must still merge their definitions one at a time.
++ */
++import { expect } from "@effect/vitest";
++import { Clock, Effect, Fiber, Redacted, Schema } from "effect";
++import { Api, body } from "./api.ts";
++import { appsManifest } from "./apps-release.ts";
++import type { cloudLocks } from "./cloud-locks.ts";
++import { Target } from "./platform.ts";
++import { removeAppWhenStopped } from "./webhook-sources.ts";
++import { FixtureActors, fixtureRequest } from "../sdk/fixtures.ts";
++
++type Database = Effect.Success<typeof cloudLocks>;
++type Files = readonly { readonly path: string; readonly content: string }[];
++const App = Schema.Struct({
++  id: Schema.String,
++  requirements: Schema.Struct({
++    accounts: Schema.Record(Schema.String, Schema.Struct({ provider: Schema.String })),
++  }),
++});
++const Version = Schema.Array(Schema.Struct({ version: Schema.String }));
++const Pid = Schema.Array(Schema.Struct({ pid: Schema.Number }));
++const Waiting = Schema.Array(Schema.Struct({ waiting: Schema.Number }));
++const Rows = Schema.Array(
++  Schema.Struct({ id: Schema.String, methods: Schema.Array(Schema.String) }),
++);
++
++/** The row's creating transaction: it changes exactly when the row is written. */
++export const providerVersion = (database: Database, id: string) =>
++  database
++    .run({
++      sql: "select xmin::text as version from executor_providers where id = $1",
++      params: [id],
++    })
++    .pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Version)),
++      Effect.map((rows) => {
++        expect(rows).toHaveLength(1);
++        return rows[0]!.version;
++      }),
++    );
++
++/** A second organization with its own owner, for deploys that share only provider rows. */
++export const otherOrganization = Effect.gen(function* () {
++  const api = yield* Api,
++    target = yield* Target;
++  if (target.fixtures === undefined) return yield* Effect.die("Managed Cloud required");
++  const control = target.fixtures,
++    id = crypto.randomUUID().replaceAll("-", "");
++  yield* Effect.addFinalizer(() => fixtureRequest(control, "/remove", { id }).pipe(Effect.orDie));
++  const outside = yield* fixtureRequest(control, "/actors", {
++    id,
++    label: "Organization deploying the same provider",
++  }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(FixtureActors)));
++  const owner = yield* api.session(Redacted.make(outside.actors.owner.cookies));
++  const prefix = `/api/organizations/${outside.organization.id}`;
++  return {
++    deploy: (name: string, files: Files) =>
++      Effect.gen(function* () {
++        const response = yield* api.request(owner, "POST", `${prefix}/apps/deploy`, {
++          name,
++          files,
++        });
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        const app = yield* body(App, response);
++        yield* Effect.addFinalizer(() =>
++          removeAppWhenStopped(owner, `${prefix}/apps/${app.id}`).pipe(Effect.asVoid, Effect.orDie),
++        );
++        return app;
++      }),
++    redeploy: (app: string, files: Files) =>
++      Effect.gen(function* () {
++        const response = yield* api.request(owner, "POST", `${prefix}/apps/${app}/deploy`, {
++          files,
++        });
++        expect(response.status, JSON.stringify(response.body)).toBe(200);
++        return (yield* body(Schema.Struct({ app: App }), response)).app;
++      }),
++  };
++});
++
++const source = (name: string, methods: readonly string[]): Files => [
++  {
++    path: "index.ts",
++    content: `import { defineApp, defineProvider, object, query, router, secrets, string } from "apps";
++const service = defineProvider({ name: ${JSON.stringify(name)}, family: { id: "fixture", name: "Fixture" }, auth: {
++  ${methods.map((method) => `${method}: secrets({ label: "${method} token", fields: object({ token: string() }) })`).join(",\n  ")}
++} });
++export default defineApp({ user: { accounts: { service } } }, async () => ({
++  tools: router({ ping: query({ input: object({}), output: string() }, async () => "ok") })
++}));`,
++  },
++  appsManifest,
++];
++
++/**
++ * Two first deploys of a new provider, started together, agree on one row; Postgres arbitrates
++ * their inserts, and nothing here forces the overlap. Two deploys adding different methods
++ * to that row, started while it is held, wait for it and then merge one after the other: the
++ * second sees the first's method, and the row is written because its definition changed.
++ */
++export const proveSerializedProviderWrites = (
++  database: Database,
++  other: Effect.Success<typeof otherOrganization>,
++) =>
++  Effect.gen(function* () {
++    const name = `Provider write proof ${crypto.randomUUID().slice(0, 8)}`;
++    const first = yield* Effect.all(
++      [
++        other.deploy(`${name} a`, source(name, ["rest"])),
++        other.deploy(`${name} b`, source(name, ["rest"])),
++      ],
++      { concurrency: 2 },
++    );
++    const ref = first[0].requirements.accounts.service!.provider;
++    expect(first[1].requirements.accounts.service?.provider).toBe(ref);
++    const rows = () =>
++      database
++        .run({
++          sql: "select id, array(select jsonb_object_keys(definition::jsonb -> 'auth') order by 1) as methods from executor_providers where definition::jsonb ->> 'name' = $1 order by id",
++          params: [name],
++        })
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rows)));
++    const created = yield* rows();
++    expect(created.map((row) => row.id)).toContain(ref);
++    // Content refs only: a fresh random ref would mean one deploy saw a conflicting definition.
++    expect(created.filter((row) => !/^prv_[0-9a-f]{64}$/.test(row.id))).toEqual([]);
++    const written = yield* providerVersion(database, ref);
++    const held = yield* database.hold({
++      sql: "select id from executor_providers where definition::jsonb ->> 'name' = $1 order by id for update",
++      params: [name],
++    });
++    expect(held.length).toBeGreaterThan(0);
++    const [holder] = yield* database
++      .hold({ sql: "select pg_backend_pid() as pid" })
++      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pid)));
++    // Each app keeps its ref for a strict addition, so both redeploys merge into the held row.
++    const merging = yield* Effect.all(
++      [
++        other.redeploy(first[0].id, source(name, ["rest", "aMethod"])),
++        other.redeploy(first[1].id, source(name, ["rest", "bMethod"])),
++      ],
++      { concurrency: 2 },
++    ).pipe(Effect.forkScoped);
++    const deadline = (yield* Clock.currentTimeMillis) + 30_000;
++    for (;;) {
++      // The second deploy queues behind the first, so it is blocked by the holder only through it.
++      const [blocked] = yield* database
++        .run({
++          sql: `with w as (select pid, pg_blocking_pids(pid) as by from pg_stat_activity where wait_event_type = 'Lock')
++          select count(*)::int as waiting from w where $1::int = any(w.by)
++            or exists (select 1 from w x where x.pid = any(w.by) and $1::int = any(x.by))`,
++          params: [holder!.pid],
++        })
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Waiting)));
++      if (blocked!.waiting >= 2) break;
++      // A deploy that ends here never waited for the held row: report its own result instead.
++      if (merging.pollUnsafe() !== undefined)
++        return yield* Fiber.join(merging).pipe(
++          Effect.andThen(Effect.die("A deploy finished without waiting for the held provider row")),
++        );
++      expect(
++        yield* Clock.currentTimeMillis,
++        "both deploys wait for the held provider",
++      ).toBeLessThan(deadline);
++      yield* Effect.sleep("100 millis");
++    }
++    yield* database.release;
++    for (const deployed of yield* Fiber.join(merging))
++      expect(deployed.requirements.accounts.service?.provider).toBe(ref);
++    const after = (yield* rows()).find((row) => row.id === ref)!;
++    expect(after.methods).toEqual(["aMethod", "bMethod", "rest"]);
++    expect(yield* providerVersion(database, ref)).not.toBe(written);
++  });
+diff --git a/e2e/support/released-retirement-proof.ts b/e2e/support/released-retirement-proof.ts
+--- a/e2e/support/released-retirement-proof.ts
++++ b/e2e/support/released-retirement-proof.ts
+@@ -1,9 +1,15 @@
+ import { expect } from "@effect/vitest";
+ import { Effect, Fiber, Schema } from "effect";
+ import { body } from "./api.ts";
+-import { providerAdoptionFixture } from "./provider-adoption-fixture.ts";
++import { LegacyProvider, providerAdoptionFixture } from "./provider-adoption-fixture.ts";
+ import { productionOpsClient, Response } from "./production-ops-client.ts";
+ import { Applied, DryRun } from "./production-ops-migration-proof.ts";
++import { boundary } from "./provider-adoption-steps.ts";
++import {
++  otherOrganization,
++  proveSerializedProviderWrites,
++  providerVersion,
++} from "./provider-writes.ts";
+ 
+ const Row = Schema.Record(Schema.String, Schema.Json);
+ const Snapshot = Schema.Array(
+@@ -222,7 +228,10 @@
+ });
+ 
+ export const releasedRetirementRaceProof = Effect.gen(function* () {
+-  const p = yield* fixture;
++  // Its own provider row: this proof deploys and writes that row, which other proofs may lock.
++  const p = yield* fixture.pipe(
++    Effect.provideService(LegacyProvider, `Subscription ${crypto.randomUUID().slice(0, 8)}`),
++  );
+   const before = yield* p.snapshot,
+     dry = yield* p.dryRun;
+   const account = before.accounts.find((row) => row.id === p.selection.account)!;
+@@ -247,13 +256,57 @@
+     params: [p.selection.account, String(account.label)],
+   });
+   yield* p.backend("present");
++  const other = yield* otherOrganization;
++  // Built and activated once before the pause, so the pause only spans an activation of a cached
++  // build: the paused apply's transaction may sit idle for ten seconds at most.
++  const elsewhere = yield* other.deploy("Same provider beside a repair", p.poolFiles);
++  expect(elsewhere.requirements.accounts.subscriptions?.provider).toBe(p.selection.provider);
+   yield* p.database.hold({
+     sql: "select id from executor_account_connections where id = $1 for update",
+     params: [p.selection.connection],
+   });
+-  const busy = yield* p.client.request(p.apply(dry));
+-  expect(busy.status).toBe(409);
+-  expect(busy.body).toMatchObject({ error: "operation_busy", retryable: true });
++  // Pause the apply after its serializable snapshot and before its row locks, which include the
++  // provider row, then let something touch that row in between.
++  const besideApply = <A, E, R>(between: Effect.Effect<A, E, R>) =>
++    Effect.gen(function* () {
++      const step = yield* boundary("organization", p.selection.organization);
++      const applying = yield* p.client.request(p.apply(dry)).pipe(Effect.forkScoped);
++      yield* Effect.raceFirst(
++        step.entered,
++        Fiber.join(applying).pipe(
++          Effect.flatMap((response) =>
++            Effect.die(`Apply finished before its locks: ${JSON.stringify(response.body)}`),
++          ),
++        ),
++      );
++      yield* between;
++      yield* step.release;
++      return yield* Fiber.join(applying);
++    });
++  // Another organization deploying an app that declares the same provider changes nothing in
++  // that row, so it writes nothing, and the apply still meets the held connection row.
++  const unchanged = yield* providerVersion(p.database, p.selection.provider);
++  const busy = yield* besideApply(other.redeploy(elsewhere.id, p.poolFiles));
++  expect(busy.status, JSON.stringify(busy.body)).toBe(409);
++  expect(busy.body, JSON.stringify(busy.body)).toMatchObject({
++    error: "operation_busy",
++    retryable: true,
++  });
++  expect(yield* providerVersion(p.database, p.selection.provider)).toBe(unchanged);
++  // A write to that row in the same place, as a deploy that really changes the definition makes,
++  // still refuses the apply as a serialization failure rather than letting it pass.
++  const changed = yield* besideApply(
++    p.database.run({
++      sql: "update executor_providers set definition = definition where id = $1",
++      params: [p.selection.provider],
++    }),
++  );
++  expect(changed.status, JSON.stringify(changed.body)).toBe(409);
++  expect(changed.body, JSON.stringify(changed.body)).toMatchObject({
++    error: "operation_refused",
++    failure: { category: "sql", sqlStateClass: "40" },
++  });
+   yield* p.database.release;
+   expect(yield* p.snapshot).toEqual(before);
++  yield* proveSerializedProviderWrites(p.database, other);
+ });
+diff --git a/packages/sdk/src/implementation/provider-continuity.ts b/packages/sdk/src/implementation/provider-continuity.ts
+--- a/packages/sdk/src/implementation/provider-continuity.ts
++++ b/packages/sdk/src/implementation/provider-continuity.ts
+@@ -2,7 +2,7 @@
+ import { type Crypto, Effect, Schema } from "effect";
+ import type { AppRequirements } from "../contracts/apps.ts";
+ import { ProviderDefinition } from "../contracts/provider.ts";
+-import { JsonObject, ProviderId, StorageError } from "../contracts/shared.ts";
++import { type Json, JsonObject, ProviderId, StorageError } from "../contracts/shared.ts";
+ import { query, type Query } from "./database.ts";
+ import { canonical, identifyProvider, methodCredential } from "./provider.ts";
+ import { expandsOAuthScopes, mergeOAuthScopes } from "./provider-oauth-scopes.ts";
+@@ -166,6 +166,8 @@
+       candidates.set(provider.identity, provider.shared);
+     }
+     const locked = new Map<ProviderId, ProviderDefinition>();
++    // The rows as stored, so a deploy that changes no definition writes no provider row.
++    const stored = new Map<ProviderId, Json>();
+     for (const [id, shared] of [...candidates].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+       const definition = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
+         Effect.mapError(() => new StorageError()),
+@@ -180,6 +182,7 @@
+       yield* db.lockProvider(id);
+       const row = yield* query(() => db.findFirst("providers", { where: (b) => b("id", "=", id) }));
+       if (row === null) return yield* new StorageError();
++      stored.set(id, row.definition);
+       locked.set(
+         id,
+         yield* Schema.decodeUnknownEffect(ProviderDefinition)(row.definition).pipe(
+@@ -222,13 +225,19 @@
+         const definition = yield* Schema.decodeUnknownEffect(JsonObject)(merged).pipe(
+           Effect.mapError(() => new StorageError()),
+         );
+-        yield* query(() =>
+-          db.upsert("providers", {
+-            where: (b) => b("id", "=", id),
+-            create: { id, definition },
+-            update: { definition },
+-          }),
+-        );
++        // Rewriting an identical definition still makes a new version of a row every owner shares,
++        // and fails serializable transactions elsewhere, such as production repairs, that lock it.
++        const current = stored.get(id);
++        if (current === undefined || canonical(current) !== canonical(definition)) {
++          yield* query(() =>
++            db.upsert("providers", {
++              where: (b) => b("id", "=", id),
++              create: { id, definition },
++              update: { definition },
++            }),
++          );
++          stored.set(id, definition);
++        }
+         locked.set(id, merged);
+         return { ...entry, provider: { ...provider, id } };
+       }),
+diff --git a/packages/sdk/src/implementation/storage-runtime.ts b/packages/sdk/src/implementation/storage-runtime.ts
+--- a/packages/sdk/src/implementation/storage-runtime.ts
++++ b/packages/sdk/src/implementation/storage-runtime.ts
+@@ -23,9 +23,11 @@
+     const db = bindOrm(client.orm("4.0.30"), sql, reactivity);
+     return {
+       orm: (_version: "4.0.24" | "4.0.25" | "4.0.27" | "4.0.28" | "4.0.30") => db,
+-      // The ORM forbids primary-key updates. Lock without changing source data or provenance.
++      // The ORM has no row locks. Provider rows are shared by every owner, so this takes the
++      // same row lock as a key-preserving update without writing a new row version: a serializable
++      // transaction elsewhere that took its snapshot first, then locks the row, would fail on it.
+       lockProvider: (id: string) =>
+-        sql`update executor_providers set id = id where id = ${id}`.pipe(
++        sql`select id from executor_providers where id = ${id} for no key update`.pipe(
+           Effect.asVoid,
+           Effect.mapError(() => new StorageError()),
+         ),

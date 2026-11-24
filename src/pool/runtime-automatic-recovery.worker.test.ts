@@ -277,6 +277,8 @@ test(
   "periodic supervision replaces a stopped sibling without a discovering model request",
   { timeout: 15_000 },
   async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
     await f.bootstrap();
@@ -294,9 +296,24 @@ test(
     await f.settle();
     const [previous] = await f.resourcesWhen((rows) => rows.some((row) => row.phase === "ready"));
     const dead = f.instances.get(previous!.target.instanceId)!;
-    dead.fixture.crash();
+    // Settle the membership pass first, so the fleet's own health reads decide.
     await f.upkeep();
     await f.settle();
+    dead.fixture.crash();
+    // The first failed read only fences the stopped cell; one 6 s later quarantines it.
+    await f.upkeep();
+    await f.settle();
+    now += 6_000;
+    await f.upkeep();
+    await f.settle();
+    const ended = (await f.send("fleet-inspect")) as {
+      recentEnds?: { slotId: string; failure?: { rule?: string } }[];
+      resources: { target: { slotId: string }; failure?: { rule?: string } }[];
+    };
+    const record =
+      ended.resources.find((row) => row.target.slotId === previous!.target.slotId)?.failure ??
+      ended.recentEnds?.find((entry) => entry.slotId === previous!.target.slotId)?.failure;
+    assert.equal(record?.rule, "failed_twice", JSON.stringify(record));
     const next = await f.resourcesWhen(
       (rows) =>
         rows.length === 1 &&
@@ -310,5 +327,94 @@ test(
       0,
       "proved stopped compute does not require destruction",
     );
+  },
+);
+
+test(
+  "the controller inspect shows the root's last recovery: detected, ready, its rounds and the failed round's refusal",
+  { timeout: 20_000 },
+  async (context) => {
+    for (const level of ["info", "warn", "error"] as const)
+      context.mock.method(console, level, () => {});
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    await f.bootstrap();
+    const previous = f.old.identity();
+    f.old.ctx.container.signal(9);
+    await f.settle();
+    const killedAt = now;
+    // The first restart's container ends before it ever answers ready.
+    let failed = false;
+    f.old.hooks.health = async () => {
+      if (failed) return;
+      failed = true;
+      f.old.ctx.container.signal(9);
+      return new Response(null, { status: 503 });
+    };
+    for (let pass = 0; pass < 4; pass++) {
+      await f.upkeep();
+      await f.settle();
+      now += 5_000;
+    }
+    const { lastRecovery } = (await f.send("inspect")) as {
+      lastRecovery: {
+        boot: string;
+        detectedAt: number;
+        readyAt: number | null;
+        rounds: number;
+        refusals: { round: number; reason: string; class: string }[];
+      } | null;
+    };
+    assert.ok(failed, "the first restart attempt ended");
+    assert.equal(lastRecovery?.boot, previous.bootId);
+    assert.equal(lastRecovery?.detectedAt, killedAt);
+    // Ready when the second round's restart served, one pass after the first round failed.
+    assert.equal(lastRecovery?.readyAt, killedAt + 5_000);
+    assert.equal(lastRecovery?.rounds, 2);
+    assert.deepEqual(
+      lastRecovery?.refusals.map((refusal) => refusal.round),
+      [1],
+    );
+    // The next healthy passes leave it as it is.
+    await f.upkeep();
+    await f.settle();
+    assert.deepEqual(
+      ((await f.send("inspect")) as { lastRecovery: unknown }).lastRecovery,
+      lastRecovery,
+    );
+  },
+);
+
+test(
+  "a root that refuses once and then serves again with no restart ends its recovery on the healthy pass",
+  { timeout: 20_000 },
+  async (context) => {
+    for (const level of ["info", "warn", "error"] as const)
+      context.mock.method(console, level, () => {});
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    await f.bootstrap();
+    const starts = f.old.calls.start;
+    let refusals = 0;
+    f.old.hooks.health = async () => {
+      if (refusals++ === 0) return new Response(null, { status: 503 });
+    };
+    const refusedAt = now;
+    await f.upkeep();
+    await f.settle();
+    now += 5_000;
+    await f.upkeep();
+    await f.settle();
+    const { lastRecovery } = (await f.send("inspect")) as {
+      lastRecovery: { detectedAt: number; readyAt: number | null; rounds: number } | null;
+    };
+    assert.equal(f.old.calls.start, starts, "no restart");
+    assert.equal(lastRecovery?.detectedAt, refusedAt);
+    assert.equal(lastRecovery?.readyAt, refusedAt + 5_000);
+    assert.equal(lastRecovery?.rounds, 1);
   },
 );
