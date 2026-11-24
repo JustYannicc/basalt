@@ -283,7 +283,7 @@ export class SharingFixture {
         "POSTGRES_PASSWORD=fixture-only",
         "--env",
         "POSTGRES_DB=basalt_pool",
-        "postgres:16",
+        "mirror.gcr.io/library/postgres:16@sha256:820b1558a744efeda508506fd85bff573cec8b6941ff4790ef4884a526dd6e86",
       ],
       this.operationTimeoutMs,
     );

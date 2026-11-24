@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloud-postgres-image-mirror",
+  "file": "0772-cloud-postgres-image-mirror.patch",
+  "content_sha256": "80dcaeca20e1de85db34b1366cbf47bfd36cf4325930ee4851cae52303395006",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
