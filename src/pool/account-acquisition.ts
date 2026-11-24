@@ -34,16 +34,19 @@ interface Attempt {
   /** A routed sign-in: Home's exchange and the saved credential go through this route. */
   route?: { routeId: string; owner: string };
   session?: string;
+  /** The image the start proved carries the session proxy. */
+  image?: string;
 }
 /** The route side of a sign-in; absent where routing isn't wired. */
 export interface SignInRoutes {
   beginSignIn(session: string, route: { routeId: string; owner: string }): Promise<void>;
   settleSignIn(session: string, references: readonly string[]): Promise<void>;
   /**
-   * Whether every runtime that can take a sign-in call runs one image. Any of them may receive
-   * the callback, so one Home's word for the session proxy speaks for all only then.
+   * The one image every runtime that can take a sign-in call runs, or null when they disagree.
+   * Any of them may receive the callback, so one Home's word for the session proxy speaks for all
+   * only while that image stays the one it was proven on.
    */
-  homogeneous(): Promise<boolean>;
+  servingImage(): Promise<string | null>;
 }
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -133,11 +136,16 @@ export class HomeAccountAcquisitions {
           return Response.json({ error: "route_unavailable" }, { status: 409 });
         // A Home without the session proxy (carry 0758) would ignore proxy_url and exchange the
         // code directly, so a routed start needs Home's own word that it routes the session.
-        if (
-          route &&
-          (!(await this.routes!.homogeneous()) || !(await this.routesSessions(request.signal)))
-        )
-          return Response.json({ error: "route_unsupported" }, { status: 409 });
+        // The image proven here is pinned: the sign-in proceeds only while it stays the one image.
+        let image: string | null = null;
+        if (route) {
+          image = await this.routes!.servingImage();
+          const proven =
+            image !== null &&
+            (await this.routesSessions(request.signal)) &&
+            (await this.routes!.servingImage()) === image;
+          if (!proven) return Response.json({ error: "route_unsupported" }, { status: 409 });
+        }
         const prior = Object.values(attempts).find(
           (entry) => entry.owner === owner && entry.operation === value.operation,
         );
@@ -164,7 +172,7 @@ export class HomeAccountAcquisitions {
           marker: await acquisitionStep("attribution", () => this.attribution.begin()),
           before,
           ...(text(value.reconnect) ? { reconnect: String(value.reconnect) } : {}),
-          ...(route ? { route, session } : {}),
+          ...(route && image ? { route, session, image } : {}),
         };
         attempts[session] = attempt;
         // An uncertain start is retained and refused; repeating it could create another credential.
@@ -273,7 +281,7 @@ export class HomeAccountAcquisitions {
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
         // The callback runs the code exchange on whichever runtime takes it.
-        if (attempt.route && !attempt.result && !(await this.routes!.homogeneous())) {
+        if (attempt.route && !attempt.result && !(await this.onProvenImage(attempt))) {
           attempt.result = { state: "failed", message: "route_unavailable" };
           await this.finish(attempt, attempts, request.signal);
           return this.reply(attempt.result);
@@ -357,6 +365,11 @@ export class HomeAccountAcquisitions {
     throw new BackendFailure(response.status);
   }
 
+  private async onProvenImage(attempt: Attempt) {
+    const image = await this.routes!.servingImage();
+    return image !== null && image === attempt.image;
+  }
+
   private async routesSessions(signal: AbortSignal) {
     const capabilities = await acquisitionStep("oauth_start", () =>
       this.home.data("/capabilities", { signal }),
@@ -380,7 +393,7 @@ export class HomeAccountAcquisitions {
         state: "failed",
         message: "Sign-in expired before its account could be confirmed. Start again.",
       };
-    } else if (attempt.route && !(await this.routes!.homogeneous())) {
+    } else if (attempt.route && !(await this.onProvenImage(attempt))) {
       // A device flow's poll can complete the exchange too; nothing more is sent.
       attempt.result = { state: "failed", message: "route_unavailable" };
     } else if (state) {

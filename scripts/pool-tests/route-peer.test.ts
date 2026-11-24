@@ -601,7 +601,8 @@ test(
           {
             beginSignIn: (session, entry) => routes.beginSignIn(session, entry),
             settleSignIn: (session, references) => routes.settleSignIn(session, references),
-            homogeneous: async () => true,
+            // One Home and no slot selection: one image, the one the start proves.
+            servingImage: async () => "rig-image",
           },
         );
         const acquire = async (action: string, input: Record<string, unknown> = {}) => {

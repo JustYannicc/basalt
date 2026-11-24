@@ -30,22 +30,24 @@ export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
 }
 
 /**
- * Whether every runtime a sign-in's management calls can reach runs one image input. With a slot
- * selection, each call goes to the selection's active runtime (runtime-slots/integration.ts
- * `selected()`), so the reachable set across a handoff is its active, candidate and draining
- * records; the root container and unselected colours are never reached. Without one, only the root
- * container takes them, which is one image by itself. An unreadable selection is never agreement.
+ * The one image every runtime a sign-in's management calls can reach runs, or null when they don't
+ * agree. With a slot selection, each call goes to the selection's active runtime
+ * (runtime-slots/integration.ts `selected()`), so the reachable set across a handoff is its active,
+ * candidate and draining records; the root container and unselected colours are never reached.
+ * Without one, only the root container takes them. An unreadable selection is never agreement.
  */
-export function servesOneImage(selection: unknown) {
-  if (selection === undefined) return true;
+export function servingImage(rootImage: string, selection: unknown): string | null {
+  if (selection === undefined) return rootImage || null;
   let decoded: SlotSelection;
   try {
     decoded = Schema.decodeUnknownSync(SlotSelection)(selection);
   } catch {
-    return false;
+    return null;
   }
   const image = decoded.active.target.imageInput;
   return [decoded.candidate, decoded.draining].every(
     (record) => record === undefined || record.target.imageInput === image,
-  );
+  )
+    ? image
+    : null;
 }
