@@ -21,10 +21,12 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   createdIdentities,
+  REGISTRY_HOST,
   stageWriteVerdict,
   type StageScope,
   type StageVerdict,
 } from "./stage-writes.ts";
+import { isRehearsalStage, stageOwnsName } from "./rehearsal-stage.ts";
 import { bindingShapes, differingBindings } from "./fixed-bindings.ts";
 
 export class WireRefused extends Data.TaggedError("WireRefused")<{
@@ -70,6 +72,12 @@ export interface WireGuardConfig {
    * is stale, so an application read that answers with this name adds its id to the held set.
    */
   readonly rootApplicationNames?: ReadonlyArray<string>;
+  /**
+   * The run must keep the root as recorded: every container application write is refused unless the
+   * root is known by both its id and its name. By id alone, Alchemy finds the root by name when the
+   * recorded id is stale, and patches and rolls out its live id.
+   */
+  readonly rootRequired?: boolean;
   /**
    * Destroy of a disposable stage only: the names and ids its destroy plan records for the
    * resources it deletes. A delete of exactly one of them is admitted; every other stays refused.
@@ -117,6 +125,22 @@ const REASONS = {
     "Alchemy found a configuration difference on the root application, and a PATCH or rollout restarts the root and its master Home.",
     "Make the declaration match the recorded application, or restart the root in its own named step.",
   ],
+  host: [
+    "The host ends in a dot. DNS and TLS take it as the same host, but every rule here compares hosts exactly, so none would apply.",
+    "Send the request to the host without the trailing dot.",
+  ],
+  rootUnknown: [
+    "The root's application is not known by both its id and its name in this run, so a container application write could reach it.",
+    "Record the root's application name on its State row, or run without container application writes.",
+  ],
+  path: [
+    "The path is not spelled the way the SDK sends it, so a rule keyed on the path could miss what it names.",
+    "Send the canonical path: lower-case path words, no empty segments, no parameters and no escaped path characters.",
+  ],
+  registry: [
+    "Production's images are served from the account's registry, and a release never writes to it through fetch.",
+    "Publish images with the build, never from the release entry.",
+  ],
   store: [
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
     "Upgrade or bootstrap the store by hand under its own approval.",
@@ -145,7 +169,7 @@ const refuse = (
 
 // Path words kept in the journal; every other segment (accounts, names, ids) prints as {id}.
 const WORDS = new Set(
-  "client v1 v2 v4 accounts zones organizations workers scripts services environments versions deployments content settings script-settings edge-preview previews subdomain secrets schedules tails durable_objects namespaces objects containers applications rollouts instances registries hyperdrive configs r2 buckets d1 database query secrets_store stores databases branches roles passwords backups assets upload assets-upload-session routes domains queues consumers purge messages workflows storage kv bulk delete values vectorize indexes delete_by_ids artifacts repos tokens user".split(
+  "client v1 v2 v4 accounts zones organizations workers scripts services environments versions deployments content settings script-settings edge-preview previews subdomain secrets schedules tails durable_objects namespaces objects containers cloudchamber applications rollouts instances registries hyperdrive configs r2 buckets d1 database query secrets_store stores databases branches roles passwords backups assets upload assets-upload-session routes domains queues consumers purge messages workflows storage kv bulk delete values vectorize indexes delete_by_ids artifacts repos tokens user".split(
     " ",
   ),
 );
@@ -170,6 +194,13 @@ const PROTECTED: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/accounts\/[^/]+\/workflows\/([^/]+)/, "Workflow"],
   // The Artifacts API (scripts/ensure-artifacts.ts): a namespace holds every repo and its history.
   [/^\/accounts\/[^/]+\/artifacts\/namespaces\/([^/]+)/, "Artifacts namespace"],
+  // Before the database: a destroy plan names a role or branch with the database it lives in, so
+  // admitting one never admits the database, and the same id elsewhere is not the plan's.
+  [
+    /^\/organizations\/[^/]+\/databases\/([^/]+\/branches\/[^/]+\/roles\/[^/]+)$/,
+    "PlanetScale role",
+  ],
+  [/^\/organizations\/[^/]+\/databases\/([^/]+\/branches\/[^/]+)$/, "PlanetScale branch"],
   [/^\/organizations\/[^/]+\/databases\/([^/]+)/, "PlanetScale database"],
   // Deleting a token breaks whatever authenticates with it (the provider observation, for one).
   [/^\/accounts\/[^/]+\/tokens\/([^/]+)/, "API token"],
@@ -204,7 +235,31 @@ const StoreCredentialRead = Schema.Struct({
   ]),
 });
 const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(?:\/|$)/;
-const APPLICATION = /^\/accounts\/[^/]+\/containers\/applications(?:\/([^/]+))?/;
+// The API serves an application under both paths; the SDK sends the first, Cloudflare's own CLI
+// may send the second.
+const APPLICATION = /^\/accounts\/[^/]+\/(?:containers|cloudchamber)\/applications(?:\/([^/]+))?/;
+const APPLICATIONS = /\/(?:containers|cloudchamber)\/applications\/?$/u;
+
+const API_ROOT = /\/(?:accounts|organizations|user|zones)\//iu;
+/**
+ * The rules key on a path as the SDK spells it. A write spelled any other way could name the same
+ * resource to Cloudflare and nothing to a rule, so it is refused rather than normalised.
+ */
+const canonicalPath = (pathname: string) =>
+  !pathname.includes("//") &&
+  !pathname.includes(";") &&
+  // An escape of a character that needs none, or of the path separator, only hides the path.
+  ![...pathname.matchAll(/%([0-9a-f]{2})/giu)].some(([, hex]) =>
+    /[a-z0-9\-._~/]/iu.test(String.fromCharCode(Number.parseInt(hex!, 16))),
+  ) &&
+  // A provider API path takes its words in lower case. (The State store's paths carry no API root;
+  // they name resources by our own logical ids, which may be capitalised.)
+  (!API_ROOT.test(pathname) ||
+    !pathname
+      .split("/")
+      .some((segment) => segment !== segment.toLowerCase() && WORDS.has(segment.toLowerCase()))) &&
+  // One API root: with two, the rules would read the wrong one.
+  (pathname.match(new RegExp(API_ROOT.source, "giu")) ?? []).length <= 1;
 
 const nullable = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
 const List = Schema.optional(Schema.Array(Schema.Unknown));
@@ -242,6 +297,7 @@ const Created = Schema.Struct({ result: Schema.Struct({ id: Schema.String }) });
 // instances by state; `durable_objects` is the immutable namespace attachment.
 const ApplicationRead = Schema.Struct({
   result: Schema.Struct({
+    name: Schema.optional(Schema.String),
     durable_objects: Schema.optional(Schema.Unknown),
     health: Schema.Struct({ instances: Schema.Record(Schema.String, Schema.Number) }),
   }),
@@ -382,15 +438,25 @@ const checkStoreCredentialRead = (request: Request, at: At) =>
  * apply meets. The delete is admitted only when a fresh read, sent around the guard with the same
  * credentials, shows no attachment and nothing running; any other answer or a failed read refuses.
  */
-const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: At) =>
+const checkUnattached = (
+  config: WireGuardConfig,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  at: At,
+) =>
   Effect.gen(function* () {
     const url = new URL(request.url);
-    url.pathname = url.pathname.replace(/(\/containers\/applications\/[^/]+).*$/u, "$1");
+    url.pathname = url.pathname.replace(
+      /(\/(?:containers|cloudchamber)\/applications\/[^/]+).*$/u,
+      "$1",
+    );
     url.search = "";
     const authorization = request.headers.get("authorization");
     const read = yield* Effect.tryPromise(async () => {
+      // A redirect would read another application than the one deleted.
       const response = await inner(url, {
         method: "GET",
+        redirect: "manual",
         headers: authorization ? { authorization } : {},
       });
       if (!response.ok) throw new Error(`application read answered ${response.status}`);
@@ -399,7 +465,13 @@ const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: A
       Effect.flatMap(Schema.decodeUnknownEffect(ApplicationRead)),
       Effect.mapError((cause) => refuse(at, "application", "application read", "failed", cause)),
     );
-    const { durable_objects: attached, health } = read.result;
+    const { name, durable_objects: attached, health } = read.result;
+    // The root, by the name Cloudflare reads back, whatever its attachment and its instances.
+    if (
+      name !== undefined &&
+      config.rootApplicationNames?.some((root) => root.toLowerCase() === name.toLowerCase())
+    )
+      return yield* refuse(at, "root", "name", "root");
     if (attached !== undefined && attached !== null)
       return yield* refuse(at, "application", "durable_objects", "attached");
     const running = Object.entries(health.instances).filter(
@@ -423,6 +495,53 @@ const authHeaders = (request: Request) => {
   return headers;
 };
 
+/** The request's own API base and account, for a read sent around the guard. */
+const accountBase = (url: URL) => {
+  const at = url.pathname.search(/\/accounts\//u);
+  const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
+  return `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+};
+
+/**
+ * A teardown's delete of a container application: a fresh read, sent around the guard with the
+ * request's credentials, must answer this id with a name carrying the rehearsal stage's token.
+ * A missing, unreadable or differently named application is refused.
+ */
+const proveStageApplication = (
+  scope: StageScope,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  id: string,
+) =>
+  Effect.gen(function* () {
+    const response = yield* Effect.promise(() =>
+      // Like the delete check's read: a redirect answers from an address no rule checked.
+      inner(`${accountBase(url)}/containers/applications/${encodeURIComponent(id)}`, {
+        headers: authHeaders(request),
+        redirect: "manual",
+      }).catch(() => undefined),
+    );
+    const body = response?.ok
+      ? ((yield* Effect.promise(() => response.json().catch(() => null))) as {
+          result?: { id?: unknown; name?: unknown };
+        } | null)
+      : null;
+    const name =
+      body?.result?.id === id && typeof body.result.name === "string" ? body.result.name : "";
+    if (!stageOwnsName(name, scope.stage))
+      return yield* refuse(
+        {
+          resource: `container application ${id}`,
+          method: request.method,
+          path: template(apiPath(url.pathname)),
+        },
+        "stage",
+        "name",
+        name || (response ? `HTTP ${response.status}` : "unreadable"),
+      );
+  });
+
 /**
  * A Worker or Workflow name the stage's State does not record: Cloudflare places it. Absent means
  * this run creates it; present, it must carry this stage's Alchemy tags (a Worker) or run on a
@@ -437,9 +556,7 @@ const proveStageName = (
   verdict: Extract<StageVerdict, { kind: "prove" }>,
 ) =>
   Effect.gen(function* () {
-    const at = url.pathname.search(/\/accounts\//u);
-    const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
-    const base = `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+    const base = accountBase(url);
     const name = encodeURIComponent(verdict.name);
     const read =
       verdict.family === "Worker"
@@ -478,6 +595,7 @@ const proveStageName = (
 const stageGate = (
   config: WireGuardConfig,
   ownedHere: Set<string>,
+  provenDeletes: Set<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   url: URL,
@@ -507,6 +625,12 @@ const stageGate = (
         verdict.field,
         url.pathname,
       );
+    if (verdict.kind === "prove" && verdict.family === "container application") {
+      yield* proveStageApplication(scope, inner, request, url, verdict.name);
+      // Admits this delete past the unattached-application check; it owns nothing else.
+      provenDeletes.add(verdict.name);
+      return undefined;
+    }
     if (verdict.kind === "prove") {
       yield* proveStageName(scope, isOwned, inner, request, url, verdict);
       ownedHere.add(verdict.name);
@@ -515,16 +639,26 @@ const stageGate = (
     return verdict.creates ? { body } : undefined;
   });
 
+/**
+ * The one registry write a release may send through fetch: a rehearsal teardown's delete, which the
+ * stage gate has already placed by repository name (stage-writes.ts). Every other method, and every
+ * run that is not a rehearsal teardown, stays off the registry production's images are served from.
+ */
+export const teardownRegistryDelete = (config: Pick<WireGuardConfig, "stage">, method: string) =>
+  method === "DELETE" && config.stage?.teardown === true && isRehearsalStage(config.stage.stage);
+
 const check = (
   config: WireGuardConfig,
   created: ReadonlySet<string>,
   held: ReadonlySet<string>,
+  provenDeletes: ReadonlySet<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   path: string,
 ) =>
   Effect.gen(function* () {
     const method = request.method.toUpperCase();
+    const host = new URL(request.url).hostname.toLowerCase();
     const name = (pattern: RegExp) => {
       const found = pattern.exec(path)?.[1];
       return found === undefined ? undefined : decodeURIComponent(found);
@@ -534,6 +668,12 @@ const check = (
       method,
       path: template(path),
     });
+    const write = method !== "GET" && method !== "HEAD";
+    if (host.endsWith(".")) return yield* refuse(at("host", "{id}"), "host", "host", host);
+    if (write && !canonicalPath(new URL(request.url).pathname))
+      return yield* refuse(at("request", "{id}"), "path", "path", "not canonical");
+    if (write && host === REGISTRY_HOST && !teardownRegistryDelete(config, method))
+      return yield* refuse(at("registry", "{id}"), "registry", "method", method);
     // Alchemy reads the store's token through an ephemeral edge preview of the store script
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
     if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))
@@ -558,13 +698,25 @@ const check = (
         method,
       );
     const application = name(APPLICATION);
-    if (
+    // Cloudflare's ids are not case sensitive, so neither is the comparison.
+    const root =
       application !== undefined &&
-      method !== "GET" &&
-      method !== "HEAD" &&
-      (config.rootApplications?.includes(application) || held.has(application))
-    )
+      (config.rootApplications?.some((id) => id.toLowerCase() === application.toLowerCase()) ||
+        held.has(application.toLowerCase()));
+    if (write && root)
       return yield* refuse(at("container application", application), "root", "method", method);
+    if (
+      write &&
+      config.rootRequired &&
+      APPLICATION.test(path) &&
+      !(config.rootApplications?.length && config.rootApplicationNames?.length)
+    )
+      return yield* refuse(
+        at("container application", application ?? "{id}"),
+        "rootUnknown",
+        "method",
+        method,
+      );
     const script = name(UPLOAD);
     if (script !== undefined && ["PUT", "POST", "PATCH"].includes(method))
       return yield* checkUpload(config, request, at("Worker", script), script);
@@ -574,6 +726,12 @@ const check = (
         if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "POST");
       }
     if (method !== "DELETE") return;
+    if (
+      application !== undefined &&
+      provenDeletes.has(application) &&
+      /^\/accounts\/[^/]+\/containers\/applications\/[^/]+$/u.test(path)
+    )
+      return;
     for (const [pattern, kind] of [[APPLICATION, "container application"], ...PROTECTED] as const) {
       const id = name(pattern);
       if (
@@ -583,7 +741,12 @@ const check = (
         return;
     }
     if (application !== undefined && !created.has(application))
-      return yield* checkUnattached(inner, request, at("container application", application));
+      return yield* checkUnattached(
+        config,
+        inner,
+        request,
+        at("container application", application),
+      );
     for (const [pattern, kind] of PROTECTED) {
       const id = name(pattern);
       if (id !== undefined) return yield* refuse(at(kind, id), "delete", "method", "DELETE");
@@ -600,6 +763,8 @@ export const install = (config: WireGuardConfig = {}) =>
     const held = new Set<string>();
     // What this run created on a disposable stage: its own from here on.
     const ownedHere = new Set<string>();
+    // Applications a rehearsal teardown proved are the stage's by name, each for its delete.
+    const provenDeletes = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
@@ -608,8 +773,16 @@ export const install = (config: WireGuardConfig = {}) =>
       journal.push({ method: request.method, host: url.host, path: template(path) });
       const exit = await Effect.runPromiseExit(
         Effect.gen(function* () {
-          const creates = yield* stageGate(config, ownedHere, inner, request, url, path);
-          yield* check(config, created, held, inner, request, path);
+          const creates = yield* stageGate(
+            config,
+            ownedHere,
+            provenDeletes,
+            inner,
+            request,
+            url,
+            path,
+          );
+          yield* check(config, created, held, provenDeletes, inner, request, path);
           return creates;
         }),
       );
@@ -620,7 +793,10 @@ export const install = (config: WireGuardConfig = {}) =>
           Deferred.doneUnsafe(refused, Effect.fail(error));
         throw error;
       }
-      const response = await inner(request);
+      // fetch re-sends a redirected write with its method and body to an address the guard never
+      // checked, so a write's redirect comes back to the caller instead. Reads follow as before.
+      const write = request.method !== "GET" && request.method !== "HEAD";
+      const response = await inner(request, write ? { redirect: "manual" } : undefined);
       if (exit.value && response.ok)
         for (const name of createdIdentities(
           await response
@@ -631,7 +807,7 @@ export const install = (config: WireGuardConfig = {}) =>
         ))
           ownedHere.add(name);
       // Only a create of an application (a POST to the collection itself) feeds the created set.
-      if (request.method === "POST" && response.ok && path.endsWith("/containers/applications")) {
+      if (request.method === "POST" && response.ok && APPLICATIONS.test(path)) {
         const decoded = Schema.decodeUnknownExit(Created)(
           await response
             .clone()
@@ -640,12 +816,13 @@ export const install = (config: WireGuardConfig = {}) =>
         );
         if (Exit.isSuccess(decoded)) created.add(decoded.value.result.id);
       }
+      // Any application Cloudflare names as the root, in a read or a create's answer, is the root.
       if (
-        request.method === "GET" &&
-        response.ok &&
+        (request.method === "GET" || (request.method === "POST" && APPLICATIONS.test(path))) &&
         config.rootApplicationNames?.length &&
         APPLICATION.test(path)
       ) {
+        const names = new Set(config.rootApplicationNames.map((name) => name.toLowerCase()));
         const body = (await response
           .clone()
           .json()
@@ -655,9 +832,9 @@ export const install = (config: WireGuardConfig = {}) =>
             item &&
             typeof item === "object" &&
             typeof (item as { id?: unknown }).id === "string" &&
-            config.rootApplicationNames.includes(String((item as { name?: unknown }).name))
+            names.has(String((item as { name?: unknown }).name).toLowerCase())
           )
-            held.add((item as { id: string }).id);
+            held.add((item as { id: string }).id.toLowerCase());
       }
       return response;
     };

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fixture } from "./native-device-fixture.ts";
+import { signIntent } from "../../src/pool/setup-links.ts";
+import { nativeControlPrefix } from "../../src/pool/native-contract.ts";
+import { openEnvelope } from "../../src/pool/token.ts";
 
 const selection = {
   "x-basalt-native-intent": "synthetic-intent",
@@ -46,6 +49,7 @@ test("a failed native dependency returns a typed nonempty decision error", async
     code: "DEVICE_APPROVAL_UNAVAILABLE",
     stage: "native_control_request",
     failure: "transport",
+    reason: "NATIVE_POOL_UNAVAILABLE",
     message:
       "We could not confirm this device connection. Check its status on your device before trying again.",
   });
@@ -55,6 +59,131 @@ test("a failed native dependency returns a typed nonempty decision error", async
   );
 });
 
+// The pool Worker's own outage answer, as `unavailableResponse` in src/pool/json.ts sends it.
+const poolOutage = () =>
+  Response.json(
+    { error: "backend_unavailable", message: "The pool backend is unavailable. Try again later." },
+    { status: 503, headers: { "Cache-Control": "no-store" } },
+  );
+
+test("a pool control failure on register answers with the reason code", async () => {
+  const cases = [
+    {
+      run: async () => poolOutage(),
+      details: {
+        stage: "native_control_response",
+        failure: "status",
+        dependencyStatus: 503,
+        dependencyCode: "backend_unavailable",
+      },
+    },
+    {
+      run: async () => {
+        throw new TypeError("synthetic network failure");
+      },
+      details: { stage: "native_control_request", failure: "transport" },
+    },
+  ];
+  for (const { run, details } of cases) {
+    using f = await fixture(run);
+    const response = await f.request(
+      "/device/decide",
+      { user_code: f.user_code, accept: true },
+      selection,
+    );
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), {
+      ...details,
+      reason: "NATIVE_POOL_UNAVAILABLE",
+      code: "DEVICE_APPROVAL_UNAVAILABLE",
+      message:
+        "We could not confirm this device connection. Check its status on your device before trying again.",
+    });
+  }
+});
+
+test("a pool refusal keeps its own code and is not reported as the pool being down", async () => {
+  using f = await fixture(async () =>
+    Response.json(
+      { error: "invalid_session", message: "Choose a computer name and native access." },
+      { status: 400, headers: { "Cache-Control": "no-store" } },
+    ),
+  );
+  const response = await f.request(
+    "/device/decide",
+    { user_code: f.user_code, accept: true },
+    selection,
+  );
+  assert.equal(response.status, 503);
+  const value = await response.json();
+  assert.equal(value.dependencyCode, "invalid_session");
+  assert.equal(value.dependencyStatus, 400);
+  assert.equal("reason" in value, false);
+  assert.equal(JSON.stringify(value).includes("Choose a computer"), false);
+});
+
+test("after a pool outage answer the same code approves with tools only", async () => {
+  let attempts = 0;
+  let team = "";
+  const actions: (string | undefined)[] = [];
+  using f = await fixture(
+    async (request) => {
+      const { envelope } = (await request.json()) as { envelope: string };
+      const opened = (await openEnvelope("ab".repeat(32), nativeControlPrefix, envelope)) as
+        | { action?: string }
+        | undefined;
+      const call = { action: opened?.action };
+      actions.push(call.action);
+      return ++attempts === 1
+        ? poolOutage()
+        : Response.json({
+            computer: { id: "computer-fixture" },
+            pool: "pool-fixture",
+            models: false,
+            toolsOrganization: team,
+          });
+    },
+    undefined,
+    undefined,
+    { organizations: true },
+  );
+  team = (
+    await f.adapter.create<{ id: string }>({
+      model: "organization",
+      data: { name: "Tools", slug: "tools", createdAt: new Date() },
+    })
+  ).id;
+  await f.adapter.create({
+    model: "member",
+    data: { organizationId: team, userId: f.userId, role: "owner", createdAt: new Date() },
+  });
+  // A tools-only approval checks the person's own Connect intent itself, so it must be real.
+  const intent = await signIntent("ab".repeat(32), {
+    user: f.userId,
+    owner: f.userId,
+    pool: "pool-fixture",
+    organization: team,
+    expiresAt: Date.now() + 60_000,
+  });
+  const decide = (models: string) =>
+    f.request(
+      "/device/decide",
+      { user_code: f.user_code, accept: true },
+      {
+        ...selection,
+        "x-basalt-native-intent": intent,
+        "x-basalt-native-models": models,
+        "x-basalt-native-tools": "true",
+      },
+    );
+  assert.equal((await decide("true")).status, 503);
+  const retried = await decide("false");
+  assert.equal(retried.status, 200, await retried.clone().text());
+  assert.deepEqual(await retried.json(), { status: "approved" });
+  // The tools-only retry registers nothing; the pool hears of the device only as a report.
+  assert.equal(actions.filter((action) => action === "register").length, 1);
+});
+
 test("native dependency diagnostics distinguish status, timeout and invalid responses", async () => {
   const cases = [
     {
@@ -62,12 +191,14 @@ test("native dependency diagnostics distinguish status, timeout and invalid resp
       stage: "native_control_response",
       failure: "status",
       dependencyStatus: 503,
+      reason: "NATIVE_POOL_UNAVAILABLE",
     },
     {
       run: async () => new Response("private edge refusal", { status: 502 }),
       stage: "native_control_response",
       failure: "status",
       dependencyStatus: 502,
+      reason: "NATIVE_POOL_UNAVAILABLE",
     },
     {
       run: async () => {
@@ -108,6 +239,7 @@ test("native dependency diagnostics distinguish status, timeout and invalid resp
     );
     assert.equal(response.status, 503);
     const value = await response.json();
+    // A timeout or an unreadable 2xx may have registered the device, so it carries no reason.
     assert.deepEqual(value, {
       ...expected,
       code: "DEVICE_APPROVAL_UNAVAILABLE",

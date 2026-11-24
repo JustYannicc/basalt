@@ -1,4 +1,4 @@
-import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
+import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
@@ -12,9 +12,14 @@ import { shortHash, type ControllerView, type FleetView } from "./controller.ts"
 
 export interface AcceptanceInput {
   client: PoolAcceptanceClient;
-  apiKey: string;
+  /** Signs each model call for the release's acceptance device. */
+  credential: ModelAuth;
   model?: string;
-  access: PoolAccess;
+  /**
+   * An owner token for a dedicated acceptance pool only. Absent when the device is in a pool that
+   * holds people's work: then the two reads it allows (the pool's accounts, its usage) are skipped.
+   */
+  access?: PoolAccess;
   controller: () => Promise<ControllerView>;
   fleet: () => Promise<FleetView>;
   burst?: number;
@@ -58,19 +63,22 @@ export const cellBoots = (fleet: FleetView, primary: string) =>
   );
 
 export async function runFleetAcceptance(input: AcceptanceInput) {
-  const { client, apiKey, log } = input;
-  const catalog = await client.modelCatalog(apiKey);
+  const { client, credential, log } = input;
+  const catalog = await client.modelCatalog(credential);
   const model = selectModel(catalog.ids, input.model);
-  const accounts = await client.testAccountIds(input.access);
+  const { access } = input;
+  const accounts = access ? await client.testAccountIds(access) : undefined;
   log(`models status=200 count=${catalog.ids.length}`);
   const burst = input.burst ?? 6;
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
   const conversations = [];
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
-    // Concurrent turns make the primary busier than an idle cell, so balancing sends one there.
+    // Ready cells take every turn; the root serves only while no cell is ready.
     const batch = Array.from({ length: burst }, () => conversation());
     conversations.push(...batch);
-    const results = await Promise.all(batch.map((value) => client.sendTurn(apiKey, model, value)));
+    const results = await Promise.all(
+      batch.map((value) => client.sendTurn(credential, model, value)),
+    );
     const primary = primaryBoot(await input.controller());
     const cells = cellBoots(await input.fleet(), primary);
     const count = { round, cell: 0, primary: 0, other: 0 };
@@ -89,22 +97,27 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
       `No streamed turn in ${input.rounds ?? 3} bursts of ${burst} carried a fleet cell's X-Signalbox-Pool-Boot; every response came from the primary or an unknown runtime.`,
       "Check fleet-inspect for a ready cell; if one is ready and still unused, the balancer never routed to it.",
     );
-  const records = await Promise.all(
-    conversations.map((value) => client.waitForUsageRecords(input.access, value)),
-  );
-  if (records.flat().some((record) => !accounts.has(record.account)))
-    throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
-  log(`usage_records status=200 matched=${records.flat().length}`);
-  const final = await client.sendTurn(apiKey, model, conversation());
+  let usageRecords: number | "skipped" = "skipped";
+  if (access && accounts) {
+    // With an owner token, the usage check stays mandatory: every record in the test pool's accounts.
+    const records = await Promise.all(
+      conversations.map((value) => client.waitForUsageRecords(access, value)),
+    );
+    if (records.flat().some((record) => !accounts.has(record.account)))
+      throw new AcceptanceFailure("Usage contained an account outside the dedicated test pool");
+    usageRecords = records.flat().length;
+    log(`usage_records status=200 matched=${usageRecords}`);
+  } else log("usage_records skipped; the acceptance device is not in a dedicated acceptance pool");
+  const final = await client.sendTurn(credential, model, conversation());
   log(`final_request status=200 first_byte_ms=${Math.round(final.firstByteMs)}`);
-  return { model, servedByCell: served, usageRecords: records.flat().length };
+  return { model, servedByCell: served, usageRecords };
 }
 
 /** After a disable: one plain streamed turn must come back from the selected primary. */
 export async function rootServes(input: Omit<AcceptanceInput, "fleet" | "access">) {
-  const catalog = await input.client.modelCatalog(input.apiKey);
+  const catalog = await input.client.modelCatalog(input.credential);
   const model = selectModel(catalog.ids, input.model);
-  const result = await input.client.sendTurn(input.apiKey, model, conversation());
+  const result = await input.client.sendTurn(input.credential, model, conversation());
   const primary = primaryBoot(await input.controller());
   if (result.boot !== primary)
     throw refuse(

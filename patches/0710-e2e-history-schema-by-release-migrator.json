@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-e2e-history-schema-by-release-migrator",
+  "file": "0710-e2e-history-schema-by-release-migrator.patch",
+  "content_sha256": "24d4e9d6e40e54acf96abe71bd1716d984871de0517ad30ee90f394e6c186fbc",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

@@ -50,7 +50,10 @@ export async function failureFleetFixture(maximum = 2) {
       install: async () => {},
       abortPool: () => {},
       drain: async () => ({ active: 0, known: true }),
-      retire: async (_identity: SlotIdentity, begin: () => Promise<void>) => begin(),
+      retire: async (_identity: SlotIdentity, begin: () => Promise<void>) => {
+        await begin();
+        return true;
+      },
       retired: async () => true,
       failed: async () => stopped,
     };

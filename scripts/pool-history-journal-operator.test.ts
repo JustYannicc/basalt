@@ -178,6 +178,28 @@ test("activation plans select only v10 despite higher unrelated markers and pres
       );
     }
     await writeFile(path, JSON.stringify(saved));
+    // A catalog that changed after the dry run refuses on refresh, before any POST or receipt.
+    const changed = async () => ({
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            assert.equal(request.method, "GET", "a changed catalog must never reach POST");
+            const plan = await modelHistorySchemaPlan(db, "journal-activation");
+            const catalog = { ...plan.catalog, relations: [] };
+            return Response.json({
+              status: "dry-run",
+              ...plan,
+              catalog,
+              catalogHash: createHash("sha256").update(JSON.stringify(catalog)).digest("hex"),
+            });
+          },
+        },
+      },
+      dispose: async () => {},
+    });
+    await assert.rejects(runHistoryOperator(applying, account, changed), /plan changed/);
+    assert.equal(writes, 0);
+    await assert.rejects(readFile(`${path}.result.json`), { code: "ENOENT" });
     await runHistoryOperator(applying, account, connect);
     assert.equal(writes, 1);
     assert.equal((await modelHistorySchemaPlan(db, "journal-activation")).applied, true);

@@ -2,6 +2,18 @@ import { SlotRefused, sameIdentity } from "./contract.ts";
 import type { RestartAuthorization } from "./admission-proof.ts";
 import type { RuntimeWitnessStore } from "./witness-store.ts";
 import type { ControllerState } from "./runtime-state.ts";
+import { runtimeStopTiming } from "./forced-stop.ts";
+
+/**
+ * Whether the container is still stopped after a confirmation wait. One `running: false` read is no
+ * proof of an exit: it can read false for a moment while the container lives, and a restart
+ * admitted then replaces the record of a boot that is still running.
+ */
+export async function confirmedStopped(ctx: ControllerState) {
+  if (ctx.container!.running) return false;
+  await runtimeStopTiming.confirmExit();
+  return !ctx.container!.running;
+}
 
 /** A fresh restart grant preserves sealed settings and replaces only a proved stopped boot. */
 export async function admitRuntimeRestart(
@@ -21,7 +33,8 @@ export async function admitRuntimeRestart(
       previous.provider.applicationConfigDigest !== proof.provider.applicationConfigDigest
     )
       throw new SlotRefused("identity");
-    if (!ctx.container!.running) await store.put(proof.target, { ...record, authorization: proof });
+    if (await confirmedStopped(ctx))
+      await store.put(proof.target, { ...record, authorization: proof });
     return;
   }
   if (
@@ -33,5 +46,6 @@ export async function admitRuntimeRestart(
     previous.provider.applicationConfigDigest !== proof.provider.applicationConfigDigest
   )
     throw new SlotRefused("identity");
+  if (!(await confirmedStopped(ctx))) throw new SlotRefused("uncertain");
   await store.put(proof.target, { authorization: proof, sealed: record.sealed });
 }

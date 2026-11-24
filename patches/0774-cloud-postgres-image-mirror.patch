@@ -1,0 +1,36 @@
+diff --git a/e2e/support/cloud-postgres.ts b/e2e/support/cloud-postgres.ts
+index de5b3a7..dd87177 100644
+--- a/e2e/support/cloud-postgres.ts
++++ b/e2e/support/cloud-postgres.ts
+@@ -24,6 +24,10 @@ const namespaceLabel = "executor.e2e.pid-namespace";
+ const pidLabel = "executor.e2e.pid";
+ /** A container younger than this is never removed by another run, whatever its owner's state. */
+ const staleAfterMs = 5 * 60_000;
++// The official image through Google's Docker Hub mirror, pinned to Docker Hub's index digest for
++// postgres:17: anonymous Docker Hub pulls hit its rate limit when several runs start at once.
++const postgresImage =
++  "mirror.gcr.io/library/postgres:17@sha256:156d40cfa063d6babb15d329a8e15b26a8d0690ebb6084c956084f3b025c3b30";
+ 
+ const Containers = Schema.fromJsonString(
+   Schema.Array(
+@@ -169,9 +173,9 @@ export const startCloudPostgres = (input: {
+     // checks none.
+     const namespace = yield* pidNamespace;
+     if (namespace !== undefined) yield* removeAbandoned(dockerEnv, namespace);
+-    const image = yield* command.run(["image", "inspect", "--format", "{{.Id}}", "postgres:17"]);
++    const image = yield* command.run(["image", "inspect", "--format", "{{.Id}}", postgresImage]);
+     if (image.code !== 0)
+-      yield* command.checked("Pull the Postgres image", ["pull", "postgres:17"]);
++      yield* command.checked("Pull the Postgres image", ["pull", postgresImage]);
+     // Acquisition is uninterruptible, so an interrupted run still learns whether Docker created
+     // the container before it removes it. Removal by name is a no-op when nothing was created.
+     const created = yield* Effect.acquireRelease(
+@@ -199,7 +203,7 @@ export const startCloudPostgres = (input: {
+           "POSTGRES_DB=executor",
+           "--env",
+           "POSTGRES_PASSWORD",
+-          "postgres:17",
++          postgresImage,
+           // The local Worker connects straight to Postgres, without PgBouncer.
+           // Parallel browser requests and their background jobs each own SQL
+           // connections; PostgreSQL's default 100 slots rejects startup bursts.

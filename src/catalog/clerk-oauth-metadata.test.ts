@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-evidence.ts";
+import { catalogDocumentSha256 } from "../../scripts/catalog-oauth-metadata.ts";
 import { oauthFitness, oauthReviews } from "./oauth-policy.ts";
 import type { Feed } from "./feed.ts";
 import reviewData from "./oauth-reviews.json" with { type: "json" };
@@ -10,12 +10,17 @@ test("Clerk's reviewed protected-resource list and browser sign-in scope still r
   // Sign-in requests its own declared scopes, never the advertised list, and the host reads no
   // protected-resource list from server metadata, so neither addition changes a grant.
   const addedScope = "poppy:browser-sign-in";
+  // Scopes Clerk advertised after that change, each re-pinned by the drift workflow.
+  const laterScopes = ["support_tickets:manage"];
   assert.ok(clerkMetadata.scopes_supported.includes(addedScope));
   const { protected_resources: added, ...unchanged } = clerkMetadata;
   assert.deepEqual(added, ["https://clerk.com"]);
   const previous = {
     ...unchanged,
-    scopes_supported: clerkMetadata.scopes_supported.filter((scope) => scope !== addedScope),
+    // Later reviewed additions are not part of the document before #1516's change.
+    scopes_supported: clerkMetadata.scopes_supported.filter(
+      (scope) => scope !== addedScope && !laterScopes.includes(scope),
+    ),
   };
   assert.equal(
     catalogDocumentSha256(previous),

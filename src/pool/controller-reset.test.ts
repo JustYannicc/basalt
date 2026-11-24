@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { controllerIsolateHeader, isolate } from "./isolate.ts";
+import { openResumeStamp, routerResumeHeader } from "./router-resume.ts";
+import {
+  encodeResumeTarget,
+  streamResumeHeader,
+  streamResumeTargetHeader,
+  streamResumeVersion,
+} from "./stream-resume.ts";
+import { routerAttemptHeader, signRouterAttempt } from "./router-attempt.ts";
 import {
   modelCallReplayable,
   upstreamOutcomeUnknown,
@@ -482,6 +491,15 @@ test("a complete stream passes through unchanged and records nothing", async (co
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** Fails with what it waited for instead of spinning until the suite's timeout. */
+async function eventually(condition: () => boolean, waitingFor: string) {
+  for (let index = 0; index < 1_000; index++) {
+    if (condition()) return;
+    await turn();
+  }
+  assert.fail(`Never saw ${waitingFor}`);
+}
+
 test("a held body is dropped as soon as the controller answers", async (context) => {
   const h = harness(context, [async (request) => new Response(await request.text())]);
   const response = await fetchController(
@@ -499,7 +517,7 @@ test("a reservation whose request never cleaned up stops counting when its windo
     new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
     h.hop,
   );
-  while (controllerHeldBytes() === 0) await turn();
+  await eventually(() => controllerHeldBytes() > 0, "the body held");
   assert.equal(controllerHeldBytes(), 4096);
   // Only the clock moves: neither the request's own release nor its timer runs, as when the
   // platform cancels a request whose client left.
@@ -520,7 +538,7 @@ test("a held body is dropped when the replay window closes, and the cut gets adv
     new Request("https://pool.example/v1/messages", { method: "POST", body: "x".repeat(4096) }),
     h.hop,
   );
-  while (controllerHeldBytes() === 0) await turn();
+  await eventually(() => controllerHeldBytes() > 0, "the body held");
   context.mock.timers.tick(controllerReplayWindowMs);
   assert.equal(controllerHeldBytes(), 0);
   fail(reset());
@@ -555,7 +573,7 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
     }),
     holding.hop,
   );
-  while (controllerHeldBytes() < 768 * 1024) await turn();
+  await eventually(() => controllerHeldBytes() >= 768 * 1024, "the first body held whole");
   const received: number[] = [];
   const unheld = controllerHop(
     [
@@ -600,4 +618,131 @@ test("past the isolate's hold budget a call is forwarded unheld, logged and not 
     [["retry_advised", "hold_budget_full"]],
   );
   assert.equal(sentry.length, 1);
+});
+
+test("the entry names its isolate before a model call and the controller's on its answer", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
+  const signingKey = "ab".repeat(32);
+  const requestId = "0f1e2d3c-4b5a-4968-8778-695a4b3c2d1e";
+  const own = isolate().id;
+  for (const controller of [own, "11111111-2222-4333-8444-555555555555"]) {
+    lines.mock.resetCalls();
+    const answer = await fetchController(
+      new Request("https://pool.example/v1/messages", {
+        method: "POST",
+        headers: {
+          [routerAttemptHeader]: await signRouterAttempt(signingKey, { requestId, attempt: 2 }),
+        },
+        body: "{}",
+      }),
+      {
+        controller: () => ({
+          fetch: async () =>
+            new Response("{}", { headers: { [controllerIsolateHeader]: controller } }),
+        }),
+        env: {},
+        defer: () => {},
+        signing: { key: signingKey },
+      },
+    );
+    assert.equal(answer.headers.has(controllerIsolateHeader), false, "never reaches a client");
+    await answer.text();
+    const named = lines.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_ENTRY_ISOLATE")
+      .map((call) => call.arguments[1] as Record<string, unknown>);
+    assert.deepEqual(
+      named.map(({ entryAgeMs: _age, ...line }) => line),
+      [
+        { phase: "sent", requestId, attempt: 2, entry: own },
+        { phase: "answered", requestId, entry: own, controller, shared: controller === own },
+      ],
+    );
+  }
+});
+
+test("a marked answer leaves the entry stamped only for a router that resumes", async () => {
+  const signingKey = "ab".repeat(32);
+  const requestId = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+  const target = encodeResumeTarget({ kind: "primary" });
+  // A router that resumes says so in its signed name; one from before, or none, does not. A router
+  // that does not resume passes the entry's answer on unchanged, so what the entry answers here is
+  // what its client would see.
+  const names = {
+    resumes: await signRouterAttempt(signingKey, { requestId, attempt: 1, resume: true }),
+    before: await signRouterAttempt(signingKey, { requestId, attempt: 1 }),
+    none: undefined,
+  };
+  for (const marked of [true, false])
+    for (const [router, name] of Object.entries(names)) {
+      const answer = await fetchController(
+        new Request("https://pool.example/v1/messages", {
+          method: "POST",
+          body: "{}",
+          headers: name ? { [routerAttemptHeader]: name } : {},
+        }),
+        {
+          controller: () => ({
+            fetch: async () =>
+              new Response("data: {}\n\n", {
+                headers: {
+                  "content-type": "text/event-stream",
+                  "X-Request-Id": requestId,
+                  "X-Signalbox-Pool-Boot": "boot-a",
+                  ...(marked
+                    ? {
+                        [streamResumeHeader]: streamResumeVersion,
+                        [streamResumeTargetHeader]: target,
+                      }
+                    : {}),
+                },
+              }),
+          }),
+          env: {},
+          defer: () => {},
+          signing: { key: signingKey },
+        },
+      );
+      assert.equal(answer.headers.has(streamResumeTargetHeader), false);
+      const stamped = marked && router === "resumes";
+      assert.equal(answer.headers.has(routerResumeHeader), stamped, `${router}, marked ${marked}`);
+      const stamp = await openResumeStamp(answer.headers.get(routerResumeHeader), signingKey);
+      assert.deepEqual(stamp, stamped ? { requestId, target, boot: "boot-a" } : undefined);
+      await answer.text();
+    }
+});
+
+test("a router's name read before the send still stamps an answer that begins after it expires", async (context) => {
+  const signingKey = "ab".repeat(32);
+  const requestId = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const name = await signRouterAttempt(signingKey, { requestId, attempt: 1, resume: true });
+  const answer = await fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      body: "{}",
+      headers: { [routerAttemptHeader]: name },
+    }),
+    {
+      controller: () => ({
+        fetch: async () => {
+          // The answer begins well past the name's 25 s.
+          context.mock.timers.tick(60_000);
+          return new Response("data: {}\n\n", {
+            headers: {
+              "content-type": "text/event-stream",
+              "X-Request-Id": requestId,
+              "X-Signalbox-Pool-Boot": "boot-a",
+              [streamResumeHeader]: streamResumeVersion,
+              [streamResumeTargetHeader]: encodeResumeTarget({ kind: "primary" }),
+            },
+          });
+        },
+      }),
+      env: {},
+      defer: () => {},
+      signing: { key: signingKey },
+    },
+  );
+  assert.equal(answer.headers.has(routerResumeHeader), true);
+  await answer.text();
 });

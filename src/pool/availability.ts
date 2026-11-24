@@ -28,8 +28,12 @@ export interface ProbeFailure {
     | "failing_now"
     | "below_target"
     | "collection_unavailable"
+    | "usage_rollup_stuck"
+    | "capture_hours_stuck"
     | PoolFailureDiagnostic["failure"];
   backendStatus?: number;
+  /** The history pool a stuck history tick names: its own 16-hex id, never a name or host. */
+  pool?: string;
 }
 export interface ProbeResult {
   ok: boolean;

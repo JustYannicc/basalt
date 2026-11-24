@@ -45,6 +45,10 @@ on:
         description: An exact main commit to release instead of main's head (the class change runs on the commit the code-only release deployed)
         required: false
         type: string
+      serving_controller:
+        description: 'For a policy that declares a root restart: the {"controllerCode": ...} packet of the pool Worker deployed now, as the crash operator takes it'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -151,7 +155,8 @@ jobs:
       # An automatic release is code-only; anything else needs a dispatch with its policy named.
       POLICY_NAME: ${{ inputs.policy || 'code' }}
       POLICY: scripts/release/policies/${{ inputs.policy || 'code' }}.json
-      POOL_ROOT_IMAGE: ${{ vars.POOL_ROOT_IMAGE }}
+      # The root pin's repository, digest and build input; the entry adds the account in its own process.
+      POOL_ROOT_PIN: ${{ vars.POOL_ROOT_PIN }}
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
       ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
       POOL_AVAILABILITY_TARGET: ${{ vars.POOL_AVAILABILITY_TARGET }}
@@ -194,6 +199,17 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: 1.4.2
+      # The apply-only steps call these; a plan proves they are on the runner it got.
+      - name: Check the apply's tools are present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for tool in gh jq bun node; do
+            command -v "$tool" >/dev/null || { echo "::error::$tool is not on this runner, and the apply calls it"; exit 1; }
+          done
+          # The apply records its deployment through gh with the job token. A read proves the token
+          # authenticates; its deployments write permission is the job's `permissions:` block.
+          gh api rate_limit >/dev/null || { echo "::error::gh cannot reach the API with the job token, and the apply records its deployment through it"; exit 1; }
       - name: Prepare
         run: npm run prepare:upstream
       - name: Build and measure Worker startup
@@ -253,8 +269,95 @@ jobs:
           APP_DOMAIN_CONTROLLER_TOKEN: ${{ secrets.APP_DOMAIN_CONTROLLER_TOKEN }}
           POOL_MANAGEMENT_KEY: ${{ secrets.POOL_MANAGEMENT_KEY }}
           POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
-          POOL_ACCEPTANCE_KEY: ${{ secrets.POOL_ACCEPTANCE_KEY }}
+          # A masked secret: the ids of the registered models-only device acceptance signs a fresh
+          # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
+          # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
+          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
         run: bun scripts/release/deploy.ts preflight --stage production
+      # A declared root restart stops the stuck root, and the restart after it reads the provider
+      # with the pool Worker's own token. Two reads through that Worker, before anything is planned
+      # and again right before the apply: the live application's pins (does the token read?) and the
+      # pins recorded when the selected runtime was admitted (would the restart's first read, after
+      # the stop, pass?). A pool with no selected runtime has nothing to heal, so a stage passes only
+      # after its adopt. The crash operator's read-only observe mode: no deployed Worker, binding or
+      # data changes, but each signed read opens a connection through the vendor's bridge, which
+      # uploads a preview of its proxy Worker (about eight per run, outside the wire guard). The
+      # reply is not tied to its request by a nonce; the path has no cache.
+      - name: Read the provider observation before a declared root restart
+        id: provider
+        # A plan still runs its read-only plan after a failed read, and the run fails after it
+        # ("Stop on an unread provider observation"); an apply stops here.
+        continue-on-error: ${{ env.MODE == 'plan' }}
+        env: &provider-observation-env
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
+          POOL_CRASH_MODE: observe
+          POOL_CRASH_PACKET: ${{ inputs.serving_controller }}
+          # The crash operator's go rule refuses ordinary words; the release's own GO, already
+          # accepted by the hold step, goes in the summary instead and never stops this read.
+          POOL_CRASH_COORDINATOR_GO: release run ${{ github.run_id }} attempt ${{ github.run_attempt }} reads the provider observation before a declared root restart
+          POOL_CRASH_TEMPORARY_DIRECTORY: ${{ runner.temp }}
+        run: &provider-observation-run |
+          # Whether the policy declares a root restart at all, whatever the declaration's fields.
+          if ! jq -e '.acceptance.rootRestart | type == "object"' "$POLICY" >/dev/null; then exit 0; fi
+          if [ -z "$POOL_CRASH_PACKET" ]; then
+            echo "::error::A release that declares a root restart needs the serving_controller input: the controller code of the pool Worker deployed now."
+            exit 1
+          fi
+          # A fresh folder per run, and no result in it before the dispatcher writes one.
+          out="$(mktemp -d "$POOL_CRASH_TEMPORARY_DIRECTORY/provider-observation.XXXXXX")"
+          result="$out/result.json"
+          rm -f "$result"
+          # The observe reads after these two may refuse on their own; only these two decide here.
+          request="$(node -e 'console.log(crypto.randomUUID())')"
+          POOL_CRASH_OUTPUT_DIRECTORY="$out" POOL_CRASH_REQUEST_ID="$request" bun scripts/pool-crash-dispatch.ts || true
+          # A field of the one JSON document, only as one printable line; anything else reads as absent.
+          field() { jq -rs --arg key "$1" 'if length == 1 then (.[0][$key] // empty) | strings | select(test("\\A[ -~]{1,240}\\z")) else empty end' "$result" 2>/dev/null || true; }
+          token="$(field providerObservation)"
+          restart="$(field restartObservation)"
+          {
+            echo "${token:-provider observation: not read}"
+            echo "${restart:-restart read: not read}"
+            echo "Not checked before the stop: the restart's second read, which lists the application's instances (the deployed provider-observe takes no instance id), and the recorded namespace and configuration digest, which no deployed reply carries. A drift in those two is seen only if it also moved the application version."
+            printf 'Release GO: %s\n' "${GO_INPUT:-none}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Passes only on one document for this run's request holding both lines, each one exact string.
+          if jq -es --arg request "$request" 'length == 1 and .[0].requestId == $request and .[0].providerObservation == "provider observation: reads" and .[0].restartObservation == "restart read: passes"' "$result" >/dev/null 2>&1; then
+            exit 0
+          fi
+          # The dispatcher's own cause is public: fixed refusal text and closed codes.
+          cause="$(field error)"
+          if [ -z "$token" ]; then
+            echo "::error::provider observation: not read, ${cause:-the dispatcher left no result}: the heal would stop the root without restarting it."
+            exit 1
+          fi
+          case "$token" in
+            "provider observation: reads") ;;
+            *"(controller_identity)")
+              echo "::error::${token}: the serving Worker refused the command's identity. The controller code in serving_controller does not match the serving Worker, or the Worker cannot decode the command. This is not the token."
+              exit 1
+              ;;
+            *)
+              echo "::error::${token}: the heal would stop the root without restarting it."
+              exit 1
+              ;;
+          esac
+          case "$restart" in
+            "restart read: refuses (recorded_pins_differ)")
+              echo "::error::${restart}${cause:+ (the dispatcher stopped at: $cause)}: the live root application's version or image digest differs from the pins recorded when the selected runtime was admitted, so the restart's first read would refuse after the stop."
+              ;;
+            "restart read: not checked (no_selected_runtime)")
+              echo "::error::${restart}${cause:+ (the dispatcher stopped at: $cause)}: the pool has no selected runtime, so there is nothing to heal. On a stage this passes only after the adopt."
+              ;;
+            "restart read: passes")
+              echo "::error::The dispatcher's result is not exactly one document for this run's request with the two lines."
+              ;;
+            *)
+              echo "::error::${restart:-restart read: not read}${cause:+ (the dispatcher stopped at: $cause)}: the heal would stop the root without restarting it."
+              ;;
+          esac
+          exit 1
       # A dispatched apply re-plans with the reviewed attempt id, so the digest must come out the same:
       # every record below names the plan that is applied.
       - name: Plan and check
@@ -271,6 +374,11 @@ jobs:
           printf 'digest=%s\nattempt=%s\n' "$digest" "$attempt" >> "$GITHUB_OUTPUT"
           # The apply step reads these from the job env, so its own env carries only the secrets.
           printf 'PLAN_DIGEST=%s\nATTEMPT=%s\n' "$digest" "$attempt" >> "$GITHUB_ENV"
+      - name: Stop on an unread provider observation
+        if: always() && env.MODE == 'plan' && steps.provider.outcome == 'failure'
+        run: |
+          echo "::error::The provider observation did not read (see its step above); the plan above ran for review only."
+          exit 1
       # Nothing below runs against a pegged database (the history import pauses at the same 60%).
       - name: Refuse while the pool database is busy
         env: *release-secrets
@@ -295,10 +403,11 @@ jobs:
             -f payload="$payload" --jq .id)
           gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state=in_progress >/dev/null
           echo "id=$id" >> "$GITHUB_OUTPUT"
+      # The serving read, the light counts and the boot read only read, so a plan runs them too: an
+      # apply is never the first run of a step that comes before its upload.
       - name: Record the serving version of every Worker the plan updates
         env: *release-secrets
         id: serving
-        if: env.MODE == 'apply'
         run: |
           bun scripts/release/deploy.ts serving --stage production --from .local/release/plan.json --out .local/release/serving.json
           echo "workers=$(jq -c '[.workers[].fqn]' .local/release/serving.json)" >> "$GITHUB_OUTPUT"
@@ -308,17 +417,16 @@ jobs:
         run: bun scripts/release/deploy.ts backup --stage production --name "basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID"
       - name: Count accounts and history before
         env: *release-secrets
-        if: env.MODE == 'apply'
-        # A code-only release changes no data by itself; skip the multi-million-row count then.
-        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
+        # A code-only release changes no data by itself, and a plan only proves the read: skip the
+        # multi-million-row count then.
+        run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.MODE == 'plan' || env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
       # No release may restart the root: its boot is read now and must still serve after the apply.
       - name: Record the root's boot before the apply
         env: *release-secrets
-        if: env.MODE == 'apply'
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
-        # pool that does not answer; every other release needs the root's boot.
+        # pool that does not serve the read; every other release needs the root's boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           bun scripts/release/deploy.ts boot --stage production --out .local/release/root-boot.json ${within:+--allow-not-serving}
       # The restore target if the class change fails. Reading it also arms a restore to it for ten
       # minutes, the window the class change runs in.
@@ -339,6 +447,12 @@ jobs:
             echo "- serving versions recorded: \`${{ steps.serving.outputs.workers }}\`; the live PoolWorker main module digest is pinned by the policy"
             echo "- controller storage bookmark: taken at $(jq -r .result.bookmark.at .local/release/bookmark/result.json); a restore to it is armed for ten minutes, and point-in-time recovery keeps it for 30 days"
           } >> "$GITHUB_STEP_SUMMARY"
+      # The backup, the counts and the boot record come between the first read and the upload; a
+      # token revoked or a rollout started in those minutes is seen here, seconds before it.
+      - name: Read the provider observation again right before the apply
+        if: env.MODE == 'apply'
+        env: *provider-observation-env
+        run: *provider-observation-run
       - name: Apply the reviewed plan
         id: apply
         if: env.MODE == 'apply'
@@ -349,7 +463,9 @@ jobs:
       - name: Accept the release through the live pool
         env: *release-secrets
         id: accept
-        if: env.MODE == 'apply' && steps.apply.outcome == 'success'
+        # A healing release reads the pool after a failed apply too: its new pool Worker may already
+        # be live and restarting the root, and nothing rolls it back.
+        if: env.MODE == 'apply' && (steps.apply.outcome == 'success' || (env.POLICY_NAME == 'code-restart' && steps.apply.outcome == 'failure'))
         continue-on-error: true
         # Every request must succeed; the runtimes that served are recorded (a code update may restart the root).
         # The pool first, then the public app (sign-in, logo, MCP metadata, pool status): a code-only
@@ -357,19 +473,35 @@ jobs:
         # A declared root restart first waits, bounded by the policy, for the root's new boot; then every
         # request must succeed on that one boot.
         run: |
-          within="$(jq -r '.acceptance.rootRestart.withinSeconds // empty' "$POLICY")"
+          within="$(jq -r '.acceptance.rootRestart.bound // empty' "$POLICY")"
           expect=(--expect "${{ (env.POLICY_NAME == 'code' || env.POLICY_NAME == 'cutover-code') && 'same-boot' || 'any' }}")
-          if [ -n "$within" ]; then expect=(--expect restart --within "$within" --serving .local/release/serving.json); fi
-          bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json
-          node scripts/smoke.ts
+          if [ -n "$within" ]; then expect=(--expect restart --serving .local/release/serving.json --apply "${{ steps.apply.outcome }}"); fi
+          rc=0
+          bun scripts/release/deploy.ts accept --stage production "${expect[@]}" --root-boot .local/release/root-boot.json --out .local/release/acceptance.json || rc=$?
+          # Exit 4: the acceptance device hit its user's cap, so nothing was tested. The step still
+          # fails; the steps after it stop the run without undoing a release nobody saw fail.
+          if [ "$rc" -eq 4 ]; then echo "acceptance=could-not-test" >> "$GITHUB_OUTPUT"; fi
+          # A failed acceptance goes straight to its rollback. A declared root restart has none, so
+          # its app smoke runs whatever the pool's acceptance found, and the run says both.
+          if [ "$rc" -ne 0 ] && [ -z "$within" ]; then exit "$rc"; fi
+          smoke=0
+          node scripts/smoke.ts || smoke=$?
+          echo "smoke=$smoke" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -ne 0 ]; then exit "$rc"; fi
+          exit "$smoke"
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
         env: *release-secrets
-        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))
         run: |
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
           # The release is red either way; this says whether the version rolled back to still serves.
-          if ! bun scripts/release/deploy.ts accept --stage production --expect any --out .local/release/acceptance-after-rollback.json; then
+          rc=0
+          # The boot read before the apply did not refuse the device, so a refusal now is that version's.
+          bun scripts/release/deploy.ts accept --stage production --expect any --admitted .local/release/root-boot.json --out .local/release/acceptance-after-rollback.json || rc=$?
+          if [ "$rc" -eq 4 ]; then
+            echo "::error::Acceptance could not test the rolled-back version: the release's acceptance device hit its user's cap: check the cap, then read the pool; whether the rolled-back version serves is unknown."
+          elif [ "$rc" -ne 0 ]; then
             echo "::error::The rolled-back version also fails acceptance: production is not serving correctly."
           fi
           echo "::error::Release rolled back (every Worker the plan updated); the cause is in the step above and in the sealed detail."
@@ -379,18 +511,59 @@ jobs:
       - name: Stop on a failed healing release
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'code-restart' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
         # Serving but needing a person is its own result: nothing is undone, and the run is not green.
+        env:
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          SMOKE: ${{ steps.accept.outputs.smoke }}
         run: |
-          outcome="$(jq -r '.outcome // "not-serving"' .local/release/acceptance.json 2>/dev/null || echo not-serving)"
-          if [ "$outcome" = "serving-needs-person" ]; then
-            echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)). Nothing was undone; look at the recovery with the pool serving."
-            exit 1
-          fi
-          echo "::error::NOT SERVING: the healing release failed, or the pool did not serve on a new root boot within its bound. It is not rolled back: the code before it could not restart the pool. The last read and the stop path are in .local/release/acceptance.json; the serving versions in .local/release/serving.json; a rollback is a separate GO."
+          outcome="$(jq -r '.outcome // "not-checked"' .local/release/acceptance.json 2>/dev/null || echo not-checked)"
+          if [ "$APPLY_OUTCOME" = "failure" ]; then apply="the apply failed (its step is named above)"; else apply="the apply succeeded"; fi
+          if [ "$SMOKE" = "0" ]; then app="the public app smoke passed"; elif [ -n "$SMOKE" ]; then app="the public app smoke FAILED"; else app="the public app smoke did not run"; fi
+          case "$outcome" in
+            healed)
+              echo "::error::HEALED, but the run is red: the pool serves on the new root boot with recovery ready; $apply and $app."
+              ;;
+            serving-restart-unconfirmed)
+              echo "::error::SERVING, RESTART UNCONFIRMED: the root's boot before the release could not be read, so nothing shows the release restarted the root; every model call served, $apply and $app. Nothing was undone; the stop path in .local/release/acceptance.json says whether the stuck runtime was stopped."
+              ;;
+            serving-needs-person)
+              echo "::error::SERVING, NEEDS A PERSON: every model call served on the new root boot, but the controller's recovery did not report ready ($(jq -r '.restart.reason' .local/release/acceptance.json)); $apply and $app. Nothing was undone; look at the recovery with the pool serving."
+              ;;
+            could-not-test)
+              echo "::error::COULD NOT TEST: no model call was tested on the root's boot after the apply; $apply and $app. Nothing was undone; the release's acceptance device hit its user's cap: check the cap, then read the pool before any GO."
+              ;;
+            not-serving)
+              echo "::error::NOT SERVING: the pool did not serve on a new root boot within its bound; $apply and $app. It is not rolled back: the code before it could not restart the pool. The last read and the stop path are in .local/release/acceptance.json; the serving versions in .local/release/serving.json; a rollback is a separate GO."
+              ;;
+            *)
+              echo "::error::NOT CHECKED: acceptance left no outcome, so nobody read the pool; $apply and $app. The new pool Worker may be live and restarting the root. It is not rolled back; read the pool before any GO."
+              ;;
+          esac
           exit 1
       - name: Stop on a failed class change
         if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        # The acceptance record keeps counts, never messages (they can name hosts), so the cause comes
+        # from the accept step's outputs and the record's counts; that step's log has the rest.
+        env:
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          ACCEPTANCE: ${{ steps.accept.outputs.acceptance }}
+          SMOKE: ${{ steps.accept.outputs.smoke }}
         run: |
-          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: $(jq -r '.cause // "apply failed"' .local/release/acceptance.json 2>/dev/null || echo 'apply failed')"
+          record=.local/release/acceptance.json
+          cause=""
+          if [ "$APPLY_OUTCOME" = "failure" ]; then
+            cause="the apply failed (its step is named above)"
+          elif [ "$ACCEPTANCE" = "could-not-test" ]; then
+            refused="$(jq -r '.refused // [] | map(tostring) | join(", ")' "$record" 2>/dev/null || true)"
+            if [ -n "$refused" ]; then cause="the pool refused the acceptance device (HTTP $refused), so nothing was tested"
+            else cause="the acceptance device was refused or misnamed before any model call, so nothing was tested"; fi
+          elif [ -n "$SMOKE" ] && [ "$SMOKE" != "0" ]; then
+            cause="every model call passed; the public app smoke failed"
+          elif [ ! -s "$record" ]; then
+            cause="acceptance stopped before it wrote a record; the accept step names why"
+          else
+            cause="$(jq -r 'if (.failed // 0) > 0 then "\(.failed) of \(.requests) model requests failed" elif .passed == false then "the boot the root had before the apply did not serve after it: the root restarted" else empty end' "$record" 2>/dev/null || true)"
+          fi
+          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: ${cause:-the accept step names it}"
           exit 1
       - name: Count accounts and history after
         env: *release-secrets
@@ -398,6 +571,14 @@ jobs:
         run: |
           bun scripts/release/deploy.ts snapshot --stage production --out .local/release/after.json ${{ (env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
           bun scripts/release/deploy.ts compare --before .local/release/before.json --after .local/release/after.json
+      # Only a serving failure undoes a release. When the pool refused the acceptance device nothing
+      # was tested, so the release stays live: the counts above still run, then the run stops red
+      # and a person looks. Rolling back would undo a release nobody saw fail.
+      - name: Stop on an acceptance that could not test
+        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'
+        run: |
+          echo "::error::ACCEPTANCE COULD NOT TEST: nothing was tested and nothing was rolled back; the release's acceptance device hit its user's cap: check the cap, then run again."
+          exit 1
       - name: Finish the deployment record
         if: always() && steps.deployment.outputs.id != ''
         env:

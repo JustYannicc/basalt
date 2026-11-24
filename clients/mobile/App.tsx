@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import Constants from "expo-constants";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
+import { namesNoPool } from "../contracts/pool-display.ts";
 import { controller } from "./native.ts";
 import { Button, Card, Field, Label, Notice, ThemeProvider, styles, useTheme } from "./ui.tsx";
 import { ModelScreen } from "./ModelScreen.tsx";
@@ -152,9 +153,11 @@ function Home() {
                     <Label small muted>
                       {connection.display.account.email}
                     </Label>
-                    <Label small muted>
-                      Pool: {connection.display.pool.name || connection.display.pool.id}
-                    </Label>
+                    {!namesNoPool(connection) ? (
+                      <Label small muted>
+                        Pool: {connection.display.pool.name}
+                      </Label>
+                    ) : null}
                   </View>
                 )}
                 {connection?.origin && (
@@ -162,7 +165,7 @@ function Home() {
                     {connection.origin}
                   </Label>
                 )}
-                {connection?.state === "connected" && origin && (
+                {connection?.state === "connected" && origin && !namesNoPool(connection) && (
                   <Button
                     label="Choose pool in browser"
                     secondary

@@ -4,6 +4,7 @@ import type { summarySelection } from "./summary-query.ts";
 import { requestCount } from "./series-coverage.ts";
 import { timestamp } from "./record.ts";
 import { utcSql } from "./series-query.ts";
+import { rollupHourlyText } from "./summary-rollup-query.ts";
 
 export const maxSummaryNativeHours = 12_000;
 const maxHeatmapCells = 5_000;
@@ -14,10 +15,13 @@ export async function summaryHourly(
   from: string,
   heatmapFrom: string,
   to: string,
+  rolled = false,
 ) {
   const heatmapTo = new Date(Math.floor(Date.parse(to) / 3_600_000) * 3_600_000).toISOString();
   const wall = "(left(timestamp_exact,19)::timestamp AT TIME ZONE 'UTC')";
-  const query = `${selection.text}, keyed AS (
+  const query = rolled
+    ? rollupHourlyText(selection, maxHeatmapCells)
+    : `${selection.text}, keyed AS (
       SELECT *,CASE WHEN counts_only THEN NULL ELSE provider END AS pv,
         date_trunc('hour',${wall}) AS hour_at,
         (extract(isodow FROM ${wall} AT TIME ZONE 'Europe/Zurich')-1)::int AS weekday,

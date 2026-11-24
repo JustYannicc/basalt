@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-import sys
+
+from .output import emit
 
 
 def report_recovery(
@@ -20,7 +21,7 @@ def report_recovery(
         or not 0 <= elapsed_ms <= 180_000
     ):
         return
-    print(
+    emit(
         "POOL_HOME_RECOVERY "
         + json.dumps(
             {
@@ -31,6 +32,5 @@ def report_recovery(
             },
             separators=(",", ":"),
         ),
-        file=sys.stderr,
-        flush=True,
+        err=True,
     )

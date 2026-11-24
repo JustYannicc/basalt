@@ -1,12 +1,44 @@
+import { Schema } from "effect";
 import type { PlanAllowanceCatalog } from "apps";
 import type { ComputerStorage } from "../computer-registry.ts";
 import { digest } from "../backend-users.ts";
-import { allowanceKey, datasetUrl, dayMs, seedCatalog, type PlanAllowance } from "./data.ts";
+import {
+  allowanceKey,
+  datasetUrl,
+  dayMs,
+  markContradictions,
+  seedCatalog,
+  type PlanAllowance,
+} from "./data.ts";
 import { datasetAllowances } from "./dataset.ts";
 import { vendorAllowances, vendorSources, type VendorSourceId } from "./vendors.ts";
 
 const stateKey = "pool-plan-allowances-v1";
+const expiryAlertKey = "pool-plan-allowances-expiry-alert-v1";
+export const expiryAlertLead = 7 * dayMs;
+export interface ExpiringAllowance {
+  vendor: string;
+  plan: string;
+  windowSeconds: number;
+  expiresAt: number;
+}
 const retryMs = 30 * 60_000;
+/** What the report's sender says Sentry answered; a refusal may carry Sentry's own wait. */
+interface ReportDelivery {
+  readonly delivered: boolean;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+}
+/** The UTC day a report was delivered, or a refused one: since when, Sentry's last status, next try. */
+const ExpiryAlert = Schema.Union([
+  Schema.Number,
+  Schema.Struct({
+    refusedSince: Schema.Number,
+    status: Schema.optional(Schema.Number),
+    nextAttemptAt: Schema.Number,
+  }),
+]);
+const isExpiryAlert = Schema.is(ExpiryAlert);
 interface SourceState {
   at: number;
   nextAttemptAt: number;
@@ -88,6 +120,47 @@ export class PlanAllowances {
           ] as [string, readonly string[], (bodies: readonly string[]) => PlanAllowance[]],
       ),
     ];
+    // Mirrors the shared resolver's order: source kind, then the newest check. A refreshed value
+    // the same size as the row deciding its plan keeps that row's revision, so the plan's revision
+    // survives whichever source ages out, takes over, or comes back.
+    const rank = {
+      "account-absolute": 0,
+      "account-calibration": 1,
+      dataset: 2,
+      vendor: 3,
+      policy: 4,
+      reference: 5,
+      unknown: 6,
+    };
+    const deciding = new Map<string, PlanAllowance>();
+    for (const entry of Object.values(state.sources).flatMap((source) => source.entries)) {
+      if (
+        entry.verification === "unknown" ||
+        entry.checkedAt === null ||
+        entry.checkedAt > now ||
+        entry.expiresAt === null ||
+        entry.expiresAt <= now
+      )
+        continue;
+      const known = deciding.get(allowanceKey(entry));
+      if (
+        !known ||
+        rank[entry.kind] < rank[known.kind] ||
+        (rank[entry.kind] === rank[known.kind] && entry.checkedAt > known.checkedAt!)
+      )
+        deciding.set(allowanceKey(entry), entry);
+    }
+    const sameSize = (a: PlanAllowance, b: PlanAllowance) =>
+      allowanceKey(a) === allowanceKey(b) &&
+      a.full === b.full &&
+      a.unit.id === b.unit.id &&
+      Boolean(a.unlimited) === Boolean(b.unlimited);
+    const sameValue = (a: PlanAllowance, b: PlanAllowance) =>
+      sameSize(a, b) && a.verification === b.verification;
+    const decidedBy = (entry: PlanAllowance) => {
+      const decider = deciding.get(allowanceKey(entry));
+      return decider && sameSize(decider, entry) ? decider.revision : undefined;
+    };
     await Promise.all(
       jobs.map(async ([id, urls, parse]) => {
         const previous = state.sources[id];
@@ -121,15 +194,16 @@ export class PlanAllowances {
             parse(bodies).map(async (entry) => ({
               ...entry,
               sourceId: id,
+              // The deciding row's revision first; then a key this source never stated keeps the
+              // seed's revision for the same value, whichever source the seed row came from.
               revision:
-                old.find(
-                  (value) =>
-                    allowanceKey(value) === allowanceKey(entry) &&
-                    value.full === entry.full &&
-                    value.unit.id === entry.unit.id &&
-                    value.verification === entry.verification &&
-                    Boolean(value.unlimited) === Boolean(entry.unlimited),
-                )?.revision ??
+                decidedBy(entry) ??
+                [
+                  ...old,
+                  ...this.seed.entries.filter(
+                    (value) => !old.some((known) => allowanceKey(known) === allowanceKey(value)),
+                  ),
+                ].find((value) => sameValue(value, entry))?.revision ??
                 `allowance-v1:${await digest(
                   JSON.stringify([
                     entry.vendor,
@@ -170,38 +244,80 @@ export class PlanAllowances {
   }
   async read(): Promise<PlanAllowanceCatalog> {
     const state = await this.storage.get<State>(stateKey);
+    const refreshed = Object.values(state?.sources ?? {}).flatMap((source) => source.entries);
+    // A source's later revocation also ends a seed row for that key from another source.
+    const revoked = (entry: PlanAllowance) =>
+      refreshed.some(
+        (value) =>
+          value.verification === "unknown" &&
+          allowanceKey(value) === allowanceKey(entry) &&
+          (value.fetchedAt ?? 0) > (entry.fetchedAt ?? 0),
+      );
     const entries = [
       ...this.seed.entries.filter((entry) => {
         const id = entry.sourceId;
-        return !id || !state?.sources[id] || state.sources[id]!.state === "unavailable";
+        return (
+          (!id || !state?.sources[id] || state.sources[id]!.state === "unavailable") &&
+          !revoked(entry)
+        );
       }),
-      ...Object.values(state?.sources ?? {}).flatMap((source) => source.entries),
+      ...refreshed,
     ];
+    return { entries: markContradictions(entries, this.now()) };
+  }
+  /**
+   * Reports plans whose last usable row expires within the lead, at most once per UTC day, so a
+   * source that stopped re-checking is fixed before its value goes stale. The day counts only
+   * once the report was delivered. A refused report waits for Sentry's own retry time, or the
+   * registry's retry cadence, so neither the send nor this read repeats on every upkeep pass.
+   */
+  async reportExpiring(
+    report: (rows: readonly ExpiringAllowance[]) => Promise<ReportDelivery>,
+    lead = expiryAlertLead,
+  ): Promise<void> {
     const now = this.now();
-    const active = entries.filter(
-      (entry) =>
-        entry.verification !== "unknown" &&
-        entry.checkedAt !== null &&
-        entry.checkedAt <= now &&
-        entry.expiresAt !== null &&
-        entry.expiresAt > now,
-    );
-    const conflicts = new Set<string>();
-    for (const entry of active.filter((value) => value.kind === "dataset")) {
-      const vendor = active.find(
-        (value) => value.kind === "vendor" && allowanceKey(value) === allowanceKey(entry),
-      );
-      if (
-        vendor &&
-        (vendor.full !== entry.full || Boolean(vendor.unlimited) !== Boolean(entry.unlimited))
-      )
-        conflicts.add(allowanceKey(entry));
+    const day = Math.floor(now / dayMs);
+    const alert = await this.expiryAlert();
+    if (alert === day || (typeof alert === "object" && alert.nextAttemptAt > now)) return;
+    const latest = new Map<string, PlanAllowance>();
+    for (const entry of (await this.read()).entries) {
+      if (entry.verification === "unknown" || entry.contradicted || entry.expiresAt === null)
+        continue;
+      const known = latest.get(allowanceKey(entry));
+      if (!known || entry.expiresAt > known.expiresAt!) latest.set(allowanceKey(entry), entry);
     }
+    const rows = [...latest.values()]
+      .filter((entry) => entry.expiresAt! - now <= lead)
+      .map(({ vendor, plan, windowSeconds, expiresAt }) => ({
+        vendor,
+        plan,
+        windowSeconds,
+        expiresAt: expiresAt!,
+      }));
+    const delivery: ReportDelivery = rows.length === 0 ? { delivered: true } : await report(rows);
+    await this.storage.put(
+      expiryAlertKey,
+      delivery.delivered
+        ? day
+        : {
+            refusedSince: typeof alert === "object" ? alert.refusedSince : now,
+            ...(delivery.status !== undefined ? { status: delivery.status } : {}),
+            nextAttemptAt: now + Math.max(delivery.retryAfterMs ?? 0, retryMs),
+          },
+    );
+  }
+  /** While Sentry refuses the expiry report: since when, and its last status. */
+  async alertDelivery() {
+    const alert = await this.expiryAlert();
+    if (typeof alert !== "object") return undefined;
     return {
-      entries: entries.map((entry) =>
-        conflicts.has(allowanceKey(entry)) ? { ...entry, contradicted: true } : entry,
-      ),
+      refusedSince: alert.refusedSince,
+      ...(alert.status !== undefined ? { lastStatus: alert.status } : {}),
     };
+  }
+  private async expiryAlert() {
+    const value = await this.storage.get<unknown>(expiryAlertKey);
+    return isExpiryAlert(value) ? value : undefined;
   }
   async status(): Promise<State | undefined> {
     return this.storage.get<State>(stateKey);

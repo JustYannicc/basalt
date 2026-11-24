@@ -884,7 +884,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://clerk.clerk.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "a21b4169c2ce5b3ccbc15672b9819ed9ee843146d2415cae7980c827b69ba3f7"
+          "metadataSha256": "6aa0f1966e8c3f3a1c1e0fd5e15861b8c9f4b5ac37c7ddb1ac64b90397c75cd6"
         }
       }
     },
@@ -1897,7 +1897,7 @@
     {
       "entry": "github",
       "package": "@executor.sh/github",
-      "sourceSha256": "17f4c32ee123c292e0ab4b16207d3a5013e121b6bfd8e5e8127b1cb91348e9fc",
+      "sourceSha256": "be267534af42ba525dfc62c8d2f0f429f75444aa784cbe0c15091277c0e344e9",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1955,7 +1955,7 @@
     {
       "entry": "gmail",
       "package": "@executor.sh/gmail",
-      "sourceSha256": "6c94c676a95eace4d988d679113e8837338b6d0ec6f3e4ad60b048c0485241fe",
+      "sourceSha256": "72dc2d793b4ef8dd0819098dfb7cd44bbf0bda0f06087cbacbc607df7c5e0ac9",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1987,7 +1987,7 @@
     {
       "entry": "google",
       "package": "@executor.sh/google",
-      "sourceSha256": "7d95eb240ea8398df356c08a2d72ac3b128adb4f66df27c621aa3e4d50e2fdea",
+      "sourceSha256": "607095e9ecb4f3a53dcf56f3ed7facdcb78b17a41c7cfc0ed493c2767a014faa",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -3259,7 +3259,7 @@
     {
       "entry": "notion",
       "package": "@executor.sh/notion",
-      "sourceSha256": "d94120acf483046aa26ae0babda755525c4d5ec8369b7f4657443036a724400c",
+      "sourceSha256": "dcafb674e047868aeca46d3047dd8e95e0c34f37febcabe95a52ede6ec4919f2",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -4203,7 +4203,7 @@
           "metadataSha256": "48af54e2e9736b4e947a3250093ec3c1fef2924aa7a38949047e9fc898fc0033"
         }
       },
-      "sourceSha256": "703bf51e36e7467fada342cffe3501e739725a2a0f737caec9825d68b42d57af"
+      "sourceSha256": "5f5b2cb5e5513ed4a647f7d3517d06dfe07f9c762bfb572909fea5e3b5945357"
     },
     {
       "entry": "servicem8",
@@ -4537,7 +4537,7 @@
       "methods": {
         "oauth": {
           "kind": "deferred",
-          "message": "Signalbox has not verified one-click sign-in for Tailscale yet. You can connect with your own OAuth app."
+          "message": "Tailscale has no sign-in for outside apps, so you connect with an OAuth client created in your own tailnet."
         }
       }
     },

@@ -1,0 +1,240 @@
+--- a/e2e/tests/account-traffic.spec.ts
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -16,7 +16,11 @@
+ import { serverControl } from "../support/server-control.ts";
+ import { scenarios } from "../test-plan.ts";
+ import { publishUsageChange } from "../support/pool-usage-change.ts";
++import { holdQuery } from "../support/query-transition.ts";
+ 
++/** The page's own reads of a pool's series and last success, which carry its pool counts. */
++const poolReads = /\/apps\/[^/]+\/pool-usage\/(?:series|last-success)$/;
++
+ const cells = (page: Page, label: string) => {
+   const row = accountRow(page, label);
+   return Promise.all([
+@@ -61,9 +65,17 @@
+             "Rejected traffic",
+             "Idle account",
+             "Counted elsewhere",
++            "Called account",
+           ],
+         });
+-        const [traffic, steady, rejected, idle] = saved as [string, string, string, string];
++        const [traffic, steady, rejected, idle, , called] = saved as [
++          string,
++          string,
++          string,
++          string,
++          string,
++          string,
++        ];
+         const ids = { traffic, steady, rejected, idle };
+         const check = (account: string) =>
+           api
+@@ -105,6 +117,12 @@
+               membership: "executor-links-v1",
+             },
+           }),
++          // A pool account that also served three tool calls this hour, and no pool request.
++          {
++            sql: `insert into executor_account_tool_calls (account, hour, requests, failed, last_success)
++              values ($1, $2::timestamptz, 3, 0, $2::timestamptz)`,
++            params: [called, new Date(Math.floor(anchor / 3_600_000) * 3_600_000).toISOString()],
++          },
+         ]);
+         // Opted out again before the app and accounts are removed: a native pool's link changes
+         // would notify the pool, which this loopback backend does not implement.
+@@ -342,20 +360,100 @@
+         // The column header is hidden here, so the count says what it counts.
+         expect(phone[1]).toBe("41");
+         expect(phone[2], "the count reads 41 req on a phone").toBe(true);
++
++        // While the pool's reads are still out, every account of the pool reads as counting: never
++        // its tool calls alone as if they were its total, never an empty cell that means no history.
++        // An account outside any pool is unchanged. The same cell serves the phone width.
++        for (const width of [1280, 390]) {
++          // The page's pool reads wait in the browser, as a slow pool's answer would, and are
++          // released when this scope closes. The host is never asked meanwhile: self-host serves
++          // every read from one database engine, so a host read held open would hold the tool-call
++          // read with it.
++          const counting = yield* Effect.scoped(
++            Effect.gen(function* () {
++              yield* holdQuery(poolReads, "continue", { method: "POST", allRequests: true });
++              return yield* browser.use(
++                `Open accounts at ${width}px while the pool's reads are held`,
++                (page) =>
++                  page
++                    .setViewportSize({ width, height: 900 })
++                    .then(() => page.goto(accounts))
++                    .then(() =>
++                      accountRow(page, "Called account")
++                        .locator("[data-account-requests-pending]")
++                        .waitFor(),
++                    )
++                    .then(() =>
++                      Promise.all([
++                        accountRow(page, "Called account")
++                          .locator("[data-account-requests]")
++                          .count(),
++                        accountRow(page, "Idle account")
++                          .locator("[data-account-requests-pending]")
++                          .count(),
++                        accountRow(page, "Idle account").locator("[data-account-requests]").count(),
++                        accountRow(page, "Traffic account")
++                          .locator("[data-account-requests-pending]")
++                          .count(),
++                        cells(page, "Connector mail"),
++                        accountRow(page, "Connector mail")
++                          .locator("[data-account-requests-pending]")
++                          .count(),
++                        // Nor do Health or Details take its tool calls for its whole traffic.
++                        accountRow(page, "Called account")
++                          .locator('[data-health-state="traffic"]')
++                          .count(),
++                      ]),
++                    ),
++              );
++            }),
++          );
++          expect(counting, `counting cells at ${width}px`).toEqual([0, 1, 0, 1, [0, 0, 0], 0, 0]);
++          // Answered: as before, the tool calls are this account's whole count.
++          const answered = yield* browser.use(`The held reads answer at ${width}px`, (page) =>
++            accountRow(page, "Called account")
++              .locator("[data-account-requests]")
++              .waitFor()
++              .then(() =>
++                Promise.all([
++                  accountRow(page, "Called account")
++                    .locator("[data-account-requests]")
++                    .getAttribute("data-account-requests"),
++                  accountRow(page, "Idle account")
++                    .locator("[data-account-requests]")
++                    .getAttribute("data-account-requests"),
++                  page.locator("[data-account-requests-pending]").count(),
++                  cells(page, "Counted elsewhere"),
++                ]),
++              ),
++          );
++          expect(answered, `answered cells at ${width}px`).toEqual(["3", "0", 0, [0, 0, 0]]);
++        }
+ 
++        // The called account's tool calls go, so that no row is counted by anything but the pool.
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          { sql: "delete from executor_account_tool_calls where account = $1", params: [called] },
++        ]);
++        yield* serverControl("start");
++
++        // The page open again with the pool's numbers, before the pool stops mapping them.
++        yield* browser.use("Open accounts with the Requests column", (page) =>
++          page
++            .setViewportSize({ width: 1280, height: 900 })
++            .then(() => page.goto(accounts))
++            .then(() => page.locator("[data-requests-header]").waitFor()),
++        );
++
+         // Once the pool can't map any request, no row has numbers: the column and the ticks go,
+         // rather than leaving a column of blank cells. Its committed revision refreshes the view.
+         yield* pool.respond(answer(ids, false, anchor));
+         yield* publishUsageChange(app);
+         const hidden = yield* browser.use("Wait for the Requests column to go", (page) =>
+           page
+-            .setViewportSize({ width: 1280, height: 900 })
++            .locator("[data-requests-header]")
++            .waitFor({ state: "detached", timeout: 45_000 })
+             .then(() =>
+-              page
+-                .locator("[data-requests-header]")
+-                .waitFor({ state: "detached", timeout: 45_000 }),
+-            )
+-            .then(() =>
+               Promise.all([
+                 page.locator("[data-account-requests]").count(),
+                 page.locator('[data-health-state="traffic"]').count(),
+--- a/e2e/tests/app-account-traffic.spec.ts
++++ b/e2e/tests/app-account-traffic.spec.ts
+@@ -15,6 +15,10 @@
+ import { scenarios } from "../test-plan.ts";
+ import { publishUsageChange } from "../support/pool-usage-change.ts";
+ import { type AccountsTabSection, rowMenuName } from "../support/account-choices.ts";
++import { holdQuery } from "../support/query-transition.ts";
++
++/** The page's own reads of a pool's series and last success, which carry its pool counts. */
++const poolReads = /\/apps\/[^/]+\/pool-usage\/(?:series|last-success)$/;
+ 
+ /** The tab's row for the account saved as `label`, found by its ⋯ menu, in one section. */
+ const tabRow = (page: Page, section: AccountsTabSection, label: string) =>
+@@ -279,6 +283,73 @@
+         });
+         expect(connectorCells).toEqual([0, 0, 0]);
+ 
++        // The quiet account served three tool calls this hour; no pool request names it.
++        const hour = new Date(Math.floor(anchor / 3_600_000) * 3_600_000).toISOString();
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          {
++            sql: `insert into executor_account_tool_calls (account, hour, requests, failed, last_success)
++              values ($1, $2::timestamptz, 3, 0, $2::timestamptz)`,
++            params: [quiet, hour],
++          },
++        ]);
++        yield* serverControl("start");
++        // While the pool's reads are still out, both pool accounts read as counting: never the quiet
++        // account's tool calls as if they were its total, never "no request history".
++        for (const width of [1280, 390]) {
++          // The page's pool reads wait in the browser, as a slow pool's answer would, and are
++          // released when this scope closes. The host is never asked meanwhile: self-host serves
++          // every read from one database engine, so a host read held open would hold the tool-call
++          // read with it.
++          const counting = yield* Effect.scoped(
++            Effect.gen(function* () {
++              yield* holdQuery(poolReads, "continue", { method: "POST", allRequests: true });
++              return yield* browser.use(
++                `Open the pool's tab at ${width}px while its reads are held`,
++                (page) => {
++                  const quietRow = tabRow(page, "App accounts", "Tab quiet");
++                  return page
++                    .setViewportSize({ width, height: 900 })
++                    .then(() => page.goto(poolTab))
++                    .then(() => quietRow.locator("[data-account-requests-pending]").waitFor())
++                    .then(() =>
++                      Promise.all([
++                        quietRow.locator("[data-account-requests]").count(),
++                        quietRow.locator("[data-account-requests-none]").count(),
++                        quietRow.locator('[data-health-state="traffic"]').count(),
++                        row(page).locator("[data-account-requests-pending]").count(),
++                        row(page).locator("[data-account-requests]").count(),
++                      ]),
++                    );
++                },
++              );
++            }),
++          );
++          expect(counting, `counting cells at ${width}px`).toEqual([0, 0, 0, 1, 0]);
++          // Answered: the quiet account's tool calls are its whole count, the pool's as before.
++          const answered = yield* browser.use(`The held reads answer at ${width}px`, (page) => {
++            const quietRow = tabRow(page, "App accounts", "Tab quiet");
++            return quietRow
++              .locator("[data-account-requests]")
++              .waitFor()
++              .then(() =>
++                Promise.all([
++                  quietRow.locator("[data-account-requests]").getAttribute("data-account-requests"),
++                  row(page)
++                    .locator("[data-account-requests]")
++                    .getAttribute("data-account-requests"),
++                  page.locator("[data-account-requests-pending]").count(),
++                ]),
++              );
++          });
++          expect(answered, `answered cells at ${width}px`).toEqual(["3", "41", 0]);
++        }
++        yield* serverControl("stop");
++        yield* legacyStorage([
++          { sql: "delete from executor_account_tool_calls where account = $1", params: [quiet] },
++        ]);
++        yield* serverControl("start");
++
+         // Once the pool can't map any request, the open tab drops the Requests cells and the
+         // ticks, and Health is the app's check again. Its committed revision refreshes the view.
+         yield* browser.use("Open the pool's tab again", (page) =>

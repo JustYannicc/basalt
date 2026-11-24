@@ -1,0 +1,251 @@
+diff --git a/apps/hosted/cloud/scripts/database-pool-budget.ts b/apps/hosted/cloud/scripts/database-pool-budget.ts
+--- a/apps/hosted/cloud/scripts/database-pool-budget.ts
++++ b/apps/hosted/cloud/scripts/database-pool-budget.ts
+@@ -1,7 +1,10 @@
+ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+ import { Config, Effect, Redacted, Schedule, Schema } from "effect";
+ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+-import { databasePoolParameters } from "../src/infrastructure/database-pool-policy.ts";
++import {
++  databaseMaxConnections,
++  databasePoolParameters,
++} from "../src/infrastructure/database-pool-policy.ts";
+ 
+ class PoolBudgetFailed extends Schema.TaggedError<PoolBudgetFailed>()("PoolBudgetFailed", {
+   message: Schema.String,
+@@ -15,6 +18,7 @@ const Parameters = Schema.Array(
+ );
+ const Change = Schema.Struct({ id: Schema.String, state: Schema.String });
+ const Changes = Schema.Struct({ data: Schema.Array(Change) });
++type Rows = typeof Parameters.Type;
+ 
+ const testDatabases = "basalt-preview-";
+ /**
+@@ -34,76 +38,129 @@ export function ownPoolBudgetTarget(stage: string, database: string, branch: str
+   );
+ }
+ 
+-export const configureDatabasePoolBudget = Effect.gen(function* () {
+-  const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
+-  const stage = yield* Config.NonEmptyString("POOL_BUDGET_STAGE");
+-  const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
+-  const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
+-  const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
+-  const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
+-  if (!ownPoolBudgetTarget(stage, database, branch))
+-    return yield* new PoolBudgetFailed({
+-      message: "The database budget refuses a database or branch that is not its stage's own",
+-    });
+-  const client = yield* HttpClient.HttpClient;
+-  const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
+-  const send = (request: HttpClientRequest.HttpClientRequest) =>
+-    Effect.gen(function* () {
+-      const response = yield* client.execute(
+-        HttpClientRequest.setHeader(
+-          request,
+-          "authorization",
+-          `${Redacted.value(id)}:${Redacted.value(token)}`,
++/**
++ * Recovery targets a branch restored from a non-test stage's own database, before it serves:
++ * never `main`, which is serving, and never a test stage's database or branch.
++ */
++export function recoveryTarget(stage: string, database: string, branch: string): boolean {
++  return (
++    !stage.startsWith("test-") &&
++    !database.startsWith(testDatabases) &&
++    branch !== "main" &&
++    !branch.startsWith("test-")
++  );
++}
++
++const value = (rows: Rows, namespace: string, name: string) =>
++  rows.find((row) => row.namespace === namespace && row.name === name)?.value;
++const poolerMatches = (rows: Rows) =>
++  Object.entries(databasePoolParameters).every(
++    ([name, expected]) => value(rows, "pgbouncer", name) === expected,
++  );
++const connectionsMatch = (rows: Rows) =>
++  value(rows, "pgconf", "max_connections") === databaseMaxConnections;
++
++/**
++ * The release keeps the shared pooler budget on its stage's own branch and verifies a non-test
++ * stage's Postgres connection slots without changing them, because that change restarts Postgres.
++ * Recovery applies both to a restored branch before it serves.
++ */
++const databasePoolBudget = (mode: "release" | "recovery") =>
++  Effect.gen(function* () {
++    const organization = yield* Config.NonEmptyString("PLANETSCALE_ORGANIZATION");
++    const stage = yield* Config.NonEmptyString("POOL_BUDGET_STAGE");
++    const database = yield* Config.NonEmptyString("POOL_BUDGET_DATABASE");
++    const branch = yield* Config.NonEmptyString("POOL_BUDGET_BRANCH");
++    const id = yield* Config.Redacted("PLANETSCALE_API_TOKEN_ID");
++    const token = yield* Config.Redacted("PLANETSCALE_API_TOKEN");
++    if (mode === "release" && !ownPoolBudgetTarget(stage, database, branch))
++      return yield* new PoolBudgetFailed({
++        message: "The database budget refuses a database or branch that is not its stage's own",
++      });
++    if (mode === "recovery" && !recoveryTarget(stage, database, branch))
++      return yield* new PoolBudgetFailed({
++        message:
++          "Recovery applies parameters only to a restored branch that is not serving, never main or a test stage's",
++      });
++    const client = yield* HttpClient.HttpClient;
++    const base = `https://api.planetscale.com/v1/organizations/${encodeURIComponent(organization)}/databases/${encodeURIComponent(database)}/branches/${encodeURIComponent(branch)}`;
++    const send = (request: HttpClientRequest.HttpClientRequest) =>
++      Effect.gen(function* () {
++        const response = yield* client.execute(
++          HttpClientRequest.setHeader(
++            request,
++            "authorization",
++            `${Redacted.value(id)}:${Redacted.value(token)}`,
++          ),
++        );
++        if (response.status !== 200)
++          return yield* new PoolBudgetFailed({
++            message: `PlanetScale returned ${response.status}`,
++          });
++        return yield* response.json;
++      }).pipe(
++        Effect.catchTag("HttpClientError", () =>
++          Effect.fail(new PoolBudgetFailed({ message: "PlanetScale request failed" })),
+         ),
+       );
+-      if (response.status !== 200)
+-        return yield* new PoolBudgetFailed({ message: `PlanetScale returned ${response.status}` });
+-      return yield* response.json;
+-    }).pipe(
+-      Effect.catchTag("HttpClientError", () =>
+-        Effect.fail(new PoolBudgetFailed({ message: "PlanetScale request failed" })),
++    const parameters = () =>
++      send(HttpClientRequest.get(`${base}/parameters`)).pipe(
++        Effect.flatMap(Schema.decodeUnknownEffect(Parameters)),
++      );
++    const current = yield* parameters();
++    if (value(current, "pgbouncer", "pool_mode") !== "transaction")
++      return yield* new PoolBudgetFailed({
++        message: "The database budget requires transaction pooling",
++      });
++    // A test stage keeps its own smaller connection size; every other release target is `main`.
++    const slots = mode === "recovery" || !stage.startsWith("test-");
++    // Refused before any write: only recovery on a branch that is not serving may restart Postgres.
++    if (mode === "release" && slots && !connectionsMatch(current))
++      return yield* new PoolBudgetFailed({
++        message: `Postgres max_connections on main is not ${databaseMaxConnections}; apply it through recovery on a branch that is not serving`,
++      });
++    const pending = {
++      ...(poolerMatches(current) ? {} : { pgbouncer: databasePoolParameters }),
++      ...(mode === "recovery" && !connectionsMatch(current)
++        ? { pgconf: { max_connections: databaseMaxConnections } }
++        : {}),
++    };
++    if (Object.keys(pending).length === 0) return;
++    const change = yield* send(
++      yield* HttpClientRequest.patch(`${base}/changes`).pipe(
++        HttpClientRequest.bodyJson({ parameters: pending }),
+       ),
++    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Change)));
++    // PlanetScale reloads the managed pooler, or restarts Postgres for recovery's slot change.
++    // Warm server retirement is verified after deployment.
++    yield* send(HttpClientRequest.get(`${base}/changes`)).pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
++      Effect.flatMap(({ data }) => {
++        const state = data.find((entry) => entry.id === change.id)?.state;
++        if (state === "completed") return Effect.void;
++        // Only a plain state word reaches the failure text; anything else is provider data.
++        const word =
++          state === undefined ? "missing" : /^[a-z_]{1,32}$/.test(state) ? state : "unreadable";
++        return Effect.fail(new PoolBudgetFailed({ message: `Parameter change is ${word}` }));
++      }),
++      // A pooler reload completes in seconds; recovery's Postgres restart can take much longer.
++      Effect.retry({
++        schedule: Schedule.spaced("5 seconds"),
++        times: mode === "recovery" ? 360 : 60,
++      }),
+     );
+-  const parameters = () =>
+-    send(HttpClientRequest.get(`${base}/parameters`)).pipe(
+-      Effect.flatMap(Schema.decodeUnknownEffect(Parameters)),
+-    );
+-  const matches = (rows: typeof Parameters.Type) =>
+-    Object.entries(databasePoolParameters).every(([name, value]) =>
+-      rows.some((row) => row.namespace === "pgbouncer" && row.name === name && row.value === value),
+-    );
+-  const current = yield* parameters();
+-  if (
+-    !current.some(
+-      (row) =>
+-        row.namespace === "pgbouncer" && row.name === "pool_mode" && row.value === "transaction",
+-    )
+-  )
+-    return yield* new PoolBudgetFailed({
+-      message: "The database budget requires transaction pooling",
+-    });
+-  if (matches(current)) return;
+-  const change = yield* send(
+-    yield* HttpClientRequest.patch(`${base}/changes`).pipe(
+-      HttpClientRequest.bodyJson({ parameters: { pgbouncer: databasePoolParameters } }),
+-    ),
+-  ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Change)));
+-  // PlanetScale reloads the managed pooler. Warm server retirement is verified after deployment.
+-  yield* send(HttpClientRequest.get(`${base}/changes`)).pipe(
+-    Effect.flatMap(Schema.decodeUnknownEffect(Changes)),
+-    Effect.flatMap(({ data }) => {
+-      const state = data.find((entry) => entry.id === change.id)?.state;
+-      if (state === "completed") return Effect.void;
+-      // Only a plain state word reaches the failure text; anything else is provider data.
+-      const word =
+-        state === undefined ? "missing" : /^[a-z_]{1,32}$/.test(state) ? state : "unreadable";
+-      return Effect.fail(new PoolBudgetFailed({ message: `PgBouncer change is ${word}` }));
+-    }),
+-    Effect.retry({ schedule: Schedule.spaced("5 seconds"), times: 60 }),
+-  );
+-  if (!matches(yield* parameters()))
+-    return yield* new PoolBudgetFailed({ message: "PgBouncer budget readback did not match" });
+-});
++    const readback = yield* parameters();
++    if (!poolerMatches(readback))
++      return yield* new PoolBudgetFailed({ message: "PgBouncer budget readback did not match" });
++    if (slots && !connectionsMatch(readback))
++      return yield* new PoolBudgetFailed({
++        message: "Postgres max_connections readback did not match",
++      });
++  });
++
++export const configureDatabasePoolBudget = databasePoolBudget("release");
++/** `node scripts/database-pool-budget.ts --recover` on a restored branch, before it serves. */
++export const recoverDatabaseParameters = databasePoolBudget("recovery");
+ 
+ /** Fixed text only: this script's own failure messages, or the class of any other error. */
+ const failureText = (error: unknown) =>
+@@ -118,10 +175,11 @@ const failureText = (error: unknown) =>
+           : "error"
+       }`;
+ 
+-if (import.meta.main)
++if (import.meta.main) {
++  const recover = process.argv.includes("--recover");
+   NodeRuntime.runMain(
+-    configureDatabasePoolBudget.pipe(
+-      Effect.timeout("6 minutes"),
++    (recover ? recoverDatabaseParameters : configureDatabasePoolBudget).pipe(
++      Effect.timeout(recover ? "35 minutes" : "6 minutes"),
+       Effect.provide(FetchHttpClient.layer),
+       // A deploy reports only a command's stderr, and the runtime logs failures to stdout.
+       Effect.tapError((error) =>
+@@ -129,3 +187,4 @@ if (import.meta.main)
+       ),
+     ),
+   );
++}
+diff --git a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
+--- a/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
++++ b/apps/hosted/cloud/src/infrastructure/database-pool-policy.ts
+@@ -9,3 +9,8 @@ export const databasePoolParameters = {
+   server_lifetime: String(retirement.lifetimeSeconds),
+   server_idle_timeout: String(retirement.idleSeconds),
+ } as const;
++/**
++ * Postgres connection slots the production release envelope is sized for. Changing it restarts
++ * Postgres, so the release only verifies it; recovery applies it to a branch that is not serving.
++ */
++export const databaseMaxConnections = "50";

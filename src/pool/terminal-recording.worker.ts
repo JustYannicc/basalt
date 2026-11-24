@@ -86,3 +86,33 @@ export function requestTerminal(
       );
   };
 }
+
+/**
+ * The finish of a call that an earlier instance of the controller started and recorded. A resumed
+ * answer records only its outcome, under the original id; the store keeps the first finish, so the
+ * call is counted once.
+ */
+export function resumedTerminal(
+  env: Environment,
+  requestId: string,
+  defer: (work: Promise<unknown>) => void,
+  recorder?: Pick<TerminalRecorder, "finish">,
+) {
+  if (!recorder && env.POOL_MODEL_HISTORY_ENABLED !== "true") return undefined;
+  const finish =
+    recorder?.finish ??
+    ((id: string, result: TerminalFinish) =>
+      withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
+        recordTerminalFinish(db, id, result),
+      ));
+  let finished = false;
+  return (outcome: TerminalOutcome, status: number, bytes: number) => {
+    if (finished) return;
+    finished = true;
+    defer(
+      finish(requestId, { outcome, status, bytes, at: new Date().toISOString() }).catch(() =>
+        console.error("POOL_TERMINAL_COLLECTION_UNAVAILABLE", { requestId }),
+      ),
+    );
+  };
+}

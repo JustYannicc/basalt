@@ -1,8 +1,8 @@
 /**
  * Failure output for release subprocesses. Actions logs are public, so a failed command shows only a
  * bounded tail with credentials removed: the values of credential-named environment variables, URL
- * userinfo, bearer and basic credentials, password/secret/token key-value pairs, and long runs mixing
- * letters and digits. GitHub's own masking of
+ * userinfo, bearer and basic credentials, password/secret/token key-value pairs, our signed envelopes
+ * whole or cut short, and long runs mixing letters and digits. GitHub's own masking of
  * Actions secrets still applies on top.
  */
 const maximumBytes = 64 * 1024;
@@ -49,6 +49,20 @@ export function redactFailureOutput(output: string, environment: NodeJS.ProcessE
     .sort((left, right) => right.length - left.length);
   for (const value of values) text = text.split(value).join("[redacted]");
   text = text
+    // `prefix.payload.signature` (src/pool/token.ts): a signature can be a run without a digit.
+    // No word boundary: an envelope can follow `_`, `x` or a URL-encoded `=`. The prefix is short,
+    // and bounding it keeps a long run of `sb` linear.
+    .replace(/sb[a-z-]{0,24}\d{1,4}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]")
+    // An envelope cut short, as any dotted run of base64url: a part after the base64url JSON payload
+    // (`eyJ`), or a whole HMAC-SHA256 signature (43 characters) after what is left of it. A run
+    // starts only where none continues, so a long one is read once.
+    .replace(/(?<![\w-])[\w-]+(?:\.[\w-]+)+/g, (run) => {
+      const parts = run.split(".");
+      const cut = parts.some(
+        (part, index) => index > 0 && (part.length === 43 || parts[index - 1]!.includes("eyJ")),
+      );
+      return cut ? "[redacted]" : run;
+    })
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/]*@/gi, "$1[redacted]@")
     .replace(/\b(Bearer|Basic)\s+\S+/gi, "$1 [redacted]")
     .replace(

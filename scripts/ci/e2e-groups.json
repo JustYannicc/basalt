@@ -154,8 +154,13 @@
     "target": "local",
     "mode": "managed"
   },
-  "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility": {
+  "account-acquisition:reusable-acquisition-and-retained-account-compatibility": {
     "job": "account-acquisition",
+    "target": "self-host",
+    "mode": "managed"
+  },
+  "account-observations:driver-readings-health-and-observation-compatibility": {
+    "job": "account-observations",
     "target": "self-host",
     "mode": "managed"
   },
@@ -292,7 +297,7 @@
     "mode": "managed"
   },
   "host-managed-accounts-pool:listed-account-actions": {
-    "job": "host-managed-accounts-pool",
+    "job": "host-managed-accounts-pool-actions",
     "target": "self-host",
     "mode": "managed"
   },
@@ -312,7 +317,7 @@
     "mode": "managed"
   },
   "host-managed-accounts-pool:bounded-per-account-usage-through-the-public-host-api": {
-    "job": "host-managed-accounts-pool",
+    "job": "host-managed-accounts-pool-actions",
     "target": "self-host",
     "mode": "managed"
   },
