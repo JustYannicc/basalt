@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.ts
+index e83691c89..92ea76325 100644
 --- a/apps/hosted/cloud/src/app-data.ts
 +++ b/apps/hosted/cloud/src/app-data.ts
-@@ -415,5 +415,5 @@ export default AppData.make(
+@@ -451,5 +451,5 @@ export default AppData.make(
        declare: (bundle: string, headers: Readonly<Record<string, string>>) =>
          runner.pipe(Effect.flatMap((served) => served.declare(bundle, headers))),
      };
@@ -9,9 +10,10 @@ diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.
 +  }).pipe(Effect.provide(AppDataSupervisorLive.pipe(Layer.provideMerge(cloudTelemetry)))),
  );
 diff --git a/apps/hosted/cloud/src/app-domains.ts b/apps/hosted/cloud/src/app-domains.ts
+index 3dcea298f..3469dcd26 100644
 --- a/apps/hosted/cloud/src/app-domains.ts
 +++ b/apps/hosted/cloud/src/app-domains.ts
-@@ -251,5 +251,7 @@ export default AppDomainController.make(
+@@ -298,5 +298,7 @@ export default AppDomainController.make(
        env: yield* telemetryBindings,
      };
    }),
@@ -21,9 +23,10 @@ diff --git a/apps/hosted/cloud/src/app-domains.ts b/apps/hosted/cloud/src/app-do
 +  ),
  );
 diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+index f457156d3..ab3a9b8c7 100644
 --- a/apps/hosted/cloud/src/app-ui.ts
 +++ b/apps/hosted/cloud/src/app-ui.ts
-@@ -20,7 +20,7 @@ import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
+@@ -24,7 +24,7 @@ import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
  import { AppUiApi } from "apps/ui/contracts";
  import { AlchemyContext } from "alchemy/AlchemyContext";
  import * as Cloudflare from "alchemy/Cloudflare";
@@ -32,16 +35,18 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
  import { HttpApiBuilder } from "effect/http-api";
  import {
    HttpRouter,
-@@ -32,7 +32,7 @@ import {
- import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
- import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
- // Failures are logged as telemetry records them: tags and fixed sentences, never values.
+@@ -40,8 +40,8 @@ import {
+   requestTiming,
+ } from "@executor-js/telemetry/http";
+ import { recordClientNetwork } from "./implementation/client-network.ts";
+-// Failures use fixed telemetry sentences, never values.
 -import { recordedCause } from "@executor-js/telemetry/recorded-failure";
++// Failures are logged as telemetry records them: tags and fixed sentences, never values.
 +import { logAppPageFailure } from "./implementation/app-page-failure.ts";
  import { cloudSentry } from "./implementation/error-reporting.ts";
  import { cloudAnalytics } from "./implementation/product-analytics.ts";
  import { postHogBindings } from "./infrastructure/posthog.ts";
-@@ -57,55 +57,6 @@ import { cloudMcpAppAssets } from "./infrastructure/mcp-app-assets.ts";
+@@ -66,55 +66,6 @@ import { cloudMcpAppAssets } from "./infrastructure/mcp-app-assets.ts";
  import { workerBuild } from "./infrastructure/worker-build.ts";
  import { productBrandBindings } from "./infrastructure/product-brand.ts";
  
@@ -97,7 +102,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
  /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
  export default class AppPages extends Cloudflare.Worker<AppPages>()(
    "AppPages",
-@@ -158,7 +109,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -169,7 +120,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
        dev: { host: "127.0.0.1", port, strictPort: port !== 0 },
      };
@@ -106,7 +111,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
    Effect.gen(function* () {
      const reportErrors = yield* cloudSentry;
      const analytics = yield* cloudAnalytics;
-@@ -244,7 +195,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -255,7 +206,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
          analytics.wrap,
          recordRequestRejections,
          reportErrors,
@@ -115,7 +120,7 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
          Effect.catchCause((cause) => {
            const error = Option.getOrUndefined(Cause.findErrorOption(cause));
            if (error !== undefined && HttpServerError.isHttpServerError(error))
-@@ -259,11 +210,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+@@ -272,11 +223,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
      };
    }).pipe(
      Effect.provide(
@@ -132,9 +137,10 @@ diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
    ),
  ) {}
 diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+index 5352e3c5e..3e36b2aeb 100644
 --- a/apps/hosted/cloud/src/artifacts-credentials.ts
 +++ b/apps/hosted/cloud/src/artifacts-credentials.ts
-@@ -531,7 +531,9 @@ export default ArtifactsCredentials.make(
+@@ -546,7 +546,9 @@ export default ArtifactsCredentials.make(
    }),
    Effect.succeed({}).pipe(
      Effect.provide(
@@ -147,6 +153,7 @@ diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/
  );
 diff --git a/apps/hosted/cloud/src/implementation/app-page-failure.ts b/apps/hosted/cloud/src/implementation/app-page-failure.ts
 new file mode 100644
+index 000000000..c9620cba7
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/app-page-failure.ts
 @@ -0,0 +1,57 @@
@@ -209,6 +216,7 @@ new file mode 100644
 +};
 diff --git a/apps/hosted/cloud/src/implementation/structured-logs.ts b/apps/hosted/cloud/src/implementation/structured-logs.ts
 new file mode 100644
+index 000000000..151376f86
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/structured-logs.ts
 @@ -0,0 +1,194 @@
@@ -407,6 +415,7 @@ new file mode 100644
 +export const withHostedSpanEvents = <A, E, R>(exporters: Layer.Layer<A, E, R>) =>
 +  Logger.layer([hostedSpanEvents], { mergeWithExisting: true }).pipe(Layer.provideMerge(exporters));
 diff --git a/apps/hosted/cloud/src/infrastructure/source-formatter.ts b/apps/hosted/cloud/src/infrastructure/source-formatter.ts
+index b0fff5050..7d50080f9 100644
 --- a/apps/hosted/cloud/src/infrastructure/source-formatter.ts
 +++ b/apps/hosted/cloud/src/infrastructure/source-formatter.ts
 @@ -27,10 +27,9 @@ export const cloudSourceFormatter = Effect.gen(function* () {
@@ -423,6 +432,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/source-formatter.ts b/apps/hos
              Effect.withSpan("source.display.format"),
            ),
 diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+index b94af6c8e..379baf478 100644
 --- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
 +++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
 @@ -14,6 +14,11 @@ import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
@@ -437,7 +447,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/clo
  import { axiomSettings } from "./axiom-settings.ts";
  import { parseDirectSentryDsn, parseDirectSentryOtlpEndpoint } from "./sentry.ts";
  
-@@ -256,6 +261,11 @@ export const telemetryBindings = Effect.gen(function* () {
+@@ -279,6 +284,11 @@ export const telemetryBindings = Effect.gen(function* () {
   * Provide it once, on a Worker's initialization. Each build adds another exporter to the
   * isolate, so a Durable Object constructor must not provide it: every later event in that
   * isolate would export its metrics once more per constructed object.
@@ -449,7 +459,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/clo
   */
  export const cloudTelemetry = Layer.unwrap(
    Effect.gen(function* () {
-@@ -266,13 +276,20 @@ export const cloudTelemetry = Layer.unwrap(
+@@ -289,13 +299,20 @@ export const cloudTelemetry = Layer.unwrap(
      const bound = yield* context.get<unknown>(binding);
      // Alchemy env props may arrive JSON-decoded; RuntimeContext.set uses a redacted marker.
      const value = Redacted.isRedacted(bound) ? Redacted.value(bound) : bound;
@@ -474,9 +484,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/clo
    }),
  );
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 81bef25ad..75370c292 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -924,9 +924,8 @@ export default Api.make(
+@@ -1001,9 +1001,8 @@ export default Api.make(
          PlacedScheduleCoordinatorLive.pipe(Layer.provideMerge(ScheduleCoordinatorLive)),
          OrganizationRemovalRecoveryLive,
          cloudAuthDatabase,
@@ -488,9 +499,10 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
    ),
  );
 diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+index 5635fbc54..8536d7db3 100644
 --- a/apps/hosted/cloud/src/mcp-server.ts
 +++ b/apps/hosted/cloud/src/mcp-server.ts
-@@ -88,8 +88,9 @@ export default McpServer.make(
+@@ -95,8 +95,9 @@ export default McpServer.make(
      };
    }).pipe(
      Effect.provide(
@@ -502,6 +514,7 @@ diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-ser
      ),
    ),
 diff --git a/apps/hosted/cloud/src/sso.ts b/apps/hosted/cloud/src/sso.ts
+index b3c8a34b6..db83f4d79 100644
 --- a/apps/hosted/cloud/src/sso.ts
 +++ b/apps/hosted/cloud/src/sso.ts
 @@ -64,6 +64,6 @@ export default Sso.make(

@@ -1,7 +1,7 @@
 {
   "identity": "basalt-catalog-method-label",
   "file": "0750-catalog-method-label.patch",
-  "content_sha256": "ef16ec788e6aac1ef903242138761454e33006566351b02cc5f14312e400dbcd",
+  "content_sha256": "e1f60eb60eb56d7f65f454c2f834682dab157871e3ec6b7eb08ca85228e23539",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

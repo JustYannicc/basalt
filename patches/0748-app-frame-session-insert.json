@@ -1,7 +1,7 @@
 {
   "identity": "basalt-app-frame-session-insert",
   "file": "0748-app-frame-session-insert.patch",
-  "content_sha256": "47765d37f1603e2b0af1e4236648238f8979d1e3e0c8a6a730018bac43eb63c8",
+  "content_sha256": "e1d3a922d24fd5308b2c456922b680d6a4f1c47a58079aabc3baeb2954fca22b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,
