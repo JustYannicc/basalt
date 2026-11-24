@@ -51,10 +51,22 @@ const Retained = Schema.Struct({
 });
 const PrimaryEnd = Schema.Struct({ previous: SlotIdentity, end: RuntimeEnd });
 const isPrimaryEnd = Schema.is(PrimaryEnd);
-/** How the last primary a recovery replaced had ended, for the controller inspect. */
+/** How the last primary a recovery restarted had ended, for the controller inspect. */
 export async function primaryLastEnd(storage: { get(key: string): Promise<unknown> }) {
   const value = await storage.get(primaryEndKey);
   return isPrimaryEnd(value) ? value : null;
+}
+/**
+ * A boot's own end is the first one recovery reads for it. A restart attempt that ends before it
+ * serves ends a container too, and must not replace it: the record keeps the boot's end until a
+ * later boot ends in its turn.
+ */
+async function keepFirstEnd(transaction: SlotStorage, previous: SlotIdentity, end: unknown) {
+  const ended = readEnd(end);
+  if (!ended) return;
+  const kept = await transaction.get(primaryEndKey);
+  if (isPrimaryEnd(kept) && sameIdentity(kept.previous, previous)) return;
+  await transaction.put(primaryEndKey, { previous, end: ended });
 }
 interface Dependencies {
   storage: RuntimeSlotStorage;
@@ -342,7 +354,7 @@ export class RuntimeSlotRecovery {
       );
     };
     // Compare before admission and again at commit; a promotion or policy edit cannot be overwritten.
-    await storage.transact(async (current) => {
+    await storage.transact(async (current, transaction) => {
       if (
         current.selection?.epoch !== selection.epoch ||
         !sameIdentity(current.selection.active.identity, previous) ||
@@ -350,6 +362,8 @@ export class RuntimeSlotRecovery {
       )
         throw new SlotRefused("selection");
       retiredDenials(current);
+      // Before any restart of this round can end a container of its own.
+      await keepFirstEnd(transaction, previous, retained.end);
     });
     if (!retained.running) {
       await driver.admit(previous, await envelope(false));
@@ -413,8 +427,7 @@ export class RuntimeSlotRecovery {
         identity: health.identity,
         fingerprint: original.configurationFingerprint,
       });
-      const previousEnd = readEnd(retained.end);
-      if (previousEnd) await transaction.put(primaryEndKey, { previous, end: previousEnd });
+      await keepFirstEnd(transaction, previous, retained.end);
     });
     await this.finish(health.identity, original.configurationFingerprint, signal);
   }
