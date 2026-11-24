@@ -17,15 +17,23 @@ export async function ensurePostgresRole(admin: pg.Client): Promise<void> {
     );
 }
 
+/**
+ * Let the postgres role administer `role` when it already exists. Proofs that create it as the
+ * fixture superuser leave postgres unable to grant it or own a database as it, and any of them may
+ * have run first; a role postgres creates itself it already administers.
+ */
+export async function ensurePostgresAdministers(admin: pg.Client, role: string): Promise<void> {
+  const existing = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = $1", [role]);
+  if (existing.rowCount)
+    await admin.query(
+      `GRANT "${role.replaceAll('"', '""')}" TO postgres WITH ADMIN TRUE, INHERIT TRUE, SET TRUE`,
+    );
+}
+
 /** Match PlanetScale's non-superuser postgres role and a managed migration login. */
 export async function managedMigrationUrl(admin: pg.Client, adminUrl: string): Promise<string> {
   await ensurePostgresRole(admin);
-  const owner = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = 'basalt_pool_owner'");
-  // Other proofs seed this role as the fixture superuser; its real creator can administer it.
-  if (owner.rowCount)
-    await admin.query(
-      "GRANT basalt_pool_owner TO postgres WITH ADMIN TRUE, INHERIT TRUE, SET TRUE",
-    );
+  await ensurePostgresAdministers(admin, "basalt_pool_owner");
   const login = await admin.query("SELECT 1 FROM pg_roles WHERE rolname = 'pool_test_migration'");
   if (!login.rowCount)
     await admin.query(
