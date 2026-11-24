@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-unchanged-provider-no-write",
+  "file": "0776-unchanged-provider-no-write.patch",
+  "content_sha256": "c924f7c562b4a184d0faaf686908caa4c8bca0ffad053a9368468950de07ada0",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": true,
+  "workflow_sensitive": false
+}

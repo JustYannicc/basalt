@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { pullTestDatabaseImage } from "../test-database-image.ts";
 
 const image = process.env.POOL_TEST_IMAGE;
 
@@ -46,6 +47,7 @@ for (const { postgres, databaseImage, pgbouncer } of [
       timeout: 240_000,
     },
     async (t) => {
+      pullTestDatabaseImage(databaseImage);
       const network = `basalt-startup-${randomUUID()}`;
       const containers: string[] = [];
       docker(["network", "create", network]);
