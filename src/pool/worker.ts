@@ -462,11 +462,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       signInRoutes: {
         beginSignIn: (session, route) => this.routes.beginSignIn(session, route),
         settleSignIn: (session, references) => this.routes.settleSignIn(session, references),
-        homogeneous: async () =>
-          servesOneImage(
-            [env.POOL_IMAGE_HASH, env.POOL_BLUE_IMAGE_HASH, env.POOL_GREEN_IMAGE_HASH],
-            await ctx.storage.get(slotSelectionKey),
-          ),
+        homogeneous: async () => servesOneImage(await ctx.storage.get(slotSelectionKey)),
       },
       // Without a gateway binding there is no reading at all, so the pool view omits `route`.
       ...(gateway && {

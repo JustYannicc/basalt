@@ -30,14 +30,13 @@ export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
 }
 
 /**
- * Whether every runtime that can take a sign-in's management calls runs one image input: the root
- * container, the bound blue and green cell applications, and every runtime the slot selection names
- * (active, candidate, draining). Unbound applications are absent and don't count.
+ * Whether every runtime a sign-in's management calls can reach runs one image input. With a slot
+ * selection, each call goes to the selection's active runtime (runtime-slots/integration.ts
+ * `selected()`), so the reachable set across a handoff is its active, candidate and draining
+ * records; the root container and unselected colours are never reached. Without one, only the root
+ * container takes them, which is one image by itself. An unreadable selection is never agreement.
  */
-export function servesOneImage(images: readonly (string | undefined)[], selection: unknown) {
-  const bound = images.filter((image): image is string => Boolean(image));
-  const root = bound[0];
-  if (root === undefined || bound.some((image) => image !== root)) return false;
+export function servesOneImage(selection: unknown) {
   if (selection === undefined) return true;
   let decoded: SlotSelection;
   try {
@@ -45,7 +44,8 @@ export function servesOneImage(images: readonly (string | undefined)[], selectio
   } catch {
     return false;
   }
-  return [decoded.active, decoded.candidate, decoded.draining].every(
-    (record) => record === undefined || record.target.imageInput === root,
+  const image = decoded.active.target.imageInput;
+  return [decoded.candidate, decoded.draining].every(
+    (record) => record === undefined || record.target.imageInput === image,
   );
 }

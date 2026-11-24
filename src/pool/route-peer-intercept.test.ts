@@ -14,43 +14,28 @@ const target = (imageInput: string) => ({
 });
 const record = (imageInput: string) => ({ target: target(imageInput), fenced: false });
 
-test("the serving runtimes count as one image only when the root and every selected slot agree", () => {
-  assert.equal(servesOneImage(["0123456789abcdef"], undefined), true);
+test("the reachable runtimes count as one image only when the selection's active, candidate and draining agree", () => {
+  const one = "0123456789abcdef";
+  const two = "fedcba9876543210";
+  assert.equal(servesOneImage(undefined), true);
+  assert.equal(servesOneImage({ epoch: 1, active: record(one) }), true);
+  assert.equal(servesOneImage({ epoch: 2, active: record(one), candidate: record(two) }), false);
+  assert.equal(servesOneImage({ epoch: 3, active: record(one), draining: record(two) }), false);
   assert.equal(
-    servesOneImage(["0123456789abcdef"], { epoch: 1, active: record("0123456789abcdef") }),
+    servesOneImage({
+      epoch: 4,
+      active: record(two),
+      candidate: record(two),
+      draining: record(two),
+    }),
     true,
   );
-  assert.equal(
-    servesOneImage(["0123456789abcdef"], {
-      epoch: 2,
-      active: record("0123456789abcdef"),
-      candidate: record("fedcba9876543210"),
-    }),
-    false,
-  );
-  assert.equal(
-    servesOneImage(["0123456789abcdef"], {
-      epoch: 3,
-      active: record("0123456789abcdef"),
-      draining: record("fedcba9876543210"),
-    }),
-    false,
-  );
-  assert.equal(
-    servesOneImage(["0123456789abcdef"], { epoch: 4, active: record("fedcba9876543210") }),
-    false,
-  );
   // An unreadable selection is never taken as agreement.
-  assert.equal(servesOneImage(["0123456789abcdef"], { epoch: "x" }), false);
+  assert.equal(servesOneImage({ epoch: "x" }), false);
 });
 
-test("the bound blue and green cell applications must run the root's image too", () => {
-  const same = "0123456789abcdef";
-  const other = "fedcba9876543210";
-  const selection = { epoch: 1, active: record(same) };
-  assert.equal(servesOneImage([same, same, same], selection), true);
-  assert.equal(servesOneImage([same, undefined, undefined], selection), true);
-  assert.equal(servesOneImage([same, other, undefined], selection), false);
-  assert.equal(servesOneImage([same, same, other], selection), false);
-  assert.equal(servesOneImage([undefined], undefined), false);
+test("a steady-state production fleet passes: one selected runtime, whatever image the root or the other colour runs", () => {
+  // The root container keeps its pinned image and the previous colour stays bound to its old one;
+  // neither takes management calls while a runtime is selected.
+  assert.equal(servesOneImage({ epoch: 9, active: record("0123456789abcdef") }), true);
 });
