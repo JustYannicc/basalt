@@ -148,7 +148,9 @@ test("Zurich DST buckets and the comparison preserve calendar boundaries", async
     await seriesFixture(async (f) => {
       const fixture = await summaryFixture(f);
       await fixture.native(1, new Date(Date.parse(start) + 3_600_000).toISOString());
-      await fixture.cursor(1);
+      // Captured through the window's end, so every hour of it is one the capture has passed.
+      await fixture.native(2, end);
+      await fixture.cursor(2);
       const result = await poolUsageSummary(
         f.db,
         { pool, from: start, to: end, authority: fixture.authority },
@@ -173,11 +175,13 @@ test("an uncaptured same-day native request makes coverage and projections expli
   await seriesFixture(async (f) => {
     const fixture = await summaryFixture(f);
     await fixture.native(1, "2026-01-01T01:00:00Z");
-    await fixture.cursor(1);
     await f.db.query(
       "INSERT INTO usage (id,timestamp,api_key) VALUES (2,'2026-01-01T02:30:00Z',$1)",
       [fixture.fingerprint],
     );
+    // Captured past it: a row after the capture's position is not captured yet, never missing.
+    await fixture.native(3, "2026-01-01T02:50:00Z");
+    await fixture.cursor(3);
     const result = await poolUsageSummary(
       f.db,
       { pool, from, to, authority: fixture.authority },
@@ -238,7 +242,9 @@ test("a native request on an account not saved in the pool reads its hours' capt
     // An account the caller's saved accounts don't bind: the probe's, a test account, or one
     // removed from the pool.
     await fixture.native(1, "2026-01-01T01:00:00Z", { account: "c".repeat(64) });
-    await fixture.cursor(1);
+    // Captured through the window's end, so every hour of it is one the capture has passed.
+    await fixture.native(2, to);
+    await fixture.cursor(2);
     const result = await poolUsageSummary(
       f.db,
       { pool, from, to, authority: fixture.authority },

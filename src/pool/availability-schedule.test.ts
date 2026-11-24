@@ -751,3 +751,77 @@ test("a usage rollup stuck before reaching any pool is reported without a pool, 
     [["pool_usage_rollup_stuck", undefined]],
   );
 });
+
+test("stuck capture-hour counts are their own closed reason, one event per pool's episode, check-in ok", async (t) => {
+  const messages: ReturnType<typeof unpack>[] = [];
+  t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit | undefined) => {
+    messages.push(unpack(init));
+    return new Response(null, { status: 202 });
+  });
+  const errors: unknown[][] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => void errors.push(args));
+  const stored = new Map<string, unknown>();
+  const memory = new AvailabilityEpisodes({
+    get: async (key) => structuredClone(stored.get(key)),
+    put: async (key, value) => void stored.set(key, structuredClone(value)),
+  });
+  const first = "0123456789abcdef";
+  const second = "fedcba9876543210";
+  const minute = async (
+    capture: () => Promise<readonly string[]>,
+    rollup: () => Promise<readonly string[]> = async () => [],
+  ) => {
+    const before = messages.length;
+    await runAvailabilityProbe(
+      env,
+      async (): Promise<ProbeResult> => ({ ok: true, failures: [] }),
+      undefined,
+      undefined,
+      memory,
+      rollup,
+      capture,
+    );
+    const sent = messages.slice(before);
+    const checkIn = sent.find(
+      (item) => item.type === "check_in" && item.payload.status !== "in_progress",
+    );
+    assert.equal(checkIn?.payload.status, "ok", "the check-in stays ok");
+    return sent
+      .filter((item) => item.type === "event")
+      .map((item) => [item.payload.tags.error_code, item.payload.tags.rollup_pool]);
+  };
+  const event = (pool: string) => ["pool_capture_hours_stuck", pool];
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "one event, naming the pool");
+  assert.deepEqual(await minute(async () => [first]), [], "the same episode a minute later");
+  assert.deepEqual(
+    await minute(async () => {
+      throw new Error("state unreadable");
+    }),
+    [],
+    "an unreadable state keeps the episode instead of ending it",
+  );
+  assert.deepEqual(
+    await minute(
+      async () => [first, second],
+      async () => [first],
+    ),
+    [["pool_usage_rollup_stuck", first], event(second)],
+    "another pool, and the rollup's own reason on the same pool, are episodes of their own",
+  );
+  assert.deepEqual(await minute(async () => []), [], "cleared: the episodes end");
+  assert.deepEqual(await minute(async () => [first]), [event(first)], "stuck again is a new one");
+  assert.deepEqual(await minute(async () => [""]), [["pool_capture_hours_stuck", undefined]]);
+  assert.equal(
+    errors.some(([line]) => line === "POOL_AVAILABILITY_FAILURE"),
+    false,
+    "the availability failures list stays empty",
+  );
+  const stuckEvent = messages.find(
+    (item) => item.payload.tags?.error_code === "pool_capture_hours_stuck",
+  );
+  assert.deepEqual(stuckEvent?.payload.contexts.pool_probe.failures, [
+    { guard: "request_reliability", reason: "capture_hours_stuck", pool: first },
+  ]);
+  assert.equal(stuckEvent?.payload.contexts.request_reliability, undefined);
+  assertNoPrivateDiagnostics(messages);
+});

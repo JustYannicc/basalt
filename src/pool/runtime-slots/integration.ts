@@ -156,6 +156,10 @@ export class RuntimeHandoff {
   available() {
     return this.recovery?.available() ?? true;
   }
+  /** How long a call may still wait for the selected root's recovery; 0 when none is restoring it. */
+  recoveryHoldMs() {
+    return this.recovery?.holdMs() ?? 0;
+  }
   /** The forced-restart clock, readable while the runtime refuses: "needs a person" shows here. */
   recoveryState() {
     return new UnservingClock(this.storage).inspect();

@@ -36,6 +36,8 @@ const pinned: Record<string, string> = {
     "2fd62938cdf4e6a9115936285f93f0a36ee3bc87f8ade6f26e61e8ec9cee8f2d",
   model_request_history_v16_usage_rollup_people:
     "a71f5d3631e5474e9d9760bd3797f514ff4e392a9cc071e4559f223cb977e9a4",
+  model_request_history_v17_capture_hours:
+    "8509dee37f2c3c8e959b581a49f1602d43849b37095936a045cce8642d238455",
   // The journal activation cutover is registered apart from the ordered steps.
   model_request_history_v10_change_journal_activate:
     "b2791bd29dfea0456497f9be6cd6d7f80a528fca126463a8960631b5f4edeccc",

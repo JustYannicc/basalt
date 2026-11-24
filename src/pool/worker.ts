@@ -8,6 +8,12 @@ import {
   usageRollupStuckPools,
   usageRollupTick,
 } from "./model-history/usage-rollup-auto.ts";
+import {
+  captureHoursAutoState,
+  captureHoursInspect,
+  captureHoursStuckPools,
+  captureHoursTick,
+} from "./model-history/capture-hours-auto.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -338,6 +344,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       namespaces: () => this.fleetNamespaces(),
       provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
       currentRequests: () => this.modelStreams.active,
+      handingOver: () => this.handover.draining,
       wrap: nativeResponse,
       schedule: (at) => this.alarms.schedule("fleet", at),
       legacyPeers: {
@@ -678,6 +685,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   usageRollupAutoState() {
     return usageRollupAutoState(this.ctx.storage);
   }
+  /** Where the pool's own capture-hour counts are: last tick, stop, pause and stuck hour. */
+  captureHoursAutoState() {
+    return captureHoursAutoState(this.ctx.storage);
+  }
   /** The minute check's failures already reported, so a continuing one is reported once. */
   availabilityEpisode() {
     return new AvailabilityEpisodes(this.ctx.storage).read();
@@ -849,6 +860,16 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
                 }),
               { stopped: () => this.handover.draining },
             ).catch(() => console.error("POOL_USAGE_ROLLUP_TICK_PENDING"));
+            // After the rollup's, in sessions of its own: the pool counts each settled hour's Home
+            // usage rows, so the summary compares counts instead of probing every usage row.
+            await captureHoursTick(
+              this.ctx.storage,
+              (work) =>
+                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
+                  totalTimeoutMs: 20_000,
+                }),
+              { stopped: () => this.handover.draining },
+            ).catch(() => console.error("POOL_CAPTURE_HOURS_TICK_PENDING"));
           }),
         );
       } catch {
@@ -915,6 +936,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         this.bookmarks,
         () => this.allowances.alertDelivery(),
         () => this.usageRollupAutoState().then(usageRollupInspect),
+        () => this.captureHoursAutoState().then(captureHoursInspect),
       );
     } finally {
       this.handoffsInFlight--;
@@ -1418,6 +1440,7 @@ export default {
           write: (episode) => singleton(env).recordAvailabilityEpisode(episode),
         },
         () => singleton(env).usageRollupAutoState().then(usageRollupStuckPools),
+        () => singleton(env).captureHoursAutoState().then(captureHoursStuckPools),
       );
       return;
     }

@@ -21,6 +21,7 @@ import {
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import { usageRollupLockClass } from "../../src/pool/model-history/usage-rollup-schema.ts";
+import { historyCaptureHoursVersion } from "../../src/pool/model-history/capture-hours-schema.ts";
 import { pool as poolName, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -388,6 +389,7 @@ test("a pool becomes ready on v16 by ticks alone, and then its summary and serie
     }
     assert.ok(await ready(f.db, pool), "ready on v16 by ticks alone");
     assert.equal(storage.state()!.rollup, "v16");
+    await withoutCaptureHours(f.db);
     const after = await read(f.db);
     assert.deepEqual(after.rolled, [true, true], "ready: the v16 rollup");
     assert.deepEqual(after.summary, before.summary);
@@ -699,3 +701,15 @@ test("the span end's margin: an install late in its hour ends the span an hour l
     assert.equal(plan.pools[0]!.to, at(5), "03:57 plus the margin is in the 04:00 hour");
   });
 });
+
+/**
+ * The fixture's January 2026 window reaches past the 400 days capture-hour counts cover, where no
+ * hour reads complete by design. This test proves the rollup equals raw rows, so it reads capture as
+ * before v17, on both sides: v17's table and record dropped.
+ */
+async function withoutCaptureHours(db: HistoryDatabase) {
+  await db.query("DROP TABLE basalt_model_capture_hours");
+  await db.query("DELETE FROM basalt_model_history_migrations WHERE name=$1", [
+    historyCaptureHoursVersion,
+  ]);
+}

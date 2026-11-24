@@ -50,12 +50,15 @@ export async function runAvailabilityProbe(
   episodes?: EpisodeMemory,
   /** The history pools whose usage rollup is stuck: a history problem, never an outage. */
   usageRollupStuck?: () => Promise<readonly string[]>,
+  /** The history pools whose capture-hour counts are stuck; the same, on their own episodes. */
+  captureHoursStuck?: () => Promise<readonly string[]>,
 ): Promise<void> {
   if (env.POOL_AVAILABILITY_TARGET === undefined || env.POOL_AVAILABILITY_TARGET === "") return;
   const receipt = await startPoolMonitor(env, availabilityCron);
   const target = env.POOL_AVAILABILITY_TARGET;
   let result: ProbeResult;
-  let rollupUnread = false;
+  // The stuck reasons whose state could not be read this minute.
+  const unread: string[] = [];
   try {
     if (!validProbeTarget(target))
       result = { ok: false, failures: [{ guard: "configuration", reason: "invalid_target" }] };
@@ -90,26 +93,24 @@ export async function runAvailabilityProbe(
         result.failures.push({ guard: "request_reliability", reason: "failing_now" });
       if (measured === null || (measured && notifyCollectionUnavailable(measured)))
         result.failures.push({ guard: "request_reliability", reason: "collection_unavailable" });
-      const stuck = usageRollupStuck
-        ? await awaitProbe(usageRollupStuck, signal).catch(() => "unread" as const)
-        : [];
-      if (stuck === "unread") {
-        rollupUnread = true;
-        console.error("POOL_USAGE_ROLLUP_STATE_UNREAD");
+      for (const [reason, read, unreadLog] of [
+        ["usage_rollup_stuck", usageRollupStuck, "POOL_USAGE_ROLLUP_STATE_UNREAD"],
+        ["capture_hours_stuck", captureHoursStuck, "POOL_CAPTURE_HOURS_STATE_UNREAD"],
+      ] as const) {
+        const stuck = read ? await awaitProbe(read, signal).catch(() => "unread" as const) : [];
+        if (stuck === "unread") {
+          unread.push(reason);
+          console.error(unreadLog);
+        }
+        // On the reliability side, so the check-in stays ok while the pool serves. Only the pool's
+        // own 16-hex history id travels, so each stuck pool is its own episode.
+        else
+          for (const pool of stuck)
+            if (/^[0-9a-f]{16}$/.test(pool))
+              result.failures.push({ guard: "request_reliability", reason, pool });
+            // A tick that fails before it reaches any pool is stuck as a whole, named by no pool.
+            else if (pool === "") result.failures.push({ guard: "request_reliability", reason });
       }
-      // On the reliability side, so the check-in stays ok while the pool serves. Only the pool's
-      // own 16-hex history id travels, so each stuck pool is its own episode.
-      else
-        for (const pool of stuck)
-          if (/^[0-9a-f]{16}$/.test(pool))
-            result.failures.push({
-              guard: "request_reliability",
-              reason: "usage_rollup_stuck",
-              pool,
-            });
-          // A tick that fails before it reaches any pool is stuck as a whole, named by no pool.
-          else if (pool === "")
-            result.failures.push({ guard: "request_reliability", reason: "usage_rollup_stuck" });
     }
   } catch {
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
@@ -123,15 +124,17 @@ export async function runAvailabilityProbe(
       )
     : undefined;
   if (reported === "unreachable") console.error("POOL_AVAILABILITY_EPISODE_UNREACHABLE");
-  // A stuck rollup whose state could not be read this minute stays in its episode, rather than
+  // A stuck tick whose state could not be read this minute stays in its episode, rather than
   // ending it and reporting it again a minute later.
-  if (rollupUnread && reported && reported !== "unreachable" && reported.pool === next.pool)
+  if (unread.length && reported && reported !== "unreachable" && reported.pool === next.pool)
     next = {
       ...next,
       reliability: [
         ...new Set([
           ...next.reliability,
-          ...reported.reliability.filter((key) => key.startsWith("usage_rollup_stuck:")),
+          ...reported.reliability.filter((key) =>
+            unread.some((reason) => key === reason || key.startsWith(`${reason}:`)),
+          ),
         ]),
       ].sort(),
     };

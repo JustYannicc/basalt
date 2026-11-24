@@ -70,6 +70,36 @@ export const UsageRollup = Schema.Struct({
     }),
   ),
 });
+/** The pool's own capture-hour counts, closed the same way. */
+export const CaptureHours = Schema.Struct({
+  lastTickAt: Schema.NullOr(Schema.String),
+  lastStop: Schema.NullOr(Schema.String),
+  pausedUntil: Schema.NullOr(Schema.String),
+  pools: Schema.NullOr(Schema.Number),
+  pendingHours: Schema.NullOr(Schema.Number),
+  stuck: Schema.Array(
+    Schema.Struct({
+      pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
+      reason: Schema.NullOr(Schema.Literals(["slow", "lock", "error"])),
+      hour: Schema.NullOr(Schema.String),
+      retryAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+  // Optional, so a pool whose projection lacks one still prints the rest.
+  lastHour: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHourReadMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  stalestCheckedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  pendingBlocks: Schema.optional(Schema.NullOr(Schema.Number)),
+  planMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  recountPosition: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        pool: Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u)),
+        block: Schema.String,
+      }),
+    ),
+  ),
+});
 const Inspect = Schema.Struct({
   result: Schema.Struct({
     selection: Schema.optional(Selection),
@@ -82,6 +112,7 @@ const Inspect = Schema.Struct({
     lastEnd: Schema.optional(Schema.Unknown),
     // Decoded apart, leniently: a diagnostic must never block the fleet lane's other modes.
     usageRollup: Schema.optional(Schema.Unknown),
+    captureHours: Schema.optional(Schema.Unknown),
   }),
 });
 const Row = Schema.Struct({

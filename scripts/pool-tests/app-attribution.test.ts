@@ -25,6 +25,7 @@ import {
   type HistoryDatabase,
 } from "../../src/pool/model-history/schema.ts";
 import { historyUsageRollupVersion } from "../../src/pool/model-history/usage-rollup-schema.ts";
+import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import { historyBulkSchemaVersion } from "../../src/pool/model-history/bulk-schema.ts";
 import {
   historyImportCompletionVersion,
@@ -95,6 +96,7 @@ test("app attribution upgrades additively and new Home attempts retain app perso
         historyChangeOnceVersion,
         historyImportReconcileVersion,
         historyUsageRollupVersion,
+        historyUsagePeopleRollupVersion,
         historySchemaVersion,
       ].sort(),
     );
