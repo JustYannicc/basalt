@@ -129,7 +129,13 @@ export class PoolControl implements ControlAttribution {
       deps.signInRoutes,
     );
     this.collection = new QuotaCollection(storage, this.client, { now: () => this.now() });
-    this.actions = new AccountActions(this.client, storage, this.collection, () => this.now());
+    this.actions = new AccountActions(
+      this.client,
+      storage,
+      this.collection,
+      () => this.now(),
+      deps.routeRefusals,
+    );
   }
   private now(): number {
     return this.deps.now?.().getTime() ?? Date.now();

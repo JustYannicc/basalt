@@ -47,6 +47,7 @@ async function fixture(
   provider = "codex",
   audience: readonly string[] = [],
   grants = claudeGrants,
+  routeRefusals?: import("./account-actions.ts").RouteRefusals,
 ) {
   let now = Date.parse("2030-01-01T00:00:00Z");
   let disabled = false,
@@ -191,6 +192,7 @@ async function fixture(
     home: (path: string, init?: RequestInit) =>
       fetch(`http://127.0.0.1:${address.port}${path}`, init),
     now: () => new Date(now),
+    routeRefusals,
   };
   let control = new PoolControl(storage, deps);
   const token = await signPoolToken(signingKey, {
@@ -256,6 +258,22 @@ test("account actions authorize before contacting Home and cannot affect another
     [true, false],
   );
   assert.equal((await f.call("cooldown/clear")).status, 200);
+});
+
+test("a credential the pool keeps off for its owner's route can't be resumed; the owner's own pause takes it over", async (t) => {
+  const refused = new Set(["account"]);
+  const f = await fixture(t, "codex", [], claudeGrants, {
+    refused: async (id) => refused.has(id),
+    refusedReferences: async () => refused,
+    markRefused: async (id, value) => void (value ? refused.add(id) : refused.delete(id)),
+  });
+  const resumed = await f.call("resume");
+  assert.equal(resumed.status, 409);
+  assert.equal(((await resumed.json()) as Json).error, "route_unsupported");
+  assert.ok(!f.calls.some((call) => call.path === "/credentials/status"));
+  assert.equal((await f.call("pause")).status, 200);
+  assert.equal(refused.has("account"), false);
+  assert.equal((await f.call("resume")).status, 200);
 });
 
 test("manual refresh collects a fresh idle account once, retaining the shared persisted cap", async (t) => {

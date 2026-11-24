@@ -2,7 +2,12 @@ import { mirrorHomeConfig } from "./account-config-mirror.ts";
 import type { HomeClient } from "./control.ts";
 import { enableNewCodexWebSockets } from "./codex-websockets.ts";
 import { failureResponse, json, object, readBody, unavailable, type Json } from "./json.ts";
-import type { MirrorRouteHint, RouteAssignments } from "./route-assignments.ts";
+import {
+  pluginProviders,
+  type MirrorRouteHint,
+  type RouteAssignments,
+} from "./route-assignments.ts";
+import { routePeerAddress } from "./route-refusal.ts";
 import { openEnvelope } from "./token.ts";
 
 export const accountMirrorPath = "/pool/v1/account-mirrors";
@@ -93,6 +98,10 @@ export async function handleAccountKeyMirror(
         "id" in value.credential
       )
         return new Response(null, { status: 400 });
+      // A plugin makes its own calls without the credential's proxy, so a routed one is saved
+      // disabled: Home never uses or refreshes it, and nothing goes direct (change 37/39).
+      const refused =
+        pluginProviders.has(value.credential.type) && proxy?.includes(routePeerAddress) === true;
       const saved = await input.home.data("/credentials", {
         method: "POST",
         signal: request.signal,
@@ -101,9 +110,11 @@ export async function handleAccountKeyMirror(
           ...value.credential,
           uuid: value.reference,
           ...(proxy === undefined ? {} : { proxy_url: proxy }),
+          ...(refused ? { disabled: true } : {}),
         }),
       });
       if (saved.name !== `${value.reference}.json`) return unavailable();
+      await input.routes?.markRefused(value.reference, refused);
       await enableNewCodexWebSockets(input.home, [value.reference], value.credential.type);
     }
     if (value.action === "remove") await input.routes?.forget(value.reference);

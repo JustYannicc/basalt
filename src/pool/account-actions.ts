@@ -17,18 +17,27 @@ export type AccountAction =
 export const accountActionPath =
   /^\/accounts\/([^/]+)\/(refresh|pause|resume|cooldown\/clear|resets(?:\/(?:use|attempt))?)$/;
 
+export interface RouteRefusals {
+  refused(reference: string): Promise<boolean>;
+  refusedReferences(): Promise<ReadonlySet<string>>;
+  markRefused(reference: string, refused: boolean): Promise<void>;
+}
+
 export class AccountActions {
   private queue = new Map<string, Promise<unknown>>();
   private redemption: ResetRedemption;
   private client: HomeClient;
   private collection: QuotaCollection;
   private now: () => number;
+  private refusals?: RouteRefusals;
   constructor(
     client: HomeClient,
     storage: ActionStorage,
     collection: QuotaCollection,
     now: () => number,
+    refusals?: RouteRefusals,
   ) {
+    this.refusals = refusals;
     this.client = client;
     this.collection = collection;
     this.now = now;
@@ -80,12 +89,17 @@ export class AccountActions {
     if (action === "pause" || action === "resume") {
       const disabled = action === "pause";
       await stillMember();
+      // Resuming would let its plugin call without the owner's route; it stays off (change 37).
+      if (!disabled && (await this.refusals?.refused(id)))
+        return fail(409, "route_unsupported", "This account can't use its owner's route yet.");
       const result = await this.client.data("/credentials/status", {
         ...post({ name: id, disabled }),
         method: "PATCH",
         signal,
       });
       if (result.status !== "ok" || result.disabled !== disabled) return unavailable();
+      // The owner's pause is theirs to lift: the pool never re-enables it when the route ends.
+      if (disabled) await this.refusals?.markRefused(id, false);
       this.client.dropQuotaDetail(id);
       return json({ disabled });
     }

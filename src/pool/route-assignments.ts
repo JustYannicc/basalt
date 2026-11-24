@@ -51,13 +51,29 @@ const entryPrefix = "route-assignment:";
 const poolPrefix = "route-pool:";
 const hintPrefix = "route-hint:";
 const signInPrefix = "route-sign-in:";
+const refusedPrefix = "route-refused:";
 // Rules change rarely; the revision poll catches edits, the floor catches anything it missed.
 const refreshFloorMs = 15 * 60_000;
+/**
+ * How often the alarm asks the tools service. While rules are not served (a 404, or no 200 yet)
+ * it asks again only after `unservedPauseMs`; a mirror or a new member still asks at once.
+ * Served, its cheap revision poll runs at most every `servedPollMs`.
+ */
+export const unservedPauseMs = 10 * 60_000;
+export const servedPollMs = 60_000;
+/**
+ * Backends whose model calls and refreshes a Home plugin makes. No rig case yet proves a plugin
+ * sends through the credential's proxy, so a routed owner's credential here is refused: Home keeps
+ * it disabled, never used and never refreshed (change 37/39).
+ */
+export const pluginProviders: ReadonlySet<string> = new Set(["gemini-cli", "typesafe"]);
 
 const State = Schema.Struct({
   served: Schema.Boolean,
   // The pools this controller has prepared, so the alarm reads them by key, never by scan.
   pools: Schema.Array(Schema.String),
+  // When the alarm last asked the tools service.
+  polledAt: Schema.optional(Schema.Number),
 });
 type State = typeof State.Type;
 const Entry = Schema.Struct({ routeId: Schema.String, owner: Schema.String });
@@ -135,7 +151,7 @@ function combine(answers: readonly (RouteResolution | Entry | undefined)[]): Ent
 
 type Credential =
   | { kind: "config"; family: string; proxy: string }
-  | { kind: "auth"; proxy: string };
+  | { kind: "auth"; proxy: string; provider: string; disabled: boolean };
 
 async function writeAuth(home: HomeClient, id: string, proxy: string, signal: AbortSignal) {
   const result = await home.data("/credentials/fields", {
@@ -146,6 +162,15 @@ async function writeAuth(home: HomeClient, id: string, proxy: string, signal: Ab
   if (result.status !== "ok") return unavailable();
 }
 
+async function writeDisabled(home: HomeClient, id: string, disabled: boolean, signal: AbortSignal) {
+  const result = await home.data("/credentials/status", {
+    ...post({ name: id, disabled }),
+    method: "PATCH",
+    signal,
+  });
+  if (result.status !== "ok" || result.disabled !== disabled) return unavailable();
+}
+
 async function readCredentials(home: HomeClient, signal: AbortSignal) {
   const credentials = new Map<string, Credential>();
   for (const [reference, value] of await readHomeConfigProxies(home, signal))
@@ -153,7 +178,13 @@ async function readCredentials(home: HomeClient, signal: AbortSignal) {
   for (const file of rows((await home.data("/credentials", { signal })).files)) {
     if (typeof file.id !== "string" || credentials.has(file.id)) continue;
     const proxy: unknown = file.proxy_url ?? file["proxy-url"];
-    credentials.set(file.id, { kind: "auth", proxy: typeof proxy === "string" ? proxy : "" });
+    const provider: unknown = file.provider ?? file.type;
+    credentials.set(file.id, {
+      kind: "auth",
+      proxy: typeof proxy === "string" ? proxy : "",
+      provider: typeof provider === "string" ? provider : "",
+      disabled: file.disabled === true,
+    });
   }
   return credentials;
 }
@@ -252,6 +283,19 @@ export class RouteAssignments {
     return answer;
   }
 
+  /** Whether the pool disabled this credential because its plugin can't use the route. */
+  async refused(reference: string) {
+    return (await this.storage.get(refusedPrefix + reference)) === true;
+  }
+  async refusedReferences(): Promise<ReadonlySet<string>> {
+    return new Set((await this.listed(refusedPrefix, Schema.Literal(true))).keys());
+  }
+  /** The mirror saved this credential disabled for its route, or Home's own state now holds. */
+  async markRefused(reference: string, refused: boolean) {
+    if (refused) await this.storage.put(refusedPrefix + reference, true);
+    else await this.storage.delete(refusedPrefix + reference);
+  }
+
   /** Whether the host said this credential's owner has a rule that could route it. */
   private async hasRules(reference: string) {
     return (await this.storage.get(hintPrefix + reference)) === true;
@@ -305,10 +349,21 @@ export class RouteAssignments {
           ? routeProxyUrl(unassignedRoute)
           : credentialProxy(decision?.routeId ?? null, credential.proxy);
       try {
+        const plugin = credential.kind === "auth" && pluginProviders.has(credential.provider);
+        // Disabled before its proxy changes, so a refused plugin credential is never live routed.
+        if (plugin && decision !== null && !credential.disabled) {
+          await writeDisabled(this.home, reference, true, signal);
+          await this.storage.put(refusedPrefix + reference, true);
+        }
         if (proxy !== credential.proxy) {
           if (credential.kind === "config")
             await setHomeConfigProxy(this.home, credential.family, reference, proxy, signal);
           else await writeAuth(this.home, reference, proxy, signal);
+        }
+        // Only the pool's own refusal is lifted; an owner's pause stays.
+        if (plugin && decision === null && (await this.refused(reference))) {
+          await writeDisabled(this.home, reference, false, signal);
+          await this.storage.delete(refusedPrefix + reference);
         }
         if (decision === null) await this.record(reference, null);
       } catch {
@@ -350,10 +405,13 @@ export class RouteAssignments {
         const stored = await this.storage.get(entryPrefix + reference);
         const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
         const rules = await this.hasRules(reference);
+        // Before any 200, the host's hasRules is the only proof of rules: never direct then.
         const decision: Decision = ruleless.has(reference)
           ? null
           : answer
-            ? combine([answer.resolutions.get(reference), entry])
+            ? !answer.served && rules
+              ? "hold"
+              : combine([answer.resolutions.get(reference), entry])
             : rules
               ? "hold"
               : "keep";
@@ -424,7 +482,8 @@ export class RouteAssignments {
     }
     const decision = combine(answers);
     const served = (await this.state()).served;
-    if (decision === "hold" || (!claimed && served)) return routeProxyUrl(unassignedRoute);
+    // Before any 200 a hasRules:true credential is held too: a 200 decides it, never a 404.
+    if (decision === "hold" || !claimed || !served) return routeProxyUrl(unassignedRoute);
     await this.record(reference, decision);
     return decision ? routeProxyUrl(decision.routeId) : undefined;
   }
@@ -461,11 +520,19 @@ export class RouteAssignments {
   /** A removed credential no longer vouches for its route. */
   async forget(reference: string) {
     await this.storage.delete(hintPrefix + reference);
+    await this.storage.delete(refusedPrefix + reference);
     await this.record(reference, null);
   }
 
   /** On the pool's alarm: one cheap poll per pool, a full pass when a revision or the floor says so. */
   async tick(signal: AbortSignal) {
+    const state = await this.state();
+    if (
+      this.now() - (state.polledAt ?? -Infinity) <
+      (state.served ? servedPollMs : unservedPauseMs)
+    )
+      return;
+    await this.storage.put(stateKey, { ...state, polledAt: this.now() } satisfies State);
     const pools = await this.pools();
     let due = false;
     for (const [pool, record] of pools) {

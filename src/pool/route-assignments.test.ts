@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { HomeClient } from "./control.ts";
 import {
@@ -9,8 +10,11 @@ import {
 import {
   RouteAssignments,
   credentialProxy,
+  pluginProviders,
   routeProxyUrl,
+  servedPollMs,
   unassignedRoute,
+  unservedPauseMs,
   type RouteResolution,
   type RouteResolver,
   type RouteStorage,
@@ -66,7 +70,13 @@ function fakeHome() {
     }
     if (route === "/credentials" && method === "GET") return Response.json({ files: state.files });
     if (route === "/credentials" && method === "POST") {
-      state.files.push({ id: body.uuid, proxy_url: body.proxy_url ?? "" });
+      state.files = state.files.filter((file) => file.id !== body.uuid);
+      state.files.push({
+        id: body.uuid,
+        type: body.type,
+        proxy_url: body.proxy_url ?? "",
+        ...(body.disabled === true ? { disabled: true } : {}),
+      });
       return Response.json({ status: "ok", name: `${body.uuid}.json` });
     }
     if (route === "/credentials/fields" && method === "PATCH" && state.failFields)
@@ -77,6 +87,13 @@ function fakeHome() {
       state.writes.push(`auth:${body.id}`);
       file.proxy_url = body.proxy_url;
       return Response.json({ status: "ok" });
+    }
+    if (route === "/credentials/status" && method === "PATCH") {
+      const file = state.files.find((item) => item.id === body.name);
+      if (!file) return Response.json({ error: "not_found" }, { status: 404 });
+      state.writes.push(`status:${body.name}:${body.disabled}`);
+      file.disabled = body.disabled;
+      return Response.json({ status: "ok", disabled: body.disabled });
     }
     if (route === "/config" && method === "PATCH") {
       state.writes.push("global");
@@ -252,35 +269,73 @@ test("an unreachable tools service that never answered 200 leaves everything dir
   rules.fail(true);
   const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
   await routes.prepare(scope, [], signal());
-  for (const hint of [{}, { hasRules: false }, { hasRules: true }]) {
+  // Change 37 reversed the hasRules:true part on purpose: that hint is proof of rules, so it is
+  // held (next test). Without a hint, or with hasRules:false, everything stays as on main.
+  for (const hint of [{}, { hasRules: false }]) {
     assert.equal((await mirror(client, routes, mine, apiKey, hint)).status, 200);
     assert.equal(keyProxy(mine), "");
   }
-  assert.equal((await mirror(client, routes, oauth, claude, { hasRules: true })).status, 200);
+  assert.equal((await mirror(client, routes, oauth, claude)).status, 200);
   await routes.prepare(scope, [mine, oauth], signal());
   await routes.tick(signal());
   assert.equal(keyProxy(mine), "");
   assert.equal(state.files[0]!.proxy_url, "");
 });
 
+test("a hasRules:true credential with no 200 yet is held, not written direct", async () => {
+  const { client, keyProxy, state } = fakeHome();
+  const rules = scripted({
+    [mine]: { routeId: home, owner },
+    [oauth]: { routeId: null, owner: null },
+  });
+  const clock = { at: now };
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => clock.at);
+  for (const unserved of ["unreachable", "404"]) {
+    rules.fail(unserved === "unreachable");
+    rules.serve(unserved !== "404");
+    assert.equal((await mirror(client, routes, mine, apiKey, { hasRules: true })).status, 200);
+    assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  }
+  assert.equal((await mirror(client, routes, oauth, claude, { hasRules: true })).status, 200);
+  // Home refreshes what it holds at once: the first thing it holds already refuses.
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(unassignedRoute));
+  // A membership step doesn't turn the hold into direct while rules are not served.
+  await routes.prepare(scope, [mine, oauth], signal());
+  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(unassignedRoute));
+  // The first 200 decides each: its route, or direct.
+  rules.fail(false);
+  rules.serve(true);
+  clock.at += 10 * 60_000;
+  await routes.tick(signal());
+  assert.equal(keyProxy(mine), routeProxyUrl(home));
+  assert.equal(state.files[0]!.proxy_url, "");
+});
+
 test("rule changes rewrite only the credentials whose route changed, and a failed pass changes nothing", async () => {
   const { client, state, keyProxy } = fakeHome();
   const rules = scripted({ [mine]: { routeId: home, owner } });
-  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  const clock = { at: now };
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => clock.at);
+  // Each alarm here is past the served poll bound.
+  const tick = () => {
+    clock.at += 60_000;
+    return routes.tick(signal());
+  };
   await mirror(client, routes, mine, apiKey);
   await mirror(client, routes, teammate, apiKey);
   await routes.prepare(scope, [mine, teammate], signal());
   await routes.refresh(signal());
   state.writes.length = 0;
-  await routes.tick(signal());
+  await tick();
   assert.deepEqual(state.writes, []);
   rules.set({ [mine]: { routeId: null, owner: null } });
   rules.fail(true);
-  await assert.rejects(routes.tick(signal()));
+  await assert.rejects(tick());
   assert.equal(keyProxy(mine), routeProxyUrl(home));
   assert.equal(await routes.routeOwner(home), owner);
   rules.fail(false);
-  await routes.tick(signal());
+  await tick();
   assert.equal(keyProxy(mine), "");
   assert.equal(keyProxy(teammate), "");
   assert.deepEqual(state.writes, ["codex"]);
@@ -513,4 +568,123 @@ test("a proxy the host configured itself is never cleared or replaced by a direc
   assert.equal(credentialProxy(null, routeProxyUrl(home)), "");
   assert.equal(credentialProxy(null, ""), "");
   assert.throws(() => routeProxyUrl("rt_../../x"));
+});
+
+test("while rules are not served the alarm asks the tools service at most once per pause; a new member asks at once", async () => {
+  const { client } = fakeHome();
+  const rules = scripted({});
+  rules.serve(false);
+  const clock = { at: now };
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => clock.at);
+  await routes.prepare(scope, [mine], signal());
+  const asked = rules.calls.length;
+  // An alarm every 5 s for the whole pause: one ask.
+  for (let at = 0; at < unservedPauseMs; at += 5_000) {
+    clock.at = now + at;
+    await routes.tick(signal());
+  }
+  assert.equal(rules.calls.length, asked + 1);
+  clock.at = now + unservedPauseMs;
+  await routes.tick(signal());
+  assert.equal(rules.calls.length, asked + 2);
+  // A membership change is never paced.
+  await routes.prepare(scope, [mine, teammate], signal());
+  assert.equal(rules.calls.length, asked + 3);
+  // Served, the cheap poll runs at most once per servedPollMs.
+  rules.serve(true);
+  clock.at += unservedPauseMs;
+  await routes.tick(signal());
+  const served = rules.calls.length;
+  for (let at = 5_000; at < servedPollMs; at += 5_000) {
+    clock.at += 5_000;
+    await routes.tick(signal());
+  }
+  assert.equal(rules.calls.length, served);
+});
+
+test("a routed owner's plugin-provider credential is kept disabled, never live on its route, and only the pool's own refusal is lifted", async () => {
+  const { client, state } = fakeHome();
+  const [gemini, typesafe, paused] = [
+    "12345678-abcd-4000-8000-0000000000a1",
+    "12345678-abcd-4000-8000-0000000000a2",
+    "12345678-abcd-4000-8000-0000000000a3",
+  ];
+  const rules = scripted({
+    [gemini]: { routeId: home, owner },
+    [typesafe]: { routeId: home, owner },
+    [paused]: { routeId: home, owner },
+  });
+  const clock = { at: now };
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => clock.at);
+  const file = (id: string) => state.files.find((row) => row.id === id)!;
+  // The host's route: saved disabled in the same write Home first sees.
+  assert.equal(
+    (
+      await mirror(
+        client,
+        routes,
+        typesafe,
+        { type: "typesafe", token: "synthetic" },
+        {
+          route: { routeId: home, owner },
+        },
+      )
+    ).status,
+    200,
+  );
+  assert.equal(file(typesafe).disabled, true);
+  // Routed by a membership step after it was mirrored: disabled before its proxy changes.
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "synthetic" });
+  await mirror(client, routes, paused, { type: "gemini-cli", access_token: "synthetic" });
+  file(paused).disabled = true;
+  assert.equal(file(gemini).disabled, undefined);
+  state.writes.length = 0;
+  await routes.prepare(scope, [gemini, typesafe, paused], signal());
+  assert.deepEqual(state.writes.slice(0, 2), [`status:${gemini}:true`, `auth:${gemini}`]);
+  assert.equal(file(gemini).disabled, true);
+  assert.deepEqual([...(await routes.refusedReferences())].sort(), [gemini, typesafe].sort());
+  // The route ends: the pool lifts what it disabled, never the owner's own pause.
+  rules.set({
+    [gemini]: { routeId: null, owner: null },
+    [typesafe]: { routeId: null, owner: null },
+    [paused]: { routeId: null, owner: null },
+  });
+  clock.at += servedPollMs;
+  await routes.tick(signal());
+  assert.equal(file(gemini).disabled, false);
+  assert.equal(file(paused).disabled, true);
+  assert.deepEqual([...(await routes.refusedReferences())], []);
+});
+
+test("no route rules anywhere: a plugin-provider credential is mirrored and served exactly as on main", async () => {
+  const { client, state } = fakeHome();
+  const rules = scripted({});
+  rules.serve(false);
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  const gemini = "12345678-abcd-4000-8000-0000000000a4";
+  for (const hint of [{}, { hasRules: false }])
+    assert.equal(
+      (await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" }, hint))
+        .status,
+      200,
+    );
+  await routes.prepare(scope, [gemini], signal());
+  assert.equal(state.files[0]!.disabled, undefined);
+  assert.equal(state.files[0]!.proxy_url, "");
+  assert.ok(!state.writes.some((write) => write.startsWith("status:")));
+  assert.deepEqual([...(await routes.refusedReferences())], []);
+});
+
+test("every provider plugin the pool image ships is refused for routed owners until proven", () => {
+  const dockerfile = readFileSync(
+    new URL("../../containers/pool/Dockerfile", import.meta.url),
+    "utf8",
+  );
+  const shipped = [...dockerfile.matchAll(/\/opt\/pool\/plugins\/([a-z0-9-]+)\.so\b/g)].map(
+    (match) => match[1]!,
+  );
+  // The scheduler veto is a plugin but makes no provider calls.
+  const providers = shipped.filter((name) => name !== "basalt-native-policy");
+  assert.ok(providers.length > 0);
+  for (const name of providers) assert.ok(pluginProviders.has(name), `${name} is not refused`);
 });

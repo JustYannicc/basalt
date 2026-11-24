@@ -71,6 +71,8 @@ export interface HomeDependencies {
   audience?: (pool: string) => Promise<readonly string[]>;
   /** Routed sign-ins; absent where routing isn't wired. */
   signInRoutes?: import("./account-acquisition.ts").SignInRoutes;
+  /** Credentials the pool keeps disabled because their plugin can't use the owner's route. */
+  routeRefusals?: import("./account-actions.ts").RouteRefusals;
   /** The reading of `owner`'s first routed credential among `accounts`, or null. */
   route?: (owner: string, accounts: readonly Account[]) => Promise<PoolRouteReading | null>;
 }
@@ -770,7 +772,8 @@ const routes: Record<string, Route> = {
     if (!object(payload)) return fail(400, "invalid_query", "Choose an account selection policy.");
     return json(await setPoolSelectionPolicy(client, pool, payload.accountSelectionPolicy));
   },
-  "GET /credit-policy": async ({ client, pool }) => json(await poolCreditRouting(client, pool)),
+  "GET /credit-policy": async ({ client, pool, deps }) =>
+    json(await poolCreditRouting(client, pool, await deps.routeRefusals?.refusedReferences())),
   "PATCH /credit-policy": async ({ client, pool, request }) => {
     const payload: unknown = await request.json();
     if (!object(payload)) return fail(400, "invalid_query", "Choose a subscription credit policy.");

@@ -459,6 +459,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       defer: (work) => ctx.waitUntil(work),
       home,
       onProductEvent,
+      routeRefusals: {
+        refused: (reference) => this.routes.refused(reference),
+        markRefused: (reference, refused) => this.routes.markRefused(reference, refused),
+        refusedReferences: () => this.routes.refusedReferences(),
+      },
       signInRoutes: {
         beginSignIn: (session, route) => this.routes.beginSignIn(session, route),
         settleSignIn: (session, references) => this.routes.settleSignIn(session, references),
@@ -1205,6 +1210,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         signingKey: this.env.POOL_APP_SIGNING_KEY,
         previousSigningKey: this.env.POOL_APP_SIGNING_KEY_PREVIOUS,
         ensure: (pool, organization) => this.memberships.ensure(pool, organization),
+        refused: () => this.routes.refusedReferences(),
       });
     if (
       pathname === poolUsageSeriesPath ||
