@@ -10,10 +10,10 @@ import { TestStageSlug } from "../../../.upstream/apps/hosted/cloud/src/infrastr
 import { PreviousTestDatabaseCleanup } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/previous-test-database-cleanup.ts";
 import {
   TestStageBuildCleanup,
-  TestStageBucketCleanup,
   TestStageDomainCleanup,
 } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/test-stage-cleanup-providers.ts";
 import { axiomProviders } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/axiom-provider.ts";
+import { StageBucketCleanup } from "./stage-bucket-cleanup.ts";
 import { stackNameForStage } from "../../release-barrier/release-stage.ts";
 import { requireCleanupStage } from "../subject.ts";
 
@@ -42,7 +42,7 @@ export default Alchemy.Stack(
       Cloudflare.providers(),
       Command.providers(),
       TestStageBuildCleanup(),
-      TestStageBucketCleanup(),
+      StageBucketCleanup(),
       axiomProviders,
       Planetscale.providers(),
       Neon.providers(),
