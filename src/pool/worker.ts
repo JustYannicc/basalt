@@ -122,7 +122,7 @@ import { HomeMembership } from "./home-membership.ts";
 import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
-import { forwardPoolRequest } from "./forward.worker.ts";
+import { admitModelCall, forwardPoolRequest } from "./forward.worker.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { containerAnswer } from "./controller-unsent.ts";
@@ -150,20 +150,15 @@ import { capturedReliability, recordReliability } from "./reliability-cadence.ts
 import { fetchController } from "./controller-reset.ts";
 import { detachFromCaller, followsCaller } from "./caller-signal.ts";
 import { isolate } from "./isolate.ts";
+import { routerResume, routerResumePath } from "./router-resume.ts";
 import {
   CodeHandover,
   decodeControllerCode,
   HandoverCount,
   handoverRefusal,
 } from "./code-handover.ts";
-import {
-  decodeResumeInput,
-  resumeGone,
-  resumeRequest,
-  resumeRoute,
-  toLayer,
-} from "./stream-resume.ts";
-import { resumedAnswer } from "./stream-resume.worker.ts";
+import { resumeGone, resumeRoute, toLayer } from "./stream-resume.ts";
+import { governedResume } from "./resume-admission.worker.ts";
 import { resumedTerminal } from "./terminal-recording.worker.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
@@ -943,42 +938,42 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   /** The rest of an answer an earlier instance of this object was streaming when it ended (#1642). */
-  async resume(input: unknown): Promise<Response> {
-    const parsed = decodeResumeInput(input);
-    // While this object hands over, a resume answers gone, so the stream ends with today's terminal.
-    if (!parsed || this.handover.draining) return resumeGone();
-    const request = resumeRequest(parsed);
-    return this.handoverCount.track(request, async () => {
-      const container = this.ctx.container;
-      const answer =
-        parsed.target.kind === "runtime"
-          ? await this.fleet.resume(parsed.target.identity, request)
-          : await this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
-              // A stopped container's answers went with it; never start one to look.
-              if (!container?.running) return resumeGone();
-              // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
-              // out a restart.
-              const status = await readRuntimeHealth(
-                container.getTcpPort(8318),
-                this.env.POOL_MANAGEMENT_KEY,
-                AbortSignal.timeout(readinessReadMs),
-              ).catch(() => undefined);
-              const routed = resumeRoute(forwarded, 8317, status);
-              if (routed === "gone") return resumeGone();
-              prepared();
-              return toLayer(
-                routed.request,
-                async (request, port) =>
-                  containerAnswer(await container.getTcpPort(port).fetch(request)),
-                () => container.running,
-              );
-            });
-      if (answer.status !== 200) return answer;
-      return resumedAnswer(answer, {
-        from: parsed.from,
-        lease: this.modelStreams.acquire(crypto.randomUUID(), "", request.signal),
-        finish: resumedTerminal(this.env, parsed.requestId, (work) => this.ctx.waitUntil(work)),
-      });
+  resume(input: unknown): Promise<Response> {
+    return governedResume(input, {
+      draining: () => this.handover.draining,
+      cut: (requestId) => this.modelStreams.wasCut(requestId) || this.computers.wasCut(requestId),
+      // A resume never starts or recovers a container: no admission recovery here.
+      admit: (call, requestId) => admitModelCall(call, this.admission(undefined, false), requestId),
+      track: (request, work) => this.handoverCount.track(request, work),
+      serve: async (parsed, request) => {
+        if (parsed.target.kind === "runtime")
+          return this.fleet.resume(parsed.target.identity, request);
+        const container = this.ctx.container;
+        return this.handoff.forward(request, 8317, undefined, async (forwarded, prepared) => {
+          // A stopped container's answers went with it; never start one to look.
+          if (!container?.running) return resumeGone();
+          // Its own readiness read, never a warm-up: a resume neither starts, stops nor waits
+          // out a restart.
+          const status = await readRuntimeHealth(
+            container.getTcpPort(8318),
+            this.env.POOL_MANAGEMENT_KEY,
+            AbortSignal.timeout(readinessReadMs),
+          ).catch(() => undefined);
+          const routed = resumeRoute(forwarded, 8317, status);
+          if (routed === "gone") return resumeGone();
+          prepared();
+          return toLayer(
+            routed.request,
+            async (request, port) =>
+              containerAnswer(await container.getTcpPort(port).fetch(request)),
+            () => container.running,
+          );
+        });
+      },
+      fallback: (requestId, signal) =>
+        this.modelStreams.acquire(crypto.randomUUID(), "", signal, requestId),
+      finish: (requestId) =>
+        resumedTerminal(this.env, requestId, (work) => this.ctx.waitUntil(work)),
     });
   }
 
@@ -1231,18 +1226,27 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     return this.handoverCount.track(request, () => this.forwardPool(request, port));
   }
 
+  /** What a first call and a resume of one are both admitted by (`admitModelCall`). */
+  private admission(appModel?: ModelIdentity, recover = true) {
+    return {
+      ...(appModel === undefined ? {} : { appModel }),
+      env: this.env,
+      computers: this.computers,
+      memberships: this.memberships,
+      ...(recover
+        ? { recoverAdmission: (signal: AbortSignal) => this.fleet.recoverAdmission(signal) }
+        : {}),
+      streams: this.modelStreams,
+    };
+  }
+
   private forwardPool(
     request: Request,
     port: ReturnType<typeof poolPort>,
     appModel?: ModelIdentity,
   ): Promise<Response> {
     return forwardPoolRequest(request, port, {
-      ...(appModel === undefined ? {} : { appModel }),
-      env: this.env,
-      computers: this.computers,
-      memberships: this.memberships,
-      recoverAdmission: (signal) => this.fleet.recoverAdmission(signal),
-      streams: this.modelStreams,
+      ...this.admission(appModel),
       lifecycle: this.lifecycle,
       protection: this.protection,
       databasePool: this.homeDatabasePool,
@@ -1277,12 +1281,14 @@ export async function handlePoolWorkerRequest(
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
   defer: (work: Promise<unknown>) => void = (work) => void work.catch(() => {}),
 ): Promise<Response> {
+  const readmit = async (call: Request) => !(await homeKeyRefusal(call, env, lookupHomeApiKey));
   const controller = (forwarded: Request) =>
     fetchController(forwarded, {
       controller: () => singleton(env),
       env,
       defer,
       signing: { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+      readmit,
     });
   request = followsCaller(stripModelLifetimeRequest(request));
   const pathname = new URL(request.url).pathname;
@@ -1292,6 +1298,17 @@ export async function handlePoolWorkerRequest(
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       jobs: env.BulkUsageImport,
     });
+  // The router resumes a stream whose entry went down; it names the call it carried (router-resume.ts).
+  if (pathname === routerResumePath)
+    return routerResume(
+      request,
+      { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+      async (input, call) => {
+        if (!(await readmit(call))) return resumeGone();
+        const resumed: Response = await singleton(env).resume(input);
+        return resumed;
+      },
+    );
   // Answered here, without waking the container.
   if (pathname === poolReleasePath)
     return poolRelease(request, env, undefined, () => singleton(env).imageReleaseReady());
@@ -1315,20 +1332,34 @@ export async function handlePoolWorkerRequest(
     return new Response(null, { status: 404 });
   }
   if (isPublicModelPath(pathname)) {
-    if (request.headers.has(nativeModelHeader)) return controller(request);
-    const { supplied, values } = homeApiKeyCandidates(request);
-    if (!supplied) return modelAuthResponse(401, "Missing API key");
-    if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
-    try {
-      const connectionString = env.POOL_AUTH_DATABASE?.connectionString;
-      if (!connectionString) return modelAuthResponse(503, "Authentication service unavailable");
-      if (!(await lookupHomeApiKey(connectionString, values)))
-        return modelAuthResponse(401, "Invalid API key");
-    } catch {
-      return modelAuthResponse(503, "Authentication service unavailable");
-    }
+    const refused = await homeKeyRefusal(request, env, lookupHomeApiKey);
+    if (refused) return refused;
   }
   return controller(request);
+}
+
+/**
+ * The entry's check of a direct model call's Home API key, for a first call and for a resume of
+ * one alike. A device call carries its own assertion, which the controller checks.
+ */
+async function homeKeyRefusal(
+  request: Request,
+  env: PoolEnvironment,
+  lookupHomeApiKey: HomeApiKeyLookup,
+): Promise<Response | undefined> {
+  if (request.headers.has(nativeModelHeader)) return undefined;
+  const { supplied, values } = homeApiKeyCandidates(request);
+  if (!supplied) return modelAuthResponse(401, "Missing API key");
+  if (values.length === 0) return modelAuthResponse(401, "Invalid API key");
+  try {
+    const connectionString = env.POOL_AUTH_DATABASE?.connectionString;
+    if (!connectionString) return modelAuthResponse(503, "Authentication service unavailable");
+    if (!(await lookupHomeApiKey(connectionString, values)))
+      return modelAuthResponse(401, "Invalid API key");
+  } catch {
+    return modelAuthResponse(503, "Authentication service unavailable");
+  }
+  return undefined;
 }
 
 function modelAuthResponse(status: 401 | 503, error: string): Response {

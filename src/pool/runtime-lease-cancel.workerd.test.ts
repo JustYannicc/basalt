@@ -292,3 +292,104 @@ test(
     }
   },
 );
+
+// The same question one hop up: the controller carries every model socket between the entry and
+// the runtime, natively, or relayed through its own code when the pool records History.
+const controllerSockets = `
+import { DurableObject } from "cloudflare:workers";
+import { terminalSocket } from "./src/pool/terminal-socket.worker.ts";
+export class Container extends DurableObject {
+  async fetch() {
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    server.addEventListener("message", () => server.send("pong"));
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}
+export class Controller extends DurableObject {
+  async fetch(request) {
+    if (new URL(request.url).pathname === "/reset") {
+      setTimeout(() => this.ctx.abort("replaced"), 0);
+      return new Response(null, { status: 204 });
+    }
+    const answer = await this.env.CONTAINER.get(this.env.CONTAINER.idFromName("c")).fetch(request);
+    if (request.headers.get("x-relay") === "observed")
+      return terminalSocket(answer, "session", () => undefined, false);
+    return new Response(null, { status: 101, webSocket: answer.webSocket });
+  }
+}
+export default {
+  fetch(request, env) {
+    return env.CONTROLLER.get(env.CONTROLLER.idFromName("control")).fetch(request);
+  },
+};
+`;
+
+for (const relay of ["native", "observed"] as const)
+  test(
+    `a model socket the controller carries ${relay === "native" ? "natively" : "through its History relay"} when its instance is replaced`,
+    { timeout: 60_000 },
+    async () => {
+      const bundle = await build({
+        stdin: {
+          contents: controllerSockets,
+          resolveDir: fileURLToPath(new URL("../../", import.meta.url)),
+          loader: "ts",
+        },
+        bundle: true,
+        write: false,
+        format: "esm",
+        platform: "neutral",
+        mainFields: ["module", "main"],
+        conditions: ["workerd", "module", "import"],
+        target: "es2023",
+        external: ["node:*", "cloudflare:workers"],
+      });
+      const { Miniflare, convertV4MiniflareOptions } = loadMiniflare();
+      const mf = new Miniflare(
+        convertV4MiniflareOptions({
+          modules: true,
+          script: bundle.outputFiles[0]!.text,
+          compatibilityDate: poolWorkerCompatibility.date,
+          compatibilityFlags: poolWorkerCompatibility.flags,
+          durableObjects: {
+            CONTROLLER: { className: "Controller", useSQLite: true },
+            CONTAINER: { className: "Container", useSQLite: true },
+          },
+        }),
+      );
+      try {
+        const opened = await mf.dispatchFetch("http://pool/v1/responses", {
+          headers: { Upgrade: "websocket", "x-relay": relay },
+        });
+        const socket = opened.webSocket!;
+        socket.accept();
+        let closed = false;
+        socket.addEventListener("close", () => (closed = true));
+        socket.addEventListener("error", () => (closed = true));
+        const answer = () =>
+          settled(
+            new Promise<string>((resolve) =>
+              socket.addEventListener("message", () => resolve("pong"), { once: true }),
+            ),
+            "silent",
+          );
+        const first = answer();
+        socket.send("ping");
+        assert.equal(await first, "pong");
+        await mf.dispatchFetch("http://pool/reset");
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        const after = answer();
+        if (!closed) socket.send("ping");
+        const outcome = closed ? "closed" : await after;
+        // Passed through natively it outlives the controller's instance; relayed by the
+        // controller's own code for History it ends with it.
+        assert.equal(outcome, relay === "native" ? "pong" : "closed");
+        try {
+          socket.close();
+        } catch {}
+      } finally {
+        await mf.dispose();
+      }
+    },
+  );

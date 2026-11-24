@@ -2,6 +2,7 @@ import { modelCallReplayable, upstreamOutcomeUnknown } from "../clients/contract
 import { holdBody } from "./pool/held-body.ts";
 import { routerAttemptHeader, signRouterAttempt } from "./pool/router-attempt.ts";
 import { shape } from "./pool/error-shape.ts";
+import { resumeThroughRouter } from "./model-resume.ts";
 
 /**
  * The platform can replace the pool Worker's isolate under every hop at once: the entry that holds
@@ -109,13 +110,17 @@ export async function forwardModelCall(
       elapsedMs: Date.now() - begun,
     });
   const lost = () => upstreamOutcomeUnknown(requestId, endpoint);
+  // Sends are attempts 1 and 2; each resume of a cut stream takes the next number.
+  let resumes = routerSends;
+  const resumable = (answer: Response) =>
+    resumeThroughRouter(answer, request, env, requestId, () => headersFor(++resumes), wait);
   try {
     // Built before the send: a device assertion that cannot be signed is not a lost pool, and the
     // native path answers it as before.
     const first = new Request(request, { headers: await headersFor(1) });
     let firstError: unknown;
     try {
-      return await env.POOL_SERVICE.fetch(first);
+      return await resumable(await env.POOL_SERVICE.fetch(first));
     } catch (error) {
       firstError = error;
       console.error("MODEL_FORWARD_FAILED", {
@@ -167,7 +172,7 @@ export async function forwardModelCall(
           }),
         );
         closed(routerSends, response.ok ? "served" : "answered", firstError);
-        return response;
+        return await resumable(response);
       } catch (error) {
         console.error("MODEL_FORWARD_FAILED", {
           requestId,
