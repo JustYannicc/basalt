@@ -495,6 +495,16 @@ const unstampedLease = async (f: Awaited<ReturnType<typeof fixture>>, identity: 
 };
 const fresh = (f: Awaited<ReturnType<typeof fixture>>) =>
   new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
+/** A count read starts the proof in the background; the next read sees what it ended. */
+const proven = async (
+  f: Awaited<ReturnType<typeof fixture>>,
+  endpoint: RuntimeEndpoint,
+  identity: SlotIdentity,
+) => {
+  await endpoint.streamCount(identity);
+  await f.settle();
+  return (await endpoint.streamCount(identity)).active;
+};
 
 test("an unstamped lease ends only when the container reads no model connection", async (context) => {
   const f = await fixture();
@@ -503,18 +513,18 @@ test("an unstamped lease ends only when the container reads no model connection"
   const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
   await unstampedLease(f, identity);
   f.hooks.connections = async () => 1;
-  assert.equal((await fresh(f).streamCount(identity)).active, 1, "a live connection keeps it");
+  assert.equal(await proven(f, fresh(f), identity), 1, "a live connection keeps it");
   f.hooks.connections = async () => {
     throw new Error("probe failed");
   };
-  assert.equal((await fresh(f).streamCount(identity)).active, 1, "a failed read keeps it");
+  assert.equal(await proven(f, fresh(f), identity), 1, "a failed read keeps it");
   // The read runs once per 30 s per boot: the same endpoint does not read again at once.
   const reader = fresh(f);
   f.hooks.connections = async () => 1;
-  await reader.streamCount(identity);
+  await proven(f, reader, identity);
   f.hooks.connections = async () => 0;
-  assert.equal((await reader.streamCount(identity)).active, 1, "no second read inside 30 s");
-  assert.equal((await fresh(f).streamCount(identity)).active, 0, "a read of 0 ends it");
+  assert.equal(await proven(f, reader, identity), 1, "no second read inside 30 s");
+  assert.equal(await proven(f, fresh(f), identity), 0, "a read of 0 ends it");
   const lines = warned.mock.calls.map((call) => call.arguments);
   assert.ok(
     lines.some(
@@ -556,10 +566,10 @@ test("the proof never ends a call this instance holds, nor one it takes during t
     await second;
     return 0;
   };
-  assert.equal((await fresh(f).streamCount(identity)).active, 2);
+  assert.equal(await proven(f, fresh(f), identity), 2);
   for (const answer of answers) answer(new Response("{}"));
   await (await held).text();
   await (await late!).text();
   await f.settle();
-  assert.equal((await fresh(f).streamCount(identity)).active, 0);
+  assert.equal(await proven(f, fresh(f), identity), 0);
 });

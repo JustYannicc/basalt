@@ -337,6 +337,9 @@ export async function forwardPoolRequest(
       statusText: response.statusText,
       headers,
     });
+    // A caller the router named that left before this answer may be sent again under the same id,
+    // when only the entry went down; that send's own outcome finishes the row.
+    if (terminal && routed && request.signal.aborted) terminal = undefined;
     const observed = terminal
       ? terminalResponse(
           forwarded,
@@ -382,7 +385,8 @@ export async function forwardPoolRequest(
     )
       return unsentAnswer(request, requestId, diagnostic);
     if (dispatched && isPublicModelPath(pathname)) {
-      terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
+      if (!(routed && request.signal.aborted))
+        terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
       return gatewayOutcomeUnknown(
         deps.env,
         request,

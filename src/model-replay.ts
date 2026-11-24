@@ -16,8 +16,12 @@ export const routerSends = 2;
 export const routerHoldBytes = 4 * 1024 * 1024;
 /** A quarter of the router's 128 MB isolate, as the entry keeps for itself. */
 export const routerHoldBudgetBytes = 32 * 1024 * 1024;
-/** Holds end with the first answer; this only frees a copy whose request the platform cancelled. */
-export const routerHoldWindowMs = 10 * 60_000;
+/**
+ * Holds end with the first answer. The router has no request signal, so a caller who hangs up cancels
+ * the handler and its own release never runs; this window frees that copy. A first send that takes
+ * longer before its headers is not replayed.
+ */
+export const routerHoldWindowMs = 120_000;
 /**
  * Replays waiting or in flight in one router isolate. A pool that fails every send for everyone
  * gets at most this many extra sends per isolate at once, not one per caller; past it a call gets
@@ -25,7 +29,13 @@ export const routerHoldWindowMs = 10 * 60_000;
  * over is still served.
  */
 export const routerReplayCeiling = 16;
-let replaying = 0;
+// Each slot carries its own deadline, as a held copy does: a cancelled handler never frees it.
+const replaying = new Map<object, number>();
+function replaysInFlight() {
+  const now = Date.now();
+  for (const [slot, until] of replaying) if (until <= now) replaying.delete(slot);
+  return replaying.size;
+}
 
 export interface ModelForward {
   POOL_SERVICE: { fetch(request: Request): Promise<Response> };
@@ -117,16 +127,18 @@ export async function forwardModelCall(
       ? "not_replayable"
       : failure.overloaded === true
         ? "overloaded"
-        : request.signal.aborted
+        : // Only the device tunnel's operation aborts its signal; a direct caller's never fires.
+          request.signal.aborted
           ? "client_left"
-          : replaying >= routerReplayCeiling
+          : replaysInFlight() >= routerReplayCeiling
             ? "ceiling"
             : undefined;
     if (skip) {
       if (replayable) closed(1, skip, firstError);
       return lost();
     }
-    replaying++;
+    const slot = {};
+    replaying.set(slot, Date.now() + routerHoldWindowMs);
     try {
       await copy.ready;
       const held = copy.take();
@@ -163,7 +175,7 @@ export async function forwardModelCall(
         return lost();
       }
     } finally {
-      replaying--;
+      replaying.delete(slot);
     }
   } finally {
     copy.release();

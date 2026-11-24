@@ -612,7 +612,9 @@ export class RuntimeEndpoint {
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {
     this.bound(identity);
-    await this.settleLeases(identity).catch(() => {});
+    // In the background: the read may take longer than the fleet waits for this count, and the next
+    // count read sees what it ended.
+    this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
     const row = await this.activity.inspect(identity);
     return row
       ? { active: row.active, known: row.known, ...stillFor(row) }
@@ -627,7 +629,7 @@ export class RuntimeEndpoint {
         this.serialize(async () => {
           await trace.run("drain_health", () => this.health(identity, signal), fields);
           signal.throwIfAborted();
-          await this.settleLeases(identity).catch(() => {});
+          this.ctx.waitUntil(this.settleLeases(identity).catch(() => {}));
           const state = await trace.run(
             "drain_activity",
             () => this.activity.drain(identity),

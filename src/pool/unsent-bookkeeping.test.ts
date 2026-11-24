@@ -344,3 +344,29 @@ test("a caller who left before its answer is recorded as client_closed once the 
   assert.equal(h.finishes.length, 1);
   assert.equal(h.finishes[0]!.outcome, "client_closed");
 });
+
+test("a router-named call whose caller left before its answer leaves the row to the router's next send", async (context) => {
+  const h = await forwarding(context);
+  const requestId = "6c7d8e9f-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+  const named = async (attempt: number, signal?: AbortSignal) =>
+    new Request(
+      await h.call({
+        [routerAttemptHeader]: await signRouterAttempt(signingKey, { requestId, attempt }),
+      }),
+      signal ? { signal } : {},
+    );
+  // Only the entry went down: the controller sees its caller leave, and its answer comes anyway.
+  const entry = new AbortController();
+  const lost = await h.send(await named(1, entry.signal), async (forwarded, ...rest) => {
+    (rest[3] as () => void)();
+    entry.abort();
+    return nodeAnswer(forwarded, ...rest);
+  });
+  await lost.text().catch(() => {});
+  await h.settle();
+  assert.deepEqual(h.finishes, [], "no outcome from the send the caller left");
+  const replayed = await h.send(await named(2), nodeAnswer);
+  await replayed.text();
+  await h.settle();
+  assert.deepEqual(h.finishes, [{ id: requestId, outcome: "complete", status: 200 }]);
+});

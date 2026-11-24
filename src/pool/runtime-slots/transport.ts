@@ -267,7 +267,6 @@ export class BoundSlotDriver implements SlotDriver {
   }
 }
 
-/** Only the pool Worker's private DO binding can reach this transport. */
 /**
  * A cell follows its caller only for a model call it forwards to its container's model port; every
  * control action (start, install, drain, retire and the rest) runs to its end, as before the flag.
@@ -280,6 +279,7 @@ export function runtimeCallerSignal(request: Request): Request {
   return model ? request : detachFromCaller(request);
 }
 
+/** Only the pool Worker's private DO binding can reach this transport. */
 export async function runtimeRequest(
   request: Request,
   endpoint: RuntimeEndpoint,
