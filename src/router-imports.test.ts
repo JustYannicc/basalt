@@ -27,6 +27,9 @@ function graph(entry: string) {
       const found = [target, `${target}.ts`].find(
         (path) => existsSync(path) && path.endsWith(".ts"),
       );
+      // A module the walk cannot follow could hide a package; only data files name none.
+      if (!found && !spec.endsWith(".json"))
+        assert.fail(`${relative(root, file)} imports ${spec}, which this walk cannot follow`);
       if (found) queue.push(found);
     }
   }

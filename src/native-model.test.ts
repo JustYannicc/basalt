@@ -7,6 +7,7 @@ import {
   nativeModelPrefix,
 } from "./pool/native-contract.ts";
 import { openEnvelope } from "./pool/token.ts";
+import { routerAttemptHeader } from "./pool/router-attempt.ts";
 
 const signingKey = "ab".repeat(32);
 const grant = {
@@ -279,32 +280,41 @@ for (const native of [false, true])
 for (const key of [signingKey, ""])
   for (const native of [false, true])
     for (const socket of [false, true])
-      test(`the pool's 401 reaches a ${native ? "native" : "direct"} ${socket ? "socket" : "call"} ${key ? "the router names" : "the router cannot name"}`, async () => {
-        if (native && !key) return; // A device call needs the key for its own assertion.
-        let reached = 0;
-        const env: RouterEnv = {
-          POOL_APP_SIGNING_KEY: key,
-          TOOLS_SERVICE: { fetch: async () => Response.json(grant) },
-          CATALOG_SERVICE: { fetch: async () => new Response(null, { status: 404 }) },
-          POOL_SERVICE: {
-            fetch: async () => {
-              reached++;
-              return Response.json({ error: "Invalid API key" }, { status: 401 });
+      test(
+        `the pool's 401 reaches a ${native ? "native" : "direct"} ${socket ? "socket" : "call"} ${key ? "the router names" : "the router cannot name"}`,
+        native && !key ? { skip: "a device call needs the key for its own assertion" } : {},
+        async () => {
+          let reached = 0;
+          let forwardedName: string | null | undefined;
+          const env: RouterEnv = {
+            POOL_APP_SIGNING_KEY: key,
+            TOOLS_SERVICE: { fetch: async () => Response.json(grant) },
+            CATALOG_SERVICE: { fetch: async () => new Response(null, { status: 404 }) },
+            POOL_SERVICE: {
+              fetch: async (forwarded) => {
+                reached++;
+                forwardedName = forwarded.headers.get(routerAttemptHeader);
+                return Response.json({ error: "Invalid API key" }, { status: 401 });
+              },
             },
-          },
-        };
-        const response = await handleRequest(
-          new Request("https://app.signalbox.run/v1/responses", {
-            method: socket ? "GET" : "POST",
-            headers: {
-              authorization: "Bearer synthetic",
-              ...(socket ? { Upgrade: "websocket" } : {}),
-              ...(native ? { [nativeAuthenticationHeader]: "1" } : {}),
-            },
-            ...(socket ? {} : { body: "{}" }),
-          }),
-          env,
-        );
-        assert.equal(response.status, 401);
-        assert.equal(reached, 1);
-      });
+          };
+          const response = await handleRequest(
+            new Request("https://app.signalbox.run/v1/responses", {
+              method: socket ? "GET" : "POST",
+              headers: {
+                authorization: "Bearer synthetic",
+                // A caller's own value never names a call, signed or not.
+                [routerAttemptHeader]: "caller-chosen",
+                ...(socket ? { Upgrade: "websocket" } : {}),
+                ...(native ? { [nativeAuthenticationHeader]: "1" } : {}),
+              },
+              ...(socket ? {} : { body: "{}" }),
+            }),
+            env,
+          );
+          assert.equal(response.status, 401);
+          assert.equal(reached, 1);
+          assert.notEqual(forwardedName, "caller-chosen");
+          if (!key) assert.equal(forwardedName, null);
+        },
+      );
