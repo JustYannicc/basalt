@@ -166,15 +166,13 @@ export class RuntimeActivity {
   }
 
   /**
-   * Ends the named leases after a read found no live connection on the container's model port. Only
-   * leases named before that read and still unproven now: a lease this instance took, before or
-   * after the read, is never among them.
+   * Ends every unproven lease after a read found no live connection on the container's model port.
+   * Each was taken before that read, since only this instance runs and it stamps every lease it
+   * takes; a lease this instance took, before or after the read, is never among them.
    */
-  async releaseProven(identity: SlotIdentity, proven: UnprovenLeases, connections: 0) {
-    const named = new Set([...proven.unstamped, ...proven.foreignSockets]);
+  async releaseProven(identity: SlotIdentity, connections: 0) {
     const ended = await this.change(identity, (row) => {
       const ends = (id: string) =>
-        named.has(id) &&
         row.leases?.[id] === "active" &&
         row.owners?.[id] === undefined &&
         (row.sockets?.[id] === undefined || row.sockets[id] !== this.instance);

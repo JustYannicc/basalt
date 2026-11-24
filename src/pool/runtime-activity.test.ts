@@ -254,7 +254,7 @@ test("only a proof ends an unstamped lease or another instance's socket, never t
   assert.equal(await count(live), 4, "nothing ends without the proof");
   // A call this instance takes between the read and the release stays counted.
   const late = await live.acquire(identity, true);
-  assert.deepEqual(await live.releaseProven(identity, pending, 0), {
+  assert.deepEqual(await live.releaseProven(identity, 0), {
     unstamped: 1,
     foreignSockets: 1,
   });
@@ -290,6 +290,6 @@ test("leases a rollback took are unstamped after the roll-forward and end only b
   const pending = await after.unproven(identity);
   assert.equal(pending.unstamped.length, 2);
   assert.equal(await count(after), 2, "kept while the container is unread or busy");
-  await after.releaseProven(identity, pending, 0);
+  await after.releaseProven(identity, 0);
   assert.equal(await count(after), 0);
 });

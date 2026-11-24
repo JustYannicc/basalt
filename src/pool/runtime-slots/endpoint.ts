@@ -598,7 +598,7 @@ export class RuntimeEndpoint {
       clearTimeout(timer);
     }
     if (connections === 0) {
-      await this.activity.releaseProven(identity, pending, 0);
+      await this.activity.releaseProven(identity, 0);
       return;
     }
     console.warn("POOL_RUNTIME_LEASES_KEPT", {
