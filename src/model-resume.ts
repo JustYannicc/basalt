@@ -162,11 +162,11 @@ function terminalJudge() {
   };
   return {
     push: (bytes: Uint8Array) => scan(decoder.decode(bytes, { stream: true })),
-    // An event still open at the end was cut before its closing blank line, even a terminal one:
-    // a client's event parser drops it.
+    // Only a closed terminal event counts: one still open at the end was cut before its blank line,
+    // and a client's event parser drops it.
     whole() {
       scan(decoder.decode());
-      return terminal && !overflow && pending.trim() === "";
+      return terminal;
     },
   };
 }
