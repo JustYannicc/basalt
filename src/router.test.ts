@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { brand } from "../brand.ts";
 import { appModelPath } from "./pool/app-model-contract.ts";
+import { openRouterAttempt, routerAttemptHeader } from "./pool/router-attempt.ts";
 import router, { handleRequest, notFoundPage, type RouterEnv } from "./router.ts";
 
 function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]): RouterEnv {
@@ -16,9 +17,13 @@ function envWithToolsService(fetchRequest: RouterEnv["TOOLS_SERVICE"]["fetch"]):
 test("signed app model ingress reaches the pool unchanged", async () => {
   const body = JSON.stringify({ envelope: "synthetic-signed-envelope" });
   const request = new Request(`https://${brand.host}${appModelPath}`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body,
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
   });
-  const env = envWithToolsService(async () => { throw new Error("app model ingress reached tools"); });
+  const env = envWithToolsService(async () => {
+    throw new Error("app model ingress reached tools");
+  });
   const poolResponse = new Response("pool reply", { status: 202 });
   env.POOL_SERVICE.fetch = async (forwarded) => {
     assert.strictEqual(forwarded, request);
@@ -29,18 +34,37 @@ test("signed app model ingress reaches the pool unchanged", async () => {
   };
   assert.strictEqual(await handleRequest(request, env), poolResponse);
 
-  for (const path of [`${appModelPath}/`, `${appModelPath}-other`, `${appModelPath};other`, "/%5f%5fmodels/v1/request", "/__models//v1/request", "/__MODELS/v1/request", "/__models/v1", "/api/organizations/example/apps/app_test/models/smoke"]) {
+  for (const path of [
+    `${appModelPath}/`,
+    `${appModelPath}-other`,
+    `${appModelPath};other`,
+    "/%5f%5fmodels/v1/request",
+    "/__models//v1/request",
+    "/__MODELS/v1/request",
+    "/__models/v1",
+    "/api/organizations/example/apps/app_test/models/smoke",
+  ]) {
     const toolsResponse = new Response("tools reply");
     const other = envWithToolsService(async () => toolsResponse);
-    other.POOL_SERVICE.fetch = async () => { throw new Error("non-ingress path reached pool"); };
-    assert.strictEqual(await handleRequest(new Request(`https://${brand.host}${path}`), other), toolsResponse);
+    other.POOL_SERVICE.fetch = async () => {
+      throw new Error("non-ingress path reached pool");
+    };
+    assert.strictEqual(
+      await handleRequest(new Request(`https://${brand.host}${path}`), other),
+      toolsResponse,
+    );
   }
 });
 
 test("private setup routes never reach a service from the public router", async () => {
-  const env = envWithToolsService(async () => { throw new Error("private path forwarded"); });
+  const env = envWithToolsService(async () => {
+    throw new Error("private path forwarded");
+  });
   for (const path of ["/__setup/v1/claim", "/__setup/v1/links", "/%5f%5fsetup/v1/revoke"])
-    assert.equal((await handleRequest(new Request(`https://app.signalbox.run${path}`), env)).status, 404);
+    assert.equal(
+      (await handleRequest(new Request(`https://app.signalbox.run${path}`), env)).status,
+      404,
+    );
 });
 
 test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
@@ -89,17 +113,26 @@ test("forwards app, MCP, OAuth, and non-boundary paths unchanged", async () => {
 test("native approval serves its own page and keeps device codes out of the asset URL", async () => {
   const assets: Request[] = [];
   const env: RouterEnv = {
-    ...envWithToolsService(async () => { throw new Error("native approval reached the generic device page"); }),
-    ASSETS: { fetch: async (request) => {
-      assets.push(request);
-      return new URL(request.url).pathname === "/native-device/index.html"
-        ? new Response(request.method === "HEAD" ? null : "<html>Native approval</html>", { headers: { "Content-Type": "text/html" } })
-        : new Response(null, { status: 404 });
-    } },
+    ...envWithToolsService(async () => {
+      throw new Error("native approval reached the generic device page");
+    }),
+    ASSETS: {
+      fetch: async (request) => {
+        assets.push(request);
+        return new URL(request.url).pathname === "/native-device/index.html"
+          ? new Response(request.method === "HEAD" ? null : "<html>Native approval</html>", {
+              headers: { "Content-Type": "text/html" },
+            })
+          : new Response(null, { status: 404 });
+      },
+    },
   };
   for (const path of ["/native/device", "/native/device/"]) {
     for (const method of ["GET", "HEAD"]) {
-      const response = await handleRequest(new Request(`https://app.signalbox.run${path}?user_code=BCDF-GHJK`, { method }), env);
+      const response = await handleRequest(
+        new Request(`https://app.signalbox.run${path}?user_code=BCDF-GHJK`, { method }),
+        env,
+      );
       assert.equal(response.status, 200);
       assert.equal(response.headers.get("cache-control"), "no-store");
       assert.equal(response.headers.get("referrer-policy"), "no-referrer");
@@ -111,13 +144,22 @@ test("native approval serves its own page and keeps device codes out of the asse
     }
   }
   const before = assets.length;
-  const response = await handleRequest(new Request("https://app.signalbox.run/native/device", { method: "POST" }), env);
+  const response = await handleRequest(
+    new Request("https://app.signalbox.run/native/device", { method: "POST" }),
+    env,
+  );
   assert.equal(response.status, 405);
   assert.equal(response.headers.get("allow"), "GET, HEAD");
   assert.equal(assets.length, before);
-  assert.equal((await handleRequest(new Request("https://app.signalbox.run/native/device"), {
-    ...env, ASSETS: undefined,
-  })).status, 404);
+  assert.equal(
+    (
+      await handleRequest(new Request("https://app.signalbox.run/native/device"), {
+        ...env,
+        ASSETS: undefined,
+      })
+    ).status,
+    404,
+  );
 });
 
 test("preserves a POST body and headers and returns the streamed tools response", async () => {
@@ -189,15 +231,39 @@ test("preserves a POST body and headers and returns the streamed tools response"
 });
 
 test("forwards model and pool control paths unchanged to the pool", async () => {
-  const paths = ["/pool/v1", "/pool/v1/", "/pool/v1/pool", "/pool/v1/sign-ins?session=example", "/v1", "/v1?mode=models", "/v1/", "/v1/models", "/v1/responses", "/messages", "/chat/completions", "/completions"];
-  const env = envWithToolsService(async () => { throw new Error("unexpected tools request"); });
+  const paths = [
+    "/pool/v1",
+    "/pool/v1/",
+    "/pool/v1/pool",
+    "/pool/v1/sign-ins?session=example",
+    "/v1",
+    "/v1?mode=models",
+    "/v1/",
+    "/v1/models",
+    "/v1/responses",
+    "/messages",
+    "/chat/completions",
+    "/completions",
+  ];
+  const env = envWithToolsService(async () => {
+    throw new Error("unexpected tools request");
+  });
   for (const path of paths) {
     const request = new Request(`https://app.signalbox.run${path}`);
     const upstream = new Response("data: response\n\n", {
       headers: { "Content-Type": "text/event-stream" },
     });
     env.POOL_SERVICE.fetch = async (forwarded) => {
-      assert.strictEqual(forwarded, request);
+      if (path.startsWith("/pool/")) assert.strictEqual(forwarded, request);
+      else {
+        // A model call keeps its URL, method and headers; it only gains the router's signed name
+        // for this send, so a replay after a lost pool finishes the same History row.
+        assert.equal(forwarded.url, request.url);
+        assert.equal(forwarded.method, request.method);
+        const added = [...forwarded.headers.keys()].filter((name) => !request.headers.has(name));
+        assert.deepEqual(added, [routerAttemptHeader]);
+        assert.ok(await openRouterAttempt(forwarded, env.POOL_APP_SIGNING_KEY));
+      }
       return upstream;
     };
     assert.strictEqual(await handleRequest(request, env), upstream);
@@ -206,18 +272,37 @@ test("forwards model and pool control paths unchanged to the pool", async () => 
 
 test("public management requests never reach either service binding", async () => {
   let forwarded = 0;
-  const service = { fetch: async () => { forwarded += 1; return new Response("upstream"); } };
+  const service = {
+    fetch: async () => {
+      forwarded += 1;
+      return new Response("upstream");
+    },
+  };
   const paths = [
-    "/v0/management", "/v0/management/", "/v0/management/config",
-    "/v8/management", "/v8/management/oauth/callback?state=example",
-    "/v8/management/credentials", "/V8/MANAGEMENT/config",
-    "//v8/management/config", "/%76%38/management/config",
+    "/v0/management",
+    "/v0/management/",
+    "/v0/management/config",
+    "/v8/management",
+    "/v8/management/oauth/callback?state=example",
+    "/v8/management/credentials",
+    "/V8/MANAGEMENT/config",
+    "//v8/management/config",
+    "/%76%38/management/config",
   ];
   for (const path of paths) {
     for (const method of ["GET", "POST", "OPTIONS"]) {
-      const response = await handleRequest(new Request(`https://app.signalbox.run${path}`, {
-        method, headers: { "X-Management-Key": "example" },
-      }), { CATALOG_SERVICE: service, TOOLS_SERVICE: service, POOL_SERVICE: service, POOL_APP_SIGNING_KEY: "ab".repeat(32) });
+      const response = await handleRequest(
+        new Request(`https://app.signalbox.run${path}`, {
+          method,
+          headers: { "X-Management-Key": "example" },
+        }),
+        {
+          CATALOG_SERVICE: service,
+          TOOLS_SERVICE: service,
+          POOL_SERVICE: service,
+          POOL_APP_SIGNING_KEY: "ab".repeat(32),
+        },
+      );
       assert.equal(response.status, 404, `${method} ${path}`);
     }
   }
@@ -304,7 +389,10 @@ test("sends a homepage visit to sign-in without the tools service's own session 
     "other-app.session_token=abc",
   ]) {
     const request = new Request("https://app.signalbox.run/", { headers: { cookie } });
-    const response = await handleRequest(request, envWithToolsService(async () => new Response()));
+    const response = await handleRequest(
+      request,
+      envWithToolsService(async () => new Response()),
+    );
     assert.equal(response.status, 302, cookie);
   }
 });
@@ -341,12 +429,18 @@ test("replaces the tools service's marketing 404 page and keeps the dashboard's"
   assert.strictEqual(passed, api);
 });
 
-
 test("the catalog uses its own binding without forwarding to the tools API", async () => {
   let received: Request | undefined;
   const request = new Request("https://app.signalbox.run/catalog/index.json");
-  const env = envWithToolsService(async () => { throw new Error("catalog reached tools"); });
-  env.CATALOG_SERVICE = { fetch: async value => { received = value; return new Response("catalog"); } };
+  const env = envWithToolsService(async () => {
+    throw new Error("catalog reached tools");
+  });
+  env.CATALOG_SERVICE = {
+    fetch: async (value) => {
+      received = value;
+      return new Response("catalog");
+    },
+  };
   assert.equal(await (await handleRequest(request, env)).text(), "catalog");
   assert.equal(received, request);
 });
@@ -355,9 +449,20 @@ test("opaque app hosts reach app UI before path handlers or dashboard static ass
   const appHost = "a-01234567-89ab-4cde-8fab-0123456789ab.signalbox.run";
   const seen: string[] = [];
   const env: RouterEnv = {
-    ...envWithToolsService(async () => { throw new Error("dashboard service reached from app origin"); }),
-    ASSETS: { fetch: async () => { throw new Error("dashboard assets reached from app origin"); } },
-    APP_UI_SERVICE: { fetch: async (request) => { seen.push(request.url); return new Response("private app UI"); } },
+    ...envWithToolsService(async () => {
+      throw new Error("dashboard service reached from app origin");
+    }),
+    ASSETS: {
+      fetch: async () => {
+        throw new Error("dashboard assets reached from app origin");
+      },
+    },
+    APP_UI_SERVICE: {
+      fetch: async (request) => {
+        seen.push(request.url);
+        return new Response("private app UI");
+      },
+    },
   };
   for (const path of ["/", "/setup", "/mcp", "/pool/v1/status", "/catalog/index.json", "/ui.css"]) {
     const request = new Request(`https://${appHost}${path}`);
@@ -368,9 +473,20 @@ test("opaque app hosts reach app UI before path handlers or dashboard static ass
 });
 
 test("unknown app subdomains return empty 404s without reaching any service", async () => {
-  const refuse = async () => { throw new Error("unknown host reached a service"); };
-  const env: RouterEnv = { ...envWithToolsService(refuse), ASSETS: { fetch: refuse }, APP_UI_SERVICE: { fetch: refuse } };
-  for (const host of ["unknown.signalbox.run", "a-name.signalbox.run", "a-01234567-89ab-4cde-8fab-0123456789ab.nested.signalbox.run", "a-01234567-89ab-4cde-8fab-0123456789ab.other.run"]) {
+  const refuse = async () => {
+    throw new Error("unknown host reached a service");
+  };
+  const env: RouterEnv = {
+    ...envWithToolsService(refuse),
+    ASSETS: { fetch: refuse },
+    APP_UI_SERVICE: { fetch: refuse },
+  };
+  for (const host of [
+    "unknown.signalbox.run",
+    "a-name.signalbox.run",
+    "a-01234567-89ab-4cde-8fab-0123456789ab.nested.signalbox.run",
+    "a-01234567-89ab-4cde-8fab-0123456789ab.other.run",
+  ]) {
     const response = await handleRequest(new Request(`https://${host}/`), env);
     assert.equal(response.status, 404);
     assert.equal(await response.text(), "");
@@ -380,40 +496,105 @@ test("unknown app subdomains return empty 404s without reaching any service", as
 test("product hosts keep dashboard, pool and static asset routing", async () => {
   const env: RouterEnv = {
     ...envWithToolsService(async () => new Response("dashboard")),
-    ASSETS: { fetch: async (request) => new URL(request.url).pathname === "/brand/logo.png" ? new Response("brand asset") : new Response(null, { status: 404 }) },
-    APP_UI_SERVICE: { fetch: async () => { throw new Error("product request reached app UI"); } },
+    ASSETS: {
+      fetch: async (request) =>
+        new URL(request.url).pathname === "/brand/logo.png"
+          ? new Response("brand asset")
+          : new Response(null, { status: 404 }),
+    },
+    APP_UI_SERVICE: {
+      fetch: async () => {
+        throw new Error("product request reached app UI");
+      },
+    },
   };
-  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/settings"), env)).text(), "dashboard");
-  assert.equal(await (await handleRequest(new Request("https://app.signalbox.run/brand/logo.png"), env)).text(), "brand asset");
+  assert.equal(
+    await (await handleRequest(new Request("https://app.signalbox.run/settings"), env)).text(),
+    "dashboard",
+  );
+  assert.equal(
+    await (
+      await handleRequest(new Request("https://app.signalbox.run/brand/logo.png"), env)
+    ).text(),
+    "brand asset",
+  );
   // The old setup page redirects; signed out, to sign-in.
   for (const path of ["/setup", "/setup/", "/SETUP"]) {
     const moved = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
     assert.equal(moved.status, 302, path);
     assert.equal(moved.headers.get("location"), "/login?redirect=%2Fsetup", path);
   }
-  assert.equal((await handleRequest(new Request("https://app.signalbox.run/v1/models"), env)).status, 202);
+  assert.equal(
+    (await handleRequest(new Request("https://app.signalbox.run/v1/models"), env)).status,
+    202,
+  );
   const stage = { ...env, DASHBOARD_HOST: "app.fixture.invalid" };
-  assert.equal(await (await handleRequest(new Request("https://app.fixture.invalid/settings"), stage)).text(), "dashboard");
+  assert.equal(
+    await (await handleRequest(new Request("https://app.fixture.invalid/settings"), stage)).text(),
+    "dashboard",
+  );
 });
 
 test("router HTML refuses framing, including static setup/share pages and branded failures", async () => {
-  const html = () => new Response("<html>private dashboard</html>", {
-    headers: { "content-type": "text/html; charset=utf-8", "content-security-policy": "default-src 'self'; frame-ancestors *" },
-  });
-  const env: RouterEnv = { ...envWithToolsService(async () => html()), ASSETS: { fetch: async (request) =>
-    ["/setup", "/share", "/index.html", "/app-auth"].includes(new URL(request.url).pathname) ? html() : new Response(null, { status: 404 }) } };
+  const html = () =>
+    new Response("<html>private dashboard</html>", {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "default-src 'self'; frame-ancestors *",
+      },
+    });
+  const env: RouterEnv = {
+    ...envWithToolsService(async () => html()),
+    ASSETS: {
+      fetch: async (request) =>
+        ["/setup", "/share", "/index.html", "/app-auth"].includes(new URL(request.url).pathname)
+          ? html()
+          : new Response(null, { status: 404 }),
+    },
+  };
   for (const path of ["/setup", "/share", "/index.html", "/app-auth", "/settings", "/home"]) {
     const response = await handleRequest(new Request(`https://app.signalbox.run${path}`), env);
-    assert.match(response.headers.get("content-security-policy") ?? "", /(?:^|;)\s*frame-ancestors 'none'(?:;|$)/);
+    assert.match(
+      response.headers.get("content-security-policy") ?? "",
+      /(?:^|;)\s*frame-ancestors 'none'(?:;|$)/,
+    );
     assert.equal(response.headers.get("x-frame-options"), "DENY");
-    if (path !== "/home") assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+    if (path !== "/home")
+      assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'self'/);
   }
-  const auth = await handleRequest(new Request("https://app.signalbox.run/app-auth"), envWithToolsService(async () => new Response("auth", { headers: {
-    "content-type": "text/html", "content-security-policy": "frame-ancestors 'self'", "x-frame-options": "SAMEORIGIN",
-  } })));
+  const auth = await handleRequest(
+    new Request("https://app.signalbox.run/app-auth"),
+    envWithToolsService(
+      async () =>
+        new Response("auth", {
+          headers: {
+            "content-type": "text/html",
+            "content-security-policy": "frame-ancestors 'self'",
+            "x-frame-options": "SAMEORIGIN",
+          },
+        }),
+    ),
+  );
   assert.equal(auth.headers.get("content-security-policy"), "frame-ancestors 'self'");
   assert.equal(auth.headers.get("x-frame-options"), "SAMEORIGIN");
-  const appEnv = { ...env, APP_UI_SERVICE: { fetch: async () => new Response("app", { headers: { "content-type": "text/html", "content-security-policy": "frame-ancestors https://app.signalbox.run" } }) } };
-  const app = await handleRequest(new Request("https://a-01234567-89ab-4cde-8fab-0123456789ab.signalbox.run/"), appEnv);
-  assert.equal(app.headers.get("content-security-policy"), "frame-ancestors https://app.signalbox.run");
+  const appEnv = {
+    ...env,
+    APP_UI_SERVICE: {
+      fetch: async () =>
+        new Response("app", {
+          headers: {
+            "content-type": "text/html",
+            "content-security-policy": "frame-ancestors https://app.signalbox.run",
+          },
+        }),
+    },
+  };
+  const app = await handleRequest(
+    new Request("https://a-01234567-89ab-4cde-8fab-0123456789ab.signalbox.run/"),
+    appEnv,
+  );
+  assert.equal(
+    app.headers.get("content-security-policy"),
+    "frame-ancestors https://app.signalbox.run",
+  );
 });

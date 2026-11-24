@@ -22,6 +22,8 @@ export class Cell extends DurableObject {
     const kind = request.headers.has("X-Signalbox-Runtime-Identity") ? "model" : "control";
     const storage = this.ctx.storage;
     await note(storage, kind, "started");
+    // The controller instance ends now, with this action under way.
+    await this.env.CONTROLLER.get(this.env.CONTROLLER.idFromName("control")).fetch("http://pool/reset");
     let copy;
     if (kind === "model") {
       // As the endpoint does: the container send takes a copy of the request it was given.
@@ -107,13 +109,10 @@ async function worker() {
 async function controllerReplacedDuring(headers: Record<string, string>) {
   const mf = await worker();
   try {
-    const call = mf
+    await mf
       .dispatchFetch("http://pool/v1/messages", { method: "POST", body: "{}", headers })
       .then((response: Response) => response.text())
       .catch(() => "cut");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    await mf.dispatchFetch("http://pool/reset");
-    await call;
     // Past the cell's 400 ms step and the container's 1 s answer.
     await new Promise((resolve) => setTimeout(resolve, 1_500));
     return (await (await mf.dispatchFetch("http://pool/seen")).json()) as Record<string, string>;

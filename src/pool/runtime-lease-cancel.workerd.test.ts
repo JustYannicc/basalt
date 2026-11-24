@@ -39,6 +39,11 @@ export class Cell extends DurableObject {
       return Response.json({ active: row?.active ?? 0 });
     }
     const done = await this.activity.acquire(identity, true);
+    // The named instance ends now, with this call counted and its answer still to come.
+    const reset = request.headers.get("x-reset");
+    if (reset === "controller")
+      await this.env.CONTROLLER.get(this.env.CONTROLLER.idFromName("control")).fetch("http://pool/reset");
+    else if (reset === "cell") setTimeout(() => this.ctx.abort("replaced"), 0);
     const release = () => {
       this.ctx.waitUntil(done());
       return true;
@@ -111,18 +116,17 @@ async function cellWorker() {
   );
 }
 
-async function countAfterReset(reset: "/reset" | "/cell-reset") {
+async function countAfterReset(reset: "controller" | "cell") {
   const mf = await cellWorker();
   try {
-    const call = mf
-      .dispatchFetch("http://pool/v1/messages", { method: "POST", body: "{}" })
+    await mf
+      .dispatchFetch("http://pool/v1/messages", {
+        method: "POST",
+        body: "{}",
+        headers: { "x-reset": reset },
+      })
       .then((response: Response) => response.status)
       .catch(() => "cut");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const before = await mf.dispatchFetch("http://pool/count");
-    assert.deepEqual(await before.json(), { active: 1 }, "the call was never counted");
-    await mf.dispatchFetch(`http://pool${reset}`);
-    await call;
     // Past the container's answer and the release's own storage write.
     await new Promise((resolve) => setTimeout(resolve, 1_000));
     const count = await mf.dispatchFetch("http://pool/count");
@@ -136,7 +140,7 @@ test(
   "a cell's lease is released when the controller instance that called it is replaced",
   { timeout: 60_000 },
   async () => {
-    assert.equal(await countAfterReset("/reset"), 0);
+    assert.equal(await countAfterReset("controller"), 0);
   },
 );
 
@@ -145,7 +149,7 @@ test(
   { timeout: 60_000 },
   async () => {
     // The lease is durable, but the call it counts died with the instance that held it.
-    assert.equal(await countAfterReset("/cell-reset"), 0);
+    assert.equal(await countAfterReset("cell"), 0);
   },
 );
 
