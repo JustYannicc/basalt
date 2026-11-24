@@ -97,10 +97,16 @@ export async function captureFixture(f: Fixture) {
   };
   const storage = memoryStorage();
   const fill = (lookback = lookbackHours) => fillByTicks(f.db, lookback, storage);
+  /** The counted capture check, in a read-only snapshot as the summary runs it. */
   const coverage = async (from: string, to: string) => {
     const read = recording(f.db);
-    const result = await homeCaptureCoverage(read.db, poolId, fixture.source, from, to, true);
-    return { incomplete: result.incompleteHours, ranges: read.ranges() };
+    await f.db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    try {
+      const result = await homeCaptureCoverage(read.db, poolId, fixture.source, from, to, true);
+      return { incomplete: result.incompleteHours, ranges: read.ranges() };
+    } finally {
+      await f.db.query("ROLLBACK");
+    }
   };
   const stored = async (pool = poolId) =>
     Object.fromEntries(

@@ -1,4 +1,5 @@
 import type { HistoryDatabase } from "./schema.ts";
+import { postgresCode } from "./usage-rollup-apply.ts";
 import { poolUsageRows, poolUsernamePattern, uncaptured, usageHour } from "./capture-population.ts";
 import {
   captureLookbackStart,
@@ -38,9 +39,10 @@ const windowStatement = `SELECT DISTINCT to_char(${usageHour},'YYYY-MM-DD"T"HH24
 /**
  * One statement over the window's whole hours before the settle horizon, for a pool ready on v16:
  * an hour whose settled count found every usage row's request and equals the requests v16 holds for
- * the Home source is complete; one without a settled count is unproven; one whose count found a row
- * without its request, or whose counts differ, is checked row by row, with the tail
- * since the horizon and the hours a bound cuts. Its `bounds` row says whether the pool is ready.
+ * the Home source is complete. Every other hour is checked row by row, with the tail since the
+ * horizon and the hours a bound cuts: one whose count found a row without its request or whose
+ * counts differ, and one with no settled count inside the lookback, as before v17. Consecutive
+ * hours to check are one range. Its `bounds` row says whether the pool is ready.
  * $1 pool, $2 from, $3 to, $4 Home source.
  */
 export const capturedHoursStatement = `WITH w AS MATERIALIZED (
@@ -64,36 +66,34 @@ export const capturedHoursStatement = `WITH w AS MATERIALIZED (
       ON p.pool=$1 AND p.hour >= w.whole_from AND p.hour < w.whole_to
     WHERE w.ready AND p.source=$4::character(64)
     GROUP BY p.hour
-  ), judged AS MATERIALIZED (
-    SELECT h.at, CASE WHEN s.hour IS NULL THEN 'unproven'
-        WHEN s.uncaptured_requests <> 0 OR s.usage_requests <> coalesce(c.n,0) THEN 'check'
-        END AS kind
+  ), checked AS (
+    SELECT h.at, h.at - interval '1 hour' * row_number() OVER (ORDER BY h.at) AS run
     FROM hours h LEFT JOIN stored s ON s.hour=h.at LEFT JOIN captured c ON c.hour=h.at
+    WHERE s.hour IS NULL OR s.uncaptured_requests <> 0 OR s.usage_requests <> coalesce(c.n,0)
   )
-  SELECT 'bounds' AS kind, w.ready, NULL::text AS hour, NULL::text AS f, NULL::text AS t FROM w
+  SELECT 'bounds' AS kind, w.ready, NULL::text AS f, NULL::text AS t FROM w
   UNION ALL
-  (SELECT 'unproven', NULL, to_char(j.at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'), NULL, NULL
-    FROM judged j WHERE j.kind='unproven' ORDER BY j.at LIMIT ${maxIncompleteHours})
+  SELECT 'check', NULL, ${iso("min(k.at)")}, ${iso("max(k.at) + interval '1 hour'")}
+    FROM checked k GROUP BY k.run
   UNION ALL
-  SELECT 'check', NULL, NULL, ${iso("j.at")}, ${iso("j.at + interval '1 hour'")}
-    FROM judged j WHERE j.kind='check'
-  UNION ALL
-  SELECT 'check', NULL, NULL, ${iso("w.lo")}, ${iso("w.whole_from")}
+  SELECT 'check', NULL, ${iso("w.lo")}, ${iso("w.whole_from")}
     FROM w WHERE w.ready AND w.whole_from < w.whole_to AND w.lo < w.whole_from
   UNION ALL
-  SELECT 'check', NULL, NULL, ${iso("w.whole_to")}, ${iso("w.hi")}
+  SELECT 'check', NULL, ${iso("w.whole_to")}, ${iso("w.hi")}
     FROM w WHERE w.ready AND w.whole_from < w.whole_to AND w.whole_to < w.hi
   UNION ALL
-  SELECT 'check', NULL, NULL, ${iso("w.lo")}, ${iso("w.hi")}
+  SELECT 'check', NULL, ${iso("w.lo")}, ${iso("w.hi")}
     FROM w WHERE w.ready AND w.whole_from >= w.whole_to`;
 
 /**
  * Reconcile the source to this pool's ledger in the caller's repeatable-read snapshot.
  *
  * With `counted`, a pool ready on the v16 rollup reads the hour counts history migration v17 keeps:
- * only the hours whose counts differ, the tail since the settle horizon and the hours a bound cuts
- * are checked row by row, and an hour without a settled count is unproven, so incomplete, and never
- * read row by row. Without v17 or a v16-ready pool, every usage row of the window is checked.
+ * an hour whose count proves it is complete without a row check, and every other hour is checked row
+ * by row, so while the counts fill the answer is the same as before v17 and only gets cheaper. That
+ * row check has its own limit: if it can't answer within it, its hours are unproven, so incomplete,
+ * and the summary still answers. Without v17 or a v16-ready pool, every usage row of the window is
+ * checked under the read's own limit, as before.
  */
 export async function homeCaptureCoverage(
   db: HistoryDatabase,
@@ -117,27 +117,71 @@ export async function homeCaptureCoverage(
   if (!available?.usage || !available.charge || !available.api_key || !available.users)
     return { capturedAt, incompleteHours: null };
   const username = poolUsernamePattern(poolHash);
-  let unproven: string[] = [];
   let ranges: { f: string; t: string }[] | undefined;
   if (counted && available.capture_hours === true) {
     const rows = (await db.query(capturedHoursStatement, [poolHash, from, to, homeSourceHash]))
       .rows;
-    if (rows.find((row) => row.kind === "bounds")?.ready === true) {
-      unproven = rows.filter((row) => row.kind === "unproven").map((row) => String(row.hour));
-      if (unproven.length >= maxIncompleteHours) return { capturedAt, incompleteHours: null };
+    if (rows.find((row) => row.kind === "bounds")?.ready === true)
       ranges = rows
         .filter((row) => row.kind === "check")
-        .map((row) => ({ f: String(row.f), t: String(row.t) }));
-    }
+        .map((row) => ({ f: String(row.f), t: String(row.t) }))
+        .sort((a, b) => Date.parse(a.f) - Date.parse(b.f));
   }
-  const read = !ranges
-    ? db.query(windowStatement, [username, from, to, poolHash, homeSourceHash])
-    : ranges.length
-      ? db.query(missingStatement, [username, JSON.stringify(ranges), poolHash, homeSourceHash])
-      : undefined;
-  const missing = read ? (await read).rows.map((row) => String(row.hour)) : [];
-  const incomplete = new Set([...unproven, ...missing]);
-  if (missing.length >= maxIncompleteHours || incomplete.size >= maxIncompleteHours)
-    return { capturedAt, incompleteHours: null };
-  return { capturedAt, incompleteHours: incomplete };
+  let missing: string[];
+  if (!ranges)
+    missing = (
+      await db.query(windowStatement, [username, from, to, poolHash, homeSourceHash])
+    ).rows.map((row) => String(row.hour));
+  else if (!ranges.length) missing = [];
+  else {
+    const checked = await boundedRowCheck(db, [
+      username,
+      JSON.stringify(ranges),
+      poolHash,
+      homeSourceHash,
+    ]);
+    // The row check did not answer in time: its hours are unproven, never complete.
+    missing = checked ?? rangeHours(ranges);
+  }
+  if (missing.length >= maxIncompleteHours) return { capturedAt, incompleteHours: null };
+  return { capturedAt, incompleteHours: new Set(missing) };
+}
+
+/** The counted path's row check limit, inside the read's own 5 s. */
+export const captureRowCheckLimitMs = 3_000;
+
+/**
+ * The row check in a savepoint under its own limit. A Postgres statement timeout gives undefined and
+ * leaves the session as it was; any other failure still fails the read.
+ */
+async function boundedRowCheck(db: HistoryDatabase, values: unknown[]) {
+  await db.query("SAVEPOINT capture_row_check");
+  try {
+    await db.query("SELECT set_config('statement_timeout',$1,true)", [
+      `${captureRowCheckLimitMs}ms`,
+    ]);
+    const rows = (await db.query(missingStatement, values)).rows.map((row) => String(row.hour));
+    // Rolling back to the savepoint restores the read's own limit, which a release would not.
+    await db.query("ROLLBACK TO SAVEPOINT capture_row_check");
+    await db.query("RELEASE SAVEPOINT capture_row_check");
+    return rows;
+  } catch (error) {
+    if (postgresCode(error) !== "57014") throw error;
+    await db.query("ROLLBACK TO SAVEPOINT capture_row_check");
+    await db.query("RELEASE SAVEPOINT capture_row_check");
+    return undefined;
+  }
+}
+
+/** Every UTC hour a range touches, keyed as the row check names them. */
+function rangeHours(ranges: readonly { f: string; t: string }[]) {
+  const hours = new Set<string>();
+  for (const range of ranges)
+    for (
+      let at = Math.floor(Date.parse(range.f) / 3_600_000) * 3_600_000;
+      at < Date.parse(range.t) && hours.size < maxIncompleteHours;
+      at += 3_600_000
+    )
+      hours.add(new Date(at).toISOString().replace(".000Z", "Z"));
+  return [...hours];
 }

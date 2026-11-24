@@ -21,7 +21,7 @@ const minute = 60_000;
 type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 
 /** The pool's hours over the fixture's lookback, and how many of them have a settled count. */
-async function counted(f: Fixture, pool: string) {
+async function counted(f: Fixture, pool: string, hours = lookbackHours) {
   const row = (
     await f.db.query(
       `SELECT count(*)::int AS hours, count(s.hour)::int AS settled
@@ -29,7 +29,7 @@ async function counted(f: Fixture, pool: string) {
         date_trunc('hour',now() - interval '2 hours','UTC') - interval '1 hour', interval '1 hour') h(at)
       LEFT JOIN basalt_model_capture_hours s ON s.pool=$1 AND s.hour=h.at
         AND s.checked_at >= s.hour + interval '2 hours'`,
-      [pool, lookbackHours],
+      [pool, hours],
     )
   ).rows[0]!;
   return { hours: Number(row.hours), settled: Number(row.settled) };
@@ -107,10 +107,13 @@ test("a pool is counted to its settle horizon by ticks alone, each session withi
     let clock = Date.parse("2026-02-01T00:00:00Z");
     let ticks = 0;
     let state: CaptureHoursAutoState = {};
+    // Thirteen or fourteen six-hour blocks, wherever the horizon falls in the six-hour grid: more
+    // than two ticks' budget. A multiple of six would make it twelve on the grid, which two take.
+    const hours = lookbackHours + 6;
     for (; ticks < 100; ticks++) {
       state = await captureHoursTick(storage, (work) => work(f.db), {
         now: () => (clock += 1),
-        bounds: { sessionMs: 12, lookbackHours },
+        bounds: { sessionMs: 12, lookbackHours: hours },
       });
       for (const session of state.sessions ?? [])
         assert.ok(session.ms <= 12 + 4, `a session took ${session.ms} ms of a 12 ms budget`);
@@ -118,8 +121,8 @@ test("a pool is counted to its settle horizon by ticks alone, each session withi
       clock += 5 * minute;
     }
     assert.ok(ticks > 2, `it took ${ticks} ticks`);
-    const done = await counted(f, c.poolId);
-    assert.equal(done.hours, lookbackHours);
+    const done = await counted(f, c.poolId, hours);
+    assert.equal(done.hours, hours);
     assert.deepEqual(done, { hours: done.hours, settled: done.hours }, "fully counted");
     assert.equal(state.pendingHours, 0);
     assert.equal(state.pendingBlocks, 0);
@@ -327,7 +330,8 @@ test("a pool another session holds is a lock stop: the tick never waits, pauses 
         [{ reason: "lock" }],
         "loud once",
       );
-      // A stuck or paused tick leaves the overview readable, the hours it never counted unproven.
+      // A stuck or paused tick leaves the overview readable, the hours it never counted read row by
+      // row as before v17.
       const summary = await poolUsageSummary(
         f.db,
         { pool, from: at(-24 * 30), to: at(24), by: "model", authority: c.authority },
@@ -337,8 +341,12 @@ test("a pool another session holds is a lock stop: the tick never waits, pauses 
       assert.equal(summary.homeCapture.status, "unavailable");
       assert.equal(summary.partial, true);
       const read = await c.coverage(at(0), at(24));
-      assert.equal([...read.incomplete!].length, 24, "every hour of the day is unproven");
-      assert.equal(read.ranges, undefined);
+      assert.deepEqual([...read.incomplete!], [], "the row check found every request");
+      assert.deepEqual(
+        read.ranges?.map((range) => [Date.parse(range.f), Date.parse(range.t)]),
+        [[Date.parse(at(0)), Date.parse(at(24))]],
+        "the uncounted day, row by row",
+      );
       await holder.query("COMMIT");
       clock += 61 * minute;
       const done = await tick();

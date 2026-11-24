@@ -41,6 +41,12 @@ const blockOf = (block: { from: string; missing?: number }) => [
 const blockStart = (hour: string) =>
   new Date(Math.floor(Date.parse(hour) / (6 * 3_600_000)) * 6 * 3_600_000).toISOString();
 type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
+/** The per-row check's ranges as [from, to] instants, or undefined when it did not run. */
+const spans = (ranges: readonly { f: string; t: string }[] | undefined) =>
+  ranges?.map((range) => [
+    new Date(Date.parse(range.f)).toISOString(),
+    new Date(Date.parse(range.t)).toISOString(),
+  ]);
 
 test("an hour whose stored count equals its captured requests reads complete without a per-row check", async () => {
   await seriesFixture(async (f) => {
@@ -92,13 +98,12 @@ test("a deleted usage row makes the counts differ, and the per-row check reads i
   });
 });
 
-test("hours the tick never counted are unproven: incomplete, and never read row by row", async () => {
+test("hours the tick never counted are read row by row, as before v17, as one range", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, 60_000));
     await c.native(at(30, 60_000));
-    // A missing request inside the uncounted day: the per-row check would find it, so a read of
-    // that day would show as a range below.
+    // A missing request inside the uncounted day: only the per-row check can find it.
     await c.usage(at(10, 60_000));
     await c.ready();
     await c.fill();
@@ -109,15 +114,15 @@ test("hours the tick never counted are unproven: incomplete, and never read row 
     ]);
     const read = await c.coverage(at(0), at(36));
     assert.deepEqual(
-      [...read.incomplete!].sort(),
-      Array.from({ length: 24 }, (_, n) => hourKey(4 + n)),
-      "every uncounted hour is unproven",
+      [...read.incomplete!],
+      [hourKey(10)],
+      "the row check found the missing request",
     );
-    assert.equal(read.ranges, undefined, "and none of them is read row by row");
+    assert.deepEqual(spans(read.ranges), [[at(4), at(28)]], "the uncounted day, as one range");
   });
 });
 
-test("a count taken before its hour settled is uncounted: unproven to the summary and pending for the tick", async () => {
+test("a count taken before its hour settled is uncounted: read row by row by the summary and pending for the tick", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, 60_000));
@@ -129,8 +134,8 @@ test("a count taken before its hour settled is uncounted: unproven to the summar
       [at(2)],
     );
     const read = await c.coverage(at(0), at(24));
-    assert.deepEqual([...read.incomplete!], [hourKey(2)]);
-    assert.equal(read.ranges, undefined);
+    assert.deepEqual([...read.incomplete!], []);
+    assert.deepEqual(spans(read.ranges), [[at(2), at(3)]], "that hour, and only it, row by row");
     const plan = await planCaptureHours(f.db, lookbackHours);
     // The block holding that hour is pending, missing that one hour.
     assert.deepEqual(
@@ -139,7 +144,9 @@ test("a count taken before its hour settled is uncounted: unproven to the summar
     );
     assert.deepEqual(blockOf(plan!.pools[0]!.blocks[0]!), [blockStart(at(2)), 1]);
     await c.fill();
-    assert.deepEqual([...(await c.coverage(at(0), at(24))).incomplete!], []);
+    const recounted = await c.coverage(at(0), at(24));
+    assert.deepEqual([...recounted.incomplete!], []);
+    assert.equal(recounted.ranges, undefined, "counted again, nothing is read row by row");
   });
 });
 
@@ -339,6 +346,7 @@ test("plans: a count reads one hour of usage through its time index, and the sum
       assert.ok(!count.seq.has("usage"), "no scan of all usage");
     }
     const read = recording(f.db);
+    await f.db.query("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await homeCaptureCoverage(
       read.db,
       c.poolId,
@@ -347,7 +355,17 @@ test("plans: a count reads one hour of usage through its time index, and the sum
       new Date().toISOString(),
       true,
     );
-    const capture = read.seen.filter((entry) => !entry.text.includes("to_regclass('usage')"));
+    await f.db.query("ROLLBACK");
+    const control = (text: string) =>
+      /^(SAVEPOINT|ROLLBACK TO|RELEASE|SELECT set_config)/.test(text);
+    assert.deepEqual(
+      read.seen.filter((entry) => control(entry.text)).map((entry) => entry.text.split(" ")[0]),
+      ["SAVEPOINT", "SELECT", "ROLLBACK", "RELEASE"],
+      "the row check runs in its own savepoint under its own limit",
+    );
+    const capture = read.seen.filter(
+      (entry) => !entry.text.includes("to_regclass('usage')") && !control(entry.text),
+    );
     assert.equal(capture.length, 2, "two statements: the stored hours and the rows they leave");
     let usage = 0,
       probes = 0;
@@ -460,7 +478,7 @@ test("a pool with only imported rows is counted, and its counted hours read comp
   });
 });
 
-test("hours of a window older than the lookback stay unproven, never complete", async () => {
+test("hours of a window older than the lookback are read row by row, as before v17", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, 60_000));
@@ -468,13 +486,15 @@ test("hours of a window older than the lookback stay unproven, never complete", 
     await c.fill();
     const first = (await horizon(f.db)) - lookbackHours * 3_600_000;
     const before = (n: number) => new Date(first - n * 3_600_000).toISOString();
+    // A missing request two hours before the lookback: only the per-row check can find it.
+    await c.usage(new Date(first - 2 * 3_600_000 + 60_000).toISOString());
     const read = await c.coverage(before(4), at(24));
+    assert.deepEqual([...read.incomplete!], [before(2).replace(".000Z", "Z")]);
     assert.deepEqual(
-      [...read.incomplete!].sort(),
-      [4, 3, 2, 1].map((n) => before(n).replace(".000Z", "Z")),
-      "the four hours before the lookback, and only those",
+      spans(read.ranges)?.[0],
+      [before(4), new Date(first).toISOString()],
+      "the four hours before the lookback, as one range",
     );
-    assert.equal(read.ranges, undefined, "and none of them is read row by row");
   });
 });
 
@@ -589,12 +609,15 @@ test("past 800 incomplete hours the check names none, on the per-row path and th
     const over = await homeCaptureCoverage(f.db, c.poolId, c.source, at(-800), at(0), true);
     assert.equal(over.incompleteHours, null, "800 missing hours are past the bound");
     await f.db.query("DELETE FROM usage");
-    // Ready and counted over the lookback: hours before it are unproven.
+    // Ready and counted over the lookback: the hours before it are read row by row, one usage row
+    // without its request an hour.
     await c.native(at(0, 60_000));
     await c.ready();
     await c.fill();
     const first = (await horizon(f.db)) - lookbackHours * 3_600_000;
     const from = (n: number) => new Date(first - n * 3_600_000).toISOString();
+    for (let n = 1; n <= 800; n++)
+      await c.usage(new Date(first - n * 3_600_000 + 60_000).toISOString());
     const under = await c.coverage(from(799), at(24));
     assert.equal(under.incomplete?.size, 799);
     assert.equal((await c.coverage(from(800), at(24))).incomplete, null);
@@ -617,7 +640,8 @@ test("a count taken at exactly two hours past its hour is settled; a microsecond
       [at(3)],
     );
     const read = await c.coverage(at(0), at(24));
-    assert.deepEqual([...read.incomplete!], [hourKey(3)]);
+    assert.deepEqual([...read.incomplete!], []);
+    assert.deepEqual(spans(read.ranges), [[at(3), at(4)]], "only the unsettled count's hour");
     const plan = await planCaptureHours(f.db, lookbackHours);
     assert.deepEqual(plan?.pools[0]?.blocks.map(blockOf), [[blockStart(at(3)), 1]]);
   });
@@ -718,7 +742,7 @@ test("a block's counts equal its hours counted one by one, to the microsecond at
   });
 });
 
-test("a stored hour older than the lookback reads unproven, never complete, though its counts agree", async () => {
+test("a stored hour older than the lookback is read row by row, though its counts agree", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, 60_000));
@@ -731,17 +755,16 @@ test("a stored hour older than the lookback reads unproven, never complete, thou
       FROM unnest(ARRAY[$2::timestamptz - interval '1 hour', $2::timestamptz]) h`,
       [c.poolId, new Date(first).toISOString()],
     );
-    const key = (ms: number) => new Date(ms).toISOString().replace(".000Z", "Z");
     const read = await c.coverage(
       new Date(first - 3_600_000).toISOString(),
       new Date(first + 3_600_000).toISOString(),
     );
+    assert.deepEqual([...read.incomplete!], []);
     assert.deepEqual(
-      [...read.incomplete!],
-      [key(first - 3_600_000)],
-      "the hour before the lookback only",
+      spans(read.ranges),
+      [[new Date(first - 3_600_000).toISOString(), new Date(first).toISOString()]],
+      "the hour before the lookback only; the one inside it is proven by its count",
     );
-    assert.equal(read.ranges, undefined);
   });
 });
 
