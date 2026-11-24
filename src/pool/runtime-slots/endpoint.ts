@@ -10,6 +10,8 @@ import { legacyConnections } from "./legacy-drain.ts";
 export const leaseProofEveryMs = 30_000;
 /** The read's own program stops at 2 s; past this the answer is unknown. */
 const leaseProofLimitMs = 5_000;
+/** The operator's commands answer inside the cell call's 5 s, so their read stops sooner. */
+const operatorReadLimitMs = 1_500;
 import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
@@ -56,6 +58,7 @@ import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
+import { leakedStreamsMs } from "./forced-restart-timing.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
@@ -585,18 +588,7 @@ export class RuntimeEndpoint {
     const now = Date.now();
     if (now - (this.leaseProofs.get(boot) ?? -Infinity) < leaseProofEveryMs) return;
     this.leaseProofs.set(boot, now);
-    const container = this.ctx.container;
-    let connections: number | undefined;
-    if (container?.exec && container.running) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      connections = await Promise.race([
-        legacyConnections({ exec: container.exec.bind(container) }).catch(() => undefined),
-        new Promise<undefined>((resolve) => {
-          timer = setTimeout(() => resolve(undefined), leaseProofLimitMs);
-        }),
-      ]);
-      clearTimeout(timer);
-    }
+    const connections = await this.openConnections(leaseProofLimitMs);
     if (connections === 0) {
       await this.activity.releaseProven(identity, 0);
       return;
@@ -608,6 +600,51 @@ export class RuntimeEndpoint {
       foreignSockets: pending.foreignSockets.length,
       connections: connections ?? "unknown",
     });
+  }
+  /**
+   * The operator's override of a count that stood still on a draining runtime (`fleet-retire`), for
+   * when the proof release above can't end it. It first takes the same 8317 read, as evidence for
+   * the operator and never as a gate: null when the read fails or is late.
+   */
+  releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
+    this.bound(identity);
+    return this.serialize(async () => {
+      signal.throwIfAborted();
+      const connections = await this.openConnections(operatorReadLimitMs);
+      const released = {
+        ...(await this.activity.releaseStill(identity, leakedStreamsMs, signal)),
+        connections,
+      };
+      // The cell's own record, so a release whose answer never reached the controller still shows.
+      console.warn("POOL_RUNTIME_STILL_RELEASED", {
+        operationId,
+        slot: identity.slotId,
+        ordinal: identity.homePeerOrdinal ?? null,
+        ...released,
+      });
+      return released;
+    });
+  }
+  /** The operator's check before `fleet-retire`: the same rules and the same read, nothing written. */
+  checkStill(identity: SlotIdentity) {
+    this.bound(identity);
+    return this.serialize(async () => ({
+      ...(await this.activity.checkStill(identity, leakedStreamsMs)),
+      connections: await this.openConnections(operatorReadLimitMs),
+    }));
+  }
+  /**
+   * The legacy drain's read of established connections on the model port, for the proof release and
+   * the operator alike: null when there's no running container, or the read fails or passes `limitMs`.
+   */
+  private async openConnections(limitMs: number) {
+    const container = this.ctx.container;
+    if (!container?.exec || !container.running) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      legacyConnections({ exec: container.exec.bind(container) }).catch(() => null),
+      new Promise<null>((late) => (timer = setTimeout(() => late(null), limitMs))),
+    ]).finally(() => clearTimeout(timer));
   }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {

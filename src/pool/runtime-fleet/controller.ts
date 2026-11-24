@@ -38,6 +38,7 @@ import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { failureIgnored, failureRead, readSuspect } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
+import { slotKey } from "../runtime-slots/activity.ts";
 import {
   distanceClass,
   neededFarMs,
@@ -108,6 +109,30 @@ export interface FleetCell {
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   /** The cell's own stream count, read without draining it; without it a ready count stays as is. */
   activity?(identity: SlotIdentity): Promise<CellCount>;
+  /** Releases a draining cell's count that stood still `leakedStreamsMs`; the cell checks both. */
+  releaseStill?(
+    identity: SlotIdentity,
+    operationId: string,
+  ): Promise<{
+    released: number;
+    stillMs: number;
+    unstamped: number;
+    foreignSockets: number;
+    connections: number | null;
+  }>;
+  /** `releaseStill`'s rules and its connection read for the operator's check, nothing written. */
+  checkStill?(identity: SlotIdentity): Promise<{
+    refusal: string | null;
+    active: number;
+    stillMs: number;
+    leases: {
+      currentCalls: number;
+      currentSockets: number;
+      foreignSockets: number;
+      unstamped: number;
+    };
+    connections: number | null;
+  }>;
   /** Whether the cell is proven gone; false while its stop is still under way. */
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
@@ -431,6 +456,97 @@ export class RuntimeFleet {
   }
   private placement() {
     return { comfortable: this.deps.targetActive, primary: this.primaryPlace };
+  }
+  /**
+   * The operator's retirement of one named draining row, whose count no stream has moved for
+   * `countStillMs`. A count left by a lost release keeps a row from ever retiring otherwise. It
+   * overrides the count, on the cell and in the ledger, and upkeep's ordinary retirement then stops
+   * the cell and holds its place until the provider proves the instance gone. Never a ready row:
+   * a row that can take calls is drained first, by a disable or by idling out.
+   */
+  async retireRow(operationId: string, go: string, key: string) {
+    const rows = await this.deps.state.inspect();
+    const matches: FleetRow[] = [];
+    for (const row of rows)
+      if ((await slotKey(row.target.slotId)).startsWith(key)) matches.push(row);
+    const row = matches[0];
+    if (matches.length !== 1 || !row) throw new FleetRefused("identity");
+    if (row.phase !== "draining" || !row.identity) throw new SlotRefused("selection");
+    const ledgerStillMs = this.deps.now() - row.lastUsedAt;
+    if (ledgerStillMs < countStillMs) throw new FleetRefused("draining");
+    const cell = this.cell(row.target);
+    if (!cell.releaseStill) throw new FleetRefused("uncertain");
+    const released = await cell.releaseStill(row.identity, operationId);
+    // From here the cell's override stands, so the line is always written. The ledger is lowered only
+    // while it is exactly what was read, as any reconcile is; otherwise upkeep's reconcile lowers it
+    // to the cell's 0 once it stands still.
+    const ledgerLowered =
+      row.active === 0 ||
+      (await this.deps.state.reconcileActive(row.identity, row, 0).catch(() => false));
+    const receipt = {
+      operationId,
+      go,
+      key: await slotKey(row.target.slotId),
+      slot: row.target.slotId,
+      ordinal: row.target.homePeerOrdinal ?? null,
+      ledger: row.active,
+      cell: released.released,
+      ledgerStillMs,
+      cellStillMs: released.stillMs,
+      ledgerLowered,
+      // Established connections on the cell's 8317 just before the override, or null: evidence only.
+      connections: released.connections,
+      // What kind of leases it ended: #1871's proof release ends the same ones when 8317 reads 0.
+      unstamped: released.unstamped,
+      foreignSockets: released.foreignSockets,
+    };
+    console.warn("POOL_FLEET_ROW_RETIRE_OVERRIDE", receipt);
+    this.deps.changed?.();
+    return receipt;
+  }
+  /**
+   * The operator's check before `retireRow`: its refusal tests and the cell's own check and
+   * connection read for the named row, answered as a closed record instead of thrown, with nothing
+   * overridden anywhere.
+   */
+  async retireCheck(key: string) {
+    const rows = await this.deps.state.inspect();
+    const matches: FleetRow[] = [];
+    for (const row of rows)
+      if ((await slotKey(row.target.slotId)).startsWith(key)) matches.push(row);
+    const row = matches[0];
+    if (matches.length !== 1 || !row)
+      return { wouldProceed: false, refusal: "key_matches", matches: matches.length };
+    const ledgerStillMs = this.deps.now() - row.lastUsedAt;
+    const named = {
+      matches: 1,
+      key: await slotKey(row.target.slotId),
+      ordinal: row.target.homePeerOrdinal ?? null,
+      phase: row.phase,
+      ledger: row.active,
+      ledgerStillMs,
+    };
+    if (row.phase !== "draining" || !row.identity)
+      return { ...named, wouldProceed: false, refusal: "not_draining" };
+    const cell = this.cell(row.target);
+    const checked = await cell.checkStill?.(row.identity).catch(() => undefined);
+    const refusal =
+      ledgerStillMs < countStillMs
+        ? "ledger_moving"
+        : !checked
+          ? "cell_unreadable"
+          : checked.refusal
+            ? `cell_${checked.refusal}`
+            : null;
+    return {
+      ...named,
+      wouldProceed: refusal === null,
+      refusal,
+      cell: checked?.active ?? null,
+      cellStillMs: checked?.stillMs ?? null,
+      leases: checked?.leases ?? null,
+      connections: checked?.connections ?? null,
+    };
   }
   async recoverPrimary() {
     const failure = this.primaryFailure;

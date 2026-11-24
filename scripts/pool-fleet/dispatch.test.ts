@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
@@ -69,10 +70,16 @@ test("configure pins each colour with the digest the controller's own observatio
   }
 });
 
-test("configure, disable, crash and bookmark refuse without a coordinator GO and send nothing", async () => {
+test("configure, disable, crash, bookmark and retire-row refuse without a coordinator GO and send nothing", async () => {
   const lane = await harness();
   try {
-    for (const mode of ["configure-and-accept", "disable", "crash-cell", "bookmark"]) {
+    for (const mode of [
+      "configure-and-accept",
+      "disable",
+      "crash-cell",
+      "bookmark",
+      "retire-row",
+    ]) {
       for (const bad of ["", "go", "coordinator-<pending>", "yes coordinator-2026-x"]) {
         const result = await runPoolFleet(dispatch(mode, { go: bad }), lane.deps());
         assert.equal(result.ok, false);
@@ -491,5 +498,344 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
     } finally {
       await lane.close();
     }
+  }
+});
+
+test("retire-row sends one fleet-retire for the named draining row and prints it before and after", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    // The row a lost release left counting: draining, six calls that never end.
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const retireGo = "coordinator-2026-11-24-retire-stuck-row";
+    const result = await runPoolFleet(dispatch("retire-row", { go: retireGo, key }), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(
+      lane.retires.map((sent) => [sent.go, sent.key]),
+      [[retireGo, key]],
+    );
+    const outcome = (
+      result as unknown as {
+        result: {
+          before: { key: string; phase: string; active: number }[];
+          after: { active: number }[];
+          retired: {
+            overrode: {
+              ledger: number;
+              cell: number;
+              cellStillMs: number;
+              connections: number | null;
+            } | null;
+          };
+        };
+      }
+    ).result;
+    assert.deepEqual(
+      outcome.before.map((row) => [row.key.slice(0, 8), row.phase, row.active]),
+      [[key, "draining", 6]],
+    );
+    assert.deepEqual(
+      outcome.after.map((row) => row.active),
+      [0],
+    );
+    assert.deepEqual(
+      [
+        outcome.retired.overrode?.ledger,
+        outcome.retired.overrode?.cell,
+        outcome.retired.overrode?.cellStillMs,
+      ],
+      [6, 6, 2_400_000],
+    );
+    assert.equal(
+      outcome.retired.overrode?.connections,
+      0,
+      "the 8317 connection read is printed beside the counts",
+    );
+    assert.equal((result as unknown as { result: { warning: unknown } }).result.warning, null);
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /runtime-cell-1|cell-boot/u,
+      "only keys leave, never slot ids",
+    );
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-row refuses a ready row, a bad key and a key matching no row before any send", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const retireGo = "coordinator-2026-11-24-retire-stuck-row";
+    for (const [name, value, refusal] of [
+      ["the ready row", key, /row-not-draining/u],
+      ["a key too short", key.slice(0, 7), /row-key-invalid/u],
+      ["a key matching no row", "00000000", /row-key-ambiguous/u],
+    ] as const) {
+      const result = await runPoolFleet(
+        dispatch("retire-row", { go: retireGo, key: value }),
+        lane.deps(),
+      );
+      assert.equal(result.ok, false, name);
+      assert.match(String("cause" in result && result.cause), refusal, name);
+    }
+    assert.deepEqual(lane.retires, []);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-row says plainly when the cell's connection read doesn't show it idle", async () => {
+  for (const [connections, warning] of [
+    [2, "2 connections are open on this cell; the override may cut them"],
+    [null, "the connection read failed; nothing proves this cell is idle"],
+  ] as const) {
+    const lane = await harness();
+    try {
+      assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+      const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+        target: { slotId: string };
+      }[];
+      lane.storage.values.set(
+        "runtime-fleet-v1:resources",
+        rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+      );
+      lane.retireRead.connections = connections;
+      const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+      const result = await runPoolFleet(
+        dispatch("retire-row", { go: "coordinator-2026-11-24-retire-stuck-row", key }),
+        lane.deps(),
+      );
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.equal((result as unknown as { result: { warning: unknown } }).result.warning, warning);
+    } finally {
+      await lane.close();
+    }
+  }
+});
+
+test("configure-and-accept sets the target-active it is given, and inspect shows it with the revision and maximum", async () => {
+  const lane = await harness();
+  try {
+    const permission = async () =>
+      (
+        (await runPoolFleet(dispatch("inspect"), lane.deps())) as unknown as {
+          result: {
+            fleet: { permission: { revision: number; targetActive: number; maximum: number } };
+          };
+        }
+      ).result.fleet.permission;
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const first = await permission();
+    assert.deepEqual([first.revision, first.targetActive, first.maximum], [1, 25, 4]);
+    const lowered = await runPoolFleet(
+      dispatch("configure-and-accept", {
+        go: "coordinator-2026-11-25-target-5",
+        targetActive: "5",
+      }),
+      lane.deps(),
+    );
+    assert.equal(lowered.ok, true, JSON.stringify(lowered));
+    assert.deepEqual([(await permission()).revision, (await permission()).targetActive], [2, 5]);
+    const restored = await runPoolFleet(
+      dispatch("configure-and-accept", {
+        go: "coordinator-2026-11-25-target-25",
+        targetActive: "25",
+      }),
+      lane.deps(),
+    );
+    assert.equal(restored.ok, true, JSON.stringify(restored));
+    assert.deepEqual([(await permission()).revision, (await permission()).targetActive], [3, 25]);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a target-active out of configure's range, or on another mode, is refused before any send", async () => {
+  const lane = await harness();
+  try {
+    for (const [mode, value] of [
+      ["configure-and-accept", "0"],
+      ["configure-and-accept", "100001"],
+      ["configure-and-accept", "5.5"],
+      ["configure-and-accept", "five"],
+      ["inspect", "5"],
+    ] as const) {
+      const result = await runPoolFleet(dispatch(mode, { targetActive: value }), lane.deps());
+      assert.equal(result.ok, false, `${mode} ${value}`);
+      assert.match(String("cause" in result && result.cause), /target-active-invalid/u);
+    }
+    assert.deepEqual(lane.actions, []);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check takes any go text, reports what retire-row would do and whose leases they are, and changes nothing", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    const before = JSON.stringify(lane.storage.values.get("runtime-fleet-v1:resources"));
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    lane.retireRead.connections = 1;
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const outcome = (
+      result as unknown as {
+        result: {
+          check: {
+            wouldProceed: boolean;
+            ledger: number;
+            cell: number;
+            connections: number;
+            leaseOwner: string;
+          };
+          warning: string | null;
+        };
+      }
+    ).result;
+    assert.deepEqual(
+      [
+        outcome.check.wouldProceed,
+        outcome.check.ledger,
+        outcome.check.cell,
+        outcome.check.connections,
+      ],
+      [true, 6, 6, 1],
+    );
+    assert.equal(
+      outcome.check.leaseOwner,
+      "none of the cell's leases is held by its current instance: 6 unstamped leases from before the stamps, which the proof release ends only when 8317 reads 0",
+    );
+    assert.equal(outcome.warning, "1 connections are open on this cell; the override may cut them");
+    assert.deepEqual(lane.checks, [key]);
+    assert.deepEqual(lane.retires, [], "no override was sent");
+    assert.equal(JSON.stringify(lane.storage.values.get("runtime-fleet-v1:resources")), before);
+    assert.doesNotMatch(JSON.stringify(result), /runtime-cell-1|cell-boot/u);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a configure rerun under the same GO with another target-active is refused instead of silently not applied", async () => {
+  const lane = await harness();
+  try {
+    const go = "coordinator-2026-11-25-target-5";
+    assert.equal(
+      (await runPoolFleet(dispatch("configure-and-accept", { go, targetActive: "5" }), lane.deps()))
+        .ok,
+      true,
+    );
+    const rerun = await runPoolFleet(
+      dispatch("configure-and-accept", { go, targetActive: "25" }),
+      lane.deps(),
+    );
+    assert.equal(rerun.ok, false);
+    assert.match(String("cause" in rerun && rerun.cause), /target-active-differs/u);
+    const kept = await lane.configuration.inspect();
+    assert.deepEqual([kept?.configuration.targetActive, kept?.enabled], [5, true]);
+    assert.ok(
+      !lane.actions.includes("fleet-disable"),
+      "a refused input never rolls the fleet back",
+    );
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check on a ready row reports the refusal and warns about nothing", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.retireRead.connections = 1;
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const outcome = (
+      result as unknown as {
+        result: { check: { wouldProceed: boolean; refusal: string }; warning: unknown };
+      }
+    ).result;
+    assert.deepEqual([outcome.check.wouldProceed, outcome.check.refusal], [false, "not_draining"]);
+    assert.equal(outcome.warning, null, "a ready row's connections are its live traffic");
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check names model sockets, unstamped leases and a count with no lease record apart", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    lane.retireRead.leases = {
+      currentCalls: 0,
+      currentSockets: 0,
+      foreignSockets: 1,
+      unstamped: 3,
+    };
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(
+      (result as unknown as { result: { check: { leaseOwner: string } } }).result.check.leaseOwner,
+      "none of the cell's leases is held by its current instance: 1 model sockets another instance took, which can outlive it, 3 unstamped leases from before the stamps, which the proof release ends only when 8317 reads 0; 2 counted with no lease record, which only the override ends",
+    );
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check says when the cell's current instance holds leases, by kind", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    lane.retireRead.leases = {
+      currentCalls: 2,
+      currentSockets: 1,
+      foreignSockets: 0,
+      unstamped: 3,
+    };
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(
+      (result as unknown as { result: { check: { leaseOwner: string } } }).result.check.leaseOwner,
+      "3 of the cell's leases belong to its current instance (2 calls, 1 model sockets), so their streams may be live; the override refuses them",
+    );
+  } finally {
+    await lane.close();
   }
 });

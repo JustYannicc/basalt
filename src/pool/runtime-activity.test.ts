@@ -293,3 +293,158 @@ test("leases a rollback took are unstamped after the roll-forward and end only b
   await after.releaseProven(identity, 0);
   assert.equal(await count(after), 0);
 });
+
+// The count a lost release leaves: six leases another isolate took, whose closures died with it.
+const leakedRow = (changedAt: number) => ({
+  identity,
+  phase: "draining",
+  active: 6,
+  known: true,
+  leases: Object.fromEntries(Array.from({ length: 6 }, (_, index) => [`dead-${index}`, "active"])),
+  changedAt,
+});
+
+test("an operator releases a dead isolate's draining count only once it has stood still the leaked-streams bound", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await storage.put(activityKey, { ...leakedRow(Date.now()), phase: "open" });
+  await assert.rejects(activity.releaseStill(identity, 300_000), /selection/, "an open count");
+  await storage.put(activityKey, leakedRow(Date.now()));
+  context.mock.timers.tick(299_999);
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/, "still moving");
+  context.mock.timers.tick(1);
+  const aborted = AbortSignal.abort();
+  await assert.rejects(activity.releaseStill(identity, 300_000, aborted), /abort/iu);
+  assert.equal(
+    (await activity.inspect(identity))?.active,
+    6,
+    "a caller that gave up commits nothing",
+  );
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), {
+    released: 6,
+    stillMs: 300_000,
+    unstamped: 6,
+    foreignSockets: 0,
+  });
+  const row = await activity.inspect(identity);
+  assert.deepEqual([row?.phase, row?.active, row?.known], ["draining", 0, true]);
+  // A re-send whose first answer was lost finds nothing left to release, and refuses nothing.
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), {
+    released: 0,
+    stillMs: 0,
+    unstamped: 0,
+    foreignSockets: 0,
+  });
+  // The ordinary retirement now goes ahead, as for any drained runtime.
+  await activity.retire(identity);
+  assert.equal((await activity.inspect(identity))?.phase, "retiring");
+});
+
+test("an operator never releases a lease this isolate still holds, nor an unknown count", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await activity.initialize(identity, true);
+  // One long stream this isolate serves: its count stands still, but the stream is live.
+  const done = await activity.acquire(identity);
+  await activity.drain(identity);
+  context.mock.timers.tick(3_600_000);
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/, "a live lease");
+  await done();
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), {
+    released: 0,
+    stillMs: 0,
+    unstamped: 0,
+    foreignSockets: 0,
+  });
+  await storage.put(activityKey, { ...leakedRow(0), known: false });
+  await assert.rejects(activity.releaseStill(identity, 300_000), /uncertain/, "an unknown count");
+});
+
+test("a lease this instance took stays refused after its release write failed; another instance's override ends it", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage, "instance-a");
+  await activity.initialize(identity, true);
+  // A model socket's lease: it outlives its instance, so only a proof or the override ends it.
+  const done = await activity.acquire(identity);
+  await activity.drain(identity);
+  const transaction = storage.transaction.bind(storage);
+  storage.transaction = async () => {
+    throw new Error("storage refused the release");
+  };
+  await assert.rejects(done(), /storage refused/u);
+  storage.transaction = transaction;
+  context.mock.timers.tick(300_000);
+  // Its stamp still names this instance, which may be serving it.
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/u);
+  const next = new RuntimeActivity(storage, "instance-b");
+  assert.deepEqual(await next.releaseStill(identity, 300_000), {
+    released: 1,
+    stillMs: 300_000,
+    unstamped: 0,
+    foreignSockets: 1,
+  });
+});
+
+test("the operator's check reads the same rules and whose leases they are, and writes nothing", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await storage.put(activityKey, leakedRow(Date.now()));
+  const stored = JSON.stringify(await storage.get(activityKey));
+  assert.equal((await activity.checkStill(identity, 300_000)).refusal, "still_moving");
+  context.mock.timers.tick(300_000);
+  assert.deepEqual(await activity.checkStill(identity, 300_000), {
+    refusal: null,
+    phase: "draining",
+    active: 6,
+    known: true,
+    stillMs: 300_000,
+    leases: { currentCalls: 0, currentSockets: 0, foreignSockets: 0, unstamped: 6 },
+  });
+  assert.equal(JSON.stringify(await storage.get(activityKey)), stored, "nothing was written");
+  // A lease this isolate holds shows as current, and the check says the override would refuse it.
+  const other = { ...identity, slotId: "runtime-2", instanceId: "runtime-2", bootId: "boot-2" };
+  await activity.initialize(other, true);
+  await activity.acquire(other);
+  await activity.drain(other);
+  context.mock.timers.tick(300_000);
+  const live = await activity.checkStill(other, 300_000);
+  assert.deepEqual(
+    [live.refusal, live.leases],
+    ["live_lease", { currentCalls: 0, currentSockets: 1, foreignSockets: 0, unstamped: 0 }],
+  );
+  // A released lease no longer counts, as the override's own read applies it.
+  await storage.put(activityKey, {
+    ...leakedRow(0),
+    leases: { ...leakedRow(0).leases, "dead-5": "released" },
+  });
+  const reconciledCheck = await activity.checkStill(identity, 300_000);
+  assert.deepEqual(
+    [reconciledCheck.active, reconciledCheck.leases],
+    [5, { currentCalls: 0, currentSockets: 0, foreignSockets: 0, unstamped: 5 }],
+  );
+  // An untracked boot is refused as the override refuses it.
+  const untracked = { ...identity, slotId: "runtime-3", instanceId: "runtime-3", bootId: "boot-3" };
+  assert.equal((await activity.checkStill(untracked, 300_000)).refusal, "unknown_count");
+});
+
+test("the check counts a count it settles as moved, as the override does", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 10_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  // Still for hours, with two plain calls a replaced instance took: settling them moves the count.
+  await storage.put(activityKey, {
+    ...leakedRow(0),
+    owners: { "dead-0": "replaced", "dead-1": "replaced" },
+  });
+  const activity = new RuntimeActivity(storage, "current");
+  assert.equal((await activity.checkStill(identity, 300_000)).refusal, "still_moving");
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/u);
+});
