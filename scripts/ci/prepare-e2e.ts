@@ -17,6 +17,7 @@ export function e2eCorrections(root: string) {
     "embedded-browser-boundaries",
     "setup-http-status",
     "accounts-traffic-pending",
+    "accounts-traffic-unavailable",
   ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);
