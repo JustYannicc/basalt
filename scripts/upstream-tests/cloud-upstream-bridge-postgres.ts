@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import type { BetterAuthOptions } from "better-auth";
 import { Deferred, Effect, Fiber } from "effect";
 import { SqlClient } from "effect/sql";
@@ -12,6 +13,12 @@ import {
   migrateCloudProductSteps,
 } from "../../.upstream/apps/hosted/cloud/src/implementation/migrations.ts";
 import { journal, objects, refused } from "./cloud-upstream-bridge-fixtures.ts";
+
+const hostedJournal = (
+  JSON.parse(readFileSync(new URL("./migration-journals.json", import.meta.url), "utf8")) as {
+    private_hosted_migrations: string[];
+  }
+).private_hosted_migrations;
 
 /** The parent supplies the real auth pool and a separate PgClient layer for a disposable DB. */
 export const proveIndependentAuthCommit = (options: BetterAuthOptions) =>
@@ -71,9 +78,9 @@ export const proveIndependentAuthCommit = (options: BetterAuthOptions) =>
     assert.deepEqual(
       yield* sql`select migration_id from private_hosted_migrations order by migration_id`,
       // Step 22 is the change journal's explicit activation, which a plain migration never runs.
-      [...Array.from({ length: 21 }, (_, index) => index + 1), 23].map((migration_id) => ({
-        migration_id,
-      })),
+      hostedJournal
+        .filter((key) => key !== "22_change_journal_activate")
+        .map((key) => ({ migration_id: Number(key.split("_", 1)[0]) })),
     );
   });
 
