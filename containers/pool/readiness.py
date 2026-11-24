@@ -586,6 +586,12 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 class ReadyServer(http.server.ThreadingHTTPServer):
+    # Every call's pre-send read, the stream guard's probes, the fleet's upkeep and the policy
+    # install each open a connection here, one request per connection. Under a burst of calls
+    # socketserver's default backlog of 5 overflows, and Linux then drops the handshake, so the
+    # overflowing reads wait out SYN retransmits of 1 s and 3 s.
+    request_queue_size = 128
+
     def handle_error(self, request: object, client_address: object) -> None:
         report_failure(FailureCategory.READINESS_HTTP)
 
