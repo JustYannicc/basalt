@@ -11,11 +11,6 @@
       "upstream": null,
       "owner": null
     },
-    "0138-auth-security-hardening": {
-      "packages": ["@better-auth/core", "better-auth"],
-      "upstream": null,
-      "owner": null
-    },
     "0170-container-image-drift": {
       "packages": ["alchemy"],
       "upstream": null,

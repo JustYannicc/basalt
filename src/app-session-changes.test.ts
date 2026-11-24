@@ -47,7 +47,10 @@ import { ScopedChanges } from "../.upstream/apps/hosted/server/src/implementatio
 
 const hostedJournal = (
   JSON.parse(
-    readFileSync(new URL("../scripts/upstream-tests/migration-journals.json", import.meta.url), "utf8"),
+    readFileSync(
+      new URL("../scripts/upstream-tests/migration-journals.json", import.meta.url),
+      "utf8",
+    ),
   ) as { private_hosted_migrations: string[] }
 ).private_hosted_migrations;
 const target = Schema.decodeUnknownSync(AppUiTarget)({

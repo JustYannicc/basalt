@@ -114,10 +114,13 @@ function backend() {
     const sent = revisions();
     await hold;
     await gate;
-    return new Response(JSON.stringify({ revisions: hold ? sent : revisions(), identity: state.identity }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ revisions: hold ? sent : revisions(), identity: state.identity }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
   };
   const send = (index: number, event: string, data: unknown) => {
     const entry = streams.at(index);
@@ -543,8 +546,7 @@ test("a sibling's moving-head failure fails a confirmed view closed, and settled
     await confirmedBesideSibling(t);
   let revision = 2;
   const resolved = new Set<unknown>();
-  const pending = () =>
-    [...sibling.loads, ...held.loads].filter((load) => !resolved.has(load));
+  const pending = () => [...sibling.loads, ...held.loads].filter((load) => !resolved.has(load));
   // Heads move under every attempt of every read, so nothing can be accepted.
   for (let round = 0; pending().length > 0; round++) {
     assert.ok(round < 20, "reads stop once every view has failed");

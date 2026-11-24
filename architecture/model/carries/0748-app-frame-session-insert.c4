@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Recording a new app session, as an app's screen does when it signs in to its own origin, publishes no session change, because a new app session cannot end or shorten any stream's access: each app change stream is bound to its own app session and checks that session on every later hint. Removing an app session, changing its record or expiry, and ending the person's login still publish the person's session change, which is how the streams bound to them end. A database that installed the change triggers before this rule gets the new trigger body from its own hosted migration step, and its existing triggers call the replaced body."
+      constraint "Recording a new app session, as an app's screen does when it signs in to its own origin, publishes no session change, because a new app session cannot end or shorten any stream's access: each app change stream is bound to its own app session and checks that session on every later hint. Removing an app session, changing its record or expiry, and ending the person's login still publish the person's session change, which is how the streams bound to them end. A database that installed the change triggers before this rule gets the new trigger body from its own hosted migration step, and its existing triggers call the replaced body. On the v2 pin the step keeps id 24 and its name beside the explicitly recognized step 22, so a database that recorded it never runs it again."
     }
   }
 }

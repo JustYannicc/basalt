@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountForms {
     metadata {
-      constraint "Catalog connection guidance may rename a method in the connect form's method list. Without it, OAuth methods keep the generic sign-in name. A client-credentials method with an OAuth client guide keeps the catalog's deferral sentence above that guide, so a provider with no sign-in for outside apps says why."
+      constraint "Catalog connection guidance may rename a method in the connect form's method list. Without it, OAuth methods keep the generic sign-in name. A client-credentials method with an OAuth client guide keeps the catalog's deferral sentence above that guide, so a provider with no sign-in for outside apps says why. On the v2 pin the connect form already shows the deferral sentence for any manual method with an OAuth client guide, so the carry there changes only method names."
     }
   }
 }
