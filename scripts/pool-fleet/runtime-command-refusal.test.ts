@@ -4,7 +4,10 @@ import { BarrierRefusal } from "./refusal.ts";
 import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
-import { logRuntimeCommandRefusal } from "../../src/pool/runtime-slots/http.ts";
+import {
+  handleRuntimeHandoff,
+  logRuntimeCommandRefusal,
+} from "../../src/pool/runtime-slots/http.ts";
 
 const candidate = "c".repeat(40);
 const controllerCode = { candidate, workerInput: "d".repeat(64) };
@@ -109,8 +112,66 @@ test("the pool logs each refused runtime command once with its closed reason", (
     operationId: null,
   });
   assert.deepEqual(lines, [
-    `POOL_RUNTIME_COMMAND_REFUSED {"action":"adopt","candidate":"${candidate}","operationId":null,"step":"endpoint_route","reason":"slot_identity"}`,
+    `POOL_RUNTIME_COMMAND_REFUSED {"action":"adopt","candidate":"${candidate}","operationId":null,"status":409,"step":"endpoint_route","reason":"slot_identity"}`,
   ]);
+});
+
+test("every answer but a 200 logs one line with its status, early refusals and defects too", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "warn", (line: string) => {
+    lines.push(line);
+  });
+  const handoff = { databasePool: () => null } as unknown as Parameters<
+    typeof handleRuntimeHandoff
+  >[1];
+  const answers = [
+    await handleRuntimeHandoff(
+      new Request("http://pool/handoff", { method: "GET" }),
+      handoff,
+      controllerCode,
+      "e".repeat(64),
+    ),
+    await handleRuntimeHandoff(
+      new Request("http://pool/handoff", { method: "POST", body: "x".repeat(256 * 1024 + 1) }),
+      handoff,
+      controllerCode,
+      "e".repeat(64),
+    ),
+  ];
+  // A signed fleet-inspect on a controller with no fleet is a defect, answered 500.
+  let defect: Response | undefined;
+  await sendRuntimeCommand({ action: "fleet-inspect", controllerCode, at, expiresAt: at + 60_000 }, "e".repeat(64), {
+    worker: "pool-worker",
+    accountId: "account",
+    connect: async () => ({
+      dispose: async () => {},
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) =>
+            (defect = await handleRuntimeHandoff(request, handoff, controllerCode, "e".repeat(64))),
+        },
+      },
+    }),
+  }, () => {}).catch(() => undefined);
+  assert.deepEqual(
+    [...answers, defect!].map((answer) => answer.status),
+    [405, 413, 500],
+  );
+  assert.deepEqual(
+    lines.map((line) => JSON.parse(line.replace("POOL_RUNTIME_COMMAND_REFUSED ", ""))),
+    [
+      { action: null, candidate: null, operationId: null, status: 405, step: null, reason: null },
+      { action: null, candidate: null, operationId: null, status: 413, step: null, reason: null },
+      {
+        action: "fleet-inspect",
+        candidate,
+        operationId: null,
+        status: 500,
+        step: "endpoint_route",
+        reason: "transport",
+      },
+    ],
+  );
 });
 
 test("a stalled refusal body is abandoned as unclassified rather than holding the release", async (t) => {
