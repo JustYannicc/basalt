@@ -5,6 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { ComputerStorage } from "../../src/pool/computers.ts";
 import { FixtureDiagnostics } from "./sharing-diagnostics.ts";
 import { cleanupFixtureDocker } from "./sharing-cleanup.ts";
+import { pullTestDatabaseImage } from "../test-database-image.ts";
 
 const fixtureSigningKey = "ab".repeat(32);
 
@@ -262,6 +263,9 @@ export class SharingFixture {
     this.stage("docker network create complete");
     const postgres = `${this.name}-postgres`;
     this.resources.push(postgres);
+    const postgresImage =
+      "mirror.gcr.io/library/postgres:16@sha256:820b1558a744efeda508506fd85bff573cec8b6941ff4790ef4884a526dd6e86";
+    pullTestDatabaseImage(postgresImage);
     this.stage("postgres container start started");
     docker(
       [
@@ -283,7 +287,7 @@ export class SharingFixture {
         "POSTGRES_PASSWORD=fixture-only",
         "--env",
         "POSTGRES_DB=basalt_pool",
-        "mirror.gcr.io/library/postgres:16@sha256:820b1558a744efeda508506fd85bff573cec8b6941ff4790ef4884a526dd6e86",
+        postgresImage,
       ],
       this.operationTimeoutMs,
     );
