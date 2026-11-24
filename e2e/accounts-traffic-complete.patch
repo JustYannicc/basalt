@@ -1,0 +1,155 @@
+--- a/e2e/tests/account-traffic.spec.ts
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -20,6 +20,8 @@
+ 
+ /** The page's own reads of a pool's series and last success, which carry its pool counts. */
+ const poolReads = /\/apps\/[^/]+\/pool-usage\/(?:series|last-success)$/;
++/** The page's own read of the tool calls each account served. */
++const toolCallReads = /\/organizations\/[^/]+\/account-traffic$/;
+ 
+ const cells = (page: Page, label: string) => {
+   const row = accountRow(page, label);
+@@ -430,6 +432,69 @@
+           expect(answered, `answered cells at ${width}px`).toEqual(["3", "0", 0, [0, 0, 0]]);
+         }
+ 
++        // While the tool calls' read is still out and the pool's has answered, every account of the
++        // pool still reads as counting: never the pool's requests alone as if they were its total.
++        for (const width of [1280, 390]) {
++          const counting = yield* Effect.scoped(
++            Effect.gen(function* () {
++              yield* holdQuery(toolCallReads, "continue", { method: "POST", allRequests: true });
++              return yield* browser.use(
++                `Open accounts at ${width}px while the tool calls' read is held`,
++                (page) =>
++                  page
++                    .setViewportSize({ width, height: 900 })
++                    .then(() => page.goto(accounts))
++                    // The pool's read has answered: the traffic account's window tokens come from it.
++                    .then(() =>
++                      accountRow(page, "Traffic account").locator("[data-window-tokens]").waitFor(),
++                    )
++                    .then(() =>
++                      Promise.all([
++                        accountRow(page, "Called account")
++                          .locator("[data-account-requests-pending]")
++                          .count(),
++                        accountRow(page, "Called account")
++                          .locator("[data-account-requests]")
++                          .count(),
++                        accountRow(page, "Traffic account")
++                          .locator("[data-account-requests-pending]")
++                          .count(),
++                        accountRow(page, "Traffic account")
++                          .locator("[data-account-requests]")
++                          .count(),
++                        accountRow(page, "Idle account").locator("[data-account-requests]").count(),
++                        accountRow(page, "Connector mail")
++                          .locator("[data-account-requests-pending]")
++                          .count(),
++                      ]),
++                    ),
++              );
++            }),
++          );
++          expect(counting, `counting cells while tool calls are out at ${width}px`).toEqual([
++            1, 0, 1, 0, 0, 0,
++          ]);
++          const answered = yield* browser.use(
++            `The held tool calls' read answers at ${width}px`,
++            (page) =>
++              accountRow(page, "Called account")
++                .locator("[data-account-requests]")
++                .waitFor()
++                .then(() =>
++                  Promise.all([
++                    accountRow(page, "Called account")
++                      .locator("[data-account-requests]")
++                      .getAttribute("data-account-requests"),
++                    accountRow(page, "Idle account")
++                      .locator("[data-account-requests]")
++                      .getAttribute("data-account-requests"),
++                    page.locator("[data-account-requests-pending]").count(),
++                  ]),
++                ),
++          );
++          expect(answered, `full counts at ${width}px`).toEqual(["3", "0", 0]);
++        }
++
+         // When the pool's reads fail, every account of the pool says its count is unavailable:
+         // never its tool calls alone as if they were its total, never an empty cell that means no
+         // history. An account outside any pool is unchanged.
+--- a/e2e/tests/app-account-traffic.spec.ts
++++ b/e2e/tests/app-account-traffic.spec.ts
+@@ -19,6 +19,8 @@
+ 
+ /** The page's own reads of a pool's series and last success, which carry its pool counts. */
+ const poolReads = /\/apps\/[^/]+\/pool-usage\/(?:series|last-success)$/;
++/** The page's own read of the tool calls each account served. */
++const toolCallReads = /\/organizations\/[^/]+\/account-traffic$/;
+ 
+ /** The tab's row for the account saved as `label`, found by its ⋯ menu, in one section. */
+ const tabRow = (page: Page, section: AccountsTabSection, label: string) =>
+@@ -343,6 +345,62 @@
+               );
+           });
+           expect(answered, `answered cells at ${width}px`).toEqual(["3", "41", 0]);
++        }
++        // While the tool calls' read is still out and the pool's has answered, both pool accounts
++        // still read as counting: never the pool's requests alone as if they were the total.
++        for (const width of [1280, 390]) {
++          const counting = yield* Effect.scoped(
++            Effect.gen(function* () {
++              yield* holdQuery(toolCallReads, "continue", { method: "POST", allRequests: true });
++              return yield* browser.use(
++                `Open the pool's tab at ${width}px while its tool calls' read is held`,
++                (page) => {
++                  const quietRow = tabRow(page, "App accounts", "Tab quiet");
++                  return (
++                    page
++                      .setViewportSize({ width, height: 900 })
++                      .then(() => page.goto(poolTab))
++                      // The pool's read has answered: the traffic account's window tokens come from it.
++                      .then(() => row(page).locator("[data-window-tokens]").waitFor())
++                      .then(() =>
++                        Promise.all([
++                          quietRow.locator("[data-account-requests-pending]").count(),
++                          quietRow.locator("[data-account-requests]").count(),
++                          quietRow.locator("[data-account-requests-none]").count(),
++                          row(page).locator("[data-account-requests-pending]").count(),
++                          row(page).locator("[data-account-requests]").count(),
++                          row(page).locator('[data-health-state="traffic"]').count(),
++                        ]),
++                      )
++                  );
++                },
++              );
++            }),
++          );
++          expect(counting, `counting cells while tool calls are out at ${width}px`).toEqual([
++            1, 0, 0, 1, 0, 0,
++          ]);
++          const answered = yield* browser.use(
++            `The held tool calls' read answers at ${width}px`,
++            (page) => {
++              const quietRow = tabRow(page, "App accounts", "Tab quiet");
++              return quietRow
++                .locator("[data-account-requests]")
++                .waitFor()
++                .then(() =>
++                  Promise.all([
++                    quietRow
++                      .locator("[data-account-requests]")
++                      .getAttribute("data-account-requests"),
++                    row(page)
++                      .locator("[data-account-requests]")
++                      .getAttribute("data-account-requests"),
++                    page.locator("[data-account-requests-pending]").count(),
++                  ]),
++                );
++            },
++          );
++          expect(answered, `full counts at ${width}px`).toEqual(["3", "41", 0]);
+         }
+         yield* serverControl("stop");
+         yield* legacyStorage([
