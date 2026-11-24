@@ -158,60 +158,68 @@ test("a job route is never sent again", async () => {
   assert.equal(response.headers.get("x-should-retry"), "false");
 });
 
-test("a pool that fails every send gets at most the ceiling in extra sends, however many call", async () => {
-  const callers = routerReplayCeiling * 3;
-  let sends = 0;
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  let allSent!: () => void;
-  const everyFirstSend = new Promise<void>((resolve) => (allSent = resolve));
-  const env = {
-    POOL_APP_SIGNING_KEY: signingKey,
-    POOL_SERVICE: {
-      fetch: async () => {
-        if (++sends === callers) allSent();
-        throw cancelled();
+test(
+  "a pool that fails every send gets at most the ceiling in extra sends, however many call",
+  { timeout: 10_000 },
+  async () => {
+    const callers = routerReplayCeiling * 3;
+    let sends = 0;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let allSent!: () => void;
+    const everyFirstSend = new Promise<void>((resolve) => (allSent = resolve));
+    const env = {
+      POOL_APP_SIGNING_KEY: signingKey,
+      POOL_SERVICE: {
+        fetch: async () => {
+          if (++sends === callers) allSent();
+          throw cancelled();
+        },
       },
-    },
-  };
-  // Every replay waits until all first sends have failed, so the replays overlap as in an outage.
-  const answers = Array.from({ length: callers }, () =>
-    forwardModelCall(call(), env, undefined, () => held),
-  );
-  await everyFirstSend;
-  assert.equal(sends, callers);
-  release();
-  for (const answer of await Promise.all(answers)) await unknown(answer);
-  assert.equal(sends - callers, routerReplayCeiling);
-});
+    };
+    // Every replay waits until all first sends have failed, so the replays overlap as in an outage.
+    const answers = Array.from({ length: callers }, () =>
+      forwardModelCall(call(), env, undefined, () => held),
+    );
+    await everyFirstSend;
+    assert.equal(sends, callers);
+    release();
+    for (const answer of await Promise.all(answers)) await unknown(answer);
+    assert.equal(sends - callers, routerReplayCeiling);
+  },
+);
 
-test("a replay slot a cancelled handler never frees expires with the hold window", async (context) => {
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
-  let sends = 0;
-  const env = {
-    POOL_APP_SIGNING_KEY: signingKey,
-    POOL_SERVICE: {
-      fetch: async () => {
-        sends++;
-        throw cancelled();
+test(
+  "a replay slot a cancelled handler never frees expires with the hold window",
+  { timeout: 10_000 },
+  async (context) => {
+    context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+    let sends = 0;
+    const env = {
+      POOL_APP_SIGNING_KEY: signingKey,
+      POOL_SERVICE: {
+        fetch: async () => {
+          sends++;
+          throw cancelled();
+        },
       },
-    },
-  };
-  // The platform cancels these handlers during their wait: their own release never runs.
-  let waiting = 0;
-  let full!: () => void;
-  const filled = new Promise<void>((resolve) => (full = resolve));
-  for (let index = 0; index < routerReplayCeiling; index++)
-    void forwardModelCall(call(), env, undefined, () => {
-      if (++waiting === routerReplayCeiling) full();
-      return new Promise<never>(() => {});
-    });
-  await filled;
-  sends = 0;
-  await unknown(await forwardModelCall(call(), env, undefined, noWait));
-  assert.equal(sends, 1, "the ceiling holds while the slots are live");
-  context.mock.timers.tick(routerHoldWindowMs + 1);
-  sends = 0;
-  await unknown(await forwardModelCall(call(), env, undefined, noWait));
-  assert.equal(sends, 2, "a leaked slot frees itself");
-});
+    };
+    // The platform cancels these handlers during their wait: their own release never runs.
+    let waiting = 0;
+    let full!: () => void;
+    const filled = new Promise<void>((resolve) => (full = resolve));
+    for (let index = 0; index < routerReplayCeiling; index++)
+      void forwardModelCall(call(), env, undefined, () => {
+        if (++waiting === routerReplayCeiling) full();
+        return new Promise<never>(() => {});
+      });
+    await filled;
+    sends = 0;
+    await unknown(await forwardModelCall(call(), env, undefined, noWait));
+    assert.equal(sends, 1, "the ceiling holds while the slots are live");
+    context.mock.timers.tick(routerHoldWindowMs + 1);
+    sends = 0;
+    await unknown(await forwardModelCall(call(), env, undefined, noWait));
+    assert.equal(sends, 2, "a leaked slot frees itself");
+  },
+);
