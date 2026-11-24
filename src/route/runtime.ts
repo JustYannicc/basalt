@@ -56,9 +56,6 @@ export class GatewayRuntime {
   get launch() {
     return this.current;
   }
-  get isStarting() {
-    return this.starting !== undefined;
-  }
 
   /** Refuses the rest of a call whose launch a stop ended. */
   live(launch: number) {

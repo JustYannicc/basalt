@@ -397,18 +397,6 @@ export class RouteGatewayCore {
     const selection = await this.deps.storage.get<Selection>(keys.selection);
     const signingIn = (await this.deps.storage.get(keys.loginUntil)) !== undefined;
     const routing = await this.routing();
-    // A sign-in whose node died cannot complete: its link belongs to that node. On a route that
-    // routes nothing, the window ends and nothing is launched to find that out.
-    if (
-      signingIn &&
-      !routing &&
-      !this.leaving &&
-      !this.runtime.running &&
-      !this.runtime.isStarting
-    ) {
-      await this.commit(since, () => this.deps.storage.delete([keys.loginUntil])).catch(() => {});
-      return this.record(await this.signedOut(selection), true);
-    }
     // A route that routes nothing and signs nobody in is read without starting compute. A node that
     // still runs is put back on what storage holds, through its own launch, so one that applied a
     // choice an event overtook converges without anything being started.
@@ -421,7 +409,9 @@ export class RouteGatewayCore {
       return this.record(await this.idle(selection), true);
     }
     try {
-      // A sign-in on a route that routes nothing only reads the node it runs on.
+      // A sign-in on a route that routes nothing only reads the node it runs on. One whose node died
+      // cannot complete, as its link belonged to that node: the poll's plan ends the window, and
+      // nothing is launched to find that out.
       const launch = await this.runtime.started(since, routing ? "route" : "poll");
       const status = await this.runtime.call(launch, () => this.heal(since, { off: false }));
       await this.persist(since, launch, status);
