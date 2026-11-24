@@ -8,6 +8,7 @@ import {
   runtimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
 import { ControlFailure } from "./json.ts";
+import { PoolDependencyFailure } from "./dependency-failure.ts";
 import { RuntimeFleet } from "./runtime-fleet/controller.ts";
 import { readFailure, readSuspect } from "./runtime-fleet/failure-record.ts";
 import type { NativeMembershipPolicy } from "./membership-contract.ts";
@@ -31,6 +32,29 @@ function readinessRefusal() {
   );
 }
 
+/**
+ * The answer production gave on 24 Nov: the endpoint's own connection to the cell's policy port
+ * broke after 25 ms, which the route reports as a transport refusal of the membership dependency.
+ */
+function policyPortBroke() {
+  const local = new PoolDependencyFailure("membership", new TypeError("Network connection lost."));
+  rememberRuntimeFailure("endpoint_route", local);
+  return retainRuntimeFailure(
+    new Response(null, { status: 409, headers: runtimeFailureHeaders(local, "endpoint_route") }),
+    new SlotRefused("uncertain"),
+  );
+}
+
+/** The endpoint answered as another process than the one recorded. */
+function anotherProcess() {
+  const local = new SlotRefused("identity");
+  rememberRuntimeFailure("endpoint_route", local);
+  return retainRuntimeFailure(
+    new Response(null, { status: 409, headers: runtimeFailureHeaders(local, "endpoint_route") }),
+    new SlotRefused("uncertain"),
+  );
+}
+
 /** One ready cell whose installs and health reads the test answers, on a clock the test moves. */
 async function installFleet(context: TestContext) {
   let clock = 0;
@@ -40,6 +64,8 @@ async function installFleet(context: TestContext) {
   const f = await fixture(2),
     cell = await f.add();
   let install: () => Promise<void> = async () => {};
+  // A call's answer the test holds open, to show what a fence does to calls already in flight.
+  let answer: (() => Response) | undefined;
   const pending: Promise<unknown>[] = [];
   const create = () =>
     new RuntimeFleet({
@@ -49,6 +75,19 @@ async function installFleet(context: TestContext) {
       },
       cell: (target) => ({
         ...f.cell(target),
+        ...(answer
+          ? {
+              forward: async (
+                _request: Request,
+                _port: 8317,
+                _pool: string | undefined,
+                before: () => void,
+              ) => {
+                before();
+                return answer!();
+              },
+            }
+          : {}),
         healthy: async () => undefined,
         install: async () => {
           if (target.slotId === cell.slotId) await install();
@@ -74,6 +113,9 @@ async function installFleet(context: TestContext) {
     cell,
     fleet,
     create,
+    hold: (value: () => Response) => {
+      answer = value;
+    },
     row: async () => (await f.state.inspect()).find((value) => value.target.slotId === cell.slotId),
     /** The membership install at `at` ms, answered by `answer`. */
     install: async (
@@ -168,14 +210,110 @@ test("a policy owed for 30 s with good reads and no install that lands is quaran
   assert.equal(readFailure(row?.failure)?.rule, "unproven");
 });
 
-test("an install that fails for another reason still quarantines as policy_refused", async (context) => {
+const broke = async () => {
+  throw policyPortBroke();
+};
+
+test("an install whose connection to the cell's policy port broke fences the cell, owes the policy, and the next install lifts it", async (context) => {
+  const s = await installFleet(context);
+  assert.equal(await s.install(0, broke), "acknowledged");
+  const row = await s.row();
+  assert.equal(row?.phase, "ready", "one broken connection quarantined a serving cell");
+  const suspect = readSuspect(row?.suspect);
+  assert.deepEqual(suspect?.policyOwed, [policy.pool]);
+  assert.equal(suspect?.reads[0]?.step, "endpoint_route");
+  assert.equal(suspect?.reads[0]?.cause, "transport");
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
+  // The next renewal, 5 s on, lands; the following pass lifts the fence.
+  await s.install(5_000, lands);
+  await s.pass(6_000);
+  assert.equal((await s.row())?.suspect, undefined);
+  assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "terminal");
+});
+
+test("two broken installs 6 s apart quarantine the cell on the install path, with both reads", async (context) => {
+  const s = await installFleet(context);
+  await s.install(0, broke);
+  await s.install(6_000, broke);
+  const row = await s.row();
+  assert.equal(row?.phase, "quarantined");
+  assert.equal(row?.reason, "runtime_failed");
+  const failure = readFailure(row?.failure);
+  assert.equal(failure?.path, "install");
+  assert.equal(failure?.rule, "failed_twice");
+  assert.equal(failure?.reads.length, 2);
+});
+
+test("a policy owed for 30 s after a broken install is quarantined as unproven", async (context) => {
+  const s = await installFleet(context);
+  await s.install(0, broke);
+  for (let at = 2_000; at < 30_000; at += 2_000) await s.pass(at);
+  assert.equal((await s.row())?.phase, "ready");
+  await s.pass(30_000);
+  const row = await s.row();
+  assert.equal(row?.phase, "quarantined");
+  assert.equal(readFailure(row?.failure)?.rule, "unproven");
+});
+
+test("an install answered by another process than the one recorded quarantines at once, with its read", async (context) => {
   const s = await installFleet(context);
   await s.install(0, async () => {
-    throw new Error("install transport failed");
+    throw anotherProcess();
   });
   const row = await s.row();
   assert.equal(row?.phase, "quarantined");
-  assert.equal(row?.reason, "policy_refused");
+  const failure = readFailure(row?.failure);
+  assert.equal(failure?.path, "install");
+  assert.equal(failure?.rule, "evidence");
+  assert.equal(failure?.reads[0]?.cause, "slot_identity");
+});
+
+test("an install round that was aborted holds acknowledgement and fences nothing", async (context) => {
+  const s = await installFleet(context);
+  const result = await s.install(0, async () => {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  });
+  assert.ok(result instanceof Error, "an aborted install was acknowledged");
+  const row = await s.row();
+  assert.equal(row?.phase, "ready");
+  assert.equal(row?.suspect, undefined);
+});
+
+test("a local failure of the install fences the cell rather than ending it", async (context) => {
+  const s = await installFleet(context);
+  assert.equal(
+    await s.install(0, async () => {
+      throw new Error("install transport failed");
+    }),
+    "acknowledged",
+  );
+  const row = await s.row();
+  assert.equal(row?.phase, "ready");
+  assert.deepEqual(readSuspect(row?.suspect)?.policyOwed, [policy.pool]);
+});
+
+test("a call already streaming from a cell finishes when a broken install fences it", async (context) => {
+  const s = await installFleet(context);
+  let push: ((text: string) => void) | undefined;
+  let end: (() => void) | undefined;
+  s.hold(
+    () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            push = (text) => controller.enqueue(new TextEncoder().encode(text));
+            end = () => controller.close();
+          },
+        }),
+      ),
+  );
+  const streaming = await s.f.forward(undefined, s.fleet);
+  push!("first ");
+  await s.install(1_000, broke);
+  assert.ok(readSuspect((await s.row())?.suspect), "the broken install did not fence the cell");
+  push!("second");
+  end!();
+  assert.equal(await streaming.text(), "first second");
 });
 
 test("an older revision that lands late never settles a newer revision the cell owes", async (context) => {
