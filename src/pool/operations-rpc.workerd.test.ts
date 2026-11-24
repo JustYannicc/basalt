@@ -5,7 +5,10 @@ import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
-import { runtimeHandoffCommandPrefix, runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
+import {
+  runtimeHandoffCommandPrefix,
+  runtimeHandoffPath,
+} from "./runtime-slots/handoff-command.ts";
 import { signEnvelope } from "./token.ts";
 import { poolWorkerCompatibility } from "./worker-compatibility.ts";
 
@@ -103,11 +106,14 @@ async function inspect() {
       at,
       expiresAt: at + 30_000,
     });
-    const response: Response = await mf.dispatchFetch(`http://pool-operations${runtimeHandoffPath}`, {
-      method: "POST",
-      body: JSON.stringify({ envelope }),
-      headers: { "content-type": "application/json" },
-    });
+    const response: Response = await mf.dispatchFetch(
+      `http://pool-operations${runtimeHandoffPath}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ envelope }),
+        headers: { "content-type": "application/json" },
+      },
+    );
     return { status: response.status, body: await response.text() };
   } finally {
     await mf.dispose();
