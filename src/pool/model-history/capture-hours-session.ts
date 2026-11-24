@@ -115,21 +115,32 @@ export async function captureHoursSession(
   const open = (entry: { pool: string; hour?: string }) =>
     !entry.hour || !done.has(`${entry.pool}|${entry.hour}`);
   const known = new Set(pools.map((pool) => pool.pool));
+  // A slow read of a block's pending hours is the block's, keyed on the block's start: it, and the
+  // stuck entry it leads to, stand until the whole block is counted, however that hour fares, or
+  // until the block falls out of the lookback. Pools no longer counted drop out.
+  const oldestBlock =
+    Date.parse(plannedAt) - (bounds.lookbackHours + 3 + blockMs / hourMs) * hourMs;
+  const reads = new Set(
+    (state().slow ?? [])
+      .filter((entry) => entry.limit === "read" && Date.parse(entry.hour) > oldestBlock)
+      .map((entry) => `${entry.pool}|${entry.hour}`),
+  );
+  const isRead = (entry: { pool: string; hour?: string }) =>
+    entry.hour !== undefined && reads.has(`${entry.pool}|${entry.hour}`);
   update({
-    stuck: (state().stuck ?? []).filter((entry) => entry.pool !== "" && open(entry)),
-    // A slow read of a block's pending hours is the block's, keyed on its first hour: it stands until
-    // the whole block is counted, however that first hour fares. Pools no longer counted drop out.
+    stuck: (state().stuck ?? []).filter(
+      (entry) => entry.pool !== "" && (isRead(entry) || open(entry)),
+    ),
     slow: (state().slow ?? []).filter(
-      (entry) => known.has(entry.pool) && (entry.limit === "read" || open(entry)),
+      (entry) => known.has(entry.pool) && (entry.limit === "read" ? isRead(entry) : open(entry)),
     ),
     lastSlow: (state().lastSlow ?? []).filter((entry) => known.has(entry.pool)),
     repeat: state().repeat?.pool === "" ? undefined : state().repeat,
     // A split block stays split while its pool is counted and the block is inside the lookback, so
     // a recount of it goes hour by hour too: each pool keeps its own, at most its lookback's blocks.
     split: (state().split ?? []).flatMap((entry) => {
-      const oldest = Date.parse(plannedAt) - (bounds.lookbackHours + 3 + blockMs / hourMs) * hourMs;
       const blocks = (Array.isArray(entry?.blocks) ? entry.blocks : []).filter(
-        (start) => typeof start === "string" && Date.parse(start) > oldest,
+        (start) => typeof start === "string" && Date.parse(start) > oldestBlock,
       );
       return known.has(entry.pool) && blocks.length ? [{ pool: entry.pool, blocks }] : [];
     }),
@@ -189,7 +200,7 @@ export async function captureHoursSession(
       (entry) =>
         entry.limit === "read" &&
         entry.pool === block.pool &&
-        entry.hour === block.from &&
+        entry.hour === startOf(block) &&
         Date.parse(entry.until) > now(),
     );
   // The plan's pools in a fixed order, so a log line and inspect name a pool by its place alone.
@@ -199,7 +210,7 @@ export async function captureHoursSession(
   const slowWaiting = () =>
     new Set(
       (state().slow ?? [])
-        .filter((entry) => Date.parse(entry.until) > now())
+        .filter((entry) => entry.limit !== "read" && Date.parse(entry.until) > now())
         .map((entry) => `${entry.pool}|${entry.hour}`),
     );
 
@@ -217,7 +228,10 @@ export async function captureHoursSession(
     elapsedMs: number,
   ) => {
     const pool = block.pool;
-    const before = (state().slow ?? []).find((entry) => entry.pool === pool && entry.hour === hour);
+    // A slow count and a slow read of the same hour are two waits, each with its own repeats.
+    const same = (entry: { pool: string; hour: string; limit?: "read" }) =>
+      entry.pool === pool && entry.hour === hour && (entry.limit ?? "count") === limit;
+    const before = (state().slow ?? []).find(same);
     const repeats = (before?.count ?? 0) + 1;
     const until = new Date(now() + bounds.slowPauseMs).toISOString();
     const stop = {
@@ -236,7 +250,7 @@ export async function captureHoursSession(
       lastHourReadMs: readMs,
       lastHourPool: pool,
       slow: [
-        ...(state().slow ?? []).filter((entry) => entry.pool !== pool || entry.hour !== hour),
+        ...(state().slow ?? []).filter((entry) => !same(entry)),
         { pool, hour, count: repeats, until, ...(limit === "read" ? { limit } : {}) },
       ],
       lastSlow: [
@@ -275,8 +289,10 @@ export async function captureHoursSession(
   };
   /** Counted: the pool is no longer failing, and its slow or stuck hour in the block is done. */
   const counted = (block: CaptureBlock) => {
+    // A read's wait is keyed on the block's start, which can sit before the block's own first hour.
     const cleared = (entry: { pool: string; hour?: string }) =>
-      entry.pool !== block.pool || (entry.hour !== undefined && !within(entry.hour, block));
+      entry.pool !== block.pool ||
+      (entry.hour !== undefined && !within(entry.hour, block) && entry.hour !== startOf(block));
     update({
       // The hour that last stopped a session is named until it is counted.
       ...(state().lastHourPool === block.pool && within(state().lastHour, block)
@@ -383,7 +399,13 @@ export async function captureHoursSession(
       } catch (error) {
         if (postgresCode(error) !== "57014") throw error;
         if (limit < captureHoursReadLimitMs) return "budget";
-        slowHour(block, block.from, captureHoursReadLimitMs, "read", performance.now() - started);
+        slowHour(
+          block,
+          startOf(block),
+          captureHoursReadLimitMs,
+          "read",
+          performance.now() - started,
+        );
         return "skip";
       }
     }

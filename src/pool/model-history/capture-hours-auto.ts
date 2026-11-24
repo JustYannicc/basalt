@@ -53,7 +53,10 @@ export type CaptureHoursAutoStop =
   | "complete"
   | "budget"
   | "lock"
-  /** A count ran out its own limit this session, and all that is left is hours in their wait. */
+  /**
+   * A count ran out its own limit this session, and nothing was left it could count: hours in their
+   * wait, or the blocks of a pool whose second slow count this session ended its turn.
+   */
   | "slow"
   | "ceiling"
   | "error"
@@ -76,7 +79,7 @@ export interface CaptureHoursSlowWait {
   /** Slow counts of this hour in a row. */
   readonly count: number;
   readonly until: string;
-  /** "read": the block's read of its pending hours ran out, keyed on the block's first hour. */
+  /** "read": the block's read of its pending hours ran out, keyed on the block's start. */
   readonly limit?: "read";
 }
 
