@@ -7,10 +7,41 @@ export const fastJobs = [
   "select",
   "long-started",
   "fast",
+  "fast-units",
   "cpa-pipeline",
   "client-connection",
   "browser-install",
 ];
+// Fast jobs that need no selection, so they start with the Check and run in every Check, a reused
+// one included: they resolve the comparison and the lane themselves (scripts/ci/lane.ts).
+export const startJobs = ["fast", "fast-units"];
+/** A job's lane and comparison commit, as the aggregate compares them (scripts/ci/lane.ts). */
+export const laneBase = (lane: string, base: string) => `${lane} ${base}`;
+/** fast-units' matrix legs, each reporting its lane and base as output `leg_<n>`. */
+export const unitLegs = 2;
+
+/**
+ * The start jobs that resolved another lane or comparison commit than select: main moving the
+ * merge-base while the Check starts, or a drifted copy of select's step. Each ran its own tests.
+ */
+export function startJobErrors(lane: string, base: string, fast: string, legs: unknown) {
+  const expected = laneBase(lane, base);
+  const outputs =
+    legs !== null && typeof legs === "object" ? (legs as Record<string, unknown>) : {};
+  const reported = [
+    ["fast", fast],
+    ...Array.from({ length: unitLegs }, (_, index) => [
+      `fast-units leg ${index + 1}`,
+      outputs[`leg_${index + 1}`],
+    ]),
+  ];
+  return reported
+    .filter(([, value]) => value !== expected)
+    .map(
+      ([job, value]) =>
+        `${job}: resolved ${JSON.stringify(value ?? "")}, select ${JSON.stringify(expected)}`,
+    );
+}
 // box-watch runs only in a Check that routed jobs to the box; it passes or is skipped. A run it
 // cancels still reaches this gate, which runs on always(), and fails here; box-rerun.yml re-runs it.
 export const conditionalJobs = ["workerd-assets", "box-watch"];
@@ -23,7 +54,6 @@ export const conditionalJobs = ["workerd-assets", "box-watch"];
 export const longJobs = [
   // Not long, but the watchdog of a Check's box jobs starts with them, ahead of the queue.
   "box-watch",
-  "fast",
   "pool-runtime",
   "host-managed-accounts-pool",
   "account-acquisition",
@@ -96,15 +126,17 @@ export function reuseGateErrors(
   event: string,
   ref: string,
 ) {
-  const expected = ["reuse", ...fastJobs, ...heavyJobs, ...conditionalJobs];
+  const expected = [...fastJobs, ...heavyJobs, ...conditionalJobs];
   const errors: string[] = [];
   if (event !== "push" || ref !== "refs/heads/main")
     errors.push("Only main pushes can reuse Check");
   if (!validReuseEvidence(evidence, identity)) errors.push("Invalid batch Check reuse evidence");
   if (Object.keys(needs).sort().join("\n") !== [...expected].sort().join("\n"))
     errors.push("Aggregate gate dependencies differ from the declared CI jobs");
+  // select decided the reuse; everything waiting for its selection skipped.
+  const ran = ["select", "cpa-pipeline", ...startJobs];
   for (const job of expected) {
-    const result = ["reuse", "cpa-pipeline"].includes(job) ? "success" : "skipped";
+    const result = ran.includes(job) ? "success" : "skipped";
     if (needs[job]?.result !== result)
       errors.push(`${job}: expected ${result}, got ${needs[job]?.result ?? "missing"}`);
   }
@@ -113,7 +145,6 @@ export function reuseGateErrors(
 
 export function runGateCli(env = process.env): void {
   const needs = JSON.parse(env.CI_NEEDS ?? "null");
-  const { reuse, ...suite } = needs;
   if (env.CI_REUSED === "true") {
     const evidence: unknown = JSON.parse(env.CI_REUSE_EVIDENCE ?? "null");
     const identity = checkedOutIdentity(env.GITHUB_REPOSITORY ?? "");
@@ -130,17 +161,23 @@ export function runGateCli(env = process.env): void {
     if (validReuseEvidence(evidence, identity)) retainReuseEvidence(evidence, env);
     return;
   }
-  if (reuse?.result !== "success")
-    throw new Error(`reuse: expected success, got ${reuse?.result ?? "missing"}`);
   const lane = lanes.find((name) => name === env.CI_LANE);
   // The fast job's full-only steps read full_suite, so it must agree with the lane.
   if (!lane || env.CI_FULL_SUITE !== String(lane === "full"))
     throw new Error("Missing or invalid CI lane");
   const errors = gateErrors(
-    suite,
+    needs,
     JSON.parse(env.CI_JOBS ?? "null"),
     JSON.parse(env.CI_BOX_JOBS ?? "null"),
     lane,
+  );
+  errors.push(
+    ...startJobErrors(
+      lane,
+      env.CI_BASE_SHA ?? "",
+      env.CI_FAST_LANE_BASE ?? "",
+      JSON.parse(env.CI_UNIT_LANE_BASES || "null"),
+    ),
   );
   for (const error of errors) console.error(error);
   if (errors.length) process.exitCode = 1;

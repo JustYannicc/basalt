@@ -21,7 +21,9 @@ function environment(value: unknown, context: FastContext): Record<string, strin
           "${{ github.event.pull_request.base.sha || github.event.before }}": context.base,
           "${{ github.event.pull_request.head.sha || github.sha }}": context.head,
           "${{ github.event.pull_request.base.sha }}": context.base,
-          "${{ needs.select.outputs.base_sha }}": context.base,
+          "${{ steps.comparison.outputs.base_sha }}": context.base,
+          // CI splits the owned unit tests over fast-units' legs; locally one leg runs them all.
+          "${{ matrix.leg }}/${{ strategy.job-total }}": "1/1",
         };
         if (text.includes("${{")) {
           if (!(text in known)) throw new Error(`Unsupported fast environment expression: ${key}`);
@@ -32,12 +34,21 @@ function environment(value: unknown, context: FastContext): Record<string, strin
   );
 }
 
-// This runs the fast-only lane, which selects no e2e config, so it skips what other lanes add.
+// The steps that resolve what select would decide; locally --base is the comparison and the
+// plan is the fast lane.
+const resolvers: Record<string, string> = {
+  comparison: "the local runner compares with --base",
+  lane: "the local runner runs the fast lane",
+};
+// The fast lane runs the steps for every lane; it selects no e2e config, so it skips what the
+// full and affected lanes add.
+const everyLane = "steps.lane.outputs.full_suite != 'true'";
 const otherLanes = new Map([
   [fullOnly, "full lane only"],
   [configsReached, "full or affected lane only"],
 ]);
 
+/** fast's steps, then the steps of fast-units (its owned unit tests) that fast does not run. */
 export function fastPlan(document: unknown, context: FastContext) {
   if (
     !object(document) ||
@@ -46,86 +57,102 @@ export function fastPlan(document: unknown, context: FastContext) {
     !Array.isArray(document.jobs.fast.steps)
   )
     throw new Error("CI has no fast job");
-  const fast = document.jobs.fast;
-  if (!Array.isArray(fast.steps)) throw new Error("CI fast steps must be a list");
-  if (
-    fast.if !== undefined ||
-    fast["continue-on-error"] !== undefined ||
-    fast.defaults !== undefined ||
-    document.defaults !== undefined
-  )
-    throw new Error("Unsupported fast job execution settings");
-  const env = { ...environment(document.env, context), ...environment(fast.env, context) };
+  const units = document.jobs["fast-units"];
+  const jobs = [document.jobs.fast, ...(units === undefined ? [] : [units])];
   let nodeVersion: string | undefined, bunVersion: string | undefined;
   const steps: FastStep[] = [];
   const skipped: { name: string; reason: string }[] = [];
-  for (const step of fast.steps) {
-    if (!object(step) || step["continue-on-error"] !== undefined || step.shell !== undefined)
-      throw new Error("Unsupported fast step execution settings");
-    if (step.uses === "actions/upload-artifact@v4" && step.if === "always()") {
-      if (typeof step.name !== "string" || !object(step.with) || typeof step.with.path !== "string")
-        throw new Error("Fast artifact uploads need a name and path");
-      skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
-      continue;
-    }
-    const skip = typeof step.if === "string" ? otherLanes.get(step.if) : undefined;
-    if (step.if !== undefined && step.if !== "needs.select.outputs.full_suite != 'true'" && !skip)
-      throw new Error("Unsupported fast step condition");
-    if (typeof step.uses === "string") {
-      if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
-      if (step.uses === "actions/checkout@v4") continue;
-      if (
-        ["./.github/actions/desktop-release-assets", "./.github/actions/setup-actionlint"].includes(
-          step.uses,
+  for (const job of jobs) {
+    if (!object(job) || !Array.isArray(job.steps)) throw new Error("CI fast steps must be a list");
+    if (
+      job.if !== undefined ||
+      job["continue-on-error"] !== undefined ||
+      job.defaults !== undefined ||
+      document.defaults !== undefined
+    )
+      throw new Error("Unsupported fast job execution settings");
+    const env = { ...environment(document.env, context), ...environment(job.env, context) };
+    const first = job === document.jobs.fast;
+    for (const step of job.steps) {
+      if (!object(step) || step["continue-on-error"] !== undefined || step.shell !== undefined)
+        throw new Error("Unsupported fast step execution settings");
+      if (step.uses === "actions/upload-artifact@v4" && step.if === "always()") {
+        if (
+          typeof step.name !== "string" ||
+          !object(step.with) ||
+          typeof step.with.path !== "string"
         )
-      ) {
-        skipped.push({
-          name: "Restore release assets",
-          reason: "download cache requires GitHub Actions",
-        });
+          throw new Error("Fast artifact uploads need a name and path");
+        skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
         continue;
       }
-      if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
-      if (step.uses === "./.github/actions/setup-node" || step.uses === "actions/setup-node@v4")
-        nodeVersion = String(step.with["node-version"]);
-      else if (
-        step.uses === "./.github/actions/setup-bun" ||
-        step.uses === "oven-sh/setup-bun@v2"
-      ) {
-        const version = String(step.with["bun-version"]);
-        const reference = /^\$\{\{ env\.([A-Z0-9_]+) \}\}$/.exec(version);
-        bunVersion = reference ? env[reference[1]!] : version;
-      } else throw new Error(`Unsupported fast setup action: ${step.uses}`);
-      continue;
+      const skip = typeof step.if === "string" ? otherLanes.get(step.if) : undefined;
+      if (step.if !== undefined && step.if !== everyLane && !skip)
+        throw new Error("Unsupported fast step condition");
+      if (typeof step.id === "string" && step.id in resolvers) {
+        if (step.if !== undefined || typeof step.name !== "string")
+          throw new Error("Fast resolver steps need a name and no condition");
+        if (first) skipped.push({ name: step.name, reason: resolvers[step.id]! });
+        continue;
+      }
+      if (typeof step.uses === "string") {
+        if (step.if !== undefined) throw new Error("Unsupported conditional fast setup action");
+        if (step.uses === "actions/checkout@v4") continue;
+        if (
+          [
+            "./.github/actions/desktop-release-assets",
+            "./.github/actions/setup-actionlint",
+          ].includes(step.uses)
+        ) {
+          skipped.push({
+            name: "Restore release assets",
+            reason: "download cache requires GitHub Actions",
+          });
+          continue;
+        }
+        if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
+        let version: string | undefined;
+        if (step.uses === "./.github/actions/setup-node" || step.uses === "actions/setup-node@v4") {
+          version = String(step.with["node-version"]);
+          if (!first && version !== nodeVersion) throw new Error("fast-units must use fast's Node");
+          nodeVersion = version;
+        } else if (
+          step.uses === "./.github/actions/setup-bun" ||
+          step.uses === "oven-sh/setup-bun@v2"
+        ) {
+          const declared = String(step.with["bun-version"]);
+          const reference = /^\$\{\{ env\.([A-Z0-9_]+) \}\}$/.exec(declared);
+          version = reference ? env[reference[1]!] : declared;
+          if (!first && version !== bunVersion) throw new Error("fast-units must use fast's Bun");
+          bunVersion = version;
+        } else throw new Error(`Unsupported fast setup action: ${step.uses}`);
+        continue;
+      }
+      if (
+        typeof step.run !== "string" ||
+        !step.run.trim() ||
+        step.run.includes("ci:fast") ||
+        step.run.includes("fast-local.ts") ||
+        step.run.includes("${{")
+      )
+        throw new Error("Unsupported or recursive fast command");
+      const directory = step["working-directory"];
+      if (directory !== undefined && typeof directory !== "string")
+        throw new Error("Invalid fast working directory");
+      const cwd = resolve(context.root, directory ?? ".");
+      if (relative(context.root, cwd).split(/[\\/]/).includes(".."))
+        throw new Error("Fast step escapes checkout");
+      const stepEnv = { ...env, ...environment(step.env, context) };
+      const name = typeof step.name === "string" ? step.name : step.run.trim();
+      if (skip) {
+        skipped.push({ name, reason: skip });
+        continue;
+      }
+      // fast-units prepares the checkout as fast does; locally that runs once.
+      if (!first && steps.some((other) => other.command === step.run && other.cwd === cwd))
+        continue;
+      steps.push({ name, command: step.run, cwd, env: stepEnv });
     }
-    if (
-      typeof step.run !== "string" ||
-      !step.run.trim() ||
-      step.run.includes("ci:fast") ||
-      step.run.includes("fast-local.ts") ||
-      step.run.includes("${{")
-    )
-      throw new Error("Unsupported or recursive fast command");
-    const directory = step["working-directory"];
-    if (directory !== undefined && typeof directory !== "string")
-      throw new Error("Invalid fast working directory");
-    const cwd = resolve(context.root, directory ?? ".");
-    if (relative(context.root, cwd).split(/[\\/]/).includes(".."))
-      throw new Error("Fast step escapes checkout");
-    const stepEnv = { ...env, ...environment(step.env, context) };
-    if (skip) {
-      skipped.push({
-        name: typeof step.name === "string" ? step.name : step.run.trim(),
-        reason: skip,
-      });
-      continue;
-    }
-    steps.push({
-      name: typeof step.name === "string" ? step.name : step.run.trim(),
-      command: step.run,
-      cwd,
-      env: stepEnv,
-    });
   }
   if (
     !steps.length ||

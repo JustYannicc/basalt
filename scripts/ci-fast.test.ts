@@ -36,16 +36,34 @@ const document = () => ({
 test("the local plan preserves every real CI shell command, in its original order", () => {
   const actual = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
   const plan = fastPlan(actual, context);
+  type Step = { run?: string; if?: string; id?: string };
+  const commands = (job: string) =>
+    actual.jobs[job].steps
+      .filter(
+        (step: Step) =>
+          step.run !== undefined &&
+          step.if !== "steps.lane.outputs.full_suite == 'true'" &&
+          step.if !== configsReached &&
+          !["comparison", "lane"].includes(step.id ?? ""),
+      )
+      .map((step: { run: string }) => step.run);
+  // fast's commands, then fast-units' owned unit tests; its preparation is fast's and runs once.
+  const units = commands("fast-units").filter(
+    (command: string) => !commands("fast").includes(command),
+  );
+  assert.deepEqual(units, ["node scripts/ci/unit-tests.ts"]);
   assert.deepEqual(
     plan.steps.map((step) => step.command),
-    actual.jobs.fast.steps
-      .filter(
-        (step: { run?: string; if?: string }) =>
-          step.run !== undefined &&
-          step.if !== "needs.select.outputs.full_suite == 'true'" &&
-          step.if !== configsReached,
-      )
-      .map((step: { run: string }) => step.run),
+    [...commands("fast"), ...units],
+  );
+  // Locally the unit legs run as one, with the comparison --base gives.
+  assert.equal(plan.steps.at(-1)!.env.UNIT_SHARD, "1/1");
+  assert.equal(plan.steps.at(-1)!.env.BASE_SHA, context.base);
+  assert.deepEqual(
+    plan.skipped
+      .filter((step) => step.reason.startsWith("the local runner"))
+      .map((step) => step.name),
+    ["Resolve the comparison commit", "Resolve the lane select chooses"],
   );
   assert.ok(plan.steps.some((step) => step.command === "node scripts/batch-preflight.ts"));
   const upstream = actual.jobs.fast.steps.find(
@@ -53,7 +71,7 @@ test("the local plan preserves every real CI shell command, in its original orde
       step.name === "Typecheck the patched upstream the way upstream checks itself",
   );
   assert.ok(upstream);
-  if (upstream.if === "needs.select.outputs.full_suite == 'true'")
+  if (upstream.if === "steps.lane.outputs.full_suite == 'true'")
     assert.ok(plan.skipped.some((step) => step.name === upstream.name));
   else assert.ok(plan.steps.some((step) => step.name === upstream.name));
   assert.equal(plan.nodeVersion, "24.18.0");
@@ -169,18 +187,18 @@ test("reviewed lane conditions select ordinary PR steps and report every full-on
             ...value.jobs.fast.steps,
             {
               name: "focused units",
-              if: "needs.select.outputs.full_suite != 'true'",
+              if: "steps.lane.outputs.full_suite != 'true'",
               run: "node scripts/ci/unit-tests.ts",
-              env: { BASE_SHA: "${{ needs.select.outputs.base_sha }}" },
+              env: { BASE_SHA: "${{ steps.comparison.outputs.base_sha }}" },
             },
             {
               name: "complete units",
-              if: "needs.select.outputs.full_suite == 'true'",
+              if: "steps.lane.outputs.full_suite == 'true'",
               run: "npm run check",
             },
             {
               name: "full upstream types",
-              if: "needs.select.outputs.full_suite == 'true'",
+              if: "steps.lane.outputs.full_suite == 'true'",
               run: "npm run typecheck:upstream",
             },
             { name: "reached e2e configs", if: configsReached, run: "bunx vitest run" },

@@ -31,9 +31,9 @@ const matrixCanRun = (expression: string, matrix: Matrix | string | undefined) =
 };
 
 /** A step condition true only in the full suite: the affected lane never runs that step. */
-export const fullOnly = "needs.select.outputs.full_suite == 'true'";
+export const fullOnly = "steps.lane.outputs.full_suite == 'true'";
 /** The fast job's e2e config step: the full suite, or a lane change that reaches a config. */
-export const configsReached = fullOnly + " || needs.select.outputs.fast_configs != '[]'";
+export const configsReached = fullOnly + " || steps.lane.outputs.fast_configs != '[]'";
 
 const conditionCanRun = (
   condition: string | boolean | undefined,
@@ -50,7 +50,7 @@ const conditionCanRun = (
       "always()",
       "success()",
       fullOnly,
-      "needs.select.outputs.full_suite != 'true'",
+      "steps.lane.outputs.full_suite != 'true'",
       configsReached,
     ].includes(expression) ||
     (job && /^contains\(fromJSON\(needs\.select\.outputs\.jobs\), '[\w-]+'\)$/.test(expression))

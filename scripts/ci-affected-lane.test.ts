@@ -293,8 +293,8 @@ test("a changed job block runs the heavy jobs that need it, with every matrix le
     copy.jobs[job]!.steps.push({ run: "true" });
     return select(workflowInputs(base, stringify(copy)));
   };
-  // Every heavy job reads select's outputs, and select runs only when reuse found no evidence.
-  for (const job of ["select", "reuse"]) {
+  // Every heavy job reads select's outputs, and select decides reuse first.
+  for (const job of ["select"]) {
     const selected = changed(job);
     assert.deepEqual(selected.jobs, heavyJobs, job);
     assert.equal(selected.declaredFiles, null, job);
@@ -320,11 +320,12 @@ test("selection and gate scripts run only the fast job, which tests them", () =>
     "scripts/ci/box-router.ts",
   ])
     assert.deepEqual(select([path]), nothing, path);
-  // The lane's fast job lints the workflows and runs every CI test for these and for a job block.
+  // The lane's fast job lints the workflows, and its unit legs run every CI test for these and for
+  // a job block.
   const files = trackedFiles(root);
   const lane = jobEntries(root, readWorkflow(root), files, { lane: true });
-  for (const script of ["scripts/ci/check-workflows.ts", "scripts/ci/unit-tests.ts"])
-    assert.ok(lane.fast!.has(script), script);
+  assert.ok(lane.fast!.has("scripts/ci/check-workflows.ts"), "scripts/ci/check-workflows.ts");
+  assert.ok(lane["fast-units"]!.has("scripts/ci/unit-tests.ts"), "scripts/ci/unit-tests.ts");
   const owned = [...jobEntries(root, ownedUnitSuite, files).owned!];
   const ciTests = files.filter((file) => /^scripts\/ci(?:-[\w-]+)?\.test\.ts$/.test(file));
   assert.ok(ciTests.includes("scripts/ci.test.ts") && ciTests.length > 30);
