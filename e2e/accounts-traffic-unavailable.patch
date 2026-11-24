@@ -1,0 +1,115 @@
+--- a/e2e/tests/account-traffic.spec.ts
++++ b/e2e/tests/account-traffic.spec.ts
+@@ -430,6 +430,103 @@
+           expect(answered, `answered cells at ${width}px`).toEqual(["3", "0", 0, [0, 0, 0]]);
+         }
+ 
++        // When the pool's reads fail, every account of the pool says its count is unavailable:
++        // never its tool calls alone as if they were its total, never an empty cell that means no
++        // history. An account outside any pool is unchanged.
++        for (const width of [1280, 390]) {
++          const failed = yield* Effect.scoped(
++            Effect.gen(function* () {
++              const reads = yield* holdQuery(poolReads, "fail", {
++                method: "POST",
++                allRequests: true,
++              });
++              yield* browser.use(
++                `Open accounts at ${width}px before the pool's reads fail`,
++                (page) =>
++                  page
++                    .setViewportSize({ width, height: 900 })
++                    .then(() => page.goto(accounts))
++                    .then(() =>
++                      accountRow(page, "Called account")
++                        .locator("[data-account-requests-pending]")
++                        .waitFor(),
++                    ),
++              );
++              yield* reads.release;
++              return yield* browser.use(`The pool's reads failed at ${width}px`, (page) =>
++                accountRow(page, "Called account")
++                  .locator("[data-account-requests-unavailable]")
++                  .waitFor()
++                  .then(() =>
++                    Promise.all([
++                      accountRow(page, "Called account").locator("[data-account-requests]").count(),
++                      accountRow(page, "Idle account")
++                        .locator("[data-account-requests-unavailable]")
++                        .count(),
++                      accountRow(page, "Traffic account")
++                        .locator("[data-account-requests-unavailable]")
++                        .count(),
++                      // Nor do Health or Details take its tool calls for its whole traffic.
++                      accountRow(page, "Called account")
++                        .locator('[data-health-state="traffic"]')
++                        .count(),
++                      cells(page, "Connector mail"),
++                      accountRow(page, "Connector mail")
++                        .locator("[data-account-requests-unavailable]")
++                        .count(),
++                      page.locator("[data-account-requests-pending]").count(),
++                      // "Unavailable" stays inside its cell on one line: a desktop cell aligns right,
++                      // so overflow would spill left, which only the boxes show.
++                      accountRow(page, "Called account")
++                        .locator("[data-account-requests-cell]")
++                        .evaluate((cell) => {
++                          const word = cell.querySelector("[data-account-requests-unavailable]");
++                          if (word === null) return false;
++                          const outer = cell.getBoundingClientRect();
++                          const inner = word.getBoundingClientRect();
++                          return (
++                            inner.left >= outer.left - 0.5 &&
++                            inner.right <= outer.right + 0.5 &&
++                            word.getClientRects().length === 1
++                          );
++                        }),
++                    ]),
++                  ),
++              );
++            }),
++          );
++          expect(failed, `failed-read cells at ${width}px`).toEqual([
++            0,
++            1,
++            1,
++            0,
++            [0, 0, 0],
++            0,
++            0,
++            true,
++          ]);
++        }
++        // The pool's next answer brings the counts back on the open page, without a reload.
++        // Revisions only advance upward, so the later change below publishes 2.
++        yield* publishUsageChange(app, "1");
++        const restored = yield* browser.use("The pool's next answer restores the counts", (page) =>
++          accountRow(page, "Called account")
++            .locator("[data-account-requests]")
++            .waitFor()
++            .then(() =>
++              Promise.all([
++                accountRow(page, "Called account")
++                  .locator("[data-account-requests]")
++                  .getAttribute("data-account-requests"),
++                accountRow(page, "Idle account")
++                  .locator("[data-account-requests]")
++                  .getAttribute("data-account-requests"),
++                page.locator("[data-account-requests-unavailable]").count(),
++              ]),
++            ),
++        );
++        expect(restored, "counts after the pool answers again").toEqual(["3", "0", 0]);
++
+         // The called account's tool calls go, so that no row is counted by anything but the pool.
+         yield* serverControl("stop");
+         yield* legacyStorage([
+@@ -448,7 +545,7 @@
+         // Once the pool can't map any request, no row has numbers: the column and the ticks go,
+         // rather than leaving a column of blank cells. Its committed revision refreshes the view.
+         yield* pool.respond(answer(ids, false, anchor));
+-        yield* publishUsageChange(app);
++        yield* publishUsageChange(app, "2");
+         const hidden = yield* browser.use("Wait for the Requests column to go", (page) =>
+           page
+             .locator("[data-requests-header]")
