@@ -3,6 +3,7 @@ import {
   interactive,
   oauth2,
   object,
+  plain,
   secrets,
   string,
   type AuthMethods,
@@ -22,6 +23,89 @@ const token = (label = "API key") =>
     fields: object({ token: string({ minLength: 1 }) }),
   });
 const subscription = (label: string) => interactive({ label, acquisition: "host" });
+// The address and model names are not secret, so the form shows them and the account row can too.
+const endpoint = (label: string) =>
+  secrets({
+    label,
+    fields: object({
+      baseUrl: plain(string({ minLength: 1 })),
+      models: plain(string({ minLength: 1 })),
+      token: string({ minLength: 1 }),
+    }),
+  });
+
+/** Why a custom endpoint's address or model list is refused, worded for the person entering it. */
+export const customEndpointRefusals = {
+  address:
+    "Enter a public https address without credentials, a query or a fragment. Local and private addresses and IPv6 literals are refused.",
+  models: "Enter one to 200 model names, separated by commas.",
+} as const;
+
+// Loopback, private, shared, link-local, reserved, documentation and multicast IPv4 ranges.
+function reservedIpv4(host: string): boolean {
+  const [a, b, c] = host.split(".").map(Number) as [number, number, number];
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && (c === 0 || c === 2)) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    (a === 198 && b === 51 && c === 100) ||
+    (a === 203 && b === 0 && c === 113) ||
+    a >= 224
+  );
+}
+
+/**
+ * The gateway address calls go to, without a trailing `/v1` since each family adds its own path,
+ * or undefined when refused. A public name that resolves to a private address is not caught here;
+ * the runtime's own egress decides that. The connect form's check and the pool mirror both use it.
+ */
+export function customEndpointAddress(value: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
+    return undefined;
+  const host = url.hostname.toLowerCase().replace(/\.+$/u, "");
+  // IPv6 literals are refused whole: the URL parser rewrites mapped IPv4 forms, so a partial
+  // classification would be easy to get wrong.
+  if (
+    host.startsWith("[") ||
+    host === "localhost" ||
+    /\.(?:localhost|local|localdomain|lan|internal|home\.arpa|svc|cluster\.local)$/u.test(host) ||
+    !host.includes(".")
+  )
+    return undefined;
+  if (/^\d+\.\d+\.\d+\.\d+$/u.test(host) && reservedIpv4(host)) return undefined;
+  const path = url.pathname.replace(/\/+$/u, "").replace(/\/v1$/u, "").replace(/\/+$/u, "");
+  return `${url.origin}${path}`;
+}
+
+/** The distinct model names a custom endpoint serves, or undefined when the list is refused. */
+export function customEndpointModels(value: string): readonly string[] | undefined {
+  // Commas separate names; a name with a space inside is refused rather than split in two.
+  const names = [
+    ...new Set(
+      value
+        .split(",")
+        .map((name) => name.trim())
+        .filter((name) => name !== ""),
+    ),
+  ];
+  return names.length >= 1 &&
+    names.length <= 200 &&
+    names.every((name) => /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/u.test(name))
+    ? names
+    : undefined;
+}
 
 const apiKeyMethod = { mechanism: "api-key" } as const;
 const subscriptionMethod = { mechanism: "interactive", offering: "subscription" } as const;
@@ -169,6 +253,25 @@ export const acquisitionProviders = {
     family: { id: "openrouter", name: "OpenRouter", methods: { apiKey: apiKeyMethod } },
     hosts: ["openrouter.ai"],
     auth: { apiKey: token("OpenRouter API key") },
+  }),
+  custom: modelProvider({
+    family: {
+      id: "custom",
+      name: "Custom endpoint",
+      methods: { anthropic: apiKeyMethod, openai: apiKeyMethod },
+    },
+    auth: {
+      anthropic: endpoint("Anthropic-compatible endpoint"),
+      openai: endpoint("OpenAI-compatible endpoint"),
+    },
+    // Applies the entry rules only and sends nothing: the form shows the thrown message, and a
+    // gateway answer would prove nothing about the names the pool will ask it for.
+    health: async ({ account }) => {
+      if (customEndpointAddress(account.fields.baseUrl) === undefined)
+        throw new Error(customEndpointRefusals.address);
+      if (customEndpointModels(account.fields.models) === undefined)
+        throw new Error(customEndpointRefusals.models);
+    },
   }),
 };
 
