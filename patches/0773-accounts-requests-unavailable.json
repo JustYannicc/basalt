@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-accounts-requests-unavailable",
+  "file": "0773-accounts-requests-unavailable.patch",
+  "content_sha256": "6912e5e6fea19ae069d026624f168fd90c9bad3ea215c2dba8bc7cbb20683caa",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
