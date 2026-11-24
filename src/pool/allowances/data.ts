@@ -31,3 +31,29 @@ export function allowanceEntry(
     revision: "pending",
   };
 }
+
+/** A dataset row and a vendor row that disagree while both are current contradict each other. */
+export function markContradictions(entries: readonly PlanAllowance[], at: number): PlanAllowance[] {
+  const active = entries.filter(
+    (entry) =>
+      entry.verification !== "unknown" &&
+      entry.checkedAt !== null &&
+      entry.checkedAt <= at &&
+      entry.expiresAt !== null &&
+      entry.expiresAt > at,
+  );
+  const conflicts = new Set<string>();
+  for (const entry of active.filter((value) => value.kind === "dataset")) {
+    const vendor = active.find(
+      (value) => value.kind === "vendor" && allowanceKey(value) === allowanceKey(entry),
+    );
+    if (
+      vendor &&
+      (vendor.full !== entry.full || Boolean(vendor.unlimited) !== Boolean(entry.unlimited))
+    )
+      conflicts.add(allowanceKey(entry));
+  }
+  return entries.map((entry) =>
+    conflicts.has(allowanceKey(entry)) ? { ...entry, contradicted: true } : entry,
+  );
+}

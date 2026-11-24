@@ -1,0 +1,319 @@
+import { createHash } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { Schema } from "effect";
+import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
+import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
+import { FleetConfiguration } from "../../src/pool/runtime-fleet/configuration.ts";
+import { currentCrashCommand } from "../../src/pool/runtime-crash-contract.ts";
+import {
+  SlotIdentity,
+  SlotTarget,
+  type ControllerCode,
+} from "../../src/pool/runtime-slots/contract.ts";
+import {
+  decodeRuntimeHandoffCommand,
+  type RuntimeFleetOperationPayload,
+} from "../../src/pool/runtime-slots/handoff-command.ts";
+import type { PoolOperationsTarget } from "../pool-operations.ts";
+import { runFleetOperator } from "./fleet-operator.ts";
+import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
+import {
+  freezeRuntimeFleetOperation,
+  runtimeFleetOperationDigest,
+} from "./runtime-fleet-operation.ts";
+import { runtimeBridgeKeyDigest } from "./runtime-slot-manifest.ts";
+
+/** The code this checkout builds; the controller refuses every command signed for other code. */
+export const checkoutControllerCode: ControllerCode = {
+  candidate: productionOpsRelease,
+  workerInput: poolWorkerRevision,
+};
+
+export interface ControllerAccess {
+  accountId: string;
+  worker: string;
+  signingKey: string;
+  code: ControllerCode;
+  connect?: PoolOperationsTarget["connect"];
+  now?: () => number;
+  /** Private runner directory for operator packets and their submission markers. */
+  directory: string;
+}
+
+const Selection = Schema.Struct({
+  epoch: Schema.Number,
+  active: Schema.Struct({ target: SlotTarget, identity: Schema.optional(SlotIdentity) }),
+  candidate: Schema.optional(Schema.Unknown),
+  draining: Schema.optional(Schema.Unknown),
+});
+/** The pool's own usage rollup backfill, closed: no name, host or account id ever travels. */
+export const UsageRollup = Schema.Struct({
+  /** The rollup the pool backfills now: v15, or v16 once its migration is applied. */
+  rollup: Schema.Literals(["v15", "v16"]),
+  lastTickAt: Schema.NullOr(Schema.String),
+  lastStop: Schema.NullOr(Schema.String),
+  pausedUntil: Schema.NullOr(Schema.String),
+  // Added later: a pool on older code leaves them out, and the rest still prints.
+  lastHour: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHourPhase: Schema.optional(Schema.NullOr(Schema.Literals(["read", "apply"]))),
+  lastHourReadMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  pools: Schema.NullOr(Schema.Number),
+  pendingHours: Schema.NullOr(Schema.Number),
+  totalPendingHours: Schema.optional(Schema.NullOr(Schema.Number)),
+  stuck: Schema.Array(
+    Schema.Struct({
+      pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
+      reason: Schema.NullOr(Schema.Literals(["slow", "lock", "error"])),
+      hour: Schema.NullOr(Schema.String),
+      retryAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+/** The pool's own capture-hour counts, closed the same way. */
+export const CaptureHours = Schema.Struct({
+  lastTickAt: Schema.NullOr(Schema.String),
+  lastStop: Schema.NullOr(Schema.String),
+  pausedUntil: Schema.NullOr(Schema.String),
+  pools: Schema.NullOr(Schema.Number),
+  pendingHours: Schema.NullOr(Schema.Number),
+  stuck: Schema.Array(
+    Schema.Struct({
+      pool: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u))),
+      reason: Schema.NullOr(Schema.Literals(["slow", "lock", "error"])),
+      hour: Schema.NullOr(Schema.String),
+      retryAt: Schema.NullOr(Schema.String),
+    }),
+  ),
+  // Optional, so a pool whose projection lacks one still prints the rest.
+  lastHour: Schema.optional(Schema.NullOr(Schema.String)),
+  lastHourReadMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  stalestCheckedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  pendingBlocks: Schema.optional(Schema.NullOr(Schema.Number)),
+  planMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  byPool: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        ordinal: Schema.Number,
+        pendingBlocks: Schema.NullOr(Schema.Number),
+        pendingHours: Schema.NullOr(Schema.Number),
+        slow: Schema.Array(
+          Schema.Struct({
+            hour: Schema.String,
+            until: Schema.NullOr(Schema.String),
+            repeat: Schema.NullOr(Schema.Number),
+            retries: Schema.optional(Schema.NullOr(Schema.Number)),
+            gaveUp: Schema.optional(Schema.Boolean),
+          }),
+        ),
+        lastSlow: Schema.NullOr(
+          Schema.Struct({
+            at: Schema.NullOr(Schema.String),
+            hour: Schema.String,
+            block: Schema.NullOr(Schema.String),
+            limit: Schema.NullOr(Schema.Literals(["count", "read"])),
+            elapsedMs: Schema.NullOr(Schema.Number),
+            repeat: Schema.NullOr(Schema.Number),
+          }),
+        ),
+      }),
+    ),
+  ),
+  recountPosition: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        pool: Schema.String.check(Schema.isPattern(/^[0-9a-f]{16}$/u)),
+        block: Schema.String,
+      }),
+    ),
+  ),
+});
+const Inspect = Schema.Struct({
+  result: Schema.Struct({
+    selection: Schema.optional(Selection),
+    digest: Schema.String,
+    alertDelivery: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({ refusedSince: Schema.Number, lastStatus: Schema.optional(Schema.Number) }),
+      ),
+    ),
+    lastEnd: Schema.optional(Schema.Unknown),
+    lastRecovery: Schema.optional(Schema.Unknown),
+    // Decoded apart, leniently: a diagnostic must never block the fleet lane's other modes.
+    usageRollup: Schema.optional(Schema.Unknown),
+    captureHours: Schema.optional(Schema.Unknown),
+  }),
+});
+const Row = Schema.Struct({
+  target: SlotTarget,
+  identity: Schema.optional(SlotIdentity),
+  phase: Schema.String,
+  active: Schema.Number,
+  reason: Schema.optional(Schema.String),
+  inPhaseMs: Schema.optional(Schema.Number),
+  // Read leniently with the fleet's closed checks, so another version's values are dropped.
+  suspect: Schema.optional(Schema.Unknown),
+  failure: Schema.optional(Schema.Unknown),
+});
+export const Permission = Schema.Struct({
+  operationId: Schema.String,
+  digest: Schema.String,
+  configuration: FleetConfiguration,
+  enabled: Schema.Boolean,
+});
+const FleetInspect = Schema.Struct({
+  result: Schema.Struct({
+    permission: Schema.optional(Schema.NullOr(Permission)),
+    inForce: Schema.optional(Schema.Boolean),
+    notInForce: Schema.optional(Schema.String),
+    resources: Schema.Array(Row),
+    bindings: Schema.Array(
+      Schema.Struct({
+        color: Schema.String,
+        applicationId: Schema.String,
+        imageInput: Schema.String,
+      }),
+    ),
+    recentEnds: Schema.optional(Schema.Array(Schema.Unknown)),
+  }),
+});
+export type FleetRow = typeof Row.Type;
+export type FleetView = typeof FleetInspect.Type.result;
+export type ControllerView = typeof Inspect.Type.result;
+
+// A runner clock a little ahead must not sign a command in the controller's future.
+const signedNow = (access: ControllerAccess) => (access.now ?? Date.now)() - 2_000;
+const target = (access: ControllerAccess): PoolOperationsTarget => ({
+  accountId: access.accountId,
+  worker: access.worker,
+  connect: access.connect,
+});
+export const shortHash = (...parts: string[]) =>
+  createHash("sha256").update(parts.join("\n")).digest("hex").slice(0, 24);
+
+async function read(access: ControllerAccess, action: Record<string, unknown>) {
+  const at = signedNow(access);
+  const command = decodeRuntimeHandoffCommand(
+    { ...action, controllerCode: access.code, at, expiresAt: at + 25_000 },
+    at,
+  );
+  return sendRuntimeCommand(command, access.signingKey, target(access), () => {
+    decodeRuntimeHandoffCommand(command, signedNow(access));
+  });
+}
+
+// Lenient: a newer controller may add fields; only the ones decoded here decide anything.
+export const inspectController = async (access: ControllerAccess) =>
+  Schema.decodeUnknownSync(Inspect)(await read(access, { action: "inspect" })).result;
+
+const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+// Lenient like inspect: only the closed fields decoded here are printed.
+const RetireCheck = Schema.Struct({
+  result: Schema.Struct({
+    wouldProceed: Schema.Boolean,
+    refusal: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-z_]{1,40}$/u))),
+    matches: Count,
+    key: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{24}$/u))),
+    ordinal: Schema.optional(Schema.NullOr(Count)),
+    phase: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z]{1,20}$/u))),
+    ledger: Schema.optional(Count),
+    ledgerStillMs: Schema.optional(Schema.Number),
+    cell: Schema.optional(Schema.NullOr(Count)),
+    cellStillMs: Schema.optional(Schema.NullOr(Schema.Number)),
+    leases: Schema.optional(
+      Schema.NullOr(
+        Schema.Struct({
+          currentCalls: Count,
+          currentSockets: Count,
+          foreignSockets: Count,
+          unstamped: Count,
+        }),
+      ),
+    ),
+    connections: Schema.optional(Schema.NullOr(Count)),
+  }),
+});
+
+/** fleet-retire's refusal tests and the cell's connection read for one row; nothing is changed. */
+export const checkRetire = async (access: ControllerAccess, key: string) =>
+  Schema.decodeUnknownSync(RetireCheck)(await read(access, { action: "fleet-retire-check", key }))
+    .result;
+
+export const inspectFleet = async (access: ControllerAccess, operationId?: string) =>
+  Schema.decodeUnknownSync(FleetInspect)(
+    await read(access, { action: "fleet-inspect", ...(operationId ? { operationId } : {}) }),
+  ).result;
+
+/**
+ * One reviewed operator packet per GO. The local marker makes a repeat in the same run inspect
+ * only; the controller's durable operation key does the same across runs.
+ */
+export async function sendFleetOperation(
+  access: ControllerAccess,
+  command: RuntimeFleetOperationPayload,
+  coordinatorGo: string,
+) {
+  const operation = freezeRuntimeFleetOperation({
+    candidate: access.code.candidate,
+    controller: { accountId: access.accountId, scriptName: access.worker },
+    bridgeKeyDigest: runtimeBridgeKeyDigest(access.signingKey),
+    command,
+  });
+  const now = access.now ?? Date.now;
+  const enable = {
+    coordinatorGo,
+    manifest: runtimeFleetOperationDigest(operation),
+    writerLease: `pool-fleet-${shortHash(coordinatorGo)}`,
+    // The GO authorizes this one send for at most ten minutes.
+    expiresAt: now() + 10 * 60_000,
+  };
+  await mkdir(access.directory, { recursive: true, mode: 0o700 });
+  const packet = join(access.directory, `${command.operationId}.json`);
+  await writeFile(packet, JSON.stringify({ operation, enable }), { mode: 0o600 });
+  return runFleetOperator({ packet, apply: true }, access.signingKey, {
+    connect: access.connect,
+    now: () => signedNow(access),
+  });
+}
+
+/** Hard-kills one ready fleet cell. The cell itself refuses when its Home is the elected master. */
+export async function crashCell(
+  access: ControllerAccess,
+  identity: SlotIdentity,
+  nonce: string,
+  operator: string,
+) {
+  const at = signedNow(access);
+  const command = currentCrashCommand(
+    {
+      controllerCode: access.code,
+      action: "runtime-crash",
+      kind: "cell",
+      identity,
+      nonce,
+      operator,
+      at,
+      expiresAt: at + 25_000,
+    },
+    at,
+  );
+  return sendRuntimeCommand(command, access.signingKey, target(access), () => {
+    currentCrashCommand(command, signedNow(access));
+  });
+}
+
+export const inspectCrash = (access: ControllerAccess, identity: SlotIdentity, nonce: string) =>
+  read(access, { action: "runtime-crash-inspect", identity, nonce });
+
+// Lenient: a newer controller may add fields to the reply.
+const TakenBookmark = Schema.Struct({
+  result: Schema.Struct({ bookmark: Schema.String, at: Schema.String }),
+});
+
+/**
+ * The controller storage's current point-in-time bookmark: the restore target if the class change
+ * fails. Reading it also arms a restore to it for ten minutes, the window the class change runs in.
+ */
+export const takeBookmark = async (access: ControllerAccess) =>
+  Schema.decodeUnknownSync(TakenBookmark)(await read(access, { action: "storage-bookmark" }))
+    .result;

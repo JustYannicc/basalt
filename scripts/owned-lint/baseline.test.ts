@@ -18,7 +18,6 @@ const finding = (rule: string, file: string, line = 1) => ({
 });
 const spread = "basalt/no-spread-into-provider-request";
 const strict = "basalt/no-strict-provider-decode";
-const rules = new Set([spread]);
 
 test("a finding the baseline does not hold fails with its location and advice", () => {
   const problems = compare(
@@ -69,56 +68,106 @@ test("landmines keeps its own counts and a parse failure is never baselined", ()
   assert.match(problems[1]!, /^src\/b\.ts:2 oxlint\/parse/u);
 });
 
-test("disable comments for owned rules, or for every rule, are refused", () => {
+test("only a single `//` comment naming upstream rules may disable anything", () => {
   // Assembled so this file carries no directive of its own.
   const off = (tool: string, scope = "") => `${tool}-disable${scope}`;
   const text = [
     `// ${off("oxlint", "-next-line")}`,
-    "a();",
     `/* ${off("eslint")} basalt/no-echo-stub */`,
     `// ${off("oxlint", "-next-line")} landmines-testing/no-fixed-sleep -- slow`,
     `// ${off("eslint", "-next-line")} typescript/no-explicit-any`,
+    `/* ${off("oxlint", "-next-line")} typescript/no-explicit-any,`,
+    "  basalt/no-discarded-child-output */",
+    `/* ${off("oxlint")} unicorn/no-null */ /* ${off("oxlint")} */`,
+    `<!-- ${off("oxlint", "-next-line")}`,
     `const quoted = "${off("oxlint")}";`,
   ].join("\n");
-  const problems = directiveProblems("src/a.ts", text);
   assert.deepEqual(
-    problems.map((problem) => problem.split(" ")[0]),
-    ["src/a.ts:1", "src/a.ts:3", "src/a.ts:4"],
+    directiveProblems("src/a.ts", text).map((problem) => problem.split(" ")[0]),
+    [
+      "src/a.ts:1",
+      "src/a.ts:2",
+      "src/a.ts:3",
+      "src/a.ts:5",
+      "src/a.ts:7",
+      "src/a.ts:7",
+      "src/a.ts:8",
+      "src/a.ts:9",
+    ],
   );
-  assert.match(problems[0]!, /disables every rule/u);
 });
+
+const state = (lintChanged = false, changed = (file: string) => file === "src/touched.ts") => ({
+  allowlist: {},
+  basePath: (file: string) =>
+    ({ "src/new-name.ts": "src/old-name.ts", "src/moved.ts": "scripts/architecture/gen/moved.ts" })[
+      file
+    ] ?? (file.startsWith("src/new") ? undefined : file),
+  changed,
+  enteredScope: (file: string) => file === "src/moved.ts",
+  lintChanged,
+});
+const enforced = new Set([spread]);
 
 test("a committed baseline may only shrink against the base commit", () => {
   const base = { [spread]: { "src/a.ts": 1, "src/b.ts": 2 } };
-  const existed = () => true;
   assert.deepEqual(
-    ratchet({ [spread]: { "src/a.ts": 1, "src/b.ts": 1 } }, base, existed, rules),
+    ratchet({ [spread]: { "src/a.ts": 1, "src/b.ts": 1 } }, base, state(), enforced).problems,
     [],
   );
   assert.equal(
-    ratchet({ [spread]: { "src/a.ts": 2, "src/b.ts": 2 } }, base, existed, rules).length,
-    2,
+    ratchet({ [spread]: { "src/a.ts": 2, "src/b.ts": 2 } }, base, state(), enforced).problems
+      .length,
+    1,
   );
 });
 
-test("a renamed file may carry its findings, but the rule's total may not rise", () => {
-  const base = { [spread]: { "src/old.ts": 2 } };
-  const existed = (file: string) => file === "src/old.ts";
-  assert.deepEqual(ratchet({ [spread]: { "src/new.ts": 2 } }, base, existed, rules), []);
-  assert.match(
-    ratchet({ [spread]: { "src/new.ts": 3 } }, base, existed, rules)[0]!,
-    /total rose from 2 to 3/u,
-  );
-});
-
-test("a rule the base did not configure brings its own baseline", () => {
+test("a new file carries no baseline, and a renamed one keeps its old count", () => {
+  const base = { [spread]: { "src/old-name.ts": 2, "src/a.ts": 1 } };
   assert.deepEqual(
-    ratchet({ "basalt/new-rule": { "src/a.ts": 4 } }, {}, () => true, rules),
+    ratchet({ [spread]: { "src/new-name.ts": 2 } }, base, state(), enforced).problems,
+    [],
+  );
+  assert.match(
+    ratchet({ [spread]: { "src/new-file.ts": 1 } }, base, state(), enforced).problems[0]!,
+    /new files carry no baseline/u,
+  );
+});
+
+test("while the rules change, only rises in untouched files are listed instead of failing", () => {
+  const base = { [spread]: { "src/untouched.ts": 1, "src/touched.ts": 1 } };
+  const current = {
+    [spread]: { "src/untouched.ts": 3, "src/touched.ts": 2, "src/new-file.ts": 1 },
+  };
+  const result = ratchet(current, base, state(true), enforced);
+  assert.equal(result.notices.length, 1);
+  assert.match(result.notices[0]!, /src\/untouched\.ts/u);
+  assert.equal(result.problems.length, 2);
+});
+
+test("code moved into the gated scope keeps its findings, listed for review", () => {
+  const result = ratchet({ [spread]: { "src/moved.ts": 3 } }, {}, state(), enforced);
+  assert.deepEqual(result.problems, []);
+  assert.match(
+    result.notices[0]!,
+    /moved into the gated scope from scripts\/architecture\/gen\/moved\.ts/u,
+  );
+});
+
+test("a rule the base did not enforce brings its own baseline", () => {
+  assert.deepEqual(
+    ratchet({ "basalt/new-rule": { "src/a.ts": 4 } }, {}, state(), enforced).problems,
     [],
   );
 });
 
-test("an enforced rule may not be switched off or removed", () => {
+const plugins = [
+  { name: "basalt", specifier: "./plugin/basalt.mjs" },
+  { name: "landmines-testing", specifier: "@interfere/landmines/testing" },
+  { name: "landmines-structure", specifier: "@interfere/landmines/structure" },
+];
+
+test("the configuration loads the pinned plugins, keeps what the base enforced, and nothing else", () => {
   const base = {
     rules: {
       [spread]: "error",
@@ -127,10 +176,26 @@ test("an enforced rule may not be switched off or removed", () => {
     },
   };
   assert.deepEqual(
-    configProblems({ rules: { [spread]: "error", [strict]: ["error", {}] } }, base),
+    configProblems(
+      { jsPlugins: plugins, rules: { [spread]: "error", [strict]: ["error", {}] } },
+      base,
+    ),
     [],
   );
-  assert.equal(configProblems({ rules: { [spread]: "off" } }, base).length, 2);
+  assert.equal(configProblems({ jsPlugins: plugins, rules: { [spread]: "off" } }, base).length, 2);
+  assert.match(
+    configProblems({ jsPlugins: plugins, rules: {}, overrides: [] }, undefined)[0]!,
+    /takes no "overrides"/u,
+  );
+  assert.match(
+    configProblems({ jsPlugins: plugins, rules: {}, extends: ["./shared.json"] }, undefined)[0]!,
+    /takes no "extends"/u,
+  );
+  const swapped = plugins.map((plugin) => ({ ...plugin, specifier: "./empty.mjs" }));
+  assert.match(
+    configProblems({ jsPlugins: swapped, rules: {} }, undefined)[0]!,
+    /pinned basalt and landmines plugins/u,
+  );
 });
 
 test("new or raised allowlist entries are listed for review with their reasons", () => {
@@ -176,34 +241,34 @@ test("an allowlist entry without a count and a reason exempts nothing", () => {
   }
 });
 
-test("the configuration takes no per-file overrides", () => {
-  assert.match(configProblems({ rules: {}, overrides: [] }, undefined)[0]!, /takes no overrides/u);
-});
-
-const state = {
-  config: { rules: { [spread]: "error" } },
-  baseline: { [spread]: { "src/a.ts": 2 } },
-  allowlist: {},
-};
-const base = {
-  config: { rules: { [spread]: "error", "basalt/later": "off" } },
-  baseline: { [spread]: { "src/a.ts": 1 } },
-  allowlist: {},
-  existed: () => true,
-  lintChanged: false,
-};
-
-test("against the base, a rise fails, or is listed for review while the rules change", () => {
-  assert.equal(basePolicy(state, base).problems.length, 2);
-  const changing = basePolicy(state, { ...base, lintChanged: true });
-  assert.deepEqual(changing.problems, []);
-  assert.equal(
-    changing.notices.filter((line) => line.startsWith("Rules or pins changed")).length,
-    2,
+test("no allowlist reason covers a decode the rule recognised as a provider response", () => {
+  const response = {
+    ...finding(strict, "src/a.ts"),
+    message: "Strict decode of a provider response: ...",
+  };
+  const allowlist = { [strict]: { "src/a.ts": { count: 1, reason: "Decodes our own data." } } };
+  assert.ok(
+    compare([response], {}, allowlist).some((problem) =>
+      /found 1, baseline allows 0/u.test(problem),
+    ),
   );
 });
 
-test("a rule that was off at the base can be enabled with its own baseline", () => {
-  const enabled = { ...state, baseline: { ...base.baseline, "basalt/later": { "src/b.ts": 3 } } };
+test("against the base, policy combines the config, allowlist and both ratchets", () => {
+  const current = {
+    config: { jsPlugins: plugins, rules: { [spread]: "error" } },
+    baseline: { [spread]: { "src/a.ts": 2 } },
+    allowlist: {},
+  };
+  const base = {
+    ...state(),
+    config: { rules: { [spread]: "error", "basalt/later": "off" } },
+    baseline: { [spread]: { "src/a.ts": 1 } },
+  };
+  assert.equal(basePolicy(current, base).problems.length, 1);
+  const enabled = {
+    ...current,
+    baseline: { [spread]: { "src/a.ts": 1 }, "basalt/later": { "src/b.ts": 3 } },
+  };
   assert.deepEqual(basePolicy(enabled, base).problems, []);
 });

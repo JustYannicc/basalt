@@ -8,9 +8,16 @@ import {
   bounded,
   liveDeadline,
   openDeploymentReadiness,
+  pause,
+  readinessRetryMs,
+  ReadinessConnectionError,
+  readyAfterAdoption,
   withinDeadline,
+  type DeploymentReadiness,
+  type ReadinessCalls,
 } from "./database-budget-readiness.ts";
 import { decodeRuntimeReady } from "../src/pool/deployment-readiness.ts";
+import { readinessWaitMs } from "../src/pool/readiness-budget.ts";
 import {
   DatabaseBudgetFailure,
   safeDatabaseError,
@@ -18,10 +25,8 @@ import {
 } from "./database-budget-receipt.ts";
 
 export const databaseVerificationCommandMs = 115_000;
-type RuntimeConnection = Pick<
-  Awaited<ReturnType<typeof openDeploymentReadiness>>,
-  "ready" | "close"
->;
+export const databaseReadinessCommandMs = readinessWaitMs;
+type RuntimeConnection = ReadinessCalls & Pick<DeploymentReadiness, "close">;
 
 function list(value: string | undefined) {
   const parsed: unknown = JSON.parse(value ?? "null");
@@ -48,7 +53,7 @@ export async function runDatabaseBudgetCommand(
     timeout?: (milliseconds: number) => AbortSignal;
     deadline?: (
       milliseconds: number,
-      phase: "command" | "receipt" | "teardown",
+      phase: "command" | "receipt" | "teardown" | "retry",
     ) => ReturnType<typeof liveDeadline>;
   } = {},
 ) {
@@ -76,12 +81,56 @@ export async function runDatabaseBudgetCommand(
     workerInput: source.DATABASE_BUDGET_WORKER_INPUT ?? "",
     imageHash: source.DATABASE_BUDGET_IMAGE_HASH ?? "",
   };
+  const mode = args.includes("--ready") ? "ready" : "verify";
+  const commandMs = mode === "ready" ? databaseReadinessCommandMs : databaseVerificationCommandMs;
+  let refusals: BudgetReceipt["refusals"];
+  let reconnect: ((signal: AbortSignal) => Promise<RuntimeConnection>) | undefined;
+  const awaitReady = async (signal: AbortSignal) => {
+    for (;;) {
+      try {
+        return await readyAfterAdoption(readiness!, target, {
+          signal,
+          pause: (until) =>
+            pause(readinessRetryMs, until, (milliseconds) => schedule(milliseconds, "retry")),
+          refused: (refusal) => {
+            refusals = { count: (refusals?.count ?? 0) + 1, ...refusal };
+          },
+        });
+      } catch (error) {
+        // Only the bridge failing is worth a fresh one, after a pause, inside the same deadline.
+        // An answer, a decode or identity error, or the deadline itself ends the wait as before.
+        if (!(error instanceof ReadinessConnectionError) || !reconnect || signal.aborted)
+          throw error;
+        const failed = readiness;
+        readiness = undefined;
+        await within(failed!.close(), "teardown").catch(() => {});
+        // A fresh bridge that fails to open is tried again the same way. A failed open closes
+        // itself, and nothing starts once the deadline has passed.
+        for (;;) {
+          try {
+            await pause(readinessRetryMs, signal, (milliseconds) =>
+              schedule(milliseconds, "retry"),
+            );
+          } catch {
+            throw error;
+          }
+          if (signal.aborted) throw error;
+          try {
+            readiness = await reconnect(signal);
+            break;
+          } catch {
+            if (signal.aborted) throw error;
+          }
+        }
+      }
+    }
+  };
   let receipt: BudgetReceipt = {
     candidate,
     outcome: "readiness-error",
     stage: "readiness",
     elapsedMs: 0,
-    deadlineMs: 180_000,
+    deadlineMs: mode === "ready" ? databaseReadinessCommandMs : 180_000,
     successfulSamples: 0,
     lastSampleAt: null,
     counts: null,
@@ -93,13 +142,13 @@ export async function runDatabaseBudgetCommand(
     target,
     operationStartedAt,
     overallDeadlineMs: databaseVerificationOverallMs,
-    commandDeadlineMs: args.includes("--ready") ? 180_000 : databaseVerificationCommandMs,
+    commandDeadlineMs: commandMs,
+    ...(refusals ? { refusals } : {}),
     elapsedMs: now() - operationStartedAt,
   });
-  const mode = args.includes("--ready") ? "ready" : "verify";
   let failure: DatabaseBudgetFailure | undefined;
   try {
-    const command = timeout(mode === "ready" ? 180_000 : databaseVerificationCommandMs);
+    const command = timeout(commandMs);
     const worker = source.DATABASE_BUDGET_WORKER;
     const previous =
       worker && mode === "verify"
@@ -116,39 +165,47 @@ export async function runDatabaseBudgetCommand(
         previous.readyReceivedAt > now())
     )
       throw new Error("Invalid readiness timing receipt");
-    operationStartedAt = previous?.startedAt ?? startedAt;
+    // The overall bound belongs to verification and starts at the readiness receipt. Waiting for
+    // the controller object to adopt new code is the readiness command's own budget.
+    operationStartedAt = previous?.readyReceivedAt ?? startedAt;
     receipt = contextual({ ...receipt, runtime: initialReady ?? null });
     const overallDeadline = operationStartedAt + databaseVerificationOverallMs;
     const remaining = overallDeadline - now();
     if (!Number.isFinite(remaining) || remaining <= 0)
       throw new Error("Overall verification bound expired");
-    const operation = AbortSignal.any([command, timeout(remaining)]);
+    const operation = mode === "ready" ? command : AbortSignal.any([command, timeout(remaining)]);
     const startup = operation;
     if (worker) {
-      const opening = open({
-        worker,
-        accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
-        key: source.POOL_DEPLOYMENT_KEY ?? "",
-        target,
-      });
-      opening.then(
-        (connection) => {
-          if (startup.aborted) void within(connection.close(), "teardown").catch(() => {});
-        },
-        () => {},
-      );
-      readiness = await bounded(opening, startup);
+      reconnect = (signal) => {
+        const opening = open({
+          worker,
+          accountId: source.CLOUDFLARE_ACCOUNT_ID ?? "",
+          key: source.POOL_DEPLOYMENT_KEY ?? "",
+          target,
+        });
+        opening.then(
+          (connection) => {
+            if (signal.aborted) void within(connection.close(), "teardown").catch(() => {});
+          },
+          () => {},
+        );
+        return bounded(opening, signal);
+      };
+      readiness = await reconnect(startup);
     }
     if (mode === "ready") {
       if (!readiness) throw new Error("Readiness service missing");
-      const ready = await bounded(readiness.ready(startup), startup);
+      const ready = await awaitReady(startup);
       receipt = {
         ...receipt,
         outcome: "converged",
         runtime: ready,
         elapsedMs: now() - startedAt,
       };
-      await within(save(path, { startedAt, readyReceivedAt: now(), ready }), "receipt");
+      await within(
+        save(path, { startedAt, readyReceivedAt: now(), ready, ...(refusals ? { refusals } : {}) }),
+        "receipt",
+      );
     } else {
       await check({
         adminUrl: source.DATABASE_BUDGET_ADMIN_URL ?? "",
@@ -158,11 +215,7 @@ export async function runDatabaseBudgetCommand(
         initialReady,
         readyReceivedAt: previous?.readyReceivedAt,
         overallDeadline,
-        ...(readiness
-          ? {
-              ready: (signal: AbortSignal) => bounded(readiness!.ready(signal), signal),
-            }
-          : {}),
+        ...(readiness ? { ready: (signal: AbortSignal) => awaitReady(signal) } : {}),
         signal: operation,
         now,
         retain: async (value) => {

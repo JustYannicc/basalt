@@ -1,4 +1,5 @@
 import { Fragment, useState } from "react";
+import { utcMoment } from "./moments.ts";
 import type { Result } from "../index.ts";
 import type {
   PoolOverviewResult,
@@ -626,7 +627,7 @@ function Notes({ read, personal = false }: { read: SeriesRead; personal?: boolea
       ))}
       {asOf && !Number.isNaN(asOf.getTime()) && (
         <span>
-          As of {asOf.toUTCString().replace(" GMT", " UTC")}.
+          As of {utcMoment(asOf.getTime(), { second: "2-digit" })}.
           {personal
             ? " This view includes only your signed-in requests."
             : " Imported history keeps its source and is never attributed to a person."}

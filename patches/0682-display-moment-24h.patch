@@ -1,0 +1,520 @@
+diff --git a/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx b/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx
+index 3751f5694..b6c955715 100644
+--- a/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-endpoint.tsx
+@@ -2,6 +2,7 @@ import { useState } from "react";
+ import { Button } from "@executor-js/ui/components/button";
+ import { Code } from "@executor-js/ui/dashboard/code";
+ import { EndpointField } from "@executor-js/ui/dashboard/connect";
++import { formatMoment, useDisplayFormat } from "@executor-js/ui/hooks/display-format";
+ import { PoolSelect } from "./computer-quick-setup.tsx";
+ import type { PoolKey, PoolSetup } from "./pool-setup.tsx";
+ 
+@@ -10,6 +11,7 @@ export function PoolEndpoint({ setup }: { readonly setup: PoolSetup }) {
+   const [issued, setIssued] = useState<PoolKey>();
+   const [busy, setBusy] = useState(false);
+   const [problem, setProblem] = useState<string>();
++  const format = useDisplayFormat();
+   // The router serves the model gateway on the dashboard's own origin.
+   const baseUrl = issued?.baseUrl ?? window.location.origin;
+   const key = issued?.key ?? "<POOL_KEY>";
+@@ -19,7 +21,7 @@ export function PoolEndpoint({ setup }: { readonly setup: PoolSetup }) {
+     try {
+       setIssued(
+         await setup.issueKey(
+-          `Pool key ${new Date().toLocaleDateString(undefined, { dateStyle: "medium" })}`,
++          `Pool key ${formatMoment(new Date(), format, { dateStyle: "medium" })}`,
+         ),
+       );
+     } catch (error) {
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
+index 1bda47a1d..909c982fb 100644
+--- a/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-cap.tsx
+@@ -10,7 +10,7 @@ import { LocalTime } from "@executor-js/ui/components/local-time";
+ import { setPoolCapAtom, type PoolUsageMember } from "../../contracts/pool-usage.ts";
+ import { appError, type HostedError } from "../../contracts/errors.ts";
+ import { SharingFailure } from "../components/sharing.tsx";
+-import { resetDay, resetMoment } from "./pool-usage-details.tsx";
++import { resetMoment } from "./pool-usage-details.tsx";
+ import {
+   capInput,
+   capText,
+@@ -127,7 +127,10 @@ export function CapSummary({
+         ) : (
+           `${format.credits(cap.remaining)} left`
+         )}{" "}
+-        · resets <LocalTime value={cap.resetAt} options={resetDay} title={resetMoment} />
++        ·{" "}
++        <span className="whitespace-nowrap">
++          resets <LocalTime value={cap.resetAt} options={resetMoment} />
++        </span>
+       </span>
+     </>
+   );
+diff --git a/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx b/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
+index c6279f105..d8af7b21e 100644
+--- a/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
++++ b/apps/hosted/web/src/implementation/pages/pool-usage-details.tsx
+@@ -22,14 +22,10 @@ import {
+ } from "./pool-usage-format.ts";
+ 
+ const percent = (fraction: number) => `${Math.round(fraction * 10_000) / 100}%`;
+-/** Reset moments read in the reader's own time zone, with the exact time on hover. */
+-export const resetDay: Intl.DateTimeFormatOptions = {
+-  weekday: "short",
++/** Reset moments in the reader's own time zone, with the exact time and zone as visible text. */
++export const resetMoment: Intl.DateTimeFormatOptions = {
+   day: "numeric",
+   month: "short",
+-};
+-export const resetMoment: Intl.DateTimeFormatOptions = {
+-  ...resetDay,
+   hour: "numeric",
+   minute: "2-digit",
+   timeZoneName: "short",
+diff --git a/e2e/tests/account-usage-cells.spec.ts b/e2e/tests/account-usage-cells.spec.ts
+index 0c621d472..68fc32c50 100644
+--- a/e2e/tests/account-usage-cells.spec.ts
++++ b/e2e/tests/account-usage-cells.spec.ts
+@@ -238,6 +238,53 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+               "image/png",
+               yield* browser.use("Capture the account list", (page) => page.screenshot()),
+             );
++            if (scheme === "light") {
++              // Phones have no hover: each countdown and its exact moment are visible text that
++              // stays inside its own cell, and the page writes no 12-hour or month-first date.
++              const shown = yield* browser.use(`Read the visible resets at ${width}px`, (page) =>
++                Promise.all([
++                  block(page, "Studio")
++                    .locator("[data-reading]")
++                    .evaluateAll((cells) =>
++                      cells.map((element) => {
++                        const reset = element.querySelector("[data-reset]");
++                        const own = reset?.getBoundingClientRect();
++                        const box = element.getBoundingClientRect();
++                        return {
++                          text: reset instanceof HTMLElement ? reset.innerText : null,
++                          title: reset?.getAttribute("title") ?? null,
++                          inside:
++                            own !== undefined &&
++                            own.left >= box.left - 0.5 &&
++                            own.right <= box.right + 0.5,
++                        };
++                      }),
++                    ),
++                  page.evaluate(
++                    () =>
++                      document.documentElement.scrollWidth > document.documentElement.clientWidth,
++                  ),
++                  page.locator("body").innerText(),
++                ]),
++              );
++              expect(shown[0], `${width}px`).toEqual([
++                {
++                  text: expect.stringMatching(
++                    /^in [12] h \d+ min · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/,
++                  ),
++                  title: null,
++                  inside: true,
++                },
++                {
++                  text: expect.stringMatching(/^in 4 days · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/),
++                  title: null,
++                  inside: true,
++                },
++              ]);
++              expect(shown[1], `no sideways scroll at ${width}px`).toBe(false);
++              expect(shown[2], `${width}px`).not.toMatch(/\d\s?(AM|PM)\b/);
++              expect(shown[2], `${width}px`).not.toMatch(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/);
++            }
+             for (const [label, file] of [
+               ["Work mail", "work-mail"],
+               ["Optional usage", "optional-usage"],
+@@ -349,10 +396,12 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+         expect([spareCells[0]?.state, spareCells[0]?.value]).toEqual(["bad", "Rem 8% · Low"]);
+         const fills = new Set([studioCells[0]?.fill, studioCells[1]?.fill, spareCells[0]?.fill]);
+         expect(fills.size, "green, amber and red are distinct fills").toBe(3);
+-        // The reset reads as a countdown with the exact moment on hover.
+-        expect(studioCells[0]?.reset).toMatch(/^in [12] h \d+ min$/);
+-        expect(studioCells[1]?.reset).toBe("in 4 days");
+-        expect(studioCells[1]?.resetTitle).toMatch(/^Resets /);
++        // The reset reads as a countdown and its exact moment, day-month-year on a 24-hour clock.
++        expect(studioCells[0]?.reset).toMatch(
++          /^in [12] h \d+ min · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/,
++        );
++        expect(studioCells[1]?.reset).toMatch(/^in 4 days · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/);
++        expect(studioCells[1]?.resetTitle).toBeNull();
+         // Stale only when stale: fresh cells name no age and keep their color.
+         expect(
+           [...studioCells, ...spareCells].every((entry) => !entry.stale && entry.age === null),
+@@ -384,6 +433,7 @@ layer(HostedLive, { excludeTestServices: true })("Account usage cells", (it) =>
+           (page) => block(page, "Spare").locator("[data-observation-details]").innerText(),
+         );
+         expect(spareExpiry.match(/Expires /g)?.length, spareExpiry).toBe(2);
++        expect(spareExpiry).toMatch(/Expires in 2[67] days · \d{2}\.\d{2}\.\d{4} \d{2}:\d{2}/);
+         // Each credit holds one reset and reads in the singular.
+         expect(spareExpiry.match(/\b1 reset\b/g)?.length, spareExpiry).toBe(2);
+         expect(studioCells.every((entry) => entry.count === null)).toBe(true);
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-details.tsx b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+index f02d626d9..0247904b3 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-details.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-details.tsx
+@@ -21,17 +21,14 @@ const parserStages = {
+ 
+ const lastRefresh = (
+   attempt: NonNullable<AccountObservationRecord["lastAttempt"]>,
+-  now: number,
+   format: DisplayFormat,
+ ) => {
+-  const at = moment(attempt.attemptedAt, now, format);
++  const at = moment(attempt.attemptedAt, format);
+   const reason = attemptReason(attempt);
+   if (reason === undefined) return `succeeded ${at}.`;
+   const evidence = [
+     reason.status === undefined ? undefined : `HTTP ${reason.status}`,
+-    reason.occurredAt === undefined
+-      ? undefined
+-      : `failure at ${moment(reason.occurredAt, now, format)}`,
++    reason.occurredAt === undefined ? undefined : `failure at ${moment(reason.occurredAt, format)}`,
+   ].filter((part) => part !== undefined);
+   const detail = failureDetail(attempt.failure);
+   const stage =
+@@ -80,12 +77,12 @@ export function ObservationDetails({
+       explained?.evidence,
+       explained?.occurredAt === undefined
+         ? undefined
+-        : `${explained.evidence === undefined ? "Failed" : "failed"} ${moment(explained.occurredAt, now, format)}`,
++        : `${explained.evidence === undefined ? "Failed" : "failed"} ${moment(explained.occurredAt, format)}`,
+     ].filter((part) => part !== undefined);
+     return [
+       appDisplayName(app, brand),
+       result ?? (check?.current === false ? `${label} · outdated` : label),
+-      check === null ? "—" : moment(check.checkedAt.toISOString(), now, format),
++      check === null ? "—" : moment(check.checkedAt.toISOString(), format),
+       explained?.message !== undefined ? (
+         <span key="reason" className="grid gap-0.5">
+           {explained.message}
+@@ -133,7 +130,7 @@ export function ObservationDetails({
+               {attempt !== null && (
+                 <>
+                   <b className="font-medium text-foreground/80">Last refresh</b>{" "}
+-                  {lastRefresh(attempt, now, format)}{" "}
++                  {lastRefresh(attempt, format)}{" "}
+                   {attempt.outcome !== "success" &&
+                     report.result !== null &&
+                     "The amounts above are from the last successful read. "}
+@@ -142,7 +139,7 @@ export function ObservationDetails({
+               {report.result === null && "No reading has been saved yet. "}
+               {report.nextAllowedAt === null
+                 ? "Next refresh allowed now."
+-                : `Next refresh allowed at ${moment(report.nextAllowedAt, now, format)}.`}
++                : `Next refresh allowed at ${moment(report.nextAllowedAt, format)}.`}
+             </p>
+           </div>
+         );
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-format.ts b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+index fccc25e97..e0fc2d36a 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-format.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-format.ts
+@@ -79,7 +79,7 @@ export function attemptNote(record: AccountObservationRecord, now: number, forma
+     record.result === null ? undefined : "Showing the last successful reading.",
+     retry === undefined || Date.parse(retry) <= now
+       ? undefined
+-      : `Next refresh at ${moment(retry, now, format)}.`,
++      : `Next refresh at ${moment(retry, format)}.`,
+   ]
+     .filter((part) => part !== undefined)
+     .join(" ");
+@@ -99,7 +99,7 @@ export function refreshBlocked(
+   );
+   const earliest = Math.min(...next);
+   if (next.length === 0 || earliest <= now) return undefined;
+-  const at = moment(new Date(earliest).toISOString(), now, format);
++  const at = moment(new Date(earliest).toISOString(), format);
+   return `Next refresh allowed at ${at}.`;
+ }
+ 
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx b/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx
+index 3c840cd60..a382511eb 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observation-readings-view.tsx
+@@ -99,7 +99,7 @@ export function ObservationReadingsTable({
+     <>
+       <span className={stale ? "text-sign-in-warning" : undefined}>{age(value, now)}</span>{" "}
+       <time dateTime={value} className="text-muted-foreground">
+-        {moment(value, now, format)}
++        {moment(value, format)}
+       </time>
+     </>
+   );
+diff --git a/packages/ui/src/implementation/dashboard/account-observation-text.ts b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+index 963e52fa2..d3ef0ce5c 100644
+--- a/packages/ui/src/implementation/dashboard/account-observation-text.ts
++++ b/packages/ui/src/implementation/dashboard/account-observation-text.ts
+@@ -8,6 +8,9 @@
+  * structural subset of the native report that the pool's projection also carries.
+  */
+ import { accountPlanName, availableResetBalances, type AccountOffering } from "apps";
++import { formatMoment } from "./moment-format.ts";
++
++export { formatMoment };
+ 
+ /** Locale and time zone; structurally the host's `DisplayFormat`. */
+ export interface DisplayFormat {
+@@ -64,13 +67,6 @@ type Window = ReadingWindow;
+ type Balance = ReadingBalance;
+ export type ObservationMeterState = "good" | "warn" | "bad" | "exhausted" | "unknown" | "unlimited";
+ 
+-/** The host's `formatMoment`, kept here so this file has no host imports. */
+-const formatMoment = (
+-  value: Date | number | string,
+-  format: DisplayFormat,
+-  options?: Intl.DateTimeFormatOptions,
+-) => new Date(value).toLocaleString(format.locale, { timeZone: format.timeZone, ...options });
+-
+ /** Elapsed time in its two largest units, such as "2 h 14 min". */
+ export const span = (milliseconds: number) => {
+   const minutes = Math.floor(Math.abs(milliseconds) / 60_000);
+@@ -88,32 +84,12 @@ export const age = (value: string, now: number) => {
+   return elapsed < 60_000 ? "just now" : `${span(elapsed)} ago`;
+ };
+ 
+-/**
+- * Today's moments show the time only; others name the day as well, and the year when it is not
+- * this one, since a banked reset can expire months ahead.
+- */
+-export const moment = (value: string, now: number, format: DisplayFormat) => {
+-  const time = { hour: "numeric", minute: "2-digit" } as const;
+-  const sameDay =
+-    formatMoment(value, format, { dateStyle: "short" }) ===
+-    formatMoment(now, format, { dateStyle: "short" });
+-  const sameYear =
+-    formatMoment(value, format, { year: "numeric" }) ===
+-    formatMoment(now, format, { year: "numeric" });
+-  return formatMoment(
+-    value,
+-    format,
+-    sameDay
+-      ? time
+-      : {
+-          weekday: "short",
+-          day: "numeric",
+-          month: "short",
+-          ...(sameYear ? {} : { year: "numeric" }),
+-          ...time,
+-        },
+-  );
+-};
++/** A moment in full, such as "21.11.2026 14:30", even today's: one shape everywhere. */
++export const moment = (value: string, format: DisplayFormat) => formatMoment(value, format);
++
++/** A future moment as its countdown and exact moment, such as "in 3 days · 21.11.2026 14:30". */
++const countdown = (value: string, now: number, format: DisplayFormat) =>
++  `in ${span(Date.parse(value) - now)} · ${moment(value, format)}`;
+ 
+ const currencies = new Set(Intl.supportedValuesOf("currency"));
+ const isCurrency = (unit: string) => currencies.has(unit);
+@@ -261,25 +237,22 @@ export function windowView(entry: Window, now: number, format: DisplayFormat) {
+   };
+ }
+ 
+-/** A reset that already passed never refills the old reading; rolling windows have no reset. */
++/**
++ * A reset that already passed never refills the old reading; rolling windows have no reset. The
++ * exact moment is part of the text, so a phone, which has no hover, shows it too.
++ */
+ function windowTiming(entry: Window, now: number, format: DisplayFormat) {
+-  if (entry.resetsAt !== undefined) {
+-    const at = Date.parse(entry.resetsAt);
+-    const when = moment(entry.resetsAt, now, format);
+-    if (at <= now)
++  // An unreadable time is a reset not reported, never "in NaN days" on a row.
++  if (entry.resetsAt !== undefined && Number.isFinite(Date.parse(entry.resetsAt))) {
++    if (Date.parse(entry.resetsAt) <= now) {
++      const when = moment(entry.resetsAt, format);
+       return {
+         reset: { text: `was due ${when}`, at: entry.resetsAt, due: true },
+         when: `Was due ${when}`,
+       };
+-    return {
+-      reset: {
+-        text: `in ${span(at - now)}`,
+-        at: entry.resetsAt,
+-        title: `Resets ${when}`,
+-        due: false,
+-      },
+-      when,
+-    };
++    }
++    const when = countdown(entry.resetsAt, now, format);
++    return { reset: { text: when, at: entry.resetsAt, due: false }, when };
+   }
+   const length = entry.period === undefined ? undefined : periodSpan(entry.period);
+   if (entry.period?.mode === "rolling")
+@@ -295,14 +268,15 @@ function windowTiming(entry: Window, now: number, format: DisplayFormat) {
+  * A missing expiry is unknown, never a promise that the balance lasts.
+  */
+ export function balanceView(balance: Balance, now: number, format: DisplayFormat) {
+-  const expires = balance.expiresAt === undefined ? undefined : Date.parse(balance.expiresAt);
+-  const when = balance.expiresAt === undefined ? undefined : moment(balance.expiresAt, now, format);
++  const { expiresAt } = balance;
+   return {
+     detail: amount(balance.available, balance.unit, format, true),
+     when:
+-      expires === undefined
++      expiresAt === undefined
+         ? "Expiry not reported"
+-        : `${expires <= now ? "Expired" : "Expires"} ${when}`,
++        : Date.parse(expiresAt) <= now
++          ? `Expired ${moment(expiresAt, format)}`
++          : `Expires ${countdown(expiresAt, now, format)}`,
+   };
+ }
+ 
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+index 36c731f4b..352c0ebf5 100644
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -475,7 +475,7 @@ function UsageFact<E>({
+                   data-freshness={report.freshness}
+                 >
+                   {stale ? "last read " : "read "}
+-                  <time dateTime={read} title={moment(read, now, format)}>
++                  <time dateTime={read} title={moment(read, format)}>
+                     {age(read, now)}
+                   </time>
+                   {report.freshness === "outdated" && " by an earlier app version"}
+diff --git a/packages/ui/src/implementation/dashboard/account-reset-control.tsx b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+index 7f151bec9..7f7f8ce66 100644
+--- a/packages/ui/src/implementation/dashboard/account-reset-control.tsx
++++ b/packages/ui/src/implementation/dashboard/account-reset-control.tsx
+@@ -419,7 +419,7 @@ export function useResetControl({
+                 <>
+                   the one expiring{" "}
+                   <b className="font-medium text-foreground">
+-                    {moment(state.credit.expiresAt, now, format)}
++                    {moment(state.credit.expiresAt, format)}
+                   </b>
+                 </>
+               )}
+diff --git a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+index 2634ed44c..788e0b196 100644
+--- a/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
++++ b/packages/ui/src/implementation/dashboard/account-usage-cell.tsx
+@@ -140,15 +140,15 @@ export function UsageCell({
+         )}
+       </span>
+       {(reading.reset !== undefined || (tokens !== undefined && tokens !== null)) && (
+-        <div className="flex min-w-0 justify-between gap-2 text-muted-foreground tabular-nums">
++        // A narrow cell moves the reset under the totals as one unit rather than cutting it off.
++        <div className="flex min-w-0 flex-wrap justify-between gap-x-2 gap-y-0.5 text-muted-foreground tabular-nums">
+           {tokens ?? <span />}
+           {reading.reset !== undefined && (
+             <span
+               className={cn(
+-                "truncate",
++                "ml-auto whitespace-nowrap",
+                 reading.reset.due ? "text-sign-in-warning" : "text-foreground",
+               )}
+-              {...(reading.reset.title === undefined ? {} : { title: reading.reset.title })}
+               data-reset
+             >
+               {reading.reset.at === undefined ? (
+diff --git a/packages/ui/src/implementation/dashboard/moment-format.ts b/packages/ui/src/implementation/dashboard/moment-format.ts
+new file mode 100644
+index 000000000..2fd84e704
+--- /dev/null
++++ b/packages/ui/src/implementation/dashboard/moment-format.ts
+@@ -0,0 +1,69 @@
++/**
++ * Every date and time a person reads, in one shape: day-month-year on a 24-hour clock, such as
++ * "21.11.2026 14:30", whatever order or clock the reader's locale would pick. Intl does the
++ * calendar and time-zone work; only the order and separators are fixed here, so a server render
++ * and the browser that hydrates it print the same text for the same zone.
++ *
++ * Pure, with no imports, and kept beside `account-observation-text.ts` so the pool app packages
++ * both and writes moments exactly as the host does.
++ */
++
++/** Where a moment is read; structurally the host's `DisplayFormat`. */
++export interface MomentZone {
++  readonly timeZone: string;
++}
++
++const dateOptions = ["weekday", "era", "year", "month", "day", "dateStyle"] as const;
++const timeOptions = [
++  "hour",
++  "minute",
++  "second",
++  "fractionalSecondDigits",
++  "dayPeriod",
++  "timeStyle",
++] as const;
++
++/**
++ * `options` choose which parts show, never their order or clock: any date field shows the date,
++ * any time field the time, `second` or a medium or longer `timeStyle` the seconds, and
++ * `timeZoneName` or a long `timeStyle` the zone. No options, or none of these, show both.
++ */
++export const formatMoment = (
++  value: Date | number | string,
++  zone: MomentZone,
++  options?: Intl.DateTimeFormatOptions,
++) => {
++  const at = new Date(value);
++  if (Number.isNaN(at.getTime())) return String(at);
++  const asked = (keys: readonly (keyof Intl.DateTimeFormatOptions)[]) =>
++    keys.some((key) => options?.[key] !== undefined);
++  const long = options?.timeStyle === "long" || options?.timeStyle === "full";
++  const seconds = options?.second !== undefined || options?.timeStyle === "medium" || long;
++  const named = options?.timeZoneName !== undefined || long;
++  const date = asked(dateOptions);
++  const time = asked(timeOptions);
++  const parts = new Intl.DateTimeFormat("en-GB", {
++    timeZone: options?.timeZone ?? zone.timeZone,
++    calendar: "gregory",
++    numberingSystem: "latn",
++    hourCycle: "h23",
++    day: "2-digit",
++    month: "2-digit",
++    year: "numeric",
++    hour: "2-digit",
++    minute: "2-digit",
++    second: "2-digit",
++    ...(named ? { timeZoneName: "short" } : {}),
++  }).formatToParts(at);
++  const part = (type: Intl.DateTimeFormatPartTypes) =>
++    parts.find((entry) => entry.type === type)?.value ?? "";
++  return [
++    date || !time ? `${part("day")}.${part("month")}.${part("year")}` : undefined,
++    time || !date
++      ? `${part("hour")}:${part("minute")}${seconds ? `:${part("second")}` : ""}`
++      : undefined,
++    named ? part("timeZoneName") : undefined,
++  ]
++    .filter((text) => text !== undefined)
++    .join(" ");
++};
+diff --git a/packages/ui/src/implementation/hooks/display-format.ts b/packages/ui/src/implementation/hooks/display-format.ts
+index a0633465c..0cad5bcaf 100644
+--- a/packages/ui/src/implementation/hooks/display-format.ts
++++ b/packages/ui/src/implementation/hooks/display-format.ts
+@@ -22,12 +22,11 @@ export function useDisplayFormat(): DisplayFormat {
+   return useSyncExternalStore(unchanging, currentBrowserFormat, () => server);
+ }
+ 
+-/** Format a moment with explicit parts; the default is a full date and time. */
+-export const formatMoment = (
+-  value: Date | number | string,
+-  format: DisplayFormat,
+-  options?: Intl.DateTimeFormatOptions,
+-) => new Date(value).toLocaleString(format.locale, { timeZone: format.timeZone, ...options });
++/**
++ * A moment in the reader's time zone, always day-month-year on a 24-hour clock: options choose
++ * only which parts show, and the default is the date and time. The shared module owns the shape.
++ */
++export { formatMoment } from "../dashboard/moment-format.ts";
+ 
+ /**
+  * After the document hydrates, mark it interactive and save the browser's time zone so later

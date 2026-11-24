@@ -11,6 +11,12 @@ export const maxSummaryProviderRows = 5_000;
 export const maxSummaryModelRows = 5_000;
 export const maxSummaryCostRows = 500;
 export const maxSummaryBytes = 2_097_152;
+/**
+ * The most requests one summary window may hold. Production last answered at about 122k window rows,
+ * where its heaviest statement already took about half the 5 s limit; every read since its window held
+ * millions was cancelled at 5 s.
+ */
+export const maxSummaryWindowRows = 100_000;
 
 /** The account policy is the series policy; foreign imports are never native capacity. */
 export async function summarySelection(
@@ -62,15 +68,6 @@ export async function summarySelection(
 }
 
 type Selection = Awaited<ReturnType<typeof summarySelection>>;
-
-export function summaryPriceTargets(selection: Selection) {
-  return {
-    text: `${selection.text} SELECT DISTINCT provider,model FROM selected
-      WHERE NOT counts_only AND provider IS NOT NULL AND model IS NOT NULL
-      ORDER BY provider,model LIMIT 101`,
-    values: selection.values,
-  };
-}
 
 export function summaryCoverageQuery(selection: Selection) {
   return {

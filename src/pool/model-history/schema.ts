@@ -1,17 +1,33 @@
 import {
   historyImportCompletionVersion,
   historyImportCompletionStatements,
+  historyImportReconcileStatements,
+  historyImportReconcileVersion,
 } from "./import-completion-schema.ts";
 import { poolDatabase } from "../database-settings.ts";
 import { historyBulkSchemaVersion, historyBulkStatements } from "./bulk-schema.ts";
 import { historyChangeStatements } from "./change-schema.ts";
-import { historyRowSchemaVersion, historyRowStatements } from "./history-row-schema.ts";
+import {
+  historyChangeOnceStatements,
+  historyChangeOnceVersion,
+  historyRowSchemaVersion,
+  historyRowStatements,
+} from "./history-row-schema.ts";
 import {
   historyJournalPrepareVersion,
   historyJournalPrepareStatements,
   historyJournalActivateVersion,
   historyJournalActivateStatements,
 } from "./change-journal-schema.ts";
+import { historyUsageRollupStatements, historyUsageRollupVersion } from "./usage-rollup-schema.ts";
+import {
+  historyUsagePeopleRollupStatements,
+  historyUsagePeopleRollupVersion,
+} from "./usage-rollup-people-schema.ts";
+import {
+  historyCaptureHoursStatements,
+  historyCaptureHoursVersion,
+} from "./capture-hours-schema.ts";
 
 export interface HistoryDatabase {
   query(
@@ -24,7 +40,7 @@ export const historyBaseSchemaVersion = "model_request_history_v1";
 export const historyAppSchemaVersion = "model_request_history_v2_app_attribution";
 export const historyAccountTimeSchemaVersion = "model_request_history_v3_account_time";
 export const historyTrafficSchemaVersion = "model_request_history_v4_traffic_purpose";
-export const historySchemaVersion = historyRowSchemaVersion;
+export const historySchemaVersion = historyCaptureHoursVersion;
 export const historyTerminalIntegrityVersion = "model_request_history_v7_terminal_integrity";
 export const historyChangeSchemaVersion = "model_request_history_v5_change_revisions";
 
@@ -177,6 +193,11 @@ export const historySchemaMigrations = [
   { name: historyImportCompletionVersion, statements: historyImportCompletionStatements },
   { name: historyJournalPrepareVersion, statements: historyJournalPrepareStatements },
   { name: historyRowSchemaVersion, statements: historyRowStatements },
+  { name: historyChangeOnceVersion, statements: historyChangeOnceStatements },
+  { name: historyImportReconcileVersion, statements: historyImportReconcileStatements },
+  { name: historyUsageRollupVersion, statements: historyUsageRollupStatements },
+  { name: historyUsagePeopleRollupVersion, statements: historyUsagePeopleRollupStatements },
+  { name: historyCaptureHoursVersion, statements: historyCaptureHoursStatements },
 ];
 export const historyJournalActivationMigration = {
   name: historyJournalActivateVersion,

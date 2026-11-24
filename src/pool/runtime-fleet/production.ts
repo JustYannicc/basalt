@@ -1,3 +1,5 @@
+import { runtimeFailureDiagnostic } from "../runtime-route-diagnostic.ts";
+import { resumeGone, stampResumeTarget } from "../stream-resume.ts";
 import { RuntimeCrash } from "../runtime-crash.ts";
 import type { RuntimeCrashCommand } from "../runtime-crash-contract.ts";
 import { awaitProbe } from "../availability.ts";
@@ -29,6 +31,7 @@ import {
   type FleetConfiguration,
 } from "./configuration.ts";
 import { RuntimeFleetState } from "./state.ts";
+import { fleetWakeUp, inPhaseFor } from "./phase-bounds.ts";
 import { RuntimeFleet } from "./controller.ts";
 import { boundFleetCell } from "./bound-cell.ts";
 import { RuntimeFleetPeers, type HomePeerEndpoint } from "./peers.ts";
@@ -39,6 +42,16 @@ import type { SlotStorage } from "../runtime-slots/storage.ts";
 import { slotSelectionKey } from "../runtime-slots/storage.ts";
 import { physicalPrimaryTargets, sameGeneration } from "./physical.ts";
 import { RuntimeImageUpdate, type ImageUpdateIntent } from "./image-update.ts";
+import { pendingFields } from "../pending-failure.ts";
+import { recoveryPassMs } from "../runtime-slots/forced-restart-timing.ts";
+
+/**
+ * Once cells exist, ready cells take every model call and the root serves only when no cell can.
+ * The root's image is pinned, so it never gets Home's fixes, and any Home fences a peer node whose
+ * liveness is 3 s old: a burst holding the root's connections that long would refuse calls a
+ * cell could have served.
+ */
+export const fleetRouting = { primary: "last" } as const;
 
 export interface FleetNamespace extends FleetBinding {
   instanceId(name: string): string;
@@ -55,6 +68,8 @@ interface Dependencies {
   provider: RuntimeProviderReader;
   legacyPeers: HomePeerEndpoint;
   currentRequests(): number;
+  /** Whether a code handover drains this object; no call waits for the root's recovery then. */
+  handingOver?(): boolean;
   wrap(response: Response, lease: NativeStreamLease): Response;
   schedule?(at: number): Promise<void>;
 }
@@ -157,7 +172,7 @@ export class PoolRuntimeFleet {
     await this.imageUpdate.assertLaunch(target, transaction);
     const record = await this.configuration.inspect(undefined, transaction);
     if (!record?.enabled) throw new SlotRefused("selection");
-    this.configuration.assertBindings(record.configuration);
+    this.configuration.assertBindings(record.configuration, false);
     const app = record.configuration.applications.find(
       (entry) => entry.color === record.configuration.active,
     );
@@ -193,7 +208,7 @@ export class PoolRuntimeFleet {
   private async target(occupied: readonly SlotTarget[]) {
     const record = await this.configuration.inspect();
     if (!record) throw new SlotRefused("selection");
-    this.configuration.assertBindings(record.configuration);
+    this.configuration.assertBindings(record.configuration, false);
     const app = record.configuration.applications.find(
       (entry) => entry.color === record.configuration.active,
     )!;
@@ -264,9 +279,11 @@ export class PoolRuntimeFleet {
       enabled: () => this.enabled,
       changed: () => this.deps.ctx.waitUntil(this.schedule()),
       keepReady: (identity) => this.replacement.keepReady(identity),
-      balancePrimary: true,
+      primary: fleetRouting.primary,
       recentDemandUntil: () => this.demand.until(),
       primaryAvailable: () => this.deps.handoff.available(),
+      primaryHoldMs: () => this.deps.handoff.recoveryHoldMs(),
+      primaryDistance: async () => (await this.deps.handoff.status())?.database,
       recoverPrimary: () => this.deps.handoff.supervise(),
       demandAt: (at) => {
         if (this.deps.schedule) this.deps.ctx.waitUntil(this.deps.schedule(at));
@@ -293,13 +310,21 @@ export class PoolRuntimeFleet {
     return record;
   }
   async inspect(operationId?: string) {
+    const permission = await this.configuration.inspect(operationId);
     return {
-      permission: await this.configuration.inspect(operationId),
+      permission,
+      // The stored record can say enabled while launches are refused; this says which holds now.
+      ...this.configuration.standing(operationId ? await this.configuration.inspect() : permission),
       replacement: operationId ? await this.replacement.inspect(operationId) : undefined,
-      resources: await this.state.inspect(),
+      // A held row has no time exit, so its age and reason show wherever the fleet is inspected.
+      resources: (await this.state.inspect()).map((row) => ({
+        ...row,
+        inPhaseMs: inPhaseFor(row, Date.now()),
+      })),
       bindings: this.deps
         .namespaces()
         .map(({ color, applicationId, imageInput }) => ({ color, applicationId, imageInput })),
+      recentEnds: await this.state.recentEnds(),
     };
   }
   async primaryTarget(operationId: string, applicationId: string): Promise<SlotTarget> {
@@ -329,6 +354,18 @@ export class PoolRuntimeFleet {
   }
   async replace(operationId: string, identity: SlotIdentity) {
     const receipt = await this.replacement.plan(operationId, identity);
+    await this.schedule();
+    return receipt;
+  }
+  async retireCheck(key: string) {
+    const fleet = await this.fleet();
+    if (!fleet) throw new SlotRefused("selection");
+    return fleet.retireCheck(key);
+  }
+  async retireRow(operationId: string, go: string, key: string) {
+    const fleet = await this.fleet();
+    if (!fleet) throw new SlotRefused("selection");
+    const receipt = await fleet.retireRow(operationId, go, key);
     await this.schedule();
     return receipt;
   }
@@ -390,16 +427,45 @@ export class PoolRuntimeFleet {
         (current, dispatch) => fleet.forward(current, pool, legacy, dispatch),
         beforeDispatch,
         () => fleet.recoverPrimary(),
+        {
+          rootHoldMs: () => fleet.primaryHoldMs(),
+          coldHoldMs: () => fleet.coldHoldMs(),
+          handover: this.deps.handingOver,
+        },
       );
     }
-    return forwardRecoverably(request, legacy, beforeDispatch, () => this.deps.handoff.supervise());
+    return stampResumeTarget(
+      await forwardRecoverably(
+        request,
+        legacy,
+        beforeDispatch,
+        () => this.deps.handoff.supervise(),
+        {
+          rootHoldMs: async () => this.deps.handoff.recoveryHoldMs(),
+          handover: this.deps.handingOver,
+        },
+      ),
+      { kind: "primary" },
+    );
+  }
+  /** A resume of a fleet runtime's answer; without a fleet there is none to resume. */
+  async resume(identity: SlotIdentity, request: Request) {
+    const fleet = await this.fleet();
+    return fleet ? fleet.resume(identity, request) : resumeGone();
   }
   async recoverAdmission(signal: AbortSignal) {
     if (!(await this.deps.handoff.selected())) return false;
+    // Advisory, as for model forwarding: the caller re-reads the membership authority next.
     await awaitProbe(
       () => (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()),
       signal,
-    );
+    ).catch((error: unknown) => {
+      if (signal.aborted) throw error;
+      console.warn(
+        "POOL_RUNTIME_RECOVERY_DECLINED",
+        runtimeFailureDiagnostic(error, "fleet_forward"),
+      );
+    });
     return true;
   }
   async install(policy: NativeMembershipPolicy) {
@@ -408,30 +474,25 @@ export class PoolRuntimeFleet {
   abortPool(pool: string) {
     this.runtime?.abortPool(pool);
   }
+  /** Arms the next fleet pass from durable state, for a pass a reset cut before it re-armed. */
+  reschedule() {
+    return this.schedule();
+  }
   private async schedule() {
     if (!this.deps.schedule) return;
     const permission = await this.configuration.inspect();
     const now = Date.now();
-    if (await this.deps.handoff.selected()) await this.deps.schedule(now + 2_000);
+    if (await this.deps.handoff.selected()) await this.deps.schedule(now + recoveryPassMs);
     if (!permission) return;
-    const deadlines = (await this.state.inspect())
-      .map((row) => {
-        if (row.phase === "ready")
-          return permission.enabled && row.active
-            ? now + 2_000
-            : Math.min(
-                now + 2_000,
-                Math.max(
-                  now + 100,
-                  row.lastUsedAt +
-                    (permission.enabled ? permission.configuration.idleMilliseconds : 0),
-                ),
-              );
-        if (row.phase === "draining" && row.active && row.drainAcknowledged) return undefined;
-        return now + 2_000;
-      })
-      .filter((at) => at !== undefined);
-    if (deadlines.length) await this.deps.schedule(Math.min(...deadlines));
+    const at = fleetWakeUp(
+      await this.state.inspect(),
+      {
+        enabled: permission.enabled,
+        idleMilliseconds: permission.configuration.idleMilliseconds,
+      },
+      now,
+    );
+    if (at !== undefined) await this.deps.schedule(at);
   }
   private async primaryHeadroom() {
     if (!(await this.imageUpdate.headroom())) return;
@@ -452,8 +513,9 @@ export class PoolRuntimeFleet {
   async upkeep() {
     try {
       this.deps.ctx.waitUntil(
-        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(() =>
-          console.error("POOL_SELECTED_RECOVERY_PENDING"),
+        (this.runtime ? this.runtime.recoverPrimary() : this.deps.handoff.supervise()).catch(
+          (error: unknown) =>
+            console.error("POOL_SELECTED_RECOVERY_PENDING", JSON.stringify(pendingFields(error))),
         ),
       );
       await this.primaryHeadroom();

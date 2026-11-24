@@ -11,6 +11,13 @@ import sys
 import sysconfig
 
 UNKNOWN = "<dynamic>"
+# A value read from one named environment variable, and a host parsed from such a URL. Only a
+# bare host parsed from a variable that one modelled service declares as its address may be dialled.
+ENV = "<env>:"
+ADDRESS = "<address>:"
+URL_PARSERS = {"urllib.parse.urlsplit", "urllib.parse.urlparse"}
+ENV_READERS = {"os.environ.get", "os.getenv"}
+ENV_WRITERS = {"os.environ." + name for name in ("setdefault", "update", "pop", "popitem", "clear", "__setitem__", "__delitem__", "__ior__")} | {"os.putenv", "os.unsetenv"}
 NETWORK = "urllib.request."
 SINKS = {NETWORK + "urlopen", NETWORK + "urlretrieve"}
 REQUEST = NETWORK + "Request"
@@ -20,6 +27,7 @@ STDLIB = getattr(sys, "stdlib_module_names", None) or set(sys.builtin_module_nam
 }
 files = json.load(sys.stdin)
 scopes, functions, calls, imports, urls, errors, all_scopes = {}, {}, [], [], [], [], []
+addresses = []
 
 
 def report(file, node, message):
@@ -130,12 +138,14 @@ def symbol(node, scope, seen=frozenset()):
 def combine(parts):
     if any(len(part) > 32 for part in parts):
         return {UNKNOWN}
+    # A declared address is usable only as itself; composed, it is dynamic like any unknown part.
+    parts = [{UNKNOWN if value.startswith((ENV, ADDRESS)) else value for value in part} for part in parts]
     result = {""}
     for part in parts:
         result = {a + b for a, b in itertools.product(result, part)}
         if len(result) > 32:
             return {UNKNOWN}
-    return result
+    return {UNKNOWN if value.startswith((ENV, ADDRESS)) else value for value in result}
 
 
 def values(node, scope, seen=frozenset()):
@@ -143,7 +153,8 @@ def values(node, scope, seen=frozenset()):
         return {UNKNOWN}
     seen = seen | {(id(node), id(scope))}
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float)):
-        return {str(node.value)}
+        # Source text can never stand for a value the scanner derived from the environment.
+        return {UNKNOWN} if str(node.value).startswith((ENV, ADDRESS)) else {str(node.value)}
     if isinstance(node, ast.Name):
         entries = scope.lookup(node.id)
         result = set()
@@ -165,7 +176,27 @@ def values(node, scope, seen=frozenset()):
         return values(node.body, scope, seen) | values(node.orelse, scope, seen)
     if isinstance(node, ast.Call) and symbol(node.func, scope) == REQUEST:
         return values(argument(node, "url"), scope, seen)
+    if isinstance(node, ast.Subscript) and symbol(node.value, scope) == "os.environ":
+        return environment(node.slice, [], scope, seen)
+    if isinstance(node, ast.Call) and symbol(node.func, scope) in ENV_READERS and node.args:
+        return environment(node.args[0], node.args[1:] + [kw.value for kw in node.keywords], scope, seen)
+    if (isinstance(node, ast.Attribute) and node.attr == "hostname" and isinstance(node.value, ast.Call)
+            and symbol(node.value.func, scope) in URL_PARSERS and node.value.args):
+        parsed = values(node.value.args[0], scope, seen)
+        if parsed and all(value.startswith(ENV) for value in parsed):
+            return {ADDRESS + value[len(ENV):] for value in parsed}
     return {UNKNOWN}
+
+
+def environment(key, defaults, scope, seen):
+    names = values(key, scope, seen)
+    if any(not name.isidentifier() for name in names):
+        return {UNKNOWN}
+    # A default is a second possible value; it never inherits the variable's declaration.
+    result = {ENV + name for name in names}
+    for default in defaults:
+        result |= {UNKNOWN if value.startswith((ENV, ADDRESS)) else value for value in values(default, scope, seen)}
+    return result
 
 
 def argument(node, name):
@@ -227,6 +258,11 @@ for node, scope in calls:
                     report(scope.file, node, "Python TCP listeners require a proven loopback host")
             else:
                 for host in hosts:
+                    if host.startswith(ADDRESS):
+                        addresses.append({"file": scope.file, "line": node.lineno, "variable": host[len(ADDRESS):]})
+                        continue
+                    if host.startswith(ENV):
+                        host = UNKNOWN
                     host = "[" + host + "]" if ":" in host else host
                     urls.append({"file": scope.file, "line": node.lineno, "value": "tcp://" + host, "sink": True})
     elif (name == "http.client.HTTPConnection"
@@ -239,6 +275,8 @@ for node, scope in calls:
         report(scope.file, node, "Unsupported Python network call: " + name)
     elif name and "<ambiguous>" in name:
         report(scope.file, node, "Unsupported ambiguous Python callable")
+    elif name in ENV_WRITERS or (name in {"builtins.setattr", "builtins.delattr"} and node.args and symbol(node.args[0], scope) in {"os", "os.environ", "urllib.parse"}):
+        report(scope.file, node, "Unsupported Python environment or URL parser mutation")
     elif name in {"builtins.getattr", "builtins.setattr", "builtins.delattr"} and node.args and (symbol(node.args[0], scope) or "").startswith("urllib"):
         report(scope.file, node, "Unsupported Python network attribute lookup or mutation")
     elif name in {"importlib.import_module", "builtins.__import__", "builtins.eval", "builtins.exec", "builtins.compile"} or isinstance(node.func, ast.Name) and node.func.id in {"__import__", "eval", "exec", "compile"}:
@@ -260,6 +298,10 @@ def literals(scope):
                 if value.startswith(("http://", "https://", "ws://", "wss://")):
                     urls.append({"file": scope.file, "line": node.lineno, "value": value, "sink": False})
         name = symbol(node, scope)
+        if (isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) and symbol(node.value, scope) == "os.environ") \
+                or (isinstance(node, ast.AugAssign) and symbol(node.target, scope) == "os.environ") \
+                or (isinstance(node, ast.Attribute) and isinstance(node.ctx, (ast.Store, ast.Del)) and symbol(node.value, scope) in {"os", "os.environ", "urllib.parse", "urllib.parse.SplitResult", "urllib.parse.ParseResult"}):
+            report(scope.file, node, "Unsupported Python environment or URL parser mutation")
         if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store) and node.attr in {"full_url", "host", "selector"}:
             report(scope.file, node, "Unsupported Python request destination mutation")
         if name and name.startswith(NETWORK) and "__" in name:
@@ -269,4 +311,4 @@ def literals(scope):
 
 for scope in all_scopes:
     literals(scope)
-print(json.dumps({"imports": imports, "urls": urls, "errors": errors}))
+print(json.dumps({"imports": imports, "urls": urls, "addresses": addresses, "errors": errors}))

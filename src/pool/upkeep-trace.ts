@@ -1,7 +1,9 @@
+import type { FleetFailureRead } from "./runtime-fleet/failure-record.ts";
 import {
   type RuntimeRouteDiagnostic,
   runtimeFailureDiagnostic,
 } from "./runtime-route-diagnostic.ts";
+import type { HomeDatabasePoolObservation } from "./home-database-pool.ts";
 
 type Phase =
   | "alarm"
@@ -14,6 +16,7 @@ type Phase =
   | "primary_retirement"
   | "app_models"
   | "memberships"
+  | "home_database_pool"
   | "computers"
   | "warm"
   | "first_request"
@@ -38,8 +41,13 @@ type Phase =
   | "drain_queue"
   | "drain_health"
   | "drain_activity"
-  | "legacy_drain_proof";
+  | "legacy_drain_proof"
+  | "health_miss";
 interface Fields {
+  // A failed health read's closed cause, its measured round trip and, against a lease, what was left.
+  cause?: FleetFailureRead["cause"];
+  roundTripMs?: number;
+  leaseLeftMs?: number;
   ordinal?: number;
   active?: number;
   known?: boolean;
@@ -48,6 +56,7 @@ interface Fields {
   homeDeadline?: number | null;
   fleetDeadline?: number | null;
   nativeDeadline?: number | null;
+  homeDatabasePool?: HomeDatabasePoolObservation | null;
 }
 let sequence = 0;
 

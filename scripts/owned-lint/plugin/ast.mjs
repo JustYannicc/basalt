@@ -12,8 +12,14 @@ export const SPAWNERS = new Set([
   "execSync",
 ]);
 
-export const filePath = (context) =>
+export const absolutePath = (context) =>
   (context.physicalFilename ?? context.filename).replaceAll("\\", "/");
+// Relative to the repository, so a checkout directory named like a test path changes nothing.
+export const filePath = (context) => {
+  const absolute = absolutePath(context);
+  const cwd = (context.cwd ?? "").replaceAll("\\", "/").replace(/\/$/u, "");
+  return cwd && absolute.startsWith(`${cwd}/`) ? absolute.slice(cwd.length + 1) : absolute;
+};
 export const isTest = (context) => TEST_PATH.test(filePath(context));
 export const keyName = (property) => {
   if (property?.type !== "Property") return undefined;

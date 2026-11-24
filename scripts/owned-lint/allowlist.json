@@ -34,10 +34,6 @@
       "count": 1,
       "reason": "Decodes Basalt's own recovery plan."
     },
-    "scripts/scale-test/fleet/readiness-hold.ts": {
-      "count": 1,
-      "reason": "Decodes the pool Worker's own readiness reply, not a provider's."
-    },
     "src/drive/import-manifest.ts": {
       "count": 1,
       "reason": "Decodes Basalt's own import plan."

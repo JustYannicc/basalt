@@ -5,6 +5,7 @@ import { fail, failureResponse, json } from "../json.ts";
 import { verifyPoolToken } from "../token.ts";
 import { HistoryInputError, historyObject, timestamp } from "./record.ts";
 import { readPricedRequests, type HistoryPrices } from "./priced-history.ts";
+import { watchHistoryRead } from "./read-failure.ts";
 
 export const modelHistoryPath = "/pool/v1/usage/history";
 
@@ -34,6 +35,9 @@ export async function handleModelHistory(
   request: Request,
   access: HistoryAccess,
 ): Promise<Response> {
+  // Each statement of the page and its prices is a `history_requests_phase` line, and a read that
+  // answers 5xx is one `POOL_USAGE_READ_FAILED` line naming its step, as the summary's is.
+  const watch = watchHistoryRead("poolUsageHistory", "requests");
   try {
     const { claims, caller, canManage } = await historyCaller(request, access);
     if (request.method !== "GET")
@@ -63,6 +67,7 @@ export async function handleModelHistory(
         after,
       },
       access.currentPrices,
+      watch,
     );
     return json(result);
   } catch (error) {
@@ -74,6 +79,8 @@ export async function handleModelHistory(
         },
         400,
       );
-    return failureResponse(error);
+    const response = failureResponse(error);
+    watch.answered(error, response);
+    return response;
   }
 }

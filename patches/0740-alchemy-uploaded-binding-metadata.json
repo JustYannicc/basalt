@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-uploaded-binding-metadata",
+  "file": "0740-alchemy-uploaded-binding-metadata.patch",
+  "content_sha256": "b9c8406eda66b378c2cd95de376caca6b291c0053f3db072549ff110248df500",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release contains alchemy-run/alchemy#3641 (the hyperdrives channel left out of a Worker's metadata hash); remove after the source/lib metadata hash proof passes without it."
+}

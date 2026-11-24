@@ -29,25 +29,40 @@ runs:
         fi
         printf 'Dir::Etc::sourceparts "%s";\n' "$ubuntu_sources" |
           sudo tee /etc/apt/apt.conf.d/98-ubuntu-sources-only > /dev/null
-        # Some hosted images omit indexes for otherwise supported Ubuntu packages.
-        sudo apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=0 -o APT::Update::Error-Mode=any update
-        node ../scripts/ci-browser-packages.ts
+        node ../scripts/ci-browser-packages.ts key
+    # An image with every package installed, or a cache with them, makes no archive request at all.
     - uses: actions/cache/restore@v4
       id: debs
+      if: steps.packages.outputs.complete != 'true'
       with:
         path: ${{ runner.temp }}/playwright-apt/*.deb
-        key: playwright-debs-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.packages.outputs.fingerprint }}
-    - name: Install system dependencies with bounded mirror downloads
+        key: ${{ steps.packages.outputs.key }}
+        # A new runner image starts from the previous image's packages.
+        restore-keys: ${{ steps.packages.outputs.prefix }}
+    - name: Install the cached system dependencies offline
+      id: offline
+      if: steps.packages.outputs.complete != 'true' && steps.debs.outputs.cache-matched-key != ''
+      continue-on-error: true
       shell: bash
       working-directory: .upstream
-      env:
-        DEBS_CACHE_HIT: ${{ steps.debs.outputs.cache-hit }}
-      run: bash "$GITHUB_ACTION_PATH/install-deps.sh" "$DEBS_CACHE_HIT"
+      run: bash "$GITHUB_ACTION_PATH/install-deps.sh" true
+    - name: Refresh the Ubuntu indexes for the missing packages
+      if: steps.packages.outputs.complete != 'true' && steps.offline.outcome != 'success'
+      shell: bash
+      working-directory: .upstream
+      run: |
+        bash "$GITHUB_ACTION_PATH/refresh-index.sh"
+        node ../scripts/ci-browser-packages.ts
+    - name: Install system dependencies with bounded mirror downloads
+      if: steps.packages.outputs.complete != 'true' && steps.offline.outcome != 'success'
+      shell: bash
+      working-directory: .upstream
+      run: bash "$GITHUB_ACTION_PATH/install-deps.sh" false
     - uses: actions/cache/save@v4
-      if: steps.debs.outputs.cache-hit != 'true'
+      if: steps.packages.outputs.complete != 'true' && steps.offline.outcome != 'success'
       with:
         path: ${{ runner.temp }}/playwright-apt/*.deb
-        key: ${{ steps.debs.outputs.cache-primary-key }}
+        key: ${{ steps.packages.outputs.key }}
     - name: Install the pinned Chromium engine
       shell: bash
       working-directory: .upstream

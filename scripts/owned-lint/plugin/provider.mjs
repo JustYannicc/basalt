@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   PROVIDER_SDK,
+  absolutePath,
   addAliases,
   filePath,
   importAliases,
@@ -33,8 +34,9 @@ const DEEP_EQUAL = new Set([
 ]);
 const EQUIVALENCE_MODULE = /-equivalence\.[cm]?[jt]s$/u;
 const EQUIVALENCE_NAME = /^equivalent[A-Z]\w*$|^\w+Equivalent$/u;
+// A value import with at least one binding: `import type` and `import {}` prove nothing.
 const RECORDED_IMPORT =
-  /^\s*import\b[^;]*?\bfrom\s+["']([^"']*(?:-shapes?|recorded-[^"'/]*|prod-shapes\/[^"']*)(?:\.[cm]?[jt]s)?)["']/gmu;
+  /^\s*import\s+(?!type\b)(?:[\w$]+|\*\s*as\s+[\w$]+|\{\s*[\w$][^}]*\})[^;]*?\bfrom\s+["']([^"']*(?:-shapes?|recorded-[^"'/]*|prod-shapes\/[^"']*)(?:\.[cm]?[jt]s)?)["']/gmu;
 
 // A copy of a whole object: Object.assign, Object.fromEntries, structuredClone.
 const copies = (node) =>
@@ -45,25 +47,30 @@ const copies = (node) =>
 
 // Every object spread or whole-object copy of a non-literal value inside a request value, at
 // any depth. Copying a list (`[...tags]`) is fine; spreading an object copies keys nobody named.
-function* spreads(input) {
-  const node = unwrap(input);
+function* spreads(input, context, seen = new Set()) {
+  let node = unwrap(input);
+  // A request field held in a local constant first is the same value.
+  if (node?.type === "Identifier" && !seen.has(node.name)) {
+    seen.add(node.name);
+    node = unwrap(variableInit(context, node)?.init);
+  }
   if (!node || typeof node !== "object") return;
   if (node.type === "ObjectExpression") {
     for (const property of node.properties)
-      if (property.type !== "SpreadElement") yield* spreads(property.value);
+      if (property.type !== "SpreadElement") yield* spreads(property.value, context, seen);
       else if (unwrap(property.argument).type === "ObjectExpression")
-        yield* spreads(property.argument);
+        yield* spreads(property.argument, context, seen);
       else {
         yield property;
-        yield* spreads(property.argument);
+        yield* spreads(property.argument, context, seen);
       }
   } else if (node.type === "ArrayExpression")
     for (const element of node.elements)
-      yield* spreads(element?.type === "SpreadElement" ? element.argument : element);
+      yield* spreads(element?.type === "SpreadElement" ? element.argument : element, context, seen);
   else if (node.type === "ConditionalExpression") {
-    yield* spreads(node.consequent);
-    yield* spreads(node.alternate);
-  } else if (node.type === "LogicalExpression") yield* spreads(node.right);
+    yield* spreads(node.consequent, context, seen);
+    yield* spreads(node.alternate, context, seen);
+  } else if (node.type === "LogicalExpression") yield* spreads(node.right, context, seen);
   else if (
     copies(node) &&
     node.arguments.some((argument) => unwrap(argument).type !== "ObjectExpression")
@@ -71,7 +78,7 @@ function* spreads(input) {
     yield node;
   // withoutNull({ ... }) and similar wrappers pass the value through.
   else if (node.type === "CallExpression" && node.callee.type === "Identifier")
-    for (const argument of node.arguments) yield* spreads(argument);
+    for (const argument of node.arguments) yield* spreads(argument, context, seen);
 }
 
 export const noSpreadIntoProviderRequest = {
@@ -92,7 +99,7 @@ export const noSpreadIntoProviderRequest = {
     const wholeMessage =
       "A whole object is passed as a provider request. Pass an object literal with the request's fields named, or a value declared with the SDK's request type (`const request: Workers.PutScriptRequest = { ... }`).";
     const reportSpreads = (value) => {
-      for (const node of spreads(value)) context.report({ node, message: spreadMessage });
+      for (const node of spreads(value, context)) context.report({ node, message: spreadMessage });
     };
     // Schema.decodeUnknownSync(Schema.toType(Workers.PutScriptMetadata), options)(input)
     const strictRequestDecode = (node) => {
@@ -195,7 +202,8 @@ const insideEquivalenceHelper = (context, node) => {
 // The helper's test must import a recorded-shapes module that exists next to it.
 const provenOnRecording = (test) => {
   if (!existsSync(test)) return false;
-  for (const [, specifier] of readFileSync(test, "utf8").matchAll(RECORDED_IMPORT)) {
+  const code = readFileSync(test, "utf8").replace(/\/\*[\s\S]*?\*\//gu, "");
+  for (const [, specifier] of code.matchAll(RECORDED_IMPORT)) {
     const target = resolve(dirname(test), specifier);
     if (
       existsSync(target) ||
@@ -272,7 +280,7 @@ export const noExactReadbackCompare = {
         if (name && (DEEP_EQUAL.has(name) || comparators.has(name))) report(node);
       },
       Program(node) {
-        const path = filePath(context);
+        const path = absolutePath(context);
         if (!EQUIVALENCE_MODULE.test(path)) return;
         const test = join(dirname(path), basename(path).replace(/\.([cm]?[jt]s)$/u, ".test.$1"));
         if (!provenOnRecording(test))

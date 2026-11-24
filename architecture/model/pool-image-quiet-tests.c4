@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "The pool image's build runs Home's fake-clock tests for the funding re-read's 30-second requeue, the master lease running out and an election slower than the lease, and the edge of the node liveness floor, so a Home update that moves one of those timers fails the image build."
+    }
+  }
+}

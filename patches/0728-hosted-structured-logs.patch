@@ -1,0 +1,514 @@
+diff --git a/apps/hosted/cloud/src/app-data.ts b/apps/hosted/cloud/src/app-data.ts
+--- a/apps/hosted/cloud/src/app-data.ts
++++ b/apps/hosted/cloud/src/app-data.ts
+@@ -415,5 +415,5 @@ export default AppData.make(
+       declare: (bundle: string, headers: Readonly<Record<string, string>>) =>
+         runner.pipe(Effect.flatMap((served) => served.declare(bundle, headers))),
+     };
+-  }).pipe(Effect.provide(Layer.mergeAll(AppDataSupervisorLive, cloudTelemetry))),
++  }).pipe(Effect.provide(AppDataSupervisorLive.pipe(Layer.provideMerge(cloudTelemetry)))),
+ );
+diff --git a/apps/hosted/cloud/src/app-domains.ts b/apps/hosted/cloud/src/app-domains.ts
+--- a/apps/hosted/cloud/src/app-domains.ts
++++ b/apps/hosted/cloud/src/app-domains.ts
+@@ -251,5 +251,7 @@ export default AppDomainController.make(
+       env: yield* telemetryBindings,
+     };
+   }),
+-  Effect.succeed({}).pipe(Effect.provide(Layer.mergeAll(AppDomainCoordinatorLive, cloudTelemetry))),
++  Effect.succeed({}).pipe(
++    Effect.provide(AppDomainCoordinatorLive.pipe(Layer.provideMerge(cloudTelemetry))),
++  ),
+ );
+diff --git a/apps/hosted/cloud/src/app-ui.ts b/apps/hosted/cloud/src/app-ui.ts
+--- a/apps/hosted/cloud/src/app-ui.ts
++++ b/apps/hosted/cloud/src/app-ui.ts
+@@ -20,7 +20,7 @@ import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
+ import { AppUiApi } from "apps/ui/contracts";
+ import { AlchemyContext } from "alchemy/AlchemyContext";
+ import * as Cloudflare from "alchemy/Cloudflare";
+-import { Cause, Config, Effect, Layer, Option, Predicate } from "effect";
++import { Cause, Config, Effect, Layer, Option } from "effect";
+ import { HttpApiBuilder } from "effect/http-api";
+ import {
+   HttpRouter,
+@@ -32,7 +32,7 @@ import {
+ import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
+ import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
+ // Failures are logged as telemetry records them: tags and fixed sentences, never values.
+-import { recordedCause } from "@executor-js/telemetry/recorded-failure";
++import { logAppPageFailure } from "./implementation/app-page-failure.ts";
+ import { cloudSentry } from "./implementation/error-reporting.ts";
+ import { cloudAnalytics } from "./implementation/product-analytics.ts";
+ import { postHogBindings } from "./infrastructure/posthog.ts";
+@@ -57,55 +57,6 @@ import { cloudMcpAppAssets } from "./infrastructure/mcp-app-assets.ts";
+ import { workerBuild } from "./infrastructure/worker-build.ts";
+ import { productBrandBindings } from "./infrastructure/product-brand.ts";
+ 
+-/** Where a config read failed: key paths and issue kinds only, never the value it read. */
+-const configIssues = (error: unknown): string[] => {
+-  if (!Predicate.hasProperty(error, "_tag") || error._tag !== "ConfigError") return [];
+-  const cause = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
+-  if (!Predicate.hasProperty(cause, "issue")) return ["(source unavailable)"];
+-  const found: string[] = [];
+-  const walk = (issue: unknown, path: readonly PropertyKey[]): void => {
+-    if (!Predicate.hasProperty(issue, "_tag") || typeof issue._tag !== "string") return;
+-    if (
+-      issue._tag === "Pointer" &&
+-      Predicate.hasProperty(issue, "path") &&
+-      Array.isArray(issue.path)
+-    )
+-      walk(Predicate.hasProperty(issue, "issue") ? issue.issue : undefined, [
+-        ...path,
+-        ...issue.path,
+-      ]);
+-    else if (Predicate.hasProperty(issue, "issue")) walk(issue.issue, path);
+-    else if (
+-      Predicate.hasProperty(issue, "issues") &&
+-      Array.isArray(issue.issues) &&
+-      issue.issues.length > 0
+-    )
+-      for (const nested of issue.issues) walk(nested, path);
+-    else found.push(`${path.map(String).join(".") || "(root)"}: ${issue._tag}`);
+-  };
+-  try {
+-    walk(cause.issue, []);
+-  } catch {
+-    // An unexpected issue shape must not turn logging into another failure.
+-    return ["(unreadable)"];
+-  }
+-  return found;
+-};
+-
+-/** Log a failure as telemetry records it, plus the config keys a ConfigError names. */
+-const logFailure = (cause: Cause.Cause<unknown>) => {
+-  const keys = cause.reasons.flatMap((reason) =>
+-    Cause.isFailReason(reason)
+-      ? configIssues(reason.error)
+-      : Cause.isDieReason(reason)
+-        ? configIssues(reason.defect)
+-        : [],
+-  );
+-  return Effect.logError(
+-    Cause.pretty(recordedCause(cause)) + (keys.length ? `\nconfig: ${keys.join("; ")}` : ""),
+-  );
+-};
+-
+ /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
+ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+   "AppPages",
+@@ -158,7 +109,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         : { routes: [{ pattern: yield* cloudAppUiRoute.pipe(Effect.orDie) }] }),
+       dev: { host: "127.0.0.1", port, strictPort: port !== 0 },
+     };
+-  }).pipe(Effect.tapCause(logFailure)),
++  }).pipe(Effect.tapCause(logAppPageFailure)),
+   Effect.gen(function* () {
+     const reportErrors = yield* cloudSentry;
+     const analytics = yield* cloudAnalytics;
+@@ -244,7 +195,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+         analytics.wrap,
+         recordRequestRejections,
+         reportErrors,
+-        Effect.tapCause(logFailure),
++        Effect.tapCause(logAppPageFailure),
+         Effect.catchCause((cause) => {
+           const error = Option.getOrUndefined(Cause.findErrorOption(cause));
+           if (error !== undefined && HttpServerError.isHttpServerError(error))
+@@ -259,11 +210,11 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
+     };
+   }).pipe(
+     Effect.provide(
+-      Layer.mergeAll(
+-        cloudAuthDatabase.pipe(Layer.provide(Layer.succeed(InvocationStatementGroups, true))),
+-        cloudTelemetry,
++      cloudAuthDatabase.pipe(
++        Layer.provide(Layer.succeed(InvocationStatementGroups, true)),
++        Layer.provideMerge(cloudTelemetry),
+       ),
+     ),
+-    Effect.tapCause(logFailure),
++    Effect.tapCause(logAppPageFailure),
+   ),
+ ) {}
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -531,7 +531,9 @@ export default ArtifactsCredentials.make(
+   }),
+   Effect.succeed({}).pipe(
+     Effect.provide(
+-      Layer.mergeAll(ArtifactsTokenCoordinator.make(makeArtifactsTokenCoordinator), cloudTelemetry),
++      ArtifactsTokenCoordinator.make(makeArtifactsTokenCoordinator).pipe(
++        Layer.provideMerge(cloudTelemetry),
++      ),
+     ),
+   ),
+ );
+diff --git a/apps/hosted/cloud/src/implementation/app-page-failure.ts b/apps/hosted/cloud/src/implementation/app-page-failure.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/app-page-failure.ts
+@@ -0,0 +1,57 @@
++import { recordedCause } from "@executor-js/telemetry/recorded-failure";
++import { Cause, Effect, Predicate } from "effect";
++
++/** Where a config read failed: key paths and issue kinds only, never the value it read. */
++const configIssues = (error: unknown): string[] => {
++  if (!Predicate.hasProperty(error, "_tag") || error._tag !== "ConfigError") return [];
++  const cause = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
++  if (!Predicate.hasProperty(cause, "issue")) return ["(source unavailable)"];
++  const found: string[] = [];
++  const walk = (issue: unknown, path: readonly PropertyKey[]): void => {
++    if (!Predicate.hasProperty(issue, "_tag") || typeof issue._tag !== "string") return;
++    if (
++      issue._tag === "Pointer" &&
++      Predicate.hasProperty(issue, "path") &&
++      Array.isArray(issue.path)
++    )
++      walk(Predicate.hasProperty(issue, "issue") ? issue.issue : undefined, [
++        ...path,
++        ...issue.path,
++      ]);
++    else if (Predicate.hasProperty(issue, "issue")) walk(issue.issue, path);
++    else if (
++      Predicate.hasProperty(issue, "issues") &&
++      Array.isArray(issue.issues) &&
++      issue.issues.length > 0
++    )
++      for (const nested of issue.issues) walk(nested, path);
++    else found.push(`${path.map(String).join(".") || "(root)"}: ${issue._tag}`);
++  };
++  try {
++    walk(cause.issue, []);
++  } catch {
++    // An unexpected issue shape must not turn logging into another failure.
++    return ["(unreadable)"];
++  }
++  return found;
++};
++
++/**
++ * Log an app page failure as telemetry records it, plus the config keys a ConfigError names. The
++ * cause stays a cause: startup failures log outside the Worker's layers, through Alchemy's logger,
++ * and requests through the hosted structured logger, which reduces it again.
++ */
++export const logAppPageFailure = (cause: Cause.Cause<unknown>) => {
++  const keys = cause.reasons.flatMap((reason) =>
++    Cause.isFailReason(reason)
++      ? configIssues(reason.error)
++      : Cause.isDieReason(reason)
++        ? configIssues(reason.defect)
++        : [],
++  );
++  return Effect.logError(
++    "App page failed",
++    recordedCause(cause),
++    ...(keys.length === 0 ? [] : [{ config: keys }]),
++  );
++};
+diff --git a/apps/hosted/cloud/src/implementation/structured-logs.ts b/apps/hosted/cloud/src/implementation/structured-logs.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/structured-logs.ts
+@@ -0,0 +1,194 @@
++import { recordedMessage } from "@executor-js/utils/recorded-message";
++import {
++  Cause,
++  Clock,
++  Exit,
++  Inspectable,
++  Layer,
++  Logger,
++  Option,
++  Predicate,
++  References,
++  Result,
++} from "effect";
++
++/**
++ * Workers Logs indexes the fields of a console call whose one argument is an object, so a hosted
++ * line is one `formatStructured` object. Failures in a line are recorded the way telemetry records
++ * them (`@executor-js/telemetry/recorded-failure`): a tagged error by its tag and the fixed sentence
++ * it declares, an untagged `Error` by its name and the first line of its message with values
++ * scrubbed, anything else by `UnrecognizedFailure`. An error's fields, nested causes and stack can
++ * hold credentials, connection strings, addresses or request content, so they are never stored.
++ */
++type Failure = { readonly name: string; readonly message?: string };
++
++const identifier = /^[A-Za-z][A-Za-z0-9_]{0,79}$/;
++
++// The first kilobyte bounds the replacements' work; long runs with a digit are tokens, keys, hashes
++// or IDs, while long words such as service names stay.
++const scrub = (message: string) =>
++  (message.split("\n", 1)[0] ?? "")
++    .slice(0, 1024)
++    .replace(/[a-z][a-z0-9+.-]{0,30}:\/\/\S*/gi, "<url>")
++    .replace(/[^\s"'<>@]{1,64}@[^\s"'<>@]{1,255}/g, "<email>")
++    .replace(/"[^"\n]*"|'[^'\n]*'/g, "<value>")
++    .replace(/[\w.~+/=-]{16,}/g, (run) => (/\d/.test(run) ? "<value>" : run))
++    .slice(0, 180);
++
++const tagOf = (value: unknown) =>
++  Predicate.hasProperty(value, "_tag") && Predicate.isString(value._tag) ? value._tag : undefined;
++
++const named = (name: string, fallback: string) => (identifier.test(name) ? name : fallback);
++
++const failure = (value: unknown): Failure => {
++  try {
++    const tag = tagOf(value);
++    if (tag !== undefined) {
++      const message = recordedMessage(value);
++      return message === undefined || message === ""
++        ? { name: named(tag, "TaggedFailure") }
++        : { name: named(tag, "TaggedFailure"), message };
++    }
++    if (!(value instanceof Error)) return { name: "UnrecognizedFailure" };
++    const name = named(value.name, "Error");
++    const message = typeof value.message === "string" ? scrub(value.message) : "";
++    return message === "" ? { name } : { name, message };
++  } catch {
++    return { name: "UnrecognizedFailure" };
++  }
++};
++
++const reasonFailure = (reason: Cause.Reason<unknown>): Failure =>
++  Cause.isFailReason(reason)
++    ? failure(reason.error)
++    : Cause.isDieReason(reason)
++      ? failure(reason.defect)
++      : { name: "Interrupted" };
++
++const describe = ({ name, message }: Failure) =>
++  message === undefined ? name : `${name}: ${message}`;
++
++const causeText = (cause: Cause.Cause<unknown>) =>
++  cause.reasons.length === 0
++    ? undefined
++    : cause.reasons.map(reasonFailure).map(describe).join("\n");
++
++const plain = (value: object) => {
++  const prototype = Object.getPrototypeOf(value);
++  return prototype === Object.prototype || prototype === null;
++};
++
++/** A decoded failure keeps its tag and message but lost its prototype, as across RPC. */
++const failureShaped = (value: object) =>
++  plain(value) &&
++  tagOf(value) !== undefined &&
++  Predicate.hasProperty(value, "message") &&
++  Predicate.isString(value.message);
++
++const define = (target: Record<string, unknown>, key: string, value: unknown) =>
++  Object.defineProperty(target, key, {
++    value,
++    enumerable: true,
++    writable: true,
++    configurable: true,
++  });
++
++/**
++ * Replace each error, cause or failed result in a logged value. A value holding none within eight
++ * levels keeps its identity, so `formatStructured` serializes it as before.
++ */
++const reduce = (value: unknown, depth = 0): unknown => {
++  if (typeof value !== "object" || value === null) return value;
++  try {
++    if (Cause.isCause(value)) return causeText(value);
++    if (Cause.isReason(value)) return describe(reasonFailure(value));
++    if (value instanceof Error || failureShaped(value)) return failure(value);
++    if (depth >= 8) return "<truncated>";
++    const inner = (item: unknown, rebuild: (next: unknown) => unknown) => {
++      const next = reduce(item, depth + 1);
++      return next === item ? value : rebuild(next);
++    };
++    if (Exit.isExit(value))
++      return Exit.isFailure(value)
++        ? { _tag: "Failure", cause: causeText(value.cause) }
++        : inner(value.value, (next) => ({ _tag: "Success", value: next }));
++    if (Option.isOption(value))
++      return Option.isSome(value)
++        ? inner(value.value, (next) => ({ _tag: "Some", value: next }))
++        : value;
++    if (Result.isResult(value))
++      return Result.isFailure(value)
++        ? inner(value.failure, (next) => ({ _tag: "Failure", failure: next }))
++        : inner(value.success, (next) => ({ _tag: "Success", success: next }));
++    if (Array.isArray(value)) {
++      const items = value.map((item) => reduce(item, depth + 1));
++      return items.some((item, index) => item !== value[index]) ? items : value;
++    }
++    // Class instances such as Data or Schema classes may hold an error; plain copies drop toJSON.
++    let changed = false;
++    const entries = Object.entries(value).map(([key, item]) => {
++      const next = reduce(item, depth + 1);
++      if (next !== item) changed = true;
++      return [key, next] as const;
++    });
++    if (!changed) return value;
++    const copy: Record<string, unknown> = {};
++    const tag = plain(value) ? undefined : tagOf(value);
++    if (tag !== undefined) define(copy, "_tag", tag);
++    for (const [key, next] of entries) define(copy, key, next);
++    return copy;
++  } catch {
++    return "<unloggable>";
++  }
++};
++
++const annotationsOf = (options: Logger.Options<unknown>) =>
++  Object.entries(options.fiber.getRef(References.CurrentLogAnnotations)).map(
++    ([key, value]) => [key, value, reduce(value)] as const,
++  );
++
++/** `Logger.formatStructured`, with every failure recorded by its tag or name and message. */
++const formatHostedStructured = Logger.make((options) => {
++  const line = Logger.formatStructured.log({
++    ...options,
++    message: reduce(options.message),
++    cause: Cause.empty,
++  });
++  const annotations: Record<string, unknown> = { ...line.annotations };
++  for (const [key, value, reduced] of annotationsOf(options))
++    if (reduced !== value) define(annotations, key, Inspectable.toJson(reduced));
++  return { ...line, annotations, cause: causeText(options.cause) };
++});
++
++/** One object per line on the console, which Workers Logs indexes by field. */
++export const hostedConsoleLogger = Logger.withConsoleLog(formatHostedStructured);
++
++/**
++ * `Logger.tracerLogger`'s span event, from the same reduced message, annotations and cause, so a
++ * span keeps an event per log line without an error's fields.
++ */
++const hostedSpanEvents = Logger.make((options) => {
++  const span = options.fiber.cache.span;
++  if (span === undefined || span._tag === "ExternalSpan") return;
++  const attributes: Record<string, unknown> = {};
++  for (const [key, , reduced] of annotationsOf(options)) define(attributes, key, reduced);
++  attributes["effect.fiberId"] = options.fiber.id;
++  attributes["effect.logLevel"] = options.logLevel.toUpperCase();
++  const cause = causeText(options.cause);
++  if (cause !== undefined) attributes["effect.cause"] = cause;
++  const message = reduce(options.message);
++  span.event(
++    Inspectable.toStringUnknown(
++      Array.isArray(message) && message.length === 1 ? message[0] : message,
++    ),
++    options.fiber.getRef(Clock.Clock).currentTimeNanosUnsafe(),
++    attributes,
++  );
++});
++
++/** The hosted loggers where no telemetry exporter supplies its own. */
++export const hostedLogs = Logger.layer([hostedConsoleLogger, hostedSpanEvents]);
++
++/** Add span events to an exporter context whose console sink is already `hostedConsoleLogger`. */
++export const withHostedSpanEvents = <A, E, R>(exporters: Layer.Layer<A, E, R>) =>
++  Logger.layer([hostedSpanEvents], { mergeWithExisting: true }).pipe(Layer.provideMerge(exporters));
+diff --git a/apps/hosted/cloud/src/infrastructure/source-formatter.ts b/apps/hosted/cloud/src/infrastructure/source-formatter.ts
+--- a/apps/hosted/cloud/src/infrastructure/source-formatter.ts
++++ b/apps/hosted/cloud/src/infrastructure/source-formatter.ts
+@@ -27,10 +27,9 @@ export const cloudSourceFormatter = Effect.gen(function* () {
+               ),
+             ),
+             Effect.provideService(Cloudflare.WorkerEnvironment, environment),
++            // The formatter's reply can quote the source; the logger keeps the error's tag only.
+             Effect.catchTag("RpcCallError", (error) =>
+-              Effect.logWarning(`Source formatting unavailable: ${error.message}`).pipe(
+-                Effect.as(files),
+-              ),
++              Effect.logWarning("Source formatting unavailable", error).pipe(Effect.as(files)),
+             ),
+             Effect.withSpan("source.display.format"),
+           ),
+diff --git a/apps/hosted/cloud/src/infrastructure/telemetry.ts b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+--- a/apps/hosted/cloud/src/infrastructure/telemetry.ts
++++ b/apps/hosted/cloud/src/infrastructure/telemetry.ts
+@@ -14,6 +14,11 @@ import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
+ import { testStage } from "./stage.ts";
+ import { InvocationTelemetry } from "./invocation-telemetry.ts";
+ import { sqlTracing } from "../implementation/sql-tracing.ts";
++import {
++  hostedConsoleLogger,
++  hostedLogs,
++  withHostedSpanEvents,
++} from "../implementation/structured-logs.ts";
+ import { axiomSettings } from "./axiom-settings.ts";
+ import { parseDirectSentryDsn, parseDirectSentryOtlpEndpoint } from "./sentry.ts";
+ 
+@@ -256,6 +261,11 @@ export const telemetryBindings = Effect.gen(function* () {
+  * Provide it once, on a Worker's initialization. Each build adds another exporter to the
+  * isolate, so a Durable Object constructor must not provide it: every later event in that
+  * isolate would export its metrics once more per constructed object.
++ * Every event, and the initialization itself, logs through the hosted loggers, with or without
++ * exporters: Alchemy's platform logger writes a line's fields as separate console calls, which
++ * Workers Logs cannot join to the line. Build a Worker's other initialization layers over it
++ * (`Layer.provideMerge(cloudTelemetry)`), so Durable Object construction and contexts those layers
++ * capture log through the hosted loggers too.
+  */
+ export const cloudTelemetry = Layer.unwrap(
+   Effect.gen(function* () {
+@@ -266,13 +276,20 @@ export const cloudTelemetry = Layer.unwrap(
+     const bound = yield* context.get<unknown>(binding);
+     // Alchemy env props may arrive JSON-decoded; RuntimeContext.set uses a redacted marker.
+     const value = Redacted.isRedacted(bound) ? Redacted.value(bound) : bound;
+-    if (value === undefined || value === null || value === "null") return Layer.empty;
++    if (value === undefined || value === null || value === "null")
++      return Layer.merge(Telemetry.layer(hostedLogs), hostedLogs);
+     const config = yield* Schema.decodeUnknownEffect(
+       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
+     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
+     // Each event flushes for its entire lifetime, including streamed bodies, and
+     // periodically, so long-lived streams remain observable before disconnect.
+-    const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" });
+-    return Telemetry.layer(Layer.mergeAll(exporters, sqlTracing));
++    const exporters = yield* isolateTelemetry(
++      { ...config, clock: "cloudflare-io" },
++      hostedConsoleLogger,
++    );
++    return Layer.merge(
++      Telemetry.layer(withHostedSpanEvents(Layer.mergeAll(exporters, sqlTracing))),
++      hostedLogs,
++    );
+   }),
+ );
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -924,9 +924,8 @@ export default Api.make(
+         PlacedScheduleCoordinatorLive.pipe(Layer.provideMerge(ScheduleCoordinatorLive)),
+         OrganizationRemovalRecoveryLive,
+         cloudAuthDatabase,
+-        cloudTelemetry,
+         Cloudflare.Workers.CronEventSourceLive,
+-      ),
++      ).pipe(Layer.provideMerge(cloudTelemetry)),
+     ),
+   ),
+ );
+diff --git a/apps/hosted/cloud/src/mcp-server.ts b/apps/hosted/cloud/src/mcp-server.ts
+--- a/apps/hosted/cloud/src/mcp-server.ts
++++ b/apps/hosted/cloud/src/mcp-server.ts
+@@ -88,8 +88,9 @@ export default McpServer.make(
+     };
+   }).pipe(
+     Effect.provide(
+-      Layer.mergeAll(McpSession.make(mcpSession), cloudTelemetry).pipe(
++      McpSession.make(mcpSession).pipe(
+         Layer.provideMerge(cloudInvocationDatabase),
++        Layer.provideMerge(cloudTelemetry),
+       ),
+     ),
+   ),
+diff --git a/apps/hosted/cloud/src/sso.ts b/apps/hosted/cloud/src/sso.ts
+--- a/apps/hosted/cloud/src/sso.ts
++++ b/apps/hosted/cloud/src/sso.ts
+@@ -64,6 +64,6 @@ export default Sso.make(
+     };
+   }).pipe(
+     Effect.provideServiceEffect(CurrentProductBrand, productBrandConfig.pipe(Effect.orDie)),
+-    Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry)),
++    Effect.provide(cloudAuthDatabase.pipe(Layer.provideMerge(cloudTelemetry))),
+   ),
+ );

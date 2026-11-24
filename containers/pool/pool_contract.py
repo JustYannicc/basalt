@@ -11,6 +11,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from typing import Any
 
 from .billing_policy import provision_billing_policy
@@ -20,6 +21,7 @@ from .home_identity import HomeIdentity
 
 HOME_URL = f"http://127.0.0.1:{8329 if os.environ.get('POOL_HOME_PEER_ORDINAL') is not None else 8327}"
 NODE_URL = "http://127.0.0.1:8317"
+RESUME_URL = "http://127.0.0.1:8316"
 READY_BIND = ("0.0.0.0", 8318)
 ROOT = pathlib.Path("/dev/shm/cliproxy-pool")
 PATH_VALUE = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -117,6 +119,7 @@ def cluster_yaml(database_url: str, schema_owner: str = "") -> str:
         "  max-idle-conns: 6\n"
         "  conn-max-idle-time: 5m\n"
         "  conn-max-lifetime: 30m\n"
+        "  coordination-max-open-conns: 2\n"
         "node:\n"
         "  external-ip: 127.0.0.1\n"
         f"  external-port: {identity.advertised_port}\n"
@@ -144,6 +147,7 @@ def bootstrap_yaml(allow_remote: bool) -> str:
         "    basalt-native-policy:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
+        "      scheduler-required: true\n"
         "    typesafe:\n"
         "      enabled: true\n"
         "      load-in-home: true\n"
@@ -270,8 +274,11 @@ def child_environment(
             value = os.environ.get(name, "").strip()
             if value:
                 env[name] = value
-    else:
+    elif kind == "node":
         env["HOME_JWT"] = home_jwt
+    elif kind == "resume":
+        # A resume naming any other boot is gone; the layer gets no credentials.
+        env["POOL_BOOT_ID"] = node_boot_id
     return env
 
 
@@ -297,7 +304,8 @@ def pool_config_patch(allow_remote: bool) -> dict[str, Any]:
             "dir": "/opt/pool/plugins",
             "configs": {
                 "gemini-cli": {"enabled": True, "load-in-home": True},
-                "basalt-native-policy": {"enabled": True, "load-in-home": True},
+                # The account veto lives in this scheduler: Home refuses picks while it is not active.
+                "basalt-native-policy": {"enabled": True, "load-in-home": True, "scheduler-required": True},
                 "typesafe": {"enabled": True, "load-in-home": True},
             },
         },
@@ -315,6 +323,15 @@ def apply_pool_config(management_key: str, allow_remote: bool) -> None:
     )
     if status != 200:
         raise StartupError(f"Home routing configuration failed (HTTP {status})")
+    # Without the key Home falls back to its built-in selector once the veto plugin fuses.
+    status, policy = request_json(
+        f"{HOME_URL}/v8/management/config/plugins/configs/basalt-native-policy",
+        "GET",
+        management_key,
+        timeout=10,
+    )
+    if status != 200 or not isinstance(policy, dict) or policy.get("scheduler-required") is not True:
+        raise StartupError(f"Home did not keep scheduler-required on the native-policy plugin (HTTP {status})")
     provision_billing_policy(
         lambda method, payload: request_json(
             f"{HOME_URL}/v8/management/billing/settings",
@@ -355,13 +372,53 @@ def _node_healthy(management_key: str) -> bool:
     return node_status == 200 and node_payload.get("status") == "ok"
 
 
-def check_liveness(management_key: str) -> bool:
+def resume_layer_healthy() -> bool:
+    """Never raises: a probe failure only withdraws resume, it must not end the supervisor."""
+    try:
+        # Loopback answers in microseconds; a short limit keeps a hung layer from delaying the 2 s tick.
+        status, payload = request_json(f"{RESUME_URL}/__basalt/resume/healthz", "GET", "", timeout=0.25)
+    except Exception:
+        return False
+    return status == 200 and payload.get("status") == "ok"
+
+
+DATABASE_DISTANCE_MAX_MS = 3500
+
+
+def home_database_distance(management_key: str) -> int | None:
+    """Home's shortest round trip to the database over its own pool, or None when unmeasured."""
+    try:
+        status, payload = request_json(
+            f"{HOME_URL}/v8/management/database/distance", "GET", management_key, timeout=5
+        )
+    except Exception:
+        return None
+    rtt = payload.get("rtt_ms") if status == 200 else None
+    if type(rtt) is not int or not 1 <= rtt <= DATABASE_DISTANCE_MAX_MS:
+        return None
+    return rtt
+
+
+def check_liveness(
+    management_key: str, observe: Callable[[int | None], None] | None = None
+) -> bool:
     if not _node_healthy(management_key):
         return False
     home_status, home_payload = request_json(
         f"{HOME_URL}/healthz", "GET", management_key, timeout=2
     )
-    return home_status == 200 and home_payload.get("status") == "ok"
+    healthy = home_status == 200 and home_payload.get("status") == "ok"
+    if observe is not None:
+        observe(home_refresh_in_flight(home_payload) if healthy else None)
+    return healthy
+
+
+def home_refresh_in_flight(payload: dict[str, Any]) -> int | None:
+    """Carry 0695's count on Home's /healthz; None for an old Home or anything malformed."""
+    count = payload.get("refresh_in_flight")
+    if type(count) is not int or not 0 <= count < 1 << 63:
+        return None
+    return count
 
 
 def check_services(management_key: str, node_id: str) -> bool:

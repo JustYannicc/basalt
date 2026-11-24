@@ -71,7 +71,7 @@
   },
   "runs": {
     "accountObservations": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ],
     "accountObservationInvalidHealth": ["declared:self-host"],
     "accountObservationRecovery": ["declared:self-host"],

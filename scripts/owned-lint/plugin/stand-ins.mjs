@@ -1,4 +1,5 @@
 // Rules for test stand-ins of external APIs: they serve recorded responses, never the request.
+import { answer, answerFlow, handler } from "./answers.mjs";
 import {
   RECORDED_SHAPES,
   filePath,
@@ -14,7 +15,6 @@ import {
 // A request body inside a stand-in: request.json(), JSON.parse(init.body), readBody(request), ...
 const REQUEST_BODY =
   /\b(?:req|request|incoming|init|input|call)\b[\w?.]*\.(?:json|text|formData|arrayBuffer)\s*\(|\b(?:readBody|readJson|requestBody|bodyOf|parseBody)\s*\(|\bbody\(\s*\)|JSON\.parse\([^;]*\b(?:init|request|req|chunks|raw)\b|\b(?:init|request|req)\??\.body\b/u;
-const HANDLER_PARAMS = /^_?(?:req|request|incoming|input|init)$/u;
 // Nodes a value passes through unchanged on its way to where it is kept or sent.
 const STRUCTURAL = new Set([
   "ObjectExpression",
@@ -28,20 +28,14 @@ const STRUCTURAL = new Set([
   "AwaitExpression",
 ]);
 const STORES = new Set(["push", "unshift", "set", "splice"]);
-const ANSWERS = new Set(["end", "write", "send", "json"]);
 // A request kept to assert on later is the honest pattern, not an echo.
 const RECORDER =
   /(?:calls|requests|writes|posted|posts|events|seen|received|captured|recorded|sent|logs?|history|bodies|payloads|updates|envelopes|messages)$/iu;
-const RESPONDER = /^(?:res|response|reply)$/u;
 // A collection that keeps what it was sent: `users.push(...)`, not `requests.push(...)`.
 const store = (call) =>
   call.callee.type === "MemberExpression" &&
   STORES.has(propertyName(call.callee)) &&
   !RECORDER.test(propertyName(call.callee.object) ?? "");
-const answer = (call) =>
-  call.callee.type === "MemberExpression" &&
-  ANSWERS.has(propertyName(call.callee)) &&
-  RESPONDER.test(propertyName(call.callee.object) ?? "");
 const message =
   "Echo stub: the stand-in answers with what the code sent, so it can never disagree with it, and every read-then-echo or write-then-compare bug passes. Serve a recorded provider response from a recorded-shapes module and assert on the request separately.";
 
@@ -93,8 +87,11 @@ const readsBody = (context, input) => {
   return REQUEST_BODY.test(ownText(context, node));
 };
 const asserted = (call) => ["assert", "expect"].includes(memberRoot(call.callee));
-const handler = (fn) =>
-  fn.params.some((param) => param.type === "Identifier" && HANDLER_PARAMS.test(param.name));
+const enclosingFunction = (node) => {
+  let current = node.parent;
+  while (current && !/Function/u.test(current.type)) current = current.parent;
+  return current;
+};
 
 export const noEchoStub = {
   meta: {
@@ -104,6 +101,67 @@ export const noEchoStub = {
   create(context) {
     if (!isTest(context)) return {};
     const bodies = new WeakSet();
+    // Per-request records (`call.rpc = body.method`), judged once every response has been seen.
+    const records = [];
+    const flow = answerFlow(context);
+    const { variableOf } = flow;
+    const inAssertion = (node) => {
+      for (
+        let current = node.parent;
+        current && !/Function/u.test(current.type);
+        current = current.parent
+      )
+        if (current.type === "CallExpression" && asserted(current)) return true;
+      return false;
+    };
+    // `const call = {...}` made inside a function, written field by field, read only by
+    // assertions and pushed whole onto arrays: the arrays, or undefined when it can reach
+    // anything else (an alias, a wrapper, a helper, a store, an answer).
+    const recordedInto = (identifier) => {
+      const variable = variableOf(identifier);
+      const declarator = variable?.defs.at(-1)?.node;
+      if (declarator?.type !== "VariableDeclarator" || declarator.parent.kind !== "const") return;
+      if (unwrap(declarator.init)?.type !== "ObjectExpression" || !enclosingFunction(declarator))
+        return;
+      // A getter, setter or method in the literal can answer on its own.
+      if (
+        unwrap(declarator.init).properties.some(
+          (property) =>
+            property.type === "Property" &&
+            (property.kind !== "init" || property.method || /Function/u.test(property.value.type)),
+        )
+      )
+        return;
+      const stores = [];
+      for (const { identifier: reference } of variable.references) {
+        if (reference === declarator.id || inAssertion(reference)) continue;
+        const parent = reference.parent;
+        if (
+          parent.type === "MemberExpression" &&
+          parent.object === reference &&
+          !parent.computed &&
+          parent.parent.type === "AssignmentExpression" &&
+          parent.parent.left === parent
+        )
+          continue;
+        if (
+          parent.type === "CallExpression" &&
+          parent.arguments.length === 1 &&
+          parent.arguments[0] === reference &&
+          parent.callee.type === "MemberExpression" &&
+          ["push", "unshift"].includes(propertyName(parent.callee)) &&
+          parent.callee.object.type === "Identifier"
+        ) {
+          const store = variableInit(context, parent.callee.object);
+          if (store) {
+            stores.push(store);
+            continue;
+          }
+        }
+        return undefined;
+      }
+      return { stores, declarator };
+    };
     // The request body, or structuredClone of it, or a member of it.
     const bodyName = (input) => {
       let node = unwrap(input);
@@ -144,7 +202,7 @@ export const noEchoStub = {
         !asserted(sink)
       );
     };
-    return {
+    const own = {
       VariableDeclarator(node) {
         if (!node.init) return;
         // `const sent = body` is still the request body.
@@ -166,6 +224,18 @@ export const noEchoStub = {
       // `app = body` or `state.app.policy = body.policy`: what was sent is what a later read returns.
       AssignmentExpression(node) {
         if (node.left.type === "ObjectPattern" || !bodyName(node.right)) return;
+        // `call.rpc = body.method` records one field of this request on an object made for this
+        // request. It cannot be served to a later request, and it is an echo only if a response
+        // here reads it, which Program:exit decides once every response has been seen.
+        if (
+          node.left.type === "MemberExpression" &&
+          !node.left.computed &&
+          node.left.object.type === "Identifier" &&
+          unwrap(node.right)?.type === "MemberExpression"
+        ) {
+          const stores = recordedInto(node.left.object);
+          if (stores) return void records.push([node, stores]);
+        }
         if (node.left.type !== "Identifier" || !variableInit(context, node.left)?.init)
           context.report({ node, message });
       },
@@ -173,6 +243,12 @@ export const noEchoStub = {
         let fn = node.parent;
         while (fn && !/Function/u.test(fn.type)) fn = fn.parent;
         if (fn && handler(fn) && bodyName(node.argument)) context.report({ node, message });
+      },
+      "Program:exit"() {
+        // A record answered itself (inside an assertion's message, say) or through its store.
+        const answered = flow.answered();
+        for (const [node, { stores, declarator }] of records)
+          if (answered(declarator) || stores.some(answered)) context.report({ node, message });
       },
       CallExpression(node) {
         const name = propertyName(node.callee);
@@ -196,6 +272,16 @@ export const noEchoStub = {
           context.report({ node, message });
       },
     };
+    // The flow sees every node before this rule's own check of it.
+    return Object.fromEntries(
+      [...new Set([...Object.keys(flow.visitors), ...Object.keys(own)])].map((key) => [
+        key,
+        (node) => {
+          flow.visitors[key]?.(node);
+          own[key]?.(node);
+        },
+      ]),
+    );
   },
 };
 

@@ -26,10 +26,10 @@ const baselinePath = join(here, "baseline.json");
 const allowlistPath = join(here, "allowlist.json");
 const oxlint = join(here, "node_modules/oxlint/bin/oxlint");
 
-// Basalt-owned code. The release layer under scripts/release-barrier is being replaced by
-// Alchemy and is not gated; everything else in scripts/ and src/ is, including new files.
+// Basalt-owned code: everything in scripts/ and src/, including new files, apart from installed
+// and generated code.
 const SCOPE = /^(?:scripts|src)\/.+\.(?:[cm]?[jt]s|[jt]sx)$/u;
-const OUTSIDE = /^scripts\/release-barrier\/|(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
+const OUTSIDE = /(?:^|\/)node_modules\/|^scripts\/architecture\/gen\//u;
 // Changing these may change what the rules find, so a rise against the base is listed for
 // review instead of failing; the rule cases in rules.test.ts guard the change.
 const LINT_INPUTS = [
@@ -154,26 +154,45 @@ function baseState(base: string) {
     });
     return result.status === 0 ? JSON.parse(result.stdout) : undefined;
   };
+  const git = (args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 }).split(
+      "\0",
+    );
   const tracked = new Set(
-    execFileSync("git", ["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"], {
-      cwd: root,
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-    }).split("\0"),
+    git(["ls-tree", "-r", "-z", "--name-only", base, "--", "scripts", "src"]),
   );
+  // The working tree against the base, with renames: a renamed file keeps its old count.
+  const renamed = new Map<string, string>();
+  const changed = new Set<string>();
+  // Renames from anywhere under scripts/ and src/, so code moved in from outside the gated scope is found.
+  const entries = git(["diff", "-z", "--name-status", "-M", base, "--", "scripts", "src"]);
+  for (let index = 0; index < entries.length - 1;) {
+    const status = entries[index++]!;
+    if (status.startsWith("R")) {
+      const from = entries[index++]!;
+      const to = entries[index++]!;
+      renamed.set(to, from);
+      changed.add(to);
+    } else changed.add(entries[index++]!);
+  }
   const lintChanged =
     spawnSync("git", ["diff", "--quiet", base, "--", ...LINT_INPUTS], { cwd: root }).status !== 0;
   return {
     baseline: show(baselinePath) as Counts | undefined,
     config: show(configPath) as Config | undefined,
     allowlist: (show(allowlistPath) ?? {}) as Allowlist,
-    existed: (file: string) => tracked.has(file),
+    basePath: (file: string) => renamed.get(file) ?? (tracked.has(file) ? file : undefined),
+    enteredScope: (file: string) => OUTSIDE.test(renamed.get(file) ?? file),
+    changed: (file: string) => changed.has(file) || !tracked.has(file),
     lintChanged,
   } satisfies BaseState;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const unknown = process.argv.slice(2).filter((argument) => argument !== "--write-baseline");
+  // pnpm, unlike npm, passes the `--` of `npm run lint:owned -- --write-baseline` through.
+  const unknown = process.argv
+    .slice(2)
+    .filter((argument) => argument !== "--" && argument !== "--write-baseline");
   if (unknown.length)
     throw new Error(`Unknown argument ${unknown.join(" ")}; the only option is --write-baseline.`);
   const files = scopedFiles();

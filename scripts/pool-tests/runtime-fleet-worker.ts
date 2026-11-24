@@ -6,7 +6,7 @@ import { Schema } from "effect";
 import { handoffWorker, runtimeWorkerClasses } from "./runtime-handoff-worker.ts";
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import { runtimeFixtureCode } from "./runtime-handoff-proofs.ts";
-import { runtimeProofFixture } from "../release-barrier/test/runtime-proof-fixture.ts";
+import { runtimeProofFixture } from "../pool-fleet/test/runtime-proof-fixture.ts";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
@@ -14,7 +14,11 @@ import {
   decodeAdmissionProof,
   runtimeAttestationFormat,
 } from "../../src/pool/runtime-slots/admission-proof.ts";
-import type { SlotTarget } from "../../src/pool/runtime-slots/contract.ts";
+import {
+  SlotRefused,
+  type ControllerCode,
+  type SlotTarget,
+} from "../../src/pool/runtime-slots/contract.ts";
 import type {
   FleetApplication,
   FleetConfiguration,
@@ -36,7 +40,13 @@ interface Instance {
 
 /** Actual controller and private runtime classes, with only the platform, provider and Home ports doubled. */
 export async function fleetWorkerFixture(
-  options: { candidateColor?: Color; publicProbe?: boolean; adopt?: boolean } = {},
+  options: {
+    candidateColor?: Color;
+    publicProbe?: boolean;
+    adopt?: boolean;
+    /** Extra Worker bindings every fleet cell's runtime starts with. */
+    runtimeBindings?: Readonly<Record<string, string>>;
+  } = {},
 ) {
   const original = await runtimeProofFixture();
   const raw = (["blue", "green"] as const).map((color) => ({
@@ -69,6 +79,8 @@ export async function fleetWorkerFixture(
   const pending = new Map<string, Promise<Instance>>();
   let created: (runtime: Runtime, color: Color) => Promise<void> = async () => {};
   let startReply: (runtime: Runtime) => Promise<void> = async () => {};
+  // A code this returns differs from the controller's, as an object left on an older version runs.
+  let runtimeCode: (target: SlotTarget) => ControllerCode | undefined = () => undefined;
   let model: (instance: Runtime, request: Request) => Promise<Response | undefined> = async () =>
     undefined;
   const fetchBefore = globalThis.fetch;
@@ -201,13 +213,30 @@ export async function fleetWorkerFixture(
                         POOL_BLUE_IMAGE_HASH: applications[0]!.imageInput,
                         POOL_GREEN_APPLICATION_ID: applications[1]!.applicationId,
                         POOL_GREEN_IMAGE_HASH: applications[1]!.imageInput,
+                        ...options.runtimeBindings,
                       };
+                      const code = runtimeCode(proof.target);
                       const fixture = await handoffRuntime(proof.target, runtimeEnv, {
                         home: old.home,
+                        ...(code ? { code } : {}),
                       });
                       fixture.hooks.model = (request) => model(fixture, request);
                       await created(fixture, color);
-                      const worker = new runtimeWorkerClasses[color](fixture.ctx, runtimeEnv);
+                      // The runtime classes run this build's code: another code runs the endpoint.
+                      const worker = code
+                        ? {
+                            fetch: (request: Request) => fixture.stub.fetch(request),
+                            alarm: async () => {
+                              await fixture.endpoint.alarm();
+                            },
+                            homePeerSource: async () => {
+                              throw new SlotRefused("identity");
+                            },
+                            assertHomePeer: async () => {
+                              throw new SlotRefused("identity");
+                            },
+                          }
+                        : new runtimeWorkerClasses[color](fixture.ctx, runtimeEnv);
                       const instance = { fixture, worker, color };
                       instances.set(instanceId, instance);
                       return instance;
@@ -374,6 +403,10 @@ export async function fleetWorkerFixture(
     },
     onRuntimeStartReply: (hook: typeof startReply) => {
       startReply = hook;
+    },
+    /** The code each new runtime object runs; undefined keeps the controller's own. */
+    onRuntimeCode: (hook: typeof runtimeCode) => {
+      runtimeCode = hook;
     },
     settle: () => f.old.settle(),
     cleanup: async () => {

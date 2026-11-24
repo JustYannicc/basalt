@@ -1,8 +1,10 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { changedInputs, jobRoutes, selectPaths } from "./affected.ts";
+import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
-import { declaredMatrices } from "./declarations.ts";
+import { githubObserver, routeBox } from "./box-router.ts";
+import { fastJobs } from "./gate.ts";
+import { declaredMatrices } from "./shards.ts";
 
 const root = process.cwd();
 const full = process.argv.includes("--all");
@@ -23,11 +25,31 @@ try {
 }
 const output = ".generated/ci/selection.json";
 const matrices = declaredMatrices(selection.full ? null : selection.declaredFiles);
-const routed = {
-  ...selection,
-  matrices,
-  ...jobRoutes(selection.jobs, process.env.BOAT_JOBS ?? ""),
-};
+const env = process.env;
+const box = await routeBox(
+  {
+    event: env.GITHUB_EVENT_NAME ?? "",
+    ref: env.GITHUB_REF ?? "",
+    attempt: env.GITHUB_RUN_ATTEMPT,
+    repository: env.GITHUB_REPOSITORY,
+    headRepository: env.HEAD_REPOSITORY,
+    slots: env.BOX_SLOTS,
+    label: env.BOX_LABEL,
+    // The fast lane's jobs run in every Check, so they can route as well as the selected ones.
+    selected: [...fastJobs, ...selection.jobs],
+    heartbeatLabel: env.BOX_HEARTBEAT_LABEL,
+    matrices,
+  },
+  githubObserver({
+    api: env.GITHUB_API_URL ?? "https://api.github.com",
+    repository: env.GITHUB_REPOSITORY ?? "",
+    token: env.GITHUB_TOKEN ?? "",
+    runId: env.GITHUB_RUN_ID ?? "",
+    label: env.BOX_LABEL ?? "",
+    heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
+  }),
+);
+const routed = { ...selection, matrices, boxJobs: box.jobs, boxRouting: box.summary };
 mkdirSync(dirname(output), { recursive: true });
 writeFileSync(output, JSON.stringify(routed, null, 2));
 if (process.env.GITHUB_OUTPUT)
@@ -39,11 +61,20 @@ if (process.env.GITHUB_OUTPUT)
       "jobs=" +
       JSON.stringify(routed.jobs) +
       "\n" +
-      "hosted_jobs=" +
-      JSON.stringify(routed.hostedJobs) +
+      "box_jobs=" +
+      JSON.stringify(routed.boxJobs) +
       "\n" +
-      "boat_jobs=" +
-      JSON.stringify(routed.boatJobs) +
+      // The label routing validated; runs-on reads it here, never the variable at job time.
+      "box_label=" +
+      box.label +
+      "\n" +
+      // box-watch's bound for jobs the box holds back: a waiting box job never outlasts it.
+      "box_floor=" +
+      String(Math.ceil(box.floor)) +
+      "\n" +
+      // Each box job's planned minutes and wave: box-watch's deadline for it.
+      "box_plan=" +
+      JSON.stringify(box.plan) +
       "\n" +
       "matrices=" +
       JSON.stringify(matrices) +
@@ -73,6 +104,8 @@ if (process.env.GITHUB_STEP_SUMMARY)
               .join(", "),
         )
         .join("\n") +
+      "\n\n" +
+      box.summary +
       "\n",
   );
 console.log(JSON.stringify(routed, null, 2));

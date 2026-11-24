@@ -1,8 +1,5 @@
 // Resource mappings are authored here; the deployment overlay is generated.
 model {
-  extend basalt.build {
-    metadata { resources "resource-57d1837bb92322d987677530fbee8b10f8335dd954bb4831fabf9ac7054569ef" }
-  }
   extend basalt.catalog {
     metadata { resources "resource-150ae309c71ca8ad14297dcb25c45f8c9fb180fbd2a93b87ed1767cf481fa4b2" }
   }
@@ -128,6 +125,13 @@ model {
   }
   basalt.catalog -[sync]-> accountManagement "publish connection guidance and management tool definitions"
   basalt.build -[sync]-> accountManagement "verify management contracts with isolated local fixtures"
+
+  tailnetAdmin = adapter "Tailnet admin console" {
+    #external
+    technology "Tailscale admin console"
+    metadata { hosts "console.tailscale.com" }
+  }
+  basalt.catalog -[sync]-> tailnetAdmin "link connection guidance to where a person creates an OAuth client"
 
   zohoSignIn = adapter "Zoho account authorization" {
     #external
@@ -261,8 +265,8 @@ model {
   }
   containerRegistry = adapter "Container registry" {
     #external
-    technology "Docker Hub · Cloudflare"
-    metadata { hosts "registry-1.docker.io|registry.cloudflare.com" }
+    technology "Docker Hub · Google's Docker Hub mirror · Cloudflare"
+    metadata { hosts "registry-1.docker.io|mirror.gcr.io|registry.cloudflare.com" }
   }
   packageSource = adapter "Package source" {
     #external
@@ -280,7 +284,7 @@ model {
   basalt.deployment -[sync]-> deploymentProvider "freeze Worker uploads, validate provider startup, activate immutable versions and provision source namespace"
   basalt.deployment -[sync]-> databaseProvider "provision database resources"
   extend basalt.modelGateway {
-    metadata { resources "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b" }
+    metadata { resources "resource-247ccf606aac919aecc1dcbf4bb603eb2446aa1a261023985b019c0c489a982b|resource-1b2e51b245a4b8292afba75d0313d225d371d69fa0dcdebad2820f7e68990723" }
   }
   extend basalt.poolController {
     metadata { resources "resource-793ef6d5de6e438736b14d305274413357e94e70d2b2864ff687c2eb72f1d4e2" }
@@ -316,4 +320,5 @@ model {
   }
   basalt.modelGateway -[sync]-> providerSource "verify official vendor plan identities"
   basalt.modelGateway -[sync]-> publicPlanAllowances "refresh expiring plan facts with provenance"
+  basalt.releaseUpdates -[sync]-> publicPlanAllowances "renew the dated allowance seed weekly"
 }

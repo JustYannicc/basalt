@@ -1,0 +1,106 @@
+diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
+--- a/apps/hosted/cloud/src/implementation/billing.ts
++++ b/apps/hosted/cloud/src/implementation/billing.ts
+@@ -334,46 +334,49 @@ export const billingLive = Effect.gen(function* () {
+ });
+ 
+ /** Every billing read and write requires a current owner/admin membership. */
+-export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing", (handlers) =>
+-  Effect.gen(function* () {
+-    const billing = yield* Billing;
+-    const meter = yield* BillingMeter;
+-    const auth = yield* Authentication;
+-    const destination = (organization: OrganizationId) =>
+-      Effect.gen(function* () {
+-        const request = yield* HttpServerRequest.HttpServerRequest;
+-        const slug = yield* auth.organizationSlug(new Headers(request.headers), organization);
+-        return new URL(`/org/${encodeURIComponent(slug)}/billing`, auth.origin);
+-      });
+-    return handlers
+-      .handle("overview", () =>
+-        Effect.gen(function* () {
+-          return yield* billing.overview((yield* requireOrganizationAdmin).organization);
+-        }),
+-      )
+-      .handle("memberLimit", () =>
+-        Effect.gen(function* () {
+-          const limit = yield* meter
+-            .memberLimit((yield* requireOrganizationAdmin).organization)
+-            .pipe(Effect.mapError(() => new BillingUnavailable()));
+-          return { limit: Number.isFinite(limit) ? limit : null };
+-        }),
+-      )
+-      .handle("checkout", ({ payload }) =>
+-        Effect.gen(function* () {
+-          const { organization } = yield* requireOrganizationAdmin;
+-          return yield* billing.checkout(
+-            organization,
+-            payload.plan,
+-            yield* destination(organization),
+-          );
+-        }),
+-      )
+-      .handle("portal", () =>
++export const billingHandlers = /* @__PURE__ */ HttpApiBuilder.group(
++  ExecutorCloudApi,
++  "billing",
++  (handlers) =>
++    Effect.gen(function* () {
++      const billing = yield* Billing;
++      const meter = yield* BillingMeter;
++      const auth = yield* Authentication;
++      const destination = (organization: OrganizationId) =>
+         Effect.gen(function* () {
+-          const { organization } = yield* requireOrganizationAdmin;
+-          return yield* billing.portal(organization, yield* destination(organization));
+-        }),
+-      );
+-  }),
++          const request = yield* HttpServerRequest.HttpServerRequest;
++          const slug = yield* auth.organizationSlug(new Headers(request.headers), organization);
++          return new URL(`/org/${encodeURIComponent(slug)}/billing`, auth.origin);
++        });
++      return handlers
++        .handle("overview", () =>
++          Effect.gen(function* () {
++            return yield* billing.overview((yield* requireOrganizationAdmin).organization);
++          }),
++        )
++        .handle("memberLimit", () =>
++          Effect.gen(function* () {
++            const limit = yield* meter
++              .memberLimit((yield* requireOrganizationAdmin).organization)
++              .pipe(Effect.mapError(() => new BillingUnavailable()));
++            return { limit: Number.isFinite(limit) ? limit : null };
++          }),
++        )
++        .handle("checkout", ({ payload }) =>
++          Effect.gen(function* () {
++            const { organization } = yield* requireOrganizationAdmin;
++            return yield* billing.checkout(
++              organization,
++              payload.plan,
++              yield* destination(organization),
++            );
++          }),
++        )
++        .handle("portal", () =>
++          Effect.gen(function* () {
++            const { organization } = yield* requireOrganizationAdmin;
++            return yield* billing.portal(organization, yield* destination(organization));
++          }),
++        );
++    }),
+ );
+diff --git a/apps/hosted/server/src/implementation/organization.ts b/apps/hosted/server/src/implementation/organization.ts
+--- a/apps/hosted/server/src/implementation/organization.ts
++++ b/apps/hosted/server/src/implementation/organization.ts
+@@ -315,7 +315,7 @@ export const inventory = (owner: OwnerId) =>
+     return { apps, accounts: yield* withHealth(listedAccounts), links, appLinks, accountCounts };
+   });
+ /** Organization routes do not own app/account operations. */
+-export const hostedOrganizationHandlers = HttpApiBuilder.group(
++export const hostedOrganizationHandlers = /* @__PURE__ */ HttpApiBuilder.group(
+   HostedApi,
+   "organization",
+   (handlers) =>

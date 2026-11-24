@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A Home's heartbeat takes the election gate's row lock only when the election can change. While the gate names the oldest live node, that node holds the master flag and its lease is fresh, a follower only writes its own node row and the master renews its lease with one conditional update on the gate's term, master key and unexpired lease that never waits on a held gate, so a renewal can never write a lease computed before a wait; any other state runs the locked election. Either path keeps the master flag only for what remains of the lease it read, so a Home stalled after its clock read never believes it is master after another Home could be elected. So a follower's steady heartbeat never queues behind other heartbeats or rebalance passes and never holds a pooled server connection while waiting on the gate; the master waits only when its renewal finds the gate held, and then through the locked election."
+    }
+  }
+}

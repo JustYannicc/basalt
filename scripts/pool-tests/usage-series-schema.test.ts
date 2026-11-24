@@ -1,7 +1,12 @@
 import { historyJournalPrepareVersion } from "../../src/pool/model-history/change-journal-schema.ts";
 import {
+  historyChangeOnceVersion,
+  historyRowSchemaVersion,
+} from "../../src/pool/model-history/history-row-schema.ts";
+import {
   historyImportCompletionVersion,
   historyImportCompletionStatements,
+  historyImportReconcileVersion,
 } from "../../src/pool/model-history/import-completion-schema.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -25,6 +30,8 @@ import {
   historySchemaVersion,
   migrateModelHistory,
 } from "../../src/pool/model-history/schema.ts";
+import { historyUsageRollupVersion } from "../../src/pool/model-history/usage-rollup-schema.ts";
+import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import {
   historyBulkSchemaVersion,
   historyBulkStatements,
@@ -113,37 +120,18 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
     try {
       const path = join(directory, "plan.json");
       const options = historyOperatorOptions(["--worker", "fixture-pool", "--plan", path]);
-      let writes = 0;
       const connect = async () => ({
         env: {
           POOL_OPERATIONS: {
             fetch: async (request: Request) => {
-              if (request.method === "GET")
-                return Response.json({ status: "dry-run", ...(await modelHistorySchemaPlan(db)) });
-              const approved = (await request.json()) as {
-                go: boolean;
-                schemaHash: string;
-                catalogHash: string;
-              };
-              assert.equal(approved.go, true);
-              const current = await modelHistorySchemaPlan(db);
-              assert.equal(approved.schemaHash, current.schemaHash);
-              assert.equal(approved.catalogHash, current.catalogHash);
-              writes++;
-              await migrateModelHistory(db);
-              return Response.json({
-                status: "complete",
-                version: historySchemaVersion,
-                schemaHash: current.schemaHash,
-                applied: true,
-              });
+              assert.equal(request.method, "GET", "the operator only plans history schema steps");
+              return Response.json({ status: "dry-run", ...(await modelHistorySchemaPlan(db)) });
             },
           },
         },
         dispose: async () => {},
       });
       const preview = await runHistoryOperator(options, "a".repeat(32), connect);
-      assert.equal(writes, 0);
       assert.deepEqual(preview.pendingDdl, [
         ...historyAccountTimeStatements,
         ...historyTrafficStatements,
@@ -180,8 +168,6 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
         ...historyTerminalIntegrityStatements,
         ...historyImportCompletionStatements,
       ]);
-      await runHistoryOperator({ ...options, apply: true }, "a".repeat(32), connect);
-      assert.equal(writes, 1);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -218,6 +204,11 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
         historyJournalPrepareVersion,
+        historyRowSchemaVersion,
+        historyChangeOnceVersion,
+        historyImportReconcileVersion,
+        historyUsageRollupVersion,
+        historyUsagePeopleRollupVersion,
         historySchemaVersion,
       ].sort(),
     );
@@ -428,6 +419,11 @@ test("a retained v4 database applies v6 after v8 and preserves imported rows and
         historyTerminalIntegrityVersion,
         historyImportCompletionVersion,
         historyJournalPrepareVersion,
+        historyRowSchemaVersion,
+        historyChangeOnceVersion,
+        historyImportReconcileVersion,
+        historyUsageRollupVersion,
+        historyUsagePeopleRollupVersion,
         historySchemaVersion,
       ].sort(),
     );

@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
-import { membershipPrefix, type NativeMembershipPolicy } from "./membership-contract.ts";
+import {
+  membershipPrefix,
+  membershipReadMs,
+  type NativeMembershipPolicy,
+} from "./membership-contract.ts";
 import { runtimeRecoveryPrefix } from "./runtime-recovery.ts";
 import { accessPath, accessPrefix, accessTtl } from "./access-contract.ts";
 
@@ -372,6 +376,14 @@ test("the Durable Object alarm provisions pending pool members", async () => {
   assert.ok(alarm);
 });
 
+interface StubStorage {
+  get(key: string): Promise<unknown>;
+  put(key: string, value: unknown): Promise<void>;
+  transaction<T>(work: (transaction: StubStorage) => Promise<T>): Promise<T>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
+}
+
 test("reconstructing a running or stopped object without a request leaves compute and idle state alone", async () => {
   const env = {
     POOL_DATABASE_URL: "postgres://fake:fake@database.invalid/fake",
@@ -381,9 +393,25 @@ test("reconstructing a running or stopped object without a request leaves comput
   };
   const timeouts: number[] = [];
   const pending: Promise<unknown>[] = [];
+  const armed: number[] = [];
   let writes = 0,
     starts = 0,
     destroys = 0;
+  // With no runtime selected, reconstruction arms no upkeep alarm, touches no compute and writes
+  // nothing but the record of a running container's boot.
+  const values = new Map<string, unknown>();
+  const storage: StubStorage = {
+    get: async (key: string) => values.get(key),
+    put: async (key: string, value: unknown) => {
+      if (key !== "pool-alarm-v1:deadlines" && key !== "runtime-container-end-v1") writes++;
+      values.set(key, value);
+    },
+    transaction: async (work) => work(storage),
+    getAlarm: async () => null,
+    setAlarm: async (at: number) => {
+      armed.push(at);
+    },
+  };
   const object = (running: boolean) =>
     new PoolContainer(
       {
@@ -403,12 +431,7 @@ test("reconstructing a running or stopped object without a request leaves comput
         waitUntil: (work: Promise<unknown>) => {
           pending.push(work);
         },
-        storage: {
-          get: async () => undefined,
-          put: async () => {
-            writes++;
-          },
-        },
+        storage,
       },
       env,
     );
@@ -419,6 +442,7 @@ test("reconstructing a running or stopped object without a request leaves comput
   await Promise.all(pending);
   assert.deepEqual(timeouts, []);
   assert.equal(writes, 0);
+  assert.deepEqual(armed, [], "nothing is selected, so no object arms an upkeep alarm");
   assert.equal(starts, 0);
   assert.equal(destroys, 0);
 });
@@ -1004,7 +1028,9 @@ for (const retire of [false, true])
       const entered = Promise.withResolvers<void>(),
         release = Promise.withResolvers<void>();
       const installed: NativeMembershipPolicy[] = [];
-      let alarm: number | null = null,
+      // A pool whose alarm is alive, so the deadlines read below are the reservation's own; a pool
+      // with none is armed at once instead (alarms.test.ts, runtime-heal-no-alarm.worker.test.ts).
+      let alarm: number | null = start + 3_600_000,
         reads = 0,
         native = true;
       if (retire)
@@ -1216,9 +1242,14 @@ for (const retire of [false, true])
       alarm = null;
       await worker.alarm();
       await Promise.all(background);
-      assert.equal(reads, 2, "the restored alarm must perform a fresh repair");
+      assert.equal(reads, 1, "the restored alarm renews a clean pool without a host read");
       assert.ok(installed.at(-1)!.expiresAt > firstExpiry, "the next pass renews native authority");
       assert.equal(alarm, Date.now() + 5_000);
+      t.mock.timers.tick(membershipReadMs);
+      alarm = null;
+      await worker.alarm();
+      await Promise.all(background);
+      assert.equal(reads, 2, "the read interval's pass performs a fresh host read");
     },
   );
 
@@ -1365,12 +1396,12 @@ test("uncertain model sends are not replayed and allow client retries while defi
         body: '{"state":"synthetic-unknown"}',
       }),
     );
-    assert.equal(response.status, path === "/v1/messages" ? 529 : 503, path);
+    assert.equal(response.status, 503, path);
     assert.equal(response.headers.get("x-should-retry"), null);
     assert.equal(response.headers.get("retry-after"), "1");
     assert.equal(response.headers.get("retry-after-ms"), null);
     const body = (await response.json()) as { error: { type: string } };
-    assert.equal(body.error.type, path === "/v1/messages" ? "overloaded_error" : "server_error");
+    assert.equal(body.error.type, path === "/v1/messages" ? "api_error" : "server_error");
     assert.equal(sends, before + 1);
   }
   refuse = true;
@@ -1591,6 +1622,7 @@ test("five-second membership alarms run persisted reporting jobs only every five
         },
         changes: { deliver: async () => {} },
         appModels: { tick: async () => {} },
+        homeDatabasePool: { report: async () => {} },
         memberships: {
           tick: async () => {
             calls.membership++;
@@ -1708,6 +1740,7 @@ test("committed change delivery survives a shared Home task without delaying fle
         },
       },
       appModels: { tick: async () => {} },
+      homeDatabasePool: { report: async () => {} },
       memberships: {
         tick: async () => {
           counts.membership++;
@@ -1733,11 +1766,61 @@ test("committed change delivery survives a shared Home task without delaying fle
     await alarms.schedule("fleet", Date.now());
     alarm = null;
     await worker.alarm();
-    assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 0 });
+    // The held task's delivery is not repeated, and membership renewal does not wait for it.
+    assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 1 });
     assert.equal((await alarms.inspect()).homeDeadline, Date.now() + 5_000);
   } finally {
     delivery.resolve();
     await Promise.all(background);
   }
-  assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 1 });
+  // Released, the pass renews again in its own turn: two renewals one after the other.
+  assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 2 });
+});
+
+test("the operator entrypoint writes one closed line when its handoff call throws before the controller runs", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const env = {
+    PoolContainer: {
+      jurisdiction() {
+        return {
+          getByName() {
+            return {
+              runtimeHandoff: async () => {
+                throw new DOMException(
+                  "AbortSignal serialization is not enabled.",
+                  "DataCloneError",
+                );
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+  const response = await PoolOperations.prototype.fetch.call(
+    { env },
+    new Request("https://pool.example/runtime-handoff", { method: "POST", body: "{}" }),
+  );
+  assert.equal(response.status, 500);
+  assert.deepEqual(
+    log.mock.calls.map((call) => [call.arguments[0], JSON.parse(String(call.arguments[1]))]),
+    [
+      [
+        "POOL_OPERATIONS_CALL_FAILED",
+        {
+          route: "/runtime-handoff",
+          status: 500,
+          name: "DataCloneError",
+          code: 25,
+          messageClass: "aborted",
+          isError: true,
+          disconnected: null,
+          retryable: null,
+          overloaded: null,
+          remote: null,
+          durableObjectReset: null,
+        },
+      ],
+    ],
+  );
 });
