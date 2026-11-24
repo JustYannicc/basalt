@@ -18,7 +18,7 @@ import {
 } from "./runtime-route-diagnostic.ts";
 import { forwardRecoverably, markRootFallbackCap } from "./runtime-fleet/retry.ts";
 import { rootFallbackBurst, rootFallbackPerSecond } from "./runtime-fleet/root-fallback.ts";
-import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
+import { RemoteRuntimeDefect, runtimeErrorResponse } from "./runtime-slots/request-error.ts";
 import { ProviderObservationRefused } from "./runtime-provider/read.ts";
 import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
@@ -721,6 +721,10 @@ async function coldFleet(
     maximum?: number;
     handoverAt?: number;
     disableAt?: number;
+    // The starting cell serves once ready, and its endpoint refuses its first calls before the
+    // container send, as S1's lapse did; a second cell starting meanwhile is ready at its time.
+    refuseFirst?: number;
+    secondReadyAt?: number;
   } = {},
 ) {
   for (const method of ["error", "warn", "info"] as const)
@@ -736,6 +740,25 @@ async function coldFleet(
   const starting = f.target();
   await f.state.reserve(starting);
   await f.state.dispatch(starting);
+  const second = options.secondReadyAt === undefined ? undefined : f.target();
+  if (second) {
+    await f.state.reserve(second);
+    await f.state.dispatch(second);
+  }
+  let refusals = options.refuseFirst ?? 0;
+  const cell = f.cell(starting);
+  const forward = cell.forward;
+  cell.forward = async (request, port, pool, beforeDispatch) => {
+    if (refusals <= 0) return forward(request, port, pool, beforeDispatch);
+    refusals--;
+    beforeDispatch();
+    const cause = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_identity", cause);
+    throw retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
   const sleepers = new Set<{ at: number; wake(): void }>();
   const timing = {
     now: () => now,
@@ -765,14 +788,19 @@ async function coldFleet(
         void response.body?.cancel().catch(() => {});
       }),
     );
-  const events = [options.readyAt, options.failAt, options.handoverAt, options.disableAt].filter(
-    (value): value is number => value !== undefined,
-  );
+  const events = [
+    options.readyAt,
+    options.failAt,
+    options.handoverAt,
+    options.disableAt,
+    options.secondReadyAt,
+  ].filter((value): value is number => value !== undefined);
   let next = 0;
   for (let turn = 0; turn < 100_000; turn++) {
     f.advance(200 + now);
     if (options.readyAt !== undefined && now >= options.readyAt && !events.includes(-1)) {
       events.push(-1);
+      if (options.refuseFirst !== undefined) f.selected.set(starting.slotId, starting);
       await f.state.ready(starting);
     }
     if (options.failAt !== undefined && now >= options.failAt && !events.includes(-2)) {
@@ -780,6 +808,11 @@ async function coldFleet(
       const [row] = await f.state.inspect();
       if (options.failInto === "uncertain") await f.state.uncertain(starting);
       else await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+    }
+    if (second && now >= options.secondReadyAt! && !events.includes(-3)) {
+      events.push(-3);
+      f.selected.set(second.slotId, second);
+      await f.state.ready(second);
     }
     if (options.handoverAt !== undefined && now >= options.handoverAt) handingOver = true;
     if (options.disableAt !== undefined && now >= options.disableAt) enabled = false;
@@ -822,6 +855,22 @@ test("a steady 3 a second on a cold fleet for 90 s is all served while the cell 
     answers.map((answer) => answer.status),
     Array(270).fill(200),
   );
+});
+
+test("a held call the first ready cell refuses before its container send is served, through that cell's fence and the root's cap", async (context) => {
+  // The cap admits 34 by 20 s; the cell ready then refuses its first call (S1's lapse), which
+  // fences it, while a second cell is still starting, so the other held calls keep holding.
+  const { answers, f } = await coldFleet(context, Array(60).fill(0), {
+    readyAt: 20_000,
+    refuseFirst: 1,
+    secondReadyAt: 40_000,
+  });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(60).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "the second cell took the calls once ready");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 42_000);
 });
 
 test("a cold start that fails releases the held calls to today's answer, inside the bound", async (context) => {
