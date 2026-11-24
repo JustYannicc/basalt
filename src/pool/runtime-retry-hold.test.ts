@@ -248,3 +248,53 @@ test("a held call waits out the root fallback cap at the cap's rate inside the h
   );
   assert.deepEqual(none.pauses, []);
 });
+
+// With enable_request_signal a caller who leaves aborts the request's signal; #1861 listed "a
+// client's abort may not reach the hold" as a limit while the flag was off.
+for (const hold of ["rootHoldMs", "coldHoldMs"] as const)
+  test(`a caller who leaves during the ${hold === "rootHoldMs" ? "root-recovery" : "cold-start"} hold ends it and lets go of its body`, async () => {
+    const caller = new AbortController();
+    let bodyCancelled = false;
+    const request = new Request("http://pool/v1/responses", {
+      method: "POST",
+      body: new ReadableStream<Uint8Array>({
+        // Still uploading, as a long request is while it waits.
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("payload"));
+        },
+        cancel() {
+          bodyCancelled = true;
+        },
+      }),
+      duplex: "half",
+      signal: caller.signal,
+    } as RequestInit);
+    let attempts = 0;
+    let paused!: () => void;
+    const pausing = new Promise<void>((resolve) => (paused = resolve));
+    const timing = {
+      now: () => 0,
+      pause: (_milliseconds: number, signal?: AbortSignal) =>
+        new Promise<void>((_resolve, reject) => {
+          paused();
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    };
+    const answer = forwardRecoverably(
+      request,
+      async () => {
+        attempts++;
+        throw recordReplaced();
+      },
+      () => {},
+      async () => {},
+      { timing, [hold]: async () => restartStartBoundMs },
+    );
+    await pausing;
+    assert.equal(attempts, 1);
+    caller.abort(new DOMException("The caller left", "AbortError"));
+    await assert.rejects(answer, { name: "AbortError" });
+    assert.equal(attempts, 1, "no attempt after the caller left");
+    await new Promise(setImmediate);
+    assert.equal(bodyCancelled, true, "the held copy of the body is let go");
+  });

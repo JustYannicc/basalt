@@ -20,6 +20,8 @@ import {
 } from "./controller-unsent.ts";
 import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
 import { heldBytes, holdBody, type HeldBody } from "./held-body.ts";
+import { controllerIsolateHeader, isolate } from "./isolate.ts";
+import { openRouterAttempt } from "./router-attempt.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -60,6 +62,8 @@ export interface ControllerHop {
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   holdBudgetBytes?: number;
+  /** Verifies the router's name for a call, so the entry's isolate line carries that id. */
+  signing?: { key: string; previous?: string };
 }
 
 type Outcome =
@@ -172,8 +176,39 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
         }),
       ),
   );
+  const traced = request.method === "POST" && isPublicModelPath(new URL(request.url).pathname);
+  const here = isolate();
+  const named =
+    traced && hop.signing
+      ? await openRouterAttempt(request, hop.signing.key, hop.signing.previous)
+      : undefined;
+  // Written before the send, so a call its isolate takes down still has its line.
+  if (traced)
+    console.info("POOL_ENTRY_ISOLATE", {
+      phase: "sent",
+      requestId: named?.requestId ?? null,
+      attempt: named?.attempt ?? null,
+      entry: here.id,
+      entryAgeMs: Date.now() - here.startedAt,
+    });
   try {
-    return await forwardHeld(request, hop, model, requestId, copy);
+    const response = await forwardHeld(request, hop, model, requestId, copy);
+    const controller = response.headers.get(controllerIsolateHeader);
+    if (controller === null) return response;
+    console.info("POOL_ENTRY_ISOLATE", {
+      phase: "answered",
+      requestId: named?.requestId ?? null,
+      entry: here.id,
+      controller: /^[0-9a-f-]{36}$/.test(controller) ? controller : "invalid",
+      shared: controller === here.id,
+    });
+    const headers = new Headers(response.headers);
+    headers.delete(controllerIsolateHeader);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   } finally {
     // Past the controller's answer, or any failure, the held copy can never be sent again.
     copy.release();

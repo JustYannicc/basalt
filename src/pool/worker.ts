@@ -149,6 +149,7 @@ import { readReliabilityInSession } from "./model-history/reliability-session.ts
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { fetchController } from "./controller-reset.ts";
 import { detachFromCaller, followsCaller } from "./caller-signal.ts";
+import { isolate } from "./isolate.ts";
 import {
   CodeHandover,
   decodeControllerCode,
@@ -193,8 +194,6 @@ export interface PoolEnvironment extends TelemetryEnv, SentryEnv, HandoffEnviron
   TOOLS_SERVICE: Fetcher;
 }
 
-// Random values are refused at global scope, so the isolate is named on its first construction.
-let controllerIsolate: { id: string; startedAt: number } | undefined;
 let controllerConstructions = 0;
 
 export class PoolContainer extends DurableObject<PoolEnvironment> {
@@ -232,7 +231,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   constructor(ctx: DurableObjectState, env: PoolEnvironment) {
     super(ctx, env);
     // A new isolate means the platform replaced it; a later construction in one rebuilt the object.
-    controllerIsolate ??= { id: crypto.randomUUID(), startedAt: Date.now() };
+    const controllerIsolate = isolate();
     console.info("POOL_CONTROLLER_INSTANCE", {
       at: Date.now(),
       isolate: controllerIsolate.id,
@@ -1279,7 +1278,12 @@ export async function handlePoolWorkerRequest(
   defer: (work: Promise<unknown>) => void = (work) => void work.catch(() => {}),
 ): Promise<Response> {
   const controller = (forwarded: Request) =>
-    fetchController(forwarded, { controller: () => singleton(env), env, defer });
+    fetchController(forwarded, {
+      controller: () => singleton(env),
+      env,
+      defer,
+      signing: { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+    });
   request = followsCaller(stripModelLifetimeRequest(request));
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)

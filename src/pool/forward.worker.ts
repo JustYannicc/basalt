@@ -27,6 +27,7 @@ import { modelPaths, rewriteCapResponse } from "./cap-message.ts";
 import { containerRequest } from "./container-request.ts";
 import { nativeModelHeader } from "./native-contract.ts";
 import { openRouterAttempt, routerAttemptHeader } from "./router-attempt.ts";
+import { controllerIsolateHeader, isolate } from "./isolate.ts";
 import { modelDrainProtocol } from "./model-drain-contract.ts";
 import { nativeResponse } from "./native-response.worker.ts";
 import {
@@ -323,6 +324,7 @@ export async function forwardPoolRequest(
     stripRuntimeFailureHeaders(headers);
     // An unsent answer names this call's own id, the one its terminal start was written under,
     // so the entry's re-send can finish that same row.
+    if (modelCall) headers.set(controllerIsolateHeader, isolate().id);
     if (modelCall || runtimeRefusal)
       headers.set(
         "X-Request-Id",
