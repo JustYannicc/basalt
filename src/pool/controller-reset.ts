@@ -206,7 +206,9 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
       entryAgeMs: Date.now() - here.startedAt,
     });
   try {
-    const response = await forwardHeld(request, hop, model, requestId, copy);
+    // Read once, before the send: the name lives 25 s, and an answer may take longer to begin.
+    const resumes = named?.resume === true;
+    const response = await forwardHeld(request, hop, model, requestId, copy, resumes);
     const controller = response.headers.get(controllerIsolateHeader);
     if (controller === null) return response;
     console.info("POOL_ENTRY_ISOLATE", {
@@ -303,6 +305,8 @@ async function forwardHeld(
   model: boolean,
   requestId: string,
   copy: HeldBody,
+  /** The router that sent the call resumes and strips a stamp. */
+  resumes: boolean,
 ): Promise<Response> {
   const now = hop.now ?? Date.now;
   const begun = now();
@@ -389,7 +393,9 @@ async function forwardHeld(
   const controllerRequestId = response.headers.get("X-Request-Id");
   // Signed before the entry's own splice strips what it is made of: if this entry goes down with
   // the controller mid-body, the router resumes the call itself.
-  const stamp = hop.signing ? await routerStamp(response, hop.signing.key) : undefined;
+  // Only a router that resumes and strips the stamp says so in its signed name; through any other
+  // the stamp would reach the client.
+  const stamp = hop.signing && resumes ? await routerStamp(response, hop.signing.key) : undefined;
   // The pool the controller admitted the call under; its resume is admitted under that pool only.
   const pool = response.headers.get(streamResumePoolHeader) ?? undefined;
   // A resumable answer is re-attached through the new instance first; only an answer it cannot

@@ -409,7 +409,12 @@ async function started(context: TestContext, memberships = true) {
       headers: {
         "content-type": "application/json",
         ...(await credentials(options.device, shape)),
-        [routerAttemptHeader]: await signRouterAttempt(signingKey, { requestId, attempt: 1 }),
+        // As a router that resumes names its sends.
+        [routerAttemptHeader]: await signRouterAttempt(signingKey, {
+          requestId,
+          attempt: 1,
+          resume: true,
+        }),
       },
       body: JSON.stringify({ model: "fixture", stream: true }),
     });

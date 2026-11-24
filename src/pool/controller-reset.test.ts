@@ -660,38 +660,89 @@ test("the entry names its isolate before a model call and the controller's on it
   }
 });
 
-test("a marked answer leaves the entry stamped for the router; an unmarked one does not", async () => {
+test("a marked answer leaves the entry stamped only for a router that resumes", async () => {
   const signingKey = "ab".repeat(32);
   const requestId = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
   const target = encodeResumeTarget({ kind: "primary" });
-  for (const marked of [true, false]) {
-    const answer = await fetchController(
-      new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
-      {
-        controller: () => ({
-          fetch: async () =>
-            new Response("data: {}\n\n", {
-              headers: {
-                "content-type": "text/event-stream",
-                "X-Request-Id": requestId,
-                "X-Signalbox-Pool-Boot": "boot-a",
-                ...(marked
-                  ? {
-                      [streamResumeHeader]: streamResumeVersion,
-                      [streamResumeTargetHeader]: target,
-                    }
-                  : {}),
-              },
-            }),
+  // A router that resumes says so in its signed name; one from before, or none, does not. A router
+  // that does not resume passes the entry's answer on unchanged, so what the entry answers here is
+  // what its client would see.
+  const names = {
+    resumes: await signRouterAttempt(signingKey, { requestId, attempt: 1, resume: true }),
+    before: await signRouterAttempt(signingKey, { requestId, attempt: 1 }),
+    none: undefined,
+  };
+  for (const marked of [true, false])
+    for (const [router, name] of Object.entries(names)) {
+      const answer = await fetchController(
+        new Request("https://pool.example/v1/messages", {
+          method: "POST",
+          body: "{}",
+          headers: name ? { [routerAttemptHeader]: name } : {},
         }),
-        env: {},
-        defer: () => {},
-        signing: { key: signingKey },
-      },
-    );
-    assert.equal(answer.headers.has(streamResumeTargetHeader), false);
-    const stamp = await openResumeStamp(answer.headers.get(routerResumeHeader), signingKey);
-    assert.deepEqual(stamp, marked ? { requestId, target, boot: "boot-a" } : undefined);
-    await answer.text();
-  }
+        {
+          controller: () => ({
+            fetch: async () =>
+              new Response("data: {}\n\n", {
+                headers: {
+                  "content-type": "text/event-stream",
+                  "X-Request-Id": requestId,
+                  "X-Signalbox-Pool-Boot": "boot-a",
+                  ...(marked
+                    ? {
+                        [streamResumeHeader]: streamResumeVersion,
+                        [streamResumeTargetHeader]: target,
+                      }
+                    : {}),
+                },
+              }),
+          }),
+          env: {},
+          defer: () => {},
+          signing: { key: signingKey },
+        },
+      );
+      assert.equal(answer.headers.has(streamResumeTargetHeader), false);
+      const stamped = marked && router === "resumes";
+      assert.equal(answer.headers.has(routerResumeHeader), stamped, `${router}, marked ${marked}`);
+      const stamp = await openResumeStamp(answer.headers.get(routerResumeHeader), signingKey);
+      assert.deepEqual(stamp, stamped ? { requestId, target, boot: "boot-a" } : undefined);
+      await answer.text();
+    }
+});
+
+test("a router's name read before the send still stamps an answer that begins after it expires", async (context) => {
+  const signingKey = "ab".repeat(32);
+  const requestId = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f";
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const name = await signRouterAttempt(signingKey, { requestId, attempt: 1, resume: true });
+  const answer = await fetchController(
+    new Request("https://pool.example/v1/messages", {
+      method: "POST",
+      body: "{}",
+      headers: { [routerAttemptHeader]: name },
+    }),
+    {
+      controller: () => ({
+        fetch: async () => {
+          // The answer begins well past the name's 25 s.
+          context.mock.timers.tick(60_000);
+          return new Response("data: {}\n\n", {
+            headers: {
+              "content-type": "text/event-stream",
+              "X-Request-Id": requestId,
+              "X-Signalbox-Pool-Boot": "boot-a",
+              [streamResumeHeader]: streamResumeVersion,
+              [streamResumeTargetHeader]: encodeResumeTarget({ kind: "primary" }),
+            },
+          });
+        },
+      }),
+      env: {},
+      defer: () => {},
+      signing: { key: signingKey },
+    },
+  );
+  assert.equal(answer.headers.has(routerResumeHeader), true);
+  await answer.text();
 });

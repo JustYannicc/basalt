@@ -93,9 +93,11 @@ export async function forwardModelCall(
     // A caller's own value never names a call. The name only ties sends together, so a router that
     // cannot sign one still forwards the call, and the pool answers it, a 401 included, as before.
     headers.delete(routerAttemptHeader);
-    const name = await signRouterAttempt(env.POOL_APP_SIGNING_KEY, { requestId, attempt }).catch(
-      () => undefined,
-    );
+    const name = await signRouterAttempt(env.POOL_APP_SIGNING_KEY, {
+      requestId,
+      attempt,
+      resume: true,
+    }).catch(() => undefined);
     if (name) headers.set(routerAttemptHeader, name);
     await prepare(headers);
     return headers;
