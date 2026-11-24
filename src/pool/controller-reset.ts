@@ -18,7 +18,15 @@ import {
   unsentAttemptHeader,
   withoutUnsentMark,
 } from "./controller-unsent.ts";
-import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
+import {
+  resumableAnswer,
+  streamBootHeader,
+  streamResumeHeader,
+  streamResumeTargetHeader,
+  streamResumeVersion,
+  type StreamResumeInput,
+} from "./stream-resume.ts";
+import { routerResumeHeader, signResumeStamp } from "./router-resume.ts";
 import { heldBytes, holdBody, type HeldBody } from "./held-body.ts";
 import { controllerIsolateHeader, isolate } from "./isolate.ts";
 import { openRouterAttempt } from "./router-attempt.ts";
@@ -373,6 +381,9 @@ async function forwardHeld(
   response = await awaitHandover(request, hop, model, copy, response, begun);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
+  // Signed before the entry's own splice strips what it is made of: if this entry goes down with
+  // the controller mid-body, the router resumes the call itself.
+  const stamp = hop.signing ? await routerStamp(response, hop.signing.key) : undefined;
   // A resumable answer is re-attached through the new instance first; only an answer it cannot
   // resume reaches the retry terminal below, unchanged.
   const answer = resumableAnswer(response, {
@@ -388,7 +399,7 @@ async function forwardHeld(
     delayMs: controllerReplayDelayMs,
     signal: request.signal,
   });
-  return nativeRuntimeStream(answer, request, (error) =>
+  const delivered = nativeRuntimeStream(answer, request, (error) =>
     report(
       hop,
       request,
@@ -399,4 +410,29 @@ async function forwardHeld(
       error,
     ),
   );
+  if (!stamp) return delivered;
+  const headers = new Headers(delivered.headers);
+  headers.set(routerResumeHeader, stamp);
+  return new Response(delivered.body, {
+    status: delivered.status,
+    statusText: delivered.statusText,
+    headers,
+  });
+}
+
+/** What a resume needs, for an answer the front layer marked and the controller stamped. */
+async function routerStamp(response: Response, key: string) {
+  const requestId = response.headers.get("X-Request-Id") ?? "";
+  const target = response.headers.get(streamResumeTargetHeader) ?? "";
+  const boot = response.headers.get(streamBootHeader) ?? "";
+  if (
+    !response.ok ||
+    !response.body ||
+    response.headers.get(streamResumeHeader) !== streamResumeVersion ||
+    !/^[0-9a-f-]{36}$/.test(requestId) ||
+    !target ||
+    !boot
+  )
+    return undefined;
+  return signResumeStamp(key, { requestId, target, boot }).catch(() => undefined);
 }
