@@ -19,7 +19,7 @@
     },
     {
       "path": "package.json",
-      "content": "{\n  \"name\": \"@executor.sh/google\",\n  \"description\": \"Every linked Google account across Gmail, Calendar, Drive, Sheets, Docs, Slides, Forms, Tasks, Contacts, Meet and Photos: cross-account search, agenda and availability, plus the complete APIs.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Google\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.15\"\n  }\n}\n"
+      "content": "{\n  \"name\": \"@executor.sh/google\",\n  \"description\": \"Every linked Google account across Gmail, Calendar, Drive, Sheets, Docs, Slides, Forms, Tasks, Contacts, Meet and Photos: cross-account search, agenda and availability, plus the complete APIs.\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"executor\": {\n    \"title\": \"Google\"\n  },\n  \"dependencies\": {\n    \"apps\": \"0.0.1-beta.104-basalt.16\"\n  }\n}\n"
     },
     {
       "path": "products/calendar/calendar-openapi.json",

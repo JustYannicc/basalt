@@ -3,9 +3,9 @@
   "publishedUrl": "https://catalog.executor.sh/apps/gmail.json",
   "snapshotCaptured": "2026-11-18",
   "publishedSha256": "d4dcbd13bcf33901f108d318dac8d27398c6dc1fa5e145905c98260250144d1b",
-  "carriedSha256": "9b575f91c84eecbbe629b0db8708020811b52741f06906ff178b520da510b270",
-  "patchSha256": "3ff4f2d9c15afd51b8cebf92b12391226e3e7a0c1a7e0c572674a0c1d55f5d00",
-  "appsVersion": "0.0.1-beta.104-basalt.15",
+  "carriedSha256": "73e83dec3cb851d21f2f7bb2664730ce03d37a14062710e9935bb4a1e5be93a4",
+  "patchSha256": "aa3f801c41a58d68bfc9fbdd8ca17ec6ae7a2771cfbf27ce2367a39f85cb11d9",
+  "appsVersion": "0.0.1-beta.104-basalt.16",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "Send and draft take attachments, large messages use Gmail's resumable upload, and scheduled send runs as an editable workflow over drafts; publication not claimed"

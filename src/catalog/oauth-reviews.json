@@ -1955,7 +1955,7 @@
     {
       "entry": "gmail",
       "package": "@executor.sh/gmail",
-      "sourceSha256": "72dc2d793b4ef8dd0819098dfb7cd44bbf0bda0f06087cbacbc607df7c5e0ac9",
+      "sourceSha256": "09f0ae18db13bd7b6ae47585a49e5b413cdb3e2bb3e7d79750ab4d407558d3fd",
       "methods": {
         "oauth": {
           "kind": "hosted",
@@ -1987,7 +1987,7 @@
     {
       "entry": "google",
       "package": "@executor.sh/google",
-      "sourceSha256": "607095e9ecb4f3a53dcf56f3ed7facdcb78b17a41c7cfc0ed493c2767a014faa",
+      "sourceSha256": "6b7d0adf3c74d664e4a6255d51ebc545c5cc70fd3dfc0aa2db94cae3510a4ba4",
       "methods": {
         "oauth": {
           "kind": "hosted",
