@@ -268,6 +268,20 @@ export async function captureHoursAutoState(storage: AutoStorage): Promise<Captu
   return (await storage.get<CaptureHoursAutoState>(captureHoursAutoKey)) ?? {};
 }
 
-/** The pools whose counting is stuck, which the minute check reports as a reliability reason. */
-export const captureHoursStuckPools = (state: CaptureHoursAutoState) =>
-  [...new Set((state.stuck ?? []).map((entry) => entry.pool))].sort();
+/**
+ * The pools whose counting is stuck, which the minute check reports as a reliability reason: any
+ * with a stuck entry, and any with a count's wait on an hour slow `slowAfter` times in a row, given
+ * up or not, since a pool keeps one stuck entry and another hour can replace it.
+ */
+export const captureHoursStuckPools = (
+  state: CaptureHoursAutoState,
+  slowAfter = captureHoursAutoBounds.slowAfter,
+) =>
+  [
+    ...new Set([
+      ...(state.stuck ?? []).map((entry) => entry.pool),
+      ...(state.slow ?? [])
+        .filter((entry) => entry.limit !== "read" && entry.count >= slowAfter)
+        .map((entry) => entry.pool),
+    ]),
+  ].sort();

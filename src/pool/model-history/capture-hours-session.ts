@@ -215,6 +215,8 @@ export async function captureHoursSession(
   // The plan's pools in a fixed order, so a log line and inspect name a pool by its place alone.
   const ordinals = [...known].sort();
   const ordinal = (pool: string) => ordinals.indexOf(pool) + 1;
+  /** The time a stuck hour's retry leaves between its limit and the session's end. */
+  const stuckRetryMarginMs = 250;
   /** Whether a count's wait is a stuck hour's: it is only ever retried alone, by retryStuck. */
   const isStuck = (entry: { count: number; limit?: "read" }) =>
     entry.limit !== "read" && entry.count >= bounds.slowAfter;
@@ -561,12 +563,22 @@ export async function captureHoursSession(
         known.has(entry.pool) &&
         Date.parse(entry.until) <= now(),
     );
+    const last = bounds.stuckRetryLimitsMs.length - 1;
     for (const entry of due) {
-      const step = entry.retries ?? 0;
-      const limitMs = bounds.stuckRetryLimitsMs[step];
-      if (limitMs === undefined) continue;
+      // A pool resting after an error, or whose turn this session has ended, waits like its counts.
+      if (waiting().has(entry.pool) || resting.has(entry.pool)) continue;
+      const step = Math.min(entry.retries ?? 0, last);
       if (stopped()) return "handover";
-      if (left() < limitMs) continue;
+      // A margin over the limit, so the count's own limit is never cut short of it and read as the
+      // session's budget. The last step takes what the session has left, up to its limit, as long as
+      // that is more than the step before: the session's own reads before it may leave less.
+      const room = Math.floor(left()) - stuckRetryMarginMs;
+      const limitMs =
+        step === last
+          ? Math.min(bounds.stuckRetryLimitsMs[last]!, room)
+          : bounds.stuckRetryLimitsMs[step]!;
+      const floor = step === last ? (bounds.stuckRetryLimitsMs[last - 1] ?? 0) : limitMs;
+      if (room < limitMs || limitMs <= (step === last ? floor : 0)) continue;
       const { pool, hour } = entry;
       const alone = { pool, from: hour, to: new Date(Date.parse(hour) + hourMs).toISOString() };
       progress.working = pool;

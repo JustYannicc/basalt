@@ -204,7 +204,7 @@ test("a code handover ends the tick at the next hour boundary, with every counte
 });
 
 for (const position of blockPositions())
-  test(`a count past its own limit is slow: only that hour waits while its pool goes on, three in a row is stuck and loud once, and it is retried every wait (${position.label})`, async (t) => {
+  test(`a count past its own limit is slow: only that hour waits while its pool goes on, three in a row is stuck and loud once, and it is retried alone under longer limits after its waits (${position.label})`, async (t) => {
     const logged = t.mock.method(console, "error", () => {});
     await seriesFixture(async (f) => {
       await clockAt(f, position.at);
@@ -352,7 +352,7 @@ async function stuckHour(f: Fixture, position: { at: number }, ms: number) {
       .filter((entry) => entry.pool === c.poolId && entry.from === Date.parse(slowHour))
       .filter((entry) => entry.to - entry.from === hour)
       .map((entry) => entry.limit);
-  return { c, slowHour, cost, clock, tick, tries, limits, state };
+  return { c, slowHour, cost, clock, tick, tries, limits, state, storage };
 }
 
 for (const position of blockPositions())
@@ -391,6 +391,25 @@ for (const position of blockPositions())
       assert.deepEqual([...new Set(others.map((entry) => entry.limit))], [1_000]);
     });
   });
+
+test("a stuck hour left by the earlier code, slow seven times with no longer retry yet, is retried at the first longer limit, and its pool reads stuck from its wait alone", async (t) => {
+  t.mock.method(console, "error", () => {});
+  await seriesFixture(async (f) => {
+    const s = await stuckHour(f, blockPositions()[0]!, 2_500);
+    // As production holds it now: seven in a row, never retried under a longer limit.
+    const before = (await s.storage.get<CaptureHoursAutoState>(captureHoursAutoKey))!;
+    const legacy = before.slow!.map((wait) => ({ ...wait, count: 7 }));
+    await s.storage.put(captureHoursAutoKey, { ...before, slow: legacy });
+    // A pool keeps one stuck entry, so another hour can replace it: its waits still name it.
+    assert.deepEqual(captureHoursStuckPools({ stuck: [], slow: legacy }), [s.c.poolId]);
+    s.clock.at += 10 * minute + 1_000;
+    const done = await s.tick();
+    assert.deepEqual(s.tries(), [1_000, 1_000, 1_000, 3_000]);
+    assert.deepEqual(captureHoursStuckPools(done), []);
+    const pool = await counted(f, s.c.poolId);
+    assert.equal(pool.settled, pool.hours);
+  });
+});
 
 for (const position of blockPositions())
   test(`a stuck hour slower than the last retry limit is given up: it stays stuck, inspect says so, and it is not tried again (${position.label})`, async (t) => {
