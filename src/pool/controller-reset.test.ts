@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { controllerIsolateHeader, isolate } from "./isolate.ts";
+import { openResumeStamp, routerResumeHeader } from "./router-resume.ts";
+import {
+  encodeResumeTarget,
+  streamResumeHeader,
+  streamResumeTargetHeader,
+  streamResumeVersion,
+} from "./stream-resume.ts";
 import { routerAttemptHeader, signRouterAttempt } from "./router-attempt.ts";
 import {
   modelCallReplayable,
@@ -650,5 +657,41 @@ test("the entry names its isolate before a model call and the controller's on it
         { phase: "answered", requestId, entry: own, controller, shared: controller === own },
       ],
     );
+  }
+});
+
+test("a marked answer leaves the entry stamped for the router; an unmarked one does not", async () => {
+  const signingKey = "ab".repeat(32);
+  const requestId = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+  const target = encodeResumeTarget({ kind: "primary" });
+  for (const marked of [true, false]) {
+    const answer = await fetchController(
+      new Request("https://pool.example/v1/messages", { method: "POST", body: "{}" }),
+      {
+        controller: () => ({
+          fetch: async () =>
+            new Response("data: {}\n\n", {
+              headers: {
+                "content-type": "text/event-stream",
+                "X-Request-Id": requestId,
+                "X-Signalbox-Pool-Boot": "boot-a",
+                ...(marked
+                  ? {
+                      [streamResumeHeader]: streamResumeVersion,
+                      [streamResumeTargetHeader]: target,
+                    }
+                  : {}),
+              },
+            }),
+        }),
+        env: {},
+        defer: () => {},
+        signing: { key: signingKey },
+      },
+    );
+    assert.equal(answer.headers.has(streamResumeTargetHeader), false);
+    const stamp = await openResumeStamp(answer.headers.get(routerResumeHeader), signingKey);
+    assert.deepEqual(stamp, marked ? { requestId, target, boot: "boot-a" } : undefined);
+    await answer.text();
   }
 });
