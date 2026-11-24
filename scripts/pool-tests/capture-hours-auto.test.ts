@@ -198,79 +198,120 @@ test("a code handover ends the tick at the next hour boundary, with every counte
   });
 });
 
-test("a count past its own limit is slow: only its pool waits, three in a row is stuck and loud once, and it is retried every wait", async (t) => {
-  const logged = t.mock.method(console, "error", () => {});
-  await seriesFixture(async (f) => {
-    const c = await captureFixture(f);
-    await c.native(at(0, minute));
-    await c.native(at(1, minute), true);
-    await c.ready();
-    // Newest first: the pool's first block holds the hour before the settle horizon. Its block
-    // runs out its limit and splits; then that hour, alone, runs out its own and is slow.
-    const slowHour = key((await horizon(f)) - hour);
-    const cost = { ms: 5_000 };
-    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
-    const storage = memoryStorage();
-    // The slow pool's turn comes first, so the other pool counts the same hours after it stops.
-    await storage.put(captureHoursAutoKey, { nextPool: c.otherId });
-    const tick = () =>
-      captureHoursTick(
-        storage,
-        (work) => work(timed(f.db, clock, { pool: c.poolId, hour: slowHour, cost })),
-        { now: () => clock.at, bounds: { lookbackHours } },
+for (const position of blockPositions())
+  test(`a count past its own limit is slow: only that hour waits while its pool goes on, three in a row is stuck and loud once, and it is retried every wait (${position.label})`, async (t) => {
+    const logged = t.mock.method(console, "error", () => {});
+    await seriesFixture(async (f) => {
+      await clockAt(f, position.at);
+      const c = await captureFixture(f);
+      await c.native(at(0, minute));
+      await c.native(at(1, minute), true);
+      await c.ready();
+      // Newest first: the pool's first block holds the hour before the settle horizon. Its block
+      // runs out its limit and splits; then that hour, alone, runs out its own and is slow.
+      const slowHour = key((await horizon(f)) - hour);
+      const cost = { ms: 5_000 };
+      const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+      const storage = memoryStorage();
+      // The slow pool's turn comes first, so the other pool counts the same hours after it stops.
+      await storage.put(captureHoursAutoKey, { nextPool: c.otherId });
+      const tick = () =>
+        captureHoursTick(
+          storage,
+          (work) => work(timed(f.db, clock, { pool: c.poolId, hour: slowHour, cost })),
+          { now: () => clock.at, bounds: { lookbackHours } },
+        );
+      const first = await tick();
+      const other = await counted(f, c.otherId);
+      assert.equal(other.settled, other.hours, "the other pool went on in the same tick");
+      const mine = await counted(f, c.poolId);
+      assert.equal(mine.settled, mine.hours - 1, "and so did the slow pool, all but its slow hour");
+      assert.equal(first.lastStop, "slow");
+      // Each slow count is one closed line: the pool by its place, the hour, the limit, the repeat.
+      const ordinal = [c.poolId, c.otherId].sort().indexOf(c.poolId) + 1;
+      const slowLines = () =>
+        logged.mock.calls
+          .filter((call) => call.arguments[0] === "POOL_CAPTURE_HOURS_SLOW")
+          .map((call) => call.arguments[1]);
+      const lines = slowLines() as { elapsedMs: number }[];
+      assert.equal(lines.length, 1);
+      assert.ok(Number.isInteger(lines[0]!.elapsedMs) && lines[0]!.elapsedMs >= 0, "as measured");
+      const block = new Date(Math.floor(Date.parse(slowHour) / (6 * hour)) * 6 * hour)
+        .toISOString()
+        .replace(".000Z", "Z");
+      assert.deepEqual(
+        { ...lines[0]!, elapsedMs: 0 },
+        { pool: ordinal, hour: slowHour, block, limit: "count", elapsedMs: 0, repeat: 1 },
       );
-    const first = await tick();
-    const other = await counted(f, c.otherId);
-    assert.equal(other.settled, other.hours, "the other pool went on in the same tick");
-    assert.equal(first.lastStop, "slow");
-    assert.deepEqual(
-      [first.lastHour, first.lastHourPool],
-      [slowHour, c.poolId],
-      "another pool counting the same hour keeps the slow pool's stop hour",
-    );
-    assert.equal(first.pausedUntil, undefined, "a slow count never pauses the tick");
-    assert.deepEqual(first.slow, [
-      {
-        pool: c.poolId,
-        hour: slowHour,
-        count: 1,
-        until: new Date(clock.at + 10 * minute).toISOString(),
-      },
-    ]);
-    clock.at += 5 * minute;
-    const waiting = await tick();
-    assert.equal(waiting.lastStop, "waiting");
-    assert.equal(waiting.slow?.[0]?.count, 1, "not tried while it waits");
-    clock.at += 5 * minute + 1_000;
-    assert.equal((await tick()).slow?.[0]?.count, 2);
-    clock.at += 10 * minute + 1_000;
-    const stuck = await tick();
-    assert.deepEqual(captureHoursStuckPools(stuck), [c.poolId]);
-    assert.deepEqual(stuck.stuck, [
-      { pool: c.poolId, reason: "slow", hour: slowHour, retryAt: stuck.slow![0]!.until },
-    ]);
-    const inspected = captureHoursInspect(stuck);
-    assert.deepEqual([inspected.lastHour, inspected.lastHourReadMs], [slowHour, 1_000]);
-    clock.at += 10 * minute + 1_000;
-    assert.equal((await tick()).slow?.[0]?.count, 4, "retried after its wait");
-    const loud = logged.mock.calls.filter(
-      (call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK",
-    );
-    assert.deepEqual(
-      loud.map((call) => call.arguments[1]),
-      [{ reason: "slow", hour: slowHour }],
-      "loud once, naming the hour",
-    );
-    // Once the hour fits, the tick after the wait counts it and clears the pool.
-    cost.ms = 0;
-    clock.at += 10 * minute + 1_000;
-    const done = await tick();
-    assert.deepEqual(captureHoursStuckPools(done), []);
-    assert.deepEqual(done.slow, []);
-    const pool = await counted(f, c.poolId);
-    assert.equal(pool.settled, pool.hours);
+      assert.deepEqual(
+        {
+          ...captureHoursInspect(first).byPool.find((entry) => entry.slow.length)!.lastSlow!,
+          at: null,
+          elapsedMs: 0,
+        },
+        { at: null, hour: slowHour, block, limit: "count", elapsedMs: 0, repeat: 1 },
+        "inspect keeps the same last slow stop",
+      );
+      // Inspect names the pool by the same place, with its own pending and its waiting hour.
+      const places = captureHoursInspect(first).byPool;
+      assert.deepEqual(
+        places.map((entry) => [entry.ordinal, entry.pendingHours, entry.slow.map((w) => w.hour)]),
+        [c.poolId, c.otherId]
+          .sort()
+          .map((pool, n) => [
+            n + 1,
+            pool === c.poolId ? 1 : 0,
+            pool === c.poolId ? [slowHour] : [],
+          ]),
+      );
+      assert.deepEqual(
+        [first.lastHour, first.lastHourPool],
+        [slowHour, c.poolId],
+        "another pool counting the same hour keeps the slow pool's stop hour",
+      );
+      assert.equal(first.pausedUntil, undefined, "a slow count never pauses the tick");
+      assert.deepEqual(first.slow, [
+        {
+          pool: c.poolId,
+          hour: slowHour,
+          count: 1,
+          until: new Date(clock.at + 10 * minute).toISOString(),
+        },
+      ]);
+      clock.at += 5 * minute;
+      const waiting = await tick();
+      assert.equal(waiting.lastStop, "waiting");
+      assert.equal(waiting.slow?.[0]?.count, 1, "not tried while it waits");
+      clock.at += 5 * minute + 1_000;
+      assert.equal((await tick()).slow?.[0]?.count, 2);
+      clock.at += 10 * minute + 1_000;
+      const stuck = await tick();
+      assert.deepEqual(captureHoursStuckPools(stuck), [c.poolId]);
+      assert.deepEqual(stuck.stuck, [
+        { pool: c.poolId, reason: "slow", hour: slowHour, retryAt: stuck.slow![0]!.until },
+      ]);
+      const inspected = captureHoursInspect(stuck);
+      assert.deepEqual([inspected.lastHour, inspected.lastHourReadMs], [slowHour, 1_000]);
+      clock.at += 10 * minute + 1_000;
+      assert.equal((await tick()).slow?.[0]?.count, 4, "retried after its wait");
+      const loud = logged.mock.calls.filter(
+        (call) => call.arguments[0] === "POOL_CAPTURE_HOURS_STUCK",
+      );
+      assert.deepEqual(
+        loud.map((call) => call.arguments[1]),
+        [{ reason: "slow", hour: slowHour }],
+        "loud once, naming the hour",
+      );
+      // Once the hour fits, the tick after the wait counts it and clears the pool.
+      cost.ms = 0;
+      clock.at += 10 * minute + 1_000;
+      const done = await tick();
+      assert.deepEqual(captureHoursStuckPools(done), []);
+      assert.deepEqual(done.slow, []);
+      const pool = await counted(f, c.poolId);
+      assert.equal(pool.settled, pool.hours);
+    });
   });
-});
 
 test("a count the session's budget cuts short of its own limit is a budget stop, never slow", async () => {
   await seriesFixture(async (f) => {

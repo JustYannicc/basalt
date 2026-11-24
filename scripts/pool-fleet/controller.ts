@@ -91,6 +91,32 @@ export const CaptureHours = Schema.Struct({
   stalestCheckedAt: Schema.optional(Schema.NullOr(Schema.String)),
   pendingBlocks: Schema.optional(Schema.NullOr(Schema.Number)),
   planMs: Schema.optional(Schema.NullOr(Schema.Number)),
+  byPool: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        ordinal: Schema.Number,
+        pendingBlocks: Schema.NullOr(Schema.Number),
+        pendingHours: Schema.NullOr(Schema.Number),
+        slow: Schema.Array(
+          Schema.Struct({
+            hour: Schema.String,
+            until: Schema.NullOr(Schema.String),
+            repeat: Schema.NullOr(Schema.Number),
+          }),
+        ),
+        lastSlow: Schema.NullOr(
+          Schema.Struct({
+            at: Schema.NullOr(Schema.String),
+            hour: Schema.String,
+            block: Schema.NullOr(Schema.String),
+            limit: Schema.NullOr(Schema.Literals(["count", "read"])),
+            elapsedMs: Schema.NullOr(Schema.Number),
+            repeat: Schema.NullOr(Schema.Number),
+          }),
+        ),
+      }),
+    ),
+  ),
   recountPosition: Schema.optional(
     Schema.NullOr(
       Schema.Struct({

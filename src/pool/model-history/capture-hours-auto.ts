@@ -90,6 +90,22 @@ export interface CaptureHoursAutoState {
   readonly pools?: number;
   readonly pendingBlocks?: number;
   readonly pendingHours?: number;
+  /** Each pool's last slow stop: which limit ran out, on which hour of which block, and how long. */
+  readonly lastSlow?: readonly {
+    readonly pool: string;
+    readonly at: string;
+    readonly hour: string;
+    readonly block: string;
+    readonly limit: "count" | "read";
+    readonly elapsedMs: number;
+    readonly repeat: number;
+  }[];
+  /** Each counted pool's own pending blocks and hours, as the last session left them. */
+  readonly byPool?: readonly {
+    readonly pool: string;
+    readonly pendingBlocks: number;
+    readonly pendingHours: number;
+  }[];
   /** The block the recount reached last. */
   readonly recountPosition?: { readonly pool: string; readonly block: string };
   /** The pool whose block was counted last: the next session starts with the one after it. */

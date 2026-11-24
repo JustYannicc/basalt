@@ -151,13 +151,19 @@ export async function captureHoursSession(
       pools: all.filter((n) => n.blocks > 0).length,
       pendingBlocks: all.reduce((sum, n) => sum + n.blocks, 0),
       pendingHours: all.reduce((sum, n) => sum + n.hours, 0),
+      // Each pool's own, so one pool held back shows while the total falls.
+      byPool: [...pending.entries()].map(([pool, n]) => ({
+        pool,
+        pendingBlocks: n.blocks,
+        pendingHours: n.hours,
+      })),
     });
   };
   tally();
-  // A pool in its slow wait, or resting after an error, is left alone.
+  // A pool resting after an error is left alone. A slow hour holds only itself: see slowWaiting.
   const waiting = () =>
     new Set(
-      [...(state().slow ?? []), ...(state().failing ?? [])]
+      (state().failing ?? [])
         .filter((entry) => Date.parse(entry.until) > now())
         .map((entry) => entry.pool),
     );
@@ -166,15 +172,45 @@ export async function captureHoursSession(
     entry,
   ];
   let slowed = false;
-  // A pool that slowed is left alone for the rest of the session.
+  // A pool whose count failed in Postgres is left alone for the rest of the session.
   const resting = new Set<string>();
+  // The plan's pools in a fixed order, so a log line and inspect name a pool by its place alone.
+  const ordinals = [...known].sort();
+  const ordinal = (pool: string) => ordinals.indexOf(pool) + 1;
+  /** The hours in their slow wait, as pool|hour: each is left alone; its pool goes on. */
+  const slowWaiting = () =>
+    new Set(
+      (state().slow ?? [])
+        .filter((entry) => Date.parse(entry.until) > now())
+        .map((entry) => `${entry.pool}|${entry.hour}`),
+    );
 
-  /** A single hour past its own limit: the pool waits, and three in a row is stuck. */
-  const slowHour = (pool: string, hour: string, readMs: number) => {
-    const before = (state().slow ?? []).find((entry) => entry.pool === pool);
-    const repeats = before?.hour === hour ? before.count + 1 : 1;
+  /**
+   * A single hour past its own limit: that hour waits, and three in a row of it is stuck; its pool
+   * goes on with its other hours. Logged each time, closed, and kept as the pool's last slow stop:
+   * the pool's place, the hour, its six-hour block, the limit it ran out (the hour's count, or its
+   * block's read of pending hours), the time the attempt took as measured, and how many in a row.
+   */
+  const slowHour = (
+    block: CaptureBlock,
+    hour: string,
+    readMs: number,
+    limit: "count" | "read",
+    elapsedMs: number,
+  ) => {
+    const pool = block.pool;
+    const before = (state().slow ?? []).find((entry) => entry.pool === pool && entry.hour === hour);
+    const repeats = (before?.count ?? 0) + 1;
     const until = new Date(now() + bounds.slowPauseMs).toISOString();
-    // Loud once, when the pool first becomes stuck; its retries after each wait stay quiet.
+    const stop = {
+      hour,
+      block: startOf(block),
+      limit,
+      elapsedMs: Math.round(elapsedMs),
+      repeat: repeats,
+    };
+    console.error("POOL_CAPTURE_HOURS_SLOW", { pool: ordinal(pool), ...stop });
+    // Loud once, when the hour first becomes stuck; its retries after each wait stay quiet.
     if (repeats === bounds.slowAfter)
       console.error("POOL_CAPTURE_HOURS_STUCK", { reason: "slow", hour });
     update({
@@ -182,15 +218,18 @@ export async function captureHoursSession(
       lastHourReadMs: readMs,
       lastHourPool: pool,
       slow: [
-        ...(state().slow ?? []).filter((entry) => entry.pool !== pool),
+        ...(state().slow ?? []).filter((entry) => entry.pool !== pool || entry.hour !== hour),
         { pool, hour, count: repeats, until },
+      ],
+      lastSlow: [
+        ...(state().lastSlow ?? []).filter((entry) => entry.pool !== pool),
+        { pool, at: new Date(now()).toISOString(), ...stop },
       ],
       ...(repeats >= bounds.slowAfter
         ? { stuck: stuckWith({ pool, reason: "slow", hour, retryAt: until }) }
         : {}),
     });
     slowed = true;
-    resting.add(pool);
   };
   /**
    * A count of this pool failed in Postgres: only the pool rests, an hour, while the others go on;
@@ -244,14 +283,15 @@ export async function captureHoursSession(
 
   /**
    * One block, whole or hour by hour. Returns the session's stop, "rest" to leave the pool for the
-   * session, "mark" once the session has spent `until` between two of its hours, or undefined once
-   * the block is counted. A count that fails in Postgres rests only its pool.
+   * session, "skip" when some of its hours are left uncounted (slow, or in their slow wait) while
+   * its pool goes on, "mark" once the session has spent `until` between two of its hours, or
+   * undefined once the block is counted. A count that fails in Postgres rests only its pool.
    */
   const countBlock = async (
     block: CaptureBlock,
     recount = false,
     until = budget,
-  ): Promise<CaptureHoursAutoStop | "rest" | "mark" | undefined> => {
+  ): Promise<CaptureHoursAutoStop | "rest" | "skip" | "mark" | undefined> => {
     try {
       return await countBlockOnce(block, recount, until);
     } catch (error) {
@@ -267,15 +307,22 @@ export async function captureHoursSession(
       return "rest";
     }
   };
+  /** The hours the last block counted one by one: a skipped block's pending shrinks by them. */
+  let countedInBlock = 0;
   const countBlockOnce = async (
     block: CaptureBlock,
     recount: boolean,
     until: number,
-  ): Promise<CaptureHoursAutoStop | "rest" | "mark" | undefined> => {
+  ): Promise<CaptureHoursAutoStop | "rest" | "skip" | "mark" | undefined> => {
     if (stopped()) return "handover";
     if (left() <= 0) return "budget";
     progress.working = block.pool;
-    if (!isSplit(block)) {
+    // A block holding an hour in its slow wait goes hour by hour without that hour.
+    const waits = slowWaiting();
+    const held = (hour: string) => waits.has(`${block.pool}|${hour}`);
+    const holds = hoursOf(block).some(held);
+    if (!isSplit(block) && !holds) {
+      const started = performance.now();
       const result = await countCaptureBlock(
         db,
         block.pool,
@@ -294,33 +341,41 @@ export async function captureHoursSession(
         return "lock";
       }
       if (result.kind === "slow") {
-        slowHour(block.pool, block.from, result.readMs);
-        return "rest";
+        slowHour(block, block.from, result.readMs, "count", performance.now() - started);
+        return "skip";
       }
       // Past its own limit: from now on hour by hour, starting in this session if time is left.
       markSplit(block);
     }
     // A recount takes every hour of it; a pending one only the hours without a settled count. A
-    // statement timeout in that read is this pool's own: it waits like a slow hour, unless the
-    // session's budget cut the read short, which is a budget stop.
+    // statement timeout in that read is this pool's own: its first hour waits like a slow hour and
+    // the pool goes on, unless the session's budget cut the read short, which is a budget stop.
     let hours: string[];
     if (recount) hours = hoursOf(block);
     else {
       const limit = Math.floor(left());
+      const started = performance.now();
       try {
         hours = await read(() => pendingHoursOf(db, block));
       } catch (error) {
         if (postgresCode(error) !== "57014") throw error;
         if (limit < captureHoursReadLimitMs) return "budget";
-        slowHour(block.pool, block.from, captureHoursReadLimitMs);
-        return "rest";
+        slowHour(block, block.from, captureHoursReadLimitMs, "read", performance.now() - started);
+        return "skip";
       }
     }
+    let skipped = false;
+    countedInBlock = 0;
     for (const hour of hours) {
+      if (held(hour)) {
+        skipped = true;
+        continue;
+      }
       if (stopped()) return "handover";
       if (left() <= 0) return "budget";
       // A split block never takes the session past its share: the rest of it waits its turn.
       if (budget - left() >= until) return "mark";
+      const started = performance.now();
       const result = await countCaptureHour(db, block.pool, hour, left, bounds.countLimitMs);
       if (result.kind === "budget") return "budget";
       if (result.kind === "lock") {
@@ -328,15 +383,19 @@ export async function captureHoursSession(
         return "lock";
       }
       if (result.kind === "slow" || result.kind === "split") {
-        slowHour(block.pool, hour, result.readMs);
-        return "rest";
+        // That hour waits; the block's other hours, and the pool's other blocks, go on.
+        slowHour(block, hour, result.readMs, "count", performance.now() - started);
+        skipped = true;
+        continue;
       }
       counted({
         pool: block.pool,
         from: hour,
         to: new Date(Date.parse(hour) + hourMs).toISOString(),
       });
+      countedInBlock++;
     }
+    if (skipped) return "skip";
     counted(block);
     return undefined;
   };
@@ -362,8 +421,16 @@ export async function captureHoursSession(
     while (budget - left() < until) {
       const block = nextPending();
       if (!block) return undefined;
+      countedInBlock = 0;
       const stop = await countBlock(block, false, until);
       update({ nextPool: block.pool });
+      if (stop === "skip") {
+        // Some of it waits: the block stays pending, less the hours it did count.
+        const was = pending.get(block.pool)!;
+        pending.set(block.pool, { ...was, hours: Math.max(0, was.hours - countedInBlock) });
+        tally();
+        continue;
+      }
       if (stop === "rest") continue;
       if (stop === "mark") return undefined;
       if (stop) return stop;
@@ -387,7 +454,7 @@ export async function captureHoursSession(
     if (waiting().has(block.pool) || resting.has(block.pool)) continue;
     const stop = await countBlock(block, true);
     if (stop === "budget" || stop === "mark") break;
-    if (stop === "rest") continue;
+    if (stop === "rest" || stop === "skip") continue;
     if (stop) return stop;
     update({ recountPosition: { pool: block.pool, block: block.from } });
   }
@@ -395,8 +462,11 @@ export async function captureHoursSession(
   const rest = await fill(budget);
   if (rest) return rest;
   const held = waiting();
+  // Pending blocks this session never reached: the budget stopped it. What is left past them is
+  // only hours in their slow wait, which no session may count yet.
   const unserved = pools.some(
-    (pool) => pending.get(pool.pool)!.blocks > 0 && !held.has(pool.pool) && !resting.has(pool.pool),
+    (pool) =>
+      (queues.get(pool.pool)?.length ?? 0) > 0 && !held.has(pool.pool) && !resting.has(pool.pool),
   );
   if (unserved) return "budget";
   if (pools.some((pool) => pending.get(pool.pool)!.blocks > 0)) return slowed ? "slow" : "waiting";
