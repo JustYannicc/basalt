@@ -109,6 +109,13 @@ test("past its cap the closest ranges merge, covering every range and nothing be
   // The eight smallest gaps are the first eight: the first nine ranges became one.
   assert.deepEqual(merged[0], { f: ranges[0]!.f, t: ranges[8]!.t });
   assert.deepEqual(mergeRanges(ranges.slice(0, 5)), ranges.slice(0, 5), "under the cap, unchanged");
+  // Every other hour of 400 days unproven, the most ranges a window can hold: one sort, no rescans.
+  const many: { f: string; t: string }[] = [];
+  for (let n = 0; n < 4_800; n++)
+    many.push({ f: iso(start + 2 * n * hourMs), t: iso(start + (2 * n + 1) * hourMs) });
+  const started = performance.now();
+  assert.equal(mergeRanges(many).length, maxRowCheckRanges);
+  assert.ok(performance.now() - started < 200, `${performance.now() - started} ms`);
 });
 
 test("forty scattered hours with a missed row are found in one capped row check, exactly", async () => {
@@ -146,6 +153,19 @@ test("forty scattered hours with a missed row are found in one capped row check,
         "its branches are capped",
       );
       assert.deepEqual([...result.incompleteHours!].sort(), missed.sort());
+      // Past its limit, the same check leaves only those forty hours unproven: its fallback reads
+      // the ranges as they were, never the merged ones, so no counted hour between them is lost.
+      const slow = await homeCaptureCoverage(
+        timingOut(f.db),
+        c.poolId,
+        c.source,
+        iso(base - 2 * dayMs),
+        iso(now - 3 * hourMs),
+        true,
+      );
+      // The window ends inside an hour, which only the row check could have proven.
+      const cut = iso(Math.floor((now - 3 * hourMs) / hourMs) * hourMs).replace(".000Z", "Z");
+      assert.deepEqual([...slow.incompleteHours!].sort(), [...missed, cut].sort());
     } finally {
       await f.db.query("ROLLBACK");
     }

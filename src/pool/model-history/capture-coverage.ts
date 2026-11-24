@@ -45,14 +45,28 @@ export function rowCheckRanges(values: readonly unknown[]) {
   return ranges;
 }
 
-/** The ranges, merged across their smallest gaps until at most `max` are left. */
+/**
+ * The ranges, merged across their smallest gaps until at most `max` are left. Joining one gap never
+ * changes another, so the gaps are sorted once and the smallest joined, the earlier of equal ones
+ * first: one sort, whatever the number of ranges.
+ */
 export function mergeRanges(ranges: readonly { f: string; t: string }[], max = maxRowCheckRanges) {
-  const merged = [...ranges].sort((a, b) => Date.parse(a.f) - Date.parse(b.f));
-  const gap = (n: number) => Date.parse(merged[n + 1]!.f) - Date.parse(merged[n]!.t);
-  while (merged.length > max) {
-    let at = 0;
-    for (let n = 1; n < merged.length - 1; n++) if (gap(n) < gap(at)) at = n;
-    merged.splice(at, 2, { f: merged[at]!.f, t: merged[at + 1]!.t });
+  const sorted = [...ranges].sort((a, b) => Date.parse(a.f) - Date.parse(b.f));
+  if (sorted.length <= max) return sorted;
+  const gaps = sorted
+    .slice(0, -1)
+    .map((range, n) => ({ n, gap: Date.parse(sorted[n + 1]!.f) - Date.parse(range.t) }))
+    .sort((a, b) => a.gap - b.gap || a.n - b.n);
+  const join = new Set(gaps.slice(0, sorted.length - max).map((entry) => entry.n));
+  const merged: { f: string; t: string }[] = [];
+  for (const [n, range] of sorted.entries()) {
+    const last = merged.at(-1);
+    if (last && join.has(n - 1))
+      merged[merged.length - 1] = {
+        f: last.f,
+        t: Date.parse(range.t) > Date.parse(last.t) ? range.t : last.t,
+      };
+    else merged.push(range);
   }
   return merged;
 }
@@ -151,8 +165,7 @@ export async function homeCaptureCoverage(
     if (rows.find((row) => row.kind === "bounds")?.ready === true)
       ranges = rows
         .filter((row) => row.kind === "check")
-        .map((row) => ({ f: String(row.f), t: String(row.t) }))
-        .sort((a, b) => Date.parse(a.f) - Date.parse(b.f));
+        .map((row) => ({ f: String(row.f), t: String(row.t) }));
   }
   let missing: string[];
   if (!ranges)
