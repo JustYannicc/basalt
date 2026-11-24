@@ -41,25 +41,30 @@ test("unchanged real journal heads skip source work; saved source and permission
     }),
   ));
 
-test("a failed guard drops cached data and never falls back to it", () =>
+test("a failed guard drops cached data and answers from one uncached read, never from the cache", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const cache = makePoolViewCache();
-      let denied = false,
+      let unreadable = false,
         calls = 0;
       const guard = Effect.suspend(() =>
-        denied ? Effect.fail("denied") : Effect.succeed({ revisions: [] }),
+        unreadable ? Effect.fail("heads unreadable") : Effect.succeed({ revisions: [] }),
       );
-      const read = Effect.sync(() => {
-        calls++;
-        return { windows: [1] };
-      });
-      yield* cache("caller", guard, read);
-      denied = true;
-      assert.equal((yield* Effect.result(cache("caller", guard, read)))._tag, "Failure");
-      denied = false;
-      yield* cache("caller", guard, read);
-      assert.equal(calls, 2);
+      const read = Effect.sync(() => ({ windows: [++calls] }));
+      const load = () =>
+        cache("caller", guard, read).pipe(
+          Effect.result,
+          Effect.map((result) => (result._tag === "Success" ? result.success : result.failure)),
+        );
+      assert.deepEqual(yield* load(), { windows: [1] });
+      assert.deepEqual(yield* load(), { windows: [1] }, "equal heads reuse the stored result");
+      unreadable = true;
+      assert.deepEqual(yield* load(), { windows: [2] }, "the stored result is not served");
+      assert.deepEqual(yield* load(), { windows: [3] }, "each request without heads reads again");
+      unreadable = false;
+      assert.deepEqual(yield* load(), { windows: [4] }, "nothing read without heads was stored");
+      assert.deepEqual(yield* load(), { windows: [4] }, "reuse resumes once heads are readable");
+      assert.equal(calls, 4);
     }),
   ));
 
@@ -240,15 +245,22 @@ test("an app without a pool registration executes normally without contacting Ho
     Effect.gen(function* () {
       const cache = makePoolViewCache();
       let reads = 0;
+      let guards = 0;
+      // A failing guard would still end in a read, so the contact itself is counted.
+      const guard = Effect.sync(() => {
+        guards++;
+        return { revisions: [] };
+      });
       const load = () =>
         cache(
           "lookalike",
-          Effect.fail("Home must not be contacted"),
+          guard,
           Effect.sync(() => ({ count: ++reads })),
           Effect.succeed(false),
         );
       assert.deepEqual(yield* load(), { count: 1 });
       assert.deepEqual(yield* load(), { count: 2 });
+      assert.equal(guards, 0, "Home was never asked for heads");
     }),
   ));
 

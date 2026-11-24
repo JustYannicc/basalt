@@ -27,7 +27,7 @@ const runGate = (
       CI_REUSED: "",
       CI_NEEDS: JSON.stringify(needs),
       CI_JOBS: JSON.stringify(selected),
-      CI_BOAT_JOBS: "[]",
+      CI_BOX_JOBS: "[]",
       CI_FULL_SUITE: String(full),
     },
   });
@@ -38,7 +38,11 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
   );
   assert.equal(step.env.CI_NEEDS, "${{ toJSON(needs) }}");
   assert.equal(workflow.jobs.check.if, "always()");
-  assert.deepEqual(workflow.jobs["upstream-image"].needs, ["select", "workerd-assets"]);
+  assert.deepEqual(workflow.jobs["upstream-image"].needs, [
+    "select",
+    "workerd-assets",
+    "long-started",
+  ]);
   assert.equal(
     workflow.jobs["workerd-assets"].if,
     "contains(fromJSON(needs.select.outputs.jobs), 'upstream-image')",
@@ -79,6 +83,7 @@ test("the real workflow dependencies reach the aggregate CLI in fast and full la
     assert.match(refused.stderr, /workerd-assets: expected (?:success|skipped), got missing/);
   }
 });
+
 test("the retry count runs after every gate verdict but can never change it", () => {
   const job = workflow.jobs.check;
   const gate = job.steps.findIndex(
@@ -94,8 +99,9 @@ test("the retry count runs after every gate verdict but can never change it", ()
     step.with?.name?.startsWith("check-e2e-retries-"),
   );
   assert.ok(gate >= 0 && gate < download && download < count && count < upload);
-  // Downloads within the run need no token scope beyond the workflow's read-only default.
-  assert.equal(job.permissions, undefined);
+  // Downloads within the run need no more than read-only contents; actions: read only lets a re-run
+  // attempt find the flake-rerun.yml run that started it.
+  assert.deepEqual(job.permissions, { actions: "read", contents: "read" });
   assert.equal(job.steps[gate].if, undefined);
   assert.equal(job.steps[gate]["continue-on-error"], undefined);
   for (const step of [job.steps[download], job.steps[count], job.steps[upload]]) {

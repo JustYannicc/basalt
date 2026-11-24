@@ -98,7 +98,7 @@ test("a changed source revokes its previous value instead of renewing a seed", a
   assert.equal(value.allowance?.checkedAt, Date.parse("2026-11-12T00:00:00Z"));
 });
 
-test("network failure does not renew source age and expiry needs no refresh job", async () => {
+test("network failure does not renew source age and an expired value is kept, read as expired", async () => {
   let clock = now,
     failed = false;
   const registry = new PlanAllowances(new Memory(), {
@@ -123,8 +123,10 @@ test("network failure does not renew source age and expiry needs no refresh job"
     catalog: await registry.read(),
     now: clock,
   });
-  assert.equal(expired.known, false);
-  assert.equal(expired.multiplier, 1);
+  assert.equal(expired.known, true);
+  assert.equal(expired.multiplier, 37);
+  assert.equal(expired.allowance?.expiresAt, Date.parse("2026-11-12T00:00:00Z") + 14 * 86_400_000);
+  assert.ok(expired.allowance!.expiresAt! <= clock);
 });
 
 test("an expired vendor statement cannot contradict a freshly checked dataset", async () => {
@@ -208,4 +210,52 @@ test("rejected source rows do not contradict fresh fallback before their origina
       assert.equal(value.allowance?.kind, change === "dataset" ? "vendor" : "dataset");
     }
   }
+});
+
+test("plans whose last usable row expires within a week are named once per day", async () => {
+  let clock = Date.parse("2026-11-20T06:00:00Z");
+  const row = (
+    plan: string,
+    expiresAt: number,
+    verification: "verified" | "unknown" = "verified",
+  ) => ({
+    vendor: "anthropic",
+    plan,
+    windowSeconds: 604_800,
+    full: verification === "unknown" ? null : 5,
+    unit: { id: "claude-pro-equivalent", label: "Pro-eq" },
+    kind: "vendor" as const,
+    verification,
+    sources: ["https://example.test/allowances.json"],
+    checkedAt: expiresAt - 14 * 86_400_000,
+    fetchedAt: expiresAt - 14 * 86_400_000,
+    expiresAt,
+    revision: plan,
+  });
+  const registry = new PlanAllowances(new Memory(), {
+    now: () => clock,
+    seed: {
+      entries: [
+        row("max_20x", Date.parse("2026-11-27T00:00:00Z")),
+        row("max_5x", Date.parse("2026-11-27T00:00:00Z")),
+        row("max_5x", Date.parse("2026-12-04T00:00:00Z")),
+        row("ultra", Date.parse("2026-11-22T00:00:00Z"), "unknown"),
+      ],
+    },
+  });
+  const reports: string[][] = [];
+  let delivered = false;
+  const report = async (rows: readonly { plan: string }[]) => {
+    reports.push(rows.map((row) => row.plan));
+    return { delivered };
+  };
+  await registry.reportExpiring(report);
+  delivered = true;
+  await registry.reportExpiring(report);
+  clock += 12 * 3_600_000;
+  await registry.reportExpiring(report);
+  clock += 12 * 3_600_000;
+  await registry.reportExpiring(report);
+  // A failed delivery waits out its retry, then counts the day; a delivered one waits a day.
+  assert.deepEqual(reports, [["max_20x"], ["max_20x"], ["max_20x"]]);
 });

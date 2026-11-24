@@ -1,22 +1,113 @@
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { test } from "node:test";
 import { PoolAcceptanceClient } from "../pool-acceptance/client.ts";
-import { awaitRecoveryReady, healingOutcome, runAcceptance, servingBoot } from "./acceptance.ts";
+import {
+  acceptanceExit,
+  acceptanceModelBeforeApply,
+  awaitRecoveryReady,
+  bootBeforeApply,
+  healingOutcome,
+  NOT_SERVING,
+  healingWait,
+  runAcceptance,
+  servingBoot,
+} from "./acceptance.ts";
+import {
+  healingAcceptanceWithinMs,
+  healingReadinessWithinMs,
+} from "../../src/pool/runtime-slots/forced-restart-timing.ts";
 import { stopPaths } from "./stop-path.ts";
+import { AcceptanceDeviceRefused, COULD_NOT_TEST_EXIT } from "./acceptance-device.ts";
+import { failureReport } from "./public-report.ts";
+import { rewriteCapResponse } from "../../src/pool/cap-message.ts";
+
+// The local pool checks no identity; acceptance-device tests prove what the real pool checks.
+const credential = async () => ({ "x-basalt-native-assertion": "fixture" });
+
+// What a model call's client gets for its user's cap: Home's refusal after the pool's own rewrite.
+const capBody = await (
+  await rewriteCapResponse(
+    new Response(
+      JSON.stringify({
+        error: {
+          message:
+            "user_period_limit_exceeded: period limit exceeded (window=7d mode=calendar used=12 limit=10)",
+        },
+      }),
+      { status: 429, headers: { "content-type": "application/json" } },
+    ),
+    "/v1/chat/completions",
+  )
+).text();
+// A provider's own 429, which the pool passes through untouched.
+const providerBusy = JSON.stringify({
+  error: {
+    message: "all credentials for model model-a are cooling down",
+    type: "rate_limit_error",
+  },
+});
 
 // A pool endpoint speaking the real wire: /v1/models JSON and a streamed chat completion, each with
 // the serving runtime's boot header, as the live pool answers the repo's acceptance client.
-async function pool(options: { fail?: number; boots?: string[] } = {}) {
+async function pool(
+  options: {
+    fail?: number;
+    boots?: string[];
+    /**
+     * HTTP status per chat number, for every chat, or for the catalog: the pool refusing or failing
+     * that call. A 429 is a provider's; "cap" is the pool's cap on the device's user.
+     */
+    answer?: Partial<Record<number | "chat" | "catalog", number | "cap">>;
+    /** The catalog's ids, in its own order. */
+    models?: readonly string[];
+    /** Models the provider refuses on every turn, as it did a retired model on 22 Nov. */
+    refuse?: readonly string[];
+  } = {},
+) {
   let chats = 0;
+  const asked: string[] = [];
   const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => (body += chunk));
+    request.on("end", () => answer(request, response, body));
+  });
+  const answer = (request: IncomingMessage, response: ServerResponse, body: string) => {
+    const model = request.url === "/v1/models" ? undefined : String(JSON.parse(body || "{}").model);
+    if (model !== undefined) asked.push(model);
+    if (model !== undefined && options.refuse?.includes(model)) {
+      chats++;
+      response.writeHead(429, { "content-type": "application/json" });
+      response.end(providerBusy);
+      return;
+    }
     const boot = options.boots?.[chats % options.boots.length] ?? "boot-root";
+    const status =
+      request.url === "/v1/models"
+        ? options.answer?.catalog
+        : (options.answer?.[chats + 1] ?? options.answer?.chat);
+    if (status !== undefined) {
+      if (request.url !== "/v1/models") chats++;
+      response.writeHead(status === "cap" ? 429 : status, { "content-type": "application/json" });
+      response.end(
+        status === "cap"
+          ? capBody
+          : status === 429
+            ? providerBusy
+            : JSON.stringify({ error: "unauthorized", message: "refused" }),
+      );
+      return;
+    }
     if (request.url === "/v1/models") {
+      // The catalog answers from the runtime serving first, as the live pool's does.
       response.writeHead(200, {
         "content-type": "application/json",
-        "x-signalbox-pool-boot": "boot-root",
+        "x-signalbox-pool-boot": options.boots?.[0] ?? "boot-root",
       });
-      response.end(JSON.stringify({ object: "list", data: [{ id: "model-a", object: "model" }] }));
+      const ids = options.models ?? ["claude-opus-5-5"];
+      response.end(
+        JSON.stringify({ object: "list", data: ids.map((id) => ({ id, object: "model" })) }),
+      );
       return;
     }
     chats++;
@@ -27,12 +118,13 @@ async function pool(options: { fail?: number; boots?: string[] } = {}) {
     }
     response.writeHead(200, { "content-type": "text/event-stream", "x-signalbox-pool-boot": boot });
     response.end('data: {"choices":[{"delta":{"content":"OK"}}]}\n\ndata: [DONE]\n\n');
-  });
+  };
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as { port: number };
   return {
     client: new PoolAcceptanceClient({ origin: `http://127.0.0.1:${port}` }),
     chats: () => chats,
+    asked: () => asked,
     close: () => server.close(),
   };
 }
@@ -40,7 +132,7 @@ async function pool(options: { fail?: number; boots?: string[] } = {}) {
 test("27 streamed requests on one unchanged root pass a code-only release", async () => {
   const live = await pool();
   try {
-    const result = await runAcceptance({ apiKey: "k", expect: "same-boot", client: live.client });
+    const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
     assert.equal(result.passed, true, result.cause ?? "");
     assert.equal(live.chats(), 27);
     assert.deepEqual(result.boots, ["boot-root"]);
@@ -52,7 +144,7 @@ test("27 streamed requests on one unchanged root pass a code-only release", asyn
 test("one failed request in the burst fails the release and names it", async () => {
   const live = await pool({ fail: 9 });
   try {
-    const result = await runAcceptance({ apiKey: "k", expect: "same-boot", client: live.client });
+    const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
     assert.equal(result.passed, false);
     assert.match(result.cause ?? "", /1 of 27 requests failed: .*503/u);
   } finally {
@@ -63,7 +155,7 @@ test("one failed request in the burst fails the release and names it", async () 
 test("a root that changed boot fails a code-only release", async () => {
   const live = await pool({ boots: ["boot-root", "boot-new"] });
   try {
-    const result = await runAcceptance({ apiKey: "k", expect: "same-boot", client: live.client });
+    const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
     assert.match(result.cause ?? "", /changed boot/u);
   } finally {
     live.close();
@@ -74,7 +166,7 @@ test("the fleet passes only when a second runtime served", async () => {
   const root = await pool();
   try {
     const result = await runAcceptance({
-      apiKey: "k",
+      credential,
       expect: "two-runtimes",
       client: root.client,
     });
@@ -85,7 +177,7 @@ test("the fleet passes only when a second runtime served", async () => {
   const fleet = await pool({ boots: ["boot-root", "boot-cell-1"] });
   try {
     assert.equal(
-      (await runAcceptance({ apiKey: "k", expect: "two-runtimes", client: fleet.client })).passed,
+      (await runAcceptance({ credential, expect: "two-runtimes", client: fleet.client })).passed,
       true,
     );
   } finally {
@@ -98,7 +190,7 @@ test("a root that restarted during the apply fails acceptance, so the release ro
   try {
     const before = "boot-root";
     const result = await runAcceptance({
-      apiKey: "k",
+      credential,
       expect: "same-boot",
       rootBoot: before,
       client: live.client,
@@ -113,10 +205,10 @@ test("a root that restarted during the apply fails acceptance, so the release ro
 test("the root's boot read before the apply passes when the root kept it", async () => {
   const live = await pool();
   try {
-    const before = await servingBoot("k", live.client);
+    const before = await servingBoot(credential, live.client);
     assert.equal(before, "boot-root");
     const result = await runAcceptance({
-      apiKey: "k",
+      credential,
       expect: "same-boot",
       rootBoot: before,
       client: live.client,
@@ -131,7 +223,7 @@ test("with fleet cells serving, the root's boot must still be among the runtimes
   const live = await pool({ boots: ["boot-cell-1", "boot-cell-2"] });
   try {
     const result = await runAcceptance({
-      apiKey: "k",
+      credential,
       expect: "any",
       rootBoot: "boot-root-gone",
       client: live.client,
@@ -252,13 +344,83 @@ test("a healing release ends healed, serving but needing a person, or not servin
   });
   const served = { passed: true };
   const refused = { passed: false };
-  assert.equal(healingOutcome(ready, served), "healed");
-  assert.equal(healingOutcome(unfinished("boot-new"), served), "serving-needs-person");
+  const before = "boot-stuck";
+  assert.equal(healingOutcome(ready, served, before), "healed");
+  assert.equal(healingOutcome(unfinished("boot-new"), served, before), "serving-needs-person");
   // Anything else is not serving: a failed model call, or no new boot.
-  assert.equal(healingOutcome(ready, refused), "not-serving");
-  assert.equal(healingOutcome(unfinished("boot-new"), refused), "not-serving");
-  assert.equal(healingOutcome(unfinished(), served), "not-serving");
-  assert.equal(healingOutcome(unfinished(), undefined), "not-serving");
+  assert.equal(healingOutcome(ready, refused, before), "not-serving");
+  assert.equal(healingOutcome(unfinished("boot-new"), refused, before), "not-serving");
+  assert.equal(healingOutcome(unfinished(), served, before), "not-serving");
+  assert.equal(healingOutcome(unfinished(), undefined, before), "not-serving");
+  // The pool refused the acceptance device on a new boot: nothing was tested either way.
+  const untested = { passed: false, couldNotTest: true };
+  assert.equal(healingOutcome(ready, untested, before), "could-not-test");
+  assert.equal(healingOutcome(unfinished("boot-new"), untested, before), "could-not-test");
+  assert.equal(healingOutcome(unfinished(), untested, before), "not-serving");
+});
+
+/** A healing release's acceptance as the entry runs it: the bounded wait, then the model calls. */
+async function heal(before: string, controller: string, served = controller) {
+  const verdict = await awaitRecoveryReady({
+    inspect: replies(inspected(controller)).inspect,
+    before,
+    withinMs: 60_000,
+    ...clock(),
+  });
+  if (!verdict.boot) return healingOutcome(verdict, undefined, before);
+  const live = await pool({ boots: [served] });
+  try {
+    const result = await runAcceptance({
+      credential,
+      expect: "same-boot",
+      rootBoot: verdict.boot,
+      admitted: true,
+      client: live.client,
+    });
+    return healingOutcome(verdict, result, before);
+  } finally {
+    live.close();
+  }
+}
+
+test("a healing release is healed only on a boot other than the one read before the apply", async () => {
+  // A served boot record: the old boot serving is not serving, as it always was; a new one healed.
+  assert.equal(await heal("boot-stuck", "boot-stuck"), "not-serving");
+  assert.equal(await heal("boot-stuck", "boot-new"), "healed");
+  // A not-serving record names no boot to compare with, so whatever boot serves, nothing shows
+  // the root restarted: the old boot serving is never healed.
+  assert.equal(await heal(NOT_SERVING, "boot-stuck"), "serving-restart-unconfirmed");
+  assert.equal(await heal(NOT_SERVING, "boot-new"), "serving-restart-unconfirmed");
+  // A recovery that is not ready does not claim a new boot either.
+  const unfinished = {
+    ready: false as const,
+    boot: "boot-stuck",
+    reason: "needs a person (restart_failed)",
+    last: "a new boot, recovery not ready",
+    waitedMs: 1,
+    reads: 1,
+  };
+  assert.equal(
+    healingOutcome(unfinished, { passed: true }, NOT_SERVING),
+    "serving-restart-unconfirmed",
+  );
+  // What did not serve, or was not tested, says so whatever was read before.
+  assert.equal(healingOutcome(unfinished, { passed: false }, NOT_SERVING), "not-serving");
+  assert.equal(
+    healingOutcome(unfinished, { passed: false, couldNotTest: true }, NOT_SERVING),
+    "could-not-test",
+  );
+});
+
+test("only a healed or a passed release exits 0; serving without proof exits 3, never green", () => {
+  assert.equal(acceptanceExit("healed", true), 0);
+  assert.equal(acceptanceExit("serving-restart-unconfirmed", true), 3);
+  assert.equal(acceptanceExit("serving-needs-person", true), 3);
+  assert.equal(acceptanceExit("could-not-test", false), COULD_NOT_TEST_EXIT);
+  assert.equal(acceptanceExit("not-serving", false), 1);
+  // A release that declares no restart has no healing outcome: its result decides, as before.
+  assert.equal(acceptanceExit(undefined, true), 0);
+  assert.equal(acceptanceExit(undefined, false), 1);
 });
 
 test("the stop path is read from the forced-stop lines only, as fixed words", () => {
@@ -272,4 +434,342 @@ test("the stop path is read from the forced-stop lines only, as fixed words", ()
     },
   });
   assert.deepEqual(stopPaths(answer), ["graceful_exit", "unreadable"]);
+});
+
+test("a healing release waits for the object's adoption too when its apply failed", () => {
+  // A failed apply may have ended seconds after the upload, before the object ran the new code.
+  assert.deepEqual(healingWait("failure"), {
+    name: "healingReadinessWithinMs",
+    seconds: healingReadinessWithinMs / 1_000,
+  });
+  // After a successful apply its readiness already waited through the adoption.
+  for (const outcome of ["success", undefined])
+    assert.deepEqual(healingWait(outcome), {
+      name: "healingAcceptanceWithinMs",
+      seconds: healingAcceptanceWithinMs / 1_000,
+    });
+});
+
+test("the pool refusing the acceptance device is could-not-test, never a failed release", async () => {
+  // 401 unknown or removed, 403 models off or no longer allowed, or the pool's cap on its user.
+  for (const answer of [
+    { catalog: 401 },
+    { catalog: 403 },
+    { 1: 403 },
+    { 9: "cap" },
+    { 27: 401 },
+  ] as const) {
+    const live = await pool({ answer });
+    try {
+      const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
+      assert.equal(result.passed, false, JSON.stringify(answer));
+      assert.equal(result.couldNotTest, true, JSON.stringify(answer));
+      assert.match(result.cause ?? "", /refused for the acceptance device \(HTTP 4\d\d\)/u);
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a serving failure is a failed release even when the pool also refused the device", async () => {
+  for (const answer of [{ 5: 503, 9: "cap" }, { 3: 500 }, { 4: 502, 6: 401 }] as const) {
+    const live = await pool({ answer });
+    try {
+      const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
+      assert.equal(result.passed, false, JSON.stringify(answer));
+      assert.equal(result.couldNotTest, false, JSON.stringify(answer));
+      assert.match(result.cause ?? "", /requests failed: .*HTTP 5\d\d/u);
+    } finally {
+      live.close();
+    }
+  }
+  // A catalog that does not answer is the pool not serving, as before.
+  const down = await pool({ answer: { catalog: 503 } });
+  try {
+    await assert.rejects(runAcceptance({ credential, expect: "same-boot", client: down.client }));
+  } finally {
+    down.close();
+  }
+});
+
+test("a refused device stops the boot read before the apply, even where the pool may not answer", async () => {
+  for (const status of [401, 403]) {
+    const live = await pool({ answer: { catalog: status } });
+    try {
+      for (const allowNotServing of [true, false]) {
+        const error = await bootBeforeApply(credential, live.client, allowNotServing).then(
+          () => assert.fail("a refused device read a boot"),
+          (error: unknown) => error,
+        );
+        assert.ok(error instanceof AcceptanceDeviceRefused, String(error));
+        assert.match(
+          failureReport(error).publicText,
+          new RegExp(
+            `HTTP ${status}.*the release's acceptance device was refused: check that it is still registered and allowed`,
+            "u",
+          ),
+        );
+      }
+    } finally {
+      live.close();
+    }
+  }
+  const down = await pool({ answer: { catalog: 503 } });
+  try {
+    assert.equal(await bootBeforeApply(credential, down.client, true), NOT_SERVING);
+    await assert.rejects(bootBeforeApply(credential, down.client, false), /HTTP 503/u);
+  } finally {
+    down.close();
+  }
+  const live = await pool();
+  try {
+    assert.equal(await bootBeforeApply(credential, live.client, false), "boot-root");
+  } finally {
+    live.close();
+  }
+});
+
+test("a revoked device's 410 fails closed: never not serving, never could not test", async () => {
+  // A person revoking the device is no pool failing to serve, so a release declaring a root restart
+  // must not start on it; and no 410 may end a run as untested.
+  const revoked = await pool({ answer: { catalog: 410 } });
+  try {
+    for (const allowNotServing of [true, false]) {
+      const error = await bootBeforeApply(credential, revoked.client, allowNotServing).then(
+        () => assert.fail("a revoked device read a boot"),
+        (error: unknown) => error,
+      );
+      assert.ok(!(error instanceof AcceptanceDeviceRefused), String(error));
+      assert.match(String(error), /HTTP 410/u);
+    }
+  } finally {
+    revoked.close();
+  }
+  for (const admitted of [true, false]) {
+    // A catalog the pool will not serve is the pool not serving (exit 1, the rollback takes it).
+    const live = await pool({ answer: { catalog: 410 } });
+    try {
+      const error = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted,
+        client: live.client,
+      }).then(
+        () => assert.fail("a revoked device's catalog returned a result"),
+        (error: unknown) => error,
+      );
+      assert.ok(!(error instanceof AcceptanceDeviceRefused), String(error));
+      assert.match(String(error), /HTTP 410/u);
+    } finally {
+      live.close();
+    }
+  }
+  for (const answer of [{ 1: 410 }, { 27: 410 }])
+    for (const admitted of [true, false]) {
+      const live = await pool({ answer });
+      try {
+        const result = await runAcceptance({
+          credential,
+          expect: "same-boot",
+          rootBoot: "boot-root",
+          admitted,
+          client: live.client,
+        });
+        const label = JSON.stringify({ answer, admitted });
+        assert.equal(result.passed, false, label);
+        assert.equal(result.couldNotTest, false, label);
+        assert.deepEqual(result.refused, [], label);
+        assert.ok(result.failures.length >= 1, label);
+      } finally {
+        live.close();
+      }
+    }
+});
+
+test("after this run's boot read admitted the device, a 401 or 403 is a serving failure", async () => {
+  // The boot read before the apply was served for the device, so the release is the likeliest
+  // thing that changed: the policy's rollback takes it, as it would a 5xx.
+  for (const answer of [{ catalog: 401 }, { catalog: 403 }, { 1: 403 }, { 27: 401 }]) {
+    const live = await pool({ answer });
+    try {
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted: true,
+        client: live.client,
+      });
+      assert.equal(result.passed, false, JSON.stringify(answer));
+      assert.equal(result.couldNotTest, false, JSON.stringify(answer));
+      assert.deepEqual(result.refused, [], JSON.stringify(answer));
+      assert.equal(result.failures.length, 1, JSON.stringify(answer));
+      assert.match(
+        result.cause ?? "",
+        /HTTP 40[13].*the acceptance device this run's boot read admitted/u,
+      );
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a 429 is untested only when it carries the pool's cap code, on a model turn", async () => {
+  for (const [answer, admitted] of [
+    [{ 9: "cap" }, true],
+    [{ chat: "cap" }, true],
+    [{ 9: "cap" }, false],
+  ] as const) {
+    const live = await pool({ answer });
+    try {
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted,
+        client: live.client,
+      });
+      assert.equal(result.couldNotTest, true, JSON.stringify(answer));
+      assert.deepEqual(result.refused, [429], JSON.stringify(answer));
+      assert.match(result.cause ?? "", /refused for the acceptance device \(HTTP 429\)/u);
+      assert.equal(result.failures.length, 0, JSON.stringify(answer));
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a provider's 429 on every turn is a serving failure, admitted or not: the release rolls back", async () => {
+  // The pool passes a provider's 429 through untouched; only its user's cap is rewritten with a code.
+  for (const admitted of [true, false]) {
+    const live = await pool({ answer: { chat: 429 } });
+    try {
+      const result = await runAcceptance({
+        credential,
+        expect: "same-boot",
+        rootBoot: "boot-root",
+        admitted,
+        client: live.client,
+      });
+      assert.equal(result.passed, false);
+      assert.equal(result.couldNotTest, false, `admitted=${admitted}`);
+      assert.deepEqual(result.refused, []);
+      assert.equal(result.failures.length, 27);
+      assert.match(result.cause ?? "", /^27 of 27 requests failed: .*HTTP 429/u);
+    } finally {
+      live.close();
+    }
+  }
+});
+
+test("a 429 on /v1/models never carries a cap: the pool is not serving, before the apply or after", async () => {
+  const live = await pool({ answer: { catalog: 429 } });
+  try {
+    for (const admitted of [true, false])
+      await assert.rejects(
+        runAcceptance({ credential, expect: "same-boot", admitted, client: live.client }),
+        /\/v1\/models returned HTTP 429/u,
+      );
+    // Not a refused device: only a declared root restart may start on a pool answering so.
+    assert.equal(await bootBeforeApply(credential, live.client, true), NOT_SERVING);
+    await assert.rejects(bootBeforeApply(credential, live.client, false), /HTTP 429/u);
+  } finally {
+    live.close();
+  }
+});
+
+// The production catalog's order on 22 Nov: a retired model first, Opus 5.5 at index 14.
+const catalog22Nov = [
+  "claude-3-5-haiku-20241022",
+  ...Array.from({ length: 13 }, (_, index) => `model-${index + 1}`),
+  "claude-opus-5-5",
+  "gpt-6.1-sol",
+];
+
+test("acceptance takes the first reviewed model the catalog lists, never the catalog's first id", async () => {
+  const live = await pool({ models: catalog22Nov, refuse: ["claude-3-5-haiku-20241022"] });
+  try {
+    const result = await runAcceptance({ credential, expect: "same-boot", client: live.client });
+    assert.equal(result.passed, true, String(result.cause));
+    assert.deepEqual([...new Set(live.asked())], ["claude-opus-5-5"]);
+  } finally {
+    live.close();
+  }
+});
+
+test("without Opus 5.5 acceptance takes GPT-6.1 Sol, and with neither it sends no turn", async () => {
+  const sol = await pool({ models: ["claude-3-5-haiku-20241022", "gpt-6.1-sol"] });
+  const none = await pool({ models: ["claude-3-5-haiku-20241022"] });
+  try {
+    await runAcceptance({ credential, expect: "same-boot", client: sol.client });
+    assert.deepEqual([...new Set(sol.asked())], ["gpt-6.1-sol"]);
+    await assert.rejects(
+      runAcceptance({ credential, expect: "same-boot", client: none.client }),
+      /None of the acceptance models \(claude-opus-5-5, gpt-6\.1-sol\) is in \/v1\/models/u,
+    );
+    assert.equal(none.chats(), 0);
+  } finally {
+    sol.close();
+    none.close();
+  }
+});
+
+test("a configured acceptance model is used only when the catalog lists it", async () => {
+  const live = await pool({ models: catalog22Nov });
+  try {
+    await runAcceptance({
+      credential,
+      expect: "same-boot",
+      client: live.client,
+      model: "gpt-6.1-sol",
+    });
+    assert.deepEqual([...new Set(live.asked())], ["gpt-6.1-sol"]);
+    await assert.rejects(
+      runAcceptance({ credential, expect: "same-boot", client: live.client, model: "claude-x" }),
+      /The acceptance model claude-x is not in \/v1\/models/u,
+    );
+  } finally {
+    live.close();
+  }
+});
+
+test("one real turn before the apply stops a model the pool cannot serve, and names it", async () => {
+  const live = await pool({ models: catalog22Nov, refuse: ["claude-3-5-haiku-20241022"] });
+  const none = await pool({ models: ["claude-3-5-haiku-20241022"] });
+  try {
+    assert.equal(await acceptanceModelBeforeApply(credential, live.client), "claude-opus-5-5");
+    assert.equal(live.chats(), 1);
+    // What the release did on 22 Nov, with the catalog's first id forced in.
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, live.client, "claude-3-5-haiku-20241022"),
+      /^Error: The acceptance model claude-3-5-haiku-20241022 did not serve one turn before the apply \(HTTP 429\); nothing was applied$/u,
+    );
+    assert.equal(live.chats(), 2);
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, none.client),
+      /None of the acceptance models/u,
+    );
+    assert.equal(none.chats(), 0);
+  } finally {
+    live.close();
+    none.close();
+  }
+});
+
+test("before the apply a refused device and its user's cap are named as such, not as a bare status", async () => {
+  const capped = await pool({ answer: { chat: "cap" } });
+  const refused = await pool({ answer: { chat: 403 } });
+  try {
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, capped.client),
+      /\(HTTP 429: the release's acceptance device hit its user's cap: check the cap, then run again\); nothing was applied/u,
+    );
+    await assert.rejects(
+      acceptanceModelBeforeApply(credential, refused.client),
+      /\(HTTP 403: the release's acceptance device was refused: check that it is still registered and allowed\); nothing was applied/u,
+    );
+  } finally {
+    capped.close();
+    refused.close();
+  }
 });

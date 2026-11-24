@@ -1,0 +1,11 @@
+{
+  "identity": "alchemy-same-cycle-rendezvous",
+  "file": "0726-alchemy-same-cycle-rendezvous.patch",
+  "content_sha256": "d85eb589866c89daaaecaf87723533af0d59946cbc842598e8ec97ff160a8a33",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "remove_with": "alchemy-dependency-upgrade",
+  "requires": "A pinned Alchemy release lets only one dependency cycle's members read each other's early attributes, so a reader in another cycle waits for reconciled ones (one upload unless that cycle converges); remove after source/lib proofs pass."
+}

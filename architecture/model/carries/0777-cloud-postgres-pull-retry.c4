@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A cloud test Postgres pull refused for the registry's rate or quota is pulled again after 5, 10, 20 and 40 s, each varied by up to a fifth, five tries in all, and its failure names the tries and the last refusal. Any other refusal, such as a missing image or a digest that fails verification, fails at once."
+    }
+  }
+}

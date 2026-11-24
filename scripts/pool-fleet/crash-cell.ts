@@ -48,10 +48,14 @@ export const crashReadyCell = (input: CrashInput) =>
     if (prior !== null) return { status: "already-submitted" as const, nonce };
     const fleet = yield* call(() => inspectFleet(access));
     const targetActive = fleet.permission?.configuration.targetActive ?? 0;
+    // A cell takes calls while it is ready and not fenced by a read that wasn't good.
     const cells = (rows: typeof fleet.resources) =>
       rows.filter(
         (row) =>
-          row.phase === "ready" && row.identity && row.target.instanceId !== primary.instanceId,
+          row.phase === "ready" &&
+          row.suspect === undefined &&
+          row.identity &&
+          row.target.instanceId !== primary.instanceId,
       );
     const ready = cells(fleet.resources).filter((row) => row.active < targetActive);
     if (!fleet.permission?.enabled || !ready.length)
@@ -134,6 +138,10 @@ export const crashReadyCell = (input: CrashInput) =>
     return {
       status: "proven" as const,
       nonce,
+      // The killed cell and when its kill was answered (this runner's clock), so a reader can tell a call
+      // cut on that cell from one cut anywhere else. Ids only: no host, account or key.
+      target: { slotId: target.slotId, instanceId: target.instanceId, bootId: target.bootId },
+      killedAt: measured.killedAt,
       detectedMs: measured.detectedMs,
       restartedMs: measured.restartedMs,
       bounds: { detectMs: detectBound, restartMs: restartBound },

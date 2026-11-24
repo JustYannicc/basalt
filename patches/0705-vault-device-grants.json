@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-vault-device-grants",
+  "file": "0705-vault-device-grants.patch",
+  "content_sha256": "e03ccf0a0d5f783b8e24b8914f865fad4f9d4d4dc3daf4800e044858d59938c1",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

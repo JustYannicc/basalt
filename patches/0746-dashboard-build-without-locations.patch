@@ -1,0 +1,35 @@
+diff --git a/apps/hosted/cloud/web/vite.config.ts b/apps/hosted/cloud/web/vite.config.ts
+--- a/apps/hosted/cloud/web/vite.config.ts
++++ b/apps/hosted/cloud/web/vite.config.ts
+@@ -4,6 +4,7 @@
+ import { browserOnlySettings } from "./browser-only-settings.ts";
+ import { cloudflareRoutes } from "./cloudflare-routes.ts";
+ import { mainPreload } from "./main-preload.ts";
++import { reproducibleBuild } from "./reproducible-build.ts";
+ 
+ const apiUrl = process.env.HOSTED_API_URL ?? "http://127.0.0.1:4411";
+ 
+@@ -22,7 +23,7 @@
+     },
+     // The development dashboard delegates docs to the Worker's built static assets.
+     server: { proxy: { "/docs": apiUrl } },
+-    build: { sourcemap: "hidden" },
++    build: { sourcemap: "hidden", ...reproducibleBuild },
+     plugins: [
+       cloudflareRoutes(),
+       mainPreload(),
+diff --git a/apps/hosted/cloud/web/reproducible-build.ts b/apps/hosted/cloud/web/reproducible-build.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/web/reproducible-build.ts
+@@ -0,0 +1,10 @@
++/**
++ * Build options that keep the dashboard's output the same bytes from any dependency store.
++ *
++ * Rolldown marks each bundled module with a `//#region <path>` comment by default. The path runs
++ * through the dependency store, whose directory is new on every install, so the server build's
++ * chunks, their names and the Dashboard Worker that bundles them changed on every fresh install.
++ */
++export const reproducibleBuild = {
++  rolldownOptions: { experimental: { attachDebugInfo: "none" } },
++} as const;

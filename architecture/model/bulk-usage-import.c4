@@ -35,4 +35,5 @@ model {
   basalt.usageBulkImportClient -[sync]-> basalt.usageExportClient "validate target origin and private owner credential file"
   basalt.build -[sync]-> basalt.bulkUsageImport "verify bounded chunks, atomic receipts and real durable-job recovery"
   basalt.build -[sync]-> basalt.usageBulkImportClient "verify accepted-manifest reuse and explicit operator recovery"
+  basalt.build -[sync]-> databaseService "operator-run one-off finish of a staged bulk job over one direct primary session: the bulk commit statements and receipts with the history live-change trigger skipped for that session only, guarded by CPU, error, release and disk headroom; never part of a deployed Worker"
 }

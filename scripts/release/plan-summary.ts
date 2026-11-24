@@ -28,8 +28,34 @@ const changed = (before: unknown, after: unknown) => {
 };
 
 /**
- * Non-noop rows, with only the names of changed top-level props (values can be secrets) and the
- * changed binding ids. Read it before apply: apply rewrites the plan it was handed.
+ * The upstream resources a value still waits on at plan time, by name: a prop that only refers to a
+ * resource this plan changes is unresolved, and Alchemy's diff calls it changed for that alone.
+ */
+const waitsOn = (value: unknown) => {
+  const upstreams = new Set<string>();
+  const seen = new Set<unknown>();
+  const walk = (part: unknown, depth: number) => {
+    if (Output.isExpr(part) && !isResolved(part)) {
+      for (const upstream of Object.keys(Output.upstreamAny(part))) upstreams.add(upstream);
+      return;
+    }
+    if (!part || typeof part !== "object" || seen.has(part) || depth > 12) return;
+    seen.add(part);
+    const parts = Array.isArray(part)
+      ? part
+      : Object.getPrototypeOf(part) === Object.prototype
+        ? Object.values(part)
+        : [];
+    for (const next of parts) walk(next, depth + 1);
+  };
+  walk(value, 0);
+  return [...upstreams].sort();
+};
+
+/**
+ * Non-noop rows, with only the names of changed top-level props (values can be secrets), the
+ * resources each still waits on, and the changed binding ids. Read it before apply: apply rewrites
+ * the plan it was handed.
  */
 export const changedRows = (snapshot: Snapshot) =>
   snapshot.resources
@@ -40,13 +66,20 @@ export const changedRows = (snapshot: Snapshot) =>
       const node = snapshot.native.resources[row.fqn] ?? snapshot.native.deletions[row.fqn];
       const before: Record<string, unknown> = node?.state?.props ?? {};
       const after: Record<string, unknown> = (node && "props" in node ? node.props : {}) ?? {};
+      const changedProps = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+        .filter((key) => changed(before[key], after[key]))
+        .sort();
       return {
         fqn: row.fqn,
         type: row.resourceType,
         action: row.action,
-        changedProps: [...new Set([...Object.keys(before), ...Object.keys(after)])]
-          .filter((key) => changed(before[key], after[key]))
-          .sort(),
+        changedProps,
+        waitsOn: Object.fromEntries(
+          changedProps.flatMap((key) => {
+            const upstreams = waitsOn(after[key]);
+            return upstreams.length ? [[key, upstreams] as const] : [];
+          }),
+        ),
         bindings: row.bindings
           .filter((binding) => binding.action !== "noop")
           .map(({ sid, action }) => ({ sid, action })),
@@ -187,41 +220,53 @@ export const updatesWorkerWithoutReadiness = (snapshot: Snapshot, poolWorker: st
   snapshot.resources.some((row) => row.fqn === poolWorker && row.action !== "noop") &&
   !snapshot.resources.some((row) => row.fqn === readinessCommand && row.action !== "noop");
 
-// The attributes providers record as a resource's own name or id (not ids it merely refers to).
-const IDENTITY = [
-  "workerName",
-  "scriptName",
-  "applicationId",
-  "applicationName",
-  "id",
-  "name",
-  "databaseId",
-  "databaseName",
-  "bucketName",
-  "namespaceId",
-  "configId",
-  "queueId",
-  "indexName",
-] as const;
+type Attr = Readonly<Record<string, unknown>>;
+const text = (value: unknown) => (typeof value === "string" && value.length > 0 ? value : "");
+const own =
+  (key: string) =>
+  (attr: Attr): string[] =>
+    text(attr[key]) ? [text(attr[key])] : [];
+// A branch or role is named only inside its database, so its target carries the path above it;
+// the same id on another database (production's) is never the plan's.
+const inDatabase =
+  (...keys: ReadonlyArray<readonly [string, string]>) =>
+  (attr: Attr): string[] => {
+    const parts = keys.map(([segment, key]) => [segment, text(attr[key])] as const);
+    if (!text(attr.database) || parts.some(([, value]) => !value)) return [];
+    return [
+      [text(attr.database), ...parts.flatMap(([segment, value]) => [segment, value])].join("/"),
+    ];
+  };
 
-// Each resource type, as the kind the wire guard names its delete path by.
-const KINDS: ReadonlyArray<readonly [RegExp, string]> = [
-  [/^Cloudflare\.Worker$/u, "Worker"],
-  [/^Cloudflare\.Container/u, "container application"],
-  [/^Cloudflare\.R2\./u, "R2 bucket"],
-  [/^Cloudflare\.D1/u, "D1 database"],
-  [/^Cloudflare\.Hyperdrive/u, "Hyperdrive config"],
-  [/^Cloudflare\.KV/u, "KV namespace"],
-  [/^Cloudflare\.Queue/u, "Queue"],
-  [/^Cloudflare\.Vectorize/u, "Vectorize index"],
-  [/^Cloudflare\.Workflow/u, "Workflow"],
-  [/^Cloudflare\.SecretsStore/u, "Secrets Store store"],
-  [/^Cloudflare\.ApiToken\./u, "API token"],
-  [/^Planetscale\.(?:Postgres)?Database$/u, "PlanetScale database"],
+/**
+ * Each resource type, the kind the wire guard names its delete path by, and the one attribute (as
+ * Alchemy records it) that the delete path carries. Ids a row only refers to, such as a Workflow's
+ * host Worker, are never targets.
+ */
+const KINDS: ReadonlyArray<readonly [RegExp, string, (attr: Attr) => string[]]> = [
+  [/^Cloudflare\.Worker$/u, "Worker", own("workerName")],
+  [/^Cloudflare\.Container/u, "container application", own("applicationId")],
+  [/^Cloudflare\.R2\./u, "R2 bucket", own("bucketName")],
+  [/^Cloudflare\.D1/u, "D1 database", own("databaseId")],
+  [/^Cloudflare\.Hyperdrive/u, "Hyperdrive config", own("hyperdriveId")],
+  [/^Cloudflare\.KV/u, "KV namespace", own("namespaceId")],
+  [/^Cloudflare\.Queue/u, "Queue", own("queueId")],
+  [/^Cloudflare\.Vectorize/u, "Vectorize index", own("indexName")],
+  [/^Cloudflare\.Workflow$/u, "Workflow", own("workflowName")],
+  // The account's one store is shared with production: a stage never deletes it.
+  [/^Cloudflare\.SecretsStore/u, "Secrets Store store", () => []],
+  [/^Cloudflare\.ApiToken\./u, "API token", own("tokenId")],
+  [/^Planetscale\.(?:Postgres)?Database$/u, "PlanetScale database", own("name")],
+  [/^Planetscale\.(?:Postgres)?Branch$/u, "PlanetScale branch", inDatabase(["branches", "name"])],
+  [
+    /^Planetscale\.(?:Postgres)?Role$/u,
+    "PlanetScale role",
+    inDatabase(["branches", "branch"], ["roles", "id"]),
+  ],
 ];
 
 /**
- * Every resource a destroy plan deletes, as the kind and the names and ids its recorded row holds.
+ * Every resource a destroy plan deletes, as the kind and the name or id its recorded row holds.
  * A type with no kind yields nothing, so its delete stays refused and the destroy says which.
  */
 export const destroyTargets = (plan: AlchemyPlan.Plan) =>
@@ -233,10 +278,8 @@ export const destroyTargets = (plan: AlchemyPlan.Plan) =>
     const type = String(
       state?.resourceType ?? (node as { resource?: { Type?: unknown } }).resource?.Type ?? "",
     );
-    const kind = KINDS.find(([pattern]) => pattern.test(type))?.[1];
-    if (!kind) return [];
-    const attr = state?.attr ?? {};
-    return IDENTITY.map((key) => attr[key])
-      .filter((value): value is string => typeof value === "string" && value.length > 0)
-      .map((id) => ({ kind, id }));
+    const found = KINDS.find(([pattern]) => pattern.test(type));
+    if (!found) return [];
+    const [, kind, ids] = found;
+    return ids(state?.attr ?? {}).map((id) => ({ kind, id }));
   });

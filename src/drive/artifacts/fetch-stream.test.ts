@@ -13,7 +13,12 @@ import { fetchStream } from "./fetch-stream.ts";
 import { createFetchStaging } from "./fetch-staging.ts";
 import { backend, git, pkt, responsePack, token } from "./test/backend.ts";
 import { repository } from "./test/vault.ts";
-import { deltaKinds, largeHistory, sampleBytes } from "./test/large-history.ts";
+import {
+  deltaKinds,
+  largeHistoryOnce,
+  sampleBytes,
+  useLargeHistory,
+} from "./test/large-history.ts";
 
 const main = "refs/heads/main";
 const author = {
@@ -35,13 +40,18 @@ const bandedReply = (pack: Uint8Array) =>
 
 // The metric counts parser-owned allocations and inflation/delta work, not process RSS or the
 // HTTP fixture's server-side copy. A slow sink also proves reading follows persistence.
+
+// The 48 MiB history takes seconds to build on an idle core and over a minute beside another
+// suite, so it is built once here, while the file loads, and its test copies it.
+const large = largeHistoryOnce();
+
 test(
   "a cold vault streams a >32 MiB delta history, then reads sampled versions byte-identically",
   { timeout: 60000 },
   async (t) => {
     const server = await backend();
     t.after(() => server.close());
-    const history = largeHistory(server.root, server.bare),
+    const history = useLargeHistory(large, server.bare),
       data = storageFixture();
     t.after(() => data.close());
     assert.ok(history.packBytes > 45 * 1024 * 1024);

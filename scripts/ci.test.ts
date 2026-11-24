@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { carryTargets, changedInputs, jobRoutes, selectPaths } from "./ci/affected.ts";
+import { carryTargets, changedInputs, selectPaths } from "./ci/affected.ts";
 import { selectUnitTests } from "./ci/unit-tests.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { activeSteps } from "./ci/e2e-workflow.ts";
-import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
+import { conditionalJobs, fastJobs, gateErrors, longJobs } from "./ci/gate.ts";
 import { declaredMatrices } from "./ci/shards.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -45,6 +45,7 @@ test("an undeclared client change retains every product and platform job", () =>
     "host-managed-accounts",
     "host-managed-accounts-adopted",
     "host-managed-accounts-pool",
+    "host-managed-accounts-pool-actions",
     "host-managed-accounts-local",
     "host-managed-accounts-cloud",
     "host-managed-accounts-cloud-actions",
@@ -216,7 +217,11 @@ test("every workflow job has a gate dependency and declared selection policy", (
   for (const job of heavyJobs) {
     assert.deepEqual(
       jobs[job].needs,
-      job === "upstream-image" ? ["select", "workerd-assets"] : "select",
+      job === "upstream-image"
+        ? ["select", "workerd-assets", "long-started"]
+        : longJobs.includes(job)
+          ? "select"
+          : ["select", "long-started"],
       job,
     );
     assert.equal(jobs[job].if, `contains(fromJSON(needs.select.outputs.jobs), '${job}')`, job);
@@ -229,33 +234,25 @@ test("every workflow job has a gate dependency and declared selection policy", (
   assert.deepEqual(workflow.on.push.branches, ["main", "batch/**"]);
   assert.equal(
     jobs.select.steps.find((step: { id?: string }) => step.id === "jobs").env.FULL_SUITE,
-    "${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'ci:boat') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}",
+    "${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}",
   );
 });
 
-test("Boat routing keeps every original selected job required", () => {
-  const selected = ["host-managed-accounts", "production-build"];
-  const routes = jobRoutes(selected, "host-managed-accounts,compiler-diagnostics");
-  assert.deepEqual(routes, {
-    hostedJobs: ["production-build"],
-    boatJobs: ["host-managed-accounts"],
-  });
-  assert.deepEqual(jobRoutes([], "host-managed-accounts").boatJobs, []);
-  assert.throws(() => jobRoutes(selected, "unknown"));
-  assert.throws(() => jobRoutes(selected, "production-build"));
+test("box routing keeps every original selected job required", () => {
+  const selected = ["declared-cloud", "production-build"];
   const needs = Object.fromEntries(
     [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
       { result: fastJobs.includes(job) || selected.includes(job) ? "success" : "skipped" },
     ]),
   );
-  assert.deepEqual(gateErrors(needs, selected, routes.boatJobs), []);
+  assert.deepEqual(gateErrors(needs, selected, ["declared-cloud-1"]), []);
   for (const result of ["failure", "cancelled", "skipped"])
     assert.ok(
-      gateErrors({ ...needs, "host-managed-accounts": { result } }, selected, routes.boatJobs)
-        .length,
+      gateErrors({ ...needs, "declared-cloud": { result } }, selected, ["declared-cloud-1"]).length,
     );
-  assert.ok(gateErrors(needs, selected, ["compiler-diagnostics"]).length);
+  assert.ok(gateErrors(needs, selected, ["declared-self-host-1"]).length);
+  assert.ok(gateErrors(needs, selected, ["production-build"]).length);
 });
 
 test("access editor changes select the public independent-read guards", () => {
@@ -303,12 +300,11 @@ test("explicit fast selection never schedules heavy work even without comparison
     for (const lane of ["--fast", "--all"]) {
       execFileSync(process.execPath, [selector, lane], {
         cwd: root,
-        env: { ...process.env, BASE_SHA: "invalid", HEAD_SHA: "invalid", BOAT_JOBS: "" },
+        env: { ...process.env, BASE_SHA: "invalid", HEAD_SHA: "invalid", BOX_SLOTS: "" },
       });
       const selected = JSON.parse(readFileSync(join(root, ".generated/ci/selection.json"), "utf8"));
       assert.deepEqual(selected.jobs, lane === "--all" ? heavyJobs : []);
-      assert.deepEqual(selected.hostedJobs, selected.jobs);
-      assert.deepEqual(selected.boatJobs, []);
+      assert.deepEqual(selected.boxJobs, []);
       assert.equal(selected.full, lane === "--all");
       // Shard rows, not one row per file; the fast lane plans no declared work at all.
       assert.deepEqual(selected.matrices, declaredMatrices(lane === "--all" ? null : []));

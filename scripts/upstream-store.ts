@@ -16,7 +16,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
-import { preparedCacheCollection } from "./upstream-cache-gc.ts";
+import { collectPatchedTrees, preparedCacheCollection } from "./upstream-cache-gc.ts";
 import {
   currentProcessOwner,
   installerGroupAlive,
@@ -91,6 +91,7 @@ export function rememberDependencyConsumer(root: string, store: string, pending:
 
 /** Call only while holding collection.lock, including publication and consumer transitions. */
 export function collectDependencyStore(_pin?: string) {
+  collectPatchedTrees();
   const cache = realpathSync(upstreamCache());
   const entries = directories(join(cache, "prepared"))
     .flatMap((pin) => directories(pin))
@@ -179,7 +180,15 @@ export function collectDependencyStore(_pin?: string) {
         !collection.preserved.has(realpathSync(generation)),
     );
   for (const file of abandonedConsumers) rmSync(file);
-  for (const path of [...abandoned, ...retired]) if (!collection.owns(path)) removeDirectory(path);
+  for (const path of abandoned) if (!collection.owns(path)) removeDirectory(path);
+  // A generation leaves its name before its bytes do: a key-named one is looked up by that name, so
+  // an interrupted delete must never leave a partial store under it.
+  for (const path of retired)
+    if (!collection.owns(path)) {
+      const aside = join(dirname(path), `.gc-${randomUUID()}`);
+      renameSync(path, aside);
+      removeDirectory(aside);
+    }
   collection.finish();
   return true;
 }

@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { request as post, type IncomingHttpHeaders } from "node:http";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { loadMiniflare } from "../../scripts/startup-profiler/profile.ts";
+import { controllerHoldBytes, controllerReplayWindowMs } from "./controller-reset.ts";
 
 // The first send reads part of a streamed body and fails as a replaced instance does; the replay
 // must reach a real object with the whole body, through workerd's own clone and tee.
 const fixture = `
 import { DurableObject } from "cloudflare:workers";
-import { fetchController } from "./src/pool/controller-reset.ts";
+import { controllerHeldBytes, fetchController } from "./src/pool/controller-reset.ts";
 export class Echo extends DurableObject {
   async fetch(request) {
     const bytes = new Uint8Array(await request.arrayBuffer());
@@ -20,12 +22,32 @@ export class Echo extends DurableObject {
     });
   }
 }
+async function settles(condition, waitingFor) {
+  for (let index = 0; index < 10_000; index++) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw Error("Never saw " + waitingFor);
+}
 export default {
   fetch(request, env, ctx) {
     let attempt = 0;
     const echo = () => env.ECHO.get(env.ECHO.idFromName("echo"));
-    // With this header the first send is the real one, to prove the copy giving up never touches it.
-    if (request.headers.has("x-send-first")) return fetchController(request, { controller: echo, env: {}, defer: (work) => ctx.waitUntil(work), wait: async () => {} });
+    // With this header the first send is the real one. It reads nothing until the copy has given
+    // up past 4 MiB, to prove that cancelling the copy mid-stream never touches the real body.
+    if (request.headers.has("x-send-first"))
+      return fetchController(request, {
+        controller: () => ({
+          fetch: async (first) => {
+            await settles(() => controllerHeldBytes() > 0, "the copy holding");
+            await settles(() => controllerHeldBytes() === 0, "the copy giving up");
+            return echo().fetch(first);
+          },
+        }),
+        env: {},
+        defer: (work) => ctx.waitUntil(work),
+        wait: async () => {},
+      }).catch((error) => new Response(String(error), { status: 500 }));
     return fetchController(request, {
       controller: () =>
         ++attempt === 1
@@ -62,6 +84,48 @@ function streamed(size: number) {
       },
     }),
   };
+}
+
+/**
+ * Sends a streamed body the way a full-duplex client does: the answer counts once it arrives, and
+ * the upload stops there. Miniflare's dispatchFetch surfaces an answer only after the whole upload,
+ * so a refusal the worker sends before reading the body raced workerd closing the connection and
+ * failed as EPIPE on a busy runner (#1685).
+ */
+function sendEarly(origin: URL, path: string, body: ReadableStream<Uint8Array>) {
+  return new Promise<{ status: number; headers: IncomingHttpHeaders; text: string }>(
+    (resolve, reject) => {
+      let answered = false;
+      const answer = Promise.withResolvers<void>();
+      const request = post(new URL(path, origin), { method: "POST" }, (response) => {
+        answered = true;
+        answer.resolve();
+        let text = "";
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => (text += chunk));
+        response.on("end", () =>
+          resolve({ status: response.statusCode ?? 0, headers: response.headers, text }),
+        );
+        response.on("error", reject);
+      });
+      // Once answered, the rest of the upload may be refused; before that, a failure is real.
+      request.on("error", (error) => (answered ? undefined : reject(error)));
+      void (async () => {
+        const reader = body.getReader();
+        while (!answered) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (!request.write(value))
+            await Promise.race([
+              new Promise((drained) => request.once("drain", drained)),
+              answer.promise,
+            ]);
+        }
+        void reader.cancel().catch(() => {});
+        request.end();
+      })().catch(reject);
+    },
+  );
 }
 
 test(
@@ -115,24 +179,30 @@ test(
     });
     assert.equal(replayed.status, 200);
     assert.deepEqual(await replayed.json(), { size: 3 * 1024 * 1024, digest: held.digest });
-    const large = streamed(5 * 1024 * 1024);
-    const advised = await mf.dispatchFetch("http://pool/v1/messages", {
-      method: "POST",
-      body: large.body,
-      duplex: "half",
-    });
-    assert.equal(advised.status, 503);
-    assert.equal(advised.headers.get("Retry-After"), "1");
-    assert.equal((await advised.json()).error.type, "api_error");
     // The copy gives up past 4 MiB, midway through 64 KiB reads; the real send keeps every byte.
     const whole = streamed(5 * 1024 * 1024);
+    const started = performance.now();
     const sent = await mf.dispatchFetch("http://pool/v1/messages", {
       method: "POST",
       headers: { "x-send-first": "1" },
       body: whole.body,
       duplex: "half",
     });
-    assert.equal(sent.status, 200);
-    assert.deepEqual(await sent.json(), { size: 5 * 1024 * 1024, digest: whole.digest });
+    const text = await sent.text();
+    assert.equal(sent.status, 200, text);
+    // The copy's own replay window also empties the hold; only a give-up inside it proves the cut.
+    assert.ok(
+      performance.now() - started < controllerReplayWindowMs,
+      "the copy outlived its window",
+    );
+    assert.deepEqual(JSON.parse(text), { size: 5 * 1024 * 1024, digest: whole.digest });
+    // Last: this answer leaves part of its upload unread, so workerd closes the connection, and a
+    // call sent after it could start on that closing socket and fail with EPIPE.
+    // Just over the hold bound: the worker refuses before it reads the whole body.
+    const large = streamed(controllerHoldBytes + 256 * 1024);
+    const advised = await sendEarly(await mf.ready, "/v1/messages", large.body);
+    assert.equal(advised.status, 503, advised.text);
+    assert.equal(advised.headers["retry-after"], "1");
+    assert.equal(JSON.parse(advised.text).error.type, "api_error");
   },
 );

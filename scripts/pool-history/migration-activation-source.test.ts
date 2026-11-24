@@ -24,6 +24,7 @@ import {
   sourceContract,
 } from "./migration-activation-source.ts";
 import { BarrierRefusal } from "../pool-fleet/refusal.ts";
+import { importSpecifiers } from "./import-specifiers.ts";
 
 const client = fileURLToPath(new URL("../../", import.meta.url));
 const hosted = ".upstream/apps/hosted/server/src/implementation/";
@@ -166,9 +167,7 @@ test("the guarded pool migration sources are exactly what the client's import re
   for (let file = pending.pop(); file; file = pending.pop()) {
     if (seen.has(file)) continue;
     seen.add(file);
-    for (const [, specifier] of readFileSync(file, "utf8").matchAll(
-      /(?:\bfrom|\bimport)\s*\(?\s*["']([^"']+)["']/gu,
-    )) {
+    for (const specifier of importSpecifiers(readFileSync(file, "utf8"))) {
       // A package or alias import would feed the migrations from a file this walk cannot follow.
       assert.match(specifier!, /^\.{1,2}\//u, `${relative(client, file)} imports ${specifier}`);
       const target = resolve(dirname(file), specifier!);

@@ -1,7 +1,7 @@
 // Generated from the deployment stack. Do not edit.
 deployment {
   stage deployed "Declared deployment" {
-    metadata { bindings "9e15780d68a6d8f0ae92325f2bd35ad9069a9a33f691e455c8cfa55a7d3e0cde" }
+    metadata { bindings "c5dfcabc10f3a373184bc35f7375abd61d4849b01fe4a52273ba857435d1d481" }
     zone group-2703341ef73f1544 "Asset service" {
       storage resource-5feb83cf920a7484743f0f20b6120bffd7591b4d943a0e1b4182bdae81230638 "App Builds" {
         app = instanceOf assetsService {
@@ -74,11 +74,6 @@ deployment {
           app = instanceOf basalt.poolRuntime {
             metadata { resource "resource-fa7235e17973da715bc94c7c4eca80038ddf36f3ab914eda710f6cd435871814" }
           }
-        }
-      }
-      storage resource-52af30bf7d07139ed70671e49647c0e511ffba63e231ec5a50ccdb34c9ba8ff8 "Pool Provider Observation Token" {
-        app = instanceOf basalt.modelGateway {
-          metadata { resource "resource-52af30bf7d07139ed70671e49647c0e511ffba63e231ec5a50ccdb34c9ba8ff8" }
         }
       }
     }

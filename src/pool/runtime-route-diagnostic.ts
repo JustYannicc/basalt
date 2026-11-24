@@ -1,9 +1,14 @@
-import { SlotRefused } from "./runtime-slots/contract.ts";
+import { ContainerEnded, SlotRefused } from "./runtime-slots/contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
 import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "./lifecycle.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
 import { PoolDependencyFailure } from "./dependency-failure.ts";
 import { ControlFailure } from "./json.ts";
+import {
+  decodeReadySignals,
+  runtimeReadySignals,
+  withReadySignals,
+} from "./runtime-ready-signals.ts";
 
 const steps = [
   "primary_forward",
@@ -24,6 +29,8 @@ const steps = [
   "endpoint_request",
   "port_lookup",
   "port_dispatch",
+  // The container's front layer (#1642): its failure costs resumability, never the runtime.
+  "resume_layer",
 ] as const;
 const reasons = [
   "slot_identity",
@@ -46,9 +53,13 @@ const reasons = [
   "transport",
   "unknown",
 ] as const;
+export const runtimeSteps = steps;
+export const runtimeReasons = reasons;
 // A separate header, so callers on an older release still recognize every reason value.
 const causes = [
   "startup_deadline",
+  // The container's monitor recorded its exit: hard evidence, where "not running" alone is not.
+  "container_ended",
   "control",
   "dependency_storage",
   "dependency_membership",
@@ -62,6 +73,10 @@ export interface RuntimeRouteDiagnostic {
 const stepHeader = "X-Signalbox-Runtime-Failure-Step";
 const reasonHeader = "X-Signalbox-Runtime-Failure-Reason";
 const causeHeader = "X-Signalbox-Runtime-Failure-Cause";
+// The readiness answer's signals as the sender decoded them; the receiver decodes them again.
+const readyHeader = "X-Signalbox-Runtime-Failure-Ready";
+// Every closed value together fits in 257 characters; anything much longer was never ours.
+const readyHeaderLength = 1_024;
 // Preserve exception identity and existing refusal/replay handling; only closed metadata crosses the binding.
 const observed = new WeakMap<object, RuntimeRouteDiagnostic>();
 const observedCauses = new WeakMap<object, (typeof causes)[number]>();
@@ -78,8 +93,13 @@ export function retainEndpointRequestId(source: object, destination: object) {
   const id = correlations.get(source);
   if (id) correlations.set(destination, id);
 }
+/** The failed dependency or deadline behind a refusal, when one is known. */
+export function runtimeFailureCause(error: unknown) {
+  return cause(error);
+}
 function cause(error: unknown): (typeof causes)[number] | undefined {
   if (error instanceof PoolStartupDeadline) return "startup_deadline";
+  if (error instanceof ContainerEnded) return "container_ended";
   if (error instanceof ControlFailure) return "control";
   if (error instanceof PoolDependencyFailure) return `dependency_${error.dependency}`;
   return object(error) ? observedCauses.get(error) : undefined;
@@ -134,10 +154,12 @@ export function knownRuntimeFailureCode(code: string) {
 export function runtimeFailureHeaders(error: unknown, step: RuntimeRouteDiagnostic["runtimeStep"]) {
   const diagnostic = runtimeFailureDiagnostic(error, step);
   const failureCause = cause(error);
+  const ready = runtimeReadySignals(error);
   return {
     [stepHeader]: diagnostic.runtimeStep,
     [reasonHeader]: diagnostic.runtimeReason,
     ...(failureCause ? { [causeHeader]: failureCause } : {}),
+    ...(ready ? { [readyHeader]: JSON.stringify(ready) } : {}),
   };
 }
 export function runtimeResponseDiagnostic(response: Response) {
@@ -147,6 +169,16 @@ export function runtimeResponseDiagnostic(response: Response) {
 }
 export function runtimeResponseCause(response: Response) {
   return causes.find((value) => value === response.headers.get(causeHeader));
+}
+/** A header is never trusted: only what decodes into closed values again survives. */
+export function runtimeResponseReady(response: Response) {
+  const header = response.headers.get(readyHeader);
+  if (header === null || header.length > readyHeaderLength) return undefined;
+  try {
+    return decodeReadySignals(JSON.parse(header));
+  } catch {
+    return undefined;
+  }
 }
 /** One closed log field: the refusal code and, when known, the failed dependency or deadline. */
 export function runtimeResponseRefusal(response: Response) {
@@ -159,6 +191,7 @@ export function stripRuntimeFailureHeaders(headers: Headers) {
   headers.delete(stepHeader);
   headers.delete(reasonHeader);
   headers.delete(causeHeader);
+  headers.delete(readyHeader);
 }
 export function retainRuntimeFailure(response: Response, error: object) {
   retainEndpointRequestId(response, error);
@@ -166,5 +199,6 @@ export function retainRuntimeFailure(response: Response, error: object) {
   if (diagnostic) observed.set(error, diagnostic);
   const failureCause = runtimeResponseCause(response);
   if (diagnostic && failureCause) observedCauses.set(error, failureCause);
+  if (diagnostic) withReadySignals(error, runtimeResponseReady(response));
   return error;
 }

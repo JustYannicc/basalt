@@ -1,0 +1,117 @@
+diff --git a/e2e/support/released-retirement-proof.ts b/e2e/support/released-retirement-proof.ts
+--- a/e2e/support/released-retirement-proof.ts
++++ b/e2e/support/released-retirement-proof.ts
+@@ -95,12 +95,27 @@
+     recipient: client.recipient,
+     request: { ...selection, snapshotSha256: proof.result.snapshotSha256 },
+   };
++  // The operation takes its rows NOWAIT, so any transaction holding one of them for an instant gets
++  // a retryable operation_busy. Like an operator, the proofs wait it out; one still busy after ten
++  // seconds fails here, so a busy answer never stands in for the refusal a check expects.
++  const request = (...input: Parameters<typeof client.request>) =>
++    Effect.gen(function* () {
++      for (let attempt = 1; ; attempt++) {
++        const response = yield* client.request(...input);
++        const busy =
++          response.status === 409 &&
++          (response.body as { error?: unknown } | null)?.error === "operation_busy";
++        if (!busy) return response;
++        expect(attempt, "still operation_busy after 10 seconds").toBeLessThan(40);
++        yield* Effect.sleep("250 millis");
++      }
++    });
+   const snapshot = p.snapshot.pipe(
+     Effect.flatMap(Schema.decodeUnknownEffect(Snapshot)),
+     Effect.map((rows) => rows[0]!),
+   );
+   const dryRun = Effect.gen(function* () {
+-    const response = yield* client.request(operation);
++    const response = yield* request(operation);
+     expect(response.status, JSON.stringify(response.body)).toBe(200);
+     return yield* body(DryRun, response);
+   });
+@@ -117,15 +132,13 @@
+       mode,
+     });
+   yield* Effect.addFinalizer(() => backend("present").pipe(Effect.asVoid, Effect.orDie));
+-  return { ...p, client, selection, operation, snapshot, marker, dryRun, apply, backend };
++  return { ...p, client, request, selection, operation, snapshot, marker, dryRun, apply, backend };
+ });
+ 
+ export const releasedRetirementPreservationProof = Effect.gen(function* () {
+   const p = yield* fixture;
+   const before = yield* p.snapshot;
+-  expect([401, 409]).toContain(
+-    (yield* p.client.request(p.operation, { secret: "cd".repeat(32) })).status,
+-  );
++  expect([401, 409]).toContain((yield* p.request(p.operation, { secret: "cd".repeat(32) })).status);
+   for (const changed of [
+     { account: "missing-account" },
+     { connection: "missing-connection" },
+@@ -137,7 +150,7 @@
+     { referenceSha256: "0".repeat(64) },
+   ]) {
+     expect(
+-      (yield* p.client.request({
++      (yield* p.request({
+         ...p.operation,
+         request: { ...p.operation.request, ...changed },
+       })).status,
+@@ -149,28 +162,28 @@
+     { removed: false, token: "synthetic-expired-lease", expiresAt: 1 },
+   ]) {
+     yield* p.marker(marker);
+-    expect((yield* p.client.request(p.operation)).status).toBe(409);
++    expect((yield* p.request(p.operation)).status).toBe(409);
+   }
+   yield* p.marker({ removed: false });
+   yield* p.database.run({
+     sql: "update executor_account_connections set state = (state::jsonb #- '{interactive,retirement}')::json where id = $1",
+     params: [p.selection.connection],
+   });
+-  expect((yield* p.client.request(p.operation)).status).toBe(409);
++  expect((yield* p.request(p.operation)).status).toBe(409);
+   yield* p.marker({ removed: false });
+   const duplicate = `${p.selection.connection}-ambiguous`;
+   yield* p.database.run({
+     sql: "insert into executor_account_connections select (jsonb_populate_record(null::executor_account_connections, to_jsonb(c) || jsonb_build_object('id', $2::text))).* from executor_account_connections c where id = $1",
+     params: [p.selection.connection, duplicate],
+   });
+-  expect((yield* p.client.request(p.operation)).status).toBe(409);
++  expect((yield* p.request(p.operation)).status).toBe(409);
+   yield* p.database.run({
+     sql: "delete from executor_account_connections where id = $1",
+     params: [duplicate],
+   });
+   for (const mode of ["missing", "mismatched"]) {
+     yield* p.backend(mode);
+-    expect((yield* p.client.request(p.operation)).status).toBe(409);
++    expect((yield* p.request(p.operation)).status).toBe(409);
+   }
+   yield* p.backend("present");
+   const dry = yield* p.dryRun;
+@@ -184,12 +197,12 @@
+   ]);
+   expect(yield* p.snapshot).toEqual(before);
+   const apply = p.apply(dry);
+-  expect((yield* p.client.request({ ...apply, go: "GO invalid" })).status).toBe(409);
++  expect((yield* p.request({ ...apply, go: "GO invalid" })).status).toBe(409);
+   yield* p.backend("missing");
+-  expect((yield* p.client.request(apply)).status).toBe(409);
++  expect((yield* p.request(apply)).status).toBe(409);
+   expect(yield* p.snapshot).toEqual(before);
+   yield* p.backend("present");
+-  const applied = yield* p.client.request(apply);
++  const applied = yield* p.request(apply);
+   expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+   expect((yield* body(Applied, applied)).verification.ok).toBe(true);
+   const connections = before.connections.map((row) => {
+@@ -202,7 +215,7 @@
+   expect(yield* p.snapshot).toEqual({ ...before, connections });
+   // Receipt replay verifies committed state without requiring or repeating an external operation.
+   yield* p.backend("missing");
+-  const replay = yield* p.client.request(apply);
++  const replay = yield* p.request(apply);
+   expect(replay.status, JSON.stringify(replay.body)).toBe(200);
+   expect((yield* body(Applied, replay)).repeated).toBe(true);
+   expect(yield* p.snapshot).toEqual({ ...before, connections });

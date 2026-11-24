@@ -8,26 +8,139 @@ const Activity = Schema.Struct({
   active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   known: Schema.Boolean,
   leases: Schema.optional(Schema.Record(Schema.String, Schema.Literals(["active", "released"]))),
+  /**
+   * Which object instance took each lease whose answer streams through that instance's own code. Code
+   * before these two fields ignores them and drops them on its next write, so after a rollback every
+   * lease is unstamped again.
+   */
+  owners: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** Which object instance took each model socket's lease; a socket outlives its instance. */
+  sockets: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  /** When a stream was last acquired or released; a forced stop reads how long the count stood. */
+  changedAt: Schema.optional(Schema.Number),
 });
 
-function reconciled(row: typeof Activity.Type) {
-  if (!row.leases) return row;
-  const released = Object.values(row.leases).filter((state) => state === "released").length;
-  if (Object.keys(row.leases).length > row.active) throw new SlotRefused("uncertain");
+type Row = typeof Activity.Type;
+const without = (map: Record<string, string> | undefined, kept: (id: string) => boolean) =>
+  map && Object.fromEntries(Object.entries(map).filter(([id]) => kept(id)));
+
+/**
+ * Settles released leases, and the leases of plain HTTP calls another object instance took: such an
+ * answer streams through its instance's own code and ended with it, though nothing of that instance
+ * ran its release. `foreign` counts those.
+ */
+function reconciled(row: Row, instance: string): { row: Row; foreign: number } {
+  if (!row.leases) return { row, foreign: 0 };
+  const entries = Object.entries(row.leases);
+  if (entries.length > row.active) throw new SlotRefused("uncertain");
+  const foreign = (id: string) => row.owners?.[id] !== undefined && row.owners[id] !== instance;
+  const live = new Set(
+    entries.filter(([id, state]) => state === "active" && !foreign(id)).map(([id]) => id),
+  );
+  const owners = without(row.owners, (id) => live.has(id));
+  const sockets = without(row.sockets, (id) => live.has(id));
   return {
-    ...row,
-    active: row.active - released,
-    leases: Object.fromEntries(
-      Object.entries(row.leases).filter(([, state]) => state !== "released"),
-    ),
+    row: {
+      ...row,
+      active: row.active - (entries.length - live.size),
+      leases: Object.fromEntries([...live].map((id) => [id, "active" as const])),
+      ...(owners ? { owners } : {}),
+      ...(sockets ? { sockets } : {}),
+    },
+    foreign: entries.filter(([id, state]) => state === "active" && foreign(id)).length,
   };
 }
 
-/** Lost request receipts remain counted. Reconstruction cannot invent an empty runtime. */
+/**
+ * The live leases no instance can vouch for: a lease taken by code before the stamps, and a model
+ * socket another instance took. Each may still carry a live connection, so only a read of the
+ * container's own connections can end them.
+ */
+export interface UnprovenLeases {
+  unstamped: string[];
+  foreignSockets: string[];
+}
+
+// The platform builds a new storage object for each object instance; Workers refuse random values
+// at global scope, so an instance is named on its first lease.
+const instances = new WeakMap<object, string>();
+
+/**
+ * How long the count stood still, as a duration, so no caller compares this clock with its own. Every
+ * acquire and release stamps `changedAt`, so a row without one never moved since it was set up.
+ */
+export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
+  return {
+    stillMs:
+      row.changedAt === undefined
+        ? Number.MAX_SAFE_INTEGER
+        : Math.max(0, Date.now() - row.changedAt),
+  };
+}
+
+/** Why an operator's override of a still count is refused, in the order the rules apply. */
+export type StillRefusal = "not_draining" | "unknown_count" | "still_moving" | "live_lease";
+const stillRefusalReason = {
+  not_draining: "selection",
+  unknown_count: "uncertain",
+  still_moving: "draining",
+  live_lease: "draining",
+} as const;
+
+/**
+ * Whether a settled count may be overridden, and by its stamps whose leases it holds. A lease this
+ * object instance took, a call's or a socket's, may still be live however long it stood. A socket
+ * another instance took, and an unstamped lease, are what the proof release ends when the 8317 read
+ * finds 0; the override ends them on the operator's GO when it doesn't.
+ */
+function stillCheck(row: Row | undefined, stillAtLeastMs: number, instance: string) {
+  const ids = Object.entries(row?.leases ?? {})
+    .filter(([, state]) => state === "active")
+    .map(([id]) => id);
+  const mine = (map: Record<string, string> | undefined) =>
+    ids.filter((id) => map?.[id] === instance).length;
+  const leases = {
+    currentCalls: mine(row?.owners),
+    currentSockets: mine(row?.sockets),
+    foreignSockets: ids.filter(
+      (id) => row?.sockets?.[id] !== undefined && row.sockets[id] !== instance,
+    ).length,
+    unstamped: ids.filter((id) => !row?.owners?.[id] && !row?.sockets?.[id]).length,
+  };
+  const stillMs = row ? stillFor(row).stillMs : 0;
+  const refusal: StillRefusal | null =
+    !row || row.phase !== "draining"
+      ? "not_draining"
+      : // An unknown count stays the drain's own proof (`drain_unproven`), never an override's.
+        !row.known
+        ? "unknown_count"
+        : row.active === 0
+          ? null
+          : stillMs < stillAtLeastMs
+            ? "still_moving"
+            : leases.currentCalls + leases.currentSockets > 0
+              ? "live_lease"
+              : null;
+  return { refusal, active: row?.active ?? 0, known: row?.known ?? false, stillMs, leases };
+}
+
+/**
+ * A lease another instance took ends only by proof: its instance's own end for a plain HTTP call, a
+ * container read with no live model connection for anything else. Reconstruction never invents an
+ * empty runtime.
+ */
 export class RuntimeActivity {
   private storage: TransactionStorage;
-  constructor(storage: TransactionStorage) {
+  private scope?: string;
+  constructor(storage: TransactionStorage, instance?: string) {
     this.storage = storage;
+    this.scope = instance;
+  }
+  private get instance() {
+    if (this.scope) return this.scope;
+    let named = instances.get(this.storage);
+    if (!named) instances.set(this.storage, (named = crypto.randomUUID()));
+    return (this.scope = named);
   }
 
   private key(identity: SlotIdentity) {
@@ -40,7 +153,8 @@ export class RuntimeActivity {
     allowUntracked = false,
     reconcile = true,
   ) {
-    return this.storage.transaction(async (transaction) => {
+    let foreign = 0;
+    const result = await this.storage.transaction(async (transaction) => {
       const value = await transaction.get(this.key(identity));
       if (value === undefined && !allowUntracked) throw new SlotRefused("uncertain");
       const current =
@@ -48,10 +162,15 @@ export class RuntimeActivity {
           ? { identity, phase: "open" as const, active: 0, known: false }
           : Schema.decodeUnknownSync(Activity)(value);
       if (!sameIdentity(current.identity, identity)) throw new SlotRefused("identity");
-      const next = work(reconcile ? reconciled(current) : current);
+      const settled = reconcile ? reconciled(current, this.instance) : { row: current, foreign: 0 };
+      // Ending a lease moves the count, so the fleet's stand-still before trusting it starts again.
+      const next = work(settled.foreign ? { ...settled.row, changedAt: Date.now() } : settled.row);
       await transaction.put(this.key(identity), next.row);
+      foreign = settled.foreign;
       return next.result;
     });
+    if (foreign) await released(identity, "foreign_http", foreign);
+    return result;
   }
 
   initialize(identity: SlotIdentity, known: boolean) {
@@ -74,7 +193,110 @@ export class RuntimeActivity {
     return row;
   }
 
-  async acquire(identity: SlotIdentity) {
+  /**
+   * An operator's override of a count that no stream has moved for `stillAtLeastMs`, for when the
+   * proof release can't end it: the 8317 read keeps finding a connection, or fails. Only a draining,
+   * known count with no lease this instance took qualifies, so nothing new can be admitted on it and
+   * no stream this instance serves is cut. It ends the unstamped leases and the sockets other
+   * instances took, which may include a live model socket that outlived its instance.
+   */
+  releaseStill(identity: SlotIdentity, stillAtLeastMs: number, signal?: AbortSignal) {
+    return this.change(identity, (row) => {
+      // A caller that gave up never sees this commit, so it never commits.
+      signal?.throwIfAborted();
+      const check = stillCheck(row, stillAtLeastMs, this.instance);
+      if (check.refusal) throw new SlotRefused(stillRefusalReason[check.refusal]);
+      const result = {
+        released: row.active,
+        stillMs: check.stillMs,
+        unstamped: check.leases.unstamped,
+        foreignSockets: check.leases.foreignSockets,
+      };
+      // Nothing left to release, as after a re-send whose first answer was lost.
+      if (row.active === 0) return { row, result };
+      const { owners: _owners, sockets: _sockets, ...rest } = row;
+      return {
+        row: { ...rest, active: 0, known: true, leases: {}, changedAt: Date.now() },
+        result,
+      };
+    });
+  }
+
+  /** The same rules as `releaseStill`, on the same settled count, read without writing anything. */
+  async checkStill(identity: SlotIdentity, stillAtLeastMs: number) {
+    const row = await this.inspect(identity);
+    // The override refuses an untracked boot as uncertain, so the check names it the same way.
+    if (!row)
+      return {
+        ...stillCheck(undefined, stillAtLeastMs, this.instance),
+        refusal: "unknown_count" as const,
+        phase: null,
+      };
+    // As `change` does: ending another instance's plain calls moves the count, so it counts as moved.
+    const settled = reconciled(row, this.instance);
+    const view = settled.foreign ? { ...settled.row, changedAt: Date.now() } : settled.row;
+    return { ...stillCheck(view, stillAtLeastMs, this.instance), phase: row.phase };
+  }
+
+  /** Settles what this instance can settle by itself, then names what only a proof can end. */
+  async unproven(identity: SlotIdentity): Promise<UnprovenLeases> {
+    let row = await this.inspect(identity);
+    if (!row?.leases) return { unstamped: [], foreignSockets: [] };
+    if (reconciled(row, this.instance).foreign) {
+      await this.reconcile(identity);
+      row = await this.inspect(identity);
+    }
+    const leases = Object.entries(row?.leases ?? {});
+    const ids = leases.filter(([, state]) => state === "active").map(([id]) => id);
+    return {
+      unstamped: ids.filter((id) => !row?.owners?.[id] && !row?.sockets?.[id]),
+      foreignSockets: ids.filter(
+        (id) => row?.sockets?.[id] !== undefined && row.sockets[id] !== this.instance,
+      ),
+    };
+  }
+
+  /**
+   * Ends every unproven lease after a read found no live connection on the container's model port.
+   * Each was taken before that read, since only this instance runs and it stamps every lease it
+   * takes; a lease this instance took, before or after the read, is never among them.
+   */
+  async releaseProven(identity: SlotIdentity, connections: 0) {
+    const ended = await this.change(identity, (row) => {
+      const ends = (id: string) =>
+        row.leases?.[id] === "active" &&
+        row.owners?.[id] === undefined &&
+        (row.sockets?.[id] === undefined || row.sockets[id] !== this.instance);
+      const ids = Object.keys(row.leases ?? {}).filter(ends);
+      if (!ids.length) return { row, result: { unstamped: 0, foreignSockets: 0 } };
+      return {
+        row: {
+          ...row,
+          active: row.active - ids.length,
+          leases: Object.fromEntries(
+            Object.entries(row.leases ?? {}).filter(([id]) => !ids.includes(id)),
+          ),
+          ...(row.sockets ? { sockets: without(row.sockets, (id) => !ids.includes(id)) } : {}),
+          changedAt: Date.now(),
+        },
+        result: {
+          unstamped: ids.filter((id) => !row.sockets?.[id]).length,
+          foreignSockets: ids.filter((id) => row.sockets?.[id] !== undefined).length,
+        },
+      };
+    });
+    if (ended.unstamped) await released(identity, "unstamped", ended.unstamped, connections);
+    if (ended.foreignSockets)
+      await released(identity, "foreign_socket", ended.foreignSockets, connections);
+    return ended;
+  }
+
+  /**
+   * `endsWithInstance` for a call whose answer streams through this instance's own code: the platform
+   * ends that stream with the instance. A model socket passes through natively and outlives a
+   * replaced instance (runtime-lease-cancel.workerd.test.ts), so its stamp says so.
+   */
+  async acquire(identity: SlotIdentity, endsWithInstance = false) {
     const id = crypto.randomUUID();
     await this.change(
       identity,
@@ -86,6 +308,10 @@ export class RuntimeActivity {
             ...row,
             active: row.active + 1,
             leases: { ...row.leases, [id]: "active" as const },
+            ...(endsWithInstance
+              ? { owners: { ...row.owners, [id]: this.instance } }
+              : { sockets: { ...row.sockets, [id]: this.instance } }),
+            changedAt: Date.now(),
           },
           result: undefined,
         };
@@ -107,7 +333,11 @@ export class RuntimeActivity {
       (row) => ({
         row:
           row.leases?.[id] === "active"
-            ? { ...row, leases: { ...row.leases, [id]: "released" as const } }
+            ? {
+                ...row,
+                leases: { ...row.leases, [id]: "released" as const },
+                changedAt: Date.now(),
+              }
             : row,
         result: undefined,
       }),
@@ -150,4 +380,28 @@ export class RuntimeActivity {
       return { row: { ...row, known: true }, result: { active: 0, known: true } };
     });
   }
+}
+
+/** One closed line per settlement; the key is the slot's short hash, as the fleet inspect shows it. */
+async function released(
+  identity: SlotIdentity,
+  kind: "foreign_http" | "unstamped" | "foreign_socket",
+  count: number,
+  connections?: number,
+) {
+  console.warn("POOL_RUNTIME_LEASES_RELEASED", {
+    key: await slotKey(identity.slotId),
+    ordinal: identity.homePeerOrdinal ?? null,
+    kind,
+    released: count,
+    ...(connections === undefined ? {} : { connections }),
+  });
+}
+
+/** The fleet inspect's row key: the slot's SHA-256, first 12 bytes. */
+export async function slotKey(slotId: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(slotId));
+  return Array.from(new Uint8Array(digest).slice(0, 12), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }

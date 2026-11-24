@@ -1,10 +1,11 @@
+import { poolWorkerCompatibility } from "./worker-compatibility.ts";
 import { productionOpsRelease } from "../../.upstream/apps/hosted/cloud/src/implementation/production-ops-release.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted } from "effect";
 import { fileURLToPath } from "node:url";
-import { verifyRuntimeDatabaseBudget } from "./database-budget.ts";
+import { poolWorkerAcceptance } from "./database-budget.ts";
 import { poolDatabaseInfrastructure } from "./database.ts";
 import { fleetBindings, fleetClasses, fleetInfrastructure } from "./fleet-deployment.ts";
 import { readinessImageInput } from "./image-release-plan.ts";
@@ -55,7 +56,10 @@ export const poolWorker = Effect.gen(function* () {
   const worker = yield* Cloudflare.Worker("PoolWorker", {
     main: fileURLToPath(new URL("./worker.ts", import.meta.url)),
     workersDev: false,
-    compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+    compatibility: {
+      date: poolWorkerCompatibility.date,
+      flags: [...poolWorkerCompatibility.flags],
+    },
     crons: ["*/5 * * * *", inventoryCron, ...(probeTarget ? [availabilityCron] : [])],
     observability: workerObservability,
     env: {
@@ -92,19 +96,14 @@ export const poolWorker = Effect.gen(function* () {
     },
   });
   yield* bindPoolObservation(worker, Boolean(fleet));
-  yield* verifyRuntimeDatabaseBudget("PoolBackendBudget", {
+  yield* poolWorkerAcceptance(worker, {
     adminUrl: database.adminUrl,
     runtimeLogin: database.runtimeRole,
-    databases: ["basalt_pool"],
-    deployment: worker.hash,
     candidate: productionOpsRelease,
-    readiness: {
-      worker: worker.workerName,
-      accountId: application.accountId,
-      key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
-      workerInput: poolWorkerRevision,
-      imageHash: imageInput,
-    },
+    accountId: application.accountId,
+    key: yield* Config.Redacted("POOL_DEPLOYMENT_KEY"),
+    workerInput: poolWorkerRevision,
+    imageHash: imageInput,
   });
   return worker;
 });

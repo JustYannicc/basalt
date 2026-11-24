@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A Worker's metadata hash covers each binding's data without the dev-only `hyperdrives` channel a Hyperdrive binding contributes beside the wire binding, which only local development reads and the upload never carries: its origins come from the Hyperdrive's attributes, which an apply takes from what it reconciled and a later plan from the live read, so hashing them planned every Worker bound to a Hyperdrive as an update on every deploy. A change to the wire binding itself still changes the hash. The fix is offered upstream as alchemy-run/alchemy#3641; the carry goes once a pinned Alchemy release contains it."
+    }
+  }
+}

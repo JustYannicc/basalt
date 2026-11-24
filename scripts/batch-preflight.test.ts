@@ -47,8 +47,16 @@ test("preflight checks prepared source and shipped types, and every failure stop
     [".", "scripts/effect-diagnostics.ts"],
   ];
   try {
-    for (const path of ["scripts", ".upstream", "bin"]) mkdirSync(join(root, path));
-    for (const file of ["batch-preflight.ts", "process.ts"])
+    for (const path of ["scripts/failure", ".upstream", "bin"])
+      mkdirSync(join(root, path), { recursive: true });
+    // The preflight and everything `run` needs to start a command and report its failure.
+    for (const file of [
+      "batch-preflight.ts",
+      "process.ts",
+      "failure/child.ts",
+      "failure/process-tee.ts",
+      "failure/redact.ts",
+    ])
       cpSync(new URL("./" + file, import.meta.url), join(root, "scripts", file));
     writeFileSync(join(root, "package.json"), '{"type":"module"}');
     for (const command of ["node", "bun"])

@@ -71,16 +71,16 @@
   },
   "runs": {
     "accountFailureFirstReading": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ],
     "accountFailureProviderStatuses": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ],
     "accountFailureSourceSeparation": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ],
     "accountFailureParserStages": [
-      "account-acquisition:reusable-acquisition-health-and-retained-account-compatibility"
+      "account-observations:driver-readings-health-and-observation-compatibility"
     ]
   },
   "inputs": [

@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.accountPresentation {
+    metadata {
+      constraint "While the read of a pool's account traffic has not answered, an Accounts row or app Accounts tab row holding an account of that pool shows its Requests 7d cell as counting: never an empty cell or \"no request history\", and never the account's tool calls alone as if they were its total, and its Health and Details show no traffic until the read answers. Not answered means starting, or waiting with nothing read before; a failed read has answered, so it never leaves a row counting. Rows without a pool account, and every row once the pool read answers, keep their counts and their no-history text."
+    }
+  }
+}

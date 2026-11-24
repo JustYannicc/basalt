@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "The cloud test Postgres comes from a public mirror of the official image registry, pinned to that registry's index digest for postgres:17, so parallel Checks never depend on the registry's anonymous pull limit. The mirror serves the same digest; a new Postgres version is a reviewed digest change."
+    }
+  }
+}

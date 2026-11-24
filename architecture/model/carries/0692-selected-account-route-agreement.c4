@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A selected account's native read is one decision for one member and one saved selection. At each concurrent-read stage, the source-binding scenario reads every account through the app page query and through tools/call and requires the same state and source from both, so a usable account is never denied on the page and a revoked selection is denied on both routes."
+    }
+  }
+}
