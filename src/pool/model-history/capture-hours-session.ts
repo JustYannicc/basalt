@@ -135,8 +135,13 @@ export async function captureHoursSession(
         (entry.hour === undefined || Date.parse(entry.hour) > oldestBlock) &&
         (isRead(entry) || open(entry)),
     ),
+    // A count's wait on an hour that left the lookback is never retried: it drops too.
     slow: (state().slow ?? []).filter(
-      (entry) => known.has(entry.pool) && (entry.limit === "read" ? isRead(entry) : open(entry)),
+      (entry) =>
+        known.has(entry.pool) &&
+        (entry.limit === "read"
+          ? isRead(entry)
+          : Date.parse(entry.hour) > oldestBlock && open(entry)),
     ),
     lastSlow: (state().lastSlow ?? []).filter((entry) => known.has(entry.pool)),
     repeat: state().repeat?.pool === "" ? undefined : state().repeat,
@@ -297,33 +302,38 @@ export async function captureHoursSession(
    * block's start, cleared only by the whole block counted or by its read answering, never by one
    * of its hours counted alone, as a recount or a cut session counts them.
    */
-  const readEntry = (block: CaptureBlock, entry: { pool: string; hour?: string; limit?: string }) =>
+  const readWait = (block: CaptureBlock, entry: { pool: string; hour?: string; limit?: string }) =>
+    entry.limit === "read" && entry.pool === block.pool && entry.hour === startOf(block);
+  /** The stuck entry a read's wait led to: on the block's start while that read's wait stands. */
+  const readStuck = (block: CaptureBlock, entry: { pool: string; hour?: string }) =>
     entry.pool === block.pool &&
     entry.hour === startOf(block) &&
-    (entry.limit === "read" ||
-      (state().slow ?? []).some(
-        (wait) => wait.limit === "read" && wait.pool === block.pool && wait.hour === entry.hour,
-      ));
-  /** The block's read answered: its read's wait, and any stuck entry from it, are over. */
+    (state().slow ?? []).some((wait) => readWait(block, wait));
+  /**
+   * The block's read answered: its read's wait, and any stuck entry from it, are over. A count's wait
+   * on the same hour is that hour's own and stands.
+   */
   const readAnswered = (block: CaptureBlock) =>
     update({
-      stuck: (state().stuck ?? []).filter((entry) => !readEntry(block, entry)),
-      slow: (state().slow ?? []).filter((entry) => !readEntry(block, entry)),
+      stuck: (state().stuck ?? []).filter((entry) => !readStuck(block, entry)),
+      slow: (state().slow ?? []).filter((entry) => !readWait(block, entry)),
     });
   /** Counted: the whole block, or with `hour` one hour of it. */
   const counted = (block: CaptureBlock, hour = false) => {
-    const kept = (entry: { pool: string; hour?: string; limit?: string }) => {
-      if (entry.pool !== block.pool) return true;
-      if (readEntry(block, entry)) return hour;
-      return entry.hour !== undefined && !within(entry.hour, block);
-    };
+    const kept =
+      (read: (entry: { pool: string; hour?: string; limit?: string }) => boolean) =>
+      (entry: { pool: string; hour?: string; limit?: string }) => {
+        if (entry.pool !== block.pool) return true;
+        if (read(entry)) return hour;
+        return entry.hour !== undefined && !within(entry.hour, block);
+      };
     update({
       // The hour that last stopped a session is named until it is counted.
       ...(state().lastHourPool === block.pool && within(state().lastHour, block)
         ? { lastHour: undefined, lastHourReadMs: undefined, lastHourPool: undefined }
         : {}),
-      stuck: (state().stuck ?? []).filter(kept),
-      slow: (state().slow ?? []).filter(kept),
+      stuck: (state().stuck ?? []).filter(kept((entry) => readStuck(block, entry))),
+      slow: (state().slow ?? []).filter(kept((entry) => readWait(block, entry))),
       failing: (state().failing ?? []).filter((entry) => entry.pool !== block.pool),
       repeat: state().repeat?.pool === block.pool ? undefined : state().repeat,
     });

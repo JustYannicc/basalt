@@ -1321,3 +1321,38 @@ test("a recount that counts some hours of a block whose read is stuck leaves it 
     assert.equal(state.slow?.find((entry) => entry.limit === "read")?.count, 3);
   });
 });
+
+test("a block's read that answers clears its read's wait, and never a count's wait on the same hour", async () => {
+  await seriesFixture(async (f) => {
+    await clockAt(f, blockPositions()[0]!.at);
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.ready();
+    const end = await horizon(f);
+    const older = key(end - 2 * block);
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    const later = new Date(clock.at + 5 * minute).toISOString();
+    const earlier = new Date(clock.at - minute).toISOString();
+    // The block's first hour is in its count's wait; the block's read timed out once, its wait over.
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, {
+      split: [{ pool: c.poolId, blocks: [older] }],
+      slow: [
+        { pool: c.poolId, hour: older, count: 2, until: later },
+        { pool: c.poolId, hour: older, count: 1, until: earlier, limit: "read" },
+      ],
+    });
+    const state = await captureHoursTick(storage, (work) => work(f.db), {
+      now: () => clock.at,
+      bounds: { lookbackHours: 12, sessions: 1 },
+    });
+    assert.deepEqual(
+      state.slow?.map((entry) => [entry.hour, entry.count, entry.until, entry.limit]),
+      [[older, 2, later, undefined]],
+      "the read's wait is over; the hour's count still waits, its repeats kept",
+    );
+    // The block's other hours were counted; its first hour waits.
+    const hours = await counted(f, c.poolId, 12);
+    assert.deepEqual(hours, { hours: 12, settled: 11 });
+  });
+});
