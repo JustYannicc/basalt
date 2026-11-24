@@ -172,7 +172,7 @@ for (const [shape, frames] of Object.entries(shapes))
         v: 1,
         type: "open",
         id: 3,
-        operation: { service: "models", method: "GET", path: "/v1/responses", transport: "http" },
+        operation: { service: "models", method: "POST", path: "/v1/responses", transport: "http" },
         headers: {},
       },
       (frame) => {
@@ -183,6 +183,8 @@ for (const [shape, frames] of Object.entries(shapes))
       () => {},
     );
     operation.output.grant(tunnelLimits.windowBytes);
+    // The device's upload is complete before the answer starts.
+    operation.end();
     await operation.run(
       new Request("https://router.example/native/v1/tunnel", {
         headers: { authorization: "Bearer synthetic" },

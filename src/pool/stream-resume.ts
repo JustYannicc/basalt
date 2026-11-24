@@ -30,6 +30,7 @@ import {
   streamResumeAttempts,
   streamResumeCuts,
   streamResumeWindowMs,
+  type StreamResumeInput,
 } from "./stream-splice.ts";
 /** A body kept for a refused connect's resend stays inside the entry's own bounds for a held copy. */
 const spareBytes = 4 * 1024 * 1024;
