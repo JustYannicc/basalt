@@ -357,7 +357,9 @@ export class RuntimeSlotRecovery {
       await this.forced.clock.unforcedRestart(Date.now());
     }
     signal.throwIfAborted();
-    this.stalled = false;
+    // Only a start that can run ends a stall: joining a restart over a container that still runs
+    // reaches here too, and its start is refused until the stop a person or the hour must allow.
+    if (!retained.running) this.stalled = false;
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "starting",
       at: Date.now(),

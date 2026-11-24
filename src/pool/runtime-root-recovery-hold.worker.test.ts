@@ -5,6 +5,8 @@ import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { PoolAlarms } from "./alarms.ts";
 import { runtimeAdmissionWaitMs, runtimeRetryTiming } from "./runtime-fleet/retry.ts";
 import { restartStartBoundMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import { UnservingClock } from "./runtime-slots/unserving-clock.ts";
+import { RuntimeSlotStorage } from "./runtime-slots/storage.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Call {
@@ -440,5 +442,59 @@ test(
       await root.idle();
     }
     assert.equal(root.calls[0]?.settledAt, undefined, "held past today's 30 s");
+  },
+);
+
+test(
+  "a root stuck over its own admitted restart that needs a person holds no call: the caller gets today's answer, not a 240 s wait",
+  { timeout: 60_000 },
+  async (context) => {
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    context.mock.method(console, "info", () => {});
+    context.mock.method(console, "error", () => {});
+    context.mock.method(console, "warn", () => {});
+    const passes = async (count: number) => {
+      for (let index = 0; index < count; index++) {
+        await f.upkeep();
+        await f.settle();
+      }
+    };
+    await f.bootstrap();
+    f.old.crash();
+    await passes(1);
+    // The previous container still runs, so the restart recovery admitted can't start over it.
+    const start = f.old.ctx.container.start.bind(f.old.ctx.container);
+    f.old.crash();
+    const detected = Date.now();
+    f.old.ctx.container.start = () => {
+      f.old.revive();
+      throw new Error("synthetic: the previous container is still running");
+    };
+    await passes(1);
+    f.old.ctx.container.start = start;
+    // Only a person can let the stop that would free it run.
+    await new UnservingClock(new RuntimeSlotStorage(f.old.storage)).needsPerson(
+      "stop_failed",
+      Date.now(),
+    );
+    await passes(2);
+    const pause = runtimeRetryTiming.pause;
+    runtimeRetryTiming.pause = async (milliseconds: number) => {
+      now += milliseconds;
+    };
+    try {
+      const model = await f.model();
+      await model.body?.cancel();
+      assert.equal(model.status, 503);
+      assert.ok(
+        Date.now() - detected < runtimeAdmissionWaitMs + 30_000,
+        `a recovery that needs a person held the call for ${Date.now() - detected} ms`,
+      );
+    } finally {
+      runtimeRetryTiming.pause = pause;
+    }
   },
 );
