@@ -465,7 +465,28 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
       },
       { pool: "", reason: "error", retryAt: "2026-11-23T10:30:00.000Z" },
     ],
+    slow: [
+      {
+        pool: "0123456789abcdef",
+        hour: "2026-11-01T03:00:00Z",
+        count: 3,
+        until: "2026-11-23T09:40:00.000Z",
+      },
+    ],
+    lastSlow: [
+      {
+        pool: "0123456789abcdef",
+        at: "2026-11-23T09:30:00.000Z",
+        hour: "2026-11-01T03:00:00Z",
+        block: "2026-11-01T00:00:00Z",
+        limit: "count",
+        elapsedMs: 1_003,
+        repeat: 3,
+      },
+    ],
+    byPool: [{ pool: "0123456789abcdef", pendingBlocks: 5, pendingHours: 30 }],
   });
+  assert.equal(captureHours.byPool[0]?.lastSlow?.limit, "count", "the fixture carries a pool");
   // A pool whose projection lacks the optional readings still prints the rest.
   const {
     lastHour: _hour,
@@ -474,6 +495,7 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
     pendingBlocks: _blocks,
     planMs: _planMs,
     recountPosition: _position,
+    byPool: _byPool,
     ...older
   } = captureHours;
   for (const [reported, expected] of [
