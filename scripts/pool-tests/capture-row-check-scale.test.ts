@@ -22,15 +22,15 @@ type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 const dayMs = 24 * hourMs;
 const requests = Number(process.env.POOL_TEST_CAPTURE_REQUESTS ?? 2_290_000);
 const usage = Number(process.env.POOL_TEST_CAPTURE_USAGE ?? 600_000);
-/** A busy hour's Home usage rows, as last night's load proof wrote in an hour. */
+/** A busy hour's Home usage rows, all of one pool. */
 const dense = Number(process.env.POOL_TEST_CAPTURE_DENSE ?? 4_000);
 const days = 86;
 
 /**
- * Production's size: about 2.29 M requests across four pools over 86 days, the Home usage rows of
+ * A large dataset: by default 2.29 M requests across four pools over 86 days, the Home usage rows of
  * `usage` of them (the rest are imports, with no usage row). Every pool's users have their own key.
  */
-async function production(f: Fixture, now: number) {
+async function largeDataset(f: Fixture, now: number) {
   const c = await captureFixture(f);
   const keys = [c.fingerprint, c.otherKey];
   const ids = [c.poolId, c.otherId];
@@ -90,7 +90,7 @@ async function production(f: Fixture, now: number) {
 }
 
 /** One summary of the pool's last week, with each step's time and the statements it ran. */
-async function measure(f: Fixture, c: Awaited<ReturnType<typeof production>>, now: number) {
+async function measure(f: Fixture, c: Awaited<ReturnType<typeof largeDataset>>, now: number) {
   const ran: { text: string; values?: unknown[]; ms: number }[] = [];
   const db: HistoryDatabase = {
     query: async (text, values) => {
@@ -135,7 +135,7 @@ async function explain(f: Fixture, text: string, values: unknown[]) {
 }
 
 test(
-  "the summary's capture step at production's size: nothing, half and every hour counted",
+  "the summary's capture step at a large size: nothing, half and every hour counted",
   {
     skip: !process.env.POOL_TEST_CAPTURE_SCALE && "set POOL_TEST_CAPTURE_SCALE=1 to measure",
     timeout: 3 * 3_600_000,
@@ -143,7 +143,7 @@ test(
   async () => {
     await seriesFixture(async (f) => {
       const now = Date.now();
-      const c = await production(f, now);
+      const c = await largeDataset(f, now);
       const report = async (label: string) => {
         await measure(f, c, now);
         const run = await measure(f, c, now);
@@ -187,7 +187,7 @@ test(
       const all = await report("all counted");
       assert.equal(all.result.homeCapture.status, "available");
 
-      // A busy hour, as a load proof makes one: 4,000 native requests of one pool in one hour,
+      // A busy hour: by default 4,000 native requests of one pool in one hour,
       // each with its Home usage row, written as the capture writes them (triggers on).
       const hour = Math.floor((now - 20 * hourMs) / hourMs) * hourMs;
       const firstId = Number(
