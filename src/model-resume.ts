@@ -1,3 +1,4 @@
+import { boundedLog } from "./pool/bounded-log.ts";
 import {
   openResumeStamp,
   routerResumeHeader,
@@ -6,6 +7,7 @@ import {
 import {
   resumableAnswer,
   streamBootHeader,
+  streamResumeFromHeader,
   streamResumeHeader,
   streamResumeTargetHeader,
   streamResumeVersion,
@@ -14,6 +16,15 @@ import {
 
 /** As the entry waits before each re-attach (controller-reset.ts). */
 export const routerResumeDelayMs = 1_000;
+
+/**
+ * How a resumed answer ended, from the router: served whole; the pool answered gone (its own
+ * POOL_STREAM_RESUME_REFUSED line says when that was a refusal); the router gave up (the pool not
+ * back, or a cut it could not resume again); another answer; or the client left.
+ */
+export type RouterResumeOutcome = "served" | "gone" | "gave_up" | "failed" | "client_left";
+const judgedEndpoint = (pathname: string) =>
+  /\/(?:messages|responses|chat\/completions)$/.exec(pathname)?.[0] ?? "other";
 
 interface Resumer {
   POOL_SERVICE: { fetch(request: Request): Promise<Response> };
@@ -53,10 +64,38 @@ export async function resumeThroughRouter(
   const judged =
     /^text\/event-stream(?:;|$)/i.test(response.headers.get("content-type") ?? "") &&
     /\/(?:messages|responses|chat\/completions)$/.test(new URL(request.url).pathname);
+  // One line per answer that needed a resume, written when it ends.
+  const tried = { tries: 0, resumes: 0, from: 0, last: undefined as string | undefined };
+  const ended = (how: "done" | "error" | "cancel") => {
+    if (!tried.tries) return;
+    const outcome: RouterResumeOutcome =
+      how === "cancel"
+        ? "client_left"
+        : how === "done"
+          ? "served"
+          : tried.last === "gone"
+            ? "gone"
+            : tried.last === "status"
+              ? "failed"
+              : "gave_up";
+    boundedLog("MODEL_FORWARD_RESUME", {
+      requestId,
+      endpoint: judgedEndpoint(new URL(request.url).pathname),
+      outcome,
+      tries: tried.tries,
+      resumes: tried.resumes,
+      from: tried.from,
+      // Sends are attempts 1 and 2; each try takes the next number.
+      attempt: 2 + tried.tries,
+    });
+  };
   const spliced = resumableAnswer(new Response(response.body, init), {
     ...(judged ? { complete: terminalJudge() } : {}),
     // The pool admits a resume as it admits a new call, so it carries the call's own credentials.
     resume: async (input) => {
+      tried.tries++;
+      tried.from = input.from;
+      tried.last = "error";
       const headers = await callHeaders();
       for (const name of ["content-length", "content-encoding", "transfer-encoding"])
         headers.delete(name);
@@ -80,6 +119,14 @@ export async function resumeThroughRouter(
         void answer.body?.cancel().catch(() => {});
         throw new Error("The pool's resume is not ready");
       }
+      // Counted as the splice counts it: an answer that continues from the offset it was asked for.
+      const resumed =
+        answer.status === 200 &&
+        !!answer.body &&
+        answer.headers.get(streamResumeHeader) === streamResumeVersion &&
+        answer.headers.get(streamResumeFromHeader) === String(input.from);
+      if (resumed) tried.resumes++;
+      tried.last = resumed ? "resumed" : answer.status === 410 ? "gone" : "status";
       return answer;
     },
     // From the router every broken body is the pool going down; a cut the layer cannot serve
@@ -91,7 +138,7 @@ export async function resumeThroughRouter(
     signal: request.signal,
   });
   if (!spliced.body) return spliced;
-  return new Response(byteStream(spliced.body), {
+  return new Response(byteStream(spliced.body, ended), {
     status: spliced.status,
     statusText: spliced.statusText,
     headers: spliced.headers,
@@ -99,14 +146,30 @@ export async function resumeThroughRouter(
 }
 
 /** The device tunnel reads with a BYOB reader, which only a byte stream serves. */
-function byteStream(source: ReadableStream<Uint8Array>) {
+function byteStream(
+  source: ReadableStream<Uint8Array>,
+  ended: (how: "done" | "error" | "cancel") => void = () => {},
+) {
   const reader = source.getReader();
+  let over = false;
+  const end = (how: "done" | "error" | "cancel") => {
+    if (over) return;
+    over = true;
+    ended(how);
+  };
   return new ReadableStream({
     type: "bytes",
     async pull(controller) {
       for (;;) {
-        const next = await reader.read();
+        let next: ReadableStreamReadResult<Uint8Array>;
+        try {
+          next = await reader.read();
+        } catch (error) {
+          end("error");
+          throw error;
+        }
         if (next.done) {
+          end("done");
           controller.close();
           // A pending BYOB read is answered with nothing once the stream has closed.
           controller.byobRequest?.respond(0);
@@ -117,6 +180,7 @@ function byteStream(source: ReadableStream<Uint8Array>) {
       }
     },
     cancel(reason) {
+      end("cancel");
       return reader.cancel(reason);
     },
   });

@@ -4,7 +4,7 @@
  * (Stack.plan, then Stack.apply) with `updateStateStore` always false: the CLI's `--yes` also sets
  * it, and a short State store outage could then redeploy the shared store with a new token.
  *
- *   bun scripts/production.ts plan   [--fleet-classes]   prints each row's name, type and action
+ *   bun scripts/production.ts plan   [--fleet-classes]   prints each row's name, type, action and why
  *   bun scripts/production.ts deploy [--fleet-classes]   plans, applies, smokes; re-points on failure
  */
 import { randomUUID } from "node:crypto";
@@ -53,7 +53,7 @@ type Snapshot = {
     fqn: string;
     resourceType: string;
     action: string;
-    bindings?: { action: string }[];
+    bindings?: { sid?: string; action: string }[];
   }[];
   actions?: { fqn: string; actionType: string; action: string }[];
   native: Plan;
@@ -215,7 +215,7 @@ async function main() {
   });
   const mode = positionals[0];
   if (mode !== "plan" && mode !== "deploy") throw new Refused("Usage: production.ts plan|deploy");
-  const { actionLine, deployApproval, planDifference, planDigest, rowLine } =
+  const { actionLine, deployApproval, planDifference, planDigest, rowLine, withReasons } =
     await import("./release/approved-plan.ts");
   // A deploy applies only the plan someone read: without its digest it stops before anything runs.
   const approval = deployApproval(mode, process.env.BASALT_APPROVED_PLAN);
@@ -321,14 +321,15 @@ async function main() {
         updateStateStore: false,
       } as never)) as unknown as Snapshot;
       const { dropped, created } = classChanges(snapshot.native);
+      // Why each row is in the plan, by name only, read before apply rewrites the plan. A deploy
+      // re-plans and prints the same lines, and the digest covers them as printed.
+      const changed = changedRows(snapshot as never) as RootRow[];
+      const rows = withReasons(snapshot.resources, changed);
       yield* print(
         `Plan of ${candidate}, fleet classes ${declared ? "declared" : "absent"}: ${JSON.stringify(snapshot.summary)}`,
       );
       // Stack actions run during the apply too, so they are rows the plan shows and the digest covers.
-      for (const line of [
-        ...snapshot.resources.map(rowLine),
-        ...(snapshot.actions ?? []).map(actionLine),
-      ])
+      for (const line of [...rows.map(rowLine), ...(snapshot.actions ?? []).map(actionLine)])
         if (line) yield* print(`- ${line}`);
       yield* print(
         `Creates Durable Object classes (cannot be rolled back): ${created.join(", ") || "none"}`,
@@ -340,9 +341,7 @@ async function main() {
       const removed = removals(snapshot);
       if (removed.length)
         return yield* refuse(`The plan deletes or replaces ${removed.join("; ")}; nothing applied`);
-      const root = (changedRows(snapshot as never) as RootRow[]).find(
-        (r) => r.fqn === "PoolContainer",
-      );
+      const root = changed.find((r) => r.fqn === "PoolContainer");
       if (rootChange(root) === "refused")
         return yield* refuse(
           `The plan changes the root container (${root!.action}${root!.changedProps.length ? `: ${root!.changedProps.join(", ")}` : ""}); no release rolls the root`,
@@ -379,7 +378,7 @@ async function main() {
       const reading = {
         candidate,
         declared,
-        rows: snapshot.resources,
+        rows,
         actions: snapshot.actions ?? [],
         created,
         forward: forward.map(({ fqn }) => fqn),

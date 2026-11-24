@@ -160,6 +160,7 @@ import {
 } from "./code-handover.ts";
 import { resumeGone, resumeRoute, toLayer } from "./stream-resume.ts";
 import { governedResume } from "./resume-admission.worker.ts";
+import { boundedLog } from "./bounded-log.ts";
 import { resumedTerminal } from "./terminal-recording.worker.ts";
 import { StorageBookmarks } from "./storage-bookmark.ts";
 
@@ -1305,7 +1306,13 @@ export async function handlePoolWorkerRequest(
       request,
       { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
       async (input, call) => {
-        if (!(await readmit(call))) return resumeGone();
+        if (!(await readmit(call))) {
+          boundedLog("POOL_ROUTER_RESUME_REFUSED", {
+            requestId: input.requestId,
+            reason: "credentials",
+          });
+          return resumeGone();
+        }
         const resumed: Response = await singleton(env).resume(input);
         return resumed;
       },
