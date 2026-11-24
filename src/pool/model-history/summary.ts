@@ -149,7 +149,17 @@ export async function poolUsageSummary(
       priceUnavailableReason,
     );
     const incidentTo = timestamp(new Date(now).toISOString());
-    const captureTo = [input.to, incidentTo].sort().at(-1)!;
+    // The check stops at the capture's own recorded position, the request of its forward position:
+    // a usage row after it is not captured yet, never missing, and one before it with no request
+    // still makes its hour missing. Without a position the check runs to now, as before.
+    const capturedThrough = observed.coverage.capturedThrough;
+    const captureTo =
+      capturedThrough === null
+        ? [input.to, incidentTo].sort().at(-1)!
+        : [readFrom, [input.to, incidentTo, capturedThrough].sort()[0]!].sort().at(-1)!;
+    // Only an hour the capture has passed whole can be complete; the rest are not captured yet.
+    const capturedMs =
+      capturedThrough === null ? Number.POSITIVE_INFINITY : Date.parse(capturedThrough);
     mark("capture");
     const capture = await homeCaptureCoverage(
       db,
@@ -195,7 +205,7 @@ export async function poolUsageSummary(
     if (nativeComplete && hourly.nativeAvailable && missingHours !== null)
       for (
         let at = Math.ceil(Date.parse(input.from) / 3_600_000) * 3_600_000;
-        at + 3_600_000 <= Date.parse(input.to);
+        at + 3_600_000 <= Math.min(Date.parse(input.to), capturedMs);
         at += 3_600_000
       ) {
         const key = new Date(at).toISOString();
@@ -210,7 +220,8 @@ export async function poolUsageSummary(
       incidentTo,
       nativeComplete &&
         missingHours !== null &&
-        ![...missingHours].some((at) => Date.parse(at) + 3_600_000 > incidentFrom),
+        ![...missingHours].some((at) => Date.parse(at) + 3_600_000 > incidentFrom) &&
+        capturedMs >= Date.parse(incidentTo),
       observed.terminalReady,
     );
     const forecasts = seriesUsageForecasts(series, capture, historyCoverage.known);
