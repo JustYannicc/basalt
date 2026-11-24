@@ -3,13 +3,15 @@ import { isPublicModelPath } from "./lifecycle.ts";
 /**
  * Only model traffic follows its caller. Anything else (a fleet command, a start or install, a
  * handover step, a membership change, a migration) runs to its end or never starts, as it did before
- * the flag: its request gets a signal that never fires. Every fetch entry of the pool Worker passes
- * through here or `detachFromCaller`.
+ * the flag: its request carries no signal. Every fetch entry of the pool Worker passes through here
+ * or `detachFromCaller`.
  */
 export function followsCaller(request: Request): Request {
   return isPublicModelPath(new URL(request.url).pathname) ? request : detachFromCaller(request);
 }
 
+// None rather than one that never fires: RPC refuses to clone an AbortSignal, and the controller's
+// /runtime-handoff takes its request over RPC.
 export function detachFromCaller(request: Request): Request {
-  return new Request(request, { signal: new AbortController().signal });
+  return new Request(request, { signal: null });
 }
