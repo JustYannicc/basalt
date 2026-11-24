@@ -36,6 +36,10 @@ const Policy = Schema.Struct({
 const Health = Schema.Struct({
   identity: SlotIdentity,
   leaseMs: Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1500)),
+  // An older runtime omits it and its remaining lease is used as before.
+  grantMs: Schema.optional(
+    Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(1500)),
+  ),
   // An older runtime omits it; a malformed one is dropped below rather than failing the read.
   database: Schema.optional(Schema.Unknown),
 });
@@ -122,9 +126,14 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(target, action, { target }, signal);
     try {
       const health = Schema.decodeUnknownSync(Health)(await response.json());
-      const policyLeaseUntil = requestedAt + health.leaseMs;
+      // The container's grant runs from the endpoint's own readiness send, which comes after this
+      // send, so counting it from here is never longer than granted and counts the read once. The
+      // remaining lease already had the read taken off; counted from here it took it off twice.
+      const leaseMs = health.grantMs ?? health.leaseMs;
+      const policyLeaseUntil = requestedAt + leaseMs;
       const roundTripMs = performance.now() - requestedAt;
       if (policyLeaseUntil <= performance.now())
+        // The remaining lease, as before, so the failure record's fields keep their meaning.
         throw new HealthLeaseElapsed(Math.round(roundTripMs), health.leaseMs);
       return { identity: health.identity, policyLeaseUntil, ...distance(health.database) };
     } catch (error) {
@@ -221,8 +230,10 @@ export class BoundSlotDriver implements SlotDriver {
       AbortSignal.timeout(2_000),
     );
     const health = Schema.decodeUnknownSync(Health)(await response.json());
-    if (requestedAt + health.leaseMs <= performance.now()) throw new SlotRefused("unhealthy");
-    return { identity: health.identity, policyLeaseUntil: requestedAt + health.leaseMs };
+    // Counted as `read` counts it: the whole grant, from this send.
+    const policyLeaseUntil = requestedAt + (health.grantMs ?? health.leaseMs);
+    if (policyLeaseUntil <= performance.now()) throw new SlotRefused("unhealthy");
+    return { identity: health.identity, policyLeaseUntil };
   }
   async install(identity: SlotIdentity, policy: NativeMembershipPolicy, signal: AbortSignal) {
     await (await this.call(identity, "install", { identity, policy }, signal)).body?.cancel();
