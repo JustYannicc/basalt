@@ -56,13 +56,15 @@ function anotherProcess() {
 }
 
 /** One ready cell whose installs and health reads the test answers, on a clock the test moves. */
-async function installFleet(context: TestContext) {
+async function installFleet(context: TestContext, { cells = 1 } = {}) {
   let clock = 0;
   context.mock.method(Date, "now", () => clock);
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "warn", () => {});
   const f = await fixture(2),
     cell = await f.add();
+  const added = [cell];
+  if (cells > 1) added.push(await f.add());
   let install: () => Promise<void> = async () => {};
   // A call's answer the test holds open, to show what a fence does to calls already in flight.
   let answer: (() => Response) | undefined;
@@ -90,7 +92,7 @@ async function installFleet(context: TestContext) {
           : {}),
         healthy: async () => undefined,
         install: async () => {
-          if (target.slotId === cell.slotId) await install();
+          if (added.some((value) => value.slotId === target.slotId)) await install();
         },
       }),
       legacyActive: async () => 0,
@@ -117,6 +119,7 @@ async function installFleet(context: TestContext) {
       answer = value;
     },
     row: async () => (await f.state.inspect()).find((value) => value.target.slotId === cell.slotId),
+    rows: () => f.state.inspect(),
     /** The membership install at `at` ms, answered by `answer`. */
     install: async (
       at: number,
@@ -337,4 +340,23 @@ test("another pool's install landing never settles the pool the cell owes", asyn
   await s.pass(2_000);
   assert.deepEqual(readSuspect((await s.row())?.suspect)?.policyOwed, ["pool-a"]);
   assert.equal(await (await s.f.forward(undefined, s.fleet)).text(), "legacy");
+});
+
+test("the same policy-layer refusal on every cell quarantines none of them: the pool's acknowledgement holds instead", async (context) => {
+  // Fencing this class quarantined every cell by the second renewal and left only the root. A held
+  // acknowledgement already keeps that pool's calls off every cell until a revision is acknowledged.
+  const s = await installFleet(context, { cells: 2 });
+  for (const at of [0, 5_000, 10_000])
+    assert.ok(
+      (await s.install(at, async () => {
+        throw new ControlFailure(409, "backend_unavailable", "refused");
+      })) instanceof Error,
+      "a policy-layer refusal was acknowledged",
+    );
+  const rows = await s.rows();
+  assert.equal(rows.length, 2);
+  for (const row of rows) {
+    assert.equal(row.phase, "ready");
+    assert.equal(row.suspect, undefined);
+  }
 });
