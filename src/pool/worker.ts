@@ -57,7 +57,7 @@ import type { ModelIdentity } from "./model-membership.ts";
 import { accountMirrorPath, handleAccountKeyMirror } from "./account-key-mirror.ts";
 import { RouteAssignments } from "./route-assignments.ts";
 import { routeResolver } from "./route-resolver.ts";
-import { routeDownAnswer } from "./route-refusal.ts";
+import { routeSafeAnswer } from "./route-refusal.ts";
 import { RouteReadings, gatewayReader } from "./route-reading.ts";
 import { installRoutePeer, servingImage } from "./route-peer-intercept.ts";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -1020,7 +1020,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           return toLayer(
             routed.request,
             async (request, port) =>
-              containerAnswer(await container.getTcpPort(port).fetch(request)),
+              routeSafeAnswer(
+                request,
+                port,
+                containerAnswer(await container.getTcpPort(port).fetch(request)),
+              ),
             () => container.running,
           );
         });
@@ -1321,7 +1325,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         const answer = containerAnswer(
           await this.ctx.container.getTcpPort(target).fetch(forwarded),
         );
-        return target === 8317 ? routeDownAnswer(forwarded, answer) : answer;
+        return routeSafeAnswer(forwarded, target, answer);
       },
       running: () => this.ctx.container?.running === true,
       defer: (work) => this.ctx.waitUntil(work),

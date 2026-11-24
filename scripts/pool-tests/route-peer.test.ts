@@ -176,7 +176,7 @@ interface Records {
 }
 
 test(
-  "routed credentials leave only through their route, refused routes send nothing, and the global covers the node's own calls",
+  "routed credentials and sign-ins leave only through their route, refused routes send nothing, and the node's global proxy is never set",
   { timeout: 600_000 },
   async () => {
     const admin = new pg.Client({ connectionString: adminUrl });
@@ -277,7 +277,7 @@ test(
         `POOL_MANAGEMENT_KEY=${managementKey}`,
         "--env",
         "POOL_MANAGEMENT_ALLOW_REMOTE=true",
-        // Test-only: the throwaway CA stands in for this container's system roots. SSL_CERT_FILE
+        // Test-only: the throwaway CA joins this container's system roots. SSL_CERT_FILE
         // can't carry it, because Home gets only the supervisor's own environment. Every other
         // phase refuses or never resolves before TLS, so this changes nothing but the vendor sign-in.
         "--volume",
@@ -541,8 +541,9 @@ test(
           !shown.includes(routePeerAddress) && !shown.includes("models.example.test"),
           shown,
         );
-        if (body.includes(routePeerAddress))
-          assert.equal(answer.headers.get("X-Signalbox-Route-Refused"), "route_down");
+        // The rewrite is proven only if the node's text names the listener; it must.
+        assert.ok(body.includes(routePeerAddress), `${model}: the node's refusal changed shape`);
+        assert.equal(answer.headers.get("X-Signalbox-Route-Refused"), "route_down");
         seen = await records();
         assert.deepEqual(seen.provider, [], `${model} reached the provider`);
         assert.ok(
@@ -550,7 +551,6 @@ test(
           `${model} fell back to a direct lookup`,
         );
       }
-      assert.ok(Object.keys(refusals).length === 2);
 
       // Home refreshes an OAuth credential as soon as it holds it. The routed one's refresh reaches
       // the gateway as a CONNECT and is never looked up; the direct one's is a lookup (the control).

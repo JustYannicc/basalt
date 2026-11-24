@@ -445,3 +445,36 @@ test("a routed device sign-in that loses its image between reads stops on the al
     message: "route_unavailable",
   });
 });
+
+test("a routed sign-in whose running Home stops routing sessions under the same image fails closed before the callback and on the alarm", async () => {
+  // A rollback the configured image can't show: the container rolled, the hash did not.
+  const recorder = routeRecorder();
+  const f = fixture([], "claude", { flow: "callback" }, recorder.routes);
+  const started = await body(await f.send("start", { hasRules: true, route: signInRoute }));
+  f.withoutSessionProxy();
+  const before = f.calls.length;
+  assert.deepEqual(
+    await body(
+      await f.send("submit", {
+        session: started.session,
+        value: "http://localhost/cb?code=x&state=home-state",
+      }),
+    ),
+    { state: "failed", message: "route_unavailable" },
+  );
+  assert.ok(!f.calls.slice(before).some((call) => call.path.includes("/oauth/callback")));
+  assert.deepEqual(recorder.events, [`begin ${signInRoute.routeId}`, "settle "]);
+
+  const device = routeRecorder();
+  const g = fixture([], "claude", {}, device.routes);
+  const polled = await body(
+    await g.send("start", { hasRules: true, route: signInRoute }, owner, "connect:device"),
+  );
+  g.withoutSessionProxy();
+  await g.tick();
+  assert.ok(!g.calls.some((call) => call.path.includes("/oauth/status")));
+  assert.deepEqual(await body(await g.send("status", { session: polled.session })), {
+    state: "failed",
+    message: "route_unavailable",
+  });
+});

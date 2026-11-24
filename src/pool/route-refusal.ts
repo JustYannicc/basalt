@@ -1,3 +1,5 @@
+import { resumeLayerPort } from "./stream-splice.ts";
+
 /** Every routed credential's proxy points here; a node error naming it is a refused route. */
 export const routePeerAddress = "127.0.0.1:20990";
 // The node's refusal bodies are small; anything larger is passed through unscanned.
@@ -24,6 +26,14 @@ export function routeDownRefusal(request: Request) {
       headers: { "Cache-Control": "no-store", "X-Signalbox-Route-Refused": "route_down" },
     },
   );
+}
+
+/**
+ * A container answer as a caller may see it: model calls reach the node directly (8317) or through
+ * the resume layer in front of it, and either carries the node's refusal text.
+ */
+export function routeSafeAnswer(request: Request, port: number, answer: Response) {
+  return port === 8317 || port === resumeLayerPort ? routeDownAnswer(request, answer) : answer;
 }
 
 /**

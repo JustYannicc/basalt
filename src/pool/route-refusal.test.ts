@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { routeDownAnswer, routePeerAddress, routeSafeMessage } from "./route-refusal.ts";
+import {
+  routeDownAnswer,
+  routePeerAddress,
+  routeSafeAnswer,
+  routeSafeMessage,
+} from "./route-refusal.ts";
+import { resumeLayerPort } from "./stream-splice.ts";
 
 // The node's own refusal text when route_peer.py answers 0x02 (pinned node, Docker integration).
 const raw = JSON.stringify({
@@ -61,4 +67,18 @@ test("an account's status text never shows the route listener", () => {
   assert.equal(routeSafeMessage(`dial ${routePeerAddress}: refused`), "route_down");
   assert.equal(routeSafeMessage("quota exceeded"), "quota exceeded");
   assert.equal(routeSafeMessage(null), null);
+});
+
+test("a refusal is rewritten on every port a model call reaches, the resume layer's included", async () => {
+  const request = new Request("https://pool.example/v1/chat/completions", { method: "POST" });
+  for (const port of [8317, resumeLayerPort]) {
+    const answer = await routeSafeAnswer(request, port, new Response(raw, { status: 500 }));
+    assert.equal(answer.status, 503, String(port));
+    assert.ok(!(await answer.text()).includes(routePeerAddress));
+  }
+  // Management and readiness answers are Home's and the supervisor's own, never the node's.
+  for (const port of [8318, 8327]) {
+    const answer = new Response(raw, { status: 500 });
+    assert.equal(await routeSafeAnswer(request, port, answer), answer);
+  }
 });

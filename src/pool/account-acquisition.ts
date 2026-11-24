@@ -184,7 +184,7 @@ export class HomeAccountAcquisitions {
         const path = `/oauth/auth-url?provider=${encodeURIComponent(provider)}${proxy}`;
         const start = await acquisitionStep("oauth_start", async () => {
           // The steps above yield; the image is checked again right before Home sees the start.
-          if (route && !(await this.onProvenImage(attempt)))
+          if (route && !(await this.onProvenImage(attempt, request.signal)))
             return { kind: "refused", refused: "route_unsupported", status: 409 } as const;
           const start = route
             ? await this.routedStart(path, request.signal)
@@ -213,7 +213,7 @@ export class HomeAccountAcquisitions {
         }
         const started = start.started;
         attempt.state = String(started.state);
-        if (route && !(await this.onProvenImage(attempt))) {
+        if (route && !(await this.onProvenImage(attempt, request.signal))) {
           // The image changed while Home started the session: it may not route it. End the
           // session where it can be ended; the sign-in fails closed either way.
           attempt.result = { state: "failed", message: "route_unavailable" };
@@ -302,7 +302,11 @@ export class HomeAccountAcquisitions {
       if (value.action === "submit") {
         if (!attempt.started?.paste || typeof value.value !== "string") return unavailable();
         // The callback runs the code exchange on whichever runtime takes it.
-        if (attempt.route && !attempt.result && !(await this.onProvenImage(attempt))) {
+        if (
+          attempt.route &&
+          !attempt.result &&
+          !(await this.onProvenImage(attempt, request.signal))
+        ) {
           attempt.result = { state: "failed", message: "route_unavailable" };
           await this.finish(attempt, attempts, request.signal);
           return this.reply(attempt.result);
@@ -387,12 +391,16 @@ export class HomeAccountAcquisitions {
     throw new BackendFailure(response.status);
   }
 
-  private async onProvenImage(attempt: Attempt) {
+  /**
+   * The image is the configured one, which a container still rolling can disagree with; Home's own
+   * word that it routes sessions covers the running one, so both are read each time.
+   */
+  private async onProvenImage(attempt: Attempt, signal?: AbortSignal) {
     const image = await this.routes!.servingImage();
-    return image !== null && image === attempt.image;
+    return image !== null && image === attempt.image && (await this.routesSessions(signal));
   }
 
-  private async routesSessions(signal: AbortSignal) {
+  private async routesSessions(signal?: AbortSignal) {
     const capabilities = await acquisitionStep("oauth_start", () =>
       this.home.data("/capabilities", { signal }),
     );
@@ -415,7 +423,7 @@ export class HomeAccountAcquisitions {
         state: "failed",
         message: "Sign-in expired before its account could be confirmed. Start again.",
       };
-    } else if (attempt.route && !(await this.onProvenImage(attempt))) {
+    } else if (attempt.route && !(await this.onProvenImage(attempt, signal))) {
       // A device flow's poll can complete the exchange too; nothing more is sent.
       attempt.result = { state: "failed", message: "route_unavailable" };
     } else if (state) {
