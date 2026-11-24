@@ -202,6 +202,10 @@ export async function smoke(send: () => Promise<unknown>) {
 // (until #1726 binds it plainly). Forced, the earlier version gets back the value it ran with.
 const forceSecrets = new Set(["EXECUTOR_TELEMETRY", "EXECUTOR_APPS_VERSION"]);
 
+// Set right before the first production write. A run that stops before it says so (`unchanged`), and
+// production.yml records every other deploy: one that dies mid-apply never writes that line.
+let began = false;
+
 const say = async (line: string) => {
   console.log(line);
   if (process.env.GITHUB_STEP_SUMMARY)
@@ -416,6 +420,7 @@ async function main() {
           );
         yield* print(`Backed up the pool database before ${steps.join(", ")}: ${name}`);
       }
+      began = true;
       for (const worker of forward) {
         const moved = yield* Effect.exit(
           rollbackTo(
@@ -480,6 +485,8 @@ async function main() {
 if (process.argv[1] === fileURLToPath(import.meta.url))
   await main().catch(async (error: unknown) => {
     const { failureLine } = await import("./release/failure-line.ts");
+    if (!began && process.env.GITHUB_OUTPUT)
+      await appendFile(process.env.GITHUB_OUTPUT, "unchanged=true\n");
     await say(`::error::Stopped: ${error instanceof Refused ? error.message : failureLine(error)}`);
     process.exit(1);
   });
