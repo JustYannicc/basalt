@@ -1,0 +1,67 @@
+{
+  "entries": [
+    {
+      "vendor": "anthropic",
+      "plan": "ultra",
+      "windowSeconds": 604800,
+      "full": 10,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-11-09",
+      "sourceId": "claude-ultra",
+      "detail": "Vendor documentation checked on the seed date"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_20x",
+      "windowSeconds": 18000,
+      "full": 20,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "policy",
+      "verification": "policy",
+      "sources": [
+        "https://github.com/JustYannicc/basalt/blob/29fa96540/src/pool/capacity/weights.ts"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-10-30",
+      "sourceId": "pool-policy",
+      "detail": "Explicit retained pool policy, not verified vendor allowance"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_20x",
+      "windowSeconds": 604800,
+      "full": 20,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "policy",
+      "verification": "policy",
+      "sources": [
+        "https://github.com/JustYannicc/basalt/blob/29fa96540/src/pool/capacity/weights.ts"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-11-09-max20x-20",
+      "sourceId": "pool-policy",
+      "detail": "Explicit retained pool policy, not verified vendor allowance"
+    }
+  ]
+}
