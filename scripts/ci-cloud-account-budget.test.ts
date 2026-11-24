@@ -156,12 +156,12 @@ test("source selection and the aggregate cannot skip either Cloud account job", 
       },
     ]),
   );
-  assert.deepEqual(gateErrors(needs, heavyJobs, [], true), []);
+  assert.deepEqual(gateErrors(needs, heavyJobs, [], "full"), []);
   for (const id of [transport, actions]) {
     assert.ok(workflow.jobs.check.needs.includes(id));
     for (const result of ["failure", "cancelled", "skipped"]) {
       assert.ok(
-        gateErrors({ ...needs, [id]: { result } }, heavyJobs, [], true).some((error) =>
+        gateErrors({ ...needs, [id]: { result } }, heavyJobs, [], "full").some((error) =>
           error.startsWith(id + ":"),
         ),
       );

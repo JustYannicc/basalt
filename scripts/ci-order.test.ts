@@ -70,7 +70,7 @@ test("a long-started that did not succeed fails the gate, with or without the jo
       { result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success" },
     ]),
   );
-  assert.deepEqual(gateErrors(passed, heavyJobs, [], true), []);
+  assert.deepEqual(gateErrors(passed, heavyJobs, [], "full"), []);
   for (const result of ["failure", "cancelled", "skipped"]) {
     // What GitHub reports: the long tier ran, every job waiting for long-started was skipped.
     const skipped = Object.fromEntries(
@@ -80,18 +80,18 @@ test("a long-started that did not succeed fails the gate, with or without the jo
       ]),
     );
     skipped["long-started"] = { result };
-    const errors = gateErrors(skipped, heavyJobs, [], true);
+    const errors = gateErrors(skipped, heavyJobs, [], "full");
     assert.ok(errors.includes(`long-started: expected success, got ${result}`), result);
     for (const id of later.filter((id) => !conditionalJobs.includes(id)))
       assert.ok(errors.includes(`${id}: expected success, got skipped`), `${id} ${result}`);
     assert.ok(
-      gateErrors({ ...passed, "long-started": { result } }, heavyJobs, [], true).length,
+      gateErrors({ ...passed, "long-started": { result } }, heavyJobs, [], "full").length,
       result,
     );
-    assert.ok(gateErrors({ ...passed, "long-started": { result } }, [], [], false).length, result);
+    assert.ok(gateErrors({ ...passed, "long-started": { result } }, [], [], "fast").length, result);
   }
   const { "long-started": _job, ...missing } = passed;
-  assert.ok(gateErrors(missing, heavyJobs, [], true).length);
+  assert.ok(gateErrors(missing, heavyJobs, [], "full").length);
 });
 
 // Set BASALT_CI_ORDER_BASE to a ref to prove a change to the tiers moves start order only.
