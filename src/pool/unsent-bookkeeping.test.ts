@@ -15,6 +15,7 @@ import { unsentRefusal } from "./controller-unsent.ts";
 import { rootFallbackRefused } from "./runtime-fleet/root-fallback.ts";
 import { fixture, owner, pool, signingKey } from "./test/computers.ts";
 import { signEnvelope } from "./token.ts";
+import { routerAttemptHeader, signRouterAttempt } from "./router-attempt.ts";
 
 const mark = "X-Signalbox-Controller-Unsent";
 const attemptHeader = "X-Signalbox-Unsent-Attempt";
@@ -300,4 +301,72 @@ test("a call the root's cap refused, then sent again under its own name, is reco
     [attempt, attempt],
     "every refused attempt of the one call carries its one id",
   );
+});
+
+test("a call the router sends again after the pool was lost finishes the row its first send started", async (context) => {
+  const h = await forwarding(context);
+  const requestId = "5b6c7d8e-9f0a-4b1c-8d2e-3f4a5b6c7d8e";
+  const named = async (attempt: number, key = signingKey) =>
+    h.call({ [routerAttemptHeader]: await signRouterAttempt(key, { requestId, attempt }) });
+  // The first send is dispatched, then the isolate under it is gone: no answer, no catch.
+  let dispatched!: () => void;
+  const reached = new Promise<void>((resolve) => (dispatched = resolve));
+  void h.send(await named(1), async (_request, ...rest) => {
+    (rest[3] as () => void)();
+    dispatched();
+    return new Promise<never>(() => {});
+  });
+  await reached;
+  const answered = await h.send(await named(2), nodeAnswer);
+  assert.equal(answered.status, 200);
+  assert.equal(answered.headers.get("X-Request-Id"), requestId);
+  await answered.text();
+  await h.settle();
+  assert.deepEqual(new Set(h.starts), new Set([requestId]));
+  assert.deepEqual(h.finishes, [{ id: requestId, outcome: "complete", status: 200 }]);
+  // A name the router did not sign is no name: the call gets its own id.
+  const forged = await h.send(await named(1, "ef".repeat(32)), nodeAnswer);
+  assert.notEqual(forged.headers.get("X-Request-Id"), requestId);
+  await forged.text();
+});
+
+test("a caller who left before its answer is recorded as client_closed once the answer comes", async (context) => {
+  const h = await forwarding(context);
+  const caller = new AbortController();
+  const request = new Request(await h.call(), { signal: caller.signal });
+  const answered = await h.send(request, async (forwarded, ...rest) => {
+    (rest[3] as () => void)();
+    caller.abort();
+    return nodeAnswer(forwarded, ...rest);
+  });
+  await answered.text().catch(() => {});
+  await h.settle();
+  assert.equal(h.finishes.length, 1);
+  assert.equal(h.finishes[0]!.outcome, "client_closed");
+});
+
+test("a router-named call whose caller left before its answer leaves the row to the router's next send", async (context) => {
+  const h = await forwarding(context);
+  const requestId = "6c7d8e9f-0a1b-4c2d-8e3f-4a5b6c7d8e9f";
+  const named = async (attempt: number, signal?: AbortSignal) =>
+    new Request(
+      await h.call({
+        [routerAttemptHeader]: await signRouterAttempt(signingKey, { requestId, attempt }),
+      }),
+      signal ? { signal } : {},
+    );
+  // Only the entry went down: the controller sees its caller leave, and its answer comes anyway.
+  const entry = new AbortController();
+  const lost = await h.send(await named(1, entry.signal), async (forwarded, ...rest) => {
+    (rest[3] as () => void)();
+    entry.abort();
+    return nodeAnswer(forwarded, ...rest);
+  });
+  await lost.text().catch(() => {});
+  await h.settle();
+  assert.deepEqual(h.finishes, [], "no outcome from the send the caller left");
+  const replayed = await h.send(await named(2), nodeAnswer);
+  await replayed.text();
+  await h.settle();
+  assert.deepEqual(h.finishes, [{ id: requestId, outcome: "complete", status: 200 }]);
 });
