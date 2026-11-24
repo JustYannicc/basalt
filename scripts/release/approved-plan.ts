@@ -17,6 +17,8 @@ export interface PlanRow {
   readonly bindings?: readonly { readonly sid?: string; readonly action: string }[];
   /** The names of the top-level props Alchemy's own diff calls changed; never their values. */
   readonly changedProps?: readonly string[];
+  /** For a changed prop that only waits on resources this plan changes: those resources' names. */
+  readonly waitsOn?: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface PlanAction {
@@ -44,7 +46,10 @@ export const rowLine = (row: PlanRow) => {
     .filter((binding) => binding.action !== "noop")
     .map((binding) => `${binding.sid ?? "unnamed"} ${binding.action}`)
     .sort();
-  const props = [...(row.changedProps ?? [])].sort();
+  const props = [...(row.changedProps ?? [])].sort().map((prop) => {
+    const upstreams = row.waitsOn?.[prop] ?? [];
+    return upstreams.length ? `${prop} (waits on ${[...upstreams].sort().join(", ")})` : prop;
+  });
   const head = `${row.fqn} ${row.resourceType} ${row.action}`;
   const bound = bindings.length ? `bindings ${bindings.join(", ")}` : "";
   if (row.action === "noop")
@@ -54,17 +59,25 @@ export const rowLine = (row: PlanRow) => {
   if (!props.length)
     return bindings.length
       ? `${head} only by its bindings, no prop changes: ${bound}`
-      : `${head}, no prop or binding changes`;
+      : `${head} by the provider's own diff (code, assets or metadata), no prop or binding changes`;
   return `${head}: props ${props.join(", ")}${bound ? `; ${bound}` : ""}`;
 };
 
 /** Each plan row with the names of its changed props, from the repository's changed-row reading. */
 export const withReasons = <Row extends PlanRow>(
   rows: readonly Row[],
-  changed: readonly { readonly fqn: string; readonly changedProps: readonly string[] }[],
+  changed: readonly {
+    readonly fqn: string;
+    readonly changedProps: readonly string[];
+    readonly waitsOn?: Readonly<Record<string, readonly string[]>>;
+  }[],
 ) => {
-  const why = new Map(changed.map((row) => [row.fqn, row.changedProps]));
-  return rows.map((row) => ({ ...row, changedProps: why.get(row.fqn) ?? [] }));
+  const why = new Map(changed.map((row) => [row.fqn, row]));
+  return rows.map((row) => ({
+    ...row,
+    changedProps: why.get(row.fqn)?.changedProps ?? [],
+    waitsOn: why.get(row.fqn)?.waitsOn ?? {},
+  }));
 };
 
 /** A stack action as the plan prints it, or nothing when it does not run. */
