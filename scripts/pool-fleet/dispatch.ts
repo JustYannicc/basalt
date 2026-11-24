@@ -31,6 +31,8 @@ import {
   configureOperationId,
   disableFleet,
   retireRow,
+  step,
+  untilSettled,
   waitForReadyCell,
 } from "./operations.ts";
 
@@ -277,8 +279,19 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     const worker = yield* poolWorkerName(deps.cloudflare);
     const access = deps.controller(worker);
     const evidence: Record<string, unknown> = { controllerCode: access.code };
+    // configure-and-accept may run right after a deploy: every read before its send shares one wait
+    // for the controller's code handover.
+    const settle = { clock: { sleep: deps.sleep, now: deps.now }, from: deps.now() };
     // Signing uses this checkout's generated code (git HEAD at prepare time); say so when it is stale.
-    const probe = yield* Effect.result(call(() => inspectController(access)));
+    const probe = yield* Effect.result(
+      mode === "configure-and-accept"
+        ? untilSettled(
+            settle,
+            access,
+            step("probe", () => inspectController(access)).pipe(Effect.map((value) => ({ value }))),
+          )
+        : call(() => inspectController(access)),
+    );
     if (Result.isFailure(probe))
       return yield* Effect.fail(
         /slot_identity/u.test(describeError(probe.failure))
@@ -407,10 +420,15 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       };
     }
     // A rerun under the same GO only inspects, so another target would silently not apply. It is
-    // refused here, before the attempt, whose rollback would disable a fleet this run never touched.
+    // refused here, before anything is sent.
     if (targetActive !== undefined) {
-      const retained = (yield* call(() => inspectFleet(access, configureOperationId(input.go))))
-        .permission;
+      const retained = (yield* untilSettled(
+        settle,
+        access,
+        step("inspect", () => inspectFleet(access, configureOperationId(input.go))).pipe(
+          Effect.map((value) => ({ value })),
+        ),
+      )).permission;
       if (retained && retained.configuration.targetActive !== targetActive)
         return yield* Effect.fail(
           refuse(
@@ -420,7 +438,9 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           ),
         );
     }
-    // configure-and-accept stands alone: any failure after a send disables, then proves the root.
+    // configure-and-accept stands alone: any failure once this run sent or holds a configuration
+    // disables, then proves the root. A failure before that leaves a fleet it never touched alone.
+    let touched = false;
     const attempt = yield* Effect.result(
       Effect.gen(function* () {
         const configured = yield* configureFleet({
@@ -429,8 +449,12 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           go: input.go,
           active: input.active as "blue" | "green" | undefined,
           ...(targetActive ? { targetActive } : {}),
-          clock: { sleep: deps.sleep, now: deps.now },
+          settle,
+          sending: () => {
+            touched = true;
+          },
         });
+        touched = true;
         evidence.configure = configured;
         evidence.ready = yield* waitForReadyCell({
           controller: access,
@@ -444,6 +468,10 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     );
     if (Result.isSuccess(attempt)) return { ...evidence, ...(yield* read()) };
     const cause = describeError(attempt.failure);
+    if (!touched) {
+      deps.log(`configure_and_accept status=failed before any send; the fleet is as it was`);
+      return yield* Effect.fail({ cause, rollback: { skipped: "nothing-sent" }, evidence });
+    }
     deps.log(`configure_and_accept status=failed; disabling the fleet`);
     const rollback = yield* Effect.result(
       Effect.gen(function* () {

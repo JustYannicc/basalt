@@ -10,6 +10,7 @@ const boot = (bootId: string): SlotIdentity => ({
   controllerId: "controller",
   slotId: "primary",
   applicationId: "application",
+  applicationVersion: "1",
   instanceId: "instance",
   imageDigest: `sha256:${"a".repeat(64)}`,
   imageInput: "b".repeat(64),
@@ -60,10 +61,10 @@ test("healthy passes read the record once, and write only to end an open recover
   const memory = new SlotMemory();
   const storage = new RuntimeSlotStorage(memory);
   let transactions = 0;
-  const transact = storage.transact.bind(storage);
-  storage.transact = (work) => {
+  const plain = storage.plain.bind(storage);
+  storage.plain = (work) => {
     transactions++;
-    return transact(work);
+    return plain(work);
   };
   const records = new RecoveryRecords(storage);
   for (let pass = 0; pass < 5; pass++) await records.ready(pass);

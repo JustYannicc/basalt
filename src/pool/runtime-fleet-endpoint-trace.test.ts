@@ -509,3 +509,29 @@ test("the guard's probe giving up on a health read through the driver writes no 
   await assert.rejects(work, { name: "AbortError" });
   assert.equal(log.mock.callCount(), 0);
 });
+
+test("a health read that timed out logs whichever settles first, so only a deliberate abort is exempt", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const timedOut = (send: (reason: DOMException) => Promise<Response>) => {
+    const timeout = new AbortController();
+    const reason = new DOMException("The operation timed out", "TimeoutError");
+    const trace = new EndpointTrace(
+      new Request("http://runtime/health", { method: "POST", signal: timeout.signal }),
+      "test-slot",
+      "test-cell",
+    );
+    const sent = trace.send(1, () => send(reason)).catch(() => {});
+    timeout.abort(reason);
+    return { trace, reason, sent };
+  };
+  // The caller's timeout settles first, with the send still pending.
+  const pending = timedOut(() => new Promise<Response>(() => {}));
+  pending.trace.finish(pending.reason);
+  // The send rejects with the timeout first.
+  const rejected = timedOut(async (reason) => {
+    throw reason;
+  });
+  await rejected.sent;
+  rejected.trace.finish(rejected.reason);
+  assert.equal(log.mock.callCount(), 2);
+});

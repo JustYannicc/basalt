@@ -386,3 +386,35 @@ test(
     );
   },
 );
+
+test(
+  "a root that refuses once and then serves again with no restart ends its recovery on the healthy pass",
+  { timeout: 20_000 },
+  async (context) => {
+    for (const level of ["info", "warn", "error"] as const)
+      context.mock.method(console, level, () => {});
+    let now = Date.now();
+    context.mock.method(Date, "now", () => now);
+    const f = await fleetWorkerFixture();
+    context.after(f.cleanup);
+    await f.bootstrap();
+    const starts = f.old.calls.start;
+    let refusals = 0;
+    f.old.hooks.health = async () => {
+      if (refusals++ === 0) return new Response(null, { status: 503 });
+    };
+    const refusedAt = now;
+    await f.upkeep();
+    await f.settle();
+    now += 5_000;
+    await f.upkeep();
+    await f.settle();
+    const { lastRecovery } = (await f.send("inspect")) as {
+      lastRecovery: { detectedAt: number; readyAt: number | null; rounds: number } | null;
+    };
+    assert.equal(f.old.calls.start, starts, "no restart");
+    assert.equal(lastRecovery?.detectedAt, refusedAt);
+    assert.equal(lastRecovery?.readyAt, refusedAt + 5_000);
+    assert.equal(lastRecovery?.rounds, 1);
+  },
+);

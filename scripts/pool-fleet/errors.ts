@@ -1,5 +1,6 @@
-import { Data } from "effect";
+import { Data, Schema } from "effect";
 import { AcceptanceFailure } from "../pool-acceptance/types.ts";
+import { BarrierRefusal } from "./refusal.ts";
 
 /** Every refusal names the exact field and values, plus what to change. Messages never carry secrets. */
 export class FleetLaneRefused extends Data.TaggedError("FleetLaneRefused")<{
@@ -16,14 +17,7 @@ export const refuse = (reason: string, why: string, fix: string) =>
   new FleetLaneRefused({ reason, why, fix });
 
 /** The lane's own closed step names: a failure says where it happened, never the error's text. */
-export type FleetStep =
-  | "inspect"
-  | "primary_read"
-  | "settings_read"
-  | "application_read"
-  | "send"
-  | "inspect_after"
-  | "digest";
+export type FleetStep = "probe" | "inspect" | "primary_read" | "send" | "inspect_after" | "digest";
 
 export class FleetStepFailed extends Data.TaggedError("FleetStepFailed")<{
   readonly step: FleetStep;
@@ -47,6 +41,25 @@ export function redact<T>(value: T, secrets: readonly string[]): T {
         : field,
     ),
   ) as T;
+}
+
+/** A delta field the bridge recorded from the answer, if any. */
+const responseField = (error: unknown, path: string) =>
+  error instanceof BarrierRefusal
+    ? error.delta?.changed.find((entry) => entry.path === path)?.new
+    : undefined;
+
+/**
+ * The Worker's own answer to a read, not one lost on the way: its 409 refusal form, by its closed
+ * reason, or a reply this lane can't decode. Anything else (the bridge failing, nothing in time,
+ * another status from the proxy or the edge) was lost on the way and is worth another read.
+ */
+export function workerAnswer(error: unknown): string | undefined {
+  const failure = error instanceof FleetStepFailed ? error.failure : error;
+  if (Schema.isSchemaError(failure)) return "undecodable";
+  if (responseField(failure, "handoff.response.http") !== 409) return undefined;
+  const reason = responseField(failure, "handoff.response.reason");
+  return typeof reason === "string" ? reason : "unclassified";
 }
 
 const published = new Set([

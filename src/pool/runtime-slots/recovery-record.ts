@@ -43,16 +43,17 @@ export class RecoveryRecords {
     this.storage = storage;
   }
   /** A round that found the root not serving: the same boot's open recovery counts one more. */
-  round(previous: SlotIdentity, at: number) {
-    return this.change((record) =>
+  async round(previous: SlotIdentity, at: number) {
+    const record = await this.change((record) =>
       record && record.boot === previous.bootId && record.readyAt === null
         ? { ...record, rounds: record.rounds + 1 }
         : { boot: previous.bootId, detectedAt: at, readyAt: null, rounds: 1, refusals: [] },
-    ).then((record) => record!.rounds);
+    );
+    return record!.rounds;
   }
-  refused(round: number, at: number, error: unknown) {
+  async refused(round: number, at: number, error: unknown) {
     const { reason, step, class: errorClass, provider } = pendingFields(error);
-    return this.change((record) =>
+    await this.change((record) =>
       record && record.readyAt === null
         ? {
             ...record,
@@ -81,7 +82,7 @@ export class RecoveryRecords {
   }
   private change(next: (record: RecoveryRecord | null) => RecoveryRecord | null) {
     this.settled = false;
-    return this.storage.transact(async (_, transaction) => {
+    return this.storage.plain(async (transaction) => {
       const raw = await transaction.get(recordKey);
       const record = isRecord(raw) ? raw : null;
       const updated = next(record);

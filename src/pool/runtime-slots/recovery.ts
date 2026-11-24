@@ -95,8 +95,6 @@ export class RuntimeSlotRecovery {
   private stalled = false;
   private forced: RuntimeForcedRestart;
   private records: RecoveryRecords;
-  /** This pass's round of the open recovery, once it found the root not serving. */
-  private round?: number;
   constructor(deps: Dependencies) {
     this.deps = deps;
     this.forced = new RuntimeForcedRestart(deps.storage, deps.driver);
@@ -138,13 +136,14 @@ export class RuntimeSlotRecovery {
   }
   private async run() {
     const signal = AbortSignal.timeout(runtimeRecoveryBudgetMs);
-    this.round = undefined;
+    // This pass's own: a pass abandoned at its budget can't count against the next one.
+    const pass: { round?: number } = {};
     try {
-      await awaitProbe(() => this.runWithin(signal), signal);
+      await awaitProbe(() => this.runWithin(signal, pass), signal);
     } catch (error) {
       // The record is a diagnostic: its write never changes what the round did.
-      if (this.round !== undefined)
-        await this.records.refused(this.round, Date.now(), error).catch(() => {});
+      if (pass.round !== undefined)
+        await this.records.refused(pass.round, Date.now(), error).catch(() => {});
       throw error;
     }
   }
@@ -198,7 +197,7 @@ export class RuntimeSlotRecovery {
       });
     });
   }
-  private async runWithin(signal: AbortSignal) {
+  private async runWithin(signal: AbortSignal, pass: { round?: number }) {
     const { storage, driver, provider, code, key } = this.deps;
     const completion = await storage.transact(async (_, transaction) =>
       transaction.get(completionKey),
@@ -269,7 +268,7 @@ export class RuntimeSlotRecovery {
       at: Date.now(),
       slot: previous.slotId,
     });
-    this.round = await this.records.round(previous, Date.now()).catch(() => undefined);
+    pass.round = await this.records.round(previous, Date.now()).catch(() => undefined);
     this.restoring(await this.forced.refused());
     retiredDenials(snapshot);
     let retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
