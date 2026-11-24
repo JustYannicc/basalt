@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { configsReached } from "./ci/e2e-workflow.ts";
 import { fastPlan, runFastSteps } from "./ci/fast-plan.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -42,6 +43,7 @@ test("the local plan preserves every real CI shell command, in its original orde
         (step: Step) =>
           step.run !== undefined &&
           step.if !== "steps.lane.outputs.full_suite == 'true'" &&
+          step.if !== configsReached &&
           !["comparison", "lane"].includes(step.id ?? ""),
       )
       .map((step: { run: string }) => step.run);
@@ -199,6 +201,7 @@ test("reviewed lane conditions select ordinary PR steps and report every full-on
               if: "steps.lane.outputs.full_suite == 'true'",
               run: "npm run typecheck:upstream",
             },
+            { name: "reached e2e configs", if: configsReached, run: "bunx vitest run" },
           ],
         },
       },
@@ -210,5 +213,6 @@ test("reviewed lane conditions select ordinary PR steps and report every full-on
   assert.deepEqual(plan.skipped, [
     { name: "complete units", reason: "full lane only" },
     { name: "full upstream types", reason: "full lane only" },
+    { name: "reached e2e configs", reason: "full or affected lane only" },
   ]);
 });

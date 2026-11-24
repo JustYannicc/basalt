@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-hosted-log-inspected-records",
+  "file": "0755-hosted-log-inspected-records.patch",
+  "content_sha256": "a36ec6654cb8516f5c3b06eed3d4428bb10c33005adc7599d7bd64495f8af56c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

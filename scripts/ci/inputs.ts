@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, matchesGlob, posix } from "node:path";
 
+/** A carry, or an e2e test correction preparation applies by name: both patch the upstream. */
+export const carryPatch = /^(?:patches\/\d{4}-[^/]+|e2e\/[^/]+)\.patch$/;
+
 export const isRelativeInput = (file: string) =>
   file.length > 0 &&
   !file.startsWith("/") &&
@@ -82,9 +85,7 @@ export function carriedReferences(root: string, files: readonly string[]) {
   const below = directoryFiles(files);
   const references = new Map<string, Set<string>>();
   const mention = /(?:\.{1,2}\/)+[\w@.-]+(?:\/[\w@.-]+)*\/?/g;
-  for (const patch of files.filter((file) =>
-    /^(?:patches\/\d{4}-[^/]+|e2e\/[^/]+)\.patch$/.test(file),
-  )) {
+  for (const patch of files.filter((file) => carryPatch.test(file))) {
     let target = "";
     for (const line of readFileSync(join(root, patch), "utf8").split("\n")) {
       const header = /^diff --git a\/\S+ b\/(\S+)$/.exec(line);

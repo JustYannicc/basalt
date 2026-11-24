@@ -16,6 +16,11 @@ public struct Presentation: Equatable, Sendable {
   public var hasSetup: Bool
   public var modelAccess: Bool
   public var toolAccess: Bool
+  /// The Connection page's "Models from" row, and whether it offers choosing a pool.
+  public var modelsFrom: String
+  public var choosesPool: Bool
+  /// The pool the server names for this device; none for a tools-only device.
+  public var poolName: String?
 
   public init(_ snapshot: DesktopSnapshot?) {
     let view = snapshot?.connection
@@ -25,11 +30,21 @@ public struct Presentation: Equatable, Sendable {
     let starting = snapshot == nil || snapshot?.phase == .starting
     let models = view?.capabilities.contains("models") ?? false
     let tools = view?.capabilities.contains("tools") ?? false
+    // A tools-only device uses no pool, so its access answer names none. A disconnected device
+    // keeps that answer but no capabilities, so the name is what still tells.
+    let toolsOnly = view?.display?.pool.name == ""
     self.starting = starting
     self.signingIn = signing
     self.connected = connected
     self.modelAccess = models
     self.toolAccess = tools
+    poolName = view?.display?.pool.name.nonEmpty
+    modelsFrom =
+      if toolsOnly || (connected && !models) { "Not included in this connection" }
+      else if let pool = view?.display?.pool.name.nonEmpty { pool }
+      else if view?.mode == .direct { "Your direct key" }
+      else { "Reconnect to load pool details" }
+    choosesPool = view?.mode == .device && !toolsOnly
     self.hasSetup = (snapshot?.configured.claude ?? false) || (snapshot?.configured.codex ?? false)
     title =
       if starting { "Starting your connection" }

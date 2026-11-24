@@ -237,6 +237,21 @@ export function declaredRuns(
   );
 }
 
+/**
+ * The test configs the fast job runs for the selected declared files, or for all of them. A spec
+ * whose plan names only `fast` runs nowhere else.
+ */
+export function fastConfigs(selected: readonly string[] | null, declarations = readDeclarations()) {
+  return [
+    ...new Set(
+      Object.entries(declarations.files)
+        .filter(([file]) => selected === null || selected.includes(file))
+        .flatMap(([, entry]) => entry.config.filter((item) => item.job === "fast"))
+        .map((item) => item.config),
+    ),
+  ].sort();
+}
+
 type Declarations = ReturnType<typeof readDeclarations>;
 
 /** The CI jobs that run one declared file's scenarios. */

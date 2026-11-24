@@ -25,6 +25,11 @@ export const FleetApplication = Schema.Struct({
 });
 export type FleetApplication = typeof FleetApplication.Type;
 export const FleetConfiguration = Schema.Struct({
+  // A permission outlives the Worker code that committed it (#1802), so later code reads one it did
+  // not commit. A change to a field's meaning, or a new field a launch must honour, therefore needs a
+  // new format here, and the new code must read the old format as not in force. Changing the
+  // literal alone makes the stored record unreadable, and every fleet read with it, model calls
+  // included, refuses.
   format: Schema.Literal("pool-runtime-fleet-v1"),
   controllerCode: ControllerCode,
   controllerId: Identifier,
@@ -83,7 +88,11 @@ export class RuntimeFleetConfiguration {
     const value = await storage.get(operationId ? operationKey(operationId) : key);
     return value === undefined ? undefined : Schema.decodeUnknownSync(Record)(value);
   }
-  assertBindings(configuration: FleetConfiguration, currentCode = true) {
+  /**
+   * `currentCode` holds a commit to the running Worker's code; launches pass false, so a
+   * permission committed under the last code stays in force across a Worker deploy (#1802).
+   */
+  assertBindings(configuration: FleetConfiguration, currentCode: boolean) {
     if (
       configuration.controllerId !== this.deps.controllerId ||
       (currentCode && !sameControllerCode(configuration.controllerCode, this.deps.code)) ||
@@ -110,6 +119,19 @@ export class RuntimeFleetConfiguration {
     )
       throw new SlotRefused("identity");
   }
+  /**
+   * Whether a stored permission authorizes launches here, by the permission checks every launch
+   * makes. A launch can still be refused for room or for its own target.
+   */
+  standing(record: FleetConfigurationRecord | undefined) {
+    if (!record?.enabled) return { inForce: false, notInForce: "disabled" } as const;
+    try {
+      this.assertBindings(record.configuration, false);
+    } catch {
+      return { inForce: false, notInForce: "bindings" } as const;
+    }
+    return { inForce: true } as const;
+  }
   async promotePrimary(intent: PromotionIntent, transaction: SlotStorage) {
     const current = await this.inspect(undefined, transaction);
     if (!current) return;
@@ -131,7 +153,8 @@ export class RuntimeFleetConfiguration {
       revision: current.configuration.revision + 1,
       previousDigest: current.digest,
     });
-    this.assertBindings(configuration);
+    // A promotion carries the committed permission forward; it is not a new commit of the code.
+    this.assertBindings(configuration, false);
     const record = {
       ...current,
       operationId: `handoff-${intent.operationId}`,
@@ -182,7 +205,7 @@ export class RuntimeFleetConfiguration {
     const configuration = Schema.decodeUnknownSync(FleetConfiguration, {
       onExcessProperty: "error",
     })(input);
-    this.assertBindings(configuration);
+    this.assertBindings(configuration, true);
     const digest = await providerDigest(configuration);
     const retained = await this.inspect(operationId);
     if (retained) {

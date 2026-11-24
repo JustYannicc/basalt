@@ -11,14 +11,15 @@ import { jobEntries, readWorkflow } from "./job-inputs.ts";
 // The lane's fast-units legs run the owned unit tests a change reaches (scripts/ci/unit-tests.ts).
 const deciding = ["select"];
 const always = [...fastJobs, ...deciding, "check"];
-const ownedUnitSuite = { jobs: { owned: { steps: [{ run: "npm run check" }] } } };
+export const ownedUnitSuite = { jobs: { owned: { steps: [{ run: "npm run check" }] } } };
 
 /**
  * Which jobs each repository file is an input of. A heavy job's inputs are the files its steps
  * name, the files its areas declare, and the declared inputs of the scenarios it runs, including
- * the repository files their carried helpers name. Files the deciding jobs run reach every job.
- * Files fast jobs run are proven there. The import graph carries the declared runtime reads and
- * the files carried product code names, which every job that prepares the product builds.
+ * the repository files their carried helpers name. A file only the jobs of every Check run, such
+ * as selection, is proven there; a selection it gets wrong still runs in the batch Check, which
+ * runs every heavy job. The import graph carries the declared runtime reads and the files carried
+ * product code names, which every job that prepares the product builds.
  */
 function buildReach(root: string) {
   const files = trackedFiles(root);
@@ -58,13 +59,12 @@ function buildReach(root: string) {
       for (const file of sources(input)) addTo(scenarios, file, spec);
     for (const file of harness(".upstream/e2e/tests/" + spec)) addTo(scenarios, file, spec);
   }
-  const everything = new Set(deciding.flatMap((job) => [...(entries[job] ?? [])]));
   const lane = jobEntries(root, readWorkflow(root), files, { lane: true });
   const fast = new Set([
     ...always.flatMap((job) => [...(lane[job] ?? [])]),
     ...jobEntries(root, ownedUnitSuite, files).owned!,
   ]);
-  return { graph, jobs, scenarios, everything, fast, declarations, entries };
+  return { graph, jobs, scenarios, fast, declarations, entries };
 }
 export type Reach = ReturnType<typeof buildReach>;
 

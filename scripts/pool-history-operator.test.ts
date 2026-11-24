@@ -173,6 +173,203 @@ test("backfill has its own dry run and requires both apply and go", async () => 
   }
 });
 
+test("the usage rollup backfill resumes with the same approval until the endpoint reports complete", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const directory = await mkdtemp(join(tmpdir(), "history-rollup-fixture-"));
+  try {
+    const path = join(directory, "rollup.json");
+    const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
+    const plan = {
+      status: "dry-run",
+      version: "usage_rollup_backfill_v3",
+      digest: "e".repeat(64),
+      plan: { pools: [] },
+      writes: false,
+    };
+    const calls: Request[] = [];
+    let posts = 0;
+    const connect = async (_path: string) => ({
+      env: {
+        POOL_OPERATIONS: {
+          fetch: async (request: Request) => {
+            calls.push(request.clone());
+            if (request.method === "GET") return Response.json(plan);
+            posts++;
+            return Response.json(
+              posts < 3
+                ? {
+                    status: "progress",
+                    stopped: "budget",
+                    walBytes: 1_000,
+                    digest: plan.digest,
+                    pools: [{ recomputedHours: 3 }],
+                  }
+                : { status: "complete", walBytes: 1_000, digest: plan.digest, pools: [] },
+            );
+          },
+        },
+      },
+      dispose: async () => {},
+    });
+    await runHistoryOperator(historyOperatorOptions(args), account, connect);
+    assert.equal(new URL(calls[0]!.url).pathname, "/model-history/usage-rollup");
+    const report = await runHistoryOperator(
+      historyOperatorOptions([...args, "--apply", "--go"]),
+      account,
+      connect,
+    );
+    assert.equal(report.status, "complete");
+    assert.equal(posts, 3, "two progress responses, then complete");
+    const bodies = await Promise.all(calls.slice(1).map((call) => call.json()));
+    assert.deepEqual(bodies[0], { digest: plan.digest, plan: plan.plan, go: true });
+    for (const body of bodies.slice(1))
+      assert.deepEqual(body, {
+        digest: plan.digest,
+        plan: plan.plan,
+        go: true,
+        walBudgetBytes: 32 * 1024 * 1024,
+      });
+    assert.equal(JSON.parse(await readFile(`${path}.result.json`, "utf8")).status, "complete");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+async function rollupOperator(responses: (post: number) => Record<string, unknown>) {
+  const directory = await mkdtemp(join(tmpdir(), "history-rollup-stop-"));
+  const path = join(directory, "rollup.json");
+  const args = ["--worker", "fixture-pool", "--plan", path, "--operation", "usage-rollup"];
+  const plan = {
+    status: "dry-run",
+    version: "usage_rollup_backfill_v3",
+    digest: "f".repeat(64),
+    plan: { pools: [] },
+    writes: false,
+  };
+  const bodies: Record<string, unknown>[] = [];
+  const connect = async (_path: string) => ({
+    env: {
+      POOL_OPERATIONS: {
+        fetch: async (request: Request) => {
+          if (request.method === "GET") return Response.json(plan);
+          bodies.push(await request.json());
+          return Response.json({ digest: plan.digest, ...responses(bodies.length) });
+        },
+      },
+    },
+    dispose: async () => {},
+  });
+  await runHistoryOperator(historyOperatorOptions(args), account, connect);
+  const apply = runHistoryOperator(
+    historyOperatorOptions([...args, "--apply", "--go"]),
+    account,
+    connect,
+  );
+  return { apply, bodies, cleanup: () => rm(directory, { recursive: true, force: true }) };
+}
+
+test("the usage rollup backfill stops at its total write-ahead-log cap and passes the remaining budget down", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const MiB = 1024 * 1024;
+  const { apply, bodies, cleanup } = await rollupOperator((post) => ({
+    status: "progress",
+    stopped: "wal",
+    walBytes: post === 1 ? 1_000 * MiB : 30 * MiB,
+    pools: [{ recomputedHours: 5 }],
+  }));
+  try {
+    await assert.rejects(apply, /WAL cap/);
+    // 1000 MiB leaves 24 MiB of the 1 GiB total: the second call may write only that.
+    assert.deepEqual(
+      bodies.map((body) => body.walBudgetBytes),
+      [undefined, 24 * MiB],
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a usage rollup response without a numeric WAL figure stops the backfill instead of uncapping it", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  for (const walBytes of [undefined, "12", Number.NaN, -1]) {
+    const { apply, bodies, cleanup } = await rollupOperator(() => ({
+      status: "progress",
+      stopped: "wal",
+      ...(walBytes === undefined ? {} : { walBytes }),
+      pools: [{ recomputedHours: 1 }],
+    }));
+    try {
+      await assert.rejects(apply, /Invalid usage rollup progress/);
+      assert.equal(bodies.length, 1, "no further call after an unreadable response");
+    } finally {
+      await cleanup();
+    }
+  }
+});
+
+test("an hour slower than its limit three times stops the backfill and says how to rerun it", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const { apply, cleanup } = await rollupOperator(() => ({
+    status: "progress",
+    stopped: "slow_hour",
+    slowHour: "2026-01-01T05:00:00.000Z",
+    walBytes: 0,
+    pools: [{ recomputedHours: 0 }],
+  }));
+  try {
+    await assert.rejects(
+      apply,
+      /2026-01-01T05:00:00.000Z took longer than its 150 ms limit three times; a person decides/,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a backfill that held the pool past its hold limit stops the script and names the hour", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const { apply, bodies, cleanup } = await rollupOperator(() => ({
+    status: "progress",
+    stopped: "slow_hold",
+    slowHour: "2026-01-01T06:00:00.000Z",
+    maxHoldMs: 420,
+    walBytes: 0,
+    pools: [{ recomputedHours: 1 }],
+  }));
+  try {
+    await assert.rejects(
+      apply,
+      /2026-01-01T06:00:00.000Z held the pool longer than 350 ms, past which writers could time out/,
+    );
+    assert.equal(bodies.length, 1, "no further call after a hold over the limit");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the usage rollup backfill stops after writers hold the pool for 100 calls in a row", async (t) => {
+  t.mock.method(console, "error", () => {});
+  process.env.USAGE_ROLLUP_PAUSE_MS = "0";
+  const { apply, bodies, cleanup } = await rollupOperator((post) => ({
+    status: "progress",
+    stopped: "lock",
+    walBytes: 0,
+    // One call in the middle gets an hour through: the count of consecutive losses restarts.
+    pools: [{ recomputedHours: post === 50 ? 1 : 0 }],
+  }));
+  try {
+    await assert.rejects(apply, /100 calls in a row/);
+    assert.equal(bodies.length, 150);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("recorded v2 catalog previews the additive SQL without applying it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "history-v2-fixture-"));
   try {
@@ -404,4 +601,16 @@ test("a v4 schema hash cannot approve a v7 migration", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("the operator has no hour-limit raise", () => {
+  const base = [
+    "--worker",
+    "fixture-pool",
+    "--plan",
+    "/nonexistent",
+    "--operation",
+    "usage-rollup",
+  ];
+  assert.throws(() => historyOperatorOptions([...base, "--hour-limit-ms", "150"]));
 });

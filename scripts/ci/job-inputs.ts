@@ -1,7 +1,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, posix } from "node:path";
-import { commandWords, shellWords, type Step as RunStep, type Workflow } from "./e2e-workflow.ts";
+import {
+  commandWords,
+  configsReached,
+  fullOnly,
+  shellWords,
+  type Step as RunStep,
+  type Workflow,
+} from "./e2e-workflow.ts";
 import { isTest } from "./import-graph.ts";
 import { directoryFiles, fileMatcher } from "./inputs.ts";
 
@@ -9,8 +16,12 @@ type Step = RunStep & { uses?: string };
 
 const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
 
-export const readWorkflow = (root: string, path = ".github/workflows/ci.yml"): Workflow =>
-  parse(readFileSync(join(root, path), "utf8"));
+export const checkWorkflow = ".github/workflows/ci.yml";
+
+export const parseWorkflow = (text: string): Workflow | null => parse(text);
+
+export const readWorkflow = (root: string, path = checkWorkflow): Workflow =>
+  parseWorkflow(readFileSync(join(root, path), "utf8"))!;
 
 // The simple commands of a step's script. Unquoted newlines, `&&`, `||`, `;` and pipes end a
 // command, `#` starts a comment, each `$(…)` substitution is a command of its own (innermost
@@ -60,15 +71,12 @@ export function commands(run: string): string[] {
   return result.map((command) => command.trim()).filter(Boolean);
 }
 
-/** A step condition true only in the full suite: the affected lane never runs that step. */
-export const fullOnly = "steps.lane.outputs.full_suite == 'true'";
-
 /**
  * The repository files each workflow job's own steps name: the scripts and test files they run,
  * the directories and files they pass to a build, and the same for the local actions and package
  * scripts those steps call. A step's words count relative to its working directory; `.upstream`
- * is prepared later from the carries, so its paths never count. With `lane`, only the steps the
- * affected lane runs count.
+ * is prepared later from the carries, so its paths never count. With `lane`, only the steps
+ * every affected-lane Check runs count.
  */
 export function jobEntries(
   root: string,
@@ -155,7 +163,10 @@ export function jobEntries(
     Object.entries(workflow.jobs).map(([job, value]) => {
       const entries = new Set<string>();
       for (const step of steps(value.steps))
-        if (typeof step.run === "string" && !(lane && step.if === fullOnly))
+        if (
+          typeof step.run === "string" &&
+          !(lane && (step.if === fullOnly || step.if === configsReached))
+        )
           visit(step.run, posix.normalize(step["working-directory"] ?? "."), entries);
       return [job, entries];
     }),

@@ -94,9 +94,17 @@ test("carry selection reads old and new targets for edits, record-only changes a
     assert.deepEqual(changedInputs(root, record, retired).inputs, [
       ".upstream/packages/sdk/new.ts",
     ]);
+    // An e2e test correction preparation applies changes its targets the same way; shared e2e
+    // support runs every heavy job.
+    mkdirSync(join(root, "e2e"));
+    writeFileSync(join(root, "e2e/fixture-correction.patch"), patch("e2e/support/api.ts"));
+    const corrected = commit("correction");
+    const { inputs } = changedInputs(root, retired, corrected);
+    assert.deepEqual(inputs, [".upstream/e2e/support/api.ts"]);
+    assert.deepEqual(selectPaths(inputs).jobs, heavyJobs);
     writeFileSync(join(root, "patches/0002-missing.json"), "{}");
     const missing = commit("missing");
-    assert.throws(() => changedInputs(root, retired, missing), /no patch/);
+    assert.throws(() => changedInputs(root, corrected, missing), /no patch/);
     assert.throws(() => changedInputs(root, "main", missing), /immutable/);
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -343,8 +351,9 @@ test("workflow cancels superseded PRs, preserves each main push and gates build 
   );
   assert.ok(workflow.on.pull_request.types.includes("labeled"));
   assert.ok(workflow.on.pull_request.types.includes("unlabeled"));
+  // The Cloud startup proofs run in the lane too when a change reaches them
+  // (ci-affected-reach.test.ts).
   for (const name of [
-    "Verify Cloud startup diagnostics and app listeners",
     "Architecture deployment generation",
     "Typecheck the patched upstream the way upstream checks itself",
   ])

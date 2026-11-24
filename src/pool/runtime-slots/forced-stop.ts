@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { SlotRefused, sameIdentity, type SlotIdentity } from "./contract.ts";
+import { markStopSent } from "./container-end.ts";
 import type { RuntimeWitnessStore, WitnessRecord } from "./witness-store.ts";
 import type { RuntimeActivity } from "./activity.ts";
 import type { ControllerState } from "./runtime-state.ts";
@@ -25,7 +26,10 @@ export const runtimeStopTiming = {
   confirmExit: () => pause(exitConfirmationMs),
   /** How long SIGTERM gets before `destroy()`. */
   stopGrace: () => pause(forcedStopGraceMs),
-  /** Whether Home is mid token refresh. The image doesn't report it yet; the Home owner adds it. */
+  /**
+   * Whether Home is mid token refresh. Images with carry 0695 report `refresh_in_flight` on
+   * readiness; the Worker doesn't read it yet.
+   */
   refreshInFlight: async (): Promise<boolean> => false,
 };
 type StopPath = "graceful_exit" | "destroy_after_grace" | "no_signal" | "stop_failed";
@@ -122,9 +126,10 @@ export class RuntimeForcedStop {
   private async signal(container: NonNullable<ControllerState["container"]>): Promise<StopPath> {
     // Without SIGTERM the single root's Home, the elected master, would be killed mid-refresh.
     if (!container.signal) return "no_signal";
+    await markStopSent(this.deps.ctx);
     try {
-      container.signal(15);
-      await Promise.race([container.monitor().catch(() => {}), runtimeStopTiming.stopGrace()]);
+      await signalStop(container);
+      // The stopped container is restarted in place, so a clean exit is left as it is.
       if (!container.running) return "graceful_exit";
       await container.destroy();
       return "destroy_after_grace";
@@ -143,4 +148,43 @@ export class RuntimeForcedStop {
       return false;
     }
   }
+}
+
+const isProcessExit = Schema.is(Schema.Struct({ exitCode: Schema.Int }));
+
+/**
+ * SIGTERM, then the container's own exit or the grace. Home drains its claimed token refreshes on
+ * SIGTERM, and whichever Home holds the master lease holds them all; a bare destroy can lose a token
+ * a vendor just rotated. `monitor()` rejecting without an exit code isn't an exit, so the wait keeps
+ * to the grace. `signalled` runs once SIGTERM is sent.
+ */
+async function signalStop(
+  container: NonNullable<ControllerState["container"]>,
+  signalled: () => void = () => {},
+) {
+  if (!container.running || !container.signal) return signalled();
+  container.signal(15);
+  signalled();
+  const grace = runtimeStopTiming.stopGrace();
+  const exit = container.monitor().then(
+    () => "exit" as const,
+    (error: unknown) => (error instanceof Error && isProcessExit(error) ? "exit" : "unknown"),
+  );
+  if ((await Promise.race([exit, grace.then(() => "grace" as const)])) === "unknown") await grace;
+}
+
+/**
+ * A deliberate end of a running container that never runs again: the graceful stop, then
+ * `destroy()` only if it still runs. An exited instance is listed inactive about 10 s after its exit
+ * code 0 or 137 alike, as a destroyed one is, and `destroy()` after an exit changes nothing. A
+ * container without `signal()` can only be destroyed.
+ */
+export async function stopGracefully(
+  container: NonNullable<ControllerState["container"]>,
+  signalled?: () => void,
+) {
+  await signalStop(container, signalled);
+  if (!container.running) return "exited" as const;
+  await container.destroy();
+  return "destroyed" as const;
 }

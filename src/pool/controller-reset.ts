@@ -18,7 +18,22 @@ import {
   unsentAttemptHeader,
   withoutUnsentMark,
 } from "./controller-unsent.ts";
-import { resumableAnswer, type StreamResumeInput } from "./stream-resume.ts";
+import {
+  resumableAnswer,
+  resumeCall,
+  streamBootHeader,
+  streamResumeHeader,
+  streamResumePoolHeader,
+  streamResumeTargetHeader,
+  streamResumeVersion,
+  type StreamResumeInput,
+} from "./stream-resume.ts";
+import { routerResumeHeader, signResumeStamp } from "./router-resume.ts";
+import { heldBytes, holdBody, type HeldBody } from "./held-body.ts";
+import { controllerIsolateHeader, isolate } from "./isolate.ts";
+import { openRouterAttempt } from "./router-attempt.ts";
+import { nativeModelHeader, nativeModelPrefix } from "./native-contract.ts";
+import { hostAssertionTtlMs, openEnvelope, signEnvelope } from "./token.ts";
 
 /** Clients reconnected 0.2-0.8 s after the 2026-11-18 reset, and retry advice already says 1 s. */
 export const controllerReplayDelayMs = 1_000;
@@ -31,19 +46,8 @@ export const controllerReplayWindowMs = 20_000;
  * join are not counted). Past it a call is forwarded unheld: it is only not replayable.
  */
 export const controllerHoldBudgetBytes = 32 * 1024 * 1024;
-// Each reservation carries its own deadline: a request the platform cancels never runs its own
-// release, and its bytes must not stay counted for the life of the isolate.
-const reservations = new Map<object, { bytes: number; until: number }>();
 /** Bytes held for replay in this isolate right now. */
-export function controllerHeldBytes() {
-  const now = Date.now();
-  let total = 0;
-  for (const [key, reservation] of reservations) {
-    if (reservation.until <= now) reservations.delete(key);
-    else total += reservation.bytes;
-  }
-  return total;
-}
+export const controllerHeldBytes = heldBytes;
 
 // The platform may end the controller instance at any time; this is its "reconnect or retry" error.
 const instanceEnded = /\bDurable Object instance is no longer active\b/i;
@@ -70,6 +74,10 @@ export interface ControllerHop {
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   holdBudgetBytes?: number;
+  /** Verifies the router's name for a call, so the entry's isolate line carries that id. */
+  signing?: { key: string; previous?: string };
+  /** The entry's own admission of a call, run again before its resume; false refuses it. */
+  readmit?: (call: Request) => Promise<boolean>;
 }
 
 type Outcome =
@@ -103,74 +111,6 @@ function replayableCall(request: Request): boolean {
     !request.headers.has("upgrade") &&
     modelCallReplayable(new URL(request.url).pathname)
   );
-}
-
-type Refusal = "body_too_large" | "body_unreadable" | "hold_budget_full" | "too_late";
-type Held = { body: Uint8Array<ArrayBuffer> } | { refused: Refusal };
-
-/**
- * Reads a tee of the body beside the real send and holds it only while a replay is still
- * possible: up to the per-call and per-isolate bounds, and until the controller answers or the
- * replay window closes, whichever is first.
- */
-function hold(body: ReadableStream<Uint8Array> | null, budget: number, skipped: () => void) {
-  if (!body)
-    return {
-      ready: Promise.resolve(),
-      take: (): Held => ({ body: new Uint8Array() }),
-      release() {},
-    };
-  const reader = body.getReader();
-  const key = {};
-  const until = Date.now() + controllerReplayWindowMs;
-  let chunks: Uint8Array[] | undefined = [];
-  let joined: Uint8Array<ArrayBuffer> | undefined;
-  let refused: Refusal | undefined;
-  let reserved = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const free = (reason: Refusal | "released") => {
-    if (!refused && reason !== "released") refused = reason;
-    if (reason === "released" && !refused) refused = "too_late";
-    chunks = undefined;
-    joined = undefined;
-    reservations.delete(key);
-    reserved = 0;
-    clearTimeout(timer);
-    void reader.cancel().catch(() => {});
-  };
-  timer = setTimeout(() => free("too_late"), controllerReplayWindowMs);
-  const ready = (async () => {
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || !chunks) break;
-        if (reserved + value.byteLength > controllerHoldBytes) return free("body_too_large");
-        if (controllerHeldBytes() + value.byteLength > budget) {
-          skipped();
-          return free("hold_budget_full");
-        }
-        reserved += value.byteLength;
-        reservations.set(key, { bytes: reserved, until });
-        chunks.push(value);
-      }
-    } catch {
-      return free("body_unreadable");
-    }
-    if (!chunks) return;
-    const whole = new Uint8Array(reserved);
-    let offset = 0;
-    for (const chunk of chunks) {
-      whole.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    chunks = undefined;
-    joined = whole;
-  })();
-  return {
-    ready,
-    take: (): Held => (joined ? { body: joined } : { refused: refused ?? "body_unreadable" }),
-    release: () => free("released"),
-  };
 }
 
 const endpointOf = (request: Request) => {
@@ -232,9 +172,13 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
   }
   const model = replayableCall(request);
   const requestId = crypto.randomUUID();
-  const copy = hold(
+  const copy = holdBody(
     model && request.body ? request.clone().body : null,
-    hop.holdBudgetBytes ?? controllerHoldBudgetBytes,
+    {
+      maxBytes: controllerHoldBytes,
+      budgetBytes: hop.holdBudgetBytes ?? controllerHoldBudgetBytes,
+      windowMs: controllerReplayWindowMs,
+    },
     () =>
       console.error(
         "POOL_CONTROLLER_HOLD_SKIPPED",
@@ -246,8 +190,41 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
         }),
       ),
   );
+  const traced = request.method === "POST" && isPublicModelPath(new URL(request.url).pathname);
+  const here = isolate();
+  const named =
+    traced && hop.signing
+      ? await openRouterAttempt(request, hop.signing.key, hop.signing.previous)
+      : undefined;
+  // Written before the send, so a call its isolate takes down still has its line.
+  if (traced)
+    console.info("POOL_ENTRY_ISOLATE", {
+      phase: "sent",
+      requestId: named?.requestId ?? null,
+      attempt: named?.attempt ?? null,
+      entry: here.id,
+      entryAgeMs: Date.now() - here.startedAt,
+    });
   try {
-    return await forwardHeld(request, hop, model, requestId, copy);
+    // Read once, before the send: the name lives 25 s, and an answer may take longer to begin.
+    const resumes = named?.resume === true;
+    const response = await forwardHeld(request, hop, model, requestId, copy, resumes);
+    const controller = response.headers.get(controllerIsolateHeader);
+    if (controller === null) return response;
+    console.info("POOL_ENTRY_ISOLATE", {
+      phase: "answered",
+      requestId: named?.requestId ?? null,
+      entry: here.id,
+      controller: /^[0-9a-f-]{36}$/.test(controller) ? controller : "invalid",
+      shared: controller === here.id,
+    });
+    const headers = new Headers(response.headers);
+    headers.delete(controllerIsolateHeader);
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
   } finally {
     // Past the controller's answer, or any failure, the held copy can never be sent again.
     copy.release();
@@ -267,7 +244,7 @@ async function awaitHandover(
   request: Request,
   hop: ControllerHop,
   model: boolean,
-  copy: ReturnType<typeof hold>,
+  copy: HeldBody,
   response: Response,
   begun: number,
 ): Promise<Response> {
@@ -327,7 +304,9 @@ async function forwardHeld(
   hop: ControllerHop,
   model: boolean,
   requestId: string,
-  copy: ReturnType<typeof hold>,
+  copy: HeldBody,
+  /** The router that sent the call resumes and strips a stamp. */
+  resumes: boolean,
 ): Promise<Response> {
   const now = hop.now ?? Date.now;
   const begun = now();
@@ -412,14 +391,26 @@ async function forwardHeld(
   response = await awaitHandover(request, hop, model, copy, response, begun);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
+  // Signed before the entry's own splice strips what it is made of: if this entry goes down with
+  // the controller mid-body, the router resumes the call itself.
+  // Only a router that resumes and strips the stamp says so in its signed name; through any other
+  // the stamp would reach the client.
+  const stamp = hop.signing && resumes ? await routerStamp(response, hop.signing.key) : undefined;
+  // The pool the controller admitted the call under; its resume is admitted under that pool only.
+  const pool = response.headers.get(streamResumePoolHeader) ?? undefined;
   // A resumable answer is re-attached through the new instance first; only an answer it cannot
   // resume reaches the retry terminal below, unchanged.
   const answer = resumableAnswer(response, {
-    resume: (input) => {
+    // The resume is admitted as a new call is, with this call's own credentials.
+    resume: async (input) => {
+      const call = await resumedCall(request, hop.signing);
+      if (hop.readmit && !(await hop.readmit(call))) return new Response(null, { status: 410 });
       const controller = hop.controller();
-      return controller.resume
-        ? controller.resume(input)
-        : Promise.reject(new Error("This controller cannot resume a stream"));
+      if (!controller.resume) throw new Error("This controller cannot resume a stream");
+      return controller.resume({
+        ...input,
+        call: { ...resumeCall(call), ...(pool ? { pool } : {}) },
+      });
     },
     ended: controllerInstanceEnded,
     wait: hop.wait ?? sleep,
@@ -427,7 +418,7 @@ async function forwardHeld(
     delayMs: controllerReplayDelayMs,
     signal: request.signal,
   });
-  return nativeRuntimeStream(answer, request, (error) =>
+  const delivered = nativeRuntimeStream(answer, request, (error) =>
     report(
       hop,
       request,
@@ -437,5 +428,59 @@ async function forwardHeld(
       "stream_ended",
       error,
     ),
+  );
+  if (!stamp) return delivered;
+  const headers = new Headers(delivered.headers);
+  headers.set(routerResumeHeader, stamp);
+  return new Response(delivered.body, {
+    status: delivered.status,
+    statusText: delivered.statusText,
+    headers,
+  });
+}
+
+/**
+ * The call as its caller made it, for its resume. A device's assertion lives 25 s, which a long
+ * answer outlasts, so the entry signs the claims the router asserted afresh, unchanged otherwise;
+ * the controller's registry still decides whether the device may go on.
+ */
+async function resumedCall(request: Request, signing: ControllerHop["signing"]) {
+  const call = new Request(request.url, { method: request.method, headers: request.headers });
+  const assertion = request.headers.get(nativeModelHeader);
+  if (!assertion || !signing) return call;
+  const claims = await openEnvelope(
+    signing.key,
+    nativeModelPrefix,
+    assertion,
+    signing.previous,
+  ).catch(() => undefined);
+  if (typeof claims !== "object" || claims === null) return call;
+  call.headers.set(
+    nativeModelHeader,
+    await signEnvelope(signing.key, nativeModelPrefix, {
+      ...claims,
+      expiresAt: Date.now() + hostAssertionTtlMs,
+    }),
+  );
+  return call;
+}
+
+/** What a resume needs, for an answer the front layer marked and the controller stamped. */
+async function routerStamp(response: Response, key: string) {
+  const requestId = response.headers.get("X-Request-Id") ?? "";
+  const target = response.headers.get(streamResumeTargetHeader) ?? "";
+  const boot = response.headers.get(streamBootHeader) ?? "";
+  const pool = response.headers.get(streamResumePoolHeader) ?? undefined;
+  if (
+    !response.ok ||
+    !response.body ||
+    response.headers.get(streamResumeHeader) !== streamResumeVersion ||
+    !/^[0-9a-f-]{36}$/.test(requestId) ||
+    !target ||
+    !boot
+  )
+    return undefined;
+  return signResumeStamp(key, { requestId, target, boot, ...(pool ? { pool } : {}) }).catch(
+    () => undefined,
   );
 }

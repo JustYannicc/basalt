@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { resolve, relative } from "node:path";
+import { configsReached, fullOnly } from "./e2e-workflow.ts";
 
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -39,10 +40,13 @@ const resolvers: Record<string, string> = {
   comparison: "the local runner compares with --base",
   lane: "the local runner runs the fast lane",
 };
-const lane = {
-  full: "steps.lane.outputs.full_suite == 'true'",
-  other: "steps.lane.outputs.full_suite != 'true'",
-};
+// The fast lane runs the steps for every lane; it selects no e2e config, so it skips what the
+// full and affected lanes add.
+const everyLane = "steps.lane.outputs.full_suite != 'true'";
+const otherLanes = new Map([
+  [fullOnly, "full lane only"],
+  [configsReached, "full or affected lane only"],
+]);
 
 /** fast's steps, then the steps of fast-units (its owned unit tests) that fast does not run. */
 export function fastPlan(document: unknown, context: FastContext) {
@@ -82,7 +86,8 @@ export function fastPlan(document: unknown, context: FastContext) {
         skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
         continue;
       }
-      if (step.if !== undefined && step.if !== lane.full && step.if !== lane.other)
+      const skip = typeof step.if === "string" ? otherLanes.get(step.if) : undefined;
+      if (step.if !== undefined && step.if !== everyLane && !skip)
         throw new Error("Unsupported fast step condition");
       if (typeof step.id === "string" && step.id in resolvers) {
         if (step.if !== undefined || typeof step.name !== "string")
@@ -139,8 +144,8 @@ export function fastPlan(document: unknown, context: FastContext) {
         throw new Error("Fast step escapes checkout");
       const stepEnv = { ...env, ...environment(step.env, context) };
       const name = typeof step.name === "string" ? step.name : step.run.trim();
-      if (step.if === lane.full) {
-        skipped.push({ name, reason: "full lane only" });
+      if (skip) {
+        skipped.push({ name, reason: skip });
         continue;
       }
       // fast-units prepares the checkout as fast does; locally that runs once.

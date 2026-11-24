@@ -30,6 +30,8 @@ import { digest } from "../backend-users.ts";
 import { seriesUsageForecasts } from "./usage-forecasts.ts";
 import { homeCaptureCoverage } from "./capture-coverage.ts";
 import { importedAccountPattern } from "../usage-account-labels.ts";
+import { seriesRollupReady } from "./series-rollup-query.ts";
+import { rollupSupportedPrices } from "./summary-rollup-query.ts";
 
 export function seriesBucket(
   row: Record<string, unknown>,
@@ -169,17 +171,23 @@ async function readUsageSeries(
     await db.query("SET LOCAL statement_timeout = '5s'");
     // Short interactive reads should not spend their statement budget compiling JIT code.
     await db.query("SET LOCAL jit = off");
-    let prices = typeof priceInput === "function" ? undefined : priceInput;
-    let query = await seriesQuery(db, input, authority, after, personScope, prices);
+    // A pool ready on the v16 rollup reads it, in this read's own snapshot; any other reads raw.
+    const rolled = await seriesRollupReady(db, (await digest(input.pool)).slice(0, 16));
+    // A pair with a price tier the rollup's bands cannot separate counts as missing a price.
+    const supported = (table: OverviewPriceTable | undefined) =>
+      rolled && table ? rollupSupportedPrices(table) : table;
+    let prices = supported(typeof priceInput === "function" ? undefined : priceInput);
+    let query = await seriesQuery(db, input, authority, after, personScope, prices, rolled);
     if (typeof priceInput === "function") {
       const targets = (await db.query(query.targetsText, query.targetsValues)).rows;
-      prices =
+      prices = supported(
         targets.length > 100
           ? { prices: [], issues: [] }
           : await priceInput(
               targets.map((row) => ({ provider: String(row.provider), model: String(row.model) })),
-            );
-      query = await seriesQuery(db, input, authority, after, personScope, prices);
+            ),
+      );
+      query = await seriesQuery(db, input, authority, after, personScope, prices, rolled);
     }
     const { coverage, asOf } = await seriesCoverage(
       db,

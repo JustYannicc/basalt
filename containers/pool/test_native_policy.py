@@ -5,12 +5,17 @@ from __future__ import annotations
 import http.client
 import http.server
 import json
+import pathlib
+import socket
+import tempfile
 import threading
+import time
 import unittest
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import patch
 
-from . import child_signals, policy_monitor, readiness
+from . import child_signals, policy_monitor, pool_contract, readiness
 from .policy_monitor import PolicyHealthMonitor, ProbeState
 
 
@@ -49,6 +54,40 @@ class NativePolicyReadinessTests(unittest.TestCase):
 
             clock.advance(500_000_000)
             self.assertFalse(ready.snapshot()[0])
+
+    def test_policy_loop_keeps_the_lease_alive_through_a_quiet_minute(self) -> None:
+        clock = FakeClock()
+        ready = readiness.Readiness(MANAGEMENT_KEY, clock.now_ns)
+        ready.set_ready(True)
+        monitor = PolicyHealthMonitor(ready, MANAGEMENT_KEY)
+        end = clock.value + 60_000_000_000
+        lapses: list[int] = []
+
+        def probe(*_: object) -> tuple[ProbeState, str | None]:
+            # Every probe takes its whole budget.
+            clock.advance(250_000_000)
+            return "healthy", INSTANCE_A
+
+        class QuietStop:
+            def is_set(self) -> bool:
+                return clock.value >= end
+
+            def wait(self, seconds: float) -> bool:
+                for _ in range(2):
+                    if not ready.snapshot()[0]:
+                        lapses.append(clock.value)
+                    clock.advance(int(seconds * 500_000_000))
+                return self.is_set()
+
+        with (
+            patch.object(policy_monitor, "probe_home_policy", side_effect=probe),
+            patch.object(
+                policy_monitor, "time", SimpleNamespace(monotonic=lambda: clock.value / 1e9)
+            ),
+        ):
+            monitor.run(cast(threading.Event, QuietStop()))
+        self.assertEqual(lapses, [])
+        self.assertTrue(ready.snapshot()[0])
 
     def test_plugin_unload_loses_readiness_and_restored_instance_recovers(self) -> None:
         clock = FakeClock()
@@ -270,7 +309,8 @@ class NativePolicyReadinessTests(unittest.TestCase):
         connection.close()
         self.assertEqual(response.status, 200)
         self.assertEqual(lease_ms, "1500")
-        self.assertEqual(set(json.loads(body)), {"boot_id", "started_at", "db_rtt_state"})
+        # A ready answer records the flip that made it ready.
+        self.assertEqual(set(json.loads(body)), {"boot_id", "started_at", "db_rtt_state", "flips", "last_flip"})
 
         clock.advance(1_234_000_000)
         connection = http.client.HTTPConnection(host, port, timeout=1)
@@ -298,6 +338,90 @@ class NativePolicyReadinessTests(unittest.TestCase):
         self.assertEqual(response.status, 503)
         self.assertIsNone(response.getheader("X-Signalbox-Policy-Lease-Ms"))
         connection.close()
+
+
+class NativePolicyInstallBudgetTests(unittest.TestCase):
+    """The plugin leg of an install gets 1 s, inside the controller's 2 s install budget."""
+
+    def plugin(self, delay: float | None) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = pathlib.Path(folder.name) / "native-policy.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(path))
+        listener.listen(1)
+        release = threading.Event()
+
+        def serve() -> None:
+            connection, _ = listener.accept()
+            with connection:
+                request = b""
+                while b"\r\n\r\n" not in request:
+                    request += connection.recv(4096)
+                head, _, body = request.partition(b"\r\n\r\n")
+                length = next(
+                    int(line.split(b":", 1)[1])
+                    for line in head.split(b"\r\n")
+                    if line.lower().startswith(b"content-length:")
+                )
+                while len(body) < length:
+                    body += connection.recv(4096)
+                # A plugin that never answers holds the connection until the test ends.
+                if delay is None or release.wait(delay):
+                    release.wait()
+                    return
+                answer = json.dumps({"installed": True, "revision": 7}).encode()
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                    + f"Content-Length: {len(answer)}\r\n\r\n".encode()
+                    + answer
+                )
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+
+        def stop() -> None:
+            release.set()
+            listener.close()
+            server.join(timeout=2)
+
+        self.addCleanup(stop)
+        self.enterContext(patch.object(pool_contract, "NATIVE_POLICY_SOCKET", path))
+
+    def install(self) -> tuple[int, dict[str, object], float]:
+        """POST /native-policy as the controller does, with its 2 s install budget."""
+        ready = readiness.Readiness(MANAGEMENT_KEY)
+        handler = type("InstallBudgetHandler", (readiness.ReadyHandler,), {"readiness": ready})
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join, 1)
+        self.addCleanup(server.shutdown)
+        connection = http.client.HTTPConnection(*server.server_address, timeout=2)
+        self.addCleanup(connection.close)
+        started = time.monotonic()
+        connection.request(
+            "POST",
+            "/native-policy",
+            body=json.dumps({"projection": "sbm-policy1.fixture"}),
+            headers={"Authorization": f"Bearer {MANAGEMENT_KEY}"},
+        )
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        return response.status, payload, time.monotonic() - started
+
+    def test_a_plugin_answering_inside_its_second_installs(self) -> None:
+        self.plugin(0.5)
+        status, payload, _ = self.install()
+        self.assertEqual((status, payload), (200, {"installed": True, "revision": 7}))
+
+    def test_a_plugin_that_stops_answering_is_refused_closed_after_one_second(self) -> None:
+        self.plugin(None)
+        status, payload, elapsed = self.install()
+        self.assertEqual((status, payload), (503, {"error": "policy_unavailable"}))
+        self.assertGreaterEqual(elapsed, 1.0)
+        self.assertLess(elapsed, 2.0, "the controller's own 2 s install budget would expire first")
 
 
 if __name__ == "__main__":

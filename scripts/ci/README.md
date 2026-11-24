@@ -20,7 +20,7 @@ After changing `upstream.json`, fetch its exact commit into `.upstream` and run 
 
 ## Affected lane
 
-A pull request from this repository runs the fast jobs plus the heavy jobs its changed files reach; [architecture/README.md](../../architecture/README.md) states the rule. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
+A pull request from this repository runs the fast jobs plus the heavy jobs its changed files reach; [architecture/README.md](../../architecture/README.md) states the rule. A `ci.yml` change outside the job blocks runs every heavy job; one inside a job's block runs that job and the jobs that need it, with the block's synthetic `ci.yml#<job>` path as the reason. The selection and gate scripts listed in `selectionInputs` in `areas.ts` run no heavy job; setup and preparation scripts stay in `sharedInputs`. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
 
 The import graph sees imports, relative file literals, literal path arguments and scripts started with `node` or `bun`. A file read through a computed path is invisible to it: declare that read in `runtimeReads` in `areas.ts`, or give the data an area. A missed dependency still fails in the batch and main Checks, which run every heavy job.
 

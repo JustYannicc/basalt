@@ -5,7 +5,6 @@ import {
   classesDeclared,
   classChanges,
   databaseSteps,
-  errorLine,
   forwardVersion,
   rootChange,
   removals,
@@ -13,6 +12,7 @@ import {
   smoke,
   workersToRepoint,
 } from "./production.ts";
+import { errorLine } from "./release/failure-line.ts";
 import { errorKind } from "./release/public-report.ts";
 import { makePlan, productionRows } from "./release/test/plan-fixture.ts";
 
@@ -201,4 +201,185 @@ test("the smoke passes on a served turn and names a failure by class and status 
     throw new Error("connect failed to a host name");
   });
   assert.deepEqual(failed, { passed: false, why: "Error" });
+});
+
+test("each plan row says why it is in the plan, by name only, and a noop row prints nothing", async () => {
+  const { rowLine, withReasons } = await import("./release/approved-plan.ts");
+  const worker = (
+    fqn: string,
+    action: string,
+    bindings: { sid: string; action: string }[] = [],
+  ) => ({
+    fqn,
+    resourceType: "Cloudflare.Worker",
+    action,
+    bindings,
+  });
+  const rows = withReasons(
+    [
+      worker("Dashboard", "update", [{ sid: "ASSETS", action: "noop" }]),
+      worker("PoolWorker", "update", [{ sid: "POOL_CONTAINER", action: "update" }]),
+      worker("Api", "update", [
+        { sid: "KV", action: "create" },
+        { sid: "DB", action: "update" },
+      ]),
+      worker("Router", "noop", [{ sid: "POOL", action: "noop" }]),
+      worker("AppPages", "noop", [{ sid: "PAGES", action: "update" }]),
+      worker("Marketing", "update"),
+      worker("NewSite", "create"),
+    ],
+    [
+      { fqn: "Dashboard", changedProps: ["env", "assets"] },
+      { fqn: "PoolWorker", changedProps: [] },
+      { fqn: "Api", changedProps: ["main"] },
+      { fqn: "AppPages", changedProps: [] },
+      { fqn: "Marketing", changedProps: [] },
+      { fqn: "NewSite", changedProps: ["name", "main"] },
+    ],
+  );
+  assert.deepEqual(rows.map(rowLine), [
+    // A prop-only update names the props, sorted.
+    "Dashboard Cloudflare.Worker update: props assets, env",
+    // A binding-only update says so in words, with each binding's id and action.
+    "PoolWorker Cloudflare.Worker update only by its bindings, no prop changes: bindings POOL_CONTAINER update",
+    // Both.
+    "Api Cloudflare.Worker update: props main; bindings DB update, KV create",
+    // A noop row whose bindings are noop too is not part of the plan.
+    undefined,
+    "AppPages Cloudflare.Worker noop, bindings changed: bindings PAGES update",
+    // A code-only update: the provider compares the bundle and assets hashes itself.
+    "Marketing Cloudflare.Worker update by the provider's own diff (code, assets or metadata), no prop or binding changes",
+    // A new resource is all new, so it names no props.
+    "NewSite Cloudflare.Worker create",
+  ]);
+});
+
+test("the digest covers why each row is in the plan; a deploy still refuses rows that differ", async () => {
+  const { planDifference, planDigest } = await import("./release/approved-plan.ts");
+  const plan = {
+    candidate: "8e7de242458798cade20330fb1924476d6a53013",
+    declared: true,
+    rows: [
+      {
+        fqn: "Dashboard",
+        resourceType: "Cloudflare.Worker",
+        action: "update",
+        changedProps: ["assets", "env"],
+        bindings: [{ sid: "ASSETS", action: "noop" }],
+      },
+      {
+        fqn: "PoolWorker",
+        resourceType: "Cloudflare.Worker",
+        action: "update",
+        changedProps: ["main"],
+      },
+    ],
+    actions: [],
+    created: [],
+    forward: [],
+  };
+  const approved = planDigest(plan);
+  // The same plan, props in another order: the same digest, so it deploys.
+  assert.equal(
+    planDifference(approved, {
+      ...plan,
+      rows: [...plan.rows]
+        .reverse()
+        .map((row) => ({ ...row, changedProps: [...row.changedProps].reverse() })),
+    }),
+    undefined,
+  );
+  const otherProps = {
+    ...plan,
+    rows: plan.rows.map((row) =>
+      row.fqn === "Dashboard" ? { ...row, changedProps: ["env"] } : row,
+    ),
+  };
+  const otherBinding = {
+    ...plan,
+    rows: plan.rows.map((row) =>
+      row.fqn === "Dashboard" ? { ...row, bindings: [{ sid: "ASSETS", action: "update" }] } : row,
+    ),
+  };
+  const extraRow = {
+    ...plan,
+    rows: [
+      ...plan.rows,
+      { fqn: "McpServer", resourceType: "Cloudflare.Worker", action: "update", changedProps: [] },
+    ],
+  };
+  const otherAction = {
+    ...plan,
+    rows: plan.rows.map((row) => (row.fqn === "PoolWorker" ? { ...row, action: "replace" } : row)),
+  };
+  for (const [name, candidate] of [
+    ["other props", otherProps],
+    ["another binding", otherBinding],
+    ["an extra row", extraRow],
+    ["another action", otherAction],
+  ] as const) {
+    const refusal = planDifference(approved, candidate);
+    assert.ok(refusal, `${name} refuses`);
+    assert.match(refusal, /nothing applied/u);
+  }
+  assert.match(
+    planDifference(approved, otherProps)!,
+    /Dashboard Cloudflare\.Worker update: props env/u,
+  );
+  assert.match(
+    planDifference(approved, extraRow)!,
+    /McpServer Cloudflare\.Worker update by the provider's own diff/u,
+  );
+});
+
+test("on Alchemy's own plan, a row names what its changed prop waits on, and the digest is what is printed", async (context) => {
+  const { changedRows } = await import("./release/plan-summary.ts");
+  const { planDigest, planLines, rowLine, withReasons } =
+    await import("./release/approved-plan.ts");
+  // PoolWorker's env gains a value that waits on the pool database's command, which this plan runs.
+  const reading = async () => {
+    const { plan } = await makePlan(context, {
+      rows: productionRows(),
+      declared: { poolWorkerWaitsOnCommand: true },
+    });
+    const native = plan as never as {
+      resources: Record<
+        string,
+        { action: string; resource: { Type: string }; bindings?: { sid: string; action: string }[] }
+      >;
+    };
+    const resources = Object.entries(native.resources).map(([fqn, node]) => ({
+      fqn,
+      resourceType: node.resource.Type,
+      action: node.action,
+      bindings: (node.bindings ?? []).map(({ sid, action }) => ({ sid, action })),
+    }));
+    const rows = withReasons(
+      resources,
+      changedRows({ resources, summary: {}, native: plan as never }),
+    );
+    return {
+      lines: rows.flatMap((row) => rowLine(row) ?? []),
+      digestOf: {
+        candidate: "0".repeat(40),
+        declared: true,
+        rows,
+        actions: [],
+        created: [],
+        forward: [],
+      },
+    };
+  };
+  const first = await reading();
+  const pool = first.lines.find((line) => line.startsWith("PoolWorker "));
+  assert.match(pool ?? "", /props [^;]*env \(waits on [A-Za-z]+[^)]*\)/u);
+  // What the plan prints is exactly what the digest covers.
+  assert.deepEqual(
+    planLines(first.digestOf).filter(
+      (line) => !line.includes(" class created") && !line.includes(" re-point forward"),
+    ),
+    [...first.lines].sort(),
+  );
+  // The same stack planned again reads the same, so a deploy's re-plan matches its plan-only run.
+  assert.equal(planDigest((await reading()).digestOf), planDigest(first.digestOf));
 });

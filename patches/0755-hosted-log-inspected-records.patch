@@ -1,0 +1,584 @@
+diff --git a/e2e/support/compiler-phase-evidence.ts b/e2e/support/compiler-phase-evidence.ts
+--- a/e2e/support/compiler-phase-evidence.ts
++++ b/e2e/support/compiler-phase-evidence.ts
+@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { FixtureFailed } from "../sdk/fixtures.ts";
+ import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { hostedRecords } from "./hosted-log.ts";
+ import { Target } from "./platform.ts";
+ import { createHash } from "node:crypto";
+ 
+@@ -73,24 +74,11 @@ export const compilerPhaseEvidence = (
+     let revision = yield* logRevision();
+     for (;;) {
+       const text = yield* fs.readFileString(file);
+-      const records = text.split("\n").flatMap((line) => {
+-        const start = line.indexOf('{"type":"executor.compiler.phase"');
+-        if (start < 0) return [];
+-        let value: unknown;
+-        try {
+-          value = JSON.parse(line.slice(start));
+-        } catch {
+-          return [];
+-        }
++      const records = hostedRecords(text).flatMap((value) => {
+         const parsed = Schema.decodeUnknownOption(Phase)(value);
+-        if (
+-          Option.isNone(parsed) ||
+-          parsed.value.traceId !== traceId ||
+-          value === null ||
+-          typeof value !== "object"
+-        )
+-          return [];
+-        return [{ record: parsed.value, keys: Object.keys(value).sort() }];
++        return Option.isNone(parsed) || parsed.value.traceId !== traceId
++          ? []
++          : [{ record: parsed.value, keys: Object.keys(value).sort() }];
+       });
+       const attempts = new Set(
+         records
+diff --git a/e2e/support/data-steps.ts b/e2e/support/data-steps.ts
+--- a/e2e/support/data-steps.ts
++++ b/e2e/support/data-steps.ts
+@@ -1,5 +1,6 @@
+ /** Read the summary line each finished data step pass writes to the product's log. */
+ import { Effect, FileSystem, Option, Schedule, Schema } from "effect";
++import { entryTexts, noReport, readHostedLog } from "./hosted-log.ts";
+ 
+ const prefix = "Data step pass finished: ";
+ 
+@@ -15,12 +16,6 @@ export const DataStepSummary = Schema.Struct({
+ });
+ export type DataStepSummary = typeof DataStepSummary.Type;
+ 
+-const LogRecord = Schema.fromJsonString(
+-  Schema.Struct({
+-    message: Schema.Union([Schema.String, Schema.Array(Schema.Unknown)]),
+-    timestamp: Schema.optional(Schema.String),
+-  }),
+-);
+ const Summary = Schema.fromJsonString(DataStepSummary);
+ 
+ /** A finished pass, and when the host logged it when its log records carry a time. */
+@@ -29,54 +24,44 @@ export interface DataStepPass {
+   readonly loggedAt: number | undefined;
+ }
+ 
+-/** Hosts write JSON log records; the message holds the prefix and the summary's JSON. */
+-const passOf = (line: string): Option.Option<DataStepPass> => {
+-  const record = Schema.decodeUnknownOption(LogRecord)(line.slice(line.indexOf("{")));
+-  const messages = Option.match(record, {
+-    onNone: () => [line],
+-    onSome: ({ message }) => (typeof message === "string" ? [message] : message),
++/** Hosts write log records, in either shape `readHostedLog` reads; the message holds the summary. */
++const logPasses = (text: string) =>
++  readHostedLog(text).flatMap((entry): DataStepPass[] => {
++    const messages = entryTexts(entry);
++    const timestamp = entry.kind === "record" ? entry.value.timestamp : undefined;
++    for (const message of messages) {
++      const at = message.indexOf(prefix);
++      if (at < 0) continue;
++      const summary = Schema.decodeUnknownOption(Summary)(message.slice(at + prefix.length));
++      if (Option.isSome(summary))
++        return [
++          {
++            summary: summary.value,
++            loggedAt: typeof timestamp === "string" ? Date.parse(timestamp) : undefined,
++          },
++        ];
++    }
++    return [];
+   });
+-  const timestamp = Option.getOrUndefined(record)?.timestamp;
+-  for (const message of messages) {
+-    if (typeof message !== "string") continue;
+-    const at = message.indexOf(prefix);
+-    if (at < 0) continue;
+-    const summary = Schema.decodeUnknownOption(Summary)(message.slice(at + prefix.length));
+-    if (Option.isSome(summary))
+-      return Option.some({
+-        summary: summary.value,
+-        loggedAt: timestamp === undefined ? undefined : Date.parse(timestamp),
+-      });
+-  }
+-  return Option.none();
+-};
+ 
+-/** Every message in the host's log: each JSON record's text parts, or a plain line itself. */
+-export const logMessages = (log: string) =>
++/** The host's log as written so far; empty before its first line. */
++export const logText = (log: string) =>
+   Effect.gen(function* () {
+     const fs = yield* FileSystem.FileSystem;
+-    const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
+-    return text.split("\n").flatMap((line) =>
+-      Option.match(Schema.decodeUnknownOption(LogRecord)(line.slice(line.indexOf("{"))), {
+-        onNone: () => [line],
+-        onSome: ({ message }) =>
+-          typeof message === "string"
+-            ? [message]
+-            : message.filter((part): part is string => typeof part === "string"),
+-      }),
+-    );
++    return (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
+   });
+ 
++/** Every message in the host's log: each record's text parts, or its text as written. */
++export const logMessages = (log: string) =>
++  logText(log).pipe(Effect.map((text) => readHostedLog(text).flatMap(entryTexts)));
++
++/** Every finished pass for one step in a log's text, oldest first. */
++export const dataStepPassesIn = (text: string, step: string) =>
++  logPasses(text).filter((pass) => pass.summary.step === step);
++
+ /** Every finished pass in the log for one step, oldest first. */
+ export const dataStepPasses = (log: string, step: string) =>
+-  Effect.gen(function* () {
+-    const fs = yield* FileSystem.FileSystem;
+-    const text = (yield* fs.exists(log)) ? yield* fs.readFileString(log) : "";
+-    return text
+-      .split("\n")
+-      .flatMap((line) => Option.toArray(passOf(line)))
+-      .filter((pass) => pass.summary.step === step);
+-  });
++  logText(log).pipe(Effect.map((text) => dataStepPassesIn(text, step)));
+ 
+ /** Every summary in the log for one step, oldest first. */
+ export const dataStepSummaries = (log: string, step: string) =>
+@@ -84,16 +69,24 @@ export const dataStepSummaries = (log: string, step: string) =>
+ 
+ class SummaryPending extends Schema.TaggedError<SummaryPending>()("SummaryPending", {
+   step: Schema.String,
++  message: Schema.String,
+ }) {}
+ 
+ /** Wait for the log to hold more than `seen` summaries for the step, and return the newest. */
+ export const nextDataStepSummary = (log: string, step: string, seen: number) =>
+-  dataStepSummaries(log, step).pipe(
+-    Effect.flatMap((summaries) => {
+-      const newest = summaries.at(-1);
++  logText(log).pipe(
++    Effect.flatMap((text) => {
++      const passes = logPasses(text);
++      const summaries = passes.filter((pass) => pass.summary.step === step);
++      const newest = summaries.at(-1)?.summary;
+       return summaries.length > seen && newest !== undefined
+         ? Effect.succeed(newest)
+-        : Effect.fail(new SummaryPending({ step }));
++        : Effect.fail(
++            new SummaryPending({
++              step,
++              message: noReport(`new ${step} summary`, text, prefix, passes.length),
++            }),
++          );
+     }),
+     Effect.retry({
+       while: (error) => Schema.is(SummaryPending)(error),
+diff --git a/e2e/support/hosted-log.ts b/e2e/support/hosted-log.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/hosted-log.ts
+@@ -0,0 +1,196 @@
++/**
++ * The product's log, entry by entry, in the order written. Self-host and the Workers' own JSON
++ * writers put one JSON record on a line. A hosted Worker writes each Effect log line as one
++ * structured object, which the local runtime prints as a JavaScript literal: one line, or a block
++ * from `{` to `}`. Alchemy prefixes each line with its Worker's name, and Workers interleave, so a
++ * block is collected per name. Both shapes read as the same record. A record keeps its text as
++ * written, so a reader of lines still sees a record that carries no message, such as a JSON line a
++ * Worker writes with `console.log`.
++ */
++export type HostedLogEntry =
++  | {
++      readonly kind: "record";
++      readonly value: Readonly<Record<string, unknown>>;
++      readonly text: string;
++    }
++  | { readonly kind: "line"; readonly text: string };
++
++const workerName = /^\[[^\]\s]+\] /;
++const escapes: Readonly<Record<string, string>> = {
++  n: "\n",
++  r: "\r",
++  t: "\t",
++  b: "\b",
++  f: "\f",
++  v: "\v",
++  "0": "\0",
++};
++
++const object = (value: unknown): Readonly<Record<string, unknown>> | undefined =>
++  value !== null && typeof value === "object" && !Array.isArray(value)
++    ? (value as Readonly<Record<string, unknown>>)
++    : undefined;
++
++const json = (text: string) => {
++  try {
++    return object(JSON.parse(text));
++  } catch {
++    return undefined;
++  }
++};
++
++/** A quoted literal from `start`, with its escapes read; adjacent pieces joined by `+` included. */
++const quoted = (text: string, start: number) => {
++  let value = "";
++  let at = start;
++  for (;;) {
++    const quote = text[at];
++    let end = at + 1;
++    while (end < text.length && text[end] !== quote) {
++      if (text[end] === "\\" && end + 1 < text.length) {
++        const next = text[end + 1]!;
++        const code = /^x([0-9a-f]{2})|^u\{([0-9a-f]+)\}|^u([0-9a-f]{4})/i.exec(text.slice(end + 1));
++        if (code !== null) {
++          value += String.fromCodePoint(Number.parseInt(code[1] ?? code[2] ?? code[3]!, 16));
++          end += 1 + code[0].length;
++        } else {
++          value += escapes[next] ?? next;
++          end += 2;
++        }
++        continue;
++      }
++      value += text[end];
++      end += 1;
++    }
++    if (end >= text.length) return undefined;
++    at = end + 1;
++    // A long string with line breaks prints as pieces joined by `+`.
++    const joined = /^\s*\+\s*(?=['"`])/.exec(text.slice(at));
++    if (joined === null) return { value, end: at };
++    at += joined[0].length;
++  }
++};
++
++/** The object a printed JavaScript literal shows, or undefined when it is not plain data. */
++const literal = (text: string) => {
++  let out = "";
++  let at = 0;
++  while (at < text.length) {
++    const char = text[at]!;
++    if (char === "'" || char === '"' || char === "`") {
++      const read = quoted(text, at);
++      if (read === undefined) return undefined;
++      out += JSON.stringify(read.value);
++      at = read.end;
++    } else if (/[A-Za-z_$]/.test(char)) {
++      let end = at;
++      while (end < text.length && /[\w$]/.test(text[end]!)) end += 1;
++      const word = text.slice(at, end);
++      out += /^\s*:/.test(text.slice(end))
++        ? JSON.stringify(word)
++        : word === "undefined"
++          ? "null"
++          : word === "true" || word === "false" || word === "null"
++            ? word
++            : JSON.stringify(word);
++      at = end;
++    } else if (
++      char === "[" &&
++      /^\[(?:Object|Array|Function|Circular|Getter|Setter)\b/.test(text.slice(at))
++    ) {
++      const end = text.indexOf("]", at);
++      if (end < 0) return undefined;
++      out += JSON.stringify(text.slice(at, end + 1));
++      at = end + 1;
++    } else {
++      out += char;
++      at += 1;
++    }
++  }
++  return json(out);
++};
++
++/** A JSON record on one line, which may follow other text; only records with a message count. */
++const jsonRecord = (line: string) => {
++  const start = line.indexOf("{");
++  const value = start < 0 ? undefined : json(line.slice(start));
++  return value !== undefined && "message" in value ? value : undefined;
++};
++
++export const readHostedLog = (text: string): ReadonlyArray<HostedLogEntry> => {
++  const entries: HostedLogEntry[] = [];
++  const open = new Map<string, { readonly held: HostedLogEntry; readonly lines: string[] }>();
++  for (const raw of text.split("\n")) {
++    const name = workerName.exec(raw)?.[0] ?? "";
++    const line = raw.slice(name.length);
++    const block = open.get(name);
++    if (block !== undefined) {
++      block.lines.push(raw);
++      if (line === "}") {
++        open.delete(name);
++        const value = literal(block.lines.map((entry) => entry.slice(name.length)).join("\n"));
++        const done: HostedLogEntry[] =
++          value === undefined
++            ? block.lines.map((entry) => ({ kind: "line", text: entry }))
++            : [{ kind: "record", value, text: block.lines.join("\n") }];
++        entries.splice(entries.indexOf(block.held), 1, ...done);
++      }
++      continue;
++    }
++    if (line === "{") {
++      // Held at its first line's place, so the log keeps its order; an unfinished block stays
++      // that one line until a later read sees the rest.
++      const held: HostedLogEntry = { kind: "line", text: raw };
++      open.set(name, { held, lines: [raw] });
++      entries.push(held);
++      continue;
++    }
++    const value = line.startsWith("{") ? (json(line) ?? literal(line)) : jsonRecord(line);
++    entries.push(
++      value === undefined ? { kind: "line", text: raw } : { kind: "record", value, text: raw },
++    );
++  }
++  return entries;
++};
++
++/** A JSON object a plain line carries after other text, such as a prefix the reader doesn't know. */
++const embedded = (line: string) => {
++  for (let at = line.indexOf('{"'); at >= 0; at = line.indexOf('{"', at + 1)) {
++    const value = json(line.slice(at));
++    if (value !== undefined) return [value];
++  }
++  return [];
++};
++
++/** Every structured record in the log, in order: each record, and each JSON object a line holds. */
++export const hostedRecords = (text: string) =>
++  readHostedLog(text).flatMap((entry) =>
++    entry.kind === "record" ? [entry.value] : embedded(entry.text),
++  );
++
++/** The text parts of a record's message: the message itself, or the strings among its parts. */
++export const messageParts = (value: Readonly<Record<string, unknown>>) => {
++  const message = value.message;
++  return typeof message === "string"
++    ? [message]
++    : Array.isArray(message)
++      ? message.filter((part): part is string => typeof part === "string")
++      : [];
++};
++
++/**
++ * Why a reader found no report: how many log lines it read, and how many entries naming its marker
++ * it could not decode. A log shape that changes under a reader fails with this, not a bare timeout.
++ */
++export const noReport = (report: string, text: string, marker: string, decoded: number) => {
++  const marked = readHostedLog(text).filter((entry) => entry.text.includes(marker)).length;
++  const lines = text === "" ? 0 : text.split("\n").length;
++  return `No ${report} in ${lines} hosted log lines; ${Math.max(0, marked - decoded)} of ${marked} lines naming it could not be decoded`;
++};
++
++/** The text a line reader sees in an entry: a record's message parts, or its text as written. */
++export const entryTexts = (entry: HostedLogEntry) => {
++  if (entry.kind === "line") return [entry.text];
++  const parts = messageParts(entry.value);
++  return parts.length > 0 ? parts : [entry.text];
++};
+diff --git a/e2e/support/runner-progress-evidence.ts b/e2e/support/runner-progress-evidence.ts
+--- a/e2e/support/runner-progress-evidence.ts
++++ b/e2e/support/runner-progress-evidence.ts
+@@ -3,6 +3,7 @@ import { Effect, FileSystem, Option, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { FixtureFailed } from "../sdk/fixtures.ts";
+ import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { hostedRecords } from "./hosted-log.ts";
+ import { Target } from "./platform.ts";
+ 
+ const Progress = Schema.Struct({
+@@ -51,24 +52,11 @@ export const runnerProgressEvidence = (app: string) =>
+     let current = yield* revision();
+     for (;;) {
+       const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
+-      const records = text.split("\n").flatMap((line) => {
+-        const start = line.indexOf('{"type":"executor.runner.progress"');
+-        if (start < 0) return [];
+-        let value: unknown;
+-        try {
+-          value = JSON.parse(line.slice(start));
+-        } catch {
+-          return [];
+-        }
++      const records = hostedRecords(text).flatMap((value) => {
+         const decoded = Schema.decodeUnknownOption(Progress)(value);
+-        if (
+-          Option.isNone(decoded) ||
+-          decoded.value.app !== app ||
+-          typeof value !== "object" ||
+-          value === null
+-        )
+-          return [];
+-        return [{ record: decoded.value, keys: Object.keys(value).sort() }];
++        return Option.isNone(decoded) || decoded.value.app !== app
++          ? []
++          : [{ record: decoded.value, keys: Object.keys(value).sort() }];
+       });
+       if (
+         records.some(({ record }) => record.phase === "invocation" && record.status === "completed")
+diff --git a/e2e/support/workflow-status-log-evidence.ts b/e2e/support/workflow-status-log-evidence.ts
+--- a/e2e/support/workflow-status-log-evidence.ts
++++ b/e2e/support/workflow-status-log-evidence.ts
+@@ -2,6 +2,7 @@
+ import { Effect, FileSystem, Option, Schema } from "effect";
+ import { HttpClient, HttpClientRequest } from "effect/http";
+ import { CloudLogRevision } from "./cloud-log-activity.ts";
++import { readHostedLog } from "./hosted-log.ts";
+ import { Target } from "./platform.ts";
+ 
+ const Record = Schema.Struct({
+@@ -33,17 +34,11 @@ export const workflowStatusLogEvidence = (barrier: string) =>
+     let after = yield* revision();
+     for (;;) {
+       const text = yield* fs.readFileString(`${target.directory}/cloud.log`);
+-      const records = text.split("\n").flatMap((line) => {
+-        const start = line.indexOf('{"message":');
+-        if (start < 0) return [];
+-        try {
+-          const value: unknown = JSON.parse(line.slice(start));
+-          const parsed = Schema.decodeUnknownOption(Record)(value);
+-          return Option.isSome(parsed) ? [parsed.value] : [];
+-        } catch {
+-          return [];
+-        }
+-      });
++      const records = readHostedLog(text).flatMap((entry) =>
++        entry.kind === "record"
++          ? Option.toArray(Schema.decodeUnknownOption(Record)(entry.value))
++          : [],
++      );
+       if (
+         records.some(
+           (record) =>
+diff --git a/e2e/tests/pool-migration-inventory.spec.ts b/e2e/tests/pool-migration-inventory.spec.ts
+--- a/e2e/tests/pool-migration-inventory.spec.ts
++++ b/e2e/tests/pool-migration-inventory.spec.ts
+@@ -11,37 +11,36 @@ import { Evidence } from "../support/evidence.ts";
+ import { Target } from "../support/platform.ts";
+ import { appsManifest } from "../support/apps-release.ts";
+ import { provisionedSource } from "../support/provisioned-source.ts";
+-import { logMessages } from "../support/data-steps.ts";
++import { logText } from "../support/data-steps.ts";
++import { hostedRecords, noReport } from "../support/hosted-log.ts";
+ import { writeRows } from "../support/cloud-rows.ts";
+ 
+ const common = { inventory: Schema.Literal("host-v1"), run: Schema.String };
+-const InventoryRecord = Schema.fromJsonString(
+-  Schema.Union([
+-    Schema.Struct({
+-      ...common,
+-      event: Schema.Literal("part"),
+-      index: Schema.Int,
+-      data: Schema.String,
+-    }),
+-    Schema.Struct({
+-      ...common,
+-      event: Schema.Literal("end"),
+-      complete: Schema.Literal(true),
+-      chunks: Schema.Int,
+-      bytes: Schema.Int,
+-      sha256: Schema.String,
+-      coverage: Schema.Array(Schema.String),
+-      migrationGo: Schema.Literal(false),
+-    }),
+-    Schema.Struct({
+-      ...common,
+-      event: Schema.Literal("end"),
+-      complete: Schema.Literal(false),
+-      reason: Schema.String,
+-      migrationGo: Schema.Literal(false),
+-    }),
+-  ]),
+-);
++const InventoryRecord = Schema.Union([
++  Schema.Struct({
++    ...common,
++    event: Schema.Literal("part"),
++    index: Schema.Int,
++    data: Schema.String,
++  }),
++  Schema.Struct({
++    ...common,
++    event: Schema.Literal("end"),
++    complete: Schema.Literal(true),
++    chunks: Schema.Int,
++    bytes: Schema.Int,
++    sha256: Schema.String,
++    coverage: Schema.Array(Schema.String),
++    migrationGo: Schema.Literal(false),
++  }),
++  Schema.Struct({
++    ...common,
++    event: Schema.Literal("end"),
++    complete: Schema.Literal(false),
++    reason: Schema.String,
++    migrationGo: Schema.Literal(false),
++  }),
++]);
+ const Snapshot = Schema.fromJsonString(
+   Schema.Struct({
+     snapshot: Schema.String,
+@@ -58,25 +57,26 @@ const App = Schema.Struct({
+   }),
+ });
+ 
+-class ReportPending extends Schema.TaggedError<ReportPending>()("ReportPending", {}) {}
++class ReportPending extends Schema.TaggedError<ReportPending>()("ReportPending", {
++  message: Schema.String,
++}) {}
+ 
+-const records = (log: string) =>
+-  logMessages(log).pipe(
+-    Effect.map((messages) =>
+-      messages.flatMap((line) => {
+-        const start = line.indexOf('{"inventory":"host-v1"');
+-        return start < 0
+-          ? []
+-          : Option.toArray(Schema.decodeUnknownOption(InventoryRecord)(line.slice(start)));
+-      }),
+-    ),
++const recordsIn = (text: string) =>
++  hostedRecords(text).flatMap((value) =>
++    Option.toArray(Schema.decodeUnknownOption(InventoryRecord)(value)),
+   );
++const records = (log: string) => logText(log).pipe(Effect.map(recordsIn));
+ const nextReport = (log: string, seen: ReadonlySet<string>) =>
+-  records(log).pipe(
+-    Effect.flatMap((entries) => {
++  logText(log).pipe(
++    Effect.flatMap((text) => {
++      const entries = recordsIn(text);
+       const end = entries.filter((entry) => entry.event === "end" && !seen.has(entry.run)).at(-1);
+       return end === undefined
+-        ? Effect.fail(new ReportPending())
++        ? Effect.fail(
++            new ReportPending({
++              message: noReport("inventory report", text, "host-v1", entries.length),
++            }),
++          )
+         : Effect.succeed({ end, entries });
+     }),
+     Effect.retry({
+diff --git a/e2e/tests/production-ops-migrations.spec.ts b/e2e/tests/production-ops-migrations.spec.ts
+--- a/e2e/tests/production-ops-migrations.spec.ts
++++ b/e2e/tests/production-ops-migrations.spec.ts
+@@ -3,6 +3,7 @@ import { Effect, FileSystem, Schema } from "effect";
+ import { randomUUID } from "node:crypto";
+ import { body } from "../support/api.ts";
+ import { Target } from "../support/platform.ts";
++import { readHostedLog } from "../support/hosted-log.ts";
+ import { fixtureRequest } from "../sdk/fixtures.ts";
+ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Response, Inventory } from "../support/production-ops-client.ts";
+@@ -48,8 +49,9 @@ layer(HostedLive, { excludeTestServices: true })("Production migration scope", (
+         expect(yield* p.account()).toEqual(before);
+         const target = yield* Target;
+         const fs = yield* FileSystem.FileSystem;
+-        const retained = (yield* fs.readFileString(`${target.directory}/cloud.log`))
+-          .split("\n")
++        // A hosted record reads the same whichever shape the runtime printed it in.
++        const retained = readHostedLog(yield* fs.readFileString(`${target.directory}/cloud.log`))
++          .map((entry) => (entry.kind === "record" ? JSON.stringify(entry.value) : entry.text))
+           .filter((line) => line.includes('"production_ops.operation_refused"'));
+         expect(
+           retained.some(

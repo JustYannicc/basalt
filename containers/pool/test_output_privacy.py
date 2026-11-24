@@ -33,6 +33,11 @@ STARTUP_PHASE_NAMES = (
     "initial_health",
 )
 MAX_STARTUP_PHASE_MS = 86_400_000
+# Literals, not readiness's constants: this file must import and run against older image sources.
+READINESS_LAPSE_LINE = "POOL_READINESS_LAPSE "
+READINESS_FLIP_LINE = "POOL_READINESS_FLIP "
+READINESS_LAPSE_STEPS = {"home_plugins", "plugin_probe", "probe_log", "node_audit", "no_probe"}
+READINESS_FLIP_REASONS = {"restored", "policy_fused", "policy_unproven", "degraded"}
 
 
 def unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -393,6 +398,19 @@ class OutputPrivacyTests(unittest.TestCase):
             observed.append(phase)
         self.assertTrue(observed == expected, "startup phase sequence changed")
 
+    def assert_readiness_record(self, line: str) -> None:
+        name, _space, body = line.partition(" ")
+        fields = json.loads(body)
+        self.assertTrue(all(type(value) in (str, int) for value in fields.values()))
+        if name == READINESS_LAPSE_LINE.strip():
+            self.assertEqual(set(fields), {"step", "ms"})
+            self.assertIn(fields["step"], READINESS_LAPSE_STEPS)
+        else:
+            self.assertEqual(name, READINESS_FLIP_LINE.strip())
+            self.assertEqual(set(fields), {"to", "reason", "prior_ms"})
+            self.assertIn(fields["to"], {"ready", "refusing"})
+            self.assertIn(fields["reason"], READINESS_FLIP_REASONS)
+
     def assert_closed_output(
         self,
         stdout: str,
@@ -403,7 +421,12 @@ class OutputPrivacyTests(unittest.TestCase):
         for value in (RESPONSE_SENTINEL, TOKEN_SENTINEL, CLASS_SENTINEL):
             self.assertNotIn(value, stdout + stderr)
         self.assert_startup_phases(stdout, startup_phases or [])
-        lines = stderr.splitlines()
+        lines = []
+        for line in stderr.splitlines():
+            if line.startswith((READINESS_LAPSE_LINE, READINESS_FLIP_LINE)):
+                self.assert_readiness_record(line)
+            else:
+                lines.append(line)
         self.assertEqual(len(lines), len(categories))
         observed = []
         for line in lines:
@@ -530,7 +553,12 @@ class OutputPrivacyTests(unittest.TestCase):
                         redirect_stderr(stderr),
                     ):
                         self.assertEqual(supervisor.main(), 1)
-                    lines = stderr.getvalue().splitlines()
+                    lines = []
+                    for line in stderr.getvalue().splitlines():
+                        if line.startswith((READINESS_LAPSE_LINE, READINESS_FLIP_LINE)):
+                            self.assert_readiness_record(line)
+                        else:
+                            lines.append(line)
                     marker, payload = lines[0].split(" ", 1)
                     self.assertEqual(marker, "POOL_CHILD_EXIT")
                     self.assertEqual(json.loads(payload), {"child": name, "exit_code": exit_code, "category": category})
