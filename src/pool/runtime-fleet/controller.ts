@@ -125,6 +125,8 @@ interface Dependencies {
   primary?: PrimaryRoute;
   recentDemandUntil?(): Promise<number>;
   primaryAvailable?(): boolean;
+  /** What is left of the bound of the root's recovery in progress; 0 when none is. */
+  primaryHoldMs?(): number;
   primaryDistance?(): Promise<RuntimeDistance | undefined>;
   recoverPrimary?(): Promise<void>;
   demandAt?(at: number): void;
@@ -396,6 +398,13 @@ export class RuntimeFleet {
     const failure = this.primaryFailure;
     await this.deps.recoverPrimary?.();
     if (failure === this.primaryFailure) this.primaryFailed = false;
+  }
+  /** How long a call may wait for the root's recovery: never while a ready cell can take it. */
+  async primaryHoldMs() {
+    const hold = this.deps.primaryHoldMs?.() ?? 0;
+    if (hold === 0) return 0;
+    const rows = await this.deps.state.inspect();
+    return rows.some((row) => row.phase === "ready" && this.serves(row)) ? 0 : hold;
   }
   /**
    * A root call that the fallback admitted stops waiting at its send. One that failed before its

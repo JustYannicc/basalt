@@ -1,5 +1,5 @@
 import { unsentRefusal } from "../controller-unsent.ts";
-import { fleetSafeRead } from "./retry.ts";
+import { fleetSafeRead, markRootFallbackCap } from "./retry.ts";
 
 /*
  * What the root may take as the fleet's fallback, when no cell is ready to serve.
@@ -71,7 +71,8 @@ export const rootFallbackCounts = (request: Request) => !fleetSafeRead(request);
 /**
  * Nothing was sent, so the refusal is marked unsent: the entry sends a held call again each second
  * inside its replay window, and a client that isn't held gets the retryable answer it already
- * follows. One count line either way.
+ * follows. One count line either way. A call held for the root's restart waits it out at the cap's
+ * rate instead.
  */
 export function rootFallbackRefused(request: Request) {
   const id = request.headers.get("X-Basalt-Request-Id");
@@ -79,5 +80,5 @@ export function rootFallbackRefused(request: Request) {
     "POOL_ROOT_FALLBACK_REFUSED",
     JSON.stringify({ count: 1, requestId: id && requestIdPattern.test(id) ? id : null }),
   );
-  return unsentRefusal(request);
+  return markRootFallbackCap(unsentRefusal(request), 1_000 / rootFallbackPerSecond);
 }

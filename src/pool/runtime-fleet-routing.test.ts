@@ -17,7 +17,9 @@ import {
   runtimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
 import { forwardRecoverably } from "./runtime-fleet/retry.ts";
-import { rootFallbackBurst } from "./runtime-fleet/root-fallback.ts";
+import { rootFallbackBurst, rootFallbackPerSecond } from "./runtime-fleet/root-fallback.ts";
+import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
+import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 const responseModule = "./native-response.worker.ts";
 const { nativeResponse } = (await import(responseModule)) as {
@@ -30,6 +32,7 @@ function fixture(
   primary: {
     primary?: PrimaryRoute;
     primaryAvailable?(): boolean;
+    primaryHoldMs?(): number;
     recoverPrimary?(): Promise<void>;
   } = {},
 ) {
@@ -526,6 +529,178 @@ test("with production routing, a fenced root never fails a call a ready cell can
   );
   await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
   assert.equal(f.calls.dispatches, 3);
+  await f.settle();
+});
+
+// The root's restart as a call sees it: the selected boot's record is gone while the new one starts.
+const rootRestarting = () => {
+  const refused = new SlotRefused("identity");
+  rememberRuntimeFailure("endpoint_identity", refused);
+  return refused;
+};
+
+test("while the root recovers, a ready cell takes the call and no call holds for the root", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  assert.equal(await f.fleet.primaryHoldMs(), 200_000, "with no ready cell a call holds");
+  await f.add();
+  assert.equal(await f.fleet.primaryHoldMs(), 0, "a ready cell ends every hold");
+  let rootCalls = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          throw rootRestarting();
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    { rootHoldMs: () => f.fleet.primaryHoldMs() },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(f.calls.dispatches, 1);
+  assert.equal(rootCalls, 0);
+  await f.settle();
+});
+
+test("a cell that becomes ready while a call holds for the root's restart takes that call", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  let rootCalls = 0,
+    pauses = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          throw rootRestarting();
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    {
+      timing: {
+        now: () => pauses * 1_000,
+        pause: async () => {
+          if (++pauses === 3) await f.add();
+        },
+      },
+      rootHoldMs: () => f.fleet.primaryHoldMs(),
+    },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(rootCalls, 3, "the root took every attempt until the cell was ready");
+  assert.equal(f.calls.dispatches, 1);
+  await f.settle();
+});
+
+test("a cell that becomes ready during a root attempt ending in the start defect takes the next attempt", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  let rootCalls = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          // The cell comes up while this root attempt finds no container to start.
+          await f.add();
+          const defect = new RemoteRuntimeDefect(crypto.randomUUID());
+          rememberRuntimeFailure("endpoint_route", defect);
+          throw defect;
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    { timing: { now: () => 0, pause: async () => {} }, rootHoldMs: () => f.fleet.primaryHoldMs() },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(rootCalls, 1);
+  assert.equal(f.calls.dispatches, 1);
+  await f.settle();
+});
+
+test("calls released together when the root serves again are all served through its fallback cap", async (context) => {
+  const errors = context.mock.method(console, "error", () => {});
+  let now = 0,
+    serving = false;
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => (serving ? 0 : restartStartBoundMs - now),
+  });
+  const sleepers = new Set<{ at: number; wake(): void }>();
+  const timing = {
+    now: () => now,
+    pause: (milliseconds: number) =>
+      new Promise<void>((wake) => {
+        sleepers.add({ at: now + milliseconds, wake });
+      }),
+  };
+  const root = async () => {
+    if (!serving) throw rootRestarting();
+    return new Response("legacy");
+  };
+  const answers: { status: number; at: number }[] = [];
+  const calls = Array.from({ length: rootFallbackBurst + 5 }, () =>
+    forwardRecoverably(
+      request(),
+      (current, dispatch) => f.fleet.forward(current, "pool", root, dispatch),
+      () => {},
+      async () => {},
+      { timing, rootHoldMs: () => f.fleet.primaryHoldMs() },
+    ).then(async (response) => {
+      answers.push({ status: response.status, at: now });
+      await response.text();
+    }),
+  );
+  // The root comes back 10 s into the hold; the cap refills at its rate from its full burst.
+  for (let turn = 0; answers.length < calls.length && turn < 10_000; turn++) {
+    for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+    if (answers.length === calls.length || !sleepers.size) break;
+    now = Math.min(...[...sleepers].map((sleeper) => sleeper.at));
+    serving = now >= 10_000;
+    f.advance(200 + now);
+    for (const sleeper of sleepers)
+      if (sleeper.at <= now) {
+        sleepers.delete(sleeper);
+        sleeper.wake();
+      }
+  }
+  await Promise.all(calls);
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(calls.length).fill(200),
+  );
+  const capped = errors.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_ROOT_FALLBACK_REFUSED",
+  );
+  assert.ok(capped.length >= 5, `the cap refused ${capped.length} attempts`);
+  const last = Math.max(...answers.map((answer) => answer.at));
+  assert.ok(last < 10_000 + (5 / rootFallbackPerSecond + 2) * 1_000, `last served at ${last} ms`);
+  assert.ok(last < restartStartBoundMs);
   await f.settle();
 });
 
