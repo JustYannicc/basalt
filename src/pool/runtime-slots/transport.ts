@@ -134,7 +134,7 @@ export class BoundSlotDriver implements SlotDriver {
       const roundTripMs = performance.now() - requestedAt;
       if (policyLeaseUntil <= performance.now())
         // The remaining lease, as before, so the failure record's fields keep their meaning.
-        throw new HealthLeaseElapsed(Math.round(roundTripMs), health.leaseMs);
+        throw new HealthLeaseElapsed(Math.round(roundTripMs), health.leaseMs, leaseMs);
       return { identity: health.identity, policyLeaseUntil, ...distance(health.database) };
     } catch (error) {
       failEndpointResponse(response, error);
