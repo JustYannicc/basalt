@@ -33,6 +33,7 @@ const requestIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 export class RootFallback {
   private tokens = rootFallbackBurst;
   private waiting = 0;
+  private refusedAt = -Infinity;
   private at: number;
   private now: () => number;
   constructor(now: () => number) {
@@ -49,10 +50,17 @@ export class RootFallback {
   /** Takes a token for a call that then waits until its send. */
   admit() {
     this.refill();
-    if (this.tokens < 1) return false;
+    if (this.tokens < 1) {
+      this.refusedAt = this.now();
+      return false;
+    }
     this.tokens -= 1;
     this.waiting += 1;
     return true;
+  }
+  /** Whether the cap turned a call away this recently, so someone is waiting for a cell. */
+  refusedWithin(milliseconds: number) {
+    return this.now() - this.refusedAt <= milliseconds;
   }
   /** The admitted call sent, or ended; with `refund`, it reached nothing and its token comes back. */
   release(refund: boolean) {
