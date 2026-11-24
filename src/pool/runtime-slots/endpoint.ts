@@ -591,7 +591,9 @@ export class RuntimeEndpoint {
       let timer: ReturnType<typeof setTimeout> | undefined;
       connections = await Promise.race([
         legacyConnections({ exec: container.exec.bind(container) }).catch(() => undefined),
-        new Promise<undefined>((resolve) => (timer = setTimeout(resolve, leaseProofLimitMs))),
+        new Promise<undefined>((resolve) => {
+          timer = setTimeout(() => resolve(undefined), leaseProofLimitMs);
+        }),
       ]);
       clearTimeout(timer);
     }
