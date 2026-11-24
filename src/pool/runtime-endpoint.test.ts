@@ -524,14 +524,10 @@ test("an unstamped lease ends only when the container reads no model connection"
     ),
   );
   const released = lines.find(([line]) => line === "POOL_RUNTIME_LEASES_RELEASED");
-  assert.deepEqual(released?.[1], {
-    key: (released?.[1] as { key: string }).key,
-    ordinal: null,
-    kind: "unstamped",
-    released: 1,
-    connections: 0,
-  });
-  assert.match((released?.[1] as { key: string }).key, /^[0-9a-f]{24}$/);
+  assert.ok(released);
+  const { key, ...line } = released[1] as { key: string };
+  assert.deepEqual(line, { ordinal: null, kind: "unstamped", released: 1, connections: 0 });
+  assert.match(key, /^[0-9a-f]{24}$/);
 });
 
 test("the proof never ends a call this instance holds, nor one it takes during the read", async (context) => {
