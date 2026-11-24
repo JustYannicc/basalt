@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway.accountPresentation {
     metadata {
-      constraint "When the read of a pool's account traffic fails, an Accounts row or app Accounts tab row holding an account of that pool shows its Requests 7d cell as unavailable: never the account's tool calls or another pool's count as if they were its total, and never an empty cell or \"no request history\", and its Health and Details show no traffic until a read of that pool answers. Failing means any error except the caller's refusal (OrganizationForbidden), which still shows nothing. A failing pool keeps the Requests column shown. While the read has not answered, the row still reads as counting; rows without a pool account are unchanged."
+      constraint "When the read of a pool's account traffic fails (its series or its last-success lookup, or the whole read before anything was read), an Accounts row or app Accounts tab row holding an account of that pool shows its Requests 7d cell as the word Unavailable, on one line: never the account's tool calls or another pool's count as if they were its total, and never an empty cell or \"no request history\", and its Health, Details and window tokens show no traffic until a read of that pool answers. Failing means any error except the caller's refusal (OrganizationForbidden), which still shows nothing. A failing pool keeps the Requests column shown. While the read has not answered, the row still reads as counting; rows without a pool account are unchanged."
     }
   }
 }

@@ -1,6 +1,6 @@
 --- a/e2e/tests/account-traffic.spec.ts
 +++ b/e2e/tests/account-traffic.spec.ts
-@@ -428,7 +428,79 @@
+@@ -428,7 +428,97 @@
                ),
            );
            expect(answered, `answered cells at ${width}px`).toEqual(["3", "0", 0, [0, 0, 0]]);
@@ -51,15 +51,33 @@
 +                        .locator("[data-account-requests-unavailable]")
 +                        .count(),
 +                      page.locator("[data-account-requests-pending]").count(),
++                      // "Unavailable" fits its cell on one line: no wrap, nothing clipped.
++                      accountRow(page, "Called account")
++                        .locator("[data-account-requests-cell]")
++                        .evaluate(
++                          (cell) =>
++                            cell.scrollWidth <= cell.clientWidth &&
++                            cell.getBoundingClientRect().height < 24,
++                        ),
 +                    ]),
 +                  ),
 +              );
 +            }),
 +          );
-+          expect(failed, `failed-read cells at ${width}px`).toEqual([0, 1, 1, 0, [0, 0, 0], 0, 0]);
++          expect(failed, `failed-read cells at ${width}px`).toEqual([
++            0,
++            1,
++            1,
++            0,
++            [0, 0, 0],
++            0,
++            0,
++            true,
++          ]);
          }
 +        // The pool's next answer brings the counts back on the open page, without a reload.
-+        yield* publishUsageChange(app, "after-failed-read");
++        // Revisions only advance upward, so the later change below publishes 2.
++        yield* publishUsageChange(app, "1");
 +        const restored = yield* browser.use("The pool's next answer restores the counts", (page) =>
 +          accountRow(page, "Called account")
 +            .locator("[data-account-requests]")
@@ -80,3 +98,12 @@
  
          // The called account's tool calls go, so that no row is counted by anything but the pool.
          yield* serverControl("stop");
+@@ -448,7 +538,7 @@
+         // Once the pool can't map any request, no row has numbers: the column and the ticks go,
+         // rather than leaving a column of blank cells. Its committed revision refreshes the view.
+         yield* pool.respond(answer(ids, false, anchor));
+-        yield* publishUsageChange(app);
++        yield* publishUsageChange(app, "2");
+         const hidden = yield* browser.use("Wait for the Requests column to go", (page) =>
+           page
+             .locator("[data-requests-header]")

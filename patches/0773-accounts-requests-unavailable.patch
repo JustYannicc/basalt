@@ -10,7 +10,39 @@ diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/we
  import { AsyncResult, Atom } from "effect/reactivity";
  import type { AccountId, AppId } from "@executor-js/sdk";
  import type { OrganizationReference } from "@executor-js/hosted-server/organization";
-@@ -176,9 +176,13 @@
+@@ -131,22 +131,24 @@
+       );
+     // The visible accounts bound the reads, so a large pool never pages past its cap. One account
+     // the caller may not inspect refuses the filtered read, so it falls back to the whole pool,
+-    // where such accounts are only other accounts' counts.
++    // where such accounts are only other accounts' counts. Any other failure is the pool's.
+     const [week, hours] = yield* accounts.length > 0 && accounts.length <= maxAccounts
+-      ? read({ accounts }).pipe(Effect.catch(() => read({})))
++      ? read({ accounts }).pipe(Effect.catchTag("OrganizationForbidden", () => read({})))
+       : read({});
+     const traffic = new Map<AccountId, PoolAccountTraffic>();
+     if (week === undefined) return { readable: false, traffic };
+-    // An account this caller may not inspect fails the lookup for all, so retry with the accounts
+-    // the series already named; without an answer, last success stays unread.
++    // An account this caller may not inspect refuses the lookup for all, so retry with the accounts
++    // the series already named; refused again, last success stays unread. Any other failure is the
++    // pool's: an idle account it would have proven would otherwise read as having no history.
+     const named = accounts.filter((account) => week.has(account));
+     const last = yield* lastSuccess(organization, pool, accounts).pipe(
+-      Effect.catch(() =>
++      Effect.catchTag("OrganizationForbidden", () =>
+         named.length === accounts.length
+           ? Effect.succeed(undefined)
+-          : lastSuccess(organization, pool, named),
++          : lastSuccess(organization, pool, named).pipe(
++              Effect.catchTag("OrganizationForbidden", () => Effect.succeed(undefined)),
++            ),
+       ),
+-      Effect.catch(() => Effect.succeed(undefined)),
+     );
+     for (const account of accounts) {
+       const buckets = week.get(account);
+@@ -176,9 +178,13 @@
      return { readable: true, traffic };
    });
  
@@ -25,7 +57,7 @@ diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/we
    readonly traffic: ReadonlyMap<AccountId, PoolAccountTraffic>;
  }
  
-@@ -201,11 +205,16 @@
+@@ -201,11 +207,16 @@
            pools,
            ({ pool, accounts }) =>
              poolTraffic(organization, pool, accounts).pipe(
@@ -49,13 +81,27 @@ diff --git a/apps/hosted/web/src/contracts/pool-usage-series.ts b/apps/hosted/we
 diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
 --- a/apps/hosted/web/src/implementation/pages/account-traffic.tsx
 +++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
-@@ -98,17 +98,26 @@
+@@ -69,9 +69,11 @@
+   const pools = useAtomValue(accountTrafficAtom(trafficKey));
+   const counted = Option.getOrUndefined(AsyncResult.value(pools));
+   // The pools' read has not answered yet: it is starting, or waiting with nothing read before. A
+-  // failed read has answered, so its rows keep what they show without it.
++  // failed read has answered: its pool accounts then read as unavailable, never as counting.
+   const unanswered =
+     AsyncResult.isInitial(pools) || (AsyncResult.isWaiting(pools) && counted === undefined);
++  // The whole read failed with nothing read before, so no pool's count is known.
++  const unread = AsyncResult.isFailure(pools) && counted === undefined;
+   // Token reads only for accounts the series named, in the pools that named them.
+   const named = useMemo(
+     () => ({
+@@ -98,17 +100,29 @@
  
    // Callers who may read no visible pool's series and have no counted tool call get no Requests
    // column at all, rather than a column of blank cells; it appears once a read answers.
 +  // A pool that failed to answer counts too: its accounts then say they couldn't be counted.
    const readable =
 -    (counted !== undefined && [...counted.values()].some((pool) => pool.readable)) ||
++    (unread && accountPools.size > 0) ||
 +    (counted !== undefined &&
 +      [...counted.values()].some((pool) => pool.readable || pool.failed === true)) ||
      (called !== undefined && called.size > 0);
@@ -69,7 +115,9 @@ diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps
 +  const unavailable = (accounts: readonly AccountSummary[]) =>
 +    !pending(accounts) &&
 +    accounts.some((account) =>
-+      (accountPools.get(account.id) ?? []).some((pool) => counted?.get(pool)?.failed === true),
++      (accountPools.get(account.id) ?? []).some(
++        (pool) => unread || counted?.get(pool)?.failed === true,
++      ),
 +    );
    const traffic = readable
      ? (accounts: readonly AccountSummary[]): AccountRowTraffic | undefined =>
@@ -78,7 +126,17 @@ diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps
            ? undefined
            : mergeTraffic(
                accounts.flatMap((account) => {
-@@ -146,5 +155,5 @@
+@@ -129,7 +143,8 @@
+     (account: AccountSummary) =>
+     (entry: Window): ReactNode => {
+       const start = windowStart(entry, Date.now());
+-      if (start === undefined || tokens === undefined) return undefined;
++      // Another pool's tokens alone would read as the account's whole use, as its count would.
++      if (start === undefined || tokens === undefined || unavailable([account])) return undefined;
+       const merged = mergeTokens(
+         (accountPools.get(account.id) ?? []).map((pool) => {
+           const value = tokens.get(windowTokensKey(pool, account.id, start));
+@@ -146,5 +161,5 @@
          />
        );
      };
@@ -135,7 +193,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-accounts-client.tsx b/
 diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/packages/ui/src/implementation/dashboard/account-traffic.tsx
 --- a/packages/ui/src/implementation/dashboard/account-traffic.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-traffic.tsx
-@@ -159,6 +159,25 @@
+@@ -159,6 +159,26 @@
    );
  }
  
@@ -148,11 +206,12 @@ diff --git a/packages/ui/src/implementation/dashboard/account-traffic.tsx b/pack
 +export function AccountRequestsUnavailable() {
 +  return (
 +    <span
-+      className="text-[13px] text-muted-foreground @max-[880px]/account-rows:text-[12px]"
++      // Said in words: a dash would read as the "no request history" mark beside it.
++      className="whitespace-nowrap text-[12px] text-muted-foreground"
 +      title={uncountedRequests}
 +      data-account-requests-unavailable
 +    >
-+      <span aria-hidden>—</span>
++      <span aria-hidden>Unavailable</span>
 +      <span className="sr-only">{uncountedRequests}</span>
 +    </span>
 +  );
