@@ -24,6 +24,7 @@ import {
   logQuarantine,
   pastBound,
   quarantineReportMs,
+  startingBoundMs,
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
@@ -405,6 +406,35 @@ export class RuntimeFleet {
     if (hold === 0) return 0;
     const rows = await this.deps.state.inspect();
     return rows.some((row) => row.phase === "ready" && this.serves(row)) ? 0 : hold;
+  }
+  /**
+   * The cold-start hold: while no cell is ready and one is starting, what is left of that start's
+   * bound. 0 once a ready cell can take the call, and below 0 when nothing can become ready.
+   */
+  async coldHoldMs() {
+    const rows = await this.deps.state.inspect();
+    if (rows.some((row) => row.phase === "ready" && this.serves(row))) return 0;
+    return this.startingHoldMs(rows);
+  }
+  /**
+   * While no cell is ready, a call waits for a cell that is starting instead of failing on the
+   * root's cap: what is left of that start's bound. Below 0 when nothing can become ready, a
+   * disabled fleet, no start in progress, or one past its bound. A growth this demand just asked for
+   * counts as starting until it reserves a row or is refused.
+   */
+  private startingHoldMs(rows: readonly FleetRow[]) {
+    if (this.deps.enabled?.() === false) return -1;
+    const now = this.deps.now();
+    const left = rows
+      .filter(
+        (row) =>
+          (row.phase === "reserved" || row.phase === "warming" || row.phase === "uncertain") &&
+          row.phaseAt !== undefined &&
+          !pastBound(row, now),
+      )
+      .map((row) => row.phaseAt! + startingBoundMs - now);
+    if (left.length) return Math.max(0, ...left);
+    return this.growing ? startingBoundMs : -1;
   }
   /**
    * A root call that the fallback admitted stops waiting at its send. One that failed before its

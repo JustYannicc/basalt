@@ -1,6 +1,6 @@
 import { readSuspect } from "./runtime-fleet/failure-record.ts";
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { SlotRefused, type SlotIdentity, type SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
@@ -16,7 +16,7 @@ import {
   retainRuntimeFailure,
   runtimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
-import { forwardRecoverably } from "./runtime-fleet/retry.ts";
+import { forwardRecoverably, markRootFallbackCap } from "./runtime-fleet/retry.ts";
 import { rootFallbackBurst, rootFallbackPerSecond } from "./runtime-fleet/root-fallback.ts";
 import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
 import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
@@ -34,6 +34,7 @@ function fixture(
     primaryAvailable?(): boolean;
     primaryHoldMs?(): number;
     recoverPrimary?(): Promise<void>;
+    enabled?(): boolean;
   } = {},
 ) {
   const state = new RuntimeFleetState(new SlotMemory(), maximum, () => 100);
@@ -702,6 +703,172 @@ test("calls released together when the root serves again are all served through 
   assert.ok(last < 10_000 + (5 / rootFallbackPerSecond + 2) * 1_000, `last served at ${last} ms`);
   assert.ok(last < restartStartBoundMs);
   await f.settle();
+});
+
+/**
+ * A cold fleet: no cell is ready and one is starting, ready at `readyAt` or failing at `failAt`.
+ * Calls arrive at their times; the root serves whatever its fallback cap admits.
+ */
+async function coldFleet(
+  context: TestContext,
+  arrivals: readonly number[],
+  options: {
+    readyAt?: number;
+    failAt?: number;
+    maximum?: number;
+    handoverAt?: number;
+    disableAt?: number;
+  } = {},
+) {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  let now = 0,
+    enabled = true,
+    handingOver = false;
+  const f = fixture(options.maximum ?? 4, 25, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    enabled: () => enabled,
+  });
+  const starting = f.target();
+  await f.state.reserve(starting);
+  await f.state.dispatch(starting);
+  const sleepers = new Set<{ at: number; wake(): void }>();
+  const timing = {
+    now: () => now,
+    pause: (milliseconds: number) =>
+      new Promise<void>((wake) => {
+        sleepers.add({ at: now + milliseconds, wake });
+      }),
+  };
+  const answers: { status: number; waited: number }[] = [];
+  const pending: Promise<void>[] = [];
+  const send = (at: number) =>
+    pending.push(
+      forwardRecoverably(
+        request(),
+        (current, dispatch) =>
+          f.fleet.forward(current, "pool", async () => new Response("legacy"), dispatch),
+        () => {},
+        async () => {},
+        {
+          timing,
+          rootHoldMs: () => f.fleet.primaryHoldMs(),
+          coldHoldMs: () => f.fleet.coldHoldMs(),
+          handover: () => handingOver,
+        },
+      ).then((response) => {
+        answers.push({ status: response.status, waited: now - at });
+        void response.body?.cancel().catch(() => {});
+      }),
+    );
+  const events = [options.readyAt, options.failAt, options.handoverAt, options.disableAt].filter(
+    (value): value is number => value !== undefined,
+  );
+  let next = 0;
+  for (let turn = 0; turn < 100_000; turn++) {
+    f.advance(200 + now);
+    if (options.readyAt !== undefined && now >= options.readyAt && !events.includes(-1)) {
+      events.push(-1);
+      await f.state.ready(starting);
+    }
+    if (options.failAt !== undefined && now >= options.failAt && !events.includes(-2)) {
+      events.push(-2);
+      const [row] = await f.state.inspect();
+      await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+    }
+    if (options.handoverAt !== undefined && now >= options.handoverAt) handingOver = true;
+    if (options.disableAt !== undefined && now >= options.disableAt) enabled = false;
+    while (next < arrivals.length && arrivals[next]! <= now) send(arrivals[next++]!);
+    for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+    if (next === arrivals.length && answers.length === arrivals.length) break;
+    const times = [
+      ...[...sleepers].map((sleeper) => sleeper.at),
+      ...(next < arrivals.length ? [arrivals[next]!] : []),
+      ...events.filter((at) => at > now),
+    ];
+    if (!times.length) break;
+    now = Math.max(now, Math.min(...times));
+    for (const sleeper of sleepers)
+      if (sleeper.at <= now) {
+        sleepers.delete(sleeper);
+        sleeper.wake();
+      }
+  }
+  await Promise.all(pending);
+  await f.settle();
+  return { answers, f };
+}
+
+test("a burst of 50 on a cold fleet is all served: the calls past the root's cap wait for the starting cell", async (context) => {
+  // The root's cap admits 10 at once and 1.2 a second, 34 by 20 s; the rest wait for the cell.
+  const { answers, f } = await coldFleet(context, Array(50).fill(0), { readyAt: 20_000 });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(50).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "no call reached the cell once it was ready");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 22_000);
+});
+
+test("a steady 3 a second on a cold fleet for 90 s is all served while the cell starts", async (context) => {
+  const arrivals = Array.from({ length: 270 }, (_, index) => Math.round((index * 1_000) / 3));
+  const { answers } = await coldFleet(context, arrivals, { readyAt: 70_000 });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(270).fill(200),
+  );
+});
+
+test("a cold start that fails releases the held calls to today's answer, inside the bound", async (context) => {
+  // At its maximum, the fleet can't start another cell, so nothing can become ready.
+  // The cap admits 46 by 30 s; the other 14 are still held when the start fails.
+  const { answers } = await coldFleet(context, Array(60).fill(0), { failAt: 30_000, maximum: 1 });
+  assert.equal(answers.filter((answer) => answer.status === 200).length >= 10, true);
+  const refused = answers.filter((answer) => answer.status !== 200);
+  assert.ok(refused.length > 0, "every call was served with nothing able to become ready");
+  for (const answer of refused) assert.ok(answer.waited < 32_000, `held ${answer.waited} ms`);
+});
+
+for (const [name, option] of [
+  ["a code handover", "handoverAt"],
+  ["a fleet disable", "disableAt"],
+] as const)
+  test(`${name} during a cold hold ends it at once, so nothing waits on held calls`, async (context) => {
+    // The cap admits 22 by 10 s; the other 38 are still held then.
+    const { answers } = await coldFleet(context, Array(60).fill(0), {
+      readyAt: 60_000,
+      [option]: 10_000,
+    });
+    const refused = answers.filter((answer) => answer.status !== 200);
+    assert.ok(refused.length > 0);
+    for (const answer of refused) assert.ok(answer.waited < 12_000, `held ${answer.waited} ms`);
+  });
+
+test("a call holds for cold starts at most one start bound from its first hold, past its own deadline too", async (context) => {
+  // Starts that keep failing and being replaced read a fresh bound each time; the call's own does not.
+  // Its own 200 s deadline runs on the mocked timers, moved with the pauses.
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  const timing = {
+    now: () => now,
+    pause: async (milliseconds: number) => {
+      now += milliseconds;
+      context.mock.timers.tick(milliseconds);
+    },
+  };
+  const response = await forwardRecoverably(
+    request(),
+    async () => markRootFallbackCap(new Response(null, { status: 503 }), 1_000),
+    () => {},
+    async () => {},
+    { timing, coldHoldMs: async () => restartStartBoundMs },
+  );
+  assert.equal(response.status, 503);
+  assert.ok(
+    now >= restartStartBoundMs - 1_000 && now <= restartStartBoundMs + 1_000,
+    `answered after ${now} ms`,
+  );
 });
 
 test("with production routing, a recovered root's calls are counted reservations again", async () => {
