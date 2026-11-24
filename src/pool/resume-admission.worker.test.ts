@@ -104,3 +104,50 @@ test("a resume with no call, or one its instance cut, is refused before admissio
   );
   assert.equal(admitted, 0);
 });
+
+const lines = (info: { mock: { calls: { arguments: unknown[] }[] } }, name: string) =>
+  info.mock.calls.filter((call) => call.arguments[0] === name).map((call) => call.arguments[1]);
+
+test("an admitted resume writes one line, with its offset and target", async (context) => {
+  const info = context.mock.method(console, "info", () => {});
+  const answer = await governedResume(input, deps().deps);
+  assert.equal(answer.status, 200);
+  await answer.text();
+  assert.deepEqual(lines(info, "POOL_STREAM_RESUME_ADMITTED"), [
+    { requestId, from: 10, target: "primary" },
+  ]);
+  assert.deepEqual(lines(info, "POOL_STREAM_RESUME_REFUSED"), []);
+});
+
+test("each refused resume writes one line with its closed reason", async (context) => {
+  const info = context.mock.method(console, "info", () => {});
+  let draining = false;
+  const cases = [{ ...input, call: undefined }, input, input, input];
+  await governedResume(cases[0], deps().deps);
+  await governedResume(cases[1], deps({ cut: () => true }).deps);
+  await governedResume(
+    cases[2],
+    deps({
+      admit: async () => {
+        throw new Error("revoked");
+      },
+    }).deps,
+  );
+  await governedResume(
+    cases[3],
+    deps({
+      draining: () => draining,
+      admit: async () => {
+        draining = true;
+        return { identity: { pool: "pool-a" } };
+      },
+    }).deps,
+  );
+  assert.deepEqual(
+    lines(info, "POOL_STREAM_RESUME_REFUSED").map(
+      (fields) => (fields as { reason: string }).reason,
+    ),
+    ["no_call", "cut", "refused", "handover"],
+  );
+  assert.deepEqual(lines(info, "POOL_STREAM_RESUME_ADMITTED"), []);
+});

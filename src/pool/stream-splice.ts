@@ -1,8 +1,10 @@
+import { boundedLog } from "./bounded-log.ts";
 /**
  * Resumable model streams, contract v1 (issue #1642): the container's front layer keeps a call's
  * raw answer for a while, and when the hop that streams it loses the hop below mid-body it
- * re-attaches from the bytes it delivered and splices the rest in. This part imports nothing, so
- * the router can splice too; the pool decodes a target strictly when it serves a resume.
+ * re-attaches from the bytes it delivered and splices the rest in. This part imports nothing of the
+ * pool's runtime, so the router can splice too; the pool decodes a target strictly when it serves a
+ * resume.
  */
 export const streamResumableHeader = "X-Basalt-Resumable";
 export const streamResumeHeader = "X-Basalt-Resume";
@@ -182,7 +184,7 @@ export function resumableAnswer(response: Response, deps: SpliceDeps): Response 
             // A cut with no byte delivered since the last resume, or one too many, is not resumed.
             if (++cuts > streamResumeCuts || delivered === resumedAt) throw error;
             const result = await reattach();
-            console.info("POOL_STREAM_RESUME", {
+            boundedLog("POOL_STREAM_RESUME", {
               requestId,
               outcome: result.outcome,
               attempts: result.attempt,

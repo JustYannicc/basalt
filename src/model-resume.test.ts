@@ -156,7 +156,8 @@ for (const [shape, frames] of Object.entries(shapes))
     assert.deepEqual(p.resumes, [{ requestId: p.requestId(), from: p.cut, attempt: 3 }]);
   });
 
-test("a stamp resumes only the call its router named", async () => {
+test("a stamp resumes only the call its router named", async (context) => {
+  const info = context.mock.method(console, "info", () => {});
   const requestId = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
   const other = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a";
   const stamp = await signResumeStamp(signingKey, { requestId, target, boot: "boot-a" });
@@ -194,6 +195,13 @@ test("a stamp resumes only the call its router named", async () => {
   assert.equal(resumed, 0);
   assert.equal(await ask(await named(requestId), { stamp, from: 10, ...callOf }), 200);
   assert.equal(resumed, 1);
+  // One closed line per refusal, naming the check that refused.
+  assert.deepEqual(
+    info.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_ROUTER_RESUME_REFUSED")
+      .map((call) => (call.arguments[1] as { reason: string }).reason),
+    ["stamp", "name", "name", "stamp", "input", "input"],
+  );
 });
 
 for (const [shape, frames] of Object.entries(shapes))
@@ -581,4 +589,90 @@ test("an oversized event whose type is readable and not a terminal is no reason 
   const cut = await cuttingPoolBytes(text, [afterBig], "/v1/responses");
   assert.equal(cut.text, text);
   assert.equal(cut.resumes.length, 1);
+});
+
+const resumeLines = (info: { mock: { calls: { arguments: unknown[] }[] } }) =>
+  info.mock.calls
+    .filter((call) => call.arguments[0] === "MODEL_FORWARD_RESUME")
+    .map((call) => call.arguments[1]);
+
+test("a resumed answer writes one line when it ends: served", async (context) => {
+  const info = context.mock.method(console, "info", () => {});
+  const p = await pool(shapes.messages, 2);
+  const response = await forwardModelCall(
+    new Request("https://app.example/v1/messages", { method: "POST", body: "{}" }),
+    p.env,
+    undefined,
+    noWait,
+  );
+  assert.equal(await response.text(), p.whole);
+  assert.deepEqual(resumeLines(info), [
+    {
+      requestId: p.requestId(),
+      endpoint: "/messages",
+      outcome: "served",
+      tries: 1,
+      resumes: 1,
+      from: p.cut,
+      attempt: 3,
+    },
+  ]);
+});
+
+for (const [status, outcome, tries] of [
+  [410, "gone", 1],
+  [503, "gave_up", 3],
+  // A 200 from another offset is no resume, as the splice judges it.
+  [200, "failed", 1],
+] as const)
+  test(`a resumed answer writes one line when it ends: ${outcome}`, async (context) => {
+    const info = context.mock.method(console, "info", () => {});
+    context.mock.method(console, "error", () => {});
+    const p = await pool(shapes.messages, 2);
+    const env = {
+      ...p.env,
+      POOL_SERVICE: {
+        fetch: async (request: Request) =>
+          new URL(request.url).pathname === routerResumePath
+            ? new Response(status === 200 ? "elsewhere" : null, {
+                status,
+                headers:
+                  status === 200
+                    ? { [streamResumeHeader]: streamResumeVersion, [streamResumeFromHeader]: "1" }
+                    : {},
+              })
+            : p.env.POOL_SERVICE.fetch(request),
+      },
+    };
+    const response = await forwardModelCall(
+      new Request("https://app.example/v1/messages", { method: "POST", body: "{}" }),
+      env,
+      undefined,
+      noWait,
+    );
+    await assert.rejects(response.text());
+    assert.deepEqual(resumeLines(info), [
+      {
+        requestId: p.requestId(),
+        endpoint: "/messages",
+        outcome,
+        tries,
+        resumes: 0,
+        from: p.cut,
+        attempt: 2 + tries,
+      },
+    ]);
+  });
+
+test("an answer that needed no resume writes no resume line", async (context) => {
+  const info = context.mock.method(console, "info", () => {});
+  const p = await pool(shapes.messages, 4, "end");
+  const response = await forwardModelCall(
+    new Request("https://app.example/v1/messages", { method: "POST", body: "{}" }),
+    p.env,
+    undefined,
+    noWait,
+  );
+  assert.equal(await response.text(), p.whole);
+  assert.deepEqual(resumeLines(info), []);
 });
