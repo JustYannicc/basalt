@@ -46,10 +46,10 @@ index 00000000..f28b1cf9
 +	}
 +}
 diff --git a/internal/api/middleware/request_logging.go b/internal/api/middleware/request_logging.go
-index a5c51402..df677504 100644
+index 793a3959..3b470894 100644
 --- a/internal/api/middleware/request_logging.go
 +++ b/internal/api/middleware/request_logging.go
-@@ -16,6 +16,7 @@ import (
+@@ -17,6 +17,7 @@ import (
  
  	"github.com/gin-gonic/gin"
  	"github.com/klauspost/compress/zstd"
@@ -57,7 +57,7 @@ index a5c51402..df677504 100644
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
  	log "github.com/sirupsen/logrus"
-@@ -34,7 +35,7 @@ const (
+@@ -35,7 +36,7 @@ const (
  // large and unknown-size bodies are spooled to disk and retained only for error logs.
  func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
  	return func(c *gin.Context) {
@@ -67,10 +67,10 @@ index a5c51402..df677504 100644
  			return
  		}
 diff --git a/internal/api/server.go b/internal/api/server.go
-index 32a7c567..ddf04915 100644
+index dab13afa..8eea9650 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
-@@ -122,6 +122,7 @@ type Server struct {
+@@ -133,6 +133,7 @@ type Server struct {
  func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdkaccess.Manager, configFilePath string, opts ...ServerOption) *Server {
  	if cfg != nil {
  		cfg = cfg.CloneForRuntime()
@@ -140,10 +140,10 @@ index 00000000..60f4e3da
 +	}
 +}
 diff --git a/internal/api/server_reload.go b/internal/api/server_reload.go
-index 312182c0..15b89178 100644
+index 273a5842..88f16d39 100644
 --- a/internal/api/server_reload.go
 +++ b/internal/api/server_reload.go
-@@ -56,6 +56,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
+@@ -62,6 +62,7 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
  		return false
  	}
  	cfg = cfg.CloneForRuntime()
@@ -152,24 +152,19 @@ index 312182c0..15b89178 100644
  	var oldCfg *config.Config
  	s.cfgMu.RLock()
 diff --git a/internal/config/config_load.go b/internal/config/config_load.go
-index baca01e9..71bae52c 100644
+index 8058b6c2..927c34a6 100644
 --- a/internal/config/config_load.go
 +++ b/internal/config/config_load.go
-@@ -155,6 +155,14 @@ func managementSecretKeyPath(data []byte) []string {
- // If optional is true and the file is missing, it returns an empty Config.
- // If optional is true and the file is empty or invalid, it returns an empty Config.
+@@ -46,6 +46,9 @@ func PrepareConfigFileForUploadWithOptional(configFile string, optional bool) ([
+ // valid read-only config can use a process-local generated server identity.
  func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
-+	cfg, err := loadConfigOptional(configFile, optional)
+ 	cfg, _, err := loadConfigFile(configFile, optional, false)
 +	if cfg != nil {
 +		cfg.ApplyMetadataOnlyDiagnostics()
 +	}
-+	return cfg, err
-+}
-+
-+func loadConfigOptional(configFile string, optional bool) (*Config, error) {
- 	// Read the entire configuration file into memory.
- 	data, err := os.ReadFile(configFile)
- 	if err != nil {
+ 	return cfg, err
+ }
+ 
 diff --git a/internal/config/metadata_only.go b/internal/config/metadata_only.go
 new file mode 100644
 index 00000000..5802fb06
@@ -250,17 +245,25 @@ index 00000000..3604c46a
 +	}
 +}
 diff --git a/internal/config/parse.go b/internal/config/parse.go
-index c3442be1..6ae80168 100644
+index 9f04f4cd..c75d8cd4 100644
 --- a/internal/config/parse.go
 +++ b/internal/config/parse.go
-@@ -125,6 +125,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
+@@ -47,6 +47,7 @@ func standbyConfig() *Config {
+ 	cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
+ 	cfg.NormalizePluginsConfig()
+ 	cfg.NormalizeClaudeConfig()
++	cfg.ApplyMetadataOnlyDiagnostics()
+ 	return cfg
+ }
+ 
+@@ -176,6 +177,7 @@ func (cfg *Config) sanitizeStartupConfig() {
  	cfg.SanitizeOAuthSettings()
  	cfg.SanitizeOAuthRequestScopedErrors()
  	cfg.SanitizePayloadRules()
 +	cfg.ApplyMetadataOnlyDiagnostics()
  
- 	return &cfg, nil
  }
+ 
 diff --git a/internal/diagnostics/metadata_only.go b/internal/diagnostics/metadata_only.go
 new file mode 100644
 index 00000000..44e006db
@@ -439,10 +442,10 @@ index 00000000..9f1640a0
 +	}
 +}
 diff --git a/internal/logging/home_app_log_forwarder.go b/internal/logging/home_app_log_forwarder.go
-index 32cd5a59..a59fd16a 100644
+index 010d9663..afd66a4b 100644
 --- a/internal/logging/home_app_log_forwarder.go
 +++ b/internal/logging/home_app_log_forwarder.go
-@@ -7,8 +7,7 @@ import (
+@@ -6,7 +6,6 @@ import (
  	"strings"
  	"sync"
  	"sync/atomic"
@@ -450,7 +453,6 @@ index 32cd5a59..a59fd16a 100644
  
  	"github.com/MoeForge/moego/json"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/home"
- 	log "github.com/sirupsen/logrus"
 @@ -186,18 +185,11 @@ func (f *HomeAppLogForwarder) Fire(entry *log.Entry) error {
  	if client == nil || !client.HeartbeatOK() {
  		return nil
@@ -733,11 +735,10 @@ index 00000000..e4dfca7c
 +	})
 +}
 diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
-index c922a73c..e53b87ef 100644
+index 7e5d71a5..f0306d33 100644
 --- a/internal/redisqueue/plugin.go
 +++ b/internal/redisqueue/plugin.go
-@@ -8,7 +8,8 @@ import (
- 	"time"
+@@ -8,6 +8,7 @@ import (
  
  	"github.com/MoeForge/moego/json"
  	"github.com/google/uuid"
@@ -745,8 +746,8 @@ index c922a73c..e53b87ef 100644
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	coresession "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/session"
  	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
-@@ -26,6 +27,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
- 	if !Enabled() || !UsageStatisticsEnabled() {
+@@ -31,6 +32,9 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 	if !Enabled() || (!UsageStatisticsEnabled() && (selectionID == "" || record.HomeSelection == nil)) {
  		return
  	}
 +	if diagnostics.MetadataOnlyEnabled() {
@@ -755,18 +756,28 @@ index c922a73c..e53b87ef 100644
  
  	timestamp := record.RequestedAt
  	if timestamp.IsZero() {
-@@ -53,6 +57,10 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+@@ -58,6 +62,12 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
  		authType = "unknown"
  	}
  	apiKey := strings.TrimSpace(record.APIKey)
 +	apiKeyFingerprint := ""
++	queuedAuthID := record.AuthID
 +	if diagnostics.MetadataOnlyEnabled() {
 +		apiKeyFingerprint = apiKey
++		queuedAuthID = ""
 +	}
  	accessProvider := strings.TrimSpace(record.AccessProvider)
  	if accessProvider == "" {
  		accessProvider = strings.TrimSpace(coreusage.AccessProviderFromContext(ctx))
-@@ -171,6 +179,7 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+@@ -173,13 +183,14 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+ 		TokenBreakdown:        usageDetail.TokenBreakdown,
+ 		Provider:              provider,
+ 		BaseURL:               record.BaseURL,
+-		AuthID:                record.AuthID,
++		AuthID:                queuedAuthID,
+ 		ExecutorType:          executorType,
+ 		Model:                 modelName,
+ 		Alias:                 aliasName,
  		Endpoint:              resolveEndpoint(ctx),
  		AuthType:              authType,
  		APIKey:                apiKey,
@@ -774,7 +785,7 @@ index c922a73c..e53b87ef 100644
  		IsNativeKey:           isNativeKey,
  		AccessProvider:        accessProvider,
  		RequestID:             requestID,
-@@ -215,6 +224,7 @@ type queuedUsageDetail struct {
+@@ -228,6 +239,7 @@ type queuedUsageDetail struct {
  	Alias                 string                      `json:"alias"`
  	Endpoint              string                      `json:"endpoint"`
  	AuthType              string                      `json:"auth_type"`
@@ -782,7 +793,7 @@ index c922a73c..e53b87ef 100644
  	APIKey                string                      `json:"api_key"`
  	IsNativeKey           bool                        `json:"is_native_key"`
  	AccessProvider        string                      `json:"access_provider,omitempty"`
-@@ -293,6 +303,7 @@ type tokenStats struct {
+@@ -310,6 +322,7 @@ type tokenStats struct {
  type failDetail struct {
  	StatusCode int    `json:"status_code"`
  	Body       string `json:"body"`
@@ -790,7 +801,7 @@ index c922a73c..e53b87ef 100644
  	Code       string `json:"code,omitempty"`
  }
  
-@@ -300,6 +311,7 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
+@@ -317,6 +330,7 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
  	fail := failDetail{
  		StatusCode: record.Fail.StatusCode,
  		Body:       strings.TrimSpace(record.Fail.Body),
@@ -799,16 +810,18 @@ index c922a73c..e53b87ef 100644
  	}
  	if !failed {
 diff --git a/internal/runtime/executor/helps/logging_helpers.go b/internal/runtime/executor/helps/logging_helpers.go
-index cdf1264d..a1504182 100644
+index b6b73283..33508d0b 100644
 --- a/internal/runtime/executor/helps/logging_helpers.go
 +++ b/internal/runtime/executor/helps/logging_helpers.go
-@@ -16,4 +16,5 @@ import (
+@@ -15,6 +15,7 @@ import (
+ 	"github.com/MoeForge/moego/ojson"
+ 	"github.com/gin-gonic/gin"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
  	log "github.com/sirupsen/logrus"
-@@ -58,11 +59,11 @@ type upstreamAttempt struct {
+@@ -61,12 +62,12 @@ type upstreamAttempt struct {
  }
  
  func requestLogCaptureEnabled(cfg *config.Config) bool {
@@ -822,9 +835,10 @@ index cdf1264d..a1504182 100644
 +	if cfg == nil || cfg.CommercialMode || diagnostics.MetadataOnlyEnabled() {
  		return
  	}
+ 	// Check the immutable policy and request-scoped capture before accessing the pooled Gin context.
 diff --git a/internal/runtime/executor/helps/metadata_only_test.go b/internal/runtime/executor/helps/metadata_only_test.go
 new file mode 100644
-index 00000000..91ebc25e
+index 00000000..3fb7a7e9
 --- /dev/null
 +++ b/internal/runtime/executor/helps/metadata_only_test.go
 @@ -0,0 +1,193 @@
@@ -1022,14 +1036,18 @@ index 00000000..91ebc25e
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index a037cba6..13a9dd67 100644
+index 5c82cee0..99aac855 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
-@@ -23,2 +23,3 @@ import (
+@@ -20,6 +20,7 @@ import (
+ 	"github.com/google/uuid"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
+ 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-@@ -91,6 +92,9 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
+@@ -94,6 +95,9 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
  }
  
  func NewUsageReporter(ctx context.Context, provider, model string, auth *cliproxyauth.Auth) *UsageReporter {
@@ -1039,7 +1057,7 @@ index a037cba6..13a9dd67 100644
  	apiKey := APIKeyFromContext(ctx)
  	accessProvider := AccessProviderFromContext(ctx)
  	isNativeKey := false
-@@ -115,19 +119,38 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -118,19 +122,38 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
  	}
  	baseURL := ""
  	if auth != nil {
@@ -1080,7 +1098,7 @@ index a037cba6..13a9dd67 100644
  	reporter := &UsageReporter{
  		requestID:       uuid.NewString(),
  		traceID:         traceID,
-@@ -142,10 +165,10 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -146,10 +169,10 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
  		isNativeKey:     isNativeKey,
  		sessionID:       sessionID,
  		parentSessionID: parentSessionID,
@@ -1095,7 +1113,9 @@ index a037cba6..13a9dd67 100644
  		generate:        usage.GenerateFromContext(ctx),
  		stream:          usage.StreamFromContext(ctx),
  	}
-@@ -156,5 +179,21 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+@@ -159,6 +182,15 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+ 		reporter.accessTokenHash = authAccessTokenSHA256(auth)
+ 		reporter.requestScopedRules = cliproxyauth.ResolveRequestScopedErrorRules(auth, cliproxyauth.RequestScopedErrorConfigFromContext(ctx))
  	}
 +	if !metadataOnly {
 +		reporter.source = resolveUsageSource(auth, apiKey)
@@ -1108,16 +1128,41 @@ index a037cba6..13a9dd67 100644
 +	}
  	return reporter
  }
-+
+ 
+@@ -166,10 +198,21 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
+ // preserving the caller alias. Call only before publishing or starting a stream.
+ func (r *UsageReporter) SetAttemptModel(model string) {
+ 	if r != nil {
++		// An unregistered attempt model could carry client text into metadata-only usage.
++		if diagnostics.MetadataOnlyEnabled() && !usage.RegisteredModel(r.provider, r.authID, model) {
++			return
++		}
+ 		r.model = model
+ 	}
+ }
+ 
 +func usageTokenFingerprint(metadataOnly bool) func(*cliproxyauth.Auth) string {
 +	if metadataOnly {
 +		return func(*cliproxyauth.Auth) string { return "" }
 +	}
 +	return authAccessTokenSHA256
 +}
- 
++
  // SetStream records whether the request was executed in streaming mode.
-@@ -200,4 +239,8 @@
+ func (r *UsageReporter) SetStream(stream bool) {
+ 	if r == nil {
+@@ -207,7 +250,7 @@ func (r *UsageReporter) ApplyPluginExecutorAttribution(executorPluginID string,
+ 	if v := strings.TrimSpace(attr.AuthType); v != "" && r.authType == "" {
+ 		r.authType = v
+ 	}
+-	if v := strings.TrimSpace(attr.Source); v != "" {
++	if v := strings.TrimSpace(attr.Source); v != "" && !diagnostics.MetadataOnlyEnabled() {
+ 		r.source = v
+ 	}
+ }
+@@ -245,6 +288,10 @@ func isHierarchyParent(primary, parent string) bool {
+ 
+ // UpdateAccessTokenFingerprint records the token version actually used upstream.
  func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
 +	// Keep the upstream refresh block intact across source versions.
 +	authAccessTokenSHA256 := func(auth *cliproxyauth.Auth) string {
@@ -1126,14 +1171,16 @@ index a037cba6..13a9dd67 100644
  	if r == nil {
  		return
  	}
-@@ -209,5 +252,5 @@
+@@ -270,7 +317,7 @@ func (r *UsageReporter) requestScopedErrorRules() []internalconfig.RequestScoped
+ }
+ 
  func (r *UsageReporter) accessTokenFingerprint() string {
 -	if r == nil {
 +	if r == nil || diagnostics.MetadataOnlyEnabled() {
  		return ""
  	}
  	r.authMu.RLock()
-@@ -218,7 +261,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
+@@ -281,7 +328,7 @@ func (r *UsageReporter) accessTokenFingerprint() string {
  // ObserveResponseModel stores the model reported by an upstream response or event and
  // ignores payloads without one; the substitution warning is emitted at publish time.
  func (r *UsageReporter) ObserveResponseModel(payload []byte) {
@@ -1142,7 +1189,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	provider := ""
-@@ -242,7 +285,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
+@@ -305,7 +352,7 @@ func (r *UsageReporter) ObserveResponseModel(payload []byte) {
  
  // SetResponseModel sets the reported model directly if valid and not already marked final.
  func (r *UsageReporter) SetResponseModel(model string) {
@@ -1151,7 +1198,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	model = strings.TrimSpace(model)
-@@ -259,7 +302,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
+@@ -322,7 +369,7 @@ func (r *UsageReporter) SetResponseModel(model string) {
  // Model substitution detection compares the response against this upstream model,
  // while usage accounting preserves the client's requested model.
  func (r *UsageReporter) SetUpstreamModel(model string) {
@@ -1160,7 +1207,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	r.upstreamModelMu.Lock()
-@@ -285,7 +328,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
+@@ -348,7 +395,7 @@ func (r *UsageReporter) IsResponseModelFinal() bool {
  // warnModelSubstitution warns about a silent upstream model swap, and labels the
  // credential by index only, never by account.
  func (r *UsageReporter) warnModelSubstitution(ctx context.Context) {
@@ -1169,7 +1216,7 @@ index a037cba6..13a9dd67 100644
  		return
  	}
  	served := r.ResponseModel()
-@@ -356,6 +399,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
+@@ -428,6 +475,11 @@ func (r *UsageReporter) SetTranslatedRequestMetadata(payload []byte, format stri
  	if r == nil {
  		return
  	}
@@ -1181,7 +1228,7 @@ index a037cba6..13a9dd67 100644
  	r.reasoning = thinking.ExtractTranslatedReasoningEffort(payload, format)
  	r.effectiveServiceTier = extractEffectiveServiceTier(payload)
  }
-@@ -610,7 +658,8 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
+@@ -689,7 +741,8 @@ func (r *UsageReporter) publishAttemptRecord(ctx context.Context, record usage.R
  
  func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
  	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
@@ -1191,7 +1238,7 @@ index a037cba6..13a9dd67 100644
  		ctx = usage.WithCapturedIdentity(ctx, r.apiKey, r.accessProvider, r.isNativeKey)
  	}
  	usage.PublishRecord(ctx, record)
-@@ -717,6 +766,9 @@ func failFromErrors(errs ...error) usage.Failure {
+@@ -805,6 +858,9 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
  		if err == nil {
  			continue
  		}
@@ -1201,7 +1248,7 @@ index a037cba6..13a9dd67 100644
  		body := strings.TrimSpace(err.Error())
  		type responseBodyProvider interface {
  			ResponseBody() []byte
-@@ -1007,6 +1059,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
+@@ -1093,6 +1149,11 @@ func (b *StreamUsageBuffer) Observe(detail usage.Detail, ok bool) {
  	if b == nil || !ok {
  		return
  	}
@@ -1213,7 +1260,7 @@ index a037cba6..13a9dd67 100644
  	responseServiceTier := strings.TrimSpace(detail.ResponseServiceTier)
  	if responseServiceTier == "" || hasNonZeroTokenUsage(detail) || hasStructuredUsageDetail(detail) {
  		preservedTier := b.detail.ResponseServiceTier
-@@ -1208,7 +1265,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
+@@ -1296,7 +1357,7 @@ func (b *StreamUsageBuffer) ObserveOpenAIStream(line []byte) {
  	hasTierCandidate := needTier && bytes.Contains(payload, openAIStreamServiceTierMarker)
  	hasToolCallsCandidate := bytes.Contains(payload, openAIStreamToolCallsMarker)
  	hasImageCompletedCandidate := bytes.Contains(payload, openAIStreamImageDoneMarker)
@@ -1222,18 +1269,22 @@ index a037cba6..13a9dd67 100644
  		if model, _ := extractGenericResponseModelEvent(payload); model != "" {
  			b.responseModel = model
  		}
-@@ -1354,3 +1411,5 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+@@ -1440,7 +1501,9 @@ func (b *StreamUsageBuffer) ObserveClaudeStream(line []byte) {
+ 	payload := jsonPayload(line)
+ 	if len(payload) > 0 {
  		if model, _ := extractClaudeResponseModelEvent(payload); model != "" {
 -			b.responseModel = model
 +			if !diagnostics.MetadataOnlyEnabled() {
 +				b.responseModel = model
 +			}
  		}
+ 	}
+ 	if len(payload) > 0 {
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index b790b4f4..26ef4017 100644
+index cfe2a461..5ca52c3c 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
-@@ -318,7 +318,15 @@ func homeExecutionAttemptContext(ctx context.Context, selection *HomeDispatchSel
+@@ -517,7 +517,15 @@ func homeExecutionAttemptContext(ctx context.Context, selection *HomeDispatchSel
  	if selection == nil {
  		return nil, func() {}, fmt.Errorf("Home dispatch selection is nil")
  	}
@@ -1251,7 +1302,7 @@ index b790b4f4..26ef4017 100644
  
  func wrapHomeStream(ctx context.Context, result *cliproxyexecutor.StreamResult, selection *HomeDispatchSelection, releaseAttempt func()) *cliproxyexecutor.StreamResult {
 diff --git a/sdk/cliproxy/auth/home_execution_paths_test.go b/sdk/cliproxy/auth/home_execution_paths_test.go
-index e45b9b09..a09c50bc 100644
+index 80a39133..0f1f5491 100644
 --- a/sdk/cliproxy/auth/home_execution_paths_test.go
 +++ b/sdk/cliproxy/auth/home_execution_paths_test.go
 @@ -1522,3 +1522,39 @@ func TestHomePrepareFailureResultPreservesRequestMetadata(t *testing.T) {
@@ -1295,7 +1346,7 @@ index e45b9b09..a09c50bc 100644
 +	}
 +}
 diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
-index 686d78a4..67609b29 100644
+index dd1f84ec..04be8d7a 100644
 --- a/sdk/cliproxy/usage/manager.go
 +++ b/sdk/cliproxy/usage/manager.go
 @@ -10,6 +10,7 @@ import (
@@ -1306,7 +1357,7 @@ index 686d78a4..67609b29 100644
  	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
  	log "github.com/sirupsen/logrus"
  )
-@@ -88,6 +89,7 @@ const FailureStreamTruncatedCode = "stream_truncated"
+@@ -98,6 +99,7 @@ const FailureForceCooldownCode = "force_cooldown"
  type Failure struct {
  	StatusCode int
  	Body       string
@@ -1314,7 +1365,7 @@ index 686d78a4..67609b29 100644
  	// Code carries structured failure classification (e.g. FailureStreamTruncatedCode)
  	// across usage sinks so downstream schedulers do not treat locally
  	// synthesized statuses as received upstream refusals.
-@@ -754,6 +756,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
+@@ -769,6 +771,9 @@ func (m *Manager) Publish(ctx context.Context, record Record) {
  		}
  	}
  	ctx = WithCapturedIdentity(ctx, record.APIKey, record.AccessProvider, record.IsNativeKey)
