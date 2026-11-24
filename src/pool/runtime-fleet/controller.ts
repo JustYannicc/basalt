@@ -167,6 +167,8 @@ function growthRefusal(error: unknown) {
 export class RuntimeFleet {
   private deps: Dependencies;
   private growing?: Promise<void>;
+  // When the growth under way began: a cold hold waits for it one start bound at most.
+  private growingSince = 0;
   private atCapacity = false;
   private primaryFailed = false;
   private primaryPlace: DistanceClass = "unknown";
@@ -237,6 +239,7 @@ export class RuntimeFleet {
     this.growthAlarm = undefined;
     if (!this.growing) {
       this.nextGrowthCheck = this.deps.now() + 100;
+      this.growingSince = this.deps.now();
       this.growing = this.addDemandedRuntime().finally(() => {
         this.growing = undefined;
         this.deps.changed?.();
@@ -418,9 +421,9 @@ export class RuntimeFleet {
   }
   /**
    * While no cell is ready, a call waits for a cell that is starting instead of failing on the
-   * root's cap: what is left of that start's bound. Below 0 when nothing can become ready, a
-   * disabled fleet, no start in progress, or one past its bound. A growth this demand just asked for
-   * counts as starting until it reserves a row or is refused.
+   * root's cap: what is left of that start's bound. A start that failed (uncertain) or ran past
+   * its bound doesn't count, nor does a growth under way for more than one start bound, so below 0
+   * when nothing can become ready: a disabled fleet, no start that can still finish.
    */
   private startingHoldMs(rows: readonly FleetRow[]) {
     if (this.deps.enabled?.() === false) return -1;
@@ -428,13 +431,14 @@ export class RuntimeFleet {
     const left = rows
       .filter(
         (row) =>
-          (row.phase === "reserved" || row.phase === "warming" || row.phase === "uncertain") &&
+          (row.phase === "reserved" || row.phase === "warming") &&
           row.phaseAt !== undefined &&
           !pastBound(row, now),
       )
       .map((row) => row.phaseAt! + startingBoundMs - now);
     if (left.length) return Math.max(0, ...left);
-    return this.growing ? startingBoundMs : -1;
+    const growth = this.growing ? this.growingSince + startingBoundMs - now : 0;
+    return growth > 0 ? growth : -1;
   }
   /**
    * A root call that the fallback admitted stops waiting at its send. One that failed before its

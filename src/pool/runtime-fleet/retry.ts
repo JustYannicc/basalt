@@ -69,12 +69,14 @@ export interface RetryTiming {
 interface RetryOptions {
   timing?: RetryTiming;
   /**
-   * What is left of the hold in force: the root's recovery in progress or a cell starting while
-   * none is ready. 0 when a ready cell can take the call or nothing holds, and below 0 when nothing
-   * can become ready, so a held call has today's answer at once. While it lasts, the call waits.
+   * What is left of the bound of the root's recovery in progress; 0 when none is, or when a ready
+   * cell can take the call. While it lasts, the call waits for that restart instead of failing.
    */
   rootHoldMs?(): Promise<number>;
-  /** The same for a cold fleet: a cell starting while none is ready (`RuntimeFleet.coldHoldMs`). */
+  /**
+   * The same for a cold fleet, a cell starting while none is ready (`RuntimeFleet.coldHoldMs`), and
+   * below 0 when nothing can become ready, so a call it held has today's answer at once.
+   */
   coldHoldMs?(): Promise<number>;
   /** Whether a code handover drains: nothing waits then, since a waiting call would hold it. */
   handover?(): boolean;
@@ -178,8 +180,10 @@ export async function forwardRecoverably(
   // A call holds at most one start bound in all, whatever it waits for and however often.
   let firstHeldAt: number | undefined;
   let held = false;
-  // Whether a cold start is what holds the call, so its stand-down ends the cap waits too.
+  // Whether a cold start is what holds the call, so its stand-down ends the cap waits too; the cap
+  // waits a root recovery gave the call stay until that recovery's own end.
   let heldCold = false;
+  let rootHoldEndsAt = -Infinity;
   let kicked = false;
   // Recovery is advisory. It declines to restart a runtime that is still running, and may fail for
   // other reasons; the request's own next admission re-checks selection, fence, policy and health.
@@ -209,6 +213,8 @@ export async function forwardRecoverably(
           : firstHeldAt === undefined
             ? read
             : Math.max(0, Math.min(read, firstHeldAt + restartStartBoundMs - timing.now()));
+      if (root > 0)
+        rootHoldEndsAt = Math.max(rootHoldEndsAt, timing.now() + Math.min(root, holdMs));
       if (holdMs > 0) {
         held = true;
         heldCold = cold > root;
@@ -220,7 +226,7 @@ export async function forwardRecoverably(
         // on the call's own history instead, so the drain is never longer than it was without holds.
         // When nothing can become ready for a cold start, the call has today's answer now, cap waits
         // included.
-        if (heldCold && cold < 0) holdEndsAt = -Infinity;
+        if (heldCold && cold < 0) holdEndsAt = rootHoldEndsAt;
         else if (timing.now() < holdEndsAt - paceCapMs && !handover?.()) {
           waitingSince = undefined;
           refusals = failures = 0;

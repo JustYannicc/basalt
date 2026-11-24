@@ -715,6 +715,8 @@ async function coldFleet(
   options: {
     readyAt?: number;
     failAt?: number;
+    // A start that throws turns the row uncertain; one past its bound is quarantined instead.
+    failInto?: "uncertain" | "quarantine";
     maximum?: number;
     handoverAt?: number;
     disableAt?: number;
@@ -775,7 +777,8 @@ async function coldFleet(
     if (options.failAt !== undefined && now >= options.failAt && !events.includes(-2)) {
       events.push(-2);
       const [row] = await f.state.inspect();
-      await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+      if (options.failInto === "uncertain") await f.state.uncertain(starting);
+      else await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
     }
     if (options.handoverAt !== undefined && now >= options.handoverAt) handingOver = true;
     if (options.disableAt !== undefined && now >= options.disableAt) enabled = false;
@@ -828,6 +831,118 @@ test("a cold start that fails releases the held calls to today's answer, inside 
   const refused = answers.filter((answer) => answer.status !== 200);
   assert.ok(refused.length > 0, "every call was served with nothing able to become ready");
   for (const answer of refused) assert.ok(answer.waited < 32_000, `held ${answer.waited} ms`);
+});
+
+test("a cold start that fails into uncertain releases the held calls at once: a failed start re-arms no bound", async (context) => {
+  const { answers } = await coldFleet(context, Array(60).fill(0), {
+    failAt: 30_000,
+    failInto: "uncertain",
+    maximum: 1,
+  });
+  const refused = answers.filter((answer) => answer.status !== 200);
+  assert.ok(refused.length > 0, "every call was served with nothing able to become ready");
+  for (const answer of refused) assert.ok(answer.waited < 32_000, `held ${answer.waited} ms`);
+});
+
+test("a growth whose start hangs past its bound holds nothing more", async (context) => {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  const f = fixture(4, 25, { ...fleetRouting, primaryAvailable: () => true });
+  // The first target growth draws, with a start that never returns.
+  const first = {
+    format: "pool-runtime-slot-v1" as const,
+    controllerId: "controller",
+    slotId: "slot-1",
+    applicationId: "blue",
+    applicationVersion: "1",
+    instanceId: "instance-1",
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    imageInput: "image",
+    homePeerOrdinal: 1,
+    bootId: "boot-1",
+  };
+  f.cell(first).start = () => new Promise<SlotIdentity>(() => {});
+  // Enough load for growth to want one cell.
+  f.pressure(25);
+  const response = await f.fleet.forward(
+    request(),
+    "pool",
+    async () => new Response("legacy"),
+    () => {},
+  );
+  void response.body?.cancel().catch(() => {});
+  for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+  assert.ok((await f.fleet.coldHoldMs()) > 0, "a start under way held nothing");
+  f.advance(200 + restartStartBoundMs + 10_000);
+  assert.ok(
+    (await f.fleet.coldHoldMs()) < 0,
+    "a hanging growth still holds calls past one start bound",
+  );
+});
+
+test("calls a root recovery released keep its cap waits when a cold start then fails", async (context) => {
+  context.mock.method(console, "error", () => {});
+  let now = 0,
+    serving = false;
+  const f = fixture(1, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => (serving ? 0 : restartStartBoundMs - now),
+  });
+  const starting = f.target();
+  await f.state.reserve(starting);
+  await f.state.dispatch(starting);
+  const sleepers = new Set<{ at: number; wake(): void }>();
+  const timing = {
+    now: () => now,
+    pause: (milliseconds: number) =>
+      new Promise<void>((wake) => {
+        sleepers.add({ at: now + milliseconds, wake });
+      }),
+  };
+  const root = async () => {
+    if (!serving) throw rootRestarting();
+    return new Response("legacy");
+  };
+  const answers: number[] = [];
+  const calls = Array.from({ length: 40 }, () =>
+    forwardRecoverably(
+      request(),
+      (current, dispatch) => f.fleet.forward(current, "pool", root, dispatch),
+      () => {},
+      async () => {},
+      {
+        timing,
+        rootHoldMs: () => f.fleet.primaryHoldMs(),
+        coldHoldMs: () => f.fleet.coldHoldMs(),
+      },
+    ).then(async (response) => {
+      answers.push(response.status);
+      await response.text();
+    }),
+  );
+  let failed = false;
+  for (let turn = 0; answers.length < calls.length && turn < 10_000; turn++) {
+    for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+    if (answers.length === calls.length || !sleepers.size) break;
+    now = Math.min(...[...sleepers].map((sleeper) => sleeper.at));
+    // The root serves again at 10 s; the cold start fails at 20 s, with no room for another.
+    serving = now >= 10_000;
+    if (!failed && now >= 20_000) {
+      failed = true;
+      const [row] = await f.state.inspect();
+      await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+    }
+    f.advance(200 + now);
+    for (const sleeper of sleepers)
+      if (sleeper.at <= now) {
+        sleepers.delete(sleeper);
+        sleeper.wake();
+      }
+  }
+  await Promise.all(calls);
+  assert.deepEqual(answers, Array(calls.length).fill(200));
+  await f.settle();
 });
 
 for (const [name, option] of [
