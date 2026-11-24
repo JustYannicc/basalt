@@ -43,10 +43,10 @@ type Prices = (
   targets: readonly { provider: string; model: string }[],
 ) => Promise<OverviewPriceTable>;
 
-/** A bounded manager summary owns one snapshot; legacy overview and series pagination are not called. */
 /** Three missed capture runs: a capture further behind than this is behind, not merely lagging. */
 export const summaryCaptureLagMs = 15 * 60_000;
 
+/** A bounded manager summary owns one snapshot; legacy overview and series pagination are not called. */
 export async function poolUsageSummary(
   db: HistoryDatabase,
   raw: unknown,
