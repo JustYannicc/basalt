@@ -47,12 +47,6 @@ export const RuntimeFleetOperationPayload = Schema.Union([
     operationId: OperationId,
     identity: SlotIdentity,
   }),
-  // The operator's check before it, which overrides nothing (`RuntimeFleet.retireCheck`).
-  Schema.Struct({
-    controllerCode: ControllerCode,
-    action: Schema.Literal("fleet-retire-check"),
-    key: Schema.String.check(Schema.isPattern(/^[0-9a-f]{8,24}$/u)),
-  }),
   // A named draining row's retirement over a count that stood still (`RuntimeFleet.retireRow`).
   Schema.Struct({
     controllerCode: ControllerCode,
@@ -79,6 +73,13 @@ export const RuntimeHandoffCommand = Schema.Union([
     target: ProviderObservationTarget,
   }),
   ...RuntimeFleetCommand.members,
+  // The operator's check before fleet-retire, a read like inspect that changes nothing, so it
+  // carries no operation (`RuntimeFleet.retireCheck`).
+  Schema.Struct({
+    ...fields,
+    action: Schema.Literal("fleet-retire-check"),
+    key: Schema.String.check(Schema.isPattern(/^[0-9a-f]{8,24}$/u)),
+  }),
   Schema.Struct({ ...fields, action: Schema.Literal("startup-abort"), intent: StartupAbortIntent }),
   Schema.Struct({
     ...fields,
