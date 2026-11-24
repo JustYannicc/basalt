@@ -17,18 +17,59 @@ const maxIncompleteHours = 800;
 const iso = (value: string) =>
   `to_char((${value}) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 
+/** At most this many ranges in one row check: the closest ones merge, which only checks more hours. */
+export const maxRowCheckRanges = 32;
+const rowCheckMark = "/* capture row check */";
+
 /**
- * The hours of `ranges` holding a Home usage row of the pool's users with no request. One statement;
- * each range is its own scan of Home's usage time index. $1 username pattern, $2 ranges as
- * [{f,t}], $3 pool, $4 Home source.
+ * The hours of `ranges` holding a Home usage row of the pool's users with no request: one statement,
+ * each range a branch in the window statement's own form with its bounds as parameters, so Postgres
+ * plans every branch as it plans that statement, in parallel where it pays.
+ * $1 username pattern, $2 pool, $3 Home source, then each range's from and to.
  */
-const missingStatement = `SELECT DISTINCT m.hour FROM jsonb_to_recordset($2::jsonb) AS w(f text, t text)
-  CROSS JOIN LATERAL (
-    SELECT to_char(${usageHour},'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS hour
-    FROM ${poolUsageRows("$1", "u.timestamp >= w.f::timestamptz AND u.timestamp < w.t::timestamptz")}
-      AND ${uncaptured("$3", "$4")}
-  ) m
+export const rowCheckStatement = (ranges: number) =>
+  `${rowCheckMark} SELECT DISTINCT m.hour FROM (${Array.from(
+    { length: ranges },
+    (_, n) => `SELECT to_char(${usageHour},'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS hour
+    FROM ${poolUsageRows("$1", `u.timestamp >= $${4 + 2 * n}::timestamptz AND u.timestamp < $${5 + 2 * n}::timestamptz`)}
+      AND ${uncaptured("$2", "$3")}`,
+  ).join("\n  UNION ALL\n  ")}) m
   ORDER BY m.hour LIMIT ${maxIncompleteHours}`;
+
+/** Whether a statement is the counted path's row check, and the ranges it read. */
+export const isRowCheck = (text: string) => text.startsWith(rowCheckMark);
+export function rowCheckRanges(values: readonly unknown[]) {
+  const ranges: { f: string; t: string }[] = [];
+  for (let n = 3; n + 1 < values.length; n += 2)
+    ranges.push({ f: String(values[n]), t: String(values[n + 1]) });
+  return ranges;
+}
+
+/**
+ * The ranges, merged across their smallest gaps until at most `max` are left. Joining one gap never
+ * changes another, so the gaps are sorted once and the smallest joined, the earlier of equal ones
+ * first: one sort, whatever the number of ranges.
+ */
+export function mergeRanges(ranges: readonly { f: string; t: string }[], max = maxRowCheckRanges) {
+  const sorted = [...ranges].sort((a, b) => Date.parse(a.f) - Date.parse(b.f));
+  if (sorted.length <= max) return sorted;
+  const gaps = sorted
+    .slice(0, -1)
+    .map((range, n) => ({ n, gap: Date.parse(sorted[n + 1]!.f) - Date.parse(range.t) }))
+    .sort((a, b) => a.gap - b.gap || a.n - b.n);
+  const join = new Set(gaps.slice(0, sorted.length - max).map((entry) => entry.n));
+  const merged: { f: string; t: string }[] = [];
+  for (const [n, range] of sorted.entries()) {
+    const last = merged.at(-1);
+    if (last && join.has(n - 1))
+      merged[merged.length - 1] = {
+        f: last.f,
+        t: Date.parse(range.t) > Date.parse(last.t) ? range.t : last.t,
+      };
+    else merged.push(range);
+  }
+  return merged;
+}
 
 /** Every usage row of the window, as the check ran before v17. $1 pattern, $2 from, $3 to, $4 pool, $5 source. */
 const windowStatement = `SELECT DISTINCT to_char(${usageHour},'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS hour
@@ -91,8 +132,8 @@ export const capturedHoursStatement = `WITH w AS MATERIALIZED (
  * With `counted`, a pool ready on the v16 rollup reads the hour counts history migration v17 keeps:
  * an hour whose count proves it is complete without a row check, and every other hour is checked row
  * by row, so while the counts fill the answer is the same as before v17 and only gets cheaper. That
- * row check has its own limit: if it can't answer within it, its hours are unproven, so incomplete,
- * and the summary still answers. Without v17 or a v16-ready pool, every usage row of the window is
+ * row check has its own limit: if it can't answer within it, the hours it covered are unproven, so
+ * incomplete, the hours the counts proved stay complete, and the summary still answers. Without v17 or a v16-ready pool, every usage row of the window is
  * checked under the read's own limit, as before.
  */
 export async function homeCaptureCoverage(
@@ -124,8 +165,7 @@ export async function homeCaptureCoverage(
     if (rows.find((row) => row.kind === "bounds")?.ready === true)
       ranges = rows
         .filter((row) => row.kind === "check")
-        .map((row) => ({ f: String(row.f), t: String(row.t) }))
-        .sort((a, b) => Date.parse(a.f) - Date.parse(b.f));
+        .map((row) => ({ f: String(row.f), t: String(row.t) }));
   }
   let missing: string[];
   if (!ranges)
@@ -134,15 +174,17 @@ export async function homeCaptureCoverage(
     ).rows.map((row) => String(row.hour));
   else if (!ranges.length) missing = [];
   else {
-    const checked = await boundedRowCheck(db, [
+    const checked = await boundedRowCheck(db, mergeRanges(ranges), [
       username,
-      JSON.stringify(ranges),
       poolHash,
       homeSourceHash,
     ]);
-    // The row check did not answer in time: its hours are unproven, never complete.
-    missing = checked ?? rangeHours(ranges);
+    // The row check did not answer in time: the hours it covered are unproven, and only those.
+    // Every hour its counts proved stays complete, so a slow check reads partial, never unknown.
+    if (!checked) return { capturedAt, incompleteHours: new Set(rangeHours(ranges)) };
+    missing = checked;
   }
+  // The check named as many missing hours as it may: there may be more, so none is known.
   if (missing.length >= maxIncompleteHours) return { capturedAt, incompleteHours: null };
   return { capturedAt, incompleteHours: new Set(missing) };
 }
@@ -154,13 +196,22 @@ export const captureRowCheckLimitMs = 3_000;
  * The row check in a savepoint under its own limit. A Postgres statement timeout gives undefined and
  * leaves the session as it was; any other failure still fails the read.
  */
-async function boundedRowCheck(db: HistoryDatabase, values: unknown[]) {
+async function boundedRowCheck(
+  db: HistoryDatabase,
+  ranges: readonly { f: string; t: string }[],
+  values: unknown[],
+) {
   await db.query("SAVEPOINT capture_row_check");
   try {
     await db.query("SELECT set_config('statement_timeout',$1,true)", [
       `${captureRowCheckLimitMs}ms`,
     ]);
-    const rows = (await db.query(missingStatement, values)).rows.map((row) => String(row.hour));
+    const rows = (
+      await db.query(rowCheckStatement(ranges.length), [
+        ...values,
+        ...ranges.flatMap((range) => [range.f, range.t]),
+      ])
+    ).rows.map((row) => String(row.hour));
     // Rolling back to the savepoint restores the read's own limit, which a release would not.
     await db.query("ROLLBACK TO SAVEPOINT capture_row_check");
     await db.query("RELEASE SAVEPOINT capture_row_check");
@@ -173,13 +224,13 @@ async function boundedRowCheck(db: HistoryDatabase, values: unknown[]) {
   }
 }
 
-/** Every UTC hour a range touches, keyed as the row check names them. */
+/** Every UTC hour a range touches, keyed as the row check names them: at most the window's hours. */
 function rangeHours(ranges: readonly { f: string; t: string }[]) {
   const hours = new Set<string>();
   for (const range of ranges)
     for (
       let at = Math.floor(Date.parse(range.f) / 3_600_000) * 3_600_000;
-      at < Date.parse(range.t) && hours.size < maxIncompleteHours;
+      at < Date.parse(range.t);
       at += 3_600_000
     )
       hours.add(new Date(at).toISOString().replace(".000Z", "Z"));
