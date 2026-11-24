@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import {
   FleetConfiguration,
   type FleetApplication,
@@ -19,12 +19,86 @@ import {
   shortHash,
   type ControllerAccess,
 } from "./controller.ts";
-import { refuse } from "./errors.ts";
+import {
+  atStep,
+  describeError,
+  FleetLaneRefused,
+  refuse,
+  workerAnswer,
+  type FleetStep,
+} from "./errors.ts";
 import { applicationPins } from "./pins.ts";
 
 const call = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
+export const step = <A>(name: FleetStep, work: () => Promise<A>) =>
+  Effect.tryPromise({ try: work, catch: (error) => atStep(name, error) });
 export const configureOperationId = (go: string) => `fleet-${shortHash("configure", go)}`;
+type FleetView = Awaited<ReturnType<typeof inspectFleet>>;
+type Permission = NonNullable<FleetView["permission"]>;
+type Wanted = { color: "blue" | "green"; applicationId: string; imageInput: string };
+
+/** The controller's code handover window: within it a deploy's code and bindings reach it. */
+export const controllerSettleMs = 300_000;
+const settlePollMs = 10_000;
+// A clock that never moves still ends the wait.
+const settleReads = controllerSettleMs / settlePollMs + 1;
+export interface LaneClock {
+  sleep(ms: number): Promise<void>;
+  now(): number;
+}
+/** One handover window shared by every read before a send, from the dispatch's first read. */
+export interface Settle {
+  clock: LaneClock;
+  from: number;
+}
+export type Settled<A> = { value: A } | { lagging: FleetLaneRefused };
+
+/** A read the controller refused as slot_identity: it runs other code than this checkout signs for. */
+export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
+  refuse(
+    "controller-code-mismatch",
+    `The controller refused reads signed for candidate ${access.code.candidate}${waited ? ` for ${controllerSettleMs / 1000} s` : ""}; the live PoolWorker runs code built from another commit.`,
+    "Dispatch from the main commit the last release deployed, or release main first.",
+  );
+
+/**
+ * Reads the controller until it settles, within one handover window: nothing is sent before. A
+ * read lost on the way, a controller still on its old code (it refuses the new code's signature as
+ * slot_identity) and lagging bindings wait. A typed refusal and any other Worker answer stand at
+ * once. Past the window, a lost read refuses as controller-not-ready, old code as
+ * controller-code-mismatch, and lagging bindings keep their own refusal.
+ */
+export const untilSettled = <A>(
+  settle: Settle,
+  access: ControllerAccess,
+  read: Effect.Effect<Settled<A>, unknown>,
+) =>
+  Effect.gen(function* () {
+    for (let reads = 1; ; reads++) {
+      const outcome = yield* Effect.result(read);
+      let lagging: FleetLaneRefused;
+      if (Result.isSuccess(outcome)) {
+        if ("value" in outcome.success) return outcome.success.value;
+        lagging = outcome.success.lagging;
+      } else {
+        const failure = outcome.failure;
+        const answer = workerAnswer(failure);
+        if (failure instanceof FleetLaneRefused || (answer && answer !== "slot_identity"))
+          return yield* Effect.fail(failure);
+        lagging = answer
+          ? codeMismatch(access, true)
+          : refuse(
+              "controller-not-ready",
+              `${describeError(failure)}, still after ${controllerSettleMs / 1000} s; nothing was sent.`,
+              "Read the PoolWorker logs for the controller's code handover, then rerun with the same GO.",
+            );
+      }
+      if (settle.clock.now() - settle.from >= controllerSettleMs || reads >= settleReads)
+        return yield* Effect.fail(lagging);
+      yield* Effect.promise(() => settle.clock.sleep(settlePollMs));
+    }
+  });
 
 /** The selected primary every fleet configuration names as legacy; refuses mid-handoff states. */
 export const selectedPrimary = (access: ControllerAccess) =>
@@ -53,38 +127,79 @@ export const configureFleet = (input: {
   active?: "blue" | "green";
   /** The growth target for this configuration; otherwise the current one, or 25. */
   targetActive?: number;
+  settle: Settle;
+  /** Right before the send: from here on a failure may leave the fleet configured by this run. */
+  sending?: () => void;
 }) =>
   Effect.gen(function* () {
     const { controller: access, go } = input;
     const operationId = configureOperationId(go);
-    const retained = (yield* call(() => inspectFleet(access, operationId))).permission;
-    if (retained)
-      return { status: "already-configured" as const, operationId, digest: retained.digest };
-    const legacy = yield* selectedPrimary(access);
-    const view = yield* call(() => inspectFleet(access));
-    const current = view.permission ?? undefined;
-    const bindings = yield* workerPlainBindings(input.cloudflare, access.worker);
-    const applications: FleetApplication[] = [];
-    for (const color of ["blue", "green"] as const) {
-      const upper = color.toUpperCase();
-      const applicationId = yield* requireBinding(bindings, `POOL_${upper}_APPLICATION_ID`);
-      const imageInput = yield* requireBinding(bindings, `POOL_${upper}_IMAGE_HASH`);
-      // The controller compares against its own bindings, not the API's; both must agree.
-      if (
-        !view.bindings.some(
-          (binding) =>
-            binding.color === color &&
-            binding.applicationId === applicationId &&
-            binding.imageInput === imageInput,
-        )
-      )
-        return yield* Effect.fail(
-          refuse(
-            "controller-bindings-differ",
-            `fleet-inspect bindings lack ${color} with the settings' POOL_${upper}_APPLICATION_ID and POOL_${upper}_IMAGE_HASH (controller lists ${view.bindings.length} bindings).`,
-            "Wait for the PoolWorker deploy to reach the controller (up to 300 s), then rerun.",
-          ),
+    let wanted: Wanted[] | undefined;
+    const settled = yield* untilSettled<
+      | { retained: Permission }
+      | {
+          legacy: Effect.Success<ReturnType<typeof selectedPrimary>>;
+          view: FleetView;
+          wanted: Wanted[];
+        }
+    >(
+      input.settle,
+      access,
+      Effect.gen(function* () {
+        const retained = (yield* step("inspect", () => inspectFleet(access, operationId)))
+          .permission;
+        if (retained) return { value: { retained } };
+        const legacy = yield* selectedPrimary(access).pipe(
+          Effect.mapError((error) => atStep("primary_read", error)),
         );
+        const view = yield* step("inspect", () => inspectFleet(access));
+        if (!wanted) {
+          // Its failures are typed refusals already, which stand at once.
+          const bindings = yield* workerPlainBindings(input.cloudflare, access.worker);
+          const read: Wanted[] = [];
+          for (const color of ["blue", "green"] as const) {
+            const upper = color.toUpperCase();
+            read.push({
+              color,
+              applicationId: yield* requireBinding(bindings, `POOL_${upper}_APPLICATION_ID`),
+              imageInput: yield* requireBinding(bindings, `POOL_${upper}_IMAGE_HASH`),
+            });
+          }
+          wanted = read;
+        }
+        // The controller compares against its own bindings, not the API's; both must agree.
+        const lagging = wanted.find(
+          (want) =>
+            !view.bindings.some(
+              (binding) =>
+                binding.color === want.color &&
+                binding.applicationId === want.applicationId &&
+                binding.imageInput === want.imageInput,
+            ),
+        );
+        if (lagging) {
+          const upper = lagging.color.toUpperCase();
+          return {
+            lagging: refuse(
+              "controller-bindings-differ",
+              `fleet-inspect bindings still lack ${lagging.color} with the settings' POOL_${upper}_APPLICATION_ID and POOL_${upper}_IMAGE_HASH after ${controllerSettleMs / 1000} s (controller lists ${view.bindings.length} bindings).`,
+              "Read the PoolWorker deploy: the controller never took the settings' bindings.",
+            ),
+          };
+        }
+        return { value: { legacy, view, wanted } };
+      }),
+    );
+    if ("retained" in settled)
+      return {
+        status: "already-configured" as const,
+        operationId,
+        digest: settled.retained.digest,
+      };
+    const { legacy, view } = settled;
+    const current = view.permission ?? undefined;
+    const applications: FleetApplication[] = [];
+    for (const { color, applicationId, imageInput } of settled.wanted) {
       const raw = yield* containerApplication(input.cloudflare, applicationId);
       applications.push(yield* applicationPins(color, applicationId, imageInput, raw));
     }
@@ -114,7 +229,8 @@ export const configureFleet = (input: {
           "Read the pins in the output; one of them is outside the schema.",
         ),
     });
-    const sent = yield* call(() =>
+    input.sending?.();
+    const sent = yield* step("send", () =>
       sendFleetOperation(
         access,
         {
@@ -126,8 +242,9 @@ export const configureFleet = (input: {
         go,
       ),
     );
-    const after = (yield* call(() => inspectFleet(access, operationId))).permission;
-    const digest = yield* call(() => providerDigest(configuration));
+    const after = (yield* step("inspect_after", () => inspectFleet(access, operationId)))
+      .permission;
+    const digest = yield* step("digest", () => providerDigest(configuration));
     if (!after?.enabled || after.digest !== digest)
       return yield* Effect.fail(
         refuse(
@@ -275,7 +392,7 @@ export const retireRow = (access: ControllerAccess, go: string, key: string) =>
 /** fleet-disable needs its own operation id: reusing the configure id is refused (configuration.ts:221-224). */
 export const disableFleet = (access: ControllerAccess, go: string) =>
   Effect.gen(function* () {
-    const current = (yield* call(() => inspectFleet(access))).permission;
+    const current = (yield* step("inspect", () => inspectFleet(access))).permission;
     if (!current)
       return yield* Effect.fail(
         refuse(
@@ -287,7 +404,7 @@ export const disableFleet = (access: ControllerAccess, go: string) =>
     if (!current.enabled)
       return { status: "already-disabled" as const, operationId: current.operationId };
     const operationId = `disable-${shortHash("disable", go, current.digest)}`;
-    yield* call(() =>
+    yield* step("send", () =>
       sendFleetOperation(
         access,
         {
@@ -299,7 +416,7 @@ export const disableFleet = (access: ControllerAccess, go: string) =>
         go,
       ),
     );
-    const after = (yield* call(() => inspectFleet(access))).permission;
+    const after = (yield* step("inspect_after", () => inspectFleet(access))).permission;
     if (after?.enabled !== false)
       return yield* Effect.fail(
         refuse(

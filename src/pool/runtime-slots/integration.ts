@@ -1,4 +1,5 @@
 import { RuntimeSlotRecovery, primaryLastEnd } from "./recovery.ts";
+import { lastRecovery } from "./recovery-record.ts";
 import { UnservingClock } from "./unserving-clock.ts";
 import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { Schema } from "effect";
@@ -164,9 +165,13 @@ export class RuntimeHandoff {
   recoveryState() {
     return new UnservingClock(this.storage).inspect();
   }
-  /** How the last primary a recovery replaced had ended. */
+  /** How the last primary a recovery restarted had ended. */
   primaryEnd() {
     return primaryLastEnd(this.ctx.storage);
+  }
+  /** The selected root's last recovery: detected, ready, its rounds and their refusals. */
+  lastRecovery() {
+    return lastRecovery(this.ctx.storage);
   }
   resetRecovery() {
     return new UnservingClock(this.storage).reset();

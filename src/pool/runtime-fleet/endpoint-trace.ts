@@ -162,9 +162,27 @@ export class EndpointTrace {
       !this.attempts.some((attempt) => attempt.outcome === "error")
     )
       return;
+    const path = new URL(this.request.url).pathname;
+    // A health read its own caller deliberately aborted, as the guard's probe does at its deadline,
+    // is that caller's to report: the guard keeps its own outcome and elapsed time. It is decided on
+    // the abort's reason, so the outcome doesn't depend on which promise settles first: a timeout
+    // signal's reason is a TimeoutError and always logs, and so does a send that failed first.
+    const reason: unknown = this.request.signal.reason;
+    if (
+      path === "/health" &&
+      !(result instanceof Response) &&
+      this.request.signal.aborted &&
+      reason instanceof DOMException &&
+      reason.name === "AbortError" &&
+      this.attempts.every(
+        (attempt) =>
+          attempt.outcome === "pending" ||
+          (attempt.outcome === "error" && attempt.error?.name === "AbortError"),
+      )
+    )
+      return;
     this.logged = true;
     if (object(result)) correlateEndpointRequest(result, this.requestId);
-    const path = new URL(this.request.url).pathname;
     console.error(
       "POOL_RUNTIME_ENDPOINT_FAILURE",
       JSON.stringify({

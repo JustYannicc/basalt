@@ -18,6 +18,10 @@ export function errorClass(error: unknown) {
   return error instanceof Error ? "Error" : "other";
 }
 
+/** A provider refusal's own closed code, which its class alone doesn't say. */
+export const providerFields = (error: unknown) =>
+  error instanceof ProviderObservationRefused ? { provider: error.code } : {};
+
 /**
  * Closed fields for a line that reports a failed background pass, never the error's text: a pass
  * that fails every 2 s for hours must say why each time.
@@ -28,7 +32,7 @@ export function pendingFields(error: unknown) {
     reason: runtimeFailureDiagnostic(error, "slot_health").runtimeReason,
     ...(remembered ? { step: remembered.runtimeStep } : {}),
     class: errorClass(error),
-    ...(error instanceof ProviderObservationRefused ? { provider: error.code } : {}),
+    ...providerFields(error),
     ...(error instanceof PoolDependencyFailure ? { dependency: error.dependency } : {}),
     ...(error instanceof ControlFailure ? { control: error.code } : {}),
     ...poolFailureDiagnostic(error),
