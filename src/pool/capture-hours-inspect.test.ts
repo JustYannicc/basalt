@@ -20,7 +20,14 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     recountPosition: { pool: "0123456789abcdef", block: "2026-08-01T00:00:00Z", host: "x" },
     split: [{ pool: "0123456789abcdef", from: "2026-08-01T00:00:00Z", to: "x" }],
     slow: [
-      { pool: "0123456789abcdef", hour: "2026-08-01T03:00:00Z", count: 3, until: "x" },
+      {
+        pool: "0123456789abcdef",
+        hour: "2026-08-01T03:00:00Z",
+        count: 3,
+        until: "x",
+        retries: 2,
+        gaveUp: true,
+      },
       {
         pool: "0123456789abcdef",
         hour: "2026-08-01T05:00:00Z",
@@ -89,8 +96,14 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
         pendingBlocks: 15,
         pendingHours: 94,
         slow: [
-          { hour: "2026-08-01T03:00:00Z", until: null, repeat: 3 },
-          { hour: "2026-08-01T05:00:00Z", until: "2026-11-23T09:40:00.000Z", repeat: 1 },
+          { hour: "2026-08-01T03:00:00Z", until: null, repeat: 3, retries: 2, gaveUp: true },
+          {
+            hour: "2026-08-01T05:00:00Z",
+            until: "2026-11-23T09:40:00.000Z",
+            repeat: 1,
+            retries: 0,
+            gaveUp: false,
+          },
         ],
         lastSlow: {
           at: "2026-11-23T09:30:00.000Z",

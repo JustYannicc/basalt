@@ -18,7 +18,8 @@ const stops = new Set<string>(Object.keys(stopNames));
 /**
  * Each pool's own progress, named by its place among the pools in the order of their history ids,
  * never by the id: its pending blocks and hours, and its hours in their slow wait with when each wait
- * ends and how many times in a row it ran out its limit. The place matches the slow log line's.
+ * ends, how many times in a row it ran out its limit, how many of a stuck hour's longer retries it
+ * has had, and whether it was given up. The place matches the slow log line's.
  */
 function byPool(state: CaptureHoursAutoState) {
   const entries = (Array.isArray(state.byPool) ? state.byPool : []).filter(
@@ -51,6 +52,8 @@ function byPool(state: CaptureHoursAutoState) {
           hour: iso(wait.hour)!,
           until: iso(wait.until),
           repeat: count(wait.count),
+          retries: count(wait.retries ?? 0),
+          gaveUp: wait.gaveUp === true,
         })),
       lastSlow: lastSlow(entry.pool),
     }));
