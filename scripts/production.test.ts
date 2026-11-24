@@ -202,3 +202,132 @@ test("the smoke passes on a served turn and names a failure by class and status 
   });
   assert.deepEqual(failed, { passed: false, why: "Error" });
 });
+
+test("each plan row says why it is in the plan, by name only, and a noop row prints nothing", async () => {
+  const { rowLine, withReasons } = await import("./release/approved-plan.ts");
+  const worker = (
+    fqn: string,
+    action: string,
+    bindings: { sid: string; action: string }[] = [],
+  ) => ({
+    fqn,
+    resourceType: "Cloudflare.Worker",
+    action,
+    bindings,
+  });
+  const rows = withReasons(
+    [
+      worker("Dashboard", "update", [{ sid: "ASSETS", action: "noop" }]),
+      worker("PoolWorker", "update", [{ sid: "POOL_CONTAINER", action: "update" }]),
+      worker("Api", "update", [
+        { sid: "KV", action: "create" },
+        { sid: "DB", action: "update" },
+      ]),
+      worker("Router", "noop", [{ sid: "POOL", action: "noop" }]),
+      worker("AppPages", "noop", [{ sid: "PAGES", action: "update" }]),
+      worker("Marketing", "update"),
+      worker("NewSite", "create"),
+    ],
+    [
+      { fqn: "Dashboard", changedProps: ["env", "assets"] },
+      { fqn: "PoolWorker", changedProps: [] },
+      { fqn: "Api", changedProps: ["main"] },
+      { fqn: "AppPages", changedProps: [] },
+      { fqn: "Marketing", changedProps: [] },
+      { fqn: "NewSite", changedProps: ["name", "main"] },
+    ],
+  );
+  assert.deepEqual(rows.map(rowLine), [
+    // A prop-only update names the props, sorted.
+    "Dashboard Cloudflare.Worker update: props assets, env",
+    // A binding-only update says so in words, with each binding's id and action.
+    "PoolWorker Cloudflare.Worker update only by its bindings, no prop changes: bindings POOL_CONTAINER update",
+    // Both.
+    "Api Cloudflare.Worker update: props main; bindings DB update, KV create",
+    // A noop row whose bindings are noop too is not part of the plan.
+    undefined,
+    "AppPages Cloudflare.Worker noop, bindings changed: bindings PAGES update",
+    // An update the provider asked for with nothing changed on our side.
+    "Marketing Cloudflare.Worker update, no prop or binding changes",
+    // A new resource is all new, so it names no props.
+    "NewSite Cloudflare.Worker create",
+  ]);
+});
+
+test("the digest covers why each row is in the plan; a deploy still refuses rows that differ", async () => {
+  const { planDifference, planDigest } = await import("./release/approved-plan.ts");
+  const plan = {
+    candidate: "8e7de242458798cade20330fb1924476d6a53013",
+    declared: true,
+    rows: [
+      {
+        fqn: "Dashboard",
+        resourceType: "Cloudflare.Worker",
+        action: "update",
+        changedProps: ["assets", "env"],
+        bindings: [{ sid: "ASSETS", action: "noop" }],
+      },
+      {
+        fqn: "PoolWorker",
+        resourceType: "Cloudflare.Worker",
+        action: "update",
+        changedProps: ["main"],
+      },
+    ],
+    actions: [],
+    created: [],
+    forward: [],
+  };
+  const approved = planDigest(plan);
+  // The same plan, props in another order: the same digest, so it deploys.
+  assert.equal(
+    planDifference(approved, {
+      ...plan,
+      rows: [...plan.rows]
+        .reverse()
+        .map((row) => ({ ...row, changedProps: [...row.changedProps].reverse() })),
+    }),
+    undefined,
+  );
+  const otherProps = {
+    ...plan,
+    rows: plan.rows.map((row) =>
+      row.fqn === "Dashboard" ? { ...row, changedProps: ["env"] } : row,
+    ),
+  };
+  const otherBinding = {
+    ...plan,
+    rows: plan.rows.map((row) =>
+      row.fqn === "Dashboard" ? { ...row, bindings: [{ sid: "ASSETS", action: "update" }] } : row,
+    ),
+  };
+  const extraRow = {
+    ...plan,
+    rows: [
+      ...plan.rows,
+      { fqn: "McpServer", resourceType: "Cloudflare.Worker", action: "update", changedProps: [] },
+    ],
+  };
+  const otherAction = {
+    ...plan,
+    rows: plan.rows.map((row) => (row.fqn === "PoolWorker" ? { ...row, action: "replace" } : row)),
+  };
+  for (const [name, candidate] of [
+    ["other props", otherProps],
+    ["another binding", otherBinding],
+    ["an extra row", extraRow],
+    ["another action", otherAction],
+  ] as const) {
+    const refusal = planDifference(approved, candidate);
+    assert.ok(refusal, `${name} refuses`);
+    assert.match(refusal, /nothing applied/u);
+  }
+  assert.match(
+    planDifference(approved, otherProps)!,
+    /Dashboard Cloudflare\.Worker update: props env/u,
+  );
+  assert.match(
+    planDifference(approved, extraRow)!,
+    /McpServer Cloudflare\.Worker update, no prop or binding changes/u,
+  );
+});
