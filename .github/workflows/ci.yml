@@ -3262,7 +3262,7 @@ jobs:
       - name: Verify driver readings, health and observation compatibility
         working-directory: .upstream
         run: >-
-          bun run e2e:self-host --test-name
+          node ../scripts/ci/with-published-frameworks.ts -- bun run e2e:self-host --test-name
           "$(node ../scripts/ci/e2e-pattern.ts account-observations:driver-readings-health-and-observation-compatibility)"
           --workers 1
       - name: Collect bounded E2E evidence

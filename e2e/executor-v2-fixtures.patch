@@ -367,7 +367,7 @@ diff --git a/e2e/tests/app-package.spec.ts b/e2e/tests/app-package.spec.ts
 diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
 --- a/e2e/support/app-package.ts
 +++ b/e2e/support/app-package.ts
-@@ -179,7 +179,14 @@
+@@ -179,7 +179,16 @@
      const runtime = yield* fs
        .readFileString(runtimeFile)
        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimePackage))));
@@ -377,7 +377,9 @@ diff --git a/e2e/support/app-package.ts b/e2e/support/app-package.ts
 +      JSON.stringify({
 +        ...runtime,
 +        protocol,
-+        ...([26, 35].includes(protocol) ? { version: `synthetic-e2e-protocol${protocol}` } : {}),
++        ...([17, 26, 35].includes(protocol)
++          ? { version: `synthetic-e2e-protocol${protocol}` }
++          : {}),
 +      }),
 +    );
      const { base, archives } = yield* loopbackArchives;
@@ -777,3 +779,145 @@ diff --git a/e2e/tests/product-brand.spec.ts b/e2e/tests/product-brand.spec.ts
          );
          expect(claudeCode).toContain(`claude mcp add --transport http ${productBrand.server} `);
          expect(claudeCode).not.toMatch(executorName);
+diff --git a/e2e/test-plan.ts b/e2e/test-plan.ts
+--- a/e2e/test-plan.ts
++++ b/e2e/test-plan.ts
+@@ -10648,7 +10648,8 @@
+   accountObservationProtocol18: {
+     fixtures: "actors",
+     file: "account-observation-protocol.spec.ts",
+-    title: "protocol 18 refuses observations before dispatch while retaining health and tool calls",
++    title:
++      "protocol 18 bundles are refused at deploy because no approved release speaks protocol 18",
+     targets: {
+       "self-host": scheduled,
+       cloud: na("Uses a loopback framework archive and allowance service."),
+diff --git a/e2e/tests/account-observation-protocol.spec.ts b/e2e/tests/account-observation-protocol.spec.ts
+--- a/e2e/tests/account-observation-protocol.spec.ts
++++ b/e2e/tests/account-observation-protocol.spec.ts
+@@ -1,4 +1,5 @@
+-import { body } from "../support/api.ts";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
+ import { legacyStorage } from "../support/legacy-storage.ts";
+ import { serverControl } from "../support/server-control.ts";
+ import { expect, layer } from "@effect/vitest";
+@@ -9,37 +10,70 @@
+ import { scenarios } from "../test-plan.ts";
+ 
+ layer(HostedLive, { excludeTestServices: true })("Optional observation protocol", (it) => {
+-  for (const { scenario, retained } of [
+-    { scenario: scenarios.accountObservationProtocol, retained: protocol17Framework },
+-    { scenario: scenarios.accountObservationProtocol18, retained: protocol18Framework },
+-  ]) {
+-    it.effect(scenario.title, (context) =>
+-      withHostedCase(
+-        context,
+-        Effect.gen(function* () {
+-          const framework = yield* retained;
+-          const f = yield* observationFixture({ observe: true, health: true, framework });
+-          expect((yield* f.check()).body).toMatchObject({
+-            apps: [{ check: { status: "healthy" } }],
+-          });
+-          const tool = yield* f.api.request(f.actors.owner, "POST", `${f.appPath}/tools/call`, {
+-            tool: "ping",
+-            kind: "query",
+-            input: {},
+-          });
+-          expect(tool.status, JSON.stringify(tool.body)).toBe(200);
+-          expect(tool.body).toBe(true);
+-          const refreshed = yield* f.refresh();
+-          expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
+-          expect(refreshed.body).toMatchObject({ reports: [] });
+-          expect(yield* f.backend.calls).toBe(0);
+-          expect((yield* f.detail()).body).toMatchObject({
+-            health: { apps: [{ check: { status: "healthy" } }] },
+-          });
+-        }),
+-      ),
+-    );
+-  }
++  it.effect(scenarios.accountObservationProtocol.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const framework = yield* protocol17Framework;
++        const f = yield* observationFixture({ observe: true, health: true, framework });
++        expect((yield* f.check()).body).toMatchObject({
++          apps: [{ check: { status: "healthy" } }],
++        });
++        const tool = yield* f.api.request(f.actors.owner, "POST", `${f.appPath}/tools/call`, {
++          tool: "ping",
++          kind: "query",
++          input: {},
++        });
++        expect(tool.status, JSON.stringify(tool.body)).toBe(200);
++        expect(tool.body).toBe(true);
++        const refreshed = yield* f.refresh();
++        expect(refreshed.status, JSON.stringify(refreshed.body)).toBe(200);
++        expect(refreshed.body).toMatchObject({ reports: [] });
++        expect(yield* f.backend.calls).toBe(0);
++        expect((yield* f.detail()).body).toMatchObject({
++          health: { apps: [{ check: { status: "healthy" } }] },
++        });
++      }),
++    ),
++  );
++
++  // No approved release speaks protocol 18, so its bundle is refused before any observation runs.
++  it.effect(scenarios.accountObservationProtocol18.title, (context) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const api = yield* Api,
++          actors = yield* Actors;
++        const framework = yield* protocol18Framework;
++        const deployed = yield* api.request(
++          actors.owner,
++          "POST",
++          `/api/organizations/${actors.organization.id}/apps/deploy`,
++          {
++            name: "Observation fixture",
++            files: [
++              {
++                path: "index.ts",
++                content: `import { defineApp, object, query, router } from "apps";
++export default defineApp({}, { tools: router({ ping: query({ input: object({}) }, async () => true) }) });`,
++              },
++              {
++                path: "package.json",
++                content: JSON.stringify({ dependencies: { apps: framework } }),
++              },
++            ],
++          },
++        );
++        expect(deployed.status, JSON.stringify(deployed.body)).toBe(422);
++        expect(deployed.body).toMatchObject({
++          _tag: "VersionBuildFailed",
++          reason: expect.stringMatching(
++            /\(protocol-mismatch\): Approved protocol \d+ differs from recorded protocol 18\.$/,
++          ),
++        });
++      }),
++    ),
++  );
+ 
+   it.effect(scenarios.accountObservationLegacyDeclaration.title, (context) =>
+     withHostedCase(
+diff --git a/e2e/tests/account-connect-no-write.spec.ts b/e2e/tests/account-connect-no-write.spec.ts
+--- a/e2e/tests/account-connect-no-write.spec.ts
++++ b/e2e/tests/account-connect-no-write.spec.ts
+@@ -163,11 +163,9 @@
+             );
+             return [...writes];
+           });
++        // Administrators register the missing client inside the connect form itself.
+         const registration = (page: Page) =>
+-          page
+-            .getByRole("dialog")
+-            .getByRole("button", { name: "Register OAuth client", exact: true })
+-            .waitFor();
++          page.getByRole("dialog").getByLabel("Client ID", { exact: true }).waitFor();
+         const plainWrites = yield* openAndClose(plain, registration);
+         const siteWrites = yield* openAndClose(site, registration);
+         // The saved identity stays preselected and its reuse is still planned, saving nothing.
