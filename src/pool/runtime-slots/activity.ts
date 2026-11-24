@@ -81,6 +81,23 @@ export class RuntimeActivity {
     });
   }
 
+  /**
+   * An operator's override of a count that no stream has moved for `stillAtLeastMs`. A lease whose
+   * release was lost with its object's isolate is released by nothing else. Only a draining count
+   * qualifies, so nothing new can be admitted on it. Returns what it released and how long it stood.
+   */
+  releaseStill(identity: SlotIdentity, stillAtLeastMs: number) {
+    return this.change(identity, (row) => {
+      if (row.phase !== "draining") throw new SlotRefused("selection");
+      const { stillMs } = stillFor(row);
+      if (stillMs < stillAtLeastMs) throw new SlotRefused("draining");
+      return {
+        row: { ...row, active: 0, known: true, leases: {}, changedAt: Date.now() },
+        result: { released: row.active, stillMs },
+      };
+    });
+  }
+
   async inspect(identity: SlotIdentity) {
     const value = await this.storage.get(this.key(identity));
     if (value === undefined) return undefined;

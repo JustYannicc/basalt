@@ -45,6 +45,7 @@ export interface HandoffFleet {
   disable?(operationId: string, expectedDigest: string): Promise<unknown>;
   assertPrimaryChange?(action: string): Promise<void>;
   replace?(operationId: string, identity: SlotIdentity): Promise<unknown>;
+  retireRow?(operationId: string, go: string, key: string): Promise<unknown>;
   prepareImage?(intent: ImageUpdateIntent): ReturnType<RuntimeImageUpdate["prepare"]>;
   inspectImage?(operationId: string): ReturnType<RuntimeImageUpdate["inspect"]>;
   cancelImage?(operationId: string): ReturnType<RuntimeImageUpdate["cancel"]>;
@@ -169,6 +170,10 @@ export async function handleRuntimeHandoff(
       case "fleet-replace":
         if (!fleet?.replace) throw new Error("Runtime fleet unavailable");
         result = await fleet.replace(value.operationId, value.identity);
+        break;
+      case "fleet-retire":
+        if (!fleet?.retireRow) throw new Error("Runtime fleet unavailable");
+        result = await fleet.retireRow(value.operationId, value.go, value.key);
         break;
       case "inspect":
         result = {

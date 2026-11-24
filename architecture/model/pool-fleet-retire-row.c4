@@ -1,0 +1,7 @@
+model {
+  extend basalt.modelGateway {
+    metadata {
+      constraint "A fleet row whose count no stream can lower, because its releases were lost with an object's isolate, never retires by itself. The signed fleet-retire command, sent by the fleet lane's retire-row mode under a coordinator GO and naming the row by its key, ends it. It refuses unless the key names exactly one row, that row is draining, never ready, and its count stood still for the leaked-streams bound of 300 s in the controller's ledger and on the cell itself. It then releases the cell's still count, lowers the ledger to 0 only while the ledger is still what it read, and logs one closed POOL_FLEET_ROW_RETIRE_OVERRIDE line naming the GO, the row key and both overridden counts with how long each stood. Upkeep's ordinary retirement then stops the cell and holds its place until the provider proves the instance gone."
+    }
+  }
+}

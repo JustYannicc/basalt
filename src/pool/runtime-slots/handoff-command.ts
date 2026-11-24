@@ -47,6 +47,14 @@ export const RuntimeFleetOperationPayload = Schema.Union([
     operationId: OperationId,
     identity: SlotIdentity,
   }),
+  // A named draining row's retirement over a count that stood still (`RuntimeFleet.retireRow`).
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-retire"),
+    operationId: OperationId,
+    go: Schema.String.check(Schema.isPattern(/^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u)),
+    key: Schema.String.check(Schema.isPattern(/^[0-9a-f]{8,24}$/u)),
+  }),
 ]);
 export type RuntimeFleetOperationPayload = typeof RuntimeFleetOperationPayload.Type;
 export const RuntimeFleetCommand = RuntimeFleetOperationPayload.mapMembers(

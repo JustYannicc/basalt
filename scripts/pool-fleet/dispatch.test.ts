@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { test } from "node:test";
 import { decodeProviderApplication } from "../../src/pool/runtime-provider/application.ts";
@@ -69,10 +70,16 @@ test("configure pins each colour with the digest the controller's own observatio
   }
 });
 
-test("configure, disable, crash and bookmark refuse without a coordinator GO and send nothing", async () => {
+test("configure, disable, crash, bookmark and retire-row refuse without a coordinator GO and send nothing", async () => {
   const lane = await harness();
   try {
-    for (const mode of ["configure-and-accept", "disable", "crash-cell", "bookmark"]) {
+    for (const mode of [
+      "configure-and-accept",
+      "disable",
+      "crash-cell",
+      "bookmark",
+      "retire-row",
+    ]) {
       for (const bad of ["", "go", "coordinator-<pending>", "yes coordinator-2026-x"]) {
         const result = await runPoolFleet(dispatch(mode, { go: bad }), lane.deps());
         assert.equal(result.ok, false);
@@ -491,5 +498,87 @@ test("the inspect lane shows the pool's own capture-hour counts as one closed ob
     } finally {
       await lane.close();
     }
+  }
+});
+
+test("retire-row sends one fleet-retire for the named draining row and prints it before and after", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    // The row a lost release left counting: draining, six calls that never end.
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const retireGo = "coordinator-2026-11-24-retire-stuck-row";
+    const result = await runPoolFleet(dispatch("retire-row", { go: retireGo, key }), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(
+      lane.retires.map((sent) => [sent.go, sent.key]),
+      [[retireGo, key]],
+    );
+    const outcome = (
+      result as unknown as {
+        result: {
+          before: { key: string; phase: string; active: number }[];
+          after: { active: number }[];
+          retired: { overrode: { ledger: number; cell: number; cellStillMs: number } | null };
+        };
+      }
+    ).result;
+    assert.deepEqual(
+      outcome.before.map((row) => [row.key.slice(0, 8), row.phase, row.active]),
+      [[key, "draining", 6]],
+    );
+    assert.deepEqual(
+      outcome.after.map((row) => row.active),
+      [0],
+    );
+    assert.deepEqual(
+      [
+        outcome.retired.overrode?.ledger,
+        outcome.retired.overrode?.cell,
+        outcome.retired.overrode?.cellStillMs,
+      ],
+      [6, 6, 2_400_000],
+    );
+    assert.doesNotMatch(
+      JSON.stringify(result),
+      /slot-|cell-boot/u,
+      "only keys leave, never slot ids",
+    );
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-row refuses a ready row, a bad key and a key matching no row before any send", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    const retireGo = "coordinator-2026-11-24-retire-stuck-row";
+    for (const [name, value, refusal] of [
+      ["the ready row", key, /row-not-draining/u],
+      ["a key too short", key.slice(0, 7), /row-key-invalid/u],
+      ["a key matching no row", "00000000", /row-key-ambiguous/u],
+    ] as const) {
+      const result = await runPoolFleet(
+        dispatch("retire-row", { go: retireGo, key: value }),
+        lane.deps(),
+      );
+      assert.equal(result.ok, false, name);
+      assert.match(String("cause" in result && result.cause), refusal, name);
+    }
+    assert.deepEqual(lane.retires, []);
+  } finally {
+    await lane.close();
   }
 });

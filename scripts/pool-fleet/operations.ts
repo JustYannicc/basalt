@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { Effect, Schema } from "effect";
 import {
   FleetConfiguration,
@@ -133,6 +134,73 @@ export const configureFleet = (input: {
         ),
       );
     return { status: sent.status, operationId, digest, configuration };
+  });
+
+const RetireReceipt = Schema.Struct({
+  key: Schema.String,
+  ordinal: Schema.NullOr(Schema.Number),
+  ledger: Schema.Number,
+  cell: Schema.Number,
+  ledgerStillMs: Schema.Number,
+  cellStillMs: Schema.Number,
+});
+export const retireOperationId = (go: string, key: string) =>
+  `fleet-${shortHash("retire", go, key)}`;
+
+/**
+ * Retires one named draining row over a count that stood still. The lane refuses what it can see
+ * first; the controller checks every rule again (src/pool/runtime-fleet/controller.ts, retireRow).
+ */
+export const retireRow = (access: ControllerAccess, go: string, key: string) =>
+  Effect.gen(function* () {
+    if (!/^[0-9a-f]{8,24}$/u.test(key))
+      return yield* Effect.fail(
+        refuse(
+          "row-key-invalid",
+          "key must be 8 to 24 lowercase hex digits, a row's key from the lane's inspect.",
+          "Pass the row's key as the key input.",
+        ),
+      );
+    const named = (fleet: Awaited<ReturnType<typeof inspectFleet>>) =>
+      fleet.resources.filter((row) => shortHash(row.target.slotId).startsWith(key));
+    const rows = named(yield* call(() => inspectFleet(access)));
+    const row = rows[0];
+    if (rows.length !== 1 || !row)
+      return yield* Effect.fail(
+        refuse(
+          "row-key-ambiguous",
+          `key ${key} matches ${rows.length} fleet rows; it must match exactly one.`,
+          "Pass a longer key from the lane's inspect.",
+        ),
+      );
+    if (row.phase !== "draining")
+      return yield* Effect.fail(
+        refuse(
+          "row-not-draining",
+          `row ${key} is ${row.phase}; only a draining row may be retired over its count.`,
+          "Disable the fleet or let the row idle out, then rerun once its count has stood still 300 s.",
+        ),
+      );
+    const operationId = retireOperationId(go, key);
+    const sent = yield* call(() =>
+      sendFleetOperation(
+        access,
+        { controllerCode: access.code, action: "fleet-retire", operationId, go, key },
+        go,
+      ),
+    );
+    // The controller's receipt names what it overrode; only closed numbers and the key leave.
+    const receipt = yield* call(async () => {
+      const kept = JSON.parse(await readFile(sent.receiptPath, "utf8")) as { result?: unknown };
+      return Schema.decodeUnknownOption(RetireReceipt)(
+        (kept.result as { result?: unknown } | undefined)?.result,
+      );
+    });
+    return {
+      operationId,
+      status: sent.status,
+      overrode: receipt._tag === "Some" ? receipt.value : null,
+    };
   });
 
 /** fleet-disable needs its own operation id: reusing the configure id is refused (configuration.ts:221-224). */

@@ -24,7 +24,7 @@ import {
 } from "../../src/pool/runtime-fleet/failure-record.ts";
 import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
-import { configureFleet, disableFleet, waitForReadyCell } from "./operations.ts";
+import { configureFleet, disableFleet, retireRow, waitForReadyCell } from "./operations.ts";
 
 export const modes = [
   "inspect",
@@ -33,6 +33,7 @@ export const modes = [
   "accept",
   "crash-cell",
   "bookmark",
+  "retire-row",
 ] as const;
 type Mode = (typeof modes)[number];
 const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
@@ -41,6 +42,8 @@ export interface DispatchInput {
   mode: string;
   go: string;
   active?: string;
+  /** retire-row only: the row's key from the lane's inspect. */
+  key?: string;
   ref: string;
   event: string;
 }
@@ -194,7 +197,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         ),
       );
     if (
-      ["configure-and-accept", "disable", "crash-cell", "bookmark"].includes(mode) &&
+      ["configure-and-accept", "disable", "crash-cell", "bookmark", "retire-row"].includes(mode) &&
       !goPattern.test(input.go)
     )
       return yield* Effect.fail(
@@ -277,6 +280,14 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       return { ...evidence, acceptance, ...(yield* read()) };
     }
     if (mode === "disable") return { ...evidence, disable: yield* disableFleet(access, input.go) };
+    if (mode === "retire-row") {
+      const key = input.key ?? "";
+      const named = (fleet: ReturnType<typeof fleetSummary>) =>
+        fleet.rows.filter((row) => row.key.startsWith(key));
+      const before = named((yield* read()).fleet);
+      const retired = yield* retireRow(access, input.go, key);
+      return { ...evidence, before, retired, after: named((yield* read()).fleet) };
+    }
     if (mode === "bookmark")
       return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };
     const acceptance = yield* needAcceptance(deps);

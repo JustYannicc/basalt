@@ -51,6 +51,15 @@ type PlacementDecision =
   | "redraw";
 
 /** One closed line per admission decision, so where each runtime landed is visible. */
+/** The lane's key for a row: the first 24 hex digits of its slot's SHA-256. */
+async function rowKey(slotId: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(slotId));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 24);
+}
+
 function logPlacement(
   identity: SlotIdentity,
   database: RuntimeDistance | undefined,
@@ -95,6 +104,8 @@ export interface FleetCell {
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   /** The cell's own stream count, read without draining it; without it a ready count stays as is. */
   activity?(identity: SlotIdentity): Promise<CellCount>;
+  /** Releases a draining cell's count that stood still `leakedStreamsMs`; the cell checks both. */
+  releaseStill?(identity: SlotIdentity): Promise<{ released: number; stillMs: number }>;
   /** Whether the cell is proven gone; false while its stop is still under way. */
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
@@ -397,6 +408,44 @@ export class RuntimeFleet {
   }
   private placement() {
     return { comfortable: this.deps.targetActive, primary: this.primaryPlace };
+  }
+  /**
+   * The operator's retirement of one named draining row, whose count no stream has moved for
+   * `countStillMs`. A count left by a lost release keeps a row from ever retiring otherwise. It
+   * overrides the count, on the cell and in the ledger, and upkeep's ordinary retirement then stops
+   * the cell and holds its place until the provider proves the instance gone. Never a ready row:
+   * a row that can take calls is drained first, by a disable or by idling out.
+   */
+  async retireRow(operationId: string, go: string, key: string) {
+    const rows = await this.deps.state.inspect();
+    const matches: FleetRow[] = [];
+    for (const row of rows)
+      if ((await rowKey(row.target.slotId)).startsWith(key)) matches.push(row);
+    const row = matches[0];
+    if (matches.length !== 1 || !row) throw new FleetRefused("identity");
+    if (row.phase !== "draining" || !row.identity) throw new SlotRefused("selection");
+    const ledgerStillMs = this.deps.now() - row.lastUsedAt;
+    if (ledgerStillMs < countStillMs) throw new FleetRefused("draining");
+    const cell = this.cell(row.target);
+    if (!cell.releaseStill) throw new FleetRefused("uncertain");
+    const released = await cell.releaseStill(row.identity);
+    // The ledger is lowered only while it is exactly what was read, as any reconcile is.
+    if (row.active > 0 && !(await this.deps.state.reconcileActive(row.identity, row, 0)))
+      throw new FleetRefused("uncertain");
+    const receipt = {
+      operationId,
+      go,
+      key: await rowKey(row.target.slotId),
+      slot: row.target.slotId,
+      ordinal: row.target.homePeerOrdinal ?? null,
+      ledger: row.active,
+      cell: released.released,
+      ledgerStillMs,
+      cellStillMs: released.stillMs,
+    };
+    console.warn("POOL_FLEET_ROW_RETIRE_OVERRIDE", receipt);
+    this.deps.changed?.();
+    return receipt;
   }
   async recoverPrimary() {
     const failure = this.primaryFailure;

@@ -194,6 +194,7 @@ export async function harness(options: HarnessOptions = {}) {
   };
   const actions: string[] = [];
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
+  const retires: { operationId: string; go: string; key: string }[] = [];
   let restart = 0;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
   const providerRequests: string[] = [];
@@ -232,6 +233,23 @@ export async function harness(options: HarnessOptions = {}) {
       ]);
       restart = 3;
       return { signalled: true };
+    },
+    // The controller's own rules are src/pool/runtime-fleet-retire-row.test.ts's; this records the send
+    // and leaves the row as the override does: count 0, then retired by upkeep.
+    retireRow: async (operationId, go, key) => {
+      retires.push({ operationId, go, key });
+      const rows = (await state.inspect()).map((row) => ({ ...row, active: 0 }));
+      storage.values.set("runtime-fleet-v1:resources", rows);
+      return {
+        operationId,
+        go,
+        key,
+        ordinal: 1,
+        ledger: 6,
+        cell: 6,
+        ledgerStillMs: 300_000,
+        cellStillMs: 2_400_000,
+      };
     },
     inspectCrash: async (_identity, nonce) => ({
       submission: (await storage.get(crashNonceKey(nonce))) ?? null,
@@ -378,6 +396,7 @@ export async function harness(options: HarnessOptions = {}) {
     poolReads,
     actions,
     crashes,
+    retires,
     providerRequests,
     storage,
     configuration,

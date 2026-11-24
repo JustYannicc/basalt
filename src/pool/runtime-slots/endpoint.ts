@@ -50,6 +50,7 @@ import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
+import { leakedStreamsMs } from "./forced-restart-timing.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
 import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
@@ -554,6 +555,11 @@ export class RuntimeEndpoint {
       await this.store.abandon(target);
       return { stopped: !this.ctx.container!.running };
     });
+  }
+  /** The operator's override of a count that stood still on a draining runtime (`fleet-retire`). */
+  releaseStill(identity: SlotIdentity) {
+    this.bound(identity);
+    return this.serialize(() => this.activity.releaseStill(identity, leakedStreamsMs));
   }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {

@@ -199,3 +199,27 @@ for (const failure of ["before", "after"] as const) {
     await reconstructed.retire(identity);
   });
 }
+
+test("an operator releases a draining count only once it has stood still the leaked-streams bound", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await activity.initialize(identity, true);
+  // Six releases lost with their isolate: nothing else ever lowers this count.
+  for (let call = 0; call < 6; call++) await activity.acquire(identity);
+  await assert.rejects(activity.releaseStill(identity, 300_000), /selection/, "an open count");
+  await activity.drain(identity);
+  context.mock.timers.tick(299_999);
+  await assert.rejects(activity.releaseStill(identity, 300_000), /draining/, "still moving");
+  context.mock.timers.tick(1);
+  assert.deepEqual(await activity.releaseStill(identity, 300_000), {
+    released: 6,
+    stillMs: 300_000,
+  });
+  const row = await activity.inspect(identity);
+  assert.deepEqual([row?.phase, row?.active, row?.known], ["draining", 0, true]);
+  // The ordinary retirement now goes ahead, as for any drained runtime.
+  await activity.retire(identity);
+  assert.equal((await activity.inspect(identity))?.phase, "retiring");
+});
