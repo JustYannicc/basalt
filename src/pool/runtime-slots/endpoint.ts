@@ -365,6 +365,8 @@ export class RuntimeEndpoint {
     return {
       identity: { ...record.authorization.target, bootId: status.boot_id },
       leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
+      // The whole grant, so the caller counts its own send as the start and the read only once.
+      ...(status.policyLeaseMs ? { grantMs: status.policyLeaseMs } : {}),
       ...(status.database ? { database: status.database } : {}),
     };
   }

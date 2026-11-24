@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { BoundSlotDriver } from "./runtime-slots/transport.ts";
 import { slotIdentity } from "../../scripts/pool-tests/runtime-slots-fixture.ts";
 import { runtimeFailureDiagnostic } from "./runtime-route-diagnostic.ts";
+import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 
 test("a private endpoint transport refusal throws with its closed cause while provider HTTP conflicts pass through", async () => {
   const identity = slotIdentity("candidate");
@@ -144,4 +145,43 @@ test("cancellation after fresh health completes cannot return a usable lease", a
   }));
   await assert.rejects(driver.start(identity, cancelled.signal), /after health completion/);
   assert.deepEqual(calls, ["/start", "/health"]);
+});
+
+/** An endpoint that answers after `afterMs` with its remaining lease and, from a newer one, its grant. */
+const answering = (identity: SlotIdentity, afterMs: number, body: Record<string, number>) =>
+  new BoundSlotDriver(() => ({
+    fetch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, afterMs));
+      return Response.json({ identity, ...body });
+    },
+  }));
+
+test("the recovery and adoption read counts the grant once, as the health read does", async () => {
+  const identity = slotIdentity("candidate");
+  // The endpoint's read took 600 ms of a 1 000 ms grant: 400 left when it answered.
+  const ready = await answering(identity, 600, { leaseMs: 400, grantMs: 1_000 }).ready(
+    identity,
+    "fingerprint",
+    identity.imageInput,
+  );
+  assert.ok(ready.policyLeaseUntil > performance.now());
+  const health = await answering(identity, 600, { leaseMs: 400, grantMs: 1_000 }).health(
+    identity,
+    AbortSignal.timeout(5_000),
+  );
+  assert.ok(health.policyLeaseUntil > performance.now());
+});
+
+test("an older endpoint's answer without its grant is counted from its remaining lease, as before", async () => {
+  const identity = slotIdentity("candidate");
+  const begun = performance.now();
+  const health = await answering(identity, 0, { leaseMs: 400 }).health(
+    identity,
+    AbortSignal.timeout(5_000),
+  );
+  assert.ok(health.policyLeaseUntil - begun <= 400 + 50);
+  await assert.rejects(
+    answering(identity, 600, { leaseMs: 400 }).health(identity, AbortSignal.timeout(5_000)),
+    SlotRefused,
+  );
 });

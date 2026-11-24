@@ -11,6 +11,8 @@ export interface PoolStatus {
   boot_id: string;
   started_at: string;
   policyLeaseUntil?: number;
+  /** The lease the container granted, counted from this read's send (`policyLeaseUntil`'s length). */
+  policyLeaseMs?: number;
   launch?: { generation: number; tokenHash: string };
   database?: RuntimeDistance;
   /** The container's front layer is up and keeps resumable answers (#1642). */

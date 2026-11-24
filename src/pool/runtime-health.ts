@@ -50,7 +50,7 @@ export async function readRuntimeHealth(
       ? { launch: { generation: Number(generation), tokenHash } }
       : {}),
     ...(milliseconds > 0 && milliseconds <= policyHealthLeaseMs
-      ? { policyLeaseUntil: requestedAt + milliseconds }
+      ? { policyLeaseUntil: requestedAt + milliseconds, policyLeaseMs: milliseconds }
       : {}),
     ...(database ? { database } : {}),
     ...("resume" in status && status.resume === "v1" ? { resume: "v1" as const } : {}),
