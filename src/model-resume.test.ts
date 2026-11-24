@@ -371,18 +371,19 @@ test("an event larger than the judge holds is still judged by its type", async (
   assert.equal(finished.resumes.length, 0);
 });
 
-/** As `cuttingPool`, with the first part ending at an exact byte offset. */
+/** As `cuttingPool`, with each part ending at an exact byte offset. */
 async function cuttingPoolBytes(text: string, offsets: number[], path = "/v1/messages") {
   const whole = encoder.encode(text);
   const resumes: number[] = [];
+  // In reads of 4093 bytes, so a large event spans many of them, as it does from a binding.
   const part = (from: number, end: number, headers: Record<string, string>) => {
-    let sent = false;
+    let offset = from;
     return new Response(
       new ReadableStream<Uint8Array>({
         pull(controller) {
-          if (sent) return controller.close();
-          sent = true;
-          controller.enqueue(whole.slice(from, end));
+          if (offset >= end) return controller.close();
+          controller.enqueue(whole.slice(offset, Math.min(end, offset + 4093)));
+          offset += 4093;
         },
       }),
       { headers },
@@ -421,3 +422,15 @@ async function cuttingPoolBytes(text: string, offsets: number[], path = "/v1/mes
   );
   return { text: await response.text(), resumes };
 }
+
+test("a large terminal event whose type is not its first key is still judged by its name", async () => {
+  const big = `event: response.completed\ndata: {"sequence_number":9,"type":"response.completed","response":{"output":"${"x".repeat(300 * 1024)}"}}\n\n`;
+  const text = shapes.responses.slice(0, 3).join("") + big;
+  const whole = encoder.encode(text).byteLength;
+  const finished = await cuttingPoolBytes(text, [whole], "/v1/responses");
+  assert.equal(finished.text, text);
+  assert.equal(finished.resumes.length, 0);
+  const cut = await cuttingPoolBytes(text, [whole - 1000], "/v1/responses");
+  assert.equal(cut.text, text);
+  assert.equal(cut.resumes.length, 1);
+});

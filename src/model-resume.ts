@@ -132,7 +132,9 @@ function terminalJudge() {
   let terminal = false;
   const close = (event: string) => {
     const data = eventData(event);
-    if (data !== undefined && isTerminal(data)) terminal = true;
+    // The event's own name says the same in both protocols, and survives a head cut short.
+    if (data !== undefined && (isTerminal(data) || terminalTypes.has(eventName(event))))
+      terminal = true;
   };
   const scan = (incoming: string) => {
     let text = incoming;
@@ -169,6 +171,11 @@ function terminalJudge() {
       return terminal;
     },
   };
+}
+
+function eventName(event: string) {
+  const line = event.split(/\r?\n/).find((value) => value.startsWith("event:"));
+  return line === undefined ? "" : line.slice(6).trim();
 }
 
 function eventData(event: string) {
