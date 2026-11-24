@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A continuation sent right after the upstream closes an idle websocket is refused when the node has already seen the EOF, or reported lost when it has not. Either refusal is correct; the pool image build's websocket tests accept both."
+    }
+  }
+}

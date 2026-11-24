@@ -5,6 +5,7 @@ import {
   deviceCode,
   deviceProblem,
   DeviceApprovalError,
+  modelsUnavailable,
   readDevicePools,
   readDeviceRequest,
   reviewDeviceDecision,
@@ -49,6 +50,7 @@ export function NativeDevice() {
   const [models, setModels] = useState(true);
   const [tools, setTools] = useState(true);
   const [problem, setProblem] = useState("");
+  const [toolsOnly, setToolsOnly] = useState(false);
   const [busy, setBusy] = useState(false);
   const mutation = useRef(false);
   const lifetime = useRef<AbortController | null>(null);
@@ -72,11 +74,17 @@ export function NativeDevice() {
           const available = await readDevicePools(controller.signal);
           if (controller.signal.aborted) return;
           setChoices(available);
-          setPool((selected) =>
-            available.pools.some((entry) => entry.id === selected)
-              ? selected
-              : (available.pools.find((entry) => entry.mine) ?? available.pools[0])!.id,
-          );
+          // The pool did not answer: there is no pool to pick, and only tools can be approved.
+          if (available.toolsOnly) {
+            setPool("");
+            setProblem(modelsUnavailable);
+            setToolsOnly(true);
+          } else
+            setPool((selected) =>
+              available.pools.some((entry) => entry.id === selected)
+                ? selected
+                : (available.pools.find((entry) => entry.mine) ?? available.pools[0])!.id,
+            );
         } catch (error) {
           if (!controller.signal.aborted) setProblem(deviceProblem(error));
         }
@@ -95,6 +103,7 @@ export function NativeDevice() {
   function reload() {
     setView({ kind: "loading" });
     setProblem("");
+    setToolsOnly(false);
     setChoices(undefined);
     setRevision((value) => value + 1);
   }
@@ -113,34 +122,39 @@ export function NativeDevice() {
     reload();
   }
 
-  async function decide(accept: boolean) {
+  async function decide(accept: boolean, access = { models, tools }) {
     if (mutation.current || !code || view.kind !== "ready") return;
     mutation.current = true;
     setBusy(true);
     setProblem("");
+    setToolsOnly(false);
     try {
       const signal = lifetime.current!.signal;
       const result = await reviewDeviceDecision(
         code,
         view.request,
         signal,
-        accept ? { name, pool, models, tools } : undefined,
+        accept ? { name, pool, ...access } : undefined,
+        choices,
       );
       if (signal.aborted) return;
       if (result.kind === "review") {
         setView({ kind: "ready", request: result.request });
         setProblem(result.message);
-        if (result.available) {
-          const available = result.available;
-          setChoices(available);
+        const available = result.available;
+        // A changed account brings no choices: the ones held were read for the previous account.
+        setChoices(available);
+        if (available)
           setPool((available.pools.find((entry) => entry.mine) ?? available.pools[0])!.id);
-        }
       } else setView({ kind: result.status });
     } catch (error) {
       if (lifetime.current?.signal.aborted) return;
       if (error instanceof DeviceApprovalError && error.kind === "uncertain")
         setView({ kind: "uncertain" });
-      else if (error instanceof DeviceApprovalError && error.kind === "signed-out")
+      else if (error instanceof DeviceApprovalError && error.kind === "models-unavailable") {
+        setProblem(error.message);
+        setToolsOnly(true);
+      } else if (error instanceof DeviceApprovalError && error.kind === "signed-out")
         setView({ kind: "signed-out" });
       else setProblem(deviceProblem(error));
     } finally {
@@ -241,12 +255,14 @@ export function NativeDevice() {
                     <select
                       id="native-pool"
                       className={`${field} max-w-[65%]`}
-                      disabled={!choices || busy || !models}
+                      disabled={!choices?.pools.length || busy || !models}
                       value={pool}
                       onChange={(event) => setPool(event.target.value)}
                     >
-                      {!choices && (
-                        <option value="">{problem ? "Pools unavailable" : "Loading pools…"}</option>
+                      {!choices?.pools.length && (
+                        <option value="">
+                          {problem || choices?.toolsOnly ? "Pools unavailable" : "Loading pools…"}
+                        </option>
                       )}
                       {choices?.pools.map((entry) => (
                         <option key={entry.id} value={entry.id}>
@@ -304,7 +320,23 @@ export function NativeDevice() {
               {problem && (
                 <div className="grid gap-2">
                   <Problem>{problem}</Problem>
-                  {!choices && (
+                  {toolsOnly && (
+                    <div>
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => {
+                          setModels(false);
+                          setTools(true);
+                          void decide(true, { models: false, tools: true });
+                        }}
+                      >
+                        Connect with tools only
+                      </Button>
+                    </div>
+                  )}
+                  {/* Trying again reads the pool again, the way back to models. */}
+                  {(!choices || choices.toolsOnly) && (
                     <div className="flex flex-wrap items-center gap-4">
                       <Button variant="outline" disabled={busy} onClick={reload}>
                         Try again
@@ -318,7 +350,9 @@ export function NativeDevice() {
               )}
               <div className="flex flex-wrap gap-2">
                 <Button
-                  disabled={busy || !choices || !pool || !validName || (!models && !tools)}
+                  disabled={
+                    busy || !choices || (models && !pool) || !validName || (!models && !tools)
+                  }
                   onClick={() => void decide(true)}
                 >
                   {busy ? "Confirming…" : "Connect device"}

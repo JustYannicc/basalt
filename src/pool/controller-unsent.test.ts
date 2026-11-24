@@ -92,6 +92,7 @@ test("a container's own answer can't carry the pool's refusal or resend marks", 
       "X-Signalbox-Runtime-Failure-Step": "endpoint_health",
       "X-Signalbox-Runtime-Failure-Reason": "not-a-known-reason",
       "X-Signalbox-Runtime-Defect": "1",
+      "X-Signalbox-Runtime-Failure-Ready": '{"lapses":1}',
       "content-type": "application/json",
     },
   });
@@ -103,9 +104,15 @@ test("a container's own answer can't carry the pool's refusal or resend marks", 
     "X-Signalbox-Runtime-Failure-Step",
     "X-Signalbox-Runtime-Failure-Reason",
     "X-Signalbox-Runtime-Defect",
+    "X-Signalbox-Runtime-Failure-Ready",
   ])
     assert.equal(cleaned.headers.get(name), null, name);
   assert.equal(cleaned.headers.get("content-type"), "application/json");
+  // The readiness signals alone are a pool header too.
+  const ready = containerAnswer(
+    new Response("{}", { headers: { "X-Signalbox-Runtime-Failure-Ready": '{"lapses":1}' } }),
+  );
+  assert.equal(ready.headers.get("X-Signalbox-Runtime-Failure-Ready"), null);
   // An ordinary answer stays the same object.
   const plain = new Response("ok");
   assert.equal(containerAnswer(plain), plain);

@@ -137,6 +137,10 @@ export const RuntimeRetirementObservation = Schema.Struct({
   retired: Schema.Boolean,
   running: Schema.Boolean,
   retireNotStarted: Schema.optional(Schema.Literal(true)),
+  /** The retiring latch is set and the container still runs: its stop hasn't ended yet. */
+  stopping: Schema.optional(Schema.Literal(true)),
+  /** How this object's container last ended, once it has; read it with `readEnd`. */
+  end: Schema.optional(Schema.Unknown),
   provider: Schema.optional(
     Schema.Struct({
       accountId: Identifier,
@@ -151,6 +155,28 @@ export class SlotRefused extends Error {
   constructor(reason: SlotRefused["reason"]) {
     super(`Pool runtime slot refused: ${reason}`);
     this.reason = reason;
+  }
+}
+/**
+ * A health answer that came back after the policy lease it reported had run out: the round trip,
+ * not the runtime, was slower than the lease. It carries both, so the miss can say so.
+ */
+export class HealthLeaseElapsed extends SlotRefused {
+  readonly roundTripMs: number;
+  readonly leaseMs: number;
+  constructor(roundTripMs: number, leaseMs: number) {
+    super("unhealthy");
+    this.roundTripMs = roundTripMs;
+    this.leaseMs = leaseMs;
+  }
+}
+/**
+ * The container's own monitor recorded that it exited: not a flag that may be stale, but the
+ * platform's report of the end. It refuses like any stopped container, and says why.
+ */
+export class ContainerEnded extends SlotRefused {
+  constructor() {
+    super("unhealthy");
   }
 }
 export const sameTarget = (left: SlotTarget, right: SlotTarget) =>

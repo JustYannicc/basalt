@@ -38,6 +38,10 @@ export class RuntimeSlotStorage {
     this.storage = storage;
   }
 
+  /** One transaction without the selection snapshot, for a record that reads only its own key. */
+  plain<T>(work: (transaction: SlotStorage) => Promise<T>) {
+    return this.storage.transaction(work);
+  }
   transact<T>(work: (snapshot: SlotSnapshot, transaction: SlotStorage) => Promise<T>) {
     return this.storage.transaction(async (transaction) => {
       const selection = await transaction.get<unknown>(slotSelectionKey);

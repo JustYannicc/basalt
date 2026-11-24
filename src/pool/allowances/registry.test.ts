@@ -247,7 +247,7 @@ test("plans whose last usable row expires within a week are named once per day",
   let delivered = false;
   const report = async (rows: readonly { plan: string }[]) => {
     reports.push(rows.map((row) => row.plan));
-    return delivered;
+    return { delivered };
   };
   await registry.reportExpiring(report);
   delivered = true;
@@ -256,6 +256,6 @@ test("plans whose last usable row expires within a week are named once per day",
   await registry.reportExpiring(report);
   clock += 12 * 3_600_000;
   await registry.reportExpiring(report);
-  // A failed delivery retries the same day; a delivered one waits for the next day.
+  // A failed delivery waits out its retry, then counts the day; a delivered one waits a day.
   assert.deepEqual(reports, [["max_20x"], ["max_20x"], ["max_20x"]]);
 });

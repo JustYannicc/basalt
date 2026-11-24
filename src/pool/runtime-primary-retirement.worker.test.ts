@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handoffWorker } from "../../scripts/pool-tests/runtime-handoff-worker.ts";
-import { runtimeApplicationFixture } from "../../scripts/pool-tests/runtime-provider-fixture.ts";
+import {
+  listStoppedAsInactive,
+  runtimeApplicationFixture,
+} from "../../scripts/pool-tests/runtime-provider-fixture.ts";
 
 async function promoted() {
   const f = await handoffWorker();
@@ -85,4 +88,18 @@ test("native retirement retains primary capacity until current provider absence 
   assert.equal((await f.command("drain", { operationId })).status, 200);
   assert.equal((await f.inspect()).selection.draining, undefined);
   assert.equal(f.old.calls.destroy, 1);
+});
+
+test("a destroyed primary the provider still lists as inactive retires on the endpoint's stopped report", async (context) => {
+  const f = await promoted();
+  const restore = listStoppedAsInactive(f.old);
+  // The listing wraps the fixture's fetch, so it is put back first.
+  context.after(async () => {
+    restore();
+    await f.cleanup();
+  });
+  const result = await f.command("drain", { operationId: "primary-listed-inactive" });
+  assert.equal(result.status, 200, await result.clone().text());
+  assert.equal(f.old.calls.destroy, 1);
+  assert.equal((await f.inspect()).selection.draining, undefined);
 });

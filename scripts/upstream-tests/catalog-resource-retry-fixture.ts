@@ -3,13 +3,15 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { Effect, ErrorReporter, Logger } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
-import { SqlClient } from "effect/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
+import type { BuildBusy as Busy } from "../../.upstream/packages/sdk/src/contracts/version.ts";
+import type { drainProvisioning as Drain } from "../../.upstream/apps/hosted/server/src/implementation/provisioning.ts";
 
 const upstream = fileURLToPath(new URL("../../.upstream/", import.meta.url));
 const load = (path: string) => import(new URL(path, new URL(`file://${upstream}/`)).href);
 const { StorageHost } = await load("packages/sdk/src/contracts/storage.ts");
-const { VersionBuildFailed } = await load("packages/sdk/src/contracts/version.ts");
+const { BuildBusy, VersionBuildFailed } = await load("packages/sdk/src/contracts/version.ts");
 const { RuntimeBuildFailed } = await load("packages/sdk/src/contracts/runtime.ts");
 const { versionBuildFailed } = await load(
   "packages/sdk/src/implementation/version-build-failure.ts",
@@ -103,6 +105,8 @@ const fixture = (
     readonly persistent?: boolean;
     readonly invalidSource?: boolean;
     readonly deploymentUnanswered?: boolean;
+    /** The compiler's queue budget runs out: every alpha build answers BuildBusy. */
+    readonly busy?: boolean;
   },
   feedUrl: string,
 ) => {
@@ -155,6 +159,7 @@ const fixture = (
       build: ({ app: id }: { app: string }) =>
         Effect.suspend(() => {
           buildCalls++;
+          if (id === "alpha" && options.busy) return Effect.fail<Busy>(new BuildBusy());
           const request = Effect.tryPromise({
             try: async () => {
               compilerCalls++;
@@ -265,10 +270,11 @@ export const withScenario = async (
     readonly persistent?: boolean;
     readonly invalidSource?: boolean;
     readonly deploymentUnanswered?: boolean;
+    readonly busy?: boolean;
   },
   run: (scenario: {
-    readonly execute: Effect.Effect<void, unknown, never>;
-    readonly row: Effect.Effect<readonly Record<string, unknown>[], unknown, never>;
+    readonly execute: Effect.Effect<void, Effect.Error<ReturnType<typeof Drain>>, never>;
+    readonly row: Effect.Effect<readonly Record<string, unknown>[], SqlError.SqlError, never>;
     readonly record: Effect.Effect<readonly CatalogRecordRow[], unknown, never>;
     readonly links: Effect.Effect<readonly Record<string, unknown>[], unknown, never>;
     readonly sql: SqlClient.SqlClient;

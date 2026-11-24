@@ -99,6 +99,7 @@ const poolOnly = [
   "X-Signalbox-Runtime-Failure-Step",
   "X-Signalbox-Runtime-Failure-Reason",
   "X-Signalbox-Runtime-Failure-Cause",
+  "X-Signalbox-Runtime-Failure-Ready",
   "X-Signalbox-Runtime-Defect",
 ];
 

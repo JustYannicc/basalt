@@ -34,3 +34,37 @@ export async function runtimeProviderFixture(target: SlotTarget) {
     ),
   };
 }
+
+/**
+ * Lists a runtime's instance as production does once its container has stopped: still under
+ * state=active, as inactive. Returns the restore for the previous fetch.
+ */
+export function listStoppedAsInactive(runtime: {
+  target: SlotTarget;
+  ctx: { container: { running: boolean } };
+}) {
+  const raw = runtimeApplicationFixture(runtime.target);
+  const previous = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (
+      runtime.ctx.container.running ||
+      !url.pathname.endsWith(`/applications/${raw.id}/instances-v2`)
+    )
+      return previous(input, init);
+    return Response.json({
+      success: true,
+      errors: [],
+      result: [
+        {
+          id: runtime.target.instanceId,
+          application_id: raw.id,
+          status: { state: "inactive" },
+          image: raw.configuration.image,
+        },
+      ],
+      result_info: { next_page_token: "" },
+    });
+  };
+  return () => (globalThis.fetch = previous);
+}
