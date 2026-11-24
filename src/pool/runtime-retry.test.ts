@@ -356,19 +356,17 @@ test("a call held for the root's restart waits through everything the restart re
       return new Response(await request.text());
     },
     () => dispatched++,
-    async () => {
+    // A pass that never returns: a held call that awaited one would never be served.
+    () => {
       recoveries++;
+      return new Promise<void>(() => {});
     },
     { timing, rootHoldMs: recovering(clock) },
   );
   assert.equal(response.status, 200);
   assert.equal(await response.text(), "payload");
   assert.equal(dispatched, 1);
-  assert.equal(
-    recoveries,
-    0,
-    "the recovery a call holds for runs on its own; it never joins a pass",
-  );
+  assert.equal(recoveries, 1, "a hold kicks the recovery once and never waits on it");
   assert.ok(clock.now >= 50_000 && clock.now < 51_000, `served at ${clock.now}`);
   assert.ok(
     clock.pauses.every((pause) => pause > 0 && pause <= 1_000),
@@ -382,25 +380,27 @@ for (const [refusal, detectedAt] of [
   [containerStopped, 0],
   [recordReplaced, -100_000],
 ] as const)
-  test(`a recovery that never completes ends a call held ${-detectedAt / 1_000} s into it with the retryable 503 at its bound: ${refusal.name}`, async () => {
-    const { clock, timing } = fakeTiming();
-    const response = await forwardRecoverably(
-      modelRequest(),
-      async () => {
-        throw refusal();
-      },
-      () => assert.fail("a held call is never sent"),
-      // A recovery pass that runs out its whole budget never stretches the hold.
-      async () => {
-        clock.now += runtimeRecoveryBudgetMs;
-      },
-      { timing, rootHoldMs: recovering(clock, detectedAt) },
-    );
-    assert.equal(response.status, 503);
-    assert.equal(response.headers.get("Retry-After"), "1");
-    const bound = detectedAt + restartStartBoundMs;
-    assert.ok(clock.now >= bound && clock.now <= bound + 1_000, `ended at ${clock.now}`);
-  });
+  test(
+    `a recovery that never completes ends a call held ${-detectedAt / 1_000} s into it with the retryable 503 at its bound: ${refusal.name}`,
+    { timeout: 10_000 },
+    async () => {
+      const { clock, timing } = fakeTiming();
+      const response = await forwardRecoverably(
+        modelRequest(),
+        async () => {
+          throw refusal();
+        },
+        () => assert.fail("a held call is never sent"),
+        // A recovery pass that never returns never stretches the hold.
+        () => new Promise<void>(() => {}),
+        { timing, rootHoldMs: recovering(clock, detectedAt) },
+      );
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("Retry-After"), "1");
+      const bound = detectedAt + restartStartBoundMs;
+      assert.ok(clock.now >= bound && clock.now <= bound + 1_000, `ended at ${clock.now}`);
+    },
+  );
 
 test("a start that found no container is waited on only while the root's recovery holds", async (context) => {
   context.mock.method(console, "error", () => {});

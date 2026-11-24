@@ -25,7 +25,7 @@ import {
 } from "./proof.ts";
 import { slotSelectionKey, type RuntimeSlotStorage, type SlotStorage } from "./storage.ts";
 import type { BoundSlotDriver } from "./transport.ts";
-import type { RuntimeProviderReader } from "../runtime-provider/read.ts";
+import { ProviderCredentialRefused, type RuntimeProviderReader } from "../runtime-provider/read.ts";
 import { providerDigest } from "../runtime-provider/canonical.ts";
 import { signEnvelope } from "../token.ts";
 import { membershipTtlMs } from "../membership-contract.ts";
@@ -78,6 +78,8 @@ export class RuntimeSlotRecovery {
   private unavailable = false;
   /** When the outage this recovery is restoring was detected; unset while nothing is restored. */
   private outage?: number;
+  /** A pass found nothing it can do until a person acts; it ends once a pass starts the root. */
+  private stalled = false;
   private forced: RuntimeForcedRestart;
   constructor(deps: Dependencies) {
     this.deps = deps;
@@ -88,13 +90,17 @@ export class RuntimeSlotRecovery {
   }
   /**
    * What is left of the restart start bound since the outage was detected, on the clock the
-   * recovery stamps its phases with; 0 once the root serves, recovery stands down, or the bound has
-   * passed. A call may wait this long for the restart instead of failing on what it refuses.
+   * recovery stamps its phases with; 0 once the root serves, recovery stands down or stalls, or the
+   * bound has passed. A call may wait this long for the restart instead of failing on its refusals.
    */
   holdMs() {
-    return this.outage === undefined
+    return this.outage === undefined || this.stalled
       ? 0
       : Math.max(0, this.outage + restartStartBoundMs - Date.now());
+  }
+  private restored() {
+    this.outage = undefined;
+    this.stalled = false;
   }
   /**
    * An outage counts from its first detection since the root served. The clock's own marks of it
@@ -142,7 +148,7 @@ export class RuntimeSlotRecovery {
       await transaction.put(completionKey, null);
     });
     this.unavailable = false;
-    this.outage = undefined;
+    this.restored();
     // The restart served: it is not a failed restart, whenever the next refusal comes.
     await this.forced.clock.serving();
     console.info("POOL_SELECTED_RECOVERY", {
@@ -183,7 +189,7 @@ export class RuntimeSlotRecovery {
         current.selection?.active.fenced ||
         current.selection?.active.retirement
       ) {
-        this.outage = undefined;
+        this.restored();
         throw new SlotRefused("selection");
       }
       const actual = Schema.decodeUnknownSync(Retained)(
@@ -215,7 +221,7 @@ export class RuntimeSlotRecovery {
       selection.draining
     ) {
       // Nothing selected, or a state recovery never fights: no restart runs for a call to wait on.
-      this.outage = undefined;
+      this.restored();
       if (!selection) return;
       throw new SlotRefused("selection");
     }
@@ -224,7 +230,7 @@ export class RuntimeSlotRecovery {
       await driver.warm(previous, AbortSignal.any([signal, AbortSignal.timeout(recoveryWarmMs)]));
       if (awaitsProof(selection.active)) await this.proveHandedBack(previous, snapshot);
       this.unavailable = false;
-      this.outage = undefined;
+      this.restored();
       await this.forced.clock.serving();
       return;
     } catch (error) {
@@ -245,12 +251,12 @@ export class RuntimeSlotRecovery {
       slot: previous.slotId,
     });
     // Restart-on-exit alone can't recover a root that runs but refuses.
-    if (
-      await this.forced.consider(
-        { previous, epoch: selection.epoch, digest: snapshot.digest, refusal, retained },
-        signal,
-      )
-    )
+    const considered = await this.forced.consider(
+      { previous, epoch: selection.epoch, digest: snapshot.digest, refusal, retained },
+      signal,
+    );
+    if (considered === "stalled") this.stalled = true;
+    if (considered === "stopped")
       retained = Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous));
     const original = retained.authorization;
     const operationId = `restart-${(await providerDigest(previous)).slice(0, 48)}`;
@@ -258,9 +264,12 @@ export class RuntimeSlotRecovery {
       original.kind === "restart" &&
       original.operationId === operationId &&
       sameIdentity(original.previous, previous);
+    // A grant for another target fails every pass the same way until a person acts.
+    const mismatched = !sameTarget(original.target, previous);
+    if (mismatched) this.stalled = true;
     if (
       (!joining && (!sameIdentity(retained.identity, previous) || retained.running)) ||
-      !sameTarget(original.target, previous)
+      mismatched
     )
       throw new SlotRefused("uncertain");
     const selectionProof = {
@@ -294,11 +303,13 @@ export class RuntimeSlotRecovery {
         at: Date.now(),
         slot: previous.slotId,
       });
-      const observation = await provider.observe(
-        application,
-        attested ? previous.instanceId : undefined,
-        signal,
-      );
+      const observation = await provider
+        .observe(application, attested ? previous.instanceId : undefined, signal)
+        .catch((error: unknown) => {
+          // Without a credential the provider accepts, no pass restarts the root until a person acts.
+          if (error instanceof ProviderCredentialRefused) this.stalled = true;
+          throw error;
+        });
       const at = Date.now();
       const witness = attested
         ? Schema.decodeUnknownSync(Retained)(await driver.recoveryWitness(previous)).witness
@@ -346,6 +357,7 @@ export class RuntimeSlotRecovery {
       await this.forced.clock.unforcedRestart(Date.now());
     }
     signal.throwIfAborted();
+    this.stalled = false;
     console.info("POOL_SELECTED_RECOVERY", {
       phase: "starting",
       at: Date.now(),

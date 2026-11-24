@@ -3,8 +3,8 @@ import { test, type TestContext } from "node:test";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { PoolAlarms } from "./alarms.ts";
-import { runtimeRetryTiming } from "./runtime-fleet/retry.ts";
-import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import { runtimeAdmissionWaitMs, runtimeRetryTiming } from "./runtime-fleet/retry.ts";
+import { restartStartBoundMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 type Fixture = Awaited<ReturnType<typeof fleetWorkerFixture>>;
 interface Call {
@@ -71,9 +71,12 @@ async function rootUnderRecovery(context: TestContext) {
     served.set(id, (served.get(id) ?? 0) + 1);
     return new Response(`ok:${id}`);
   });
-  /** Every call is answered or asleep in its pause, so moving the clock is all that is left. */
+  /**
+   * Every call is answered or asleep in its pause, so moving the clock is all that is left. A call
+   * may first join a recovery pass, which takes the fixture about half a second.
+   */
   const idle = async () => {
-    for (let turn = 0; turn < 20_000; turn++) {
+    for (let turn = 0; turn < 200_000; turn++) {
       if (calls.filter((call) => call.settledAt === undefined).length === sleepers.size) return;
       await new Promise(setImmediate);
     }
@@ -312,5 +315,130 @@ test(
       waited >= restartStartBoundMs && waited <= restartStartBoundMs + 1_000,
       `answered ${waited} ms after the second detection`,
     );
+  },
+);
+
+/** Readiness refuses for the current boot only, as a runtime that went bad and stays bad. */
+function refuseCurrentBoot(f: Fixture) {
+  const boot = f.old.identity().bootId;
+  f.old.hooks.health = async () =>
+    f.old.identity().bootId === boot ? new Response(null, { status: 503 }) : undefined;
+  return boot;
+}
+
+/** A call that arrives now on a recovery that can't progress gets today's 30 s, as passes go on. */
+async function answeredAsToday(root: Awaited<ReturnType<typeof rootUnderRecovery>>) {
+  const arrived = root.now();
+  root.call("stalled");
+  await root.idle();
+  for (let at = 10_000; at <= runtimeAdmissionWaitMs + 10_000; at += 10_000) {
+    await root.advance(arrived + at);
+    await pass(root.f);
+    await root.idle();
+  }
+  const [call] = root.calls;
+  assert.equal(call?.response?.status, 503, "not held");
+  assert.equal(call.response.headers.get("Retry-After"), "1");
+  await call.response.body?.cancel();
+  const waited = call.settledAt! - arrived;
+  assert.ok(
+    waited >= runtimeAdmissionWaitMs && waited <= runtimeAdmissionWaitMs + 1_000,
+    `answered after ${waited} ms`,
+  );
+}
+
+test(
+  "a recovery that needs a person after a failed stop holds no call",
+  { timeout: 30_000 },
+  async (context) => {
+    const root = await rootUnderRecovery(context);
+    const { f } = root;
+    f.old.ctx.container.signal = () => {};
+    f.old.ctx.container.destroy = async () => {
+      throw new Error("synthetic destroy failure");
+    };
+    refuseCurrentBoot(f);
+    const detected = root.now();
+    await pass(f);
+    await root.advance(detected + unservingBoundMs);
+    await pass(f);
+    const { recovery } = (await f.send("inspect")) as { recovery: { needsPerson?: unknown } };
+    assert.deepEqual(recovery.needsPerson, {
+      at: detected + unservingBoundMs,
+      reason: "stop_failed",
+    });
+    await answeredAsToday(root);
+  },
+);
+
+test(
+  "a recovery at its hourly forced-restart limit holds no call",
+  { timeout: 30_000 },
+  async (context) => {
+    const root = await rootUnderRecovery(context);
+    const { f } = root;
+    f.old.hooks.sigtermExits = true;
+    for (let restart = 0; restart < 3; restart++) {
+      const boot = refuseCurrentBoot(f);
+      await pass(f);
+      await root.advance(root.now() + unservingBoundMs);
+      for (let attempt = 0; attempt < 8 && f.old.identity().bootId === boot; attempt++) {
+        await pass(f);
+        await root.advance(root.now() + 2_000);
+      }
+      assert.notEqual(f.old.identity().bootId, boot, `forced restart ${restart + 1}`);
+      await pass(f);
+    }
+    refuseCurrentBoot(f);
+    await pass(f);
+    await root.advance(root.now() + unservingBoundMs);
+    await pass(f);
+    const { recovery } = (await f.send("inspect")) as {
+      recovery: { needsPerson?: { reason: string } };
+    };
+    assert.equal(recovery.needsPerson?.reason, "restart_limit");
+    await answeredAsToday(root);
+  },
+);
+
+test(
+  "a recovery whose provider credential is missing holds no call",
+  { timeout: 60_000 },
+  async (context) => {
+    const root = await rootUnderRecovery(context);
+    const { f } = root;
+    f.secretAvailable(false);
+    f.old.crash();
+    await pass(f);
+    assert.equal(f.old.calls.start, 0, "no restart without a provider observation");
+    await answeredAsToday(root);
+  },
+);
+
+test(
+  "once the credential is back and a pass starts the root again, calls hold for the restart",
+  { timeout: 60_000 },
+  async (context) => {
+    const root = await rootUnderRecovery(context);
+    const { f } = root;
+    f.secretAvailable(false);
+    f.old.ctx.container.start = () => {
+      throw new Error("synthetic: no container instance");
+    };
+    f.old.crash();
+    const detected = root.now();
+    await pass(f);
+    f.secretAvailable(true);
+    await root.advance(detected + 2_000);
+    await pass(f);
+    assert.equal(root.phases().filter((row) => row.phase === "starting").length, 1);
+    root.call("held-again");
+    await root.idle();
+    for (let at = 10_000; at <= 60_000; at += 10_000) {
+      await root.advance(detected + at);
+      await pass(f);
+      await root.idle();
+    }
+    assert.equal(root.calls[0]?.settledAt, undefined, "held past today's 30 s");
   },
 );

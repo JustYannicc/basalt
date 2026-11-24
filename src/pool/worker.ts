@@ -337,6 +337,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       namespaces: () => this.fleetNamespaces(),
       provider: new RuntimeProviderReader(env.POOL_PROVIDER_OBSERVATION_TOKEN),
       currentRequests: () => this.modelStreams.active,
+      handingOver: () => this.handover.draining,
       wrap: nativeResponse,
       schedule: (at) => this.alarms.schedule("fleet", at),
       legacyPeers: {

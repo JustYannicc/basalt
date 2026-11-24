@@ -81,6 +81,8 @@ export class ProviderObservationRefused extends Error {
 }
 /** A state outside the documented list: never absent, never proof, and named on its own. */
 class UndocumentedInstanceState extends ProviderObservationRefused {}
+/** No credential, or one the provider refuses: nothing reads it again until a person acts. */
+export class ProviderCredentialRefused extends ProviderObservationRefused {}
 
 /** A read-only credential observes actual provider state; desired bindings never stand in for it. */
 export class RuntimeProviderReader {
@@ -128,7 +130,7 @@ export class RuntimeProviderReader {
     try {
       // Resolve on each observation so provisioning or rotation needs no Worker restart.
       const token = await this.credential(signal);
-      if (!token) throw new ProviderObservationRefused();
+      if (!token) throw new ProviderCredentialRefused();
       const response = await this.fetchResponse(url, {
         method: "GET",
         redirect: "manual",
@@ -137,6 +139,8 @@ export class RuntimeProviderReader {
       });
       if (response.status !== 200 || !response.body) {
         await response.body?.cancel();
+        if (response.status === 401 || response.status === 403)
+          throw new ProviderCredentialRefused();
         throw new ProviderObservationRefused();
       }
       const reader = response.body.getReader();

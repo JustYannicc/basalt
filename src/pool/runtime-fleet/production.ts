@@ -68,6 +68,8 @@ interface Dependencies {
   provider: RuntimeProviderReader;
   legacyPeers: HomePeerEndpoint;
   currentRequests(): number;
+  /** Whether a code handover drains this object; no call waits for the root's recovery then. */
+  handingOver?(): boolean;
   wrap(response: Response, lease: NativeStreamLease): Response;
   schedule?(at: number): Promise<void>;
 }
@@ -413,7 +415,7 @@ export class PoolRuntimeFleet {
         (current, dispatch) => fleet.forward(current, pool, legacy, dispatch),
         beforeDispatch,
         () => fleet.recoverPrimary(),
-        { rootHoldMs: () => fleet.primaryHoldMs() },
+        { rootHoldMs: () => fleet.primaryHoldMs(), handover: this.deps.handingOver },
       );
     }
     return stampResumeTarget(
@@ -422,7 +424,10 @@ export class PoolRuntimeFleet {
         legacy,
         beforeDispatch,
         () => this.deps.handoff.supervise(),
-        { rootHoldMs: async () => this.deps.handoff.recoveryHoldMs() },
+        {
+          rootHoldMs: async () => this.deps.handoff.recoveryHoldMs(),
+          handover: this.deps.handingOver,
+        },
       ),
       { kind: "primary" },
     );

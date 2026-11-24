@@ -44,7 +44,8 @@ function waitsForAdmission(error: unknown) {
 }
 /** How long an undispatched request waits for admission before the retryable 503. */
 export const runtimeAdmissionWaitMs = 30_000;
-const admissionPace = (waits: number) => Math.min(1_000, 125 * 2 ** waits);
+const paceCapMs = 1_000;
+const admissionPace = (waits: number) => Math.min(paceCapMs, 125 * 2 ** waits);
 /**
  * A held call's deadline sits this far past the end of the root recovery's bound: beyond one
  * jittered pause and one health read, so the call's own next attempt answers first, and the
@@ -71,6 +72,14 @@ interface RetryOptions {
    * cell can take the call. While it lasts, the call waits for that restart instead of failing.
    */
   rootHoldMs?(): Promise<number>;
+  /** Whether a code handover drains: nothing waits then, since a waiting call would hold it. */
+  handover?(): boolean;
+}
+const capped = new WeakMap<Response, number>();
+/** The root fallback cap's refusal, and the pace a call held for the root's restart waits it out at. */
+export function markRootFallbackCap(response: Response, paceMs: number) {
+  capped.set(response, paceMs);
+  return response;
 }
 /** The waits between attempts; tests replace them instead of sleeping. */
 export const runtimeRetryTiming: RetryTiming = {
@@ -135,7 +144,7 @@ export async function forwardRecoverably(
   attempt: (request: Request, dispatched: () => void) => Promise<Response>,
   beforeDispatch: () => void,
   recover?: () => Promise<void>,
-  { timing = runtimeRetryTiming, rootHoldMs }: RetryOptions = {},
+  { timing = runtimeRetryTiming, rootHoldMs, handover }: RetryOptions = {},
 ) {
   const deadline = new AbortController();
   const expire = () =>
@@ -160,6 +169,10 @@ export async function forwardRecoverably(
   let refusals = 0;
   let waits = 0;
   let waitingSince: number | undefined;
+  // Where the hold last in force ends, on this clock; a cap refusal is waited out until then.
+  let holdEndsAt = -Infinity;
+  let held = false;
+  let kicked = false;
   // Recovery is advisory. It declines to restart a runtime that is still running, and may fail for
   // other reasons; the request's own next admission re-checks selection, fence, policy and health.
   const tryRecovery = async () => {
@@ -177,6 +190,22 @@ export async function forwardRecoverably(
   try {
     while (true) {
       signal.throwIfAborted();
+      // The hold in force when an attempt begins judges it, whatever the hold reads once it fails.
+      const holdMs = rootHoldMs && !handover?.() ? await rootHoldMs().catch(() => 0) : 0;
+      if (holdMs > 0) {
+        held = true;
+        holdEndsAt = timing.now() + holdMs;
+      } else if (held) {
+        held = kicked = false;
+        // A hold that ends before its bound (the root serves, or recovery stands down) leaves the
+        // call today's rules from now on; one that reaches it has had its wait. A handover ends it
+        // on the call's own history instead, so the drain is never longer than it was without holds.
+        if (timing.now() < holdEndsAt - paceCapMs && !handover?.()) {
+          waitingSince = undefined;
+          refusals = failures = 0;
+          recovered = false;
+        }
+      }
       const current = retained;
       // Keep a body copy only until the send boundary; never retain an accepted upload for replay.
       let backup = current.body ? current.clone() : undefined;
@@ -196,20 +225,24 @@ export async function forwardRecoverably(
             }),
           signal,
         );
+        const capPace = dispatched ? undefined : capped.get(response);
+        // Inside a hold's bound the cap's refusal is waited out at the cap's rate: the calls a
+        // restart releases together would otherwise lose the ones past its burst.
+        if (capPace !== undefined && timing.now() < holdEndsAt && !handover?.()) {
+          void response.body?.cancel().catch(() => {});
+          void current.body?.cancel().catch(() => {});
+          retained = backup ?? new Request(request, { signal });
+          await timing.pause(capPace, signal);
+          continue;
+        }
         if (backup) void backup.body?.cancel().catch(() => {});
         return nativeRuntimeStream(response, request);
       } catch (error) {
         failure = error;
         if (!dispatched) void current.body?.cancel().catch(() => {});
-        // Only a call that never left waits on the root's restart, and only on what it refuses.
-        const holdMs =
-          dispatched ||
-          signal.aborted ||
-          !rootHoldMs ||
-          !(restartRefusal(error) || waitsForAdmission(error))
-            ? 0
-            : await rootHoldMs().catch(() => 0);
-        const restarting = holdMs > 0 && restartRefusal(error);
+        // Only a call that never left waits on the root's restart.
+        const holdable = dispatched ? 0 : holdMs;
+        const restarting = holdable > 0 && restartRefusal(error);
         if (signal.aborted || !(restarting || recoverable(error))) {
           if (backup) void backup.body?.cancel().catch(() => {});
           throw error;
@@ -226,14 +259,24 @@ export async function forwardRecoverably(
         }
         const waiting = restarting || waitsForAdmission(error);
         // While the root's recovery is inside its bound, the call waits for it, not for 30 s.
-        const holding = waiting && holdMs > 0;
+        const holding = waiting && holdable > 0;
         if (waiting) {
           waitingSince ??= timing.now();
           if (!holding && timing.now() - waitingSince >= runtimeAdmissionWaitMs) break;
           // Six hard refusals in a row end the request; a wait in between restarts the count.
           refusals = 0;
         } else if (++refusals >= 6) break;
-        if (holding) holdUntil(holdMs);
+        if (holding) {
+          holdUntil(holdable);
+          // Once a hold, as a call joins recovery once today, but not awaited: a pass can outlast the
+          // bound. It keeps recovery going should its alarm chain break while calls wait for it.
+          if (recover && !kicked) {
+            kicked = true;
+            void Promise.resolve()
+              .then(recover)
+              .catch(() => {});
+          }
+        }
         // A held call's recovery runs on its own cadence already; joining one of its passes could
         // keep the call past the bound.
         if (++failures === 5 && !recovered && recover && !holding) {
