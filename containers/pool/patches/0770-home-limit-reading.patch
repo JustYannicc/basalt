@@ -26,10 +26,10 @@ index cde6a90..8106b52 100644
  func providerQuotaTime(result Result, now time.Time) (time.Time, bool) {
 diff --git a/internal/home/basalt_limit_reading_test.go b/internal/home/basalt_limit_reading_test.go
 new file mode 100644
-index 0000000..9733f4a
+index 0000000..3bd1490
 --- /dev/null
 +++ b/internal/home/basalt_limit_reading_test.go
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,202 @@
 +package home
 +
 +import (
@@ -46,6 +46,8 @@ index 0000000..9733f4a
 +	mu    sync.Mutex
 +	ids   []string
 +	calls chan struct{}
++	// accept returns how many jobs the call accepts; nil accepts every id.
++	accept func(call int) int
 +}
 +
 +func (c *limitReadingCollector) TriggerCollection(_ context.Context, ids map[string]struct{}, _ map[string]struct{}) (int, error) {
@@ -53,8 +55,12 @@ index 0000000..9733f4a
 +	for id := range ids {
 +		c.ids = append(c.ids, id)
 +	}
++	call := len(c.ids)
 +	c.mu.Unlock()
 +	c.calls <- struct{}{}
++	if c.accept != nil {
++		return c.accept(call), nil
++	}
 +	return len(ids), nil
 +}
 +
@@ -65,7 +71,40 @@ index 0000000..9733f4a
 +}
 +
 +func limitPayload(index, provider string, status int) string {
-+	return fmt.Sprintf(`{"auth_index": %q, "provider": %q, "model": "model-a", "failed": true, "fail": {"status_code": %d}}`, index, provider, status)
++	return limitPayloadForModel(index, provider, "model-a", status)
++}
++
++func limitPayloadForModel(index, provider, model string, status int) string {
++	return fmt.Sprintf(`{"auth_index": %q, "provider": %q, "model": %q, "failed": true, "fail": {"status_code": %d}}`, index, provider, model, status)
++}
++
++// awaitLimitReadingSettled makes each queued reading's trigger report back, so a test can send the
++// next 429 only once the previous one's window is decided.
++func awaitLimitReadingSettled(t *testing.T) <-chan struct{} {
++	t.Helper()
++	settled := make(chan struct{}, 8)
++	previous := limitedReadingSettled
++	limitedReadingSettled = func() { settled <- struct{}{} }
++	t.Cleanup(func() { limitedReadingSettled = previous })
++	return settled
++}
++
++func expectLimitReading(t *testing.T, calls <-chan struct{}, what string) {
++	t.Helper()
++	select {
++	case <-calls:
++	case <-time.After(5 * time.Second):
++		t.Fatalf("%s queued no reading", what)
++	}
++}
++
++func expectNoLimitReading(t *testing.T, calls <-chan struct{}, what string) {
++	t.Helper()
++	select {
++	case <-calls:
++		t.Fatalf("%s queued a reading", what)
++	case <-time.After(200 * time.Millisecond):
++	}
 +}
 +
 +// A subscription account's 429 queues one forced quota reading for that account, so the reading
@@ -147,8 +186,54 @@ index 0000000..9733f4a
 +		t.Fatal("a limit reading made the funding refusal skip its fresh reading")
 +	}
 +}
++
++// A 429 whose reading the collector didn't accept, because a collection of the account was already
++// running and may have read it before the limit, doesn't hold back the next 429's reading for the
++// window; only the short retry does.
++func TestBasaltLimitReadingWindowStartsOnlyWhenAReadingIsAccepted(t *testing.T) {
++	previousRetry := limitedReadingRetry
++	limitedReadingRetry = 0
++	t.Cleanup(func() { limitedReadingRetry = previousRetry })
++	settled := awaitLimitReadingSettled(t)
++	rt := newUsageResultTestRuntime(t, &coreauth.Auth{ID: "claude-a", Index: "claude-a-index", Provider: "claude", Status: coreauth.StatusActive})
++	collector := &limitReadingCollector{calls: make(chan struct{}, 8), accept: func(call int) int {
++		if call == 1 {
++			return 0
++		}
++		return 1
++	}}
++	rt.usageCreditCollector = collector
++	rt.RecordUsagePayload(context.Background(), limitPayload("claude-a-index", "claude", 429))
++	expectLimitReading(t, collector.calls, "the first 429")
++	<-settled
++	rt.RecordUsagePayload(context.Background(), limitPayload("claude-a-index", "claude", 429))
++	expectLimitReading(t, collector.calls, "a 429 after one whose reading wasn't accepted")
++	<-settled
++	rt.RecordUsagePayload(context.Background(), limitPayload("claude-a-index", "claude", 429))
++	expectNoLimitReading(t, collector.calls, "a 429 right after an accepted reading")
++}
++
++// Each account and model keeps its own window: a limit on a second model within the window gets its
++// own reading, while a repeat on the same model doesn't.
++func TestBasaltLimitReadingIsPerModel(t *testing.T) {
++	settled := awaitLimitReadingSettled(t)
++	rt := newUsageResultTestRuntime(t, &coreauth.Auth{ID: "claude-a", Index: "claude-a-index", Provider: "claude", Status: coreauth.StatusActive})
++	collector := &limitReadingCollector{calls: make(chan struct{}, 8)}
++	rt.usageCreditCollector = collector
++	rt.RecordUsagePayload(context.Background(), limitPayloadForModel("claude-a-index", "claude", "model-a", 429))
++	expectLimitReading(t, collector.calls, "a 429 on model-a")
++	<-settled
++	rt.RecordUsagePayload(context.Background(), limitPayloadForModel("claude-a-index", "claude", "model-b", 429))
++	expectLimitReading(t, collector.calls, "a 429 on model-b within model-a's window")
++	<-settled
++	rt.RecordUsagePayload(context.Background(), limitPayloadForModel("claude-a-index", "claude", "model-a", 429))
++	expectNoLimitReading(t, collector.calls, "a repeat 429 on model-a")
++	if got := collector.triggered(); len(got) != 2 {
++		t.Fatalf("queued readings for %v, want one per model", got)
++	}
++}
 diff --git a/internal/home/runtime.go b/internal/home/runtime.go
-index bc675be..ba0aa60 100644
+index bc675be..532eb47 100644
 --- a/internal/home/runtime.go
 +++ b/internal/home/runtime.go
 @@ -64,6 +64,8 @@ type Runtime struct {
@@ -156,35 +241,51 @@ index bc675be..ba0aa60 100644
  	usageCreditRefreshMu sync.Mutex
  	usageCreditRefreshAt map[string]time.Time
 +	limitReadingMu       sync.Mutex
-+	limitReadingAt       map[string]time.Time
++	limitReadingUntil    map[limitedReadingKey]time.Time
  
  	clusterUsageQueueMu sync.Mutex
  	clusterUsageQueue   *usagePayloadQueue
 diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
-index 53bfb9f..259d146 100644
+index 53bfb9f..ce67fa7 100644
 --- a/internal/home/usage_credits.go
 +++ b/internal/home/usage_credits.go
-@@ -90,6 +90,62 @@ func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) (
+@@ -90,6 +90,86 @@ func (r *Runtime) requestUsageCreditRefresh(ctx context.Context, ids []string) (
  	return false, errWait
  }
  
 +// limitedReadingTimeout bounds the queueing of one forced collection after a 429.
 +const limitedReadingTimeout = 10 * time.Second
 +
-+// limitedReadingWindow is how long one 429's forced reading covers its account. It matches the
-+// collector's own backoff after a failed probe, so a run of 429s adds at most one usage probe per
-+// account in that time; a probe the usage endpoint itself refuses marks the account unavailable
-+// until its next probe, and forcing one every few seconds would make that likelier.
++// limitedReadingWindow is how long one accepted forced reading holds back the next for the same
++// account and model. It matches the collector's own backoff after a failed probe, so a run of 429s on
++// one model adds at most one usage probe per account and model in that time, per Home; a probe the
++// usage endpoint itself refuses marks the account unavailable until its next probe, and forcing one
++// every few seconds would make that likelier.
 +const limitedReadingWindow = 5 * time.Minute
 +
-+// requestLimitedReading queues one forced quota collection for an account whose call was just
-+// refused 429, so its reading shows the limit and the funding filter can drop it while another
-+// account is eligible. It keeps its own window, apart from the funding refusal's refresh, and never
-+// makes the caller wait: queueing reads the credentials, so it runs on its own goroutine with a
-+// detached, bounded context.
-+func (r *Runtime) requestLimitedReading(ctx context.Context, id string) {
-+	id = strings.TrimSpace(id)
-+	if r == nil || id == "" {
++// limitedReadingRetry is how long a 429 waits to queue a reading when none was accepted because a
++// collection of the account was already running. That collection may have read the account before
++// the limit, so the next 429 after it queues its own; the wait only keeps a burst of 429s from
++// listing every credential once each.
++var limitedReadingRetry = 10 * time.Second
++
++// limitedReadingSettled runs once a queued reading's trigger has returned. Tests wait on it.
++var limitedReadingSettled = func() {}
++
++type limitedReadingKey struct {
++	authID string
++	model  string
++}
++
++// requestLimitedReading queues one forced quota collection for an account whose call on model was
++// just refused 429, so its reading shows the limit and the funding filter can drop it while another
++// account is eligible. Each account and model keeps its own window, apart from the funding refusal's
++// refresh, and the window starts only when the collector accepted the reading. It never makes the
++// caller wait: queueing reads the credentials, so it runs on its own goroutine with a detached,
++// bounded context.
++func (r *Runtime) requestLimitedReading(ctx context.Context, id, model string) {
++	key := limitedReadingKey{authID: strings.TrimSpace(id), model: coreauth.CanonicalModelID(model)}
++	if r == nil || key.authID == "" {
 +		return
 +	}
 +	r.cfgMu.RLock()
@@ -195,32 +296,40 @@ index 53bfb9f..259d146 100644
 +	}
 +	now := time.Now()
 +	r.limitReadingMu.Lock()
-+	if r.limitReadingAt == nil {
-+		r.limitReadingAt = make(map[string]time.Time)
++	if r.limitReadingUntil == nil {
++		r.limitReadingUntil = make(map[limitedReadingKey]time.Time)
 +	}
-+	for queuedID, at := range r.limitReadingAt {
-+		if now.Sub(at) >= limitedReadingWindow {
-+			delete(r.limitReadingAt, queuedID)
++	for queued, until := range r.limitReadingUntil {
++		if !now.Before(until) {
++			delete(r.limitReadingUntil, queued)
 +		}
 +	}
-+	if _, queued := r.limitReadingAt[id]; queued {
++	if _, queued := r.limitReadingUntil[key]; queued {
 +		r.limitReadingMu.Unlock()
 +		return
 +	}
-+	r.limitReadingAt[id] = now
++	// Held while the trigger runs, so concurrent 429s don't queue a second reading.
++	r.limitReadingUntil[key] = now.Add(limitedReadingWindow)
 +	r.limitReadingMu.Unlock()
 +	if ctx == nil {
 +		ctx = context.Background()
 +	}
 +	queueCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), limitedReadingTimeout)
 +	go func() {
++		defer limitedReadingSettled()
 +		defer cancel()
-+		if _, errTrigger := collector.TriggerCollection(queueCtx, map[string]struct{}{id: {}}, nil); errTrigger != nil {
-+			// Let the next 429 try again: this collection never started.
-+			r.limitReadingMu.Lock()
-+			delete(r.limitReadingAt, id)
-+			r.limitReadingMu.Unlock()
++		accepted, errTrigger := collector.TriggerCollection(queueCtx, map[string]struct{}{key.authID: {}}, nil)
++		if errTrigger == nil && accepted > 0 {
++			return
 +		}
++		r.limitReadingMu.Lock()
++		if errTrigger != nil {
++			// This collection never started: let the next 429 try again.
++			delete(r.limitReadingUntil, key)
++		} else {
++			r.limitReadingUntil[key] = time.Now().Add(limitedReadingRetry)
++		}
++		r.limitReadingMu.Unlock()
 +	}()
 +}
 +
@@ -228,7 +337,7 @@ index 53bfb9f..259d146 100644
  func (r *Runtime) forgetUsageCreditRefresh(ids map[string]struct{}) {
  	r.usageCreditRefreshMu.Lock()
 diff --git a/internal/home/usage_result.go b/internal/home/usage_result.go
-index 29031cb..7ba6bc5 100644
+index 29031cb..dd2f247 100644
 --- a/internal/home/usage_result.go
 +++ b/internal/home/usage_result.go
 @@ -58,6 +58,9 @@ func (r *Runtime) RecordUsagePayload(ctx context.Context, payload string) {
@@ -236,7 +345,7 @@ index 29031cb..7ba6bc5 100644
  	result.AccessTokenSHA256 = strings.TrimSpace(gjson.Get(payload, "access_token_sha256").String())
  	r.coreManager.MarkResult(ctx, result)
 +	if statusCode == http.StatusTooManyRequests && coreauth.SubscriptionLimitProvider(provider) {
-+		r.requestLimitedReading(ctx, r.coreManager.AuthIDForUsageIndex(authIndex))
++		r.requestLimitedReading(ctx, r.coreManager.AuthIDForUsageIndex(authIndex), model)
 +	}
  }
  
