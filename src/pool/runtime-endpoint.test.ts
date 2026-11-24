@@ -11,6 +11,7 @@ import {
 } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
+import { BoundSlotDriver, runtimeRequest } from "./runtime-slots/transport.ts";
 import {
   StartAuthorization,
   InitialStartAuthorization,
@@ -662,3 +663,55 @@ test("the proof read waits up to its 5 s, and the operator's read gives up at 1.
   assert.equal(checked.connections, null, "the operator's read stops at 1.5 s");
   assert.equal(await proven(f, fresh(f), identity), 0, "the proof's read still ends the lease");
 });
+
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** The controller's view of this endpoint: in its own isolate (the root), or across a hop (a cell). */
+const controllerDriver = (endpoint: RuntimeEndpoint, hopMs = 0) =>
+  new BoundSlotDriver(() => ({
+    fetch: async (request: Request) => {
+      const answer = await runtimeRequest(request, endpoint);
+      if (hopMs) await pause(hopMs);
+      return answer;
+    },
+  }));
+/** The fixture's readiness answer (a 1500 ms grant), taking `readMs` to come. */
+const slowReadiness = (readMs: number) => async () => {
+  await pause(readMs);
+};
+
+for (const [where, hopMs] of [
+  ["root", 0],
+  ["cell", 100],
+] as const)
+  test(`the ${where}'s readiness read that takes 60 % of its lease is admitted: the read counts once`, async (context) => {
+    const f = await fixture();
+    context.after(f.cleanup);
+    const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+    f.hooks.health = slowReadiness(900);
+    const health = await controllerDriver(f.endpoint, hopMs).health(
+      identity,
+      AbortSignal.timeout(5_000),
+    );
+    // Counted from the controller's own send, so never longer than the container granted.
+    assert.ok(health.policyLeaseUntil > performance.now());
+    assert.ok(health.policyLeaseUntil - performance.now() < 1_500 - 900);
+  });
+
+// The root's read runs into the endpoint's 1500 ms deadline; the cell's read and hop together
+// outlast the grant though the endpoint still saw it live.
+for (const [where, readMs, hopMs] of [
+  ["root", 1_700, 0],
+  ["cell", 700, 900],
+] as const)
+  test(`the ${where}'s health that outlasts its lease is refused`, async (context) => {
+    const f = await fixture();
+    context.after(f.cleanup);
+    context.mock.method(console, "warn", () => {});
+    context.mock.method(console, "error", () => {});
+    const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+    f.hooks.health = slowReadiness(readMs);
+    await assert.rejects(
+      controllerDriver(f.endpoint, hopMs).health(identity, AbortSignal.timeout(5_000)),
+      SlotRefused,
+    );
+  });
