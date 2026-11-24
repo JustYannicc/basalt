@@ -14,6 +14,8 @@ import {
   runUsageRollup,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
+import { fillByTicks } from "./capture-hours-fixture.ts";
+import { captureHoursLookbackHours } from "../../src/pool/model-history/capture-hours-plan.ts";
 import { pool, seriesFixture } from "./series-fixture.ts";
 import { summaryFixture, summaryPrices } from "./usage-summary-fixture.ts";
 
@@ -214,6 +216,8 @@ test("the summary finds the capture cursor's request, and the captured Home usag
       assert.ok(run < 50, "the backfill finishes");
       if ((await runUsageRollup(f.db, backfill, 60_000)).status === "complete") break;
     }
+    // Counted by its own tick over its 400 days, which span the summary's window.
+    await fillByTicks(f.db, captureHoursLookbackHours);
     const read = recording(f.db);
     const to = "2026-11-23T20:00:00Z";
     await poolUsageSummary(
@@ -229,7 +233,13 @@ test("the summary finds the capture cursor's request, and the captured Home usag
     const capture = read.seen.find(
       (entry) => entry.step === "capture" && entry.text.includes("FROM usage u"),
     );
-    assert.ok(state && capture, "the summary ran its capture state and capture coverage");
+    const counts = read.seen.find(
+      (entry) =>
+        entry.step === "capture" && entry.text.includes("JOIN basalt_model_capture_hours s"),
+    );
+    assert.ok(state && capture && counts, "the summary ran its capture state and capture coverage");
+    // The stored hours' comparison reads no request row at all.
+    assert.equal((await plan(f.db, counts.text, counts.values)).read, 0);
     assert.ok(
       read.seen.some((entry) => entry.text.includes("basalt_model_usage_people_hourly")),
       "the summary read the v16 rollup",

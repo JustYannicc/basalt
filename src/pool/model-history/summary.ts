@@ -43,6 +43,9 @@ type Prices = (
   targets: readonly { provider: string; model: string }[],
 ) => Promise<OverviewPriceTable>;
 
+/** Three missed capture runs: a capture further behind than this is behind, not merely lagging. */
+export const summaryCaptureLagMs = 15 * 60_000;
+
 /** A bounded manager summary owns one snapshot; legacy overview and series pagination are not called. */
 export async function poolUsageSummary(
   db: HistoryDatabase,
@@ -149,7 +152,24 @@ export async function poolUsageSummary(
       priceUnavailableReason,
     );
     const incidentTo = timestamp(new Date(now).toISOString());
-    const captureTo = [input.to, incidentTo].sort().at(-1)!;
+    // The capture ingests on every model-history pass, about every five minutes, so its newest
+    // minutes are normally not captured yet. The check runs to the later of the capture's recorded
+    // position and three missed runs ago, and never past the window or now: a usage row in that
+    // normal lag is not captured yet, never missing, while one older than it with no request is
+    // missing, so a capture that has fallen behind reads partial. A window that ended before that
+    // is checked whole, as before. Without a recorded position the check runs to now, as before.
+    // Every bound is normalised by timestamp(), so the comparisons are exact.
+    const capturedThrough = observed.coverage.capturedThrough;
+    const settled = timestamp(new Date(now - summaryCaptureLagMs).toISOString());
+    const end = [input.to, incidentTo].sort().at(-1)!;
+    const checkedThrough =
+      capturedThrough === null ? end : [end, [capturedThrough, settled].sort().at(-1)!].sort()[0]!;
+    const captureTo = [readFrom, checkedThrough].sort().at(-1)!;
+    // Only an hour or a day the check has passed whole can be complete; the rest are not yet.
+    const capturedMs = Date.parse(captureTo);
+    // Both of its statements, the stored hours' comparison and the rows it leaves, are this step. A
+    // pool read from v16 is ready on it, so its stored counts can stand in for the per-row check,
+    // and its per-row check of the tail and cut hours runs to the same captureTo.
     mark("capture");
     const capture = await homeCaptureCoverage(
       db,
@@ -157,6 +177,7 @@ export async function poolUsageSummary(
       selection.homeSource,
       readFrom,
       captureTo,
+      rolled && target === "v16",
     );
     const series: PoolUsageSeriesResult = {
       from: readFrom,
@@ -168,7 +189,13 @@ export async function poolUsageSummary(
       groups: history.series,
       next: null,
     };
-    const historyCoverage = summaryKnownDays(readFrom, input.to, observed.coverage, capture);
+    const historyCoverage = summaryKnownDays(
+      readFrom,
+      input.to,
+      observed.coverage,
+      capture,
+      captureTo,
+    );
     const hourlySelection = await summarySelection(
       pool,
       [input.from, heatmapFrom].sort()[0]!,
@@ -195,7 +222,7 @@ export async function poolUsageSummary(
     if (nativeComplete && hourly.nativeAvailable && missingHours !== null)
       for (
         let at = Math.ceil(Date.parse(input.from) / 3_600_000) * 3_600_000;
-        at + 3_600_000 <= Date.parse(input.to);
+        at + 3_600_000 <= Math.min(Date.parse(input.to), capturedMs);
         at += 3_600_000
       ) {
         const key = new Date(at).toISOString();
@@ -210,7 +237,8 @@ export async function poolUsageSummary(
       incidentTo,
       nativeComplete &&
         missingHours !== null &&
-        ![...missingHours].some((at) => Date.parse(at) + 3_600_000 > incidentFrom),
+        ![...missingHours].some((at) => Date.parse(at) + 3_600_000 > incidentFrom) &&
+        capturedMs >= Date.parse(incidentTo),
       observed.terminalReady,
     );
     const forecasts = seriesUsageForecasts(series, capture, historyCoverage.known);

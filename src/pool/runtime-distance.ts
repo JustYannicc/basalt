@@ -2,6 +2,12 @@ import { Schema } from "effect";
 
 /** At or under this many milliseconds to the database pooler, a runtime can carry load. */
 export const nearDatabaseMs = 20;
+/**
+ * A far cell the fleet needs now serves at once only up to this distance: just past the farthest
+ * draws measured so far (the 18 Nov placement trial: Athens 44 ms and Lisbon 40 ms, at most 48 ms in
+ * any sample; ath01 at 44 and 45 ms on 24 Nov). Farther draws keep the redraw rule.
+ */
+export const neededFarMs = 50;
 
 /**
  * What a runtime's readiness reports about its own distance to the database, measured once per boot

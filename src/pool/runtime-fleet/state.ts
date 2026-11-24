@@ -6,7 +6,7 @@ import { slotFirstStartKey } from "../runtime-slots/storage.ts";
 import { runtimeCellKey } from "./cell-state.ts";
 import { RuntimeDistance, distanceClass, type DistanceClass } from "../runtime-distance.ts";
 import { RuntimeEnd } from "../runtime-slots/container-end.ts";
-import { logQuarantine, type PhaseBound } from "./phase-bounds.ts";
+import { logQuarantine, startingBoundMs, type PhaseBound } from "./phase-bounds.ts";
 import type { FleetFailure } from "./failure-record.ts";
 
 const Count = Schema.Number.check(
@@ -61,6 +61,13 @@ const Ledger = Schema.Array(Row);
 const key = "runtime-fleet-v1:resources";
 const primaryKey = "runtime-fleet-v1:primary-active";
 const replacementKey = "runtime-fleet-v1:replacement-demand";
+// Far draws redrawn since the last admitted cell, and when the last one was. Durable, so a
+// controller reset can't restart the count and redraw past the limit.
+const drawsKey = "runtime-fleet-v1:placement-draws";
+const Draws = Schema.Struct({ count: Count, at: Count });
+// One run of redraws is back-to-back starts, each inside its start bound. A count whose last redraw
+// is older than two bounds belongs to demand that stopped, so it starts over.
+const drawsStaleMs = 2 * startingBoundMs;
 const retiredKey = (slot: string) => `runtime-fleet-v1:retired:${slot}`;
 /** The ends of the cells that left last, newest first, which the fleet inspect returns. */
 const recentEndsKey = "runtime-fleet-v1:recent-ends";
@@ -260,7 +267,7 @@ export class RuntimeFleetState {
    */
   redraw(value: SlotIdentity, database: RuntimeDistance | undefined) {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
-    return this.change((rows) => {
+    return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
       if (row.phase === "draining" && row.redrawn && sameIdentity(row.identity, identity))
         return false;
@@ -280,8 +287,21 @@ export class RuntimeFleetState {
         lastUsedAt: this.now(),
         ...(database ? { database } : {}),
       };
+      await transaction.put(drawsKey, {
+        count: (await this.placementDraws(transaction)) + 1,
+        at: this.now(),
+      });
       return true;
     });
+  }
+  /**
+   * An unreadable count, such as one a newer version wrote, starts a new run of draws instead of
+   * refusing the admission; the next redraw or admission writes a readable one.
+   */
+  async placementDraws(storage: SlotStorage = this.storage) {
+    const stored = Schema.decodeUnknownOption(Draws)(await storage.get(drawsKey));
+    if (stored._tag === "None" || this.now() - stored.value.at > drawsStaleMs) return 0;
+    return stored.value.count;
   }
   /** A redrawn cell nobody used comes back when the runtime that justified the redraw stopped. */
   restoreRedrawn(value: SlotIdentity) {
@@ -335,6 +355,10 @@ export class RuntimeFleetState {
         lastUsedAt: row.phase === "ready" ? row.lastUsedAt : this.now(),
         ...(database ? { database } : {}),
       };
+      // An admitted cell ends the run of redraws.
+      const draws = await transaction.get(drawsKey);
+      if (draws !== undefined && !(Schema.is(Draws)(draws) && draws.count === 0))
+        await transaction.put(drawsKey, { count: 0, at: this.now() });
     });
   }
   async promoteGeneration(primary: SlotTarget, transaction: SlotStorage) {

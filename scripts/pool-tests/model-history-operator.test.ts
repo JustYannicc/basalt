@@ -50,6 +50,7 @@ const expectedTables = [
   "basalt_model_usage_people_hourly",
   "basalt_model_usage_people_hours",
   "basalt_model_usage_people_ready",
+  "basalt_model_capture_hours",
 ].sort();
 
 const adminUrl = process.env.POOL_TEST_ADMIN_URL;

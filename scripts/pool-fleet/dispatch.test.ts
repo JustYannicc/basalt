@@ -9,6 +9,7 @@ import { refuse } from "./errors.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import { accountId, colours, harness } from "./test/harness.ts";
 import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
+import { captureHoursInspect } from "../../src/pool/model-history/capture-hours-auto.ts";
 
 const go = "coordinator-2026-11-18-fleet-proof";
 const dispatch = (mode: string, extra: Partial<DispatchInput> = {}): DispatchInput => ({
@@ -426,6 +427,64 @@ test("the inspect lane shows the pool's own usage rollup backfill as one closed 
       assert.equal(result.ok, true, JSON.stringify(result));
       assert.deepEqual(
         "result" in result && (result.result as { usageRollup?: unknown }).usageRollup,
+        expected,
+      );
+      assert.doesNotMatch(JSON.stringify(result), new RegExp(accountId));
+    } finally {
+      await lane.close();
+    }
+  }
+});
+
+test("the inspect lane shows the pool's own capture-hour counts as one closed object", async () => {
+  // The producer's own projection, through the consumer's decode, as production sends it.
+  const captureHours = captureHoursInspect({
+    lastTickAt: "2026-11-23T09:30:00.000Z",
+    lastStop: "slow",
+    lastHour: "2026-11-01T03:00:00Z",
+    lastHourReadMs: 1_000,
+    pools: 1,
+    pendingBlocks: 5,
+    planMs: 412.5,
+    pendingHours: 30,
+    stalestCheckedAt: "2026-11-20T01:00:00.000Z",
+    recountPosition: { pool: "0123456789abcdef", block: "2026-11-01T00:00:00Z" },
+    stuck: [
+      {
+        pool: "0123456789abcdef",
+        reason: "slow",
+        hour: "2026-11-01T03:00:00Z",
+        retryAt: "2026-11-23T09:40:00.000Z",
+      },
+      { pool: "", reason: "error", retryAt: "2026-11-23T10:30:00.000Z" },
+    ],
+  });
+  // A pool whose projection lacks the optional readings still prints the rest.
+  const {
+    lastHour: _hour,
+    lastHourReadMs: _ms,
+    stalestCheckedAt: _stalest,
+    pendingBlocks: _blocks,
+    planMs: _planMs,
+    recountPosition: _position,
+    ...older
+  } = captureHours;
+  for (const [reported, expected] of [
+    [captureHours, captureHours],
+    [older, older],
+    [undefined, null],
+    // A shape this lane doesn't know is dropped, and the lane still answers.
+    [{ ...captureHours, stuck: [{ pool: "fixture-pool-name" }] }, null],
+    [{ ...captureHours, recountPosition: { pool: "fixture-pool-name", block: "x" } }, null],
+    [{ ...captureHours, planMs: "fast" }, null],
+    [{ lastStop: 7 }, null],
+  ] as const) {
+    const lane = await harness(reported === undefined ? {} : { captureHours: reported });
+    try {
+      const result = await runPoolFleet(dispatch("inspect"), lane.deps());
+      assert.equal(result.ok, true, JSON.stringify(result));
+      assert.deepEqual(
+        "result" in result && (result.result as { captureHours?: unknown }).captureHours,
         expected,
       );
       assert.doesNotMatch(JSON.stringify(result), new RegExp(accountId));
