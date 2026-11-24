@@ -33,7 +33,11 @@ test("every carry that patches Alchemy is on the release path, whatever its name
 
 test("every script the new release workflows run is on the release path", () => {
   // The old workflows are being removed with the layer they run; the new ones must stay covered.
-  for (const workflow of [".github/workflows/release.yml", ".github/workflows/pool-fleet.yml"]) {
+  for (const workflow of [
+    ".github/workflows/production.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/pool-fleet.yml",
+  ]) {
     let text: string;
     try {
       text = readFileSync(join(root, workflow), "utf8");
