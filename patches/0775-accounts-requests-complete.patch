@@ -1,0 +1,90 @@
+diff --git a/apps/hosted/web/src/implementation/pages/account-traffic.tsx b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+--- a/apps/hosted/web/src/implementation/pages/account-traffic.tsx
++++ b/apps/hosted/web/src/implementation/pages/account-traffic.tsx
+@@ -25,6 +25,19 @@
+ } from "../../contracts/pool-usage-series.ts";
+ import { toolCallTrafficAtom } from "../../contracts/connector-traffic.ts";
+ 
++/** A read starting, or waiting with nothing read before. */
++const notAnswered = (result: AsyncResult.AsyncResult<unknown, unknown>) =>
++  AsyncResult.isInitial(result) ||
++  (AsyncResult.isWaiting(result) && Option.isNone(AsyncResult.value(result)));
++
++/** A read that failed with nothing read before, unless the caller was refused. */
++const failedUnread = (result: AsyncResult.AsyncResult<unknown, unknown>) =>
++  AsyncResult.isFailure(result) &&
++  Option.isNone(AsyncResult.value(result)) &&
++  !Option.exists(Cause.findErrorOption(result.cause), (error) =>
++    Predicate.isTagged(error, "OrganizationForbidden"),
++  );
++
+ /** Who counted an account's tool calls, as its Details line names it. */
+ const toolCalls = "tool calls";
+ 
+@@ -70,16 +83,10 @@
+   const counted = Option.getOrUndefined(AsyncResult.value(pools));
+   // The pools' read has not answered yet: it is starting, or waiting with nothing read before. A
+   // failed read has answered: its pool accounts then read as unavailable, never as counting.
+-  const unanswered =
+-    AsyncResult.isInitial(pools) || (AsyncResult.isWaiting(pools) && counted === undefined);
++  const unanswered = notAnswered(pools);
+   // The whole read failed with nothing read before, so no pool's count is known. A refusal still
+   // shows nothing.
+-  const unread =
+-    AsyncResult.isFailure(pools) &&
+-    counted === undefined &&
+-    !Option.exists(Cause.findErrorOption(pools.cause), (error) =>
+-      Predicate.isTagged(error, "OrganizationForbidden"),
+-    );
++  const unread = failedUnread(pools);
+   // Token reads only for accounts the series named, in the pools that named them.
+   const named = useMemo(
+     () => ({
+@@ -98,32 +105,37 @@
+     () => ({ organization, accounts: [...new Set((rows ?? []).map((row) => row.id))].sort() }),
+     [organization, rows],
+   );
+-  const called = Option.getOrUndefined(
+-    AsyncResult.value(useAtomValue(toolCallTrafficAtom(toolCallKey))),
+-  );
++  const calls = useAtomValue(toolCallTrafficAtom(toolCallKey));
++  const called = Option.getOrUndefined(AsyncResult.value(calls));
++  // A pool account's count is its pool's requests and the tool calls it served: until both reads
++  // answer, either alone is part of it, and reads as counting; if either fails, as unavailable.
++  const callsUnanswered = notAnswered(calls);
++  const callsUnread = failedUnread(calls);
+   const needs = useAtomValue(windowNeedsAtom(named));
+   const tokens = Option.getOrUndefined(AsyncResult.value(useAtomValue(windowTokensAtom(needs))));
+ 
+   // Callers who may read no visible pool's series and have no counted tool call get no Requests
+-  // column at all, rather than a column of blank cells; it appears once a read answers.
++  // column at all once both reads answer, rather than a column of blank cells. While either read is
++  // out, a page with pool accounts shows the column with them counting, never a blank cell.
+   // A pool that failed to answer counts too: its accounts then say they couldn't be counted.
+   const readable =
+-    (unread && accountPools.size > 0) ||
++    (accountPools.size > 0 && (unanswered || callsUnanswered || unread || callsUnread)) ||
+     (counted !== undefined &&
+       [...counted.values()].some((pool) => pool.readable || pool.failed === true)) ||
+     (called !== undefined && called.size > 0);
+-  // Until the pools' read answers, a pool account's count is unknown: its tool calls alone would
+-  // read as its total, and no count at all as no history. Its Requests cell reads as counting, and
+-  // its Health and Details show no traffic until then.
++  // Until both reads answer, a pool account's count is unknown: its tool calls alone, or its pool's
++  // requests alone, would read as its total, and no count at all as no history. Its Requests cell
++  // reads as counting, and its Health and Details show no traffic until then.
+   const pending = (accounts: readonly AccountSummary[]) =>
+-    unanswered && accounts.some((account) => (accountPools.get(account.id)?.length ?? 0) > 0);
++    (unanswered || callsUnanswered) &&
++    accounts.some((account) => (accountPools.get(account.id)?.length ?? 0) > 0);
+   // A pool carrying the account failed to answer: what else counted it is only part of its count,
+   // so its Requests cell, Health and Details show none of it until a read answers.
+   const unavailable = (accounts: readonly AccountSummary[]) =>
+     !pending(accounts) &&
+     accounts.some((account) =>
+       (accountPools.get(account.id) ?? []).some(
+-        (pool) => unread || counted?.get(pool)?.failed === true,
++        (pool) => unread || callsUnread || counted?.get(pool)?.failed === true,
+       ),
+     );
+   const traffic = readable
