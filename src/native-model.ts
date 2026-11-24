@@ -98,10 +98,9 @@ export async function nativeModelRequest(
 }
 
 /** A direct model call; a send the pool lost is sent again where that is safe (model-replay.ts). */
-export async function forwardModelRequest(
+export function forwardModelRequest(
   request: Request,
   env: Pick<Environment, "POOL_SERVICE" | "POOL_APP_SIGNING_KEY">,
 ): Promise<Response> {
-  // Only the router's own signing can throw before a send; the caller then gets the retryable 503.
-  return forwardModelCall(request, env).catch(() => refused(503));
+  return forwardModelCall(request, env);
 }
