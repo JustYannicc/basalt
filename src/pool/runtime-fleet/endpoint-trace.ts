@@ -20,6 +20,8 @@ const actions = [
   "/install",
   "/native",
   "/retire",
+  "/release-still",
+  "/release-check",
   "/drain",
   "/retirement",
   "/failed",
