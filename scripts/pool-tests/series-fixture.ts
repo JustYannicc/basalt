@@ -51,12 +51,14 @@ export async function seriesFixture(
     let sequence = 0;
     const source = await digest("fixture-import");
     const poolId = (await digest(pool)).slice(0, 16);
+    // Keyed as every writer keys a request: the digest of its final source and record.
     const row = async (overrides: Partial<ModelRequest> = {}): Promise<ModelRequest> => {
-      const sourceRecord = await digest(String(++sequence));
+      const recordOf = overrides.sourceRecord ?? (await digest(String(++sequence)));
+      const sourceOf = overrides.source ?? source;
       return {
-        id: await digest(`${source}:${sourceRecord}`),
+        id: await digest(JSON.stringify([sourceOf, recordOf])),
         source,
-        sourceRecord,
+        sourceRecord: recordOf,
         timestamp: timestamp("2026-01-01T00:45:00Z"),
         pool: poolId,
         person: null,

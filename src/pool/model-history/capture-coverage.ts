@@ -37,8 +37,13 @@ export async function homeCaptureCoverage(
     WHERE a.username ~ $1 AND u.timestamp >= $2::timestamptz AND u.timestamp < $3::timestamptz
       AND NOT EXISTS (
         SELECT 1 FROM basalt_model_requests r
-        WHERE r.pool=$4 AND r.source=$5
-          AND r.source_record=encode(sha256(convert_to('["usage","'||u.id::text||'"]','UTF8')),'hex')
+        -- Every writer keys a request by the digest of its source and record, so the lookup is one
+        -- partition's primary key instead of a probe of each partition. The pool, source and record
+        -- must still match: a row keyed otherwise reads as missing, never as captured.
+        WHERE r.id=encode(sha256(convert_to('["'||$5::text||'","'
+            ||encode(sha256(convert_to('["usage","'||u.id::text||'"]','UTF8')),'hex')||'"]','UTF8')),'hex')::character(64)
+          AND r.pool=$4 AND r.source=$5::character(64)
+          AND r.source_record=encode(sha256(convert_to('["usage","'||u.id::text||'"]','UTF8')),'hex')::character(64)
       )
     ORDER BY hour LIMIT 800`,
     [username, from, to, poolHash, homeSourceHash],
