@@ -1,0 +1,14 @@
+model {
+  extend basalt {
+    stageCloudflare = module "Test stage account API" {
+      #basalt
+      description "The deployment provider account calls the scale test and the emulated upstream share: one call, a read of one resource by id, paged listings and a stage's container applications, runtime adapters and their namespaces by name prefix. It fails closed: a refused call, a false success envelope or a listing without its array throws, so a wrong path or a missing permission never reads as an empty account. Only a read by id answers absent, on 404. Refusals carry the operation, status, error codes and known field names, never remote messages. Which stage's names it reads is the caller's; it holds no credential of its own."
+      metadata {
+        code "scripts/stage-cloudflare"
+      }
+    }
+  }
+  basalt.stageCloudflare -[sync]-> deploymentProvider "read, list and delete account resources, failing closed on any refusal"
+  basalt.scaleTest -[sync]-> basalt.stageCloudflare "find, list and change only the scale stage's resources"
+  basalt.emulatedUpstream -[sync]-> basalt.stageCloudflare "find, list and delete only the emulated stage's resources"
+}
