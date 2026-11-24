@@ -44,10 +44,13 @@ export function redact<T>(value: T, secrets: readonly string[]): T {
 }
 
 /** A delta field the bridge recorded from the answer, if any. */
-const responseField = (error: unknown, path: string) =>
-  error instanceof BarrierRefusal
-    ? error.delta?.changed.find((entry) => entry.path === path)?.new
-    : undefined;
+const responseField = (error: unknown, path: string) => {
+  const entry =
+    error instanceof BarrierRefusal
+      ? error.delta?.changed.find((change) => change.path === path)
+      : undefined;
+  return entry && "new" in entry ? entry.new : undefined;
+};
 
 /**
  * The Worker's own answer to a read, not one lost on the way: its 409 refusal form, by its closed
