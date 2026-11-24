@@ -75,14 +75,15 @@ async function rootUnderRecovery(context: TestContext) {
   });
   /**
    * Every call is answered or asleep in its pause, so moving the clock is all that is left. A call
-   * may first join a recovery pass, which takes the fixture about half a second.
+   * may first join a recovery pass, whose fixture work runs on real timers for about half a
+   * second, so this yields to timers rather than counting turns; the guard only ends a hang.
    */
   const idle = async () => {
-    for (let turn = 0; turn < 200_000; turn++) {
-      if (calls.filter((call) => call.settledAt === undefined).length === sleepers.size) return;
-      await new Promise(setImmediate);
+    const guard = performance.now() + 30_000;
+    while (calls.filter((call) => call.settledAt === undefined).length !== sleepers.size) {
+      if (performance.now() > guard) throw new Error("a call neither answered nor paused");
+      await new Promise((resolve) => setTimeout(resolve, 1));
     }
-    throw new Error("a call neither answered nor paused");
   };
   const advance = async (to: number) => {
     while (now < to) {
