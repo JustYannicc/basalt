@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import {
   FleetConfiguration,
   type FleetApplication,
@@ -19,12 +19,52 @@ import {
   shortHash,
   type ControllerAccess,
 } from "./controller.ts";
-import { refuse } from "./errors.ts";
+import { atStep, describeError, FleetLaneRefused, refuse, type FleetStep } from "./errors.ts";
 import { applicationPins } from "./pins.ts";
 
 const call = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
+const step = <A>(name: FleetStep, work: () => Promise<A>) =>
+  Effect.tryPromise({ try: work, catch: (error) => atStep(name, error) });
 export const configureOperationId = (go: string) => `fleet-${shortHash("configure", go)}`;
+
+/** The controller's code handover window: within it a deploy's bindings reach the controller. */
+export const controllerSettleMs = 300_000;
+const settlePollMs = 10_000;
+export interface LaneClock {
+  sleep(ms: number): Promise<void>;
+  now(): number;
+}
+
+/**
+ * Reads the controller until it settles, bounded by its code handover: nothing is sent before.
+ * A read that throws or a lagging binding waits; a typed refusal stands at once. Past the bound a
+ * throw refuses as controller-not-ready, and lagging bindings keep their own refusal.
+ */
+const untilSettled = <A>(
+  clock: LaneClock,
+  read: Effect.Effect<{ value: A } | { lagging: FleetLaneRefused }, unknown>,
+) =>
+  Effect.gen(function* () {
+    const started = clock.now();
+    while (true) {
+      const outcome = yield* Effect.result(read);
+      if (Result.isSuccess(outcome) && "value" in outcome.success) return outcome.success.value;
+      if (Result.isFailure(outcome) && outcome.failure instanceof FleetLaneRefused)
+        return yield* Effect.fail(outcome.failure);
+      if (clock.now() - started >= controllerSettleMs)
+        return yield* Effect.fail(
+          Result.isSuccess(outcome)
+            ? (outcome.success as { lagging: FleetLaneRefused }).lagging
+            : refuse(
+                "controller-not-ready",
+                `${describeError(outcome.failure)}, still after ${controllerSettleMs / 1000} s; nothing was sent.`,
+                "Read the PoolWorker logs for the controller's code handover, then rerun with the same GO.",
+              ),
+        );
+      yield* Effect.promise(() => clock.sleep(settlePollMs));
+    }
+  });
 
 /** The selected primary every fleet configuration names as legacy; refuses mid-handoff states. */
 export const selectedPrimary = (access: ControllerAccess) =>
@@ -53,40 +93,78 @@ export const configureFleet = (input: {
   active?: "blue" | "green";
   /** The growth target for this configuration; otherwise the current one, or 25. */
   targetActive?: number;
+  clock: LaneClock;
 }) =>
   Effect.gen(function* () {
     const { controller: access, go } = input;
     const operationId = configureOperationId(go);
-    const retained = (yield* call(() => inspectFleet(access, operationId))).permission;
-    if (retained)
-      return { status: "already-configured" as const, operationId, digest: retained.digest };
-    const legacy = yield* selectedPrimary(access);
-    const view = yield* call(() => inspectFleet(access));
-    const current = view.permission ?? undefined;
-    const bindings = yield* workerPlainBindings(input.cloudflare, access.worker);
-    const applications: FleetApplication[] = [];
-    for (const color of ["blue", "green"] as const) {
-      const upper = color.toUpperCase();
-      const applicationId = yield* requireBinding(bindings, `POOL_${upper}_APPLICATION_ID`);
-      const imageInput = yield* requireBinding(bindings, `POOL_${upper}_IMAGE_HASH`);
-      // The controller compares against its own bindings, not the API's; both must agree.
-      if (
-        !view.bindings.some(
-          (binding) =>
-            binding.color === color &&
-            binding.applicationId === applicationId &&
-            binding.imageInput === imageInput,
-        )
-      )
-        return yield* Effect.fail(
-          refuse(
-            "controller-bindings-differ",
-            `fleet-inspect bindings lack ${color} with the settings' POOL_${upper}_APPLICATION_ID and POOL_${upper}_IMAGE_HASH (controller lists ${view.bindings.length} bindings).`,
-            "Wait for the PoolWorker deploy to reach the controller (up to 300 s), then rerun.",
-          ),
+    let wanted: { color: "blue" | "green"; applicationId: string; imageInput: string }[] | undefined;
+    const settled = yield* untilSettled(
+      input.clock,
+      Effect.gen(function* () {
+        const retained = (yield* step("inspect", () => inspectFleet(access, operationId)))
+          .permission;
+        if (retained) return { value: { retained } };
+        const legacy = yield* selectedPrimary(access).pipe(
+          Effect.mapError((error) => atStep("primary_read", error)),
         );
-      const raw = yield* containerApplication(input.cloudflare, applicationId);
-      applications.push(yield* applicationPins(color, applicationId, imageInput, raw));
+        const view = yield* step("inspect", () => inspectFleet(access));
+        if (!wanted) {
+          const bindings = yield* workerPlainBindings(input.cloudflare, access.worker).pipe(
+            Effect.mapError((error) => atStep("settings_read", error)),
+          );
+          const read = [];
+          for (const color of ["blue", "green"] as const) {
+            const upper = color.toUpperCase();
+            read.push({
+              color,
+              applicationId: yield* requireBinding(bindings, `POOL_${upper}_APPLICATION_ID`),
+              imageInput: yield* requireBinding(bindings, `POOL_${upper}_IMAGE_HASH`),
+            });
+          }
+          wanted = read;
+        }
+        // The controller compares against its own bindings, not the API's; both must agree.
+        const lagging = wanted.find(
+          (want) =>
+            !view.bindings.some(
+              (binding) =>
+                binding.color === want.color &&
+                binding.applicationId === want.applicationId &&
+                binding.imageInput === want.imageInput,
+            ),
+        );
+        if (lagging) {
+          const upper = lagging.color.toUpperCase();
+          return {
+            lagging: refuse(
+              "controller-bindings-differ",
+              `fleet-inspect bindings still lack ${lagging.color} with the settings' POOL_${upper}_APPLICATION_ID and POOL_${upper}_IMAGE_HASH after ${controllerSettleMs / 1000} s (controller lists ${view.bindings.length} bindings).`,
+              "Read the PoolWorker deploy: the controller never took the settings' bindings.",
+            ),
+          };
+        }
+        return { value: { legacy, view, wanted } };
+      }),
+    );
+    if ("retained" in settled)
+      return {
+        status: "already-configured" as const,
+        operationId,
+        digest: settled.retained.digest,
+      };
+    const { legacy, view } = settled;
+    const current = view.permission ?? undefined;
+    const applications: FleetApplication[] = [];
+    for (const { color, applicationId, imageInput } of settled.wanted) {
+      const raw = yield* containerApplication(input.cloudflare, applicationId).pipe(
+        Effect.mapError((error) => atStep("application_read", error)),
+      );
+      applications.push(
+        yield* applicationPins(color, applicationId, imageInput, raw).pipe(
+          Effect.mapError((error) => atStep("application_read", error)),
+        ),
+      );
     }
     const configuration = yield* Effect.try({
       try: () =>
@@ -114,7 +192,7 @@ export const configureFleet = (input: {
           "Read the pins in the output; one of them is outside the schema.",
         ),
     });
-    const sent = yield* call(() =>
+    const sent = yield* step("send", () =>
       sendFleetOperation(
         access,
         {
@@ -126,8 +204,8 @@ export const configureFleet = (input: {
         go,
       ),
     );
-    const after = (yield* call(() => inspectFleet(access, operationId))).permission;
-    const digest = yield* call(() => providerDigest(configuration));
+    const after = (yield* step("inspect_after", () => inspectFleet(access, operationId))).permission;
+    const digest = yield* step("digest", () => providerDigest(configuration));
     if (!after?.enabled || after.digest !== digest)
       return yield* Effect.fail(
         refuse(
@@ -275,7 +353,7 @@ export const retireRow = (access: ControllerAccess, go: string, key: string) =>
 /** fleet-disable needs its own operation id: reusing the configure id is refused (configuration.ts:221-224). */
 export const disableFleet = (access: ControllerAccess, go: string) =>
   Effect.gen(function* () {
-    const current = (yield* call(() => inspectFleet(access))).permission;
+    const current = (yield* step("inspect", () => inspectFleet(access))).permission;
     if (!current)
       return yield* Effect.fail(
         refuse(
@@ -287,7 +365,7 @@ export const disableFleet = (access: ControllerAccess, go: string) =>
     if (!current.enabled)
       return { status: "already-disabled" as const, operationId: current.operationId };
     const operationId = `disable-${shortHash("disable", go, current.digest)}`;
-    yield* call(() =>
+    yield* step("send", () =>
       sendFleetOperation(
         access,
         {
@@ -299,7 +377,7 @@ export const disableFleet = (access: ControllerAccess, go: string) =>
         go,
       ),
     );
-    const after = (yield* call(() => inspectFleet(access))).permission;
+    const after = (yield* step("inspect_after", () => inspectFleet(access))).permission;
     if (after?.enabled !== false)
       return yield* Effect.fail(
         refuse(

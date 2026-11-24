@@ -406,6 +406,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           go: input.go,
           active: input.active as "blue" | "green" | undefined,
           ...(targetActive ? { targetActive } : {}),
+          clock: { sleep: deps.sleep, now: deps.now },
         });
         evidence.configure = configured;
         evidence.ready = yield* waitForReadyCell({

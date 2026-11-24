@@ -83,6 +83,10 @@ export interface HarnessOptions {
   usageRollup?: unknown;
   /** What the controller's inspect reports for the pool's own capture-hour counts. */
   captureHours?: unknown;
+  /** While true, the controller still holds blue's image input from before the settings' deploy. */
+  bindingsLag?: () => boolean;
+  /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
+  handoffFailure?: (action: string) => Error | Response | undefined;
 }
 
 export async function harness(options: HarnessOptions = {}) {
@@ -160,6 +164,13 @@ export async function harness(options: HarnessOptions = {}) {
     applicationId: colours[color].id,
     imageInput: colours[color].input,
   }));
+  // As in production, the configuration and fleet-inspect read the controller's one set of bindings.
+  const currentBindings = () =>
+    options.bindingsLag?.()
+      ? bindings.map((binding) =>
+          binding.color === "blue" ? { ...binding, imageInput: "0".repeat(64) } : binding,
+        )
+      : bindings;
   // The controller observes providers exactly as in production; only the host is local.
   const provider = new RuntimeProviderReader("observation-token", (input, init) =>
     fetch(input.replace("https://api.cloudflare.com", cloudflare.origin), init),
@@ -168,7 +179,7 @@ export async function harness(options: HarnessOptions = {}) {
     storage,
     controllerId,
     code,
-    bindings: () => bindings,
+    bindings: () => currentBindings(),
     legacy: async () => primary,
     occupied: (transaction) => state.inspect(transaction),
     provider,
@@ -229,7 +240,7 @@ export async function harness(options: HarnessOptions = {}) {
       return {
         permission: await configuration.inspect(operationId),
         resources: await state.inspect(),
-        bindings,
+        bindings: currentBindings(),
         recentEnds: await state.recentEnds(),
       };
     },
@@ -355,7 +366,11 @@ export async function harness(options: HarnessOptions = {}) {
         fetch: async (request: Request) => {
           const { envelope } = JSON.parse(await request.clone().text()) as { envelope: string };
           const opened = await openEnvelope(signingKey, runtimeHandoffCommandPrefix, envelope);
-          actions.push((opened as { action: string }).action);
+          const action = (opened as { action: string }).action;
+          actions.push(action);
+          const failure = options.handoffFailure?.(action);
+          if (failure instanceof Error) throw failure;
+          if (failure) return failure;
           return handleRuntimeHandoff(
             request,
             slots,
