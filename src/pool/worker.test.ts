@@ -1776,3 +1776,39 @@ test("committed change delivery survives a shared Home task without delaying fle
   // Released, the pass renews again in its own turn: two renewals one after the other.
   assert.deepEqual(counts, { deliveries: 1, fleet: 2, membership: 2 });
 });
+
+test("the operator entrypoint writes one closed line when its handoff call throws before the controller runs", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const env = {
+    PoolContainer: {
+      jurisdiction() {
+        return {
+          getByName() {
+            return {
+              runtimeHandoff: async () => {
+                throw new DOMException(
+                  "AbortSignal serialization is not enabled.",
+                  "DataCloneError",
+                );
+              },
+            };
+          },
+        };
+      },
+    },
+  };
+  const response = await PoolOperations.prototype.fetch.call(
+    { env },
+    new Request("https://pool.example/runtime-handoff", { method: "POST", body: "{}" }),
+  );
+  assert.equal(response.status, 500);
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments),
+    [
+      [
+        "POOL_OPERATIONS_CALL_FAILED",
+        '{"route":"/runtime-handoff","error":"DataCloneError","status":500}',
+      ],
+    ],
+  );
+});

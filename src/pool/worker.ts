@@ -41,6 +41,7 @@ import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 import { RuntimeHandoff, type HandoffEnvironment } from "./runtime-slots/integration.ts";
 import { handleRuntimeHandoff } from "./runtime-slots/http.ts";
 import { runtimeHandoffPath } from "./runtime-slots/handoff-command.ts";
+import { throughController } from "./operations-call.ts";
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { deploymentReadinessPath, handleDeploymentReadiness } from "./deployment-readiness.ts";
 import { poolWorkerRevision } from "../../.upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts";
@@ -1365,7 +1366,10 @@ export class PoolOperations extends WorkerEntrypoint<PoolEnvironment> {
         headers: { "Cache-Control": "no-store" },
       });
     }
-    if (path === runtimeHandoffPath) return singleton(this.env).runtimeHandoff(request);
+    if (path === runtimeHandoffPath)
+      return throughController(runtimeHandoffPath, () =>
+        singleton(this.env).runtimeHandoff(request),
+      );
     if (path === deploymentReadinessPath)
       return handleDeploymentReadiness(
         request,
