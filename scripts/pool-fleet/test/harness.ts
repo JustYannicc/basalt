@@ -195,6 +195,7 @@ export async function harness(options: HarnessOptions = {}) {
   const actions: string[] = [];
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
   const retires: { operationId: string; go: string; key: string }[] = [];
+  const checks: string[] = [];
   // What the cell's 8317 read returns to the next fleet-retire.
   const retireRead = { connections: 0 as number | null };
   let restart = 0;
@@ -256,6 +257,28 @@ export async function harness(options: HarnessOptions = {}) {
         // The real receipt names the slot; the lane must keep it out of its output.
         slot: cell.slotId,
       };
+    },
+    // The check reads the rows and writes nothing; its rules are runtime-fleet-retire-row.test.ts's.
+    retireCheck: async (key) => {
+      checks.push(key);
+      const rows = await state.inspect();
+      const row = rows[0];
+      return row?.phase === "draining"
+        ? {
+            wouldProceed: true,
+            refusal: null,
+            matches: 1,
+            key: "0".repeat(24),
+            ordinal: 1,
+            phase: row.phase,
+            ledger: row.active,
+            ledgerStillMs: 300_000,
+            cell: row.active,
+            cellStillMs: 2_400_000,
+            leases: { current: 0, gone: row.active },
+            connections: retireRead.connections,
+          }
+        : { wouldProceed: false, refusal: "not_draining", matches: 1, phase: row?.phase ?? "none" };
     },
     inspectCrash: async (_identity, nonce) => ({
       submission: (await storage.get(crashNonceKey(nonce))) ?? null,
@@ -403,6 +426,7 @@ export async function harness(options: HarnessOptions = {}) {
     actions,
     crashes,
     retires,
+    checks,
     retireRead,
     providerRequests,
     storage,

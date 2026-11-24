@@ -47,6 +47,12 @@ export const RuntimeFleetOperationPayload = Schema.Union([
     operationId: OperationId,
     identity: SlotIdentity,
   }),
+  // The operator's check before it, which overrides nothing (`RuntimeFleet.retireCheck`).
+  Schema.Struct({
+    controllerCode: ControllerCode,
+    action: Schema.Literal("fleet-retire-check"),
+    key: Schema.String.check(Schema.isPattern(/^[0-9a-f]{8,24}$/u)),
+  }),
   // A named draining row's retirement over a count that stood still (`RuntimeFleet.retireRow`).
   Schema.Struct({
     controllerCode: ControllerCode,

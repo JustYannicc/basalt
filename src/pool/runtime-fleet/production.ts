@@ -357,6 +357,11 @@ export class PoolRuntimeFleet {
     await this.schedule();
     return receipt;
   }
+  async retireCheck(key: string) {
+    const fleet = await this.fleet();
+    if (!fleet) throw new SlotRefused("selection");
+    return fleet.retireCheck(key);
+  }
   async retireRow(operationId: string, go: string, key: string) {
     const fleet = await this.fleet();
     if (!fleet) throw new SlotRefused("selection");

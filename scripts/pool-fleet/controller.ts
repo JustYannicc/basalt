@@ -177,6 +177,30 @@ async function read(access: ControllerAccess, action: Record<string, unknown>) {
 export const inspectController = async (access: ControllerAccess) =>
   Schema.decodeUnknownSync(Inspect)(await read(access, { action: "inspect" })).result;
 
+const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+// Lenient like inspect: only the closed fields decoded here are printed.
+const RetireCheck = Schema.Struct({
+  result: Schema.Struct({
+    wouldProceed: Schema.Boolean,
+    refusal: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[a-z_]{1,40}$/u))),
+    matches: Count,
+    key: Schema.optional(Schema.String.check(Schema.isPattern(/^[0-9a-f]{24}$/u))),
+    ordinal: Schema.optional(Schema.NullOr(Count)),
+    phase: Schema.optional(Schema.String.check(Schema.isPattern(/^[a-z]{1,20}$/u))),
+    ledger: Schema.optional(Count),
+    ledgerStillMs: Schema.optional(Schema.Number),
+    cell: Schema.optional(Schema.NullOr(Count)),
+    cellStillMs: Schema.optional(Schema.NullOr(Schema.Number)),
+    leases: Schema.optional(Schema.NullOr(Schema.Struct({ current: Count, gone: Count }))),
+    connections: Schema.optional(Schema.NullOr(Count)),
+  }),
+});
+
+/** fleet-retire's refusal tests and the cell's connection read for one row; nothing is changed. */
+export const checkRetire = async (access: ControllerAccess, key: string) =>
+  Schema.decodeUnknownSync(RetireCheck)(await read(access, { action: "fleet-retire-check", key }))
+    .result;
+
 export const inspectFleet = async (access: ControllerAccess, operationId?: string) =>
   Schema.decodeUnknownSync(FleetInspect)(
     await read(access, { action: "fleet-inspect", ...(operationId ? { operationId } : {}) }),

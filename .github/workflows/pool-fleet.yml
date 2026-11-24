@@ -5,11 +5,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: inspect reads only; configure-and-accept enables the fleet, accepts it and disables it again on any failure; retire-row retires one named draining row over a count that stood still
+        description: inspect reads only; configure-and-accept enables the fleet, accepts it and disables it again on any failure; retire-row retires one named draining row over a count that stood still; retire-check runs retire-row's checks for that row and changes nothing
         required: true
         default: inspect
         type: choice
-        options: [inspect, configure-and-accept, disable, accept, crash-cell, retire-row]
+        options: [inspect, configure-and-accept, disable, accept, crash-cell, retire-row, retire-check]
       go:
         description: The coordinator's literal GO (coordinator-20YY-...); required for configure-and-accept, disable, crash-cell and retire-row
         required: false
@@ -22,7 +22,12 @@ on:
         type: choice
         options: [default, blue, green]
       key:
-        description: retire-row only, the row's key from the lane's inspect (8 to 24 hex digits)
+        description: retire-row and retire-check only, the row's key from the lane's inspect (8 to 24 hex digits)
+        required: false
+        default: ""
+        type: string
+      target-active:
+        description: configure-and-accept only, the growth target to configure (1 to 100000); empty keeps the configured value
         required: false
         default: ""
         type: string
@@ -89,6 +94,7 @@ jobs:
           POOL_FLEET_GO: ${{ inputs.go }}
           POOL_FLEET_ACTIVE: ${{ inputs.active != 'default' && inputs.active || '' }}
           POOL_FLEET_KEY: ${{ inputs.key }}
+          POOL_FLEET_TARGET_ACTIVE: ${{ inputs.target-active }}
           POOL_FLEET_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-fleet
       - uses: actions/upload-artifact@v4
         if: always()

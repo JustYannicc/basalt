@@ -24,7 +24,13 @@ import {
 } from "../../src/pool/runtime-fleet/failure-record.ts";
 import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
-import { configureFleet, disableFleet, retireRow, waitForReadyCell } from "./operations.ts";
+import {
+  checkRetireRow,
+  configureFleet,
+  disableFleet,
+  retireRow,
+  waitForReadyCell,
+} from "./operations.ts";
 
 export const modes = [
   "inspect",
@@ -34,6 +40,7 @@ export const modes = [
   "crash-cell",
   "bookmark",
   "retire-row",
+  "retire-check",
 ] as const;
 type Mode = (typeof modes)[number];
 const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
@@ -42,8 +49,10 @@ export interface DispatchInput {
   mode: string;
   go: string;
   active?: string;
-  /** retire-row only: the row's key from the lane's inspect. */
+  /** retire-row and retire-check only: the row's key from the lane's inspect. */
   key?: string;
+  /** configure-and-accept only: the growth target to configure, 1 to 100,000. */
+  targetActive?: string;
   ref: string;
   event: string;
 }
@@ -152,6 +161,8 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
         enabled: fleet.permission.enabled,
         revision: fleet.permission.configuration.revision,
         active: fleet.permission.configuration.active,
+        targetActive: fleet.permission.configuration.targetActive,
+        maximum: fleet.permission.configuration.maximum,
       }
     : null,
   inForce: fleet.inForce ?? null,
@@ -181,6 +192,17 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
 const needAcceptance = ({ acceptance }: DispatchDependencies) =>
   acceptance instanceof FleetLaneRefused ? Effect.fail(acceptance) : Effect.succeed(acceptance);
 
+/**
+ * The GO is the gate. A model socket can outlive the isolate that took its lease, so the cell's own
+ * read of its open connections is said plainly whenever it doesn't show the cell idle.
+ */
+const connectionWarning = (connections: number | null | undefined) =>
+  connections === 0
+    ? null
+    : typeof connections === "number"
+      ? `${connections} connections are open on this cell; the override may cut them`
+      : "the connection read failed; nothing proves this cell is idle";
+
 const program = (input: DispatchInput, deps: DispatchDependencies) =>
   Effect.gen(function* () {
     if (!modes.includes(input.mode as Mode))
@@ -205,6 +227,21 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           "coordinator-go-missing",
           `mode ${mode} changes production and needs a go matching ${goPattern.source}.`,
           "Ask the coordinator for a literal GO and pass it as the go input.",
+        ),
+      );
+    // The bounds src/pool/runtime-fleet/configuration.ts accepts for targetActive.
+    const targetActive = input.targetActive ? Number(input.targetActive) : undefined;
+    if (
+      input.targetActive &&
+      (mode !== "configure-and-accept" ||
+        !/^[1-9][0-9]{0,5}$/u.test(input.targetActive) ||
+        targetActive! > 100_000)
+    )
+      return yield* Effect.fail(
+        refuse(
+          "target-active-invalid",
+          `target-active "${input.targetActive.slice(0, 12)}" must be an integer from 1 to 100000, and only configure-and-accept takes it.`,
+          "Leave it empty to keep the configured value, or pass one in range with configure-and-accept.",
         ),
       );
     if (input.active && input.active !== "blue" && input.active !== "green")
@@ -286,17 +323,21 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         fleet.rows.filter((row) => row.key.startsWith(key));
       const before = named((yield* read()).fleet);
       const retired = yield* retireRow(access, input.go, key);
-      // The GO is the gate. A model socket can outlive the isolate that took its lease, so the cell's
-      // own read of its open connections is said plainly whenever it doesn't show the cell idle.
-      const connections = retired.overrode?.connections;
-      const warning =
-        connections === 0
-          ? null
-          : typeof connections === "number"
-            ? `${connections} connections are open on this cell; the override may cut them`
-            : "the connection read failed; nothing proves this cell is idle";
+      const warning = connectionWarning(retired.overrode?.connections);
       if (warning) deps.log(`WARNING ${warning}`);
       return { ...evidence, before, retired, warning, after: named((yield* read()).fleet) };
+    }
+    if (mode === "retire-check") {
+      const check = yield* checkRetireRow(access, input.key ?? "");
+      deps.log(
+        check.wouldProceed
+          ? "retire-row would proceed"
+          : `retire-row would be refused: ${check.refusal}`,
+      );
+      deps.log(check.leaseOwner);
+      const warning = check.phase === "draining" ? connectionWarning(check.connections) : null;
+      if (warning) deps.log(`WARNING ${warning}`);
+      return { ...evidence, check, warning };
     }
     if (mode === "bookmark")
       return { ...evidence, bookmark: yield* call(() => takeBookmark(access)) };
@@ -349,6 +390,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           controller: access,
           go: input.go,
           active: input.active as "blue" | "green" | undefined,
+          ...(targetActive ? { targetActive } : {}),
         });
         evidence.configure = configured;
         evidence.ready = yield* waitForReadyCell({

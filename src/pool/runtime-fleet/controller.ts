@@ -122,6 +122,14 @@ export interface FleetCell {
     identity: SlotIdentity,
     operationId: string,
   ): Promise<{ released: number; stillMs: number; connections: number | null }>;
+  /** `releaseStill`'s rules and its connection read for the operator's check, nothing written. */
+  checkStill?(identity: SlotIdentity): Promise<{
+    refusal: string | null;
+    active: number;
+    stillMs: number;
+    leases: { current: number; gone: number };
+    connections: number | null;
+  }>;
   /** Whether the cell is proven gone; false while its stop is still under way. */
   retire(identity: SlotIdentity, begin: () => Promise<void>): Promise<boolean>;
   retired(identity: SlotIdentity, resumeBeforeDispatch?: boolean): Promise<boolean>;
@@ -489,6 +497,50 @@ export class RuntimeFleet {
     console.warn("POOL_FLEET_ROW_RETIRE_OVERRIDE", receipt);
     this.deps.changed?.();
     return receipt;
+  }
+  /**
+   * The operator's check before `retireRow`: its refusal tests and the cell's own check and
+   * connection read for the named row, answered as a closed record instead of thrown, with nothing
+   * overridden anywhere.
+   */
+  async retireCheck(key: string) {
+    const rows = await this.deps.state.inspect();
+    const matches: FleetRow[] = [];
+    for (const row of rows)
+      if ((await rowKey(row.target.slotId)).startsWith(key)) matches.push(row);
+    const row = matches[0];
+    if (matches.length !== 1 || !row)
+      return { wouldProceed: false, refusal: "key_matches", matches: matches.length };
+    const ledgerStillMs = this.deps.now() - row.lastUsedAt;
+    const named = {
+      matches: 1,
+      key: await rowKey(row.target.slotId),
+      ordinal: row.target.homePeerOrdinal ?? null,
+      phase: row.phase,
+      ledger: row.active,
+      ledgerStillMs,
+    };
+    if (row.phase !== "draining" || !row.identity)
+      return { ...named, wouldProceed: false, refusal: "not_draining" };
+    const cell = this.cell(row.target);
+    const checked = await cell.checkStill?.(row.identity).catch(() => undefined);
+    const refusal =
+      ledgerStillMs < countStillMs
+        ? "ledger_moving"
+        : !checked
+          ? "cell_unreadable"
+          : checked.refusal
+            ? `cell_${checked.refusal}`
+            : null;
+    return {
+      ...named,
+      wouldProceed: refusal === null,
+      refusal,
+      cell: checked?.active ?? null,
+      cellStillMs: checked?.stillMs ?? null,
+      leases: checked?.leases ?? null,
+      connections: checked?.connections ?? null,
+    };
   }
   async recoverPrimary() {
     const failure = this.primaryFailure;

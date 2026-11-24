@@ -624,3 +624,113 @@ test("retire-row says plainly when the cell's connection read doesn't show it id
     }
   }
 });
+
+test("configure-and-accept sets the target-active it is given, and inspect shows it with the revision and maximum", async () => {
+  const lane = await harness();
+  try {
+    const permission = async () =>
+      (
+        (await runPoolFleet(dispatch("inspect"), lane.deps())) as unknown as {
+          result: {
+            fleet: { permission: { revision: number; targetActive: number; maximum: number } };
+          };
+        }
+      ).result.fleet.permission;
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const first = await permission();
+    assert.deepEqual([first.revision, first.targetActive, first.maximum], [1, 25, 4]);
+    const lowered = await runPoolFleet(
+      dispatch("configure-and-accept", {
+        go: "coordinator-2026-11-25-target-5",
+        targetActive: "5",
+      }),
+      lane.deps(),
+    );
+    assert.equal(lowered.ok, true, JSON.stringify(lowered));
+    assert.deepEqual([(await permission()).revision, (await permission()).targetActive], [2, 5]);
+    const restored = await runPoolFleet(
+      dispatch("configure-and-accept", {
+        go: "coordinator-2026-11-25-target-25",
+        targetActive: "25",
+      }),
+      lane.deps(),
+    );
+    assert.equal(restored.ok, true, JSON.stringify(restored));
+    assert.deepEqual([(await permission()).revision, (await permission()).targetActive], [3, 25]);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a target-active out of configure's range, or on another mode, is refused before any send", async () => {
+  const lane = await harness();
+  try {
+    for (const [mode, value] of [
+      ["configure-and-accept", "0"],
+      ["configure-and-accept", "100001"],
+      ["configure-and-accept", "5.5"],
+      ["configure-and-accept", "five"],
+      ["inspect", "5"],
+    ] as const) {
+      const result = await runPoolFleet(dispatch(mode, { targetActive: value }), lane.deps());
+      assert.equal(result.ok, false, `${mode} ${value}`);
+      assert.match(String("cause" in result && result.cause), /target-active-invalid/u);
+    }
+    assert.deepEqual(lane.actions, []);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("retire-check takes any go text, reports what retire-row would do and whose leases they are, and changes nothing", async () => {
+  const lane = await harness();
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const rows = lane.storage.values.get("runtime-fleet-v1:resources") as {
+      target: { slotId: string };
+    }[];
+    lane.storage.values.set(
+      "runtime-fleet-v1:resources",
+      rows.map((row) => ({ ...row, phase: "draining", active: 6 })),
+    );
+    const before = JSON.stringify(lane.storage.values.get("runtime-fleet-v1:resources"));
+    const key = createHash("sha256").update(rows[0]!.target.slotId).digest("hex").slice(0, 8);
+    lane.retireRead.connections = 1;
+    const result = await runPoolFleet(dispatch("retire-check", { go: "", key }), lane.deps());
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const outcome = (
+      result as unknown as {
+        result: {
+          check: {
+            wouldProceed: boolean;
+            ledger: number;
+            cell: number;
+            connections: number;
+            leaseOwner: string;
+          };
+          warning: string | null;
+        };
+      }
+    ).result;
+    assert.deepEqual(
+      [
+        outcome.check.wouldProceed,
+        outcome.check.ledger,
+        outcome.check.cell,
+        outcome.check.connections,
+      ],
+      [true, 6, 6, 1],
+    );
+    assert.equal(
+      outcome.check.leaseOwner,
+      "all 6 of the cell's leases were left by an isolate that is gone; only a model socket can outlive it",
+    );
+    assert.equal(outcome.warning, "1 connections are open on this cell; the override may cut them");
+    assert.deepEqual(lane.checks, [key]);
+    assert.deepEqual(lane.retires, [], "no override was sent");
+    assert.equal(JSON.stringify(lane.storage.values.get("runtime-fleet-v1:resources")), before);
+    assert.doesNotMatch(JSON.stringify(result), /runtime-cell-1|cell-boot/u);
+  } finally {
+    await lane.close();
+  }
+});

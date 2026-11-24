@@ -12,6 +12,7 @@ import {
   type CloudflareAccess,
 } from "./cloudflare.ts";
 import {
+  checkRetire,
   inspectController,
   inspectFleet,
   sendFleetOperation,
@@ -50,6 +51,8 @@ export const configureFleet = (input: {
   controller: ControllerAccess;
   go: string;
   active?: "blue" | "green";
+  /** The growth target for this configuration; otherwise the current one, or 25. */
+  targetActive?: number;
 }) =>
   Effect.gen(function* () {
     const { controller: access, go } = input;
@@ -101,7 +104,7 @@ export const configureFleet = (input: {
             "blue",
           applications,
           maximum: current?.configuration.maximum ?? 4,
-          targetActive: current?.configuration.targetActive ?? 25,
+          targetActive: input.targetActive ?? current?.configuration.targetActive ?? 25,
           idleMilliseconds: current?.configuration.idleMilliseconds ?? 60_000,
         }),
       catch: () =>
@@ -146,6 +149,35 @@ const RetireReceipt = Schema.Struct({
   ledgerLowered: Schema.Boolean,
   connections: Schema.NullOr(Schema.Number),
 });
+/**
+ * The check before retire-row: the controller's refusal tests and the cell's own check and 8317
+ * read for the named row, with nothing overridden. Any go text will do, as for inspect.
+ */
+export const checkRetireRow = (access: ControllerAccess, key: string) =>
+  Effect.gen(function* () {
+    if (!/^[0-9a-f]{8,24}$/u.test(key))
+      return yield* Effect.fail(
+        refuse(
+          "row-key-invalid",
+          "key must be 8 to 24 lowercase hex digits, a row's key from the lane's inspect.",
+          "Pass the row's key as the key input.",
+        ),
+      );
+    const checked = yield* call(() => checkRetire(access, key));
+    const leases = checked.leases;
+    return {
+      ...checked,
+      // Whose isolate took the row's cell leases: a gone one's may only be a model socket.
+      leaseOwner: !leases
+        ? "the cell's leases weren't read"
+        : leases.current > 0
+          ? `${leases.current} of the cell's leases belong to its current isolate, so their streams may be live; the override refuses them`
+          : leases.gone > 0
+            ? `all ${leases.gone} of the cell's leases were left by an isolate that is gone; only a model socket can outlive it`
+            : "the cell holds no lease",
+    };
+  });
+
 export const retireOperationId = (go: string, key: string) =>
   `fleet-${shortHash("retire", go, key)}`;
 

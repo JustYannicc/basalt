@@ -280,3 +280,31 @@ test("a stream whose release write failed no longer holds the operator's overrid
     stillMs: 300_000,
   });
 });
+
+test("the operator's check reads the same rules and whose leases they are, and writes nothing", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const storage = new RuntimeSqlite();
+  context.after(() => storage.close());
+  const activity = new RuntimeActivity(storage);
+  await storage.put(activityKey, leakedRow(Date.now()));
+  const stored = JSON.stringify(await storage.get(activityKey));
+  assert.equal((await activity.checkStill(identity, 300_000)).refusal, "still_moving");
+  context.mock.timers.tick(300_000);
+  assert.deepEqual(await activity.checkStill(identity, 300_000), {
+    refusal: null,
+    phase: "draining",
+    active: 6,
+    known: true,
+    stillMs: 300_000,
+    leases: { current: 0, gone: 6 },
+  });
+  assert.equal(JSON.stringify(await storage.get(activityKey)), stored, "nothing was written");
+  // A lease this isolate holds shows as current, and the check says the override would refuse it.
+  const other = { ...identity, slotId: "runtime-2", instanceId: "runtime-2", bootId: "boot-2" };
+  await activity.initialize(other, true);
+  await activity.acquire(other);
+  await activity.drain(other);
+  context.mock.timers.tick(300_000);
+  const live = await activity.checkStill(other, 300_000);
+  assert.deepEqual([live.refusal, live.leases], ["live_lease", { current: 1, gone: 0 }]);
+});

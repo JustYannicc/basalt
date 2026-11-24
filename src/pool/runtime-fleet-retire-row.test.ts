@@ -72,6 +72,13 @@ async function stuckRow(
     abortPool: () => {},
     drain: async () => ({ active: cellCount, known: true }),
     activity: async () => ({ active: cellCount, known: true, stillMs: 2_400_000 }),
+    checkStill: async () => ({
+      refusal: options.cellMoved ? "still_moving" : null,
+      active: cellCount,
+      stillMs: 2_400_000,
+      leases: { current: 0, gone: cellCount },
+      connections: 0,
+    }),
     releaseStill: async () => {
       if (options.cellMoved) throw new SlotRefused("draining");
       if (options.releaseDuring) await held[0]!.release();
@@ -175,4 +182,39 @@ test("a ledger that moves during the override still gets its line, and upkeep's 
   f.advance(300_000);
   await f.fleet.upkeep();
   assert.deepEqual(f.retired, ["slot-stuck"]);
+});
+
+test("the operator's check runs every refusal test and the cell's read, and overrides nothing", async (context) => {
+  const f = await stuckRow(context);
+  const check = await f.fleet.retireCheck(f.key.slice(0, 8));
+  assert.deepEqual(check, {
+    matches: 1,
+    key: f.key,
+    ordinal: 1,
+    phase: "draining",
+    ledger: 6,
+    ledgerStillMs: 300_000,
+    wouldProceed: true,
+    refusal: null,
+    cell: 6,
+    cellStillMs: 2_400_000,
+    leases: { current: 0, gone: 6 },
+    connections: 0,
+  });
+  assert.equal((await f.row())?.active, 6, "the ledger keeps its count");
+  assert.deepEqual(f.overrides(), [], "no override line");
+  await f.fleet.upkeep();
+  assert.deepEqual(f.retired, [], "nothing retires");
+  for (const [name, options, key, refusal] of [
+    ["a ready row", { phase: "ready" }, undefined, "not_draining"],
+    ["a ledger that moved", { stillMs: 299_999 }, undefined, "ledger_moving"],
+    ["a cell count that moved", { cellMoved: true }, undefined, "cell_still_moving"],
+    ["a key that matches no row", {}, "0123456789abcdef", "key_matches"],
+  ] as const) {
+    context.mock.restoreAll();
+    const g = await stuckRow(context, options);
+    const refused = await g.fleet.retireCheck(key ?? g.key);
+    assert.deepEqual([refused.wouldProceed, refused.refusal], [false, refusal], name);
+    assert.equal((await g.row())?.active, 6, `${name}: the ledger keeps its count`);
+  }
 });

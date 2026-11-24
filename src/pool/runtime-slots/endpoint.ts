@@ -565,15 +565,7 @@ export class RuntimeEndpoint {
     this.bound(identity);
     return this.serialize(async () => {
       signal.throwIfAborted();
-      const container = this.ctx.container;
-      const read = container?.exec
-        ? legacyConnections({ exec: container.exec.bind(container) })
-        : Promise.reject(new SlotRefused("uncertain"));
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const connections = await Promise.race([
-        read.catch(() => null),
-        new Promise<null>((late) => (timer = setTimeout(() => late(null), 1_500))),
-      ]).finally(() => clearTimeout(timer));
+      const connections = await this.openConnections();
       const released = {
         ...(await this.activity.releaseStill(identity, leakedStreamsMs, signal)),
         connections,
@@ -587,6 +579,26 @@ export class RuntimeEndpoint {
       });
       return released;
     });
+  }
+  /** The operator's check before `fleet-retire`: the same rules and the same read, nothing written. */
+  checkStill(identity: SlotIdentity) {
+    this.bound(identity);
+    return this.serialize(async () => ({
+      ...(await this.activity.checkStill(identity, leakedStreamsMs)),
+      connections: await this.openConnections(),
+    }));
+  }
+  /** Established connections on 8317, or null when the read fails or takes over 1.5 s. */
+  private async openConnections() {
+    const container = this.ctx.container;
+    const read = container?.exec
+      ? legacyConnections({ exec: container.exec.bind(container) })
+      : Promise.reject(new SlotRefused("uncertain"));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      read.catch(() => null),
+      new Promise<null>((late) => (timer = setTimeout(() => late(null), 1_500))),
+    ]).finally(() => clearTimeout(timer));
   }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {

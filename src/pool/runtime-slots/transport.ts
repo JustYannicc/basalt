@@ -52,6 +52,18 @@ const StillRelease = Schema.Struct({
   stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
   connections: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
 });
+const Count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0));
+const StillCheck = Schema.Struct({
+  refusal: Schema.NullOr(
+    Schema.Literals(["not_draining", "unknown_count", "still_moving", "live_lease"]),
+  ),
+  phase: Schema.NullOr(Schema.Literals(["open", "draining", "retiring"])),
+  active: Count,
+  known: Schema.Boolean,
+  stillMs: Schema.Number.check(Schema.isGreaterThanOrEqualTo(0)),
+  leases: Schema.Struct({ current: Count, gone: Count }),
+  connections: Schema.NullOr(Count),
+});
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
@@ -228,6 +240,10 @@ export class BoundSlotDriver implements SlotDriver {
     const response = await this.call(identity, "activity", { identity }, signal);
     return Schema.decodeUnknownSync(ActivityCount)(await response.json());
   }
+  async checkStill(identity: SlotIdentity, signal: AbortSignal) {
+    const response = await this.call(identity, "release-check", { identity }, signal);
+    return Schema.decodeUnknownSync(StillCheck)(await response.json());
+  }
   async releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
     const response = await this.call(identity, "release-still", { identity, operationId }, signal);
     return Schema.decodeUnknownSync(StillRelease)(await response.json());
@@ -384,6 +400,11 @@ export async function runtimeRequest(
         )(value),
       );
       return Response.json(await endpoint.stopRefusing(identity, refusingSince, request.signal));
+    } else if (action === "/release-check") {
+      const { identity } = runtimeInput(() =>
+        Schema.decodeUnknownSync(Schema.Struct({ identity: SlotIdentity }))(value),
+      );
+      return Response.json(await endpoint.checkStill(identity));
     } else if (action === "/release-still") {
       const { identity, operationId } = runtimeInput(() =>
         Schema.decodeUnknownSync(

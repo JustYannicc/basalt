@@ -42,6 +42,46 @@ export function stillFor(row: Pick<typeof Activity.Type, "changedAt">) {
 // another isolate died with it, as `legacy-activity.ts` treats a dead isolate's count.
 const liveLeases = new Set<string>();
 
+/** Why an operator's override of a still count is refused, in the order the rules apply. */
+export type StillRefusal = "not_draining" | "unknown_count" | "still_moving" | "live_lease";
+const stillRefusalReason = {
+  not_draining: "selection",
+  unknown_count: "uncertain",
+  still_moving: "draining",
+  live_lease: "draining",
+} as const;
+
+/**
+ * Whether a count may be overridden, and whose leases it holds: `current` were taken by this
+ * isolate and may still be live, `gone` were left by an isolate that no longer runs.
+ */
+function stillCheck(row: typeof Activity.Type | undefined, stillAtLeastMs: number) {
+  const leases = Object.keys(row?.leases ?? {});
+  const current = leases.filter((lease) => liveLeases.has(lease)).length;
+  const stillMs = row ? stillFor(row).stillMs : 0;
+  const refusal: StillRefusal | null =
+    !row || row.phase !== "draining"
+      ? "not_draining"
+      : // An unknown count stays the drain's own proof (`drain_unproven`), never an override's.
+        !row.known
+        ? "unknown_count"
+        : row.active === 0
+          ? null
+          : stillMs < stillAtLeastMs
+            ? "still_moving"
+            : // A stream this isolate still holds may be live however long it has run.
+              current > 0
+              ? "live_lease"
+              : null;
+  return {
+    refusal,
+    active: row?.active ?? 0,
+    known: row?.known ?? false,
+    stillMs,
+    leases: { current, gone: leases.length - current },
+  };
+}
+
 /** Lost request receipts remain counted. Reconstruction cannot invent an empty runtime. */
 export class RuntimeActivity {
   private storage: TransactionStorage;
@@ -95,21 +135,22 @@ export class RuntimeActivity {
     return this.change(identity, (row) => {
       // A caller that gave up never sees this commit, so it never commits.
       signal?.throwIfAborted();
-      if (row.phase !== "draining") throw new SlotRefused("selection");
-      // An unknown count stays the drain's own proof (`drain_unproven`), never an override's.
-      if (!row.known) throw new SlotRefused("uncertain");
-      const { stillMs } = stillFor(row);
+      const check = stillCheck(row, stillAtLeastMs);
+      if (check.refusal) throw new SlotRefused(stillRefusalReason[check.refusal]);
       // Nothing left to release, as after a re-send whose first answer was lost.
-      if (row.active === 0) return { row, result: { released: 0, stillMs } };
-      if (stillMs < stillAtLeastMs) throw new SlotRefused("draining");
-      // A stream this isolate still holds may be live however long it has run.
-      if (Object.keys(row.leases ?? {}).some((lease) => liveLeases.has(lease)))
-        throw new SlotRefused("draining");
+      if (row.active === 0) return { row, result: { released: 0, stillMs: check.stillMs } };
       return {
         row: { ...row, active: 0, known: true, leases: {}, changedAt: Date.now() },
-        result: { released: row.active, stillMs },
+        result: { released: row.active, stillMs: check.stillMs },
       };
     });
+  }
+
+  /** The same rules as `releaseStill`, read without writing anything: the operator's check. */
+  async checkStill(identity: SlotIdentity, stillAtLeastMs: number) {
+    const row = await this.inspect(identity);
+    if (!row) return { ...stillCheck(undefined, stillAtLeastMs), phase: null };
+    return { ...stillCheck(reconciled(row), stillAtLeastMs), phase: row.phase };
   }
 
   async inspect(identity: SlotIdentity) {
