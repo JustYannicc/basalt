@@ -14,11 +14,15 @@ import {
   OrganizationId,
 } from "../../.upstream/apps/hosted/server/src/contracts/organization.ts";
 import { PoolUsageBackend } from "../../.upstream/apps/hosted/server/src/contracts/pool-usage.ts";
+import { pullTestDatabaseImage } from "../test-database-image.ts";
 
+const image =
+  "mirror.gcr.io/library/postgres:17@sha256:156d40cfa063d6babb15d329a8e15b26a8d0690ebb6084c956084f3b025c3b30";
 let container: string | undefined;
 let port: number;
 before(
   async () => {
+    pullTestDatabaseImage(image);
     container = execFileSync(
       "docker",
       [
@@ -29,7 +33,7 @@ before(
         "127.0.0.1::5432",
         "--env",
         "POSTGRES_HOST_AUTH_METHOD=trust",
-        "mirror.gcr.io/library/postgres:17@sha256:156d40cfa063d6babb15d329a8e15b26a8d0690ebb6084c956084f3b025c3b30",
+        image,
       ],
       { encoding: "utf8" },
     ).trim();
@@ -55,7 +59,8 @@ before(
     assert.match(binding, /^127\.0\.0\.1:\d+$/);
     port = Number(binding.split(":")[1]);
   },
-  { timeout: 30_000 },
+  // pullTestDatabaseImage may wait 60 to 90 s on rate or quota refusals before the database starts.
+  { timeout: 180_000 },
 );
 after(() => {
   if (container)
