@@ -45,7 +45,7 @@ export const oldDestination = (app: App, requirement: string) =>
       return unavailable("No provider app is registered for this account requirement.");
     const catalog = yield* Effect.serviceOption(HostedCatalog);
     if (Option.isNone(catalog)) return unavailable("The provider catalog is unavailable.");
-    const entries = yield* catalog.value.list.pipe(Effect.catch(() => Effect.succeed([])));
+    const entries = yield* catalog.value.list.pipe(Effect.orElseSucceed(() => []));
     const entry = entries.find((entry) => entry.id === `provider-${lab}`);
     if (entry === undefined)
       return unavailable("This provider app is not available in the catalog.");
@@ -90,7 +90,7 @@ const oldIdentity = (app: App) =>
   Effect.gen(function* () {
     const catalog = yield* Effect.serviceOption(HostedCatalog);
     if (app.activeVersion === null || Option.isNone(catalog)) return null;
-    const entries = yield* catalog.value.list.pipe(Effect.catch(() => Effect.succeed([])));
+    const entries = yield* catalog.value.list.pipe(Effect.orElseSucceed(() => []));
     const installed = (yield* recordedServiceInstalls(yield* policyDatabase, [app])).get(app.id);
     const crypto = yield* Crypto.Crypto;
     const matches = yield* Effect.forEach(

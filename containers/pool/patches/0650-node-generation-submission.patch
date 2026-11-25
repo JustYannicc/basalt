@@ -1,27 +1,27 @@
 diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/adapters_executors.go
-index 48771f958d..1a202ee5ed 100644
+index 1b452cc9..66f81862 100644
 --- a/internal/pluginhost/adapters_executors.go
 +++ b/internal/pluginhost/adapters_executors.go
-@@ -936,7 +936,7 @@ func (a *executorAdapter) Execute(ctx context.Context, auth *coreauth.Auth, req
+@@ -1039,7 +1039,7 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
  		reporter.StartResponseTTFT()
  	}
  
 -	pluginResp, errExecute := a.executor.Execute(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 +	pluginResp, errExecute := a.executor.Execute(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
  	if errExecute != nil {
- 		return coreexecutor.Response{}, errExecute
+ 		return coreexecutor.Response{}, nil, errExecute
  	}
-@@ -994,7 +994,7 @@ func (a *executorAdapter) ExecuteStream(ctx context.Context, auth *coreauth.Auth
+@@ -1104,7 +1104,7 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
  		reporter.StartResponseTTFT()
  	}
  
 -	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
 +	pluginResp, errExecuteStream := a.executor.ExecuteStream(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
  	if errExecuteStream != nil {
- 		return nil, errExecuteStream
+ 		return nil, nil, errExecuteStream
  	}
 diff --git a/internal/pluginhost/host_callbacks.go b/internal/pluginhost/host_callbacks.go
-index 58dd95bfb0..c732d7496d 100644
+index 1ff25a4a..674ffa47 100644
 --- a/internal/pluginhost/host_callbacks.go
 +++ b/internal/pluginhost/host_callbacks.go
 @@ -28,6 +28,7 @@ type rpcHostHTTPRequest struct {
@@ -57,7 +57,7 @@ index 58dd95bfb0..c732d7496d 100644
  }
  
 diff --git a/internal/pluginhost/http_bridge.go b/internal/pluginhost/http_bridge.go
-index d5b8f906f5..574c82b8a6 100644
+index d5b8f906..574c82b8 100644
 --- a/internal/pluginhost/http_bridge.go
 +++ b/internal/pluginhost/http_bridge.go
 @@ -21,12 +21,23 @@ import (
@@ -98,7 +98,7 @@ index d5b8f906f5..574c82b8a6 100644
  		if cleanup != nil {
 diff --git a/internal/pluginhost/submission_boundary_test.go b/internal/pluginhost/submission_boundary_test.go
 new file mode 100644
-index 0000000000..7431c46e57
+index 00000000..7431c46e
 --- /dev/null
 +++ b/internal/pluginhost/submission_boundary_test.go
 @@ -0,0 +1,147 @@
@@ -250,7 +250,7 @@ index 0000000000..7431c46e57
 +	}
 +}
 diff --git a/internal/runtime/executor/aistudio_executor.go b/internal/runtime/executor/aistudio_executor.go
-index 7acfd20b6a..d6f8d17f7a 100644
+index e92a0577..11d24a6a 100644
 --- a/internal/runtime/executor/aistudio_executor.go
 +++ b/internal/runtime/executor/aistudio_executor.go
 @@ -189,7 +189,7 @@ func (e *AIStudioExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth,
@@ -262,7 +262,7 @@ index 7acfd20b6a..d6f8d17f7a 100644
  	}
  	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
  	reporter.ObserveResponseModel(wsResp.Body)
-@@ -300,7 +300,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+@@ -308,7 +308,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
  			if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
  				logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
  			}
@@ -271,7 +271,7 @@ index 7acfd20b6a..d6f8d17f7a 100644
  		}
  		for event := range wsStream {
  			if event.Err != nil {
-@@ -327,7 +327,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+@@ -335,7 +335,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
  		if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, firstEvent.Status, errBody.Bytes()); errClear != nil {
  			logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
  		}
@@ -280,7 +280,7 @@ index 7acfd20b6a..d6f8d17f7a 100644
  	}
  	replayAccumulator := newAntigravityReasoningReplayAccumulator(body.replayScope, body.replayRequestPayload)
  	out := make(chan cliproxyexecutor.StreamChunk, 1)
-@@ -465,7 +465,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
+@@ -534,7 +534,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
  					if errClear := clearAntigravityReasoningReplayOnInvalidSignature(ctx, body.replayScope, event.Status, event.Payload); errClear != nil {
  						logAntigravityReasoningReplayDegraded(body.replayScope, "invalidate", errClear)
  					}
@@ -290,23 +290,23 @@ index 7acfd20b6a..d6f8d17f7a 100644
  					reporter.PublishFailure(ctx, errResponse)
  					select {
 diff --git a/internal/runtime/executor/antigravity_executor_credits.go b/internal/runtime/executor/antigravity_executor_credits.go
-index 2e4e6230f6..a7122b6479 100644
+index c83b2e4d..8cbb7178 100644
 --- a/internal/runtime/executor/antigravity_executor_credits.go
 +++ b/internal/runtime/executor/antigravity_executor_credits.go
-@@ -356,7 +356,7 @@ func antigravityHasExplicitCreditsBalanceExhaustedReason(body []byte) bool {
+@@ -465,7 +465,7 @@ func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
  }
  
- func newAntigravityStatusErr(statusCode int, body []byte) statusErr {
+ func newAntigravityStatusErrWithHeaders(statusCode int, headers http.Header, body []byte) statusErr {
 -	err := statusErr{code: statusCode, msg: string(body)}
 +	err := statusErr{code: statusCode, msg: string(body), providerErrorPayload: helps.IsProviderErrorPayload(body)}
- 	if statusCode == http.StatusTooManyRequests {
- 		if retryAfter, parseErr := helps.ParseRetryDelay(body); parseErr == nil && retryAfter != nil {
+ 	if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
+ 		if retryAfter, parseErr := helps.ParseRetryDelayWithHeaders(headers, body, time.Now()); parseErr == nil && retryAfter != nil {
  			err.retryAfter = retryAfter
 diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
-index 7a55bc5555..d5bd8141db 100644
+index b8badeb2..7859e32f 100644
 --- a/internal/runtime/executor/antigravity_executor_execute.go
 +++ b/internal/runtime/executor/antigravity_executor_execute.go
-@@ -464,7 +464,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
+@@ -404,7 +404,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
  		return resp, scanErr
  	}
  	if pendingFilterMsg != "" {
@@ -316,10 +316,10 @@ index 7a55bc5555..d5bd8141db 100644
  		reporter.PublishFailure(ctx, filterErr)
  		return resp, filterErr
 diff --git a/internal/runtime/executor/antigravity_executor_stream.go b/internal/runtime/executor/antigravity_executor_stream.go
-index 835b3279b3..475356b576 100644
+index 4ff85b86..06902bc3 100644
 --- a/internal/runtime/executor/antigravity_executor_stream.go
 +++ b/internal/runtime/executor/antigravity_executor_stream.go
-@@ -391,7 +391,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+@@ -382,7 +382,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
  			}
  		}
  		if pendingFilterMsg != "" && scanner.Err() == nil && !terminalDelivered {
@@ -329,7 +329,7 @@ index 835b3279b3..475356b576 100644
  			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
  			select {
 diff --git a/internal/runtime/executor/claude_executor_diagnostics.go b/internal/runtime/executor/claude_executor_diagnostics.go
-index 47b05df8de..72a33f15a4 100644
+index 47b05df8..72a33f15 100644
 --- a/internal/runtime/executor/claude_executor_diagnostics.go
 +++ b/internal/runtime/executor/claude_executor_diagnostics.go
 @@ -161,9 +161,9 @@ func observeClaudeSSEEvent(rawEvent []byte, messageID *string, completed *bool,
@@ -345,10 +345,10 @@ index 47b05df8de..72a33f15a4 100644
  	}
  }
 diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
-index f0eb97c91e..d06d0fa77e 100644
+index 9390136b..cdd0b7d2 100644
 --- a/internal/runtime/executor/claude_executor_execute.go
 +++ b/internal/runtime/executor/claude_executor_execute.go
-@@ -433,7 +433,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+@@ -435,7 +435,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
  			return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errRestore)
  		}
  		if refusalMsg, blocked := clienterror.ClaudePolicyRefusalMessage(data); blocked {
@@ -358,7 +358,7 @@ index f0eb97c91e..d06d0fa77e 100644
  			reporter.PublishFailureWithDetail(ctx, helps.ParseClaudeUsage(data), errRefusal)
  			return resp, errRefusal
 diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
-index 5a11869a7d..f172599244 100644
+index 5a11869a..f1725992 100644
 --- a/internal/runtime/executor/claude_executor_request.go
 +++ b/internal/runtime/executor/claude_executor_request.go
 @@ -891,7 +891,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
@@ -371,10 +371,10 @@ index 5a11869a7d..f172599244 100644
  		if !modelLevelCooling && helps.ClaudeHeadersIndicateUnifiedRateLimitRejection(headers) {
  			return claudeRateLimitError{statusErr: err, credentialScoped: true}
 diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
-index bdffd8cbfb..b16f4f95c1 100644
+index 336b5bd3..10995443 100644
 --- a/internal/runtime/executor/claude_executor_stream.go
 +++ b/internal/runtime/executor/claude_executor_stream.go
-@@ -619,7 +619,7 @@ func validateClaudeStreamingResponse(data []byte) error {
+@@ -623,7 +623,7 @@ func validateClaudeStreamingResponse(data []byte) error {
  			if message == "" {
  				message = "unknown upstream error"
  			}
@@ -384,45 +384,48 @@ index bdffd8cbfb..b16f4f95c1 100644
  			message := root.Get("message")
  			if strings.TrimSpace(message.Get("id").String()) == "" || strings.TrimSpace(message.Get("model").String()) == "" {
 diff --git a/internal/runtime/executor/codex_executor_stream.go b/internal/runtime/executor/codex_executor_stream.go
-index 3223e020a1..d071d5f392 100644
+index 3edfbe2f..54180de6 100644
 --- a/internal/runtime/executor/codex_executor_stream.go
 +++ b/internal/runtime/executor/codex_executor_stream.go
-@@ -291,7 +291,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
- 							// transparently retry on another credential, and report the status the
- 							// upstream refused to put on the wire.
- 							helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d buffered lines, failing over", bufferedFrames)
--							return nil, newCodexBootstrapOverloadErr(terminalBody)
-+							return nil, newCodexBootstrapOverloadErr(terminalBody, streamErr)
+@@ -305,7 +305,10 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+ 							if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
+ 								return nil, streamErr
+ 							}
+-							return nil, newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
++							overloadErr := newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
++							// The body may be a normalized fallback; only the original event grants replay.
++							overloadErr.providerErrorPayload = streamErr.providerErrorPayload
++							return nil, overloadErr
  						}
  						helps.LogWithRequestID(ctx).Debugf("codex executor: bootstrap overload rejection after %d lines / %v, time budget exhausted; delivering in-stream", bufferedFrames, timeSinceStart)
  					}
 diff --git a/internal/runtime/executor/codex_executor_terminal.go b/internal/runtime/executor/codex_executor_terminal.go
-index 6e513dd646..9bb1b4f6ff 100644
+index 4ba09c5a..318059f0 100644
 --- a/internal/runtime/executor/codex_executor_terminal.go
 +++ b/internal/runtime/executor/codex_executor_terminal.go
-@@ -161,7 +161,9 @@ func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool)
- 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
+@@ -162,7 +162,9 @@ func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool)
  		return statusErr{}, nil, false
  	}
--	return newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling), body, true
-+	err := newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling)
+ 	headers := parseCodexWebsocketErrorHeaders(eventData)
+-	return newCodexStatusErrWithHeadersAndCooling(http.StatusBadRequest, headers, body, modelLevelCooling), body, true
++	err := newCodexStatusErrWithHeadersAndCooling(http.StatusBadRequest, headers, body, modelLevelCooling)
 +	err.providerErrorPayload = helps.IsProviderErrorPayload(eventData)
 +	return err, body, true
  }
  
  func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
-@@ -176,7 +178,9 @@ func codexTerminalFailureErrWithCooling(eventData []byte, modelLevelCooling bool
- 	if !ok {
+@@ -178,7 +180,9 @@ func codexTerminalFailureErrWithCooling(eventData []byte, modelLevelCooling bool
  		return statusErr{}, nil, false
  	}
--	return newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling), body, true
-+	err := newCodexStatusErrWithCooling(codexTerminalFailureStatus(body), body, modelLevelCooling)
+ 	headers := parseCodexWebsocketErrorHeaders(eventData)
+-	return newCodexStatusErrWithHeadersAndCooling(codexTerminalFailureStatus(body), headers, body, modelLevelCooling), body, true
++	err := newCodexStatusErrWithHeadersAndCooling(codexTerminalFailureStatus(body), headers, body, modelLevelCooling)
 +	err.providerErrorPayload = helps.IsProviderErrorPayload(eventData)
 +	return err, body, true
  }
  
  func codexTerminalFailureStatus(body []byte) int {
-@@ -334,6 +338,7 @@ func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling
+@@ -365,6 +369,7 @@ func newCodexStatusErrWithCooling(statusCode int, body []byte, modelLevelCooling
  }
  
  func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
@@ -430,31 +433,17 @@ index 6e513dd646..9bb1b4f6ff 100644
  	errCode := statusCode
  	isUsageLimit := isCodexUsageLimitError(body)
  	credentialScoped := isUsageLimit && !modelLevelCooling
-@@ -342,7 +347,7 @@ func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header,
+@@ -373,7 +378,7 @@ func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header,
  		errCode = http.StatusTooManyRequests
  	}
  	body = classifyCodexStatusError(errCode, body)
 -	err := statusErr{code: errCode, msg: string(body), credentialScoped: credentialScoped, transientRateLimit: transientCapacity && errCode == http.StatusTooManyRequests}
 +	err := statusErr{code: errCode, msg: string(body), providerErrorPayload: providerErrorPayload, credentialScoped: credentialScoped, transientRateLimit: transientCapacity && errCode == http.StatusTooManyRequests}
  	// A usage_limit_reached body reset describes quota recovery and wins over
- 	// the generic Retry-After header. Every other 429 honours the upstream
- 	// header so per-turn admission limits cool until their real deadline.
-@@ -720,8 +725,11 @@ func observeCodexTokenEvent(reporter *helps.UsageReporter, payload []byte) {
- // is shared with the unbuffered path, where the rejection is delivered in-stream and a status
- // change would alter cooldown classification and retry-after parsing for everyone. Keeping 503
- // scoped to this path means disabling the feature restores the previous behaviour exactly.
--func newCodexBootstrapOverloadErr(body []byte) statusErr {
--	return newCodexStatusErr(http.StatusServiceUnavailable, body)
-+func newCodexBootstrapOverloadErr(body []byte, source statusErr) statusErr {
-+	err := newCodexStatusErr(http.StatusServiceUnavailable, body)
-+	// The body may be a normalized fallback; only the original event grants replay.
-+	err.providerErrorPayload = source.providerErrorPayload
-+	return err
- }
- 
- // isCodexOverloadBootstrapFailure reports whether a terminal failure delivered inside an HTTP 200
+ 	// the generic Retry-After header. Other 429s and recoverable transient
+ 	// upstream errors honour the upstream header so capacity rejections cool
 diff --git a/internal/runtime/executor/codex_websockets_connection.go b/internal/runtime/executor/codex_websockets_connection.go
-index 05d22e9b05..ec6be337d3 100644
+index 05d22e9b..ec6be337 100644
 --- a/internal/runtime/executor/codex_websockets_connection.go
 +++ b/internal/runtime/executor/codex_websockets_connection.go
 @@ -20,6 +20,7 @@ import (
@@ -539,19 +528,19 @@ index 05d22e9b05..ec6be337d3 100644
  	if errors.As(err, &status) && status.StatusCode() != 0 {
  		return err
 diff --git a/internal/runtime/executor/codex_websockets_duplex.go b/internal/runtime/executor/codex_websockets_duplex.go
-index 29cd1569f2..f719403343 100644
+index 93381bce..522c9342 100644
 --- a/internal/runtime/executor/codex_websockets_duplex.go
 +++ b/internal/runtime/executor/codex_websockets_duplex.go
-@@ -638,7 +638,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -657,7 +657,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  			helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
- 				URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
+ 				URL: initial.wsURL, Method: "WEBSOCKET", Body: prepared.sessionInstructions.LogBody(payload), Provider: e.Identifier(), AuthID: auth.ID,
  			})
 -			if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
 +			if errWrite := writeCodexWebsocketMessage(streamCtx, sess, conn, payload); errWrite != nil {
  				fail(mapCodexWebsocketWriteError(sess, conn, errWrite))
  				return false
  			}
-@@ -770,7 +770,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -802,7 +802,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  					helps.RecordAPIWebsocketRequest(streamCtx, e.cfg, helps.UpstreamRequestLog{
  						URL: initial.wsURL, Method: "WEBSOCKET", Body: payload, Provider: e.Identifier(), AuthID: auth.ID,
  					})
@@ -561,10 +550,10 @@ index 29cd1569f2..f719403343 100644
  						return
  					}
 diff --git a/internal/runtime/executor/codex_websockets_errors.go b/internal/runtime/executor/codex_websockets_errors.go
-index 0e30d98080..3f2541d00a 100644
+index 0905ad87..e6d1177d 100644
 --- a/internal/runtime/executor/codex_websockets_errors.go
 +++ b/internal/runtime/executor/codex_websockets_errors.go
-@@ -49,10 +49,11 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
+@@ -103,10 +103,11 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
  	isUsageLimit := isCodexUsageLimitError(out)
  	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(out)
  	statusError := statusErr{
@@ -581,21 +570,21 @@ index 0e30d98080..3f2541d00a 100644
  	// Hint precedence: the quota body reset wins, then the connection-limit
  	// immediate-retry contract, then the generic Retry-After header.
 diff --git a/internal/runtime/executor/codex_websockets_execute.go b/internal/runtime/executor/codex_websockets_execute.go
-index e1b44ebbcd..07adbd22d7 100644
+index f424ee31..58e2bd63 100644
 --- a/internal/runtime/executor/codex_websockets_execute.go
 +++ b/internal/runtime/executor/codex_websockets_execute.go
-@@ -236,7 +236,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
- 	restoreMultiAgentV2 := !multiAgentV2Conflict && (optimizeMultiAgentV2 || sess.isMultiAgentV2Optimized(conn))
+@@ -257,7 +257,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
  
+ 	sessionReceipt := sess.sessionInstructions.Sent(conn, sessionInstructions)
  	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 -	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 +	if errSend := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBody); errSend != nil {
  		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
  		if sess != nil && !isEphemeralSession {
  			if cliproxyexecutor.RequiredUpstreamWebsocket(ctx) {
-@@ -284,7 +284,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
- 				recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+@@ -310,7 +310,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
  				reporter.StartResponseTTFT()
+ 				sessionReceipt = sess.sessionInstructions.Sent(conn, sessionInstructions)
  				cliproxyexecutor.MarkUpstreamAttempt(ctx)
 -				if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry == nil {
 +				if errSendRetry := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBodyRetry); errSendRetry == nil {
@@ -603,12 +592,12 @@ index e1b44ebbcd..07adbd22d7 100644
  				} else {
  					errSendRetry = mapCodexWebsocketWriteError(sess, connRetry, errSendRetry)
 diff --git a/internal/runtime/executor/codex_websockets_executor.go b/internal/runtime/executor/codex_websockets_executor.go
-index 199bb2d8f7..befd252d36 100644
+index 8a94b509..4e19a766 100644
 --- a/internal/runtime/executor/codex_websockets_executor.go
 +++ b/internal/runtime/executor/codex_websockets_executor.go
-@@ -270,7 +270,7 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
- 	if !authEnabled {
- 		return fmt.Errorf("websocket credential is no longer enabled")
+@@ -280,7 +280,7 @@ func (e *CodexWebsocketsExecutor) InterruptExecutionSession(ctx context.Context,
+ 			return errMarker
+ 		}
  	}
 -	if errWrite := writeCodexWebsocketMessage(sess, conn, payload); errWrite != nil {
 +	if errWrite := writeCodexWebsocketMessage(ctx, sess, conn, payload); errWrite != nil {
@@ -616,7 +605,7 @@ index 199bb2d8f7..befd252d36 100644
  	}
  	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")
 diff --git a/internal/runtime/executor/codex_websockets_executor_test.go b/internal/runtime/executor/codex_websockets_executor_test.go
-index 4d9d28fa73..a876d292ab 100644
+index 9c39d062..a5c8ae81 100644
 --- a/internal/runtime/executor/codex_websockets_executor_test.go
 +++ b/internal/runtime/executor/codex_websockets_executor_test.go
 @@ -25,6 +25,7 @@ import (
@@ -632,7 +621,7 @@ index 4d9d28fa73..a876d292ab 100644
  }
  
 -func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *testing.T) {
-+func TestCodexWebsocketWriteFailureRecordedWithoutReconnectWhenRequestLogDisabled(t *testing.T) {
++func TestCodexWebsocketWriteFailureIsTerminalWithoutReconnectWhenRequestLogDisabled(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
  
@@ -660,16 +649,14 @@ index 4d9d28fa73..a876d292ab 100644
  			}
  
  			value, exists := ginCtx.Get(logging.DeferredAPIResponseContextKey)
-@@ -3434,17 +3439,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3433,16 +3438,16 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+ 			for _, want := range []string{
  				"=== API RESPONSE 1 ===",
  				"Status: 101",
- 				"Error: send:",
 -				"=== API RESPONSE 2 ===",
 -				"Status: 403",
 -				"Retry-After: 11",
 -				`{"error":{"message":"codex websocket reconnect forbidden"}}`,
--				"Error: dial_retry:",
-+				"upstream_outcome_unknown",
  			} {
  				if !strings.Contains(rendered, want) {
  					t.Fatalf("deferred API response missing %q:\n%s", want, rendered)
@@ -683,7 +670,7 @@ index 4d9d28fa73..a876d292ab 100644
  			var transportDials atomic.Int32
  			transportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
  				if transportDials.Add(1) == 1 {
-@@ -3452,7 +3457,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3450,7 +3455,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  					if errUpgrade != nil {
  						return
  					}
@@ -696,7 +683,7 @@ index 4d9d28fa73..a876d292ab 100644
  					for {
  						if _, _, errRead := conn.ReadMessage(); errRead != nil {
  							return
-@@ -3486,8 +3495,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3484,8 +3493,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			} else {
  				_, errExec = exec.Execute(subCtx, subAuth, req, subOpts)
  			}
@@ -707,15 +694,11 @@ index 4d9d28fa73..a876d292ab 100644
  			}
  			subVal, ok := subGinCtx.Get(logging.DeferredAPIResponseContextKey)
  			if !ok {
-@@ -3496,15 +3505,19 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3494,12 +3503,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			subRendered := string(subVal.(logging.DeferredAPIResponse).RenderAPIResponse())
  			for _, want := range []string{
  				"=== API RESPONSE 1 ===",
 +				"Status: 101",
- 				"Error: send:",
--				"=== API RESPONSE 2 ===",
--				"Error: dial_retry:",
-+				"upstream_outcome_unknown",
  			} {
  				if !strings.Contains(subRendered, want) {
  					t.Fatalf("transport reconnect response missing %q:\n%s", want, subRendered)
@@ -730,41 +713,44 @@ index 4d9d28fa73..a876d292ab 100644
  				hijacker, ok := w.(http.Hijacker)
  				if !ok {
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index e01dc786f6..edad91bcfa 100644
+index 61b4b737..f67c9ae4 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
-@@ -205,7 +205,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
- 		}
+@@ -214,7 +214,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  	}
+ 	prepared.sessionReceipt = sess.sessionInstructions.Sent(conn, prepared.sessionInstructions)
  	cliproxyexecutor.MarkUpstreamAttempt(ctx)
 -	if errSend := writeCodexWebsocketMessage(sess, conn, wsReqBody); errSend != nil {
 +	if errSend := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBody); errSend != nil {
  		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
  		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
  		if sess != nil && !isEphemeralSession && cliproxyexecutor.DownstreamWebsocket(ctx) {
-@@ -272,7 +272,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
- 			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
+@@ -288,7 +288,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  			reporter.StartResponseTTFT()
+ 			prepared.sessionReceipt = sess.sessionInstructions.Sent(conn, prepared.sessionInstructions)
  			cliproxyexecutor.MarkUpstreamAttempt(ctx)
 -			if errSendRetry := writeCodexWebsocketMessage(sess, conn, wsReqBodyRetry); errSendRetry != nil {
 +			if errSendRetry := writeCodexWebsocketMessage(ctx, sess, conn, wsReqBodyRetry); errSendRetry != nil {
  				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
  				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
  				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
-@@ -499,7 +499,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
- 					// status the upstream refused to put on the wire.
- 					helps.LogWithRequestID(ctx).Debugf("codex websockets executor: bootstrap overload rejection after %d messages read, failing over", bufferedFrames)
- 					if overloadFailover {
--						return nil, newCodexBootstrapOverloadErr(terminalBody)
-+						return nil, newCodexBootstrapOverloadErr(terminalBody, streamErr)
+@@ -518,7 +518,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+ 						if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
+ 							return nil, streamErr
+ 						}
+-						return nil, newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
++						overloadErr := newCodexBootstrapOverloadErrWithRetryAfter(terminalBody, streamErr.RetryAfter())
++						// The body may be a normalized fallback; only the original event grants replay.
++						overloadErr.providerErrorPayload = streamErr.providerErrorPayload
++						return nil, overloadErr
  					}
  					return nil, streamErr
  				}
 diff --git a/internal/runtime/executor/devin_executor.go b/internal/runtime/executor/devin_executor.go
-index 9726f35228..8345f6aab0 100644
+index 1bcac577..6168e121 100644
 --- a/internal/runtime/executor/devin_executor.go
 +++ b/internal/runtime/executor/devin_executor.go
-@@ -3084,7 +3084,7 @@ func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
+@@ -3117,7 +3117,7 @@ func newDevinStatusError(code int, headers http.Header, body []byte) statusErr {
  // (non-trailer) upstream failure. Daily/weekly quota exhaustion becomes
  // credential-scoped and, when auth is known, retries at the observed reset.
  func newDevinStatusErrorForAuth(code int, headers http.Header, body []byte, auth *cliproxyauth.Auth) statusErr {
@@ -774,10 +760,10 @@ index 9726f35228..8345f6aab0 100644
  		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
  			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
 diff --git a/internal/runtime/executor/gemini_executor.go b/internal/runtime/executor/gemini_executor.go
-index 8c57616bc3..3922dadc10 100644
+index 42eb3c12..5a8af7e8 100644
 --- a/internal/runtime/executor/gemini_executor.go
 +++ b/internal/runtime/executor/gemini_executor.go
-@@ -264,7 +264,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+@@ -273,7 +273,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
  	}
  	reporter.ObserveResponseModel(data)
  	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
@@ -786,7 +772,7 @@ index 8c57616bc3..3922dadc10 100644
  		helps.RecordAPIResponseError(ctx, e.cfg, err)
  		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
  		return cliproxyexecutor.Response{}, err
-@@ -490,7 +490,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -545,7 +545,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  			}
  			streamUsage.ObserveGeminiStream(rawPayload)
  			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
@@ -795,7 +781,7 @@ index 8c57616bc3..3922dadc10 100644
  				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
  				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
  					reporter.PublishFailure(ctx, blockErr)
-@@ -516,7 +516,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -569,7 +569,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  			}
  		}
  		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
@@ -804,7 +790,7 @@ index 8c57616bc3..3922dadc10 100644
  			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
  			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
  				reporter.PublishFailure(ctx, filterErr)
-@@ -594,7 +594,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -683,7 +683,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  }
  
  func geminiPromptBlockErrorMessage(payload []byte) (string, bool) {
@@ -814,10 +800,10 @@ index 8c57616bc3..3922dadc10 100644
  	}
  	for _, cPath := range []string{"candidates", "response.candidates"} {
 diff --git a/internal/runtime/executor/gemini_vertex_executor.go b/internal/runtime/executor/gemini_vertex_executor.go
-index ff87112937..df555c5949 100644
+index f83534f6..2ac1d1a9 100644
 --- a/internal/runtime/executor/gemini_vertex_executor.go
 +++ b/internal/runtime/executor/gemini_vertex_executor.go
-@@ -572,7 +572,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
+@@ -600,7 +600,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
  	}
  
  	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
@@ -826,16 +812,16 @@ index ff87112937..df555c5949 100644
  		helps.RecordAPIResponseError(ctx, e.cfg, err)
  		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
  		return cliproxyexecutor.Response{}, err
-@@ -739,7 +739,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
+@@ -793,7 +793,7 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
+ 		data = convertImagenToGeminiResponse(data, baseModel)
  	}
- 	reporter.ObserveResponseModel(data)
  	if blockMsg, blocked := geminiPromptBlockErrorMessage(data); blocked {
 -		err = statusErr{code: http.StatusBadGateway, msg: blockMsg}
 +		err = statusErr{code: http.StatusBadGateway, msg: blockMsg, providerErrorPayload: true}
  		helps.RecordAPIResponseError(ctx, e.cfg, err)
  		reporter.PublishFailureWithDetail(ctx, helps.ParseGeminiUsage(data), err)
  		return cliproxyexecutor.Response{}, err
-@@ -960,7 +960,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+@@ -1109,7 +1109,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
  			}
  			streamUsage.ObserveGeminiStream(line)
  			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
@@ -844,16 +830,16 @@ index ff87112937..df555c5949 100644
  				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
  				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
  					reporter.PublishFailure(ctx, blockErr)
-@@ -981,7 +981,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
+@@ -1133,7 +1133,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
  			}
  		}
- 		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+ 		if pendingFilterMsg != "" && (isImagenModel(baseModel) || scanner.Err() == nil) && !sawFinishReason {
 -			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
 +			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
  			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
  			if !streamUsage.PublishFailure(ctx, reporter, filterErr) {
  				reporter.PublishFailure(ctx, filterErr)
-@@ -1248,7 +1248,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+@@ -1525,7 +1525,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
  			}
  			streamUsage.ObserveGeminiStream(line)
  			if blockMsg, blocked := geminiPromptBlockErrorMessage(rawPayload); blocked {
@@ -862,10 +848,10 @@ index ff87112937..df555c5949 100644
  				helps.RecordAPIResponseError(ctx, e.cfg, blockErr)
  				if !streamUsage.PublishFailure(ctx, reporter, blockErr) {
  					reporter.PublishFailure(ctx, blockErr)
-@@ -1269,7 +1269,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
+@@ -1549,7 +1549,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
  			}
  		}
- 		if pendingFilterMsg != "" && scanner.Err() == nil && !sawFinishReason {
+ 		if pendingFilterMsg != "" && (isImagenModel(baseModel) || scanner.Err() == nil) && !sawFinishReason {
 -			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg}
 +			filterErr := statusErr{code: http.StatusBadRequest, msg: pendingFilterMsg, providerErrorPayload: true}
  			helps.RecordAPIResponseError(ctx, e.cfg, filterErr)
@@ -873,7 +859,7 @@ index ff87112937..df555c5949 100644
  				reporter.PublishFailure(ctx, filterErr)
 diff --git a/internal/runtime/executor/gemini_vertex_submission_token_test.go b/internal/runtime/executor/gemini_vertex_submission_token_test.go
 new file mode 100644
-index 0000000000..e8a9457d40
+index 00000000..e8a9457d
 --- /dev/null
 +++ b/internal/runtime/executor/gemini_vertex_submission_token_test.go
 @@ -0,0 +1,96 @@
@@ -975,7 +961,7 @@ index 0000000000..e8a9457d40
 +}
 diff --git a/internal/runtime/executor/helps/provider_error.go b/internal/runtime/executor/helps/provider_error.go
 new file mode 100644
-index 0000000000..f4909a1572
+index 00000000..f4909a15
 --- /dev/null
 +++ b/internal/runtime/executor/helps/provider_error.go
 @@ -0,0 +1,51 @@
@@ -1032,7 +1018,7 @@ index 0000000000..f4909a1572
 +}
 diff --git a/internal/runtime/executor/helps/provider_error_test.go b/internal/runtime/executor/helps/provider_error_test.go
 new file mode 100644
-index 0000000000..2d620fa7aa
+index 00000000..2d620fa7
 --- /dev/null
 +++ b/internal/runtime/executor/helps/provider_error_test.go
 @@ -0,0 +1,44 @@
@@ -1081,7 +1067,7 @@ index 0000000000..2d620fa7aa
 +	}
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index 8a9faebdbf..64a2d7d642 100644
+index 99aac855..95ce4d7d 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
 @@ -27,6 +27,7 @@ import (
@@ -1089,10 +1075,10 @@ index 8a9faebdbf..64a2d7d642 100644
  	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
  	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 +	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
  	log "github.com/sirupsen/logrus"
  )
- 
-@@ -888,7 +889,7 @@ type usageTTFTRoundTripper struct {
+@@ -944,7 +945,7 @@ type usageTTFTRoundTripper struct {
  func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
  	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
  	t.reporter.StartResponseTTFT()
@@ -1102,10 +1088,10 @@ index 8a9faebdbf..64a2d7d642 100644
  		return resp, errRoundTrip
  	}
 diff --git a/internal/runtime/executor/meta_executor_execute.go b/internal/runtime/executor/meta_executor_execute.go
-index b08b534358..85ec6a2ee4 100644
+index 09177ac3..7b161aff 100644
 --- a/internal/runtime/executor/meta_executor_execute.go
 +++ b/internal/runtime/executor/meta_executor_execute.go
-@@ -475,7 +475,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
+@@ -482,7 +482,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
  }
  
  func wrapMetaUpstreamError(statusCode int, body []byte) error {
@@ -1115,7 +1101,7 @@ index b08b534358..85ec6a2ee4 100644
  		if retryAfter := parseMetaRetryAfter(statusCode, body, time.Now()); retryAfter != nil {
  			se.retryAfter = retryAfter
 diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
-index f257f63099..edef7b8dfc 100644
+index a61bb6f2..1f580636 100644
 --- a/internal/runtime/executor/openai_compat_executor.go
 +++ b/internal/runtime/executor/openai_compat_executor.go
 @@ -251,7 +251,7 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth
@@ -1136,7 +1122,7 @@ index f257f63099..edef7b8dfc 100644
  				break
  			}
  		}
-@@ -1272,20 +1272,21 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
+@@ -1272,22 +1272,23 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
  	if status < http.StatusBadRequest || status > 599 {
  		status = http.StatusBadGateway
  	}
@@ -1147,25 +1133,33 @@ index f257f63099..edef7b8dfc 100644
  type statusErr struct {
 -	code               int
 -	msg                string
+-	cause              error
 -	retryAfter         *time.Duration
+-	requestScoped      bool
 -	credentialScoped   bool
 -	streamTruncated    bool
 -	transientRateLimit bool
+-	transientTransport bool
+-	tosViolation       bool
+-	tosAppealURL       string
+-	tosAppealURLText   string
 +	code                 int
 +	msg                  string
++	cause                error
 +	retryAfter           *time.Duration
++	requestScoped        bool
 +	credentialScoped     bool
 +	streamTruncated      bool
 +	providerErrorPayload bool
 +	transientRateLimit   bool
- 	transientTransport bool
- 	tosViolation       bool
- 	tosAppealURL       string
- 	tosAppealURLText   string
++	transientTransport   bool
++	tosViolation         bool
++	tosAppealURL         string
++	tosAppealURLText     string
  	// diagnostic is a content-free detail for logs only; it never reaches clients.
  	diagnostic string
  }
-@@ -1303,6 +1304,9 @@ func (e statusErr) LogDiagnostic() string { return e.diagnostic }
+@@ -1311,6 +1312,9 @@ func (e statusErr) LogDiagnostic() string { return e.diagnostic }
  // upstream stream that ended without its terminal frame.
  func (e statusErr) IsStreamTruncated() bool { return e.streamTruncated }
  
@@ -1175,7 +1169,7 @@ index f257f63099..edef7b8dfc 100644
  // IsTransientRateLimit marks a transient per-model capacity/admission 429
  // that must not be recorded as credential quota exhaustion.
  func (e statusErr) IsTransientRateLimit() bool { return e.transientRateLimit }
-@@ -1311,9 +1315,10 @@ const openAICompatTPMFallbackRetryAfter = time.Minute
+@@ -1373,9 +1377,10 @@ const openAICompatTPMFallbackRetryAfter = time.Minute
  
  func newOpenAICompatStatusError(status int, headers http.Header, body []byte) statusErr {
  	return statusErr{
@@ -1191,7 +1185,7 @@ index f257f63099..edef7b8dfc 100644
  
 diff --git a/internal/runtime/executor/submission_classification_test.go b/internal/runtime/executor/submission_classification_test.go
 new file mode 100644
-index 0000000000..381af4ae12
+index 00000000..381af4ae
 --- /dev/null
 +++ b/internal/runtime/executor/submission_classification_test.go
 @@ -0,0 +1,86 @@
@@ -1282,7 +1276,7 @@ index 0000000000..381af4ae12
 +	}
 +}
 diff --git a/internal/runtime/executor/websocket_session_target_test.go b/internal/runtime/executor/websocket_session_target_test.go
-index 2141331174..d9ec62ff0d 100644
+index fba383dd..aa753505 100644
 --- a/internal/runtime/executor/websocket_session_target_test.go
 +++ b/internal/runtime/executor/websocket_session_target_test.go
 @@ -22,6 +22,7 @@ import (
@@ -1357,7 +1351,7 @@ index 2141331174..d9ec62ff0d 100644
  	}
 diff --git a/internal/runtime/executor/websocket_submission_test.go b/internal/runtime/executor/websocket_submission_test.go
 new file mode 100644
-index 0000000000..0cd9f451b4
+index 00000000..0cd9f451
 --- /dev/null
 +++ b/internal/runtime/executor/websocket_submission_test.go
 @@ -0,0 +1,237 @@
@@ -1600,7 +1594,7 @@ index 0000000000..0cd9f451b4
 +}
 diff --git a/internal/runtime/executor/websocket_submission_write_error_test.go b/internal/runtime/executor/websocket_submission_write_error_test.go
 new file mode 100644
-index 0000000000..5ebfbc2a91
+index 00000000..5ebfbc2a
 --- /dev/null
 +++ b/internal/runtime/executor/websocket_submission_write_error_test.go
 @@ -0,0 +1,191 @@
@@ -1796,7 +1790,7 @@ index 0000000000..5ebfbc2a91
 +	}
 +}
 diff --git a/internal/runtime/executor/xai_executor_response.go b/internal/runtime/executor/xai_executor_response.go
-index fdb538ccb9..43c087b277 100644
+index 572879e5..ae16fda6 100644
 --- a/internal/runtime/executor/xai_executor_response.go
 +++ b/internal/runtime/executor/xai_executor_response.go
 @@ -1347,7 +1347,9 @@ func xaiTerminalFailureErr(eventName string, eventData []byte) (statusErr, bool)
@@ -1810,7 +1804,7 @@ index fdb538ccb9..43c087b277 100644
  }
  
  func xaiTerminalFailureDoc(eventName string, eventData []byte) (*ojson.Doc, bool) {
-@@ -1585,7 +1587,7 @@ func xaiTerminalFailureStatus(eventData []byte, doc *ojson.Doc) int {
+@@ -1590,7 +1592,7 @@ func xaiTerminalFailureStatus(eventData []byte, doc *ojson.Doc) int {
  //
  // Generic 429s stay without an explicit retry hint so conductor backoff still applies.
  func xaiStatusErr(code int, body []byte) statusErr {
@@ -1820,10 +1814,10 @@ index fdb538ccb9..43c087b277 100644
  		return err
  	}
 diff --git a/internal/runtime/executor/xai_websockets_executor.go b/internal/runtime/executor/xai_websockets_executor.go
-index 09943aaac7..239df72ac7 100644
+index 32bea514..b119f966 100644
 --- a/internal/runtime/executor/xai_websockets_executor.go
 +++ b/internal/runtime/executor/xai_websockets_executor.go
-@@ -606,7 +606,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
+@@ -815,7 +815,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
  	}
  
  	cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -1832,7 +1826,7 @@ index 09943aaac7..239df72ac7 100644
  		errSend = mapXAIWebsocketWriteError(sess, conn, errSend)
  		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
  		if sess != nil && !isEphemeralSession {
-@@ -661,7 +661,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
+@@ -871,7 +871,7 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
  			recordAPIWebsocketHandshake(ctx, e.cfg, respHSRetry)
  			reporter.StartResponseTTFT()
  			cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -1842,7 +1836,7 @@ index 09943aaac7..239df72ac7 100644
  				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
  				e.invalidateUpstreamConn(sess, connRetry, "send_error", errSendRetry)
 diff --git a/internal/runtime/executor/xai_websockets_executor_test.go b/internal/runtime/executor/xai_websockets_executor_test.go
-index e65295c2a1..d2ff4218bf 100644
+index cc50d02b..aa4ba060 100644
 --- a/internal/runtime/executor/xai_websockets_executor_test.go
 +++ b/internal/runtime/executor/xai_websockets_executor_test.go
 @@ -22,6 +22,7 @@ import (
@@ -1853,16 +1847,16 @@ index e65295c2a1..d2ff4218bf 100644
  	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
  )
  
-@@ -2649,7 +2650,7 @@ func TestApplyXAIWebsocketHeaders_UserAgent(t *testing.T) {
+@@ -2713,7 +2714,7 @@ func TestApplyXAIWebsocketHeaders_UserAgent(t *testing.T) {
  	})
  }
  
 -func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *testing.T) {
-+func TestXAIWebsocketWriteFailureRecordedWithoutReconnectWhenRequestLogDisabled(t *testing.T) {
++func TestXAIWebsocketWriteFailureIsTerminalWithoutReconnectWhenRequestLogDisabled(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
  	var dials atomic.Int32
-@@ -2659,7 +2660,11 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+@@ -2723,7 +2724,11 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
  			if errUpgrade != nil {
  				return
  			}
@@ -1875,7 +1869,7 @@ index e65295c2a1..d2ff4218bf 100644
  			for {
  				if _, _, errRead := conn.ReadMessage(); errRead != nil {
  					return
-@@ -2708,8 +2713,8 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+@@ -2772,8 +2777,8 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
  			},
  		},
  	)
@@ -1886,16 +1880,14 @@ index e65295c2a1..d2ff4218bf 100644
  	}
  
  	value, exists := ginCtx.Get(logging.DeferredAPIResponseContextKey)
-@@ -2725,18 +2730,18 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+@@ -2788,17 +2793,17 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+ 	for _, want := range []string{
  		"=== API RESPONSE 1 ===",
  		"Status: 101",
- 		"Error: send:",
 -		"=== API RESPONSE 2 ===",
 -		"Status: 429",
 -		"Retry-After: 9",
 -		`{"error":{"message":"xai websocket reconnect rate limited"}}`,
--		"Error: dial_retry:",
-+		"upstream_outcome_unknown",
  	} {
  		if !strings.Contains(rendered, want) {
  			t.Fatalf("deferred API response missing %q:\n%s", want, rendered)
@@ -1911,7 +1903,7 @@ index e65295c2a1..d2ff4218bf 100644
  		var transportDials atomic.Int32
  		var transportServer *httptest.Server
  		transportServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-@@ -2745,7 +2750,11 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+@@ -2807,7 +2812,11 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
  				if errUpgrade != nil {
  					return
  				}
@@ -1924,7 +1916,7 @@ index e65295c2a1..d2ff4218bf 100644
  				for {
  					if _, _, errRead := conn.ReadMessage(); errRead != nil {
  						return
-@@ -2795,8 +2804,8 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+@@ -2857,8 +2866,8 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
  				},
  			},
  		)
@@ -1935,15 +1927,11 @@ index e65295c2a1..d2ff4218bf 100644
  		}
  		subVal, ok := subGinCtx.Get(logging.DeferredAPIResponseContextKey)
  		if !ok {
-@@ -2805,14 +2814,17 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
+@@ -2867,11 +2876,15 @@ func TestXAIWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t *
  		subRendered := string(subVal.(logging.DeferredAPIResponse).RenderAPIResponse())
  		for _, want := range []string{
  			"=== API RESPONSE 1 ===",
 +			"Status: 101",
- 			"Error: send:",
--			"=== API RESPONSE 2 ===",
--			"Error: dial_retry:",
-+			"upstream_outcome_unknown",
  		} {
  			if !strings.Contains(subRendered, want) {
  				t.Fatalf("transport reconnect response missing %q:\n%s", want, subRendered)
@@ -1956,7 +1944,7 @@ index e65295c2a1..d2ff4218bf 100644
  
  	t.Run("initial handshake failure with HTTP response records dial error", func(t *testing.T) {
 diff --git a/internal/wsrelay/session.go b/internal/wsrelay/session.go
-index 571997aa2a..4f2a65a42c 100644
+index 571997aa..4f2a65a4 100644
 --- a/internal/wsrelay/session.go
 +++ b/internal/wsrelay/session.go
 @@ -9,6 +9,7 @@ import (
@@ -1984,17 +1972,18 @@ index 571997aa2a..4f2a65a42c 100644
  	}
  	return nil
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index ea0cbe18a9..48d675e4b9 100644
+index 698e4297..05426070 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
-@@ -6,5 +6,6 @@ package handlers
+@@ -5,6 +5,7 @@ package handlers
+ 
  import (
  	"bytes"
 +	"errors"
  	"fmt"
  	"net"
  	"net/http"
-@@ -84,6 +85,10 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
+@@ -85,6 +86,10 @@ func BuildErrorResponseBodyWithError(status int, errText string, err error) []by
  
  	trimmed := strings.TrimSpace(errText)
  
@@ -2007,7 +1996,7 @@ index ea0cbe18a9..48d675e4b9 100644
  	}
 diff --git a/sdk/api/handlers/openai/http_submission_accepted_default_test.go b/sdk/api/handlers/openai/http_submission_accepted_default_test.go
 new file mode 100644
-index 0000000000..04401a0eb7
+index 00000000..04401a0e
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_accepted_default_test.go
 @@ -0,0 +1,68 @@
@@ -2080,9 +2069,10 @@ index 0000000000..04401a0eb7
 +	}
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
+index 4a8d44cb..8f9d8f6c 100644
 --- a/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
 +++ b/sdk/api/handlers/openai/http_submission_claude_accepted_error_control_test.go
-@@ -2,8 +2,6 @@
+@@ -2,8 +2,6 @@ package openai
  
  import (
  	"context"
@@ -2091,7 +2081,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
  	"io"
  	"net/http"
  	"net/http/httptest"
-@@ -12,6 +10,7 @@
+@@ -12,6 +10,7 @@ import (
  	"testing"
  	"time"
  
@@ -2099,7 +2089,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
  	"github.com/gin-gonic/gin"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-@@ -61,10 +60,7 @@
+@@ -61,10 +60,7 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
  				}
  				// Count fully received requests, not executor invocations or TCP dials.
  				attempt := submissions.Add(1)
@@ -2111,7 +2101,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
  					invalidRequests.Add(1)
  					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
  				}
-@@ -98,8 +94,9 @@
+@@ -98,8 +94,9 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
  			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
  			public := httptest.NewServer(router)
  			defer public.Close()
@@ -2123,7 +2113,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
  			if errRequest != nil {
  				t.Fatal(errRequest)
  			}
-@@ -131,16 +128,9 @@
+@@ -131,16 +128,9 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
  				t.Fatal("probe did not reach the expected Claude upstream stream path")
  			}
  			if tc.valid {
@@ -2143,7 +2133,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
  					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
  				}
  				return
-@@ -148,13 +138,8 @@
+@@ -148,13 +138,8 @@ func TestHTTPSubmissionClaudeAcceptedErrorAndMalformedStart(t *testing.T) {
  			if response.StatusCode != http.StatusBadGateway {
  				t.Errorf("status=%d, want 502", response.StatusCode)
  			}
@@ -2160,9 +2150,10 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_error_contr
  			}
  			if got := response.Header.Get("x-should-retry"); got != "false" {
 diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
+index e3a7e5e0..61c5cadf 100644
 --- a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
 +++ b/sdk/api/handlers/openai/http_submission_claude_accepted_validation_test.go
-@@ -2,8 +2,6 @@
+@@ -2,8 +2,6 @@ package openai
  
  import (
  	"context"
@@ -2171,7 +2162,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
  	"io"
  	"net/http"
  	"net/http/httptest"
-@@ -12,6 +10,7 @@
+@@ -12,6 +10,7 @@ import (
  	"testing"
  	"time"
  
@@ -2179,7 +2170,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
  	"github.com/gin-gonic/gin"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
-@@ -51,10 +50,7 @@
+@@ -51,10 +50,7 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
  				}
  				// Count fully received requests, not executor invocations or TCP dials.
  				submissions.Add(1)
@@ -2191,7 +2182,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
  					invalidRequests.Add(1)
  					t.Errorf("wrong upstream path: method=%s path=%s body=%s", r.Method, r.URL.Path, body)
  				}
-@@ -84,8 +80,9 @@
+@@ -84,8 +80,9 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
  			router.POST("/v1/chat/completions", NewOpenAIAPIHandler(base).ChatCompletions)
  			public := httptest.NewServer(router)
  			defer public.Close()
@@ -2203,7 +2194,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
  			if errRequest != nil {
  				t.Fatal(errRequest)
  			}
-@@ -113,16 +110,9 @@
+@@ -113,16 +110,9 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
  				t.Fatal("probe did not reach the expected Claude upstream stream path")
  			}
  			if tc.valid {
@@ -2223,7 +2214,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
  					t.Fatalf("valid terminal response changed: status=%d body=%s", response.StatusCode, body)
  				}
  				return
-@@ -130,13 +120,8 @@
+@@ -130,13 +120,8 @@ func TestHTTPSubmissionClaudeAcceptedValidationDoesNotReplay(t *testing.T) {
  			if response.StatusCode != http.StatusBadGateway {
  				t.Errorf("status=%d, want 502", response.StatusCode)
  			}
@@ -2241,7 +2232,7 @@ diff --git a/sdk/api/handlers/openai/http_submission_claude_accepted_validation_
  			if got := response.Header.Get("x-should-retry"); got != "false" {
 diff --git a/sdk/api/handlers/openai/http_submission_codex_bootstrap_provenance_test.go b/sdk/api/handlers/openai/http_submission_codex_bootstrap_provenance_test.go
 new file mode 100644
-index 0000000000..043759e543
+index 00000000..043759e5
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_codex_bootstrap_provenance_test.go
 @@ -0,0 +1,77 @@
@@ -2324,7 +2315,7 @@ index 0000000000..043759e543
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_credits_translation_test.go b/sdk/api/handlers/openai/http_submission_credits_translation_test.go
 new file mode 100644
-index 0000000000..6d59bb8481
+index 00000000..1b17eb44
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_credits_translation_test.go
 @@ -0,0 +1,123 @@
@@ -2410,10 +2401,10 @@ index 0000000000..6d59bb8481
 +				}
 +				registry.GetGlobalRegistry().RegisterClient(authID, "antigravity", []*registry.ModelInfo{{ID: model}})
 +				// Fresh hints prevent background loadCodeAssist refreshes.
-+				coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
++				coreauth.SetAntigravityCreditsHintForAuth(auth, coreauth.AntigravityCreditsHint{Known: true, Available: true, UpdatedAt: time.Now()})
 +				t.Cleanup(func() {
 +					registry.GetGlobalRegistry().UnregisterClient(authID)
-+					coreauth.SetAntigravityCreditsHint(authID, coreauth.AntigravityCreditsHint{})
++					coreauth.SetAntigravityCreditsHintForAuth(auth, coreauth.AntigravityCreditsHint{})
 +				})
 +			}
 +
@@ -2453,7 +2444,7 @@ index 0000000000..6d59bb8481
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_empty_nonstream_test.go b/sdk/api/handlers/openai/http_submission_empty_nonstream_test.go
 new file mode 100644
-index 0000000000..3fb0733a4c
+index 00000000..3fb0733a
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_empty_nonstream_test.go
 @@ -0,0 +1,40 @@
@@ -2499,7 +2490,7 @@ index 0000000000..3fb0733a4c
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_local_error_matrix_test.go b/sdk/api/handlers/openai/http_submission_local_error_matrix_test.go
 new file mode 100644
-index 0000000000..d0dcea2afa
+index 00000000..d0dcea2a
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_local_error_matrix_test.go
 @@ -0,0 +1,92 @@
@@ -2597,7 +2588,7 @@ index 0000000000..d0dcea2afa
 +}
 diff --git a/sdk/api/handlers/openai/http_submission_provider_error_matrix_test.go b/sdk/api/handlers/openai/http_submission_provider_error_matrix_test.go
 new file mode 100644
-index 0000000000..d5cacd4157
+index 00000000..d5cacd41
 --- /dev/null
 +++ b/sdk/api/handlers/openai/http_submission_provider_error_matrix_test.go
 @@ -0,0 +1,71 @@
@@ -2672,20 +2663,8 @@ index 0000000000..d5cacd4157
 +		})
 +	}
 +}
-diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index 1d2f83c31d..2dd6c49923 100644
---- a/sdk/cliproxy/auth/conductor_home.go
-+++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -1520,6 +1520,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
- 			creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
- 			executionSeq := m.nextExecutionSeq()
- 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
-+			errExec = httptransport.ClassifySubmissionError(creditsCtx, errExec)
- 			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, AccessToken: authAccessTokenForRequest(creditsCtx, c.auth, creditsOpts.Headers), RefreshToken: authRefreshToken(c.auth), CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
- 			if errExec != nil {
- 				result.Error = resultErrorFromError(errExec)
 diff --git a/sdk/cliproxy/executor/websocket.go b/sdk/cliproxy/executor/websocket.go
-index 4c1f084d15..fdcfacb3bc 100644
+index 31ee3ec5..7e584557 100644
 --- a/sdk/cliproxy/executor/websocket.go
 +++ b/sdk/cliproxy/executor/websocket.go
 @@ -66,6 +66,12 @@ func (e *UpstreamWebsocketTurnError) StatusCode() int {
@@ -2702,7 +2681,7 @@ index 4c1f084d15..fdcfacb3bc 100644
  func IsUpstreamWebsocketTurnError(err error) bool {
  	var turnErr *UpstreamWebsocketTurnError
 diff --git a/sdk/httptransport/decorator.go b/sdk/httptransport/decorator.go
-index 987ad67728..30b113dff5 100644
+index 987ad677..30b113df 100644
 --- a/sdk/httptransport/decorator.go
 +++ b/sdk/httptransport/decorator.go
 @@ -28,10 +28,9 @@ func WithDecorator(ctx context.Context, decorator Decorator) context.Context {
@@ -2760,7 +2739,7 @@ index 987ad67728..30b113dff5 100644
  	clone.Transport = wrapped
  	return &clone
 diff --git a/sdk/httptransport/submission.go b/sdk/httptransport/submission.go
-index 724d090718..9838ae24e5 100644
+index 724d0907..9838ae24 100644
 --- a/sdk/httptransport/submission.go
 +++ b/sdk/httptransport/submission.go
 @@ -63,18 +63,17 @@ func (*OutcomeUnknownError) IsRequestScoped() bool { return true }
@@ -2857,7 +2836,7 @@ index 724d090718..9838ae24e5 100644
  	state *submissionState
 diff --git a/sdk/httptransport/submission_classification_test.go b/sdk/httptransport/submission_classification_test.go
 new file mode 100644
-index 0000000000..1f1c1e0a71
+index 00000000..1f1c1e0a
 --- /dev/null
 +++ b/sdk/httptransport/submission_classification_test.go
 @@ -0,0 +1,99 @@
@@ -2961,7 +2940,7 @@ index 0000000000..1f1c1e0a71
 +	_ = response.Body.Close()
 +}
 diff --git a/sdk/httptransport/submission_test.go b/sdk/httptransport/submission_test.go
-index 1dde55d822..46ade9e603 100644
+index 1dde55d8..46ade9e6 100644
 --- a/sdk/httptransport/submission_test.go
 +++ b/sdk/httptransport/submission_test.go
 @@ -2,6 +2,7 @@ package httptransport
@@ -3049,10 +3028,10 @@ index 1dde55d822..46ade9e603 100644
 +	}
 +}
 diff --git a/sdk/pluginapi/types.go b/sdk/pluginapi/types.go
-index 9e84fa29f3..cfdadf143d 100644
+index 74e78fb6..32f95334 100644
 --- a/sdk/pluginapi/types.go
 +++ b/sdk/pluginapi/types.go
-@@ -1043,6 +1043,9 @@ type HTTPRequest struct {
+@@ -1219,6 +1219,9 @@ type HTTPRequest struct {
  	Body []byte
  	// WireProfile specifies optional outbound HTTP wire profile settings.
  	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`

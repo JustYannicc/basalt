@@ -1,8 +1,8 @@
 diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
-index 669583d..20977fa 100644
+index 8eb0d3ab..ea52359f 100644
 --- a/internal/redisqueue/plugin.go
 +++ b/internal/redisqueue/plugin.go
-@@ -314,6 +314,8 @@ type failDetail struct {
+@@ -327,6 +327,8 @@ type failDetail struct {
  	Body       string `json:"body"`
  	Type       string `json:"type,omitempty"`
  	Code       string `json:"code,omitempty"`
@@ -11,7 +11,7 @@ index 669583d..20977fa 100644
  }
  
  func resolveFail(ctx context.Context, record coreusage.Record, failed bool) failDetail {
-@@ -323,6 +325,9 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
+@@ -336,6 +338,9 @@ func resolveFail(ctx context.Context, record coreusage.Record, failed bool) fail
  		Type:       strings.TrimSpace(record.Fail.Type),
  		Code:       strings.TrimSpace(record.Fail.Code),
  	}
@@ -23,7 +23,7 @@ index 669583d..20977fa 100644
  	}
 diff --git a/internal/runtime/executor/basalt_provider_retry_time_test.go b/internal/runtime/executor/basalt_provider_retry_time_test.go
 new file mode 100644
-index 0000000..3040b89
+index 00000000..3040b893
 --- /dev/null
 +++ b/internal/runtime/executor/basalt_provider_retry_time_test.go
 @@ -0,0 +1,86 @@
@@ -114,10 +114,10 @@ index 0000000..3040b89
 +	return nil
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
-index 64a2d7d..e19bdf7 100644
+index 95ce4d7d..fdbf36b9 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
 +++ b/internal/runtime/executor/helps/usage_helpers.go
-@@ -803,8 +803,10 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
+@@ -859,8 +859,10 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
  		if err == nil {
  			continue
  		}
@@ -129,7 +129,7 @@ index 64a2d7d..e19bdf7 100644
  		}
  		body := strings.TrimSpace(err.Error())
  		type responseBodyProvider interface {
-@@ -817,8 +819,9 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
+@@ -873,8 +875,9 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
  			}
  		}
  		fail := usage.Failure{
@@ -141,7 +141,7 @@ index 64a2d7d..e19bdf7 100644
  		}
  		if truncatedErr, ok := errors.AsType[cliproxyexecutor.StreamTruncatedError](err); ok && truncatedErr != nil && truncatedErr.IsStreamTruncated() {
  			fail.Code = usage.FailureStreamTruncatedCode
-@@ -836,6 +839,15 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
+@@ -892,6 +895,15 @@ func failFromErrorsWithRules(rules []internalconfig.RequestScopedErrorRule, errs
  	return usage.Failure{}
  }
  
@@ -158,7 +158,7 @@ index 64a2d7d..e19bdf7 100644
  	if r == nil || r.requestedAt.IsZero() {
  		return 0
 diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
-index 04be8d7..f24745f 100644
+index 04be8d7a..f24745f3 100644
 --- a/sdk/cliproxy/usage/manager.go
 +++ b/sdk/cliproxy/usage/manager.go
 @@ -104,6 +104,26 @@ type Failure struct {
@@ -189,7 +189,7 @@ index 04be8d7..f24745f 100644
  
  // Detail holds the token and structured usage breakdown captured from an upstream response.
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
-index ccf829a..40c4a86 100644
+index ccf829a6..40c4a86f 100644
 --- a/sdk/cliproxy/usage/metadata_only.go
 +++ b/sdk/cliproxy/usage/metadata_only.go
 @@ -126,7 +126,8 @@ func RedactForMetadataOnly(ctx context.Context, record Record) (context.Context,

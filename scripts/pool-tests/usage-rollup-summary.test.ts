@@ -370,3 +370,52 @@ async function withoutCaptureHours(db: HistoryDatabase) {
     historyCaptureHoursVersion,
   ]);
 }
+
+/** Scans in a statement's plan: the raw table's partitions, and the people rollup. */
+async function planned(db: HistoryDatabase, text: string, values: unknown[] | undefined) {
+  const [row] = (await db.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows;
+  const counts = { partitions: 0, people: 0 };
+  const walk = (node: Record<string, unknown>) => {
+    const relation = String(node["Relation Name"] ?? "");
+    if (/^basalt_model_requests_\d+$/.test(relation)) counts.partitions++;
+    if (relation === "basalt_model_usage_people_hourly") counts.people++;
+    for (const child of (node.Plans as Record<string, unknown>[] | undefined) ?? []) walk(child);
+  };
+  walk((row!["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]!.Plan);
+  return counts;
+}
+
+test("a v16 summary plans each statement's cut hours as one partitioned read and counts its rollup window once", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await history(f);
+    await backfill(f.db, "v16");
+    const statements: { text: string; values?: unknown[] }[] = [];
+    const recorded: HistoryDatabase = {
+      query: (text, values) => {
+        statements.push({ text, values });
+        return f.db.query(text, values);
+      },
+    };
+    await summary(recorded, fixture.authority, "provider");
+    const partitions = Number(
+      (
+        await f.db.query(
+          "SELECT count(*)::int AS n FROM pg_inherits WHERE inhparent='basalt_model_requests'::regclass",
+        )
+      ).rows[0]!.n,
+    );
+    const plans = [];
+    for (const statement of statements.filter(({ text }) => /^\s*WITH bindings/.test(text)))
+      plans.push(await planned(f.db, statement.text, statement.values));
+    assert.equal(plans.length, 4, "targets, coverage, daily and hourly read the rollup");
+    const [targets, coverage, daily, hourly] = plans;
+    // The window's off-hour boundaries cut several hours; their raw rows are one read per selection.
+    for (const [name, plan] of Object.entries({ coverage, daily, hourly }))
+      assert.equal(plan!.partitions, partitions, `${name} plans one read of the raw partitions`);
+    // The targets statement builds the raw selection, each rollup's selection and the raw window
+    // count, one partitioned read each, and reads the v16 window's groups twice: once to count
+    // them, once to select them.
+    assert.equal(targets!.partitions, 4 * partitions);
+    assert.equal(targets!.people, 2);
+  });
+});
