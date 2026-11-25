@@ -3,18 +3,17 @@
 // itself (ownership.mjs). `send` takes a structured request, never a path: a declared kind, a
 // declared operation of that kind, the row this stage's own listing returned (or, for a Worker, its
 // name), and a body checked against its operation's exact schema (bodies.mjs). It builds the URL
-// from a fixed template per kind and operation, and refuses
-// before anything is sent unless every name in the URL is inside the stage's prefix and no name
-// production's records use, and every id in it is the one this stage's own listing recorded for
-// that name, in a strict charset. A resource addressed by id is read back by that id first, and is
-// changed or deleted only when the answer names the recorded, owned name. Every request refuses
-// redirects, and any redirect answer is refused, so a request reaches only the URL checked here.
-// Account-wide reads take
-// nothing from the caller, and their rows are filtered by ownership before they are returned.
-// Registry credentials are minted and used here and never returned. Every table below has no
-// prototype, and every field of a request, an option or an answer is read as the object's own, so
-// nothing set on Object.prototype changes a request. The fetcher is held only here, in send's
-// closure; answers.mjs reads what comes back, once, failing closed.
+// from a fixed template per kind and operation, and refuses before anything is sent unless every
+// name in the URL is inside the stage's prefix and no name production's records use, and every id
+// in it is the one this stage's own listing recorded for that name, in a strict charset. A resource
+// addressed by id is read back by that id first, and is changed or deleted only when the answer
+// names the recorded, owned name. Every request refuses redirects, and any redirect answer is
+// refused, so a request reaches only the URL checked here. Account-wide reads take nothing from the
+// caller, and their rows are filtered by ownership before they are returned. Registry credentials
+// are minted and used here and never returned. Every table below has no prototype, and every field
+// of a request, an option or an answer is read as the object's own, so nothing set on
+// Object.prototype changes a request. The fetcher is held only here, in send's closure; answers.mjs
+// reads what comes back, once, failing closed.
 import {
   DIGEST,
   answerOf,
