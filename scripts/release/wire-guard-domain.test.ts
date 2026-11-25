@@ -3,6 +3,12 @@ import { test } from "node:test";
 import { Effect } from "effect";
 import type { StageScope } from "./stage-writes.ts";
 import { install, WireRefused } from "./wire-guard.ts";
+import {
+  envelope,
+  workerDomain,
+  workerDomainNotFound,
+  workerDomainRead,
+} from "../pool-fleet/test/cloudflare-shapes.ts";
 
 const ACCOUNT = "1".repeat(32);
 const OTHER_ACCOUNT = "2".repeat(32);
@@ -92,8 +98,7 @@ const cloudflare =
     )?.[1];
     const entry = id === undefined ? undefined : domains[id];
     if (request.method === "GET" && id !== undefined) {
-      if (entry === undefined)
-        return Response.json({ success: false, result: null }, { status: 404 });
+      if (entry === undefined) return Response.json(workerDomainNotFound(id), { status: 404 });
       if (entry === 302)
         return new Response(null, {
           status: 302,
@@ -101,10 +106,22 @@ const cloudflare =
             location: `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/domains/domain-own`,
           },
         });
-      if (typeof entry === "number") return Response.json({ success: false }, { status: entry });
-      return Response.json({ success: true, result: "answer" in entry ? entry.answer : entry });
+      // A failed read refuses on its status alone: this body would vouch for the stage's domain.
+      if (typeof entry === "number")
+        return Response.json(
+          workerDomainRead({
+            ...workerDomain,
+            id,
+            hostname: `mcp.rehearsal-2.${ZONE}`,
+            service: STAGE_WORKER,
+          }),
+          { status: entry },
+        );
+      const domain = "answer" in entry ? entry.answer : entry;
+      return Response.json(workerDomainRead({ ...workerDomain, ...domain }));
     }
-    return Response.json({ success: true, result: null });
+    // The delete's answer was not recorded; the guard only judges the request, never this body.
+    return Response.json(envelope(null));
   };
 
 const deleting = async (urls: readonly string[]) => {

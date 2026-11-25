@@ -1409,7 +1409,16 @@ test(
       });
 
     let policyWeight = (provider, plan, seconds) =>
-      capacityWeight(provider, plan, seconds, { now: Date.parse("2026-11-13T12:00:00Z") });
+      capacityWeight(provider, plan, seconds, {
+        now: Date.parse("2026-11-13T12:00:00Z"),
+        // The table as generated on 13 Nov, frozen: the shipped one is re-dated at each renewal.
+        catalog: JSON.parse(
+          readFileSync(
+            new URL("../../src/pool/allowances/fixtures/seed-2026-11-13.json", import.meta.url),
+            "utf8",
+          ),
+        ),
+      });
     if (weightPolicyRef) {
       const path = join(directory, "baseline-weights.ts");
       writeFileSync(

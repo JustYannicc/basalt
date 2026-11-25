@@ -1,8 +1,8 @@
 diff --git a/config.example.yaml b/config.example.yaml
-index 9f7c05d..097c5df 100644
+index 08651e46..fc127913 100644
 --- a/config.example.yaml
 +++ b/config.example.yaml
-@@ -523,6 +523,12 @@ upstream:
+@@ -567,6 +567,12 @@ upstream:
      # permanently and session-date-pin-days is ignored.
      session-date-pin-days: 7
  
@@ -17,7 +17,7 @@ index 9f7c05d..097c5df 100644
      # Credential attributes and explicit per-key cloak modes override this shared default.
 diff --git a/internal/config/basalt_stream_bootstrap_hold_test.go b/internal/config/basalt_stream_bootstrap_hold_test.go
 new file mode 100644
-index 0000000..c697bd5
+index 00000000..c697bd56
 --- /dev/null
 +++ b/internal/config/basalt_stream_bootstrap_hold_test.go
 @@ -0,0 +1,37 @@
@@ -59,13 +59,13 @@ index 0000000..c697bd5
 +	}
 +}
 diff --git a/internal/config/config_types.go b/internal/config/config_types.go
-index eec98f3..2864df0 100644
+index 77e37e73..3eb806d7 100644
 --- a/internal/config/config_types.go
 +++ b/internal/config/config_types.go
-@@ -136,6 +136,20 @@ type ClaudeConfig struct {
- 	// KV) is active, session date pins are persisted permanently and
- 	// session-date-pin-days is ignored.
- 	SessionDatePinDays *int `yaml:"session-date-pin-days" json:"session-date-pin-days"`
+@@ -141,6 +141,14 @@ type ClaudeConfig struct {
+ 	// URLs request the org:create_api_key scope in addition to ClaudeOAuthScope.
+ 	// Nil defaults to true to match native Claude Code.
+ 	OAuthIncludeCreateAPIKey *bool `yaml:"oauth-include-create-api-key,omitempty" json:"oauth-include-create-api-key,omitempty"`
 +	// StreamBootstrapHold holds back the stream events that carry no generated
 +	// output yet (message_start, ping, an empty text or thinking block start)
 +	// until the first generating event. Anthropic can answer a 200 stream with a
@@ -74,31 +74,38 @@ index eec98f3..2864df0 100644
 +	// Trade-off: the caller's first byte waits for the first generating event, up
 +	// to 5s, 48 frames or 1 MiB, whichever comes first. Unset means on.
 +	StreamBootstrapHold *bool `yaml:"stream-bootstrap-hold,omitempty" json:"stream-bootstrap-hold,omitempty"`
-+}
-+
+ }
+ 
+ // OAuthIncludeCreateAPIKeyEnabled reports whether Claude OAuth authorization
+@@ -149,6 +157,12 @@ func (c *ClaudeConfig) OAuthIncludeCreateAPIKeyEnabled() bool {
+ 	return c == nil || c.OAuthIncludeCreateAPIKey == nil || *c.OAuthIncludeCreateAPIKey
+ }
+ 
 +// StreamBootstrapHoldEnabled reports whether Claude streams hold their
 +// pre-generation events. Unset defaults to true.
 +func (c ClaudeConfig) StreamBootstrapHoldEnabled() bool {
 +	return c.StreamBootstrapHold == nil || *c.StreamBootstrapHold
- }
- 
++}
++
  // DefaultClaudeSessionDatePinDays is the session date pin retention applied
+ // when session-date-pin-days is not configured.
+ const DefaultClaudeSessionDatePinDays = 7
 diff --git a/internal/config/config_yaml.go b/internal/config/config_yaml.go
-index bd168b9..e00b356 100644
+index 2a7ca46f..601bac9c 100644
 --- a/internal/config/config_yaml.go
 +++ b/internal/config/config_yaml.go
-@@ -468,7 +468,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+@@ -469,7 +469,8 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
  	}
  
- 	// Pointer-backed booleans (such as cache-user-id and disable-cooling): explicit false is meaningful and must be preserved.
--	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
+ 	// Pointer-backed booleans (such as cache-user-id, disable-cooling, and oauth-include-create-api-key): explicit values are meaningful and must be preserved.
+-	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "oauth-include-create-api-key") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
 +	// stream-bootstrap-hold defaults on, so an explicit false is its off switch.
-+	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "stream-bootstrap-hold") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
++	if len(path) > 0 && (path[len(path)-1] == "cache-user-id" || path[len(path)-1] == "disable-cooling" || path[len(path)-1] == "oauth-include-create-api-key" || path[len(path)-1] == "stream-bootstrap-hold") && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!bool" {
  		return false
  	}
  
-@@ -478,6 +479,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
- 		if pinIdx := findMapKeyIndex(node, "session-date-pin-days"); pinIdx >= 0 {
+@@ -483,6 +484,9 @@ func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+ 		if scopeIdx := findMapKeyIndex(node, "oauth-include-create-api-key"); scopeIdx >= 0 {
  			return false
  		}
 +		if holdIdx := findMapKeyIndex(node, "stream-bootstrap-hold"); holdIdx >= 0 {
@@ -109,7 +116,7 @@ index bd168b9..e00b356 100644
  	// First check if it's a zero value
 diff --git a/internal/runtime/executor/basalt_claude_bootstrap_hold_test.go b/internal/runtime/executor/basalt_claude_bootstrap_hold_test.go
 new file mode 100644
-index 0000000..2c50aba
+index 00000000..2c50abaf
 --- /dev/null
 +++ b/internal/runtime/executor/basalt_claude_bootstrap_hold_test.go
 @@ -0,0 +1,511 @@
@@ -626,7 +633,7 @@ index 0000000..2c50aba
 +}
 diff --git a/internal/runtime/executor/claude_executor_bootstrap_hold.go b/internal/runtime/executor/claude_executor_bootstrap_hold.go
 new file mode 100644
-index 0000000..d03a4f1
+index 00000000..d03a4f10
 --- /dev/null
 +++ b/internal/runtime/executor/claude_executor_bootstrap_hold.go
 @@ -0,0 +1,281 @@
@@ -912,7 +919,7 @@ index 0000000..d03a4f1
 +	}
 +}
 diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
-index d06d0fa..60c6440 100644
+index cdd0b7d2..3117d6fa 100644
 --- a/internal/runtime/executor/claude_executor_execute.go
 +++ b/internal/runtime/executor/claude_executor_execute.go
 @@ -3,6 +3,7 @@ package executor
@@ -923,7 +930,7 @@ index d06d0fa..60c6440 100644
  	"fmt"
  	"io"
  	"net/http"
-@@ -375,6 +376,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+@@ -377,6 +378,10 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
  	threadMessageID := ""
  	if upstreamStream {
  		if errValidate := validateClaudeStreamingResponse(data); errValidate != nil {
@@ -935,10 +942,10 @@ index d06d0fa..60c6440 100644
  			return resp, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, errValidate)
  		}
 diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
-index b16f4f9..8779d79 100644
+index 10995443..ee2d6a3b 100644
 --- a/internal/runtime/executor/claude_executor_stream.go
 +++ b/internal/runtime/executor/claude_executor_stream.go
-@@ -355,6 +355,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -357,6 +357,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  		return nil, wrapClaudeFastRequestError(fastRequest, httpResp.StatusCode, err)
  	}
  	out := make(chan cliproxyexecutor.StreamChunk, 1)
@@ -948,7 +955,7 @@ index b16f4f9..8779d79 100644
  	go func() {
  		defer close(out)
  		defer func() {
-@@ -395,6 +398,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -397,6 +400,13 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  			case <-ctx.Done():
  			}
  		}
@@ -962,7 +969,7 @@ index b16f4f9..8779d79 100644
  
  		streamBody := threadBetas.StreamReader(decodedBody, func(messageID string) {
  			commitClaudeContinuity(diagnosticsState, messageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
-@@ -408,46 +418,88 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -410,47 +420,89 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  			var upstreamMessageID string
  			var upstreamStreamErr error
  			upstreamCompleted := false
@@ -1025,6 +1032,7 @@ index b16f4f9..8779d79 100644
 -					return
 -				}
 -				line = e.restoreResponseModel(restoredLine, req.Model)
+-				advisorState.ObserveSSELine(line)
 -				event.Write(line)
 -				event.WriteByte('\n')
 -				if len(bytes.TrimSpace(line)) == 0 {
@@ -1047,6 +1055,7 @@ index b16f4f9..8779d79 100644
 -					if upstreamCompleted || (upstreamStreamErr != nil && !clienterror.IsClaudePolicyRefusalError(upstreamStreamErr)) {
 -						break
 +					line = e.restoreResponseModel(restoredLine, req.Model)
++					advisorState.ObserveSSELine(line)
 +					event.Write(line)
 +					event.WriteByte('\n')
 +					if len(bytes.TrimSpace(line)) == 0 {
@@ -1078,7 +1087,7 @@ index b16f4f9..8779d79 100644
  				return
  			}
  			if !upstreamCompleted || upstreamStreamErr != nil {
-@@ -488,24 +540,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -491,25 +543,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  		var upstreamStreamErr error
  		var eventBuf bytes.Buffer
  		upstreamCompleted := false
@@ -1100,13 +1109,14 @@ index b16f4f9..8779d79 100644
 -				return
 -			}
 -			line = e.restoreResponseModel(restoredLine, req.Model)
+-			advisorState.ObserveSSELine(line)
 +		// translateLine is the one path every Claude line takes to the caller, so
 +		// held lines are translated exactly like live ones, in order.
 +		translateLine := func(line []byte) claudeStreamAction {
  			helps.RecordClaudeWebSearchResultsContext(ctx, webSearchSessionKey, line, webSearchTTL, webSearchLimit)
  			chunks := sdktranslator.TranslateStream(
  				ctx,
-@@ -535,16 +572,106 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+@@ -539,16 +575,107 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
  					if !upstreamCompleted {
  						emitCancellation(ctx.Err())
  					}
@@ -1154,6 +1164,7 @@ index b16f4f9..8779d79 100644
 +					return claudeStreamReturn
 +				}
 +				line = e.restoreResponseModel(restoredLine, req.Model)
++				advisorState.ObserveSSELine(line)
 +				if hold.Holding() {
 +					// Lines wait for the blank line that completes their event,
 +					// which decides whether the event is held, fails over or
@@ -1215,7 +1226,7 @@ index b16f4f9..8779d79 100644
  		if eventBuf.Len() > 0 {
  			observeClaudeSSEEvent(eventBuf.Bytes(), &upstreamMessageID, &upstreamCompleted, &upstreamStreamErr)
  			streamUsage.ObserveClaudeSSEEvent(eventBuf.Bytes())
-@@ -612,6 +739,9 @@ func validateClaudeStreamingResponse(data []byte) error {
+@@ -616,6 +743,9 @@ func validateClaudeStreamingResponse(data []byte) error {
  		root := util.ParseGJSONBytesNoCopy(payload)
  		switch root.Get("type").String() {
  		case "error":
@@ -1227,7 +1238,7 @@ index b16f4f9..8779d79 100644
  				message = strings.TrimSpace(root.Get("error.type").String())
 diff --git a/sdk/api/handlers/openai/basalt_claude_bootstrap_hold_failover_test.go b/sdk/api/handlers/openai/basalt_claude_bootstrap_hold_failover_test.go
 new file mode 100644
-index 0000000..31611c2
+index 00000000..31611c26
 --- /dev/null
 +++ b/sdk/api/handlers/openai/basalt_claude_bootstrap_hold_failover_test.go
 @@ -0,0 +1,121 @@
@@ -1354,7 +1365,7 @@ index 0000000..31611c2
 +}
 diff --git a/sdk/cliproxy/auth/basalt_home_redispatch.go b/sdk/cliproxy/auth/basalt_home_redispatch.go
 new file mode 100644
-index 0000000..132a0f3
+index 00000000..132a0f3e
 --- /dev/null
 +++ b/sdk/cliproxy/auth/basalt_home_redispatch.go
 @@ -0,0 +1,129 @@
@@ -1489,10 +1500,10 @@ index 0000000..132a0f3
 +}
 diff --git a/sdk/cliproxy/auth/basalt_home_redispatch_test.go b/sdk/cliproxy/auth/basalt_home_redispatch_test.go
 new file mode 100644
-index 0000000..585f688
+index 00000000..e96078e2
 --- /dev/null
 +++ b/sdk/cliproxy/auth/basalt_home_redispatch_test.go
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,475 @@
 +package auth
 +
 +import (
@@ -1925,19 +1936,62 @@ index 0000000..585f688
 +		t.Fatalf("after a non-429 = %v, want today's 503", errAccount)
 +	}
 +}
++
++// A plugin refuses account a for this request and Home never acknowledges a's
++// release. a is excluded from the redispatch, so b serves the call.
++func TestBasaltHomeRedispatchSkipsAckWaitForARefusedCredential(t *testing.T) {
++	for _, stream := range []bool{true, false} {
++		t.Run(map[bool]string{true: "stream", false: "nonstream"}[stream], func(t *testing.T) {
++			var blocked atomic.Int32
++			dispatcher := &basaltAccountedDispatcher{authIDs: []string{basaltAccountA, basaltAccountB}}
++			executor := &retryContractHomeExecutor{}
++			manager, _ := newBasaltRedispatchManager(dispatcher, executor, basaltReleaseSink(basaltAccountA, nil, &blocked))
++			opts := cliproxyexecutor.Options{
++				Stream: stream,
++				RequestAfterAuthInterceptor: func(_ context.Context, req cliproxyexecutor.RequestAfterAuthInterceptRequest) cliproxyexecutor.RequestAfterAuthInterceptResponse {
++					if authID, _ := req.Metadata[cliproxyexecutor.SelectedAuthMetadataKey].(string); authID == basaltAccountA {
++						return cliproxyexecutor.RequestAfterAuthInterceptResponse{Terminate: true, TerminateScope: "credential", StatusCode: http.StatusForbidden, ResponseBody: []byte("a refused")}
++					}
++					return cliproxyexecutor.RequestAfterAuthInterceptResponse{}
++				},
++			}
++			var payloads []string
++			var errRun error
++			if stream {
++				result, errStream := manager.ExecuteStream(context.Background(), []string{"home-retry-contract"}, cliproxyexecutor.Request{Model: "gpt"}, opts)
++				payloads, errRun = basaltStreamOutcome(result, errStream)
++			} else {
++				response, errExecute := manager.Execute(context.Background(), []string{"home-retry-contract"}, cliproxyexecutor.Request{Model: "gpt"}, opts)
++				errRun = errExecute
++				if errExecute == nil {
++					payloads = []string{string(response.Payload)}
++				}
++			}
++			if errRun != nil {
++				t.Fatalf("call error = %T %v, want b to serve it (home_unavailable=%v)", errRun, errRun, basaltIsHomeUnavailable(errRun))
++			}
++			if !reflect.DeepEqual(payloads, []string{basaltAccountB}) {
++				t.Fatalf("payloads = %q, want only account b", payloads)
++			}
++			if blocked.Load() != 1 {
++				t.Fatalf("unacknowledged releases of a = %d, want 1", blocked.Load())
++			}
++		})
++	}
++}
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index cd1b16f..89477fe 100644
+index 4ab432dc..cecf99c8 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
-@@ -1129,6 +1129,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1872,6 +1872,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  	homeSameAuthRetries := make(map[string]int)
  	lastHomeAuthID := ""
  	homeSameAuthRetryPending := false
 +	homeRedispatched := false
  	attempted := make(map[string]struct{})
+ 	lastAttemptedAuthID := ""
  	var lastErr error
- 	var upstreamErr error
-@@ -1160,6 +1161,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1911,6 +1912,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  		var errPick error
  		if homeMode {
  			selection, errPick = m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
@@ -1953,7 +2007,7 @@ index cd1b16f..89477fe 100644
  			if selection != nil {
  				auth = selection.CloneAuthForRoute(routeModel)
  				executor = selection.Executor
-@@ -1289,7 +1299,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2057,7 +2067,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  				lastHomeAuthID = auth.ID
  				homeSameAuthRetryPending = false
  				releaseAttempt()
@@ -1962,8 +2016,8 @@ index cd1b16f..89477fe 100644
  					return nil, errEnd
  				}
  			}
-@@ -1335,7 +1345,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
- 				roundTiming.Observe(lastErr)
+@@ -2153,7 +2163,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 				roundTiming.Observe(errPrepare)
  			}
  			if selection != nil {
 -				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
@@ -1971,7 +2025,16 @@ index cd1b16f..89477fe 100644
  					return nil, errEnd
  				}
  			}
-@@ -1429,7 +1439,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2227,7 +2237,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 					lastHomeAuthID = auth.ID
+ 					homeSameAuthRetryPending = false
+ 					releaseAttempt()
+-					if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "credential_refused"); errEnd != nil {
++					if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "credential_refused", homeExcludedAuthIDs); errEnd != nil {
+ 						return nil, errEnd
+ 					}
+ 				}
+@@ -2260,7 +2270,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  			}
  			if selection != nil {
  				releaseAttempt()
@@ -1981,10 +2044,10 @@ index cd1b16f..89477fe 100644
  				}
  			}
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index 4f297ce..c9e3b0c 100644
+index 42b739d7..efdddc8d 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -604,7 +604,7 @@ func (m *Manager) retainedHomeSessionSelection(ctx context.Context, opts cliprox
+@@ -609,7 +609,7 @@ func (m *Manager) retainedHomeSessionSelection(ctx context.Context, opts cliprox
  	m.mu.Unlock()
  
  	for _, selection := range ended {
@@ -1993,7 +2056,7 @@ index 4f297ce..c9e3b0c 100644
  			return nil, false, errWait
  		}
  	}
-@@ -671,24 +671,28 @@ func (m *Manager) endHomeSelectionBeforeRedispatch(ctx context.Context, selectio
+@@ -676,24 +676,28 @@ func (m *Manager) endHomeSelectionBeforeRedispatch(ctx context.Context, selectio
  		return nil
  	}
  
@@ -2031,10 +2094,10 @@ index 4f297ce..c9e3b0c 100644
  	if m == nil || selection == nil || !selection.Retained() || !cliproxyexecutor.DownstreamWebsocket(ctx) {
  		return false
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index f962ac2..3034010 100644
+index 400382c4..b77afa5c 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
-@@ -80,6 +80,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+@@ -173,6 +173,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
  	var lastErr error
  	var upstreamErr error
  	var roundTiming homeRetryRoundTiming
@@ -2042,7 +2105,7 @@ index f962ac2..3034010 100644
  	for homeAuthCount := 1; ; homeAuthCount++ {
  		if maxRetryCredentials > 0 && len(attempted) >= maxRetryCredentials {
  			if lastErr != nil {
-@@ -91,6 +92,15 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+@@ -189,6 +190,15 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
  		pickOpts = withHomeAuthCount(pickOpts, homeAuthCount)
  		pickOpts = withHomeExcludedAuthIDs(pickOpts, tried)
  		selection, errSelection := m.pickHomeDispatchSelection(ctx, routeModel, pickOpts)
@@ -2058,7 +2121,7 @@ index f962ac2..3034010 100644
  		if errSelection != nil {
  			preferredErr := preferredExecutionAttemptError(lastErr, upstreamErr)
  			var homeCooldown *homeDispatchRetryAfterError
-@@ -155,7 +165,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+@@ -266,7 +276,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
  		}
  		if len(models) == 0 {
  			releaseAttempt()
@@ -2066,17 +2129,25 @@ index f962ac2..3034010 100644
 +			if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "no_execution_models", tried); errEnd != nil {
  				return cliproxyexecutor.Response{}, errEnd
  			}
- 			lastErr = &Error{Code: "auth_not_found", Message: "no execution models available"}
-@@ -170,7 +180,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			noModelsErr := &Error{Code: "auth_not_found", Message: "no execution models available"}
+@@ -314,7 +324,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 				selection.End("request_invalid")
+ 				return cliproxyexecutor.Response{}, errPrepare
  			}
- 			m.reportHomeResult(execCtx, Result{AuthID: auth.ID, Provider: selection.Provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: opts}, auth)
- 			releaseAttempt()
 -			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
 +			if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "prepare_failed", tried); errEnd != nil {
  				return cliproxyexecutor.Response{}, errEnd
  			}
- 			lastErr = errPrepare
-@@ -312,7 +322,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			lastErr = keepPreferredCandidateError(lastErr, errPrepare)
+@@ -501,14 +511,14 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			recordRequestRefusedAuth(ctx, auth.ID)
+ 			lastErr = refusedErr
+ 			releaseAttempt()
+-			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "credential_refused"); errEnd != nil {
++			if errEnd := m.endHomeSelectionBeforeExcludedRedispatch(ctx, selection, "credential_refused", tried); errEnd != nil {
+ 				return cliproxyexecutor.Response{}, errEnd
+ 			}
+ 			continue
  		}
  		roundTiming.Observe(lastErr)
  		releaseAttempt()

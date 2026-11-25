@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { capacityWeight as resolveWeight, capacityWeightRevision } from "./weights.ts";
+import { seedFixture } from "../allowances/test/seed-fixture.ts";
 
 const clock = Date.parse("2026-11-13T12:00:00Z");
 const capacityWeight = (
@@ -8,7 +9,7 @@ const capacityWeight = (
   plan: string | null,
   seconds: number,
   options: Parameters<typeof resolveWeight>[3] = {},
-) => resolveWeight(provider, plan, seconds, { now: clock, ...options });
+) => resolveWeight(provider, plan, seconds, { now: clock, catalog: seedFixture, ...options });
 
 test("a refreshed catalog changes a plan's allowance without changing code", () => {
   const now = Date.parse("2026-11-13T12:00:00Z");
