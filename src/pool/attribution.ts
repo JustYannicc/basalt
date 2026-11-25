@@ -147,6 +147,7 @@ export class PoolControl implements ControlAttribution {
       signingKey: this.deps.signingKey,
       previousSigningKey: this.deps.previousSigningKey,
       now: () => this.now(),
+      refusals: this.deps.routeRefusals,
     });
     if (health !== undefined) return health;
     const result = await this.run(() => this.acquisitions.handle(request));
