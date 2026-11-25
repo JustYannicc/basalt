@@ -121,6 +121,10 @@ const REASONS = {
     "A deploy must never redeploy the shared State store or rewrite a Secrets Store secret; that rotates the store token every stack reads.",
     "Upgrade or bootstrap the store by hand under its own approval.",
   ],
+  path: [
+    "The path is not spelled the way the SDK sends it, so a rule keyed on the path could miss what it names.",
+    "Send the canonical path: lower-case path words, no empty segments, no parameters and no escaped path characters.",
+  ],
   readonly: [
     "This run only reads production, so it sends nothing but reads; this request would write.",
     "Find what tried to write during a read. A plan, preflight or count never writes.",
@@ -212,6 +216,27 @@ const StoreCredentialRead = Schema.Struct({
 });
 const SECRET_WRITE = /^\/accounts\/[^/]+\/secrets_store\/stores\/[^/]+\/secrets(?:\/|$)/;
 const APPLICATION = /^\/accounts\/[^/]+\/containers\/applications(?:\/([^/]+))?/;
+
+const API_ROOT = /\/(?:accounts|organizations|user|zones)\//iu;
+/**
+ * The rules key on a path as the SDK spells it. A write spelled any other way could name the same
+ * resource to Cloudflare and nothing to a rule, so it is refused rather than normalised.
+ */
+const canonicalPath = (pathname: string) =>
+  !pathname.includes("//") &&
+  !pathname.includes(";") &&
+  // An escape of a character that needs none, or of the path separator, only hides the path.
+  ![...pathname.matchAll(/%([0-9a-f]{2})/giu)].some(([, hex]) =>
+    /[a-z0-9\-._~/]/iu.test(String.fromCharCode(Number.parseInt(hex!, 16))),
+  ) &&
+  // A provider API path takes its words in lower case. (The State store's paths carry no API root;
+  // they name resources by our own logical ids, which may be capitalised.)
+  (!API_ROOT.test(pathname) ||
+    !pathname
+      .split("/")
+      .some((segment) => segment !== segment.toLowerCase() && WORDS.has(segment.toLowerCase()))) &&
+  // One API root: with two, the rules would read the wrong one.
+  (pathname.match(new RegExp(API_ROOT.source, "giu")) ?? []).length <= 1;
 
 const nullable = <S extends Schema.Top>(schema: S) => Schema.optional(Schema.NullOr(schema));
 const List = Schema.optional(Schema.Array(Schema.Unknown));
@@ -541,6 +566,9 @@ const check = (
       method,
       path: template(path),
     });
+    const write = method !== "GET" && method !== "HEAD";
+    if (write && !canonicalPath(new URL(request.url).pathname))
+      return yield* refuse(at("request", "{id}"), "path", "path", "not canonical");
     // Alchemy reads the store's token through an ephemeral edge preview of the store script
     // (StateStore/State.ts readSecretViaEdge, Cloudflare/EdgeSession.ts): admitted only in that exact shape.
     if (STATE_STORE_PREVIEW.test(path) && (method === "PUT" || method === "POST"))
@@ -627,7 +655,10 @@ export const install = (config: WireGuardConfig = {}) =>
           Deferred.doneUnsafe(refused, Effect.fail(error));
         throw error;
       }
-      const response = await inner(request);
+      // fetch re-sends a redirected write with its method and body to an address the guard never
+      // checked, so a write's redirect comes back to the caller instead. Reads follow as before.
+      const write = request.method !== "GET" && request.method !== "HEAD";
+      const response = await inner(request, write ? { redirect: "manual" } : undefined);
       if (exit.value && response.ok)
         for (const name of createdIdentities(
           await response
