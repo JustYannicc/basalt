@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-cloud-postgres-pull-retry",
+  "file": "0777-cloud-postgres-pull-retry.patch",
+  "content_sha256": "e3e09c0da3b853ada53af393e55c3577107fa5c0651ddc2d97a3df48ceb41f43",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

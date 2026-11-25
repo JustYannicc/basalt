@@ -1,11 +1,13 @@
+import { readSuspect } from "./runtime-fleet/failure-record.ts";
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { SlotRefused, type SlotIdentity, type SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 import { ControlFailure } from "./json.ts";
-import { RuntimeFleetState } from "./runtime-fleet/state.ts";
-import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
+import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
+import { PoolStartupDeadline } from "./lifecycle.ts";
+import { RuntimeFleet, fenceDecidedMs, type FleetCell } from "./runtime-fleet/controller.ts";
 import type { PrimaryRoute } from "./runtime-fleet/state.ts";
 import { fleetRouting } from "./runtime-fleet/production.ts";
 import { decodeResumeTarget } from "./stream-resume.ts";
@@ -14,8 +16,11 @@ import {
   retainRuntimeFailure,
   runtimeFailureHeaders,
 } from "./runtime-route-diagnostic.ts";
-import { forwardRecoverably } from "./runtime-fleet/retry.ts";
-import { rootFallbackBurst } from "./runtime-fleet/root-fallback.ts";
+import { forwardRecoverably, markRootFallbackCap } from "./runtime-fleet/retry.ts";
+import { rootFallbackBurst, rootFallbackPerSecond } from "./runtime-fleet/root-fallback.ts";
+import { RemoteRuntimeDefect, runtimeErrorResponse } from "./runtime-slots/request-error.ts";
+import { ProviderObservationRefused } from "./runtime-provider/read.ts";
+import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
 const responseModule = "./native-response.worker.ts";
 const { nativeResponse } = (await import(responseModule)) as {
@@ -28,7 +33,10 @@ function fixture(
   primary: {
     primary?: PrimaryRoute;
     primaryAvailable?(): boolean;
+    primaryHoldMs?(): number;
     recoverPrimary?(): Promise<void>;
+    enabled?(): boolean;
+    recentDemandUntil?(): Promise<number>;
   } = {},
 ) {
   const state = new RuntimeFleetState(new SlotMemory(), maximum, () => 100);
@@ -88,6 +96,7 @@ function fixture(
         calls.retires++;
         retired = true;
         if (retirementLost) throw new Error("lost retirement acknowledgement");
+        return true;
       },
       retired: async () => retired,
       failed: async () => false,
@@ -337,7 +346,7 @@ test("a retiring row is never asked for a policy, so its refusal cannot hold the
   assert.equal(f.calls.installs, 0);
 });
 
-test("a ready row whose runtime fails the install leaves the selection, and the fan-out still resolves", async () => {
+test("a ready row whose readiness refuses the install is fenced until the policy lands, and the fan-out still resolves", async () => {
   const f = fixture();
   const identity = await f.add();
   refusing(f, identity);
@@ -348,9 +357,13 @@ test("a ready row whose runtime fails the install leaves the selection, and the 
   };
   await f.fleet.install(membership());
   assert.equal(f.calls.installs, 1);
-  assert.equal(
-    (await f.state.inspect()).find((row) => row.identity?.slotId === identity.slotId)?.phase,
-    "quarantined",
+  // The install could not be made: the row stays, fenced, owing the pool's current policy.
+  const row = (await f.state.inspect()).find((value) => value.identity?.slotId === identity.slotId);
+  assert.equal(row?.phase, "ready");
+  assert.deepEqual(
+    readSuspect(row?.suspect)?.policyOwed,
+    [membership().pool],
+    "the row that could not take the policy owes none",
   );
   await (await f.fleet.forward(request(), "pool", f.legacy, () => {})).text();
   assert.equal(served, 0);
@@ -520,6 +533,626 @@ test("with production routing, a fenced root never fails a call a ready cell can
   await Promise.all(responses.map((response, index) => served(response, f.bodies[index])));
   assert.equal(f.calls.dispatches, 3);
   await f.settle();
+});
+
+// The root's restart as a call sees it: the selected boot's record is gone while the new one starts.
+const rootRestarting = () => {
+  const refused = new SlotRefused("identity");
+  rememberRuntimeFailure("endpoint_identity", refused);
+  return refused;
+};
+
+test("while the root recovers, a ready cell takes the call and no call holds for the root", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  assert.equal(await f.fleet.primaryHoldMs(), 200_000, "with no ready cell a call holds");
+  await f.add();
+  assert.equal(await f.fleet.primaryHoldMs(), 0, "a ready cell ends every hold");
+  let rootCalls = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          throw rootRestarting();
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    { rootHoldMs: () => f.fleet.primaryHoldMs() },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(f.calls.dispatches, 1);
+  assert.equal(rootCalls, 0);
+  await f.settle();
+});
+
+test("a cell that becomes ready while a call holds for the root's restart takes that call", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  let rootCalls = 0,
+    pauses = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          throw rootRestarting();
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    {
+      timing: {
+        now: () => pauses * 1_000,
+        pause: async () => {
+          if (++pauses === 3) await f.add();
+        },
+      },
+      rootHoldMs: () => f.fleet.primaryHoldMs(),
+    },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(rootCalls, 3, "the root took every attempt until the cell was ready");
+  assert.equal(f.calls.dispatches, 1);
+  await f.settle();
+});
+
+test("a cell that becomes ready during a root attempt ending in the start defect takes the next attempt", async () => {
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => 200_000,
+  });
+  let rootCalls = 0;
+  const response = await forwardRecoverably(
+    request(),
+    (current, dispatch) =>
+      f.fleet.forward(
+        current,
+        "pool",
+        async () => {
+          rootCalls++;
+          // The cell comes up while this root attempt finds no container to start.
+          await f.add();
+          const defect = new RemoteRuntimeDefect(crypto.randomUUID());
+          rememberRuntimeFailure("endpoint_route", defect);
+          throw defect;
+        },
+        dispatch,
+      ),
+    () => {},
+    async () => {},
+    { timing: { now: () => 0, pause: async () => {} }, rootHoldMs: () => f.fleet.primaryHoldMs() },
+  );
+  assert.equal(await served(response, f.bodies[0]), "data: [DONE]\n\n");
+  assert.equal(rootCalls, 1);
+  assert.equal(f.calls.dispatches, 1);
+  await f.settle();
+});
+
+test("calls released together when the root serves again are all served through its fallback cap", async (context) => {
+  const errors = context.mock.method(console, "error", () => {});
+  let now = 0,
+    serving = false;
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => (serving ? 0 : restartStartBoundMs - now),
+  });
+  const sleepers = new Set<{ at: number; wake(): void }>();
+  const timing = {
+    now: () => now,
+    pause: (milliseconds: number) =>
+      new Promise<void>((wake) => {
+        sleepers.add({ at: now + milliseconds, wake });
+      }),
+  };
+  const root = async () => {
+    if (!serving) throw rootRestarting();
+    return new Response("legacy");
+  };
+  const answers: { status: number; at: number }[] = [];
+  const calls = Array.from({ length: rootFallbackBurst + 5 }, () =>
+    forwardRecoverably(
+      request(),
+      (current, dispatch) => f.fleet.forward(current, "pool", root, dispatch),
+      () => {},
+      async () => {},
+      { timing, rootHoldMs: () => f.fleet.primaryHoldMs() },
+    ).then(async (response) => {
+      answers.push({ status: response.status, at: now });
+      await response.text();
+    }),
+  );
+  // The root comes back 10 s into the hold; the cap refills at its rate from its full burst.
+  for (let turn = 0; answers.length < calls.length && turn < 10_000; turn++) {
+    for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+    if (answers.length === calls.length || !sleepers.size) break;
+    now = Math.min(...[...sleepers].map((sleeper) => sleeper.at));
+    serving = now >= 10_000;
+    f.advance(200 + now);
+    for (const sleeper of sleepers)
+      if (sleeper.at <= now) {
+        sleepers.delete(sleeper);
+        sleeper.wake();
+      }
+  }
+  await Promise.all(calls);
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(calls.length).fill(200),
+  );
+  const capped = errors.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_ROOT_FALLBACK_REFUSED",
+  );
+  assert.ok(capped.length >= 5, `the cap refused ${capped.length} attempts`);
+  const last = Math.max(...answers.map((answer) => answer.at));
+  assert.ok(last < 10_000 + (5 / rootFallbackPerSecond + 2) * 1_000, `last served at ${last} ms`);
+  assert.ok(last < restartStartBoundMs);
+  await f.settle();
+});
+
+/**
+ * A cold fleet: no cell is ready and one is starting, ready at `readyAt` or failing at `failAt`.
+ * Calls arrive at their times; the root serves whatever its fallback cap admits.
+ */
+async function coldFleet(
+  context: TestContext,
+  arrivals: readonly number[],
+  options: {
+    readyAt?: number;
+    failAt?: number;
+    // A start that throws turns the row uncertain; one past its bound is quarantined instead.
+    failInto?: "uncertain" | "quarantine";
+    maximum?: number;
+    handoverAt?: number;
+    disableAt?: number;
+    // The starting cell serves once ready, and its endpoint refuses its first calls before the
+    // container send, as S1's lapse did; a second cell starting meanwhile is ready at its time.
+    refuseFirst?: number;
+    secondReadyAt?: number;
+    // Fleet upkeep passes, as the controller's alarm runs them, with the demand that keeps the
+    // serving cell: the fixture's frozen row clock would otherwise idle it out at once, where in
+    // production a call's demand keeps it 60 s. From `healthFailsFrom` the starting cell's health
+    // reads fail as its call did.
+    upkeepAt?: readonly number[];
+    healthFailsFrom?: number;
+  } = {},
+) {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  let now = 0,
+    enabled = true,
+    handingOver = false;
+  const f = fixture(options.maximum ?? 4, 25, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    enabled: () => enabled,
+    ...(options.upkeepAt ? { recentDemandUntil: async () => Number.POSITIVE_INFINITY } : {}),
+  });
+  const starting = f.target();
+  await f.state.reserve(starting);
+  await f.state.dispatch(starting);
+  const second = options.secondReadyAt === undefined ? undefined : f.target();
+  if (second) {
+    await f.state.reserve(second);
+    await f.state.dispatch(second);
+  }
+  let refusals = options.refuseFirst ?? 0;
+  const lapsed = () => {
+    const cause = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_identity", cause);
+    return retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  const cell = f.cell(starting);
+  const forward = cell.forward;
+  cell.forward = async (request, port, pool, beforeDispatch) => {
+    if (refusals <= 0) return forward(request, port, pool, beforeDispatch);
+    refusals--;
+    beforeDispatch();
+    throw lapsed();
+  };
+  if (options.healthFailsFrom !== undefined)
+    cell.healthy = async () => {
+      if (now >= options.healthFailsFrom!) throw lapsed();
+      return undefined;
+    };
+  const upkeeps = [...(options.upkeepAt ?? [])];
+  const sleepers = new Set<{ at: number; wake(): void }>();
+  const timing = {
+    now: () => now,
+    pause: (milliseconds: number) =>
+      new Promise<void>((wake) => {
+        sleepers.add({ at: now + milliseconds, wake });
+      }),
+  };
+  const answers: { status: number; waited: number }[] = [];
+  const pending: Promise<void>[] = [];
+  const send = (at: number) =>
+    pending.push(
+      forwardRecoverably(
+        request(),
+        (current, dispatch) =>
+          f.fleet.forward(current, "pool", async () => new Response("legacy"), dispatch),
+        () => {},
+        async () => {},
+        {
+          timing,
+          rootHoldMs: () => f.fleet.primaryHoldMs(),
+          coldHoldMs: () => f.fleet.coldHoldMs(),
+          handover: () => handingOver,
+        },
+      ).then((response) => {
+        answers.push({ status: response.status, waited: now - at });
+        void response.body?.cancel().catch(() => {});
+      }),
+    );
+  const events = [
+    options.readyAt,
+    options.failAt,
+    options.handoverAt,
+    options.disableAt,
+    options.secondReadyAt,
+    ...upkeeps,
+  ].filter((value): value is number => value !== undefined);
+  let next = 0;
+  for (let turn = 0; turn < 100_000; turn++) {
+    f.advance(200 + now);
+    if (options.readyAt !== undefined && now >= options.readyAt && !events.includes(-1)) {
+      events.push(-1);
+      if (options.refuseFirst !== undefined) f.selected.set(starting.slotId, starting);
+      await f.state.ready(starting);
+    }
+    if (options.failAt !== undefined && now >= options.failAt && !events.includes(-2)) {
+      events.push(-2);
+      const [row] = await f.state.inspect();
+      if (options.failInto === "uncertain") await f.state.uncertain(starting);
+      else await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+    }
+    if (second && now >= options.secondReadyAt! && !events.includes(-3)) {
+      events.push(-3);
+      f.selected.set(second.slotId, second);
+      await f.state.ready(second);
+    }
+    while (upkeeps.length && upkeeps[0]! <= now) {
+      upkeeps.shift();
+      await f.fleet.upkeep();
+    }
+    if (options.handoverAt !== undefined && now >= options.handoverAt) handingOver = true;
+    if (options.disableAt !== undefined && now >= options.disableAt) enabled = false;
+    while (next < arrivals.length && arrivals[next]! <= now) send(arrivals[next++]!);
+    for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+    if (next === arrivals.length && answers.length === arrivals.length) break;
+    const times = [
+      ...[...sleepers].map((sleeper) => sleeper.at),
+      ...(next < arrivals.length ? [arrivals[next]!] : []),
+      ...events.filter((at) => at > now),
+    ];
+    if (!times.length) break;
+    now = Math.max(now, Math.min(...times));
+    for (const sleeper of sleepers)
+      if (sleeper.at <= now) {
+        sleepers.delete(sleeper);
+        sleeper.wake();
+      }
+  }
+  await Promise.all(pending);
+  await f.settle();
+  return { answers, f };
+}
+
+test("a burst of 50 on a cold fleet is all served: the calls past the root's cap wait for the starting cell", async (context) => {
+  // The root's cap admits 10 at once and 1.2 a second, 34 by 20 s; the rest wait for the cell.
+  const { answers, f } = await coldFleet(context, Array(50).fill(0), { readyAt: 20_000 });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(50).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "no call reached the cell once it was ready");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 22_000);
+});
+
+test("a steady 3 a second on a cold fleet for 90 s is all served while the cell starts", async (context) => {
+  const arrivals = Array.from({ length: 270 }, (_, index) => Math.round((index * 1_000) / 3));
+  const { answers } = await coldFleet(context, arrivals, { readyAt: 70_000 });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(270).fill(200),
+  );
+});
+
+test("a held call the first ready cell refuses before its container send is served, through that cell's fence and the root's cap", async (context) => {
+  // The cap admits 34 by 20 s; the cell ready then refuses its first call (S1's lapse), which
+  // fences it, while a second cell is still starting, so the other held calls keep holding.
+  const { answers, f } = await coldFleet(context, Array(60).fill(0), {
+    readyAt: 20_000,
+    refuseFirst: 1,
+    secondReadyAt: 40_000,
+  });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(60).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "the second cell took the calls once ready");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 42_000);
+});
+
+// The only cell, ready as the root's cap has admitted 34, refuses its first call before the
+// container send (S1's lapse), and that refusal fences it.
+const fencedAtRelease = { readyAt: 20_000, refuseFirst: 1, maximum: 1 } as const;
+const late = (answers: readonly { status: number; waited: number }[]) =>
+  answers.filter((answer) => answer.status !== 200).map((answer) => answer.waited);
+
+test("a cold fleet's held calls wait for their only cell while a refusal fences it, and all 80 are served", async (context) => {
+  // The controller's alarm reads the cell 2 s later and the read is good, which lifts the fence.
+  const { answers, f } = await coldFleet(context, Array(80).fill(0), {
+    ...fencedAtRelease,
+    upkeepAt: [22_000],
+  });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(80).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "the cell took the calls once its fence lifted");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 23_000);
+});
+
+test("a fenced cell that is then quarantined releases the held calls at once, not before", async (context) => {
+  // Its next read fails too, 7 s after the first: the second failure quarantines it.
+  const { answers } = await coldFleet(context, Array(80).fill(0), {
+    ...fencedAtRelease,
+    healthFailsFrom: 20_000,
+    upkeepAt: [27_000],
+  });
+  const released = late(answers);
+  assert.ok(released.length > 0, "nothing can become ready, so today's answer comes");
+  for (const waited of released)
+    assert.ok(waited >= 27_000 && waited <= 28_000, `released at ${waited} ms`);
+});
+
+test("a fleet disable while the only cell is fenced releases the held calls at once", async (context) => {
+  const { answers } = await coldFleet(context, Array(80).fill(0), {
+    ...fencedAtRelease,
+    disableAt: 23_000,
+  });
+  const released = late(answers);
+  assert.ok(released.length > 0);
+  for (const waited of released)
+    assert.ok(waited >= 23_000 && waited <= 24_000, `released at ${waited} ms`);
+});
+
+test("a fence that neither lifts nor quarantines holds calls no longer than its fleet alarm takes to decide it", async (context) => {
+  const { answers } = await coldFleet(context, Array(80).fill(0), fencedAtRelease);
+  const released = late(answers);
+  assert.ok(released.length > 0);
+  for (const waited of released)
+    assert.ok(
+      waited >= 20_000 + fenceDecidedMs - 1_000 && waited <= 20_000 + fenceDecidedMs + 1_000,
+      `released at ${waited} ms`,
+    );
+});
+
+test("a fence whose durable record could not be written holds calls no longer than one that was", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(1, 25, { ...fleetRouting, primaryAvailable: () => true });
+  const ready = await f.add();
+  f.cell(ready).forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    const cause = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_identity", cause);
+    throw retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  f.state.suspect = () => Promise.reject(new Error("synthetic: storage unavailable"));
+  await assert.rejects(f.fleet.forward(request(), "pool", f.legacy, () => {}));
+  assert.equal((await f.state.inspect())[0]?.suspect, undefined, "no durable fence");
+  const held = await f.fleet.coldHoldMs();
+  assert.ok(held > 0 && held <= fenceDecidedMs, `held ${held} ms`);
+  // The fixture's clock read 200 at the refusal; every later read keeps that start.
+  f.advance(200 + fenceDecidedMs - 1);
+  assert.ok((await f.fleet.coldHoldMs()) > 0);
+  f.advance(200 + fenceDecidedMs + 1);
+  assert.ok((await f.fleet.coldHoldMs()) < 0, "the fence's own start bounds it");
+});
+
+test("a cell whose quarantine is still being written holds no call", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(1, 25, { ...fleetRouting, primaryAvailable: () => true });
+  const ready = await f.add();
+  // A call that fails after its send is evidence; its quarantine's durable write never lands.
+  f.cell(ready).forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    throw new Error("Network connection lost.");
+  };
+  f.state.quarantine = () => new Promise(() => {});
+  assert.equal(await f.fleet.coldHoldMs(), 0);
+  void f.fleet.forward(request(), "pool", f.legacy, () => {}).catch(() => {});
+  for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+  assert.equal((await f.state.inspect())[0]?.phase, "ready", "the durable row still reads ready");
+  assert.ok((await f.fleet.coldHoldMs()) < 0, "a quarantined cell can't become ready");
+});
+
+test("a cold start that fails releases the held calls to today's answer, inside the bound", async (context) => {
+  // At its maximum, the fleet can't start another cell, so nothing can become ready.
+  // The cap admits 46 by 30 s; the other 14 are still held when the start fails.
+  const { answers } = await coldFleet(context, Array(60).fill(0), { failAt: 30_000, maximum: 1 });
+  assert.equal(answers.filter((answer) => answer.status === 200).length >= 10, true);
+  const refused = answers.filter((answer) => answer.status !== 200);
+  assert.ok(refused.length > 0, "every call was served with nothing able to become ready");
+  for (const answer of refused) assert.ok(answer.waited < 32_000, `held ${answer.waited} ms`);
+});
+
+test("a cold start that fails into uncertain releases the held calls at once: a failed start re-arms no bound", async (context) => {
+  const { answers } = await coldFleet(context, Array(60).fill(0), {
+    failAt: 30_000,
+    failInto: "uncertain",
+    maximum: 1,
+  });
+  const refused = answers.filter((answer) => answer.status !== 200);
+  assert.ok(refused.length > 0, "every call was served with nothing able to become ready");
+  for (const answer of refused) assert.ok(answer.waited < 32_000, `held ${answer.waited} ms`);
+});
+
+test("a growth whose start hangs past its bound holds nothing more", async (context) => {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  const f = fixture(4, 25, { ...fleetRouting, primaryAvailable: () => true });
+  // The first target growth draws, with a start that never returns.
+  const first = {
+    format: "pool-runtime-slot-v1" as const,
+    controllerId: "controller",
+    slotId: "slot-1",
+    applicationId: "blue",
+    applicationVersion: "1",
+    instanceId: "instance-1",
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    imageInput: "image",
+    homePeerOrdinal: 1,
+    bootId: "boot-1",
+  };
+  f.cell(first).start = () => new Promise<SlotIdentity>(() => {});
+  // Enough load for growth to want one cell.
+  f.pressure(25);
+  const response = await f.fleet.forward(
+    request(),
+    "pool",
+    async () => new Response("legacy"),
+    () => {},
+  );
+  void response.body?.cancel().catch(() => {});
+  for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+  assert.ok((await f.fleet.coldHoldMs()) > 0, "a start under way held nothing");
+  f.advance(200 + restartStartBoundMs + 10_000);
+  assert.ok(
+    (await f.fleet.coldHoldMs()) < 0,
+    "a hanging growth still holds calls past one start bound",
+  );
+});
+
+test("calls a root recovery released keep its cap waits when a cold start then fails", async (context) => {
+  context.mock.method(console, "error", () => {});
+  let now = 0,
+    serving = false;
+  const f = fixture(1, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => false,
+    primaryHoldMs: () => (serving ? 0 : restartStartBoundMs - now),
+  });
+  const starting = f.target();
+  await f.state.reserve(starting);
+  await f.state.dispatch(starting);
+  const sleepers = new Set<{ at: number; wake(): void }>();
+  const timing = {
+    now: () => now,
+    pause: (milliseconds: number) =>
+      new Promise<void>((wake) => {
+        sleepers.add({ at: now + milliseconds, wake });
+      }),
+  };
+  const root = async () => {
+    if (!serving) throw rootRestarting();
+    return new Response("legacy");
+  };
+  const answers: number[] = [];
+  const calls = Array.from({ length: 40 }, () =>
+    forwardRecoverably(
+      request(),
+      (current, dispatch) => f.fleet.forward(current, "pool", root, dispatch),
+      () => {},
+      async () => {},
+      {
+        timing,
+        rootHoldMs: () => f.fleet.primaryHoldMs(),
+        coldHoldMs: () => f.fleet.coldHoldMs(),
+      },
+    ).then(async (response) => {
+      answers.push(response.status);
+      await response.text();
+    }),
+  );
+  let failed = false;
+  for (let turn = 0; answers.length < calls.length && turn < 10_000; turn++) {
+    for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+    if (answers.length === calls.length || !sleepers.size) break;
+    now = Math.min(...[...sleepers].map((sleeper) => sleeper.at));
+    // The root serves again at 10 s; the cold start fails at 20 s, with no room for another.
+    serving = now >= 10_000;
+    if (!failed && now >= 20_000) {
+      failed = true;
+      const [row] = await f.state.inspect();
+      await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+    }
+    f.advance(200 + now);
+    for (const sleeper of sleepers)
+      if (sleeper.at <= now) {
+        sleepers.delete(sleeper);
+        sleeper.wake();
+      }
+  }
+  await Promise.all(calls);
+  assert.deepEqual(answers, Array(calls.length).fill(200));
+  await f.settle();
+});
+
+for (const [name, option] of [
+  ["a code handover", "handoverAt"],
+  ["a fleet disable", "disableAt"],
+] as const)
+  test(`${name} during a cold hold ends it at once, so nothing waits on held calls`, async (context) => {
+    // The cap admits 22 by 10 s; the other 38 are still held then.
+    const { answers } = await coldFleet(context, Array(60).fill(0), {
+      readyAt: 60_000,
+      [option]: 10_000,
+    });
+    const refused = answers.filter((answer) => answer.status !== 200);
+    assert.ok(refused.length > 0);
+    for (const answer of refused) assert.ok(answer.waited < 12_000, `held ${answer.waited} ms`);
+  });
+
+test("a call holds for cold starts at most one start bound from its first hold, past its own deadline too", async (context) => {
+  // Starts that keep failing and being replaced read a fresh bound each time; the call's own does not.
+  // Its own 200 s deadline runs on the mocked timers, moved with the pauses.
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  const timing = {
+    now: () => now,
+    pause: async (milliseconds: number) => {
+      now += milliseconds;
+      context.mock.timers.tick(milliseconds);
+    },
+  };
+  const response = await forwardRecoverably(
+    request(),
+    async () => markRootFallbackCap(new Response(null, { status: 503 }), 1_000),
+    () => {},
+    async () => {},
+    { timing, coldHoldMs: async () => restartStartBoundMs },
+  );
+  assert.equal(response.status, 503);
+  assert.ok(
+    now >= restartStartBoundMs - 1_000 && now <= restartStartBoundMs + 1_000,
+    `answered after ${now} ms`,
+  );
 });
 
 test("with production routing, a recovered root's calls are counted reservations again", async () => {
@@ -915,4 +1548,140 @@ test("a root call that fails after its send keeps its token spent", async (conte
     [503],
   );
   await f.settle();
+});
+
+test("growth logs its refusal once per change of reason, and again after a launch", async (context) => {
+  const f = fixture(3, 1);
+  const log = context.mock.method(console, "warn", () => {});
+  // Each growth reserves once and stops at the first refusal; "ok" lets one launch through.
+  const script: (SlotRefused["reason"] | "ok")[] = [
+    "identity",
+    "identity",
+    "selection",
+    "ok",
+    "identity",
+  ];
+  const reserve = f.state.reserve.bind(f.state);
+  context.mock.method(f.state, "reserve", async (...args: Parameters<typeof f.state.reserve>) => {
+    const next = script.shift();
+    if (next && next !== "ok") throw new SlotRefused(next);
+    return reserve(...args);
+  });
+  // Upkeep runs growth; a request would route to the launched cell, whose body stays open.
+  const pass = async (at: number, pressure: number) => {
+    f.pressure(pressure);
+    f.advance(at);
+    await f.fleet.upkeep();
+    await f.settle();
+  };
+  for (const at of [300, 500, 700, 900]) await pass(at, 3);
+  // A pass that ends with nothing to do clears the refusal too, so the same reason logs again.
+  await pass(1100, 0);
+  script.push("identity");
+  await pass(1300, 3);
+  // A local refusal carries no runtime step or cause: its own reason and class say why.
+  const local = (reason: SlotRefused["reason"]) => [
+    "POOL_FLEET_GROWTH_REFUSED",
+    { step: null, reason, cause: null, error: "SlotRefused" },
+  ];
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments),
+    [local("identity"), local("selection"), local("identity"), local("identity")],
+  );
+  assert.equal(f.calls.starts, 1);
+});
+
+test("growth keeps a provider refusal's closed code beside its class", async (context) => {
+  const f = fixture(3, 1);
+  const log = context.mock.method(console, "warn", () => {});
+  let refuse = true;
+  const reserve = f.state.reserve.bind(f.state);
+  context.mock.method(f.state, "reserve", async (...args: Parameters<typeof f.state.reserve>) => {
+    if (refuse) throw new ProviderObservationRefused("provider_fetch_failed");
+    return reserve(...args);
+  });
+  f.pressure(3);
+  f.advance(300);
+  await f.fleet.upkeep();
+  await f.settle();
+  refuse = false;
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments),
+    [
+      [
+        "POOL_FLEET_GROWTH_REFUSED",
+        {
+          step: null,
+          reason: null,
+          cause: null,
+          error: "ProviderObservationRefused",
+          provider: "provider_fetch_failed",
+        },
+      ],
+    ],
+  );
+});
+
+test("growth logs the runtime's step, reason and cause with the error's class, and again when any of them changes", async (context) => {
+  const f = fixture(3, 1);
+  const log = context.mock.method(console, "warn", () => {});
+  // As the slot transport keeps a refusal's closed fields from the endpoint's answer.
+  const answered = (
+    error: Error,
+    ...sources: [Error, "endpoint_route" | "endpoint_admission"][]
+  ) => {
+    const headers = new Headers();
+    for (const [source, step] of sources)
+      for (const [name, value] of Object.entries(runtimeFailureHeaders(source, step)))
+        headers.set(name, value);
+    return retainRuntimeFailure(new Response(null, { status: 409, headers }), error);
+  };
+  const identity = new SlotRefused("identity");
+  const script = [
+    answered(new SlotRefused("uncertain"), [identity, "endpoint_route"]),
+    answered(new SlotRefused("uncertain"), [identity, "endpoint_route"]),
+    // The deadline gives the cause; the identity refusal's step and reason override its own.
+    answered(
+      new SlotRefused("uncertain"),
+      [new PoolStartupDeadline(), "endpoint_route"],
+      [identity, "endpoint_route"],
+    ),
+    answered(
+      new FleetRefused("uncertain"),
+      [new PoolStartupDeadline(), "endpoint_route"],
+      [identity, "endpoint_route"],
+    ),
+    answered(
+      new FleetRefused("uncertain"),
+      [new PoolStartupDeadline(), "endpoint_admission"],
+      [identity, "endpoint_admission"],
+    ),
+    new TypeError("synthetic refusal text that never reaches a log"),
+  ];
+  context.mock.method(f.state, "reserve", async () => {
+    throw script.shift();
+  });
+  for (let pass = 1; pass <= 6; pass++) {
+    f.pressure(3);
+    f.advance(200 * (pass + 1));
+    await f.fleet.upkeep();
+    await f.settle();
+  }
+  const fields = (step: string, cause: string | null, error: string) => ({
+    step,
+    reason: "slot_identity",
+    cause,
+    error,
+  });
+  assert.deepEqual(
+    log.mock.calls.map((call) => call.arguments[1]),
+    [
+      fields("endpoint_route", null, "SlotRefused"),
+      fields("endpoint_route", "startup_deadline", "SlotRefused"),
+      fields("endpoint_route", "startup_deadline", "FleetRefused"),
+      fields("endpoint_admission", "startup_deadline", "FleetRefused"),
+      { step: null, reason: null, cause: null, error: "Error" },
+    ],
+  );
+  assert.doesNotMatch(JSON.stringify(log.mock.calls), /synthetic refusal text/u);
 });

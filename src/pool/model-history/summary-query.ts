@@ -69,30 +69,6 @@ export async function summarySelection(
 
 type Selection = Awaited<ReturnType<typeof summarySelection>>;
 
-/**
- * One statement: a count of the window's rows that stops one past the bound, through the pool-time
- * index, gates the targets scan. Over the bound the scan never runs and one row carries the count.
- */
-export function summaryPriceTargets(selection: Selection, windowRows = maxSummaryWindowRows) {
-  if (!Number.isSafeInteger(windowRows) || windowRows < 1) throw new Error("Invalid window bound");
-  return {
-    text: `${selection.text}, window_rows AS MATERIALIZED (
-      SELECT count(*) AS n FROM (SELECT 1 FROM basalt_model_requests w
-        WHERE w.pool=$1 AND w.timestamp >= $2::text::timestamptz - interval '1 microsecond'
-          AND w.timestamp < $3::text::timestamptz + interval '1 microsecond'
-        LIMIT ${windowRows + 1}) bounded
-    ), targets AS (
-      SELECT DISTINCT provider,model FROM selected
-      WHERE NOT counts_only AND provider IS NOT NULL AND model IS NOT NULL
-        AND (SELECT n FROM window_rows) <= ${windowRows}
-      ORDER BY provider,model LIMIT 101
-    ) SELECT provider,model,NULL::bigint AS window_rows FROM targets
-      UNION ALL SELECT NULL,NULL,n FROM window_rows WHERE n > ${windowRows}
-      ORDER BY provider NULLS FIRST,model`,
-    values: selection.values,
-  };
-}
-
 export function summaryCoverageQuery(selection: Selection) {
   return {
     text: `${selection.text} SELECT source,min(timestamp_exact) AS first_at,

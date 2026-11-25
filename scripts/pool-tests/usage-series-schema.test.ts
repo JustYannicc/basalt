@@ -6,6 +6,7 @@ import {
 import {
   historyImportCompletionVersion,
   historyImportCompletionStatements,
+  historyImportReconcileVersion,
 } from "../../src/pool/model-history/import-completion-schema.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -29,6 +30,8 @@ import {
   historySchemaVersion,
   migrateModelHistory,
 } from "../../src/pool/model-history/schema.ts";
+import { historyUsageRollupVersion } from "../../src/pool/model-history/usage-rollup-schema.ts";
+import { historyUsagePeopleRollupVersion } from "../../src/pool/model-history/usage-rollup-people-schema.ts";
 import {
   historyBulkSchemaVersion,
   historyBulkStatements,
@@ -203,6 +206,9 @@ test("schema v2 upgrades apply selected v3, v4, v6, v7 and v8 migrations without
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
         historyChangeOnceVersion,
+        historyImportReconcileVersion,
+        historyUsageRollupVersion,
+        historyUsagePeopleRollupVersion,
         historySchemaVersion,
       ].sort(),
     );
@@ -415,6 +421,9 @@ test("a retained v4 database applies v6 after v8 and preserves imported rows and
         historyJournalPrepareVersion,
         historyRowSchemaVersion,
         historyChangeOnceVersion,
+        historyImportReconcileVersion,
+        historyUsageRollupVersion,
+        historyUsagePeopleRollupVersion,
         historySchemaVersion,
       ].sort(),
     );

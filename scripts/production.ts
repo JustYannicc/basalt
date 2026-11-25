@@ -4,7 +4,7 @@
  * (Stack.plan, then Stack.apply) with `updateStateStore` always false: the CLI's `--yes` also sets
  * it, and a short State store outage could then redeploy the shared store with a new token.
  *
- *   bun scripts/production.ts plan   [--fleet-classes]   prints each row's name, type and action
+ *   bun scripts/production.ts plan   [--fleet-classes]   prints each row's name, type, action and why
  *   bun scripts/production.ts deploy [--fleet-classes]   plans, applies, smokes; re-points on failure
  */
 import { randomUUID } from "node:crypto";
@@ -49,7 +49,13 @@ type Plan = {
 };
 type Snapshot = {
   summary: Record<string, number>;
-  resources: { fqn: string; resourceType: string; action: string }[];
+  resources: {
+    fqn: string;
+    resourceType: string;
+    action: string;
+    bindings?: { sid?: string; action: string }[];
+  }[];
+  actions?: { fqn: string; actionType: string; action: string }[];
   native: Plan;
 };
 
@@ -176,29 +182,14 @@ export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) 
     .filter(({ fqn, action }) => ["Migrations", "PoolDatabase"].includes(fqn) && action !== "noop")
     .map(({ fqn }) => fqn);
 
-/** An error's kind as one public line: its class and kind, and the HTTP status when it has one. */
-export const errorLine = (kind: { errorClass: string; kind: string; status?: number }) =>
-  `${kind.errorClass} (${kind.kind}${kind.status === undefined ? "" : `, HTTP ${kind.status}`})`;
-
-/** One streamed turn through the public pool. Says why it failed by error class and status only. */
-export async function smoke(send: () => Promise<unknown>) {
-  try {
-    await send();
-    return { passed: true } as const;
-  } catch (error) {
-    const status = (error as { status?: unknown } | undefined)?.status;
-    const name = error instanceof Error ? error.name : "failure";
-    return {
-      passed: false,
-      why: typeof status === "number" ? `${name}, HTTP ${status}` : name,
-    } as const;
-  }
-}
-
 // A rollback Cloudflare refuses over a changed secret is forced only for these: the telemetry
 // secret carries the upstream pin, and AppCompiler's apps version the served framework version
 // (until #1726 binds it plainly). Forced, the earlier version gets back the value it ran with.
 const forceSecrets = new Set(["EXECUTOR_TELEMETRY", "EXECUTOR_APPS_VERSION"]);
+
+// Set right before the first production write. A run that stops before it says so (`unchanged`), and
+// production.yml records every other deploy: one that dies mid-apply never writes that line.
+let began = false;
 
 const say = async (line: string) => {
   console.log(line);
@@ -213,6 +204,11 @@ async function main() {
   });
   const mode = positionals[0];
   if (mode !== "plan" && mode !== "deploy") throw new Refused("Usage: production.ts plan|deploy");
+  const { actionLine, deployApproval, planDifference, planDigest, rowLine, withReasons } =
+    await import("./release/approved-plan.ts");
+  // A deploy applies only the plan someone read: without its digest it stops before anything runs.
+  const approval = deployApproval(mode, process.env.BASALT_APPROVED_PLAN);
+  if (approval.refusal) throw new Refused(approval.refusal);
   const candidate = process.env.BASALT_RELEASE_CANDIDATE ?? "";
   const model = process.env.POOL_ACCEPTANCE_MODEL ?? "";
   if (mode === "deploy" && !model)
@@ -232,6 +228,22 @@ async function main() {
   // A missing or malformed acceptance device stops here, before anything changes.
   const { acceptanceCredential } = await import("./release/acceptance-device.ts");
   const credential = mode === "deploy" ? acceptanceCredential(process.env) : undefined;
+  const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
+  const { servedBeforeApply, smokeAfterApply, smokeModels } =
+    await import("./release/smoke-models.ts");
+  const turn = (name: string) =>
+    new PoolAcceptanceClient().sendTurn(credential!, name, {
+      id: randomUUID(),
+      expectedRecords: 1,
+    });
+  // Before anything changes, a model the pool serves now (deploy only; a plan sends no turn).
+  let served = model;
+  if (mode === "deploy") {
+    const before = await servedBeforeApply(smokeModels(model), turn);
+    if ("stop" in before) throw new Refused(before.stop);
+    served = before.model;
+    await say(before.line);
+  }
   // Alchemy captures the working directory on its first load and resolves the stack's commands
   // from it; they are declared relative to the cloud app.
   process.chdir(resolve(root, ".upstream/apps/hosted/cloud"));
@@ -244,7 +256,8 @@ async function main() {
   const { storeCannotBootstrap } = await import("./release/state-store-guard.ts");
   const { rollbackTo, servingVersion } = await import("./release/worker-version.ts");
   const { takeBackup } = await import("./release/database-safety.ts");
-  const { errorKind, progressTracker } = await import("./release/public-report.ts");
+  const { progressTracker } = await import("./release/public-report.ts");
+  const { failureLine } = await import("./release/failure-line.ts");
   const { changedRows } = await import("./release/plan-summary.ts");
   // Alchemy's own progress events: the resource that reported a failure, by name and type.
   const tracker = progressTracker();
@@ -313,11 +326,16 @@ async function main() {
         updateStateStore: false,
       } as never)) as unknown as Snapshot;
       const { dropped, created } = classChanges(snapshot.native);
+      // Why each row is in the plan, by name only, read before apply rewrites the plan. A deploy
+      // re-plans and prints the same lines, and the digest covers them as printed.
+      const changed = changedRows(snapshot as never) as RootRow[];
+      const rows = withReasons(snapshot.resources, changed);
       yield* print(
         `Plan of ${candidate}, fleet classes ${declared ? "declared" : "absent"}: ${JSON.stringify(snapshot.summary)}`,
       );
-      for (const row of snapshot.resources)
-        if (row.action !== "noop") yield* print(`- ${row.fqn} ${row.resourceType} ${row.action}`);
+      // Stack actions run during the apply too, so they are rows the plan shows and the digest covers.
+      for (const line of [...rows.map(rowLine), ...(snapshot.actions ?? []).map(actionLine)])
+        if (line) yield* print(`- ${line}`);
       yield* print(
         `Creates Durable Object classes (cannot be rolled back): ${created.join(", ") || "none"}`,
       );
@@ -328,9 +346,7 @@ async function main() {
       const removed = removals(snapshot);
       if (removed.length)
         return yield* refuse(`The plan deletes or replaces ${removed.join("; ")}; nothing applied`);
-      const root = (changedRows(snapshot as never) as RootRow[]).find(
-        (r) => r.fqn === "PoolContainer",
-      );
+      const root = changed.find((r) => r.fqn === "PoolContainer");
       if (rootChange(root) === "refused")
         return yield* refuse(
           `The plan changes the root container (${root!.action}${root!.changedProps.length ? `: ${root!.changedProps.join(", ")}` : ""}); no release rolls the root`,
@@ -364,8 +380,20 @@ async function main() {
         return yield* refuse(
           `The plan's fleet classes (${fleet.join(", ") || "none"}) do not match the switch`,
         );
+      const reading = {
+        candidate,
+        declared,
+        rows,
+        actions: snapshot.actions ?? [],
+        created,
+        forward: forward.map(({ fqn }) => fqn),
+      };
+      yield* print(`Plan digest: ${planDigest(reading)}`);
       const serving: { fqn: string; script: string; version: string }[] = [];
       if (mode === "plan") return { serving, applied: false, creating: created.length > 0 };
+      // Nothing has been written yet: the backup, the re-points and the apply all come after this.
+      const difference = planDifference(approval.approved!, reading);
+      if (difference) return yield* refuse(difference);
       for (const fqn of [...uploads, ...forward.map((worker) => worker.fqn)]) {
         const script = String(snapshot.native.resources[fqn]!.state?.attr?.workerName ?? "");
         serving.push({ fqn, script, version: yield* servingVersion(at(script)) });
@@ -389,10 +417,11 @@ async function main() {
         );
         if (backup._tag === "Failure")
           return yield* refuse(
-            `The backup before ${steps.join(", ")} failed (${errorLine(errorKind(Cause.squash(backup.cause)))}); nothing applied`,
+            `The backup before ${steps.join(", ")} failed (${failureLine(Cause.squash(backup.cause))}); nothing applied`,
           );
         yield* print(`Backed up the pool database before ${steps.join(", ")}: ${name}`);
       }
+      began = true;
       for (const worker of forward) {
         const moved = yield* Effect.exit(
           rollbackTo(
@@ -404,7 +433,7 @@ async function main() {
         );
         if (moved._tag === "Failure")
           return yield* refuse(
-            `Re-pointing ${worker.fqn} forward failed (${errorLine(errorKind(Cause.squash(moved.cause)))}); nothing applied`,
+            `Re-pointing ${worker.fqn} forward failed (${failureLine(Cause.squash(moved.cause))}); nothing applied`,
           );
       }
       // A restore of the controller's storage would be looked up by this time.
@@ -413,24 +442,18 @@ async function main() {
       if (exit._tag === "Failure") {
         const failed = tracker.context().resources.map(({ fqn, type }) => `${fqn} (${type})`);
         yield* print(
-          `::error::The apply failed at ${failed.join(", ") || "no resource it reported"}: ${errorLine(errorKind(Cause.squash(exit.cause)))}`,
+          `::error::The apply failed at ${failed.join(", ") || "no resource it reported"}: ${failureLine(Cause.squash(exit.cause))}`,
         );
       }
       return { serving, applied: exit._tag === "Success", creating: created.length > 0 };
     }),
   );
   if (mode === "plan") return;
-  const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
   const result = applied
-    ? await smoke(() =>
-        new PoolAcceptanceClient().sendTurn(credential!, model, {
-          id: randomUUID(),
-          expectedRecords: 1,
-        }),
-      )
+    ? await smokeAfterApply(served, turn)
     : ({ passed: false, why: "the apply failed" } as const);
   if (result.passed)
-    return void (await say(`Deployed ${candidate}; the smoke turn on ${model} served.`));
+    return void (await say(`Deployed ${candidate}; the smoke turn on ${served} served.`));
   if (creating) {
     await say(
       `::error::Failed (${result.why}). New Durable Object classes cannot be rolled back: fix forward.`,
@@ -447,17 +470,18 @@ async function main() {
   await say(
     `::error::Failed (${result.why}); re-pointed ${serving.length - failed.length} of ${serving.length} Workers` +
       ` to their versions from before the apply${failed.length ? `; not re-pointed: ${failed.join(", ")}` : ""}.` +
-      " State still records this release, so the next deploy is a new commit, not this one again.",
+      " State still records this release: a plan-only run of this commit again shows them re-pointed forward, and a deploy with that run's digest does it.",
   );
   process.exit(1);
 }
 
-// An error's message and cause can carry hosts or derived values; the public log names its kind.
+// An error's message and cause can carry hosts or derived values; the public log names its kind,
+// and a provider's code with its message redacted.
 if (process.argv[1] === fileURLToPath(import.meta.url))
   await main().catch(async (error: unknown) => {
-    const { errorKind } = await import("./release/public-report.ts");
-    await say(
-      `::error::Stopped: ${error instanceof Refused ? error.message : errorLine(errorKind(error))}`,
-    );
+    const { failureLine } = await import("./release/failure-line.ts");
+    if (!began && process.env.GITHUB_OUTPUT)
+      await appendFile(process.env.GITHUB_OUTPUT, "unchanged=true\n");
+    await say(`::error::Stopped: ${error instanceof Refused ? error.message : failureLine(error)}`);
     process.exit(1);
   });

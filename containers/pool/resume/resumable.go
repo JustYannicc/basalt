@@ -1,0 +1,137 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// canonicalID is the lowercase 8-4-4-4-12 form crypto.randomUUID produces.
+var canonicalID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// resumable buffers a marked call. Once the node's answer has begun, the upstream runs on its own
+// context so it outlives the caller and only the idle limit cancels it. Before that there is nothing
+// to resume, so the caller leaving cancels the call, as it does without the layer: otherwise the
+// controller would send the call again while the node still runs the first one.
+func (l *Layer) resumable(w http.ResponseWriter, r *http.Request) {
+	id := r.Header.Get(requestIDHeader)
+	if !canonicalID.MatchString(id) {
+		l.passThrough(w, r)
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c, err := l.store.reserve(id, cancel)
+	if err != nil {
+		cancel()
+		l.passThrough(w, r)
+		return
+	}
+	out, err := upstreamRequest(ctx, l.upstream, r)
+	if err != nil {
+		l.abandon(c)
+		closedError(w, http.StatusBadRequest, "resume_layer_bad_request")
+		return
+	}
+	// Offsets count the bytes the client receives: a resumed answer is never re-encoded.
+	out.Header.Set("Accept-Encoding", "identity")
+	early := context.AfterFunc(r.Context(), cancel)
+	resp, err := l.transport.RoundTrip(out)
+	if err != nil {
+		early()
+		l.abandon(c)
+		upstreamFailure(w, err)
+		return
+	}
+	// Offsets count raw bytes; an answer the node encoded anyway would resume at the wrong one.
+	encoded := resp.Header.Get("Content-Encoding")
+	if resp.StatusCode/100 != 2 || (encoded != "" && !strings.EqualFold(encoded, "identity")) {
+		// Only a successful answer is worth resuming; anything else passes through as it is. Its
+		// body is still read on the upstream context, so that context ends only with this call.
+		l.store.remove(c)
+		defer cancel()
+		defer resp.Body.Close()
+		defer early()
+		writeHead(w, resp)
+		if err := copyBody(w, resp.Body); err != nil {
+			panic(http.ErrAbortHandler)
+		}
+		writeTrailers(w, resp)
+		return
+	}
+	// A finished request context means the caller can't have the headers, even when stopping the
+	// cancel won the race against it.
+	if !early() || r.Context().Err() != nil {
+		// The caller left before the headers and the call is already cancelled: drop it whole.
+		resp.Body.Close()
+		l.abandon(c)
+		panic(http.ErrAbortHandler)
+	}
+	gen := c.begin(resp.StatusCode, resp.Header.Clone())
+	go c.pump(ctx, resp.Body)
+	w.Header().Set(resumeHeader, "v1")
+	writeHead(w, resp)
+	err = c.serve(r.Context(), w, gen)
+	c.detach(gen)
+	if err != nil {
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func (l *Layer) abandon(c *call) {
+	c.cancel()
+	l.store.remove(c)
+}
+
+// resume serves GET /__basalt/resume/v1/{id} from X-Basalt-Resume-From.
+func (l *Layer) resume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		closedError(w, http.StatusMethodNotAllowed, "resume_layer_method")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, resumePrefix)
+	from, err := strconv.ParseInt(r.Header.Get(resumeFromHeader), 10, 64)
+	if !canonicalID.MatchString(id) || err != nil || from < 0 {
+		closedError(w, http.StatusBadRequest, "resume_layer_bad_resume")
+		return
+	}
+	c := l.store.lookup(id)
+	if c == nil || l.boot == "" || r.Header.Get(resumeBootHeader) != l.boot {
+		gone(w, "gone")
+		return
+	}
+	gen, state, answerHeader, err := c.attach(from)
+	if errors.Is(err, errFailed) {
+		gone(w, "failed")
+		return
+	}
+	if err != nil {
+		gone(w, "gone")
+		return
+	}
+	header := w.Header()
+	if contentType := answerHeader.Values("Content-Type"); len(contentType) > 0 {
+		header["Content-Type"] = contentType
+	} else {
+		header["Content-Type"] = nil
+	}
+	header.Set(resumeHeader, "v1")
+	header.Set(resumeFromHeader, strconv.FormatInt(from, 10))
+	header.Set(resumeStateHeader, state.name())
+	header.Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_ = http.NewResponseController(w).Flush()
+	err = c.serve(r.Context(), w, gen)
+	c.detach(gen)
+	if err != nil {
+		// A failed upstream, a newer reader or a dropped buffer: never a clean end.
+		panic(http.ErrAbortHandler)
+	}
+}
+
+func gone(w http.ResponseWriter, state string) {
+	w.Header().Set(resumeStateHeader, state)
+	closedError(w, http.StatusGone, "resume_gone")
+}

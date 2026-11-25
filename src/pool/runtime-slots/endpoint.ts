@@ -4,6 +4,14 @@ import { assertFollowerHome, crashTargetsCell, homeTopologyPath } from "../runti
 import { crashAuditKey } from "../runtime-crash-contract.ts";
 import { Schema } from "effect";
 import { isModelLifetimePath } from "../model-lifetime-contract.ts";
+import { legacyConnections } from "./legacy-drain.ts";
+
+/** How often a boot holding a lease no instance vouches for reads its container's connections. */
+export const leaseProofEveryMs = 30_000;
+/** The read's own program stops at 2 s; past this the answer is unknown. */
+const leaseProofLimitMs = 5_000;
+/** The operator's commands answer inside the cell call's 5 s, so their read stops sooner. */
+const operatorReadLimitMs = 1_500;
 import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
@@ -12,12 +20,14 @@ import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
 import { refuseRuntime, rememberRuntimeFailure } from "../runtime-route-diagnostic.ts";
 import { RuntimeHealthRefusalLog } from "./health-refusal-log.ts";
 import {
+  ContainerEnded,
   SlotIdentity,
   SlotRefused,
   sameControllerCode,
   sameIdentity,
   sameTarget,
   type ControllerCode,
+  type RuntimeRetirementObservation,
   type SlotTarget,
 } from "./contract.ts";
 import {
@@ -36,19 +46,22 @@ import {
   RuntimeConfiguration,
   type RuntimeEnvironment,
 } from "./configuration.ts";
-import type { ControllerState } from "./runtime-state.ts";
+import type { ControllerState, OwnedRuntimeStorage } from "./runtime-state.ts";
 import type { PoolStatus } from "../lifecycle.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import { startRuntime, verifyRuntimeLaunch } from "./startup.ts";
 import { openEnvelope } from "../token.ts";
-import { RuntimeActivity, stillFor } from "./activity.ts";
+import { RuntimeActivity, slotKey, stillFor } from "./activity.ts";
+import { shape } from "../error-shape.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import { proveLegacyDrain } from "./legacy-drain.ts";
 import { PeerBootstrap, type PeerBootstrapInput } from "./peer-bootstrap.ts";
 import { RuntimeMaintenance } from "./maintenance.ts";
 import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
-import { RuntimeForcedStop } from "./forced-stop.ts";
+import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
+import { leakedStreamsMs } from "./forced-restart-timing.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
+import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
 export interface EndpointEnvironment extends RuntimeEnvironment {
@@ -66,6 +79,8 @@ const crashHealthTimeoutMs = 1_000;
 const homeManagementPort = 8327;
 export interface EndpointOptions {
   controlPair?: RuntimeControlPair;
+  /** The hosting runtime object's own storage, so an ended slot drops the alarm its start armed. */
+  ownStorage?: OwnedRuntimeStorage;
   beforeStart?(witness: StartupWitness): Promise<void>;
   beforeBootstrap?(identity: SlotIdentity): Promise<void>;
 }
@@ -89,6 +104,8 @@ export class RuntimeEndpoint {
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
   private modelLifetimes: RuntimeModelLifetimes;
+  private leaseProofs = new Map<string, number>();
+  private settleFailures = new Map<string, number>();
   constructor(
     ctx: ControllerState,
     env: EndpointEnvironment,
@@ -103,7 +120,12 @@ export class RuntimeEndpoint {
     this.env = env;
     this.role = role;
     this.code = code;
-    this.store = new RuntimeWitnessStore(ctx.storage, env.POOL_DEPLOYMENT_KEY ?? "");
+    // The legacy endpoint shares its object's alarm with the pool's own deadlines.
+    this.store = new RuntimeWitnessStore(
+      ctx.storage,
+      env.POOL_DEPLOYMENT_KEY ?? "",
+      role === "runtime" ? options.ownStorage : undefined,
+    );
     this.startupStop = new RuntimeStartupStop(ctx, this.store);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
@@ -183,7 +205,23 @@ export class RuntimeEndpoint {
     return this.serialize(() => this.maintenance.alarm());
   }
   failed(identity: SlotIdentity, signal: AbortSignal) {
-    return this.serialize(() => this.maintenance.failed(identity, signal));
+    return this.serialize(async () => {
+      const failed = await this.maintenance.failed(identity, signal);
+      const end = await this.lastEnd();
+      return end ? { ...failed, end } : failed;
+    });
+  }
+  /** How this object's container last ended, once it has; a boot found gone ends here. */
+  private lastEnd() {
+    return lastContainerEnd(this.ctx);
+  }
+  private routed(target: SlotTarget) {
+    try {
+      this.bound(target);
+      return true;
+    } catch {
+      return false;
+    }
   }
   private bound(target: SlotTarget) {
     const applicationId =
@@ -327,6 +365,8 @@ export class RuntimeEndpoint {
     return {
       identity: { ...record.authorization.target, bootId: status.boot_id },
       leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
+      // The whole grant, so the caller counts its own send as the start and the read only once.
+      ...(status.policyLeaseMs ? { grantMs: status.policyLeaseMs } : {}),
       ...(status.database ? { database: status.database } : {}),
     };
   }
@@ -359,6 +399,9 @@ export class RuntimeEndpoint {
       const read = await runtimeReadStep(trace, "identity", () => this.store.read(identity));
       record = read.record;
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+      // A stopped container whose own monitor recorded the exit says so, so it leaves at once.
+      if (!this.ctx.container?.running && endedForGood(await this.lastEnd()))
+        throw new ContainerEnded();
       const observed = await this.channel.health(read.configuration, signal, trace);
       status = observed;
       this.resumeAdvert = observed.resume;
@@ -394,11 +437,13 @@ export class RuntimeEndpoint {
   async recoveryWitness(target: SlotTarget) {
     this.bound(target);
     const { record } = await this.store.read(target);
+    const end = await this.lastEnd();
     return {
       authorization: record.authorization,
       running: this.ctx.container!.running,
       identity: record.identity,
       witness: record.witness,
+      ...(end ? { end } : {}),
     };
   }
   attest(envelope: string) {
@@ -484,12 +529,21 @@ export class RuntimeEndpoint {
       const { record, configuration } = await this.store.read(identity);
       if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
       request.signal.throwIfAborted();
-      return { configuration, done: await this.activity.acquire(identity) };
+      // A plain HTTP call's answer streams through this instance and ends with it; a socket doesn't.
+      const throughInstance =
+        request.headers.get("Upgrade") === null &&
+        !isModelLifetimePath(new URL(request.url).pathname);
+      return { configuration, done: await this.activity.acquire(identity, throughInstance) };
     }).catch((error: unknown) => refuseRuntime("endpoint_admission", error));
     const release = () => {
       this.ctx.waitUntil(done());
       return true;
     };
+    // A caller gone before the answer holds nothing here, whether or not the container still
+    // answers: nobody would read that answer, so its stream wrapper would never release the count.
+    const left = () => void release();
+    request.signal.addEventListener("abort", left, { once: true });
+    if (request.signal.aborted) left();
     try {
       await this.channel.keepAlive();
       await this.health(identity, request.signal);
@@ -518,6 +572,8 @@ export class RuntimeEndpoint {
     } catch (error) {
       release();
       throw error;
+    } finally {
+      request.signal.removeEventListener("abort", left);
     }
   }
   /**
@@ -532,9 +588,101 @@ export class RuntimeEndpoint {
       return { stopped: !this.ctx.container!.running };
     });
   }
+  /**
+   * A lease no instance can vouch for ends only when the container's own read finds no established
+   * connection on its model port: the legacy drain's read, unchanged. It runs only while such a lease
+   * exists, at most once every 30 s per boot, and a failed, partial or late read ends nothing.
+   */
+  private async settleLeases(identity: SlotIdentity) {
+    const pending = await this.activity.unproven(identity);
+    if (!pending.unstamped.length && !pending.foreignSockets.length) return;
+    const boot = `${identity.slotId}:${identity.bootId}`;
+    const now = Date.now();
+    if (now - (this.leaseProofs.get(boot) ?? -Infinity) < leaseProofEveryMs) return;
+    this.leaseProofs.set(boot, now);
+    const connections = await this.openConnections(leaseProofLimitMs);
+    if (connections === 0) {
+      await this.activity.releaseProven(identity, 0);
+      return;
+    }
+    console.warn("POOL_RUNTIME_LEASES_KEPT", {
+      key: await slotKey(identity.slotId),
+      ordinal: identity.homePeerOrdinal ?? null,
+      unstamped: pending.unstamped.length,
+      foreignSockets: pending.foreignSockets.length,
+      connections: connections ?? "unknown",
+    });
+  }
+  /**
+   * In the background: the read may take longer than its caller waits, and the next count read sees
+   * what it ended. A settle that fails says so, at most once per proof interval per boot, since a
+   * row that keeps failing fails on every read.
+   */
+  private settleInBackground(identity: SlotIdentity) {
+    this.ctx.waitUntil(
+      this.settleLeases(identity).catch(async (error: unknown) => {
+        const boot = `${identity.slotId}:${identity.bootId}`;
+        const now = Date.now();
+        if (now - (this.settleFailures.get(boot) ?? -Infinity) < leaseProofEveryMs) return;
+        this.settleFailures.set(boot, now);
+        console.warn("POOL_RUNTIME_LEASES_SETTLE_FAILED", {
+          key: await slotKey(identity.slotId).catch(() => null),
+          ordinal: identity.homePeerOrdinal ?? null,
+          reason: error instanceof SlotRefused ? error.reason : null,
+          ...shape(error),
+        });
+      }),
+    );
+  }
+  /**
+   * The operator's override of a count that stood still on a draining runtime (`fleet-retire`), for
+   * when the proof release above can't end it. It first takes the same 8317 read, as evidence for
+   * the operator and never as a gate: null when the read fails or is late.
+   */
+  releaseStill(identity: SlotIdentity, operationId: string, signal: AbortSignal) {
+    this.bound(identity);
+    return this.serialize(async () => {
+      signal.throwIfAborted();
+      const connections = await this.openConnections(operatorReadLimitMs);
+      const released = {
+        ...(await this.activity.releaseStill(identity, leakedStreamsMs, signal)),
+        connections,
+      };
+      // The cell's own record, so a release whose answer never reached the controller still shows.
+      console.warn("POOL_RUNTIME_STILL_RELEASED", {
+        operationId,
+        slot: identity.slotId,
+        ordinal: identity.homePeerOrdinal ?? null,
+        ...released,
+      });
+      return released;
+    });
+  }
+  /** The operator's check before `fleet-retire`: the same rules and the same read, nothing written. */
+  checkStill(identity: SlotIdentity) {
+    this.bound(identity);
+    return this.serialize(async () => ({
+      ...(await this.activity.checkStill(identity, leakedStreamsMs)),
+      connections: await this.openConnections(operatorReadLimitMs),
+    }));
+  }
+  /**
+   * The legacy drain's read of established connections on the model port, for the proof release and
+   * the operator alike: null when there's no running container, or the read fails or passes `limitMs`.
+   */
+  private async openConnections(limitMs: number) {
+    const container = this.ctx.container;
+    if (!container?.exec || !container.running) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      legacyConnections({ exec: container.exec.bind(container) }).catch(() => null),
+      new Promise<null>((late) => (timer = setTimeout(() => late(null), limitMs))),
+    ]).finally(() => clearTimeout(timer));
+  }
   /** The stream count as stored, read without draining; an untracked boot's count is unknown. */
   async streamCount(identity: SlotIdentity) {
     this.bound(identity);
+    this.settleInBackground(identity);
     const row = await this.activity.inspect(identity);
     return row
       ? { active: row.active, known: row.known, ...stillFor(row) }
@@ -547,6 +695,9 @@ export class RuntimeEndpoint {
       "drain_queue",
       () =>
         this.serialize(async () => {
+          // Before the health read, so a drain whose health read fails still ends the leases the
+          // container shows are over. That read refuses a misrouted drain, which settles nothing.
+          if (this.routed(identity)) this.settleInBackground(identity);
           await trace.run("drain_health", () => this.health(identity, signal), fields);
           signal.throwIfAborted();
           const state = await trace.run(
@@ -588,27 +739,45 @@ export class RuntimeEndpoint {
   }
   retire(target: SlotTarget, identity: SlotIdentity, signal: AbortSignal) {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
-    return this.serialize(async () => {
+    let began = false;
+    const work = this.serialize(async () => {
       const { record } = await trace.run("witness_read", () => this.store.read(target));
       await trace.run("health", () => this.health(identity, signal), undefined, signal);
       signal.throwIfAborted();
       if (!sameTarget(target, identity)) throw new SlotRefused("identity");
       await trace.run("activity_retire", () => this.activity.retire(identity));
-      signal.throwIfAborted();
+      // From the retiring latch on, the stop no longer follows its caller's 2 s budget: the latch
+      // refuses every later drain and retire, and Home's drain of claimed refreshes may take the
+      // whole grace. The retirement read sees the stop end.
+      await trace.run("monitor_attach", async () => this.retirementMonitor.start(identity));
+      await this.store.stopSent(target, Date.now());
+      await markStopSent(this.ctx);
       await trace.run(
-        "monitor_attach",
-        async () => this.retirementMonitor.start(identity),
-        undefined,
-        signal,
+        "stop",
+        () => stopGracefully(this.ctx.container!, () => (began = true)),
+        (stopped) => ({ stopped }),
       );
-      await trace.run("destroy", () => this.ctx.container!.destroy(), undefined, signal);
-      await trace.run("retired_record", () => this.store.put(target, { ...record, retired: true }));
+      await trace.run("retired_record", () =>
+        this.store.retire(target, { ...record, retired: true }),
+      );
+    });
+    this.ctx.waitUntil(work.catch(() => {}));
+    // A caller that stops waiting once the stop began has done its part; the retirement read sees
+    // the stop end, so a stop longer than the caller's budget is no failure.
+    return new Promise<void>((resolve, reject) => {
+      const abort = () => (began ? resolve() : reject(signal.reason));
+      if (signal.aborted) return abort();
+      signal.addEventListener("abort", abort, { once: true });
+      work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
     });
   }
-  async retirement(identity: SlotIdentity, signal?: AbortSignal) {
+  async retirement(
+    identity: SlotIdentity,
+    signal?: AbortSignal,
+  ): Promise<RuntimeRetirementObservation> {
     const trace = new RuntimeRetirementTrace("endpoint", ++this.retirementAttempts);
     this.bound(identity);
-    return observeRuntimeRetirement(
+    const observed = await observeRuntimeRetirement(
       identity,
       this.ctx.container!,
       this.store,
@@ -617,5 +786,7 @@ export class RuntimeEndpoint {
       this.retirementMonitor,
       signal,
     );
+    const end = observed.running ? undefined : await this.lastEnd();
+    return end ? { ...observed, end } : observed;
   }
 }

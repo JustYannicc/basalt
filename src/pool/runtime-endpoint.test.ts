@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readEnd } from "./runtime-slots/container-end.ts";
 import { test } from "node:test";
 import { registerHooks } from "node:module";
 import { Schema } from "effect";
@@ -10,6 +11,7 @@ import {
 } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
+import { BoundSlotDriver, runtimeRequest } from "./runtime-slots/transport.ts";
 import {
   StartAuthorization,
   InitialStartAuthorization,
@@ -19,7 +21,7 @@ import {
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
 import { configurationDigest, runtimeConfiguration } from "./runtime-slots/configuration.ts";
 import { signEnvelope } from "./token.ts";
-import { SlotRefused } from "./runtime-slots/contract.ts";
+import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { PoolRuntimeUnhealthy } from "./lifecycle.ts";
 
 async function fixture(initial = false) {
@@ -135,12 +137,14 @@ test("a reconstructed endpoint waits for the actual response body before destroy
   });
   await reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000));
   assert.equal(f.calls.destroy, 1);
-  assert.deepEqual(await reconstructed.retirement(identity), {
+  const { end, ...retired } = await reconstructed.retirement(identity);
+  assert.deepEqual(retired, {
     identity,
     retired: true,
     running: false,
     provider: f.grant.proof.provider,
   });
+  assert.equal(readEnd(end)?.stopSent, true, "a stop we sent read as a crash");
   await assert.rejects(f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)));
   assert.equal(f.calls.destroy, 1);
 });
@@ -150,6 +154,10 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
   context.after(f.cleanup);
   const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
   await f.endpoint.drain(identity, AbortSignal.timeout(2_000));
+  // Home is still draining when the grace ends, and the destroy that follows loses its reply.
+  f.ctx.container.signal = (signal: number) => {
+    f.calls.signals.push(signal);
+  };
   f.ctx.container.destroy = async () => {
     f.calls.destroy++;
     throw new Error("lost destroy response");
@@ -158,6 +166,7 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
     f.endpoint.retire(f.target, identity, AbortSignal.timeout(2_000)),
     /lost destroy/,
   );
+  assert.deepEqual(f.calls.signals, [15]);
   const reconstructed = new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
   await assert.rejects(
     reconstructed.retire(f.target, identity, AbortSignal.timeout(2_000)),
@@ -168,6 +177,7 @@ test("a lost destroy reply is inspect-only after endpoint reconstruction", async
     identity,
     retired: false,
     running: true,
+    stopping: true,
     provider: f.grant.proof.provider,
   });
 });
@@ -446,3 +456,262 @@ test("a fenced fleet start is never admitted or started again", async (context) 
   await assert.rejects(f.endpoint.start(f.target, AbortSignal.timeout(5_000)), /selection/);
   assert.equal(f.calls.start, 0);
 });
+
+test("a model call whose caller leaves before the container answers stops counting at once", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  let answer!: (response: Response) => void;
+  let sent!: () => void;
+  const reached = new Promise<void>((resolve) => (sent = resolve));
+  f.hooks.model = () => {
+    sent();
+    return new Promise<Response>((resolve) => (answer = resolve));
+  };
+  const caller = new AbortController();
+  const call = f.endpoint
+    .fetch(identity, new Request("http://pool/v1/messages", { signal: caller.signal }), 8317)
+    .catch(() => undefined);
+  await reached;
+  assert.equal((await f.endpoint.streamCount(identity)).active, 1);
+  caller.abort();
+  // The release is the object's own background write; it lands before the container answers.
+  await f.settle();
+  assert.equal((await f.endpoint.streamCount(identity)).active, 0);
+  // The late answer goes nowhere and releases nothing twice.
+  answer(new Response("{}"));
+  await call;
+  assert.equal((await f.endpoint.streamCount(identity)).active, 0);
+});
+
+const unstampedLease = async (f: Awaited<ReturnType<typeof fixture>>, identity: SlotIdentity) => {
+  const key = `runtime-activity-v1:${JSON.stringify([identity.slotId, identity.bootId])}`;
+  const row = (await f.ctx.storage.get(key)) as { active: number; leases?: object };
+  // As code before the stamps left it, and as the stuck cell of 24 Nov holds six.
+  await f.ctx.storage.put(key, {
+    ...row,
+    active: row.active + 1,
+    leases: { ...row.leases, old: "active" },
+  });
+};
+const fresh = (f: Awaited<ReturnType<typeof fixture>>) =>
+  new RuntimeEndpoint(f.ctx, f.env, "runtime", runtimeFixtureCode, f.wrap);
+/** A count read starts the proof in the background; the next read sees what it ended. */
+const proven = async (
+  f: Awaited<ReturnType<typeof fixture>>,
+  endpoint: RuntimeEndpoint,
+  identity: SlotIdentity,
+) => {
+  await endpoint.streamCount(identity);
+  await f.settle();
+  return (await endpoint.streamCount(identity)).active;
+};
+
+test("an unstamped lease ends only when the container reads no model connection", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  f.hooks.connections = async () => 1;
+  assert.equal(await proven(f, fresh(f), identity), 1, "a live connection keeps it");
+  f.hooks.connections = async () => {
+    throw new Error("probe failed");
+  };
+  assert.equal(await proven(f, fresh(f), identity), 1, "a failed read keeps it");
+  // The read runs once per 30 s per boot: the same endpoint does not read again at once.
+  const reader = fresh(f);
+  f.hooks.connections = async () => 1;
+  await proven(f, reader, identity);
+  f.hooks.connections = async () => 0;
+  assert.equal(await proven(f, reader, identity), 1, "no second read inside 30 s");
+  assert.equal(await proven(f, fresh(f), identity), 0, "a read of 0 ends it");
+  const lines = warned.mock.calls.map((call) => call.arguments);
+  assert.ok(
+    lines.some(
+      ([line, fields]) =>
+        line === "POOL_RUNTIME_LEASES_KEPT" &&
+        (fields as { connections: unknown }).connections === "unknown",
+    ),
+  );
+  const released = lines.find(([line]) => line === "POOL_RUNTIME_LEASES_RELEASED");
+  assert.ok(released);
+  const { key, ...line } = released[1] as { key: string };
+  assert.deepEqual(line, { ordinal: null, kind: "unstamped", released: 1, connections: 0 });
+  assert.match(key, /^[0-9a-f]{24}$/);
+});
+
+test("the proof never ends a call this instance holds, nor one it takes during the read", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  const answers: ((response: Response) => void)[] = [];
+  let arrived = () => {};
+  const arrival = () => new Promise<void>((resolve) => (arrived = resolve));
+  f.hooks.model = () =>
+    new Promise<Response>((resolve) => {
+      answers.push(resolve);
+      arrived();
+    });
+  const call = () =>
+    f.endpoint.fetch(identity, new Request("http://pool/v1/messages", { method: "POST" }), 8317);
+  const first = arrival();
+  const held = call();
+  await first;
+  await unstampedLease(f, identity);
+  let late: Promise<Response> | undefined;
+  f.hooks.connections = async () => {
+    const second = arrival();
+    late = call();
+    await second;
+    return 0;
+  };
+  assert.equal(await proven(f, fresh(f), identity), 2);
+  for (const answer of answers) answer(new Response("{}"));
+  await (await held).text();
+  await (await late!).text();
+  await f.settle();
+  assert.equal(await proven(f, fresh(f), identity), 0);
+});
+
+test("a drain whose health read fails still ends a lease the container shows is over", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  let reads = 0;
+  f.hooks.connections = async () => {
+    reads++;
+    return 0;
+  };
+  f.hooks.health = async () => new Response("policy unavailable", { status: 503 });
+  const endpoint = fresh(f);
+  await assert.rejects(endpoint.drain(identity, AbortSignal.timeout(2_000)));
+  await f.settle();
+  assert.equal(reads, 1, "the container's connections were read");
+  assert.ok(warned.mock.calls.some((call) => call.arguments[0] === "POOL_RUNTIME_LEASES_RELEASED"));
+});
+
+test("a settle whose release fails writes one closed line and keeps the lease", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  // The read proves the lease over, then the write that ends it fails.
+  const original = f.ctx.storage.transaction.bind(f.ctx.storage);
+  let broken = false;
+  context.mock.method(f.ctx.storage, "transaction", (...input: Parameters<typeof original>) =>
+    broken ? Promise.reject(new Error("storage said something private")) : original(...input),
+  );
+  f.hooks.connections = async () => {
+    broken = true;
+    return 0;
+  };
+  await fresh(f).streamCount(identity);
+  await f.settle();
+  broken = false;
+  const failed = warned.mock.calls
+    .map((call) => call.arguments)
+    .filter(([line]) => line === "POOL_RUNTIME_LEASES_SETTLE_FAILED");
+  assert.equal(failed.length, 1);
+  const { key, ...fields } = failed[0]![1] as { key: string };
+  assert.match(key, /^[0-9a-f]{24}$/);
+  assert.deepEqual(
+    { ordinal: null, reason: null, name: "Error", messageClass: "other", isError: true },
+    Object.fromEntries(
+      Object.entries(fields).filter(([name]) =>
+        ["ordinal", "reason", "name", "messageClass", "isError"].includes(name),
+      ),
+    ),
+  );
+  assert.ok(!JSON.stringify(failed).includes("private"), "never the exception text");
+  f.hooks.connections = async () => 1;
+  assert.equal(await proven(f, fresh(f), identity), 1, "the lease is still counted");
+});
+
+test("storage that keeps failing is reported once per proof interval, not on every read", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const warned = context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  context.mock.method(f.ctx.storage, "get", () => Promise.reject(new Error("broken")));
+  const endpoint = fresh(f);
+  for (let read = 0; read < 3; read++) {
+    // The count read fails too; only its background settle's line is under test.
+    await endpoint.streamCount(identity).catch(() => undefined);
+    await f.settle();
+  }
+  const failed = warned.mock.calls.filter(
+    (call) => call.arguments[0] === "POOL_RUNTIME_LEASES_SETTLE_FAILED",
+  );
+  assert.equal(failed.length, 1);
+});
+
+test("the proof read waits up to its 5 s, and the operator's read gives up at 1.5 s, on one read", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.method(console, "warn", () => {});
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  await unstampedLease(f, identity);
+  // A container read slower than the operator's 1.5 s and inside the proof's 5 s.
+  f.hooks.connections = () => new Promise<number>((resolve) => setTimeout(() => resolve(0), 2_000));
+  const checked = await fresh(f).checkStill(identity);
+  assert.equal(checked.connections, null, "the operator's read stops at 1.5 s");
+  assert.equal(await proven(f, fresh(f), identity), 0, "the proof's read still ends the lease");
+});
+
+const pause = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+/** The controller's view of this endpoint: in its own isolate (the root), or across a hop (a cell). */
+const controllerDriver = (endpoint: RuntimeEndpoint, hopMs = 0) =>
+  new BoundSlotDriver(() => ({
+    fetch: async (request: Request) => {
+      const answer = await runtimeRequest(request, endpoint);
+      if (hopMs) await pause(hopMs);
+      return answer;
+    },
+  }));
+/** The fixture's readiness answer (a 1500 ms grant), taking `readMs` to come. */
+const slowReadiness = (readMs: number) => async () => {
+  await pause(readMs);
+};
+
+for (const [where, hopMs] of [
+  ["root", 0],
+  ["cell", 100],
+] as const)
+  test(`the ${where}'s readiness read that takes 60 % of its lease is admitted: the read counts once`, async (context) => {
+    const f = await fixture();
+    context.after(f.cleanup);
+    const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+    f.hooks.health = slowReadiness(900);
+    const health = await controllerDriver(f.endpoint, hopMs).health(
+      identity,
+      AbortSignal.timeout(5_000),
+    );
+    // Counted from the controller's own send, so never longer than the container granted.
+    assert.ok(health.policyLeaseUntil > performance.now());
+    assert.ok(health.policyLeaseUntil - performance.now() < 1_500 - 900);
+  });
+
+// The root's read runs into the endpoint's 1500 ms deadline; the cell's read and hop together
+// outlast the grant though the endpoint still saw it live.
+for (const [where, readMs, hopMs] of [
+  ["root", 1_700, 0],
+  ["cell", 700, 900],
+] as const)
+  test(`the ${where}'s health that outlasts its lease is refused`, async (context) => {
+    const f = await fixture();
+    context.after(f.cleanup);
+    context.mock.method(console, "warn", () => {});
+    context.mock.method(console, "error", () => {});
+    const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+    f.hooks.health = slowReadiness(readMs);
+    await assert.rejects(
+      controllerDriver(f.endpoint, hopMs).health(identity, AbortSignal.timeout(5_000)),
+      SlotRefused,
+    );
+  });

@@ -17,7 +17,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { installUpstreamDependencies } from "./upstream-dependencies.ts";
+import { generationName, installUpstreamDependencies } from "./upstream-dependencies.ts";
 import { dependencyIdentity } from "./upstream-inputs.ts";
 
 function fixture(t: TestContext) {
@@ -75,7 +75,7 @@ function fixture(t: TestContext) {
   writeFileSync(join(store, "ready.json"), JSON.stringify({ key, trees: ["node_modules"] }));
   writeFileSync(join(entry, "store-format.json"), '{"version":3}');
   symlinkSync("generations/published", join(entry, "current"));
-  return { consumer, store, index, scoped, workspace, bytes };
+  return { consumer, store, index, scoped, workspace, bytes, entry, key };
 }
 
 test("a second prepare replaces read-only private directories without changing shared bytes or symlink targets", async (t) => {
@@ -125,4 +125,25 @@ test("an interrupted read-only copy is removed while a linked destination stays 
     readFileSync(join(consumer, "node_modules/fixture/index.js"), "utf8"),
     "synthetic package bytes",
   );
+});
+
+// #1811: the store's path reaches build output, so one key must always give one path.
+test("a dependency generation is named by its key, never by a random id", () => {
+  const key = "a".repeat(64);
+  assert.match(generationName(key), /^[a-f0-9]{32}$/u);
+  assert.equal(generationName(key), generationName(key));
+  assert.notEqual(generationName(key), generationName("b".repeat(64)));
+});
+
+test("a ready generation under its key's name is used again after its pointer is gone", async (t) => {
+  const { consumer, store, entry, key } = fixture(t);
+  const named = join(entry, "generations", generationName(key));
+  chmodSync(join(entry, "generations"), 0o755);
+  childProcess.execFileSync("mv", [store, named]);
+  rmSync(join(entry, "current"));
+  // A cache-hit-only prepare refuses to install, so this passes only by adopting the named store.
+  await installUpstreamDependencies(consumer, "fixture-pin", true);
+  const record = JSON.parse(readFileSync(join(consumer, ".basalt-dependencies.json"), "utf8"));
+  assert.equal(record.store, realpathSync(named));
+  assert.equal(realpathSync(join(entry, "current")), realpathSync(named));
 });

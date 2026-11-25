@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import { pullTestDatabaseImage } from "../test-database-image.ts";
 
 const image = process.env.POOL_TEST_IMAGE;
 
@@ -29,13 +30,13 @@ for (const { postgres, databaseImage, pgbouncer } of [
   {
     postgres: "16-alpine",
     databaseImage:
-      "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "mirror.gcr.io/library/postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
     pgbouncer: "1.25.2-r0",
   },
   {
     postgres: "17.7-alpine",
     databaseImage:
-      "postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2",
+      "mirror.gcr.io/library/postgres:17.7-alpine@sha256:bb377b7239d2774ac8cc76f481596ce96c5a6b5e9d141f6d0a0ee371a6e7c0f2",
     pgbouncer: "1.25.1-r0",
   },
 ]) {
@@ -46,6 +47,7 @@ for (const { postgres, databaseImage, pgbouncer } of [
       timeout: 240_000,
     },
     async (t) => {
+      pullTestDatabaseImage(databaseImage);
       const network = `basalt-startup-${randomUUID()}`;
       const containers: string[] = [];
       docker(["network", "create", network]);

@@ -442,6 +442,12 @@ test("the check decides as the provider's own apply does", async (context) => {
       recordedRead({}, { durable_objects: { namespace_id: "namespace-elsewhere" } }),
     ],
     ["the recorded digest kept", kept, recordedRead({ image: `${repository}@${otherDigest}` })],
+    // Carry 0767: the application keeps the reference it runs when that names the recorded digest.
+    [
+      "the recorded digest on another repository",
+      kept,
+      recordedRead({ image: `${repository}-elsewhere@${otherDigest}` }),
+    ],
     ["the pin's digest while the recorded one is kept", kept, recordedRead()],
   ] as const;
   const decisions: string[] = [];

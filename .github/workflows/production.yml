@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: plan prints each row's name, type and action; deploy plans, applies and smokes
+        description: plan prints each row's name, type, action and why it is in the plan; deploy plans, applies and smokes
         required: true
         type: choice
         options: [plan, deploy]
@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      approved_plan:
+        description: For deploy, the plan digest a plan-only run of this commit printed; the deploy refuses when its own plan differs
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -35,8 +40,14 @@ jobs:
     environment:
       name: production-release
       deployment: false
+    # Whether the deploy reached its release step, and whether it stopped there before changing
+    # production; `record` records every other deploy. A lost runner gives neither, so it is recorded.
+    outputs:
+      release: ${{ steps.release.outcome }}
+      unchanged: ${{ steps.release.outputs.unchanged }}
     env:
       BASALT_RELEASE_CANDIDATE: ${{ inputs.candidate }}
+      BASALT_APPROVED_PLAN: ${{ inputs.approved_plan }}
       POOL_ROOT_PIN: ${{ vars.POOL_ROOT_PIN }}
       ZENDESK_MARKETPLACE_ORGANIZATION_ID: ${{ vars.ZENDESK_MARKETPLACE_ORGANIZATION_ID }}
       ZENDESK_MARKETPLACE_APP_ID: ${{ vars.ZENDESK_MARKETPLACE_APP_ID }}
@@ -53,6 +64,11 @@ jobs:
         run: |
           [ "$(git rev-parse HEAD)" = "$BASALT_RELEASE_CANDIDATE" ] || { echo "::error::candidate is not a full sha"; exit 1; }
           git merge-base --is-ancestor HEAD origin/main || { echo "::error::candidate is not on main"; exit 1; }
+      # Before the build: scripts/production.ts makes the same check before anything is written.
+      - name: A deploy names the plan it applies
+        if: inputs.mode == 'deploy'
+        run: |
+          printf '%s' "$BASALT_APPROVED_PLAN" | grep -Eiq '^ *[a-f0-9]{64} *$' || { echo "::error::a deploy needs approved_plan, the plan digest a plan-only run of this commit printed"; exit 1; }
       - uses: ./.github/actions/setup-node
         with:
           node-version: 24.18.0
@@ -64,6 +80,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: ${{ inputs.mode == 'deploy' && 'Plan, apply and smoke' || 'Plan' }}
+        id: release
         run: bun scripts/production.ts "${{ inputs.mode }}" ${{ inputs.fleet_classes && '--fleet-classes' || '' }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -118,3 +135,64 @@ jobs:
           # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
           # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
           POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+
+  # The Deployments page shows each production deploy under `production`, with the commit it
+  # deployed: success when the deploy job succeeded, failure when it did not. The record is the one
+  # `release.yml` writes and its live check reads (a deployment of the candidate, not of the run's
+  # commit), so the two paths agree on what production runs. A plan-only run, and a deploy that
+  # stopped before it changed anything, write none; one that died on the way (a lost runner, a
+  # timeout, a cancel) is recorded as failed. The deploy job's own colour stays the truth about the
+  # deploy; this job fails only when the record could not, or must not, be written.
+  record:
+    needs: production
+    if: >-
+      always() && inputs.mode == 'deploy' && needs.production.result != 'skipped' &&
+      needs.production.outputs.release != 'skipped' && needs.production.outputs.unchanged != 'true'
+    runs-on: ${{ vars.BASALT_RELEASE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      deployments: write
+    steps:
+      - name: Record the deployment of the candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ inputs.candidate }}
+          RESULT: ${{ needs.production.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          state=$([ "$RESULT" = success ] && echo success || echo failure)
+          payload=$(jq -cn --arg run "$GITHUB_RUN_ID" '{path: "production", run: $run}')
+          missing() {
+            echo "::error::The deploy ended $RESULT (its own job above is the truth about it), but its deployment record is missing: production's live check and the Deployments page do not show it. Re-run this record job alone (its own re-run, not \"Re-run failed jobs\", which would deploy again); it writes the record from this run's deploy result."
+            exit 1
+          }
+          superseded() {
+            echo "::error::The deploy ended $RESULT, but a later deploy recorded itself on production after this one began. This record would read as newer than that one, so it is not written; the later record is what production runs."
+            exit 1
+          }
+          # Each call is tried again with a pause.
+          retry() { for try in 1 2 3 4 5; do "$@" && return 0; sleep $((try * 10)); done; return 1; }
+          started() {
+            start=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?filter=all" \
+              --jq '[.jobs[] | select(.name == "production" and .started_at != null)] | max_by(.run_attempt) | .started_at // empty') &&
+              [ -n "$start" ]
+          }
+          # Both workflows deploy under one lock, so a deployment created after this deploy job began
+          # is a later deploy. A deployment this run already created (an earlier try, or the first
+          # attempt of a re-run) is given its state instead of a second one being created.
+          deployment() {
+            list=$(gh api "repos/$GITHUB_REPOSITORY/deployments?environment=production&per_page=30") || return 1
+            runs=$(jq -c 'map({id, created_at, run: ((.payload | if type == "string" then (fromjson? // {}) else . end) | .run? // "")})' <<<"$list") || return 1
+            later=$(jq --arg run "$GITHUB_RUN_ID" --arg start "$start" 'map(select(.run != $run and .created_at > $start)) | length' <<<"$runs")
+            [ "$later" = 0 ] || superseded
+            id=$(jq -r --arg run "$GITHUB_RUN_ID" 'map(select(.run == $run)) | .[0].id // empty' <<<"$runs")
+            [ -n "$id" ] && return 0
+            id=$(gh api "repos/$GITHUB_REPOSITORY/deployments" -f ref="$CANDIDATE" -f environment=production \
+              -F auto_merge=false -f 'required_contexts[]' -f description="Production deploy" \
+              -f payload="$payload" --jq .id) && [ -n "$id" ]
+          }
+          retry started || missing
+          retry deployment || missing
+          retry gh api "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" -f state="$state" -f log_url="$RUN_URL" >/dev/null || missing
+          echo "Recorded the deployment of $CANDIDATE: $state."

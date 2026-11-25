@@ -70,7 +70,7 @@ export class RuntimeCrash {
     if (cell ? namesPrimary : !namesPrimary) throw new SlotRefused("identity");
     const permission = await configuration.inspect();
     if (!permission?.enabled) throw new SlotRefused("selection");
-    configuration.assertBindings(permission.configuration);
+    configuration.assertBindings(permission.configuration, false);
     if (cell) {
       const row = (await state.inspect()).find((value) =>
         sameIdentity(value.identity, command.identity),

@@ -14,7 +14,7 @@ import {
   sealConfiguration,
   type RuntimeConfiguration,
 } from "./configuration.ts";
-import type { RuntimeState } from "./runtime-state.ts";
+import type { OwnedRuntimeStorage, RuntimeState } from "./runtime-state.ts";
 
 const Authorization = Schema.Union([LaunchAuthorization, UnattestedActive]);
 const WitnessRecord = Schema.Struct({
@@ -30,26 +30,78 @@ export type WitnessRecord = typeof WitnessRecord.Type;
 
 /** A fleet start its controller abandoned: no admission or start reaches its slot again. */
 const abandonedStartKey = (slot: string) => `runtime-slots-v1:start-abandoned:${slot}`;
+const alarmTargetKey = "runtime-alarm-v1:target";
+/** When a retirement sent its SIGTERM, so a stop under way can be told from one never sent. */
+const stopSentKey = (slot: string) => `runtime-slots-v1:stop-sent:${slot}`;
 
 /** Private configuration and launch provenance share the allocated per-slot witness record. */
 export class RuntimeWitnessStore {
   private storage: RuntimeState["storage"];
   private secret: string;
-  constructor(storage: RuntimeState["storage"], secret: string) {
+  private owned?: OwnedRuntimeStorage;
+  /** `owned` is given only where this store's storage is a runtime Durable Object's own. */
+  constructor(storage: RuntimeState["storage"], secret: string, owned?: OwnedRuntimeStorage) {
     this.storage = storage;
     this.secret = secret;
+    this.owned = owned;
+  }
+  /**
+   * A slot's last write: retired, abandoned or its start aborted. A runtime object holds exactly one
+   * slot, so the refresh alarm and target its start left are dropped in the same turn and commit
+   * with it. The provider lists a retired cell whose object an alarm wakes as running, with a place.
+   */
+  async end(write: () => Promise<unknown>) {
+    await Promise.all([write(), ...this.dropAlarm()]);
+  }
+  private dropAlarm() {
+    return this.owned ? [this.owned.delete(alarmTargetKey), this.owned.deleteAlarm()] : [];
+  }
+  /**
+   * How a start on a runtime object arms its refresh, or undefined to keep the lifecycle's own
+   * arming of a shared alarm. An abort doesn't wait for the start it stops, so the start checks
+   * again after arming: whichever lands first, an ended slot keeps no alarm.
+   */
+  refresh(target: SlotTarget) {
+    if (!this.owned) return undefined;
+    return async (at: number) => {
+      const scheduled = await this.storage.getAlarm();
+      if (scheduled === null || scheduled > at) await this.storage.setAlarm(at);
+      await this.dropIfEnded(target);
+    };
+  }
+  /** Drops the alarm and target of a slot that ended; a live slot or a shared alarm keeps both. */
+  async dropIfEnded(target: SlotTarget) {
+    if (this.owned && (await this.over(target))) await Promise.all(this.dropAlarm());
+  }
+  /** What `read` refuses on, short of a wrong target: no start or alarm may use this slot again. */
+  private async over(target: SlotTarget) {
+    return (
+      (await this.storage.get(startupStopKey(target))) !== undefined ||
+      (await this.abandoned(target.slotId)) ||
+      (await this.retained(target.slotId))?.retired === true
+    );
+  }
+  retire(target: SlotTarget, record: WitnessRecord & { retired: true }) {
+    return this.end(() => this.put(target, record));
   }
   abandon(target: SlotTarget) {
-    return this.storage.put(abandonedStartKey(target.slotId), { target });
+    return this.end(() => this.storage.put(abandonedStartKey(target.slotId), { target }));
+  }
+  stopSent(target: SlotTarget, at: number) {
+    return this.storage.put(stopSentKey(target.slotId), at);
+  }
+  async stopSentAt(slot: string) {
+    const value = await this.storage.get(stopSentKey(slot));
+    return value === undefined ? undefined : Schema.decodeUnknownSync(Schema.Number)(value);
   }
   async abandoned(slot: string) {
     return (await this.storage.get(abandonedStartKey(slot))) !== undefined;
   }
   retainAlarmTarget(target: SlotTarget) {
-    return this.storage.put("runtime-alarm-v1:target", target);
+    return this.storage.put(alarmTargetKey, target);
   }
   async alarmTarget() {
-    const value = await this.storage.get("runtime-alarm-v1:target");
+    const value = await this.storage.get(alarmTargetKey);
     return value === undefined ? undefined : Schema.decodeUnknownSync(SlotTarget)(value);
   }
   async retained(slot: string) {
