@@ -5,36 +5,30 @@
 // every name in the URL is inside the stage's prefix and no name production's records use, and every
 // id in it is the one this stage's own listing recorded for that name, in a strict charset.
 // Account-wide reads take nothing from the caller, and their rows are filtered by ownership before
-// they are returned. The fetcher is held only here, in send's closure.
-//
-// It fails closed: a refused call, a `success: false` envelope or a listing without its array
-// throws, so a wrong template or a missing permission never reads as an empty account. Refusals
-// carry only the operation, the status, the error codes and known field names; remote messages and
-// pointers may hold secrets.
+// they are returned. The fetcher is held only here, in send's closure; answers.mjs reads what comes
+// back, failing closed.
+import {
+  DIGEST,
+  catalogOf,
+  credentialsOf,
+  deletedOf,
+  envelopeOf,
+  fail,
+  manifestOf,
+  tagsOf,
+} from "./answers.mjs";
 import { isProductionName } from "./ownership.mjs";
 
 const API = "https://api.cloudflare.com/client/v4";
-export const REGISTRY = "registry.cloudflare.com";
+const REGISTRY = "registry.cloudflare.com";
 /** What an id or a name may be when it goes into a URL: no separator, dot, escape, query or space. */
-export const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/u;
-const DIGEST = /^sha256:[a-f0-9]{64}$/u;
+const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/u;
 const MANIFEST_TYPES = [
   "application/vnd.oci.image.index.v1+json",
   "application/vnd.oci.image.manifest.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
   "application/vnd.docker.distribution.manifest.v2+json",
 ].join(", ");
-const FIELDS = [
-  "description",
-  "strategy",
-  "target_configuration",
-  "instance_type",
-  "step_percentage",
-  "image",
-  "max_instances",
-];
-// Refusals are small JSON envelopes; a larger body is cancelled rather than kept.
-const REFUSAL_BYTES = 65536;
 const MAX_PAGES = 100;
 const PERMISSIONS = { pull: ["pull"], push: ["pull", "push"] };
 
@@ -87,75 +81,7 @@ const ON_RESOURCE = {
   delete: { method: "DELETE" },
 };
 
-const own = new WeakSet();
-/** Whether this module raised the error itself, so its message holds no remote text. */
-export const isCloudflareApiError = (error) => own.has(error);
-export const fail = (message) => {
-  const error = new Error(message);
-  own.add(error);
-  return error;
-};
 const refuse = (message) => fail(`Refused: ${message}`);
-
-function refusal(operation, method, status, data) {
-  const errors = Array.isArray(data?.errors) ? data.errors.slice(0, 20) : [];
-  const codes = [...new Set(errors.map((error) => error?.code).filter(Number.isSafeInteger))];
-  const fields = FIELDS.filter((field) =>
-    errors.some(
-      (error) =>
-        typeof error?.message === "string" && new RegExp(`\\b${field}\\b`).test(error.message),
-    ),
-  );
-  const error = fail(`Cloudflare ${method} ${operation} failed (${status})`);
-  error.diagnostic = { provider: "cloudflare", operation, method, status, codes, fields };
-  return error;
-}
-
-async function boundedJson(response) {
-  const reader = response.body?.getReader();
-  let bytes = 0;
-  const chunks = [];
-  try {
-    while (reader) {
-      const { done, value } = await reader.read();
-      if (done) return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      bytes += value.byteLength;
-      if (bytes > REFUSAL_BYTES) {
-        await reader.cancel();
-        return undefined;
-      }
-      chunks.push(Buffer.from(value));
-    }
-  } catch {
-    // Diagnostics must not hide the original refusal.
-  }
-  return undefined;
-}
-
-/** A v4 envelope's data, or null for an absent resource where `absent`; throws on any refusal. */
-async function envelopeOf(response, { label, method, absent }) {
-  if (response.status === 404 && absent) {
-    await response.body?.cancel();
-    return null;
-  }
-  if (!response.ok) throw refusal(label, method, response.status, await boundedJson(response));
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    // A parse error quotes the body it could not read.
-    throw refusal(label, method, response.status, undefined);
-  }
-  if (data?.success === false) throw refusal(label, method, response.status, data);
-  return data;
-}
-
-// A registry list that says it has another page could hide one of the stage's repositories or tags.
-function singlePage(response, listing) {
-  if (/rel="?next"?/u.test(response.headers.get("link") ?? ""))
-    throw fail(`The registry ${listing} has more than one page; the check reads only one`);
-}
-const json = (response) => response.json().catch(() => null);
 
 /**
  * The choke point for one stage of one account. `owned` is the stage's ownership test
@@ -320,15 +246,9 @@ export function stageRequests({ accountId, token, owned, fetcher, signal }) {
   async function answer({ kind, operation, reference }, step, data) {
     if (kind === "account") {
       if (operation === "subdomain") return data?.result?.subdomain;
-      if (operation === "imageReferences")
-        // Image references only, no row: nothing here can be handed back to address a resource.
-        return data
-          .map((row) => row?.configuration?.image)
-          .filter((ref) => typeof ref === "string");
-      const username = data?.result?.username ?? data?.result?.user;
-      if (data?.success !== true || !username || !data.result?.password)
-        throw fail("Registry credentials answered without a username and password");
-      return `Basic ${Buffer.from(`${username}:${data.result.password}`).toString("base64")}`;
+      if (operation === "credentials") return credentialsOf(data);
+      // Image references only, no row: nothing here can be handed back to address a resource.
+      return data.map((row) => row?.configuration?.image).filter((ref) => typeof ref === "string");
     }
     if (kind !== "images") {
       if (operation !== "list") return data;
@@ -336,59 +256,23 @@ export function stageRequests({ accountId, token, owned, fetcher, signal }) {
         .filter((row) => KINDS[kind].names(row).every(ownedName))
         .map((row) => record(kind, row));
     }
-    const response = data;
-    if (operation === "list") {
-      if (!response.ok) throw fail(`Registry catalog read failed (HTTP ${response.status})`);
-      singlePage(response, "catalog");
-      const repositories = (await json(response))?.repositories;
-      if (!Array.isArray(repositories))
-        throw fail("The registry catalog answered without its repository list");
-      const rows = [];
-      for (const repository of repositories) {
-        if (typeof repository !== "string")
-          throw fail("The registry catalog lists a repository without a name");
-        const [owner, name, ...nested] = repository.split("/");
-        if (owner === accountId && !nested.length && ownedName(name))
-          rows.push(record(kind, { name }, name));
-      }
-      return rows;
-    }
-    if (operation === "tags") {
-      let listed = [];
-      if (response.status === 404) await response.body?.cancel();
-      else {
-        if (!response.ok) throw fail(`Registry tag list failed (HTTP ${response.status})`);
-        singlePage(response, "tag list");
-        // A repository whose tags are all deleted answers `tags: null`.
-        listed = (await json(response))?.tags ?? [];
-        if (!Array.isArray(listed) || !listed.every((tag) => typeof tag === "string"))
-          throw fail("A registry tag list answered without its tags");
-      }
-      step.entry.tags = Object.freeze([...listed]);
-      return step.entry.tags;
-    }
+    if (operation === "list")
+      return (await catalogOf(data))
+        .map((repository) => repository.split("/"))
+        .filter(
+          ([owner, name, ...nested]) => owner === accountId && !nested.length && ownedName(name),
+        )
+        .map(([, name]) => record(kind, { name }, name));
+    if (operation === "tags") return (step.entry.tags = Object.freeze([...(await tagsOf(data))]));
     if (operation === "deleteManifest") {
-      await response.body?.cancel();
-      if (!response.ok && response.status !== 404)
-        throw fail(`Registry manifest delete failed (HTTP ${response.status})`);
+      const deleted = await deletedOf(data);
       step.entry.digests.delete(reference);
-      return response.ok;
+      return deleted;
     }
-    if (response.status === 404) {
-      await response.body?.cancel();
-      return undefined;
-    }
-    const digest = response.headers.get("docker-content-digest") ?? "";
-    const body = await json(response);
-    if (!response.ok || !DIGEST.test(digest) || body === null)
-      throw fail(`Registry manifest read failed (HTTP ${response.status})`);
-    const children = Array.isArray(body.manifests)
-      ? body.manifests.map((entry) => entry?.digest)
-      : [];
-    if (!children.every((child) => typeof child === "string" && DIGEST.test(child)))
-      throw fail("A registry index names a manifest without a digest");
-    for (const found of [digest, ...children]) step.entry.digests.add(found);
-    return { digest, children };
+    const manifest = await manifestOf(data);
+    for (const found of manifest ? [manifest.digest, ...manifest.children] : [])
+      step.entry.digests.add(found);
+    return manifest;
   }
 
   return send;

@@ -5,7 +5,8 @@
 // stage owns.
 import { stageOwnership } from "./ownership.mjs";
 import { registryOperations } from "./registry.mjs";
-import { fail, isCloudflareApiError, stageRequests } from "./request.mjs";
+import { fail, isCloudflareApiError } from "./answers.mjs";
+import { stageRequests } from "./request.mjs";
 
 export { isCloudflareApiError };
 export const WORKER_KINDS = ["applications", "namespaces", "scripts"];

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import * as answersModule from "./answers.mjs";
 import * as apiModule from "./api.mjs";
 import { STAGE_PREFIXES, stageOwnership } from "./ownership.mjs";
 import * as registryModule from "./registry.mjs";
@@ -20,7 +21,7 @@ import {
 const { stageCloudflare } = apiModule;
 const { KINDS, stageRequests } = requestModule;
 const source = (file) => readFileSync(new URL(file, import.meta.url), "utf8");
-const MODULE = ["api.mjs", "request.mjs", "registry.mjs", "ownership.mjs"];
+const MODULE = ["api.mjs", "request.mjs", "answers.mjs", "registry.mjs", "ownership.mjs"];
 const count = (text, pattern) => [...text.matchAll(pattern)].length;
 
 test("exactly one place in the module calls the fetcher, and nothing else holds it", () => {
@@ -30,6 +31,7 @@ test("exactly one place in the module calls the fetcher, and nothing else holds 
   assert.deepEqual(calls, {
     "api.mjs": 0,
     "request.mjs": 1,
+    "answers.mjs": 0,
     "registry.mjs": 0,
     "ownership.mjs": 0,
   });
@@ -40,7 +42,7 @@ test("exactly one place in the module calls the fetcher, and nothing else holds 
     source("api.mjs"),
     /stageRequests\(\{ accountId, token, owned, fetcher, signal \}\)/u,
   );
-  for (const file of ["registry.mjs", "ownership.mjs"])
+  for (const file of ["answers.mjs", "registry.mjs", "ownership.mjs"])
     assert.equal(count(source(file), /\bfetch(?:er)?\b|https?:\/\//gu), 0, file);
   assert.equal(count(source("api.mjs"), /https?:\/\//gu), 0);
 });
@@ -55,10 +57,17 @@ const EXPORTS = {
   "request.mjs": {
     stageRequests: "the choke point, every kind and operation of which is covered below",
     KINDS: "the declared kinds and operations",
-    REGISTRY: "a constant",
-    SEGMENT: "a constant",
-    fail: "builds an error; sends nothing",
+  },
+  "answers.mjs": {
+    DIGEST: "a constant",
     isCloudflareApiError: "a predicate over errors; sends nothing",
+    fail: "builds an error; sends nothing",
+    envelopeOf: "reads an answer it is handed; sends nothing",
+    credentialsOf: "reads an answer it is handed; sends nothing",
+    catalogOf: "reads an answer it is handed; sends nothing",
+    tagsOf: "reads an answer it is handed; sends nothing",
+    manifestOf: "reads an answer it is handed; sends nothing",
+    deletedOf: "reads an answer it is handed; sends nothing",
   },
   "registry.mjs": {
     registryOperations: "holds only a send; covered through images and removeImage below",
@@ -68,6 +77,7 @@ test("every export of the module is accounted for", () => {
   for (const [file, module] of [
     ["api.mjs", apiModule],
     ["request.mjs", requestModule],
+    ["answers.mjs", answersModule],
     ["registry.mjs", registryModule],
   ])
     assert.deepEqual(Object.keys(module).sort(), Object.keys(EXPORTS[file]).sort(), file);
