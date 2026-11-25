@@ -156,13 +156,11 @@ With separate production recovery GO, use the original report, inventory and che
 
 ## Release guardrails
 
-`scripts/guardrails/release-path.json` lists the files that decide how a production release is made. The Guardrails workflow and the release itself judge every change against it:
+`scripts/guardrails/release-path.json` lists the files that decide how a production release is made. The Guardrails workflow judges every pull request against it:
 
 - **Ship alone.** A pull request that touches the release path may otherwise touch only `architecture/**`, `docs/releases.md` and `package.json`.
 - **Budget.** `scripts/guardrails/budget.json` holds the release path's source and test lines. Lower it when they fall. Raising it, dropping a path from the list or reopening a tombstone needs a `## Reuse decision` section in the pull request, with links to what Cloudflare, Alchemy and libraries already provide, and the `release-budget-approved` label. Tombstoned paths take no new lines.
-- **Freeze.** Once merged work has waited 12 hours for a release, the `release-freshness` status fails on every pull request except release-path changes and those labelled `release-unblock`.
-- **Release gate.** `node scripts/guardrails/release-gate.ts <commit>` runs first in a production release. A changed release path needs a `release-rehearsal` status from the rehearsal workflow that upgraded from the live commit. After two failed production deployments in a row, the rehearsal must also fail on the latest failed candidate. A dispatch with `override_reason` passes and records who gave it.
-- `node scripts/guardrails/release-health.ts` prints the numbers behind the freeze and the gate.
+- `node scripts/guardrails/release-health.ts` prints release health from the deployment and pull request records: time since the last good deployment, consecutive failed deployments and how long merged work has waited.
 
 ## Rebuild historical framework hashes
 
