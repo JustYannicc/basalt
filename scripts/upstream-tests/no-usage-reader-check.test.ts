@@ -12,7 +12,10 @@ import {
   ProviderId,
   identifyProvider,
 } from "../../.upstream/packages/sdk/src/core.ts";
-import type { AccountAcquisitionBinding } from "../../.upstream/packages/sdk/src/contracts/account-acquisition-driver.ts";
+import {
+  AccountAcquisitionUnavailable,
+  type AccountAcquisitionBinding,
+} from "../../.upstream/packages/sdk/src/contracts/account-acquisition-driver.ts";
 import { makeDriverAccountHealth } from "../../.upstream/packages/sdk/src/implementation/account-driver-health.ts";
 import { database } from "../../.upstream/packages/sdk/src/implementation/database.ts";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
@@ -160,8 +163,18 @@ const stored = (provider: string) => ({
   credentialGeneration: 1,
 });
 
-/** A Devin account whose earlier check recorded "Service unavailable" seven hours ago. */
-const seeded = (provider: string) =>
+/**
+ * A subscription whose earlier check recorded "Service unavailable" seven hours ago, unless
+ * `storedRow` is false (an account never checked yet). `withCheck` is whether its registration
+ * defines a check: false as the pool registry now builds Devin's, true as for a provider with a reader.
+ */
+const seeded = (
+  provider: string,
+  {
+    withCheck = false as boolean | "unresolved",
+    storedRow = true,
+  }: { withCheck?: boolean | "unresolved"; storedRow?: boolean } = {},
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const storage = yield* makeExecutorStorage({ provider: "postgresql" });
@@ -183,7 +196,8 @@ const seeded = (provider: string) =>
     yield* sql`insert into executor_account_acquisitions
       (account, owner, provider, method, driver, driver_revision, generation, revision, removal)
       values (${account}, ${owner}, ${provider}, 'devin', 'basalt-home', 'oauth-v1', 1, 'fixture-r1', null)`;
-    yield* sql`insert into executor_account_driver_checks
+    if (storedRow)
+      yield* sql`insert into executor_account_driver_checks
       (account, owner, driver, driver_revision, binding_revision, generation, checkable, status, reason, checked_at)
       values (${account}, ${owner}, 'basalt-home', 'oauth-v1', 'fixture-r1', 1, true,
         'upstream_unavailable', 'unavailable', now() - interval '7 hours')`;
@@ -193,8 +207,10 @@ const seeded = (provider: string) =>
       db,
       {
         binding: () => Effect.succeed(binding),
-        // The registration as the pool registry now builds it for Devin: no check.
-        checkable: () => Effect.succeed(false),
+        checkable: () =>
+          withCheck === "unresolved"
+            ? Effect.fail(new AccountAcquisitionUnavailable({ reason: "registration" }))
+            : Effect.succeed(withCheck),
         source: () =>
           Effect.succeed({
             binding,
@@ -224,52 +240,84 @@ test("a stored Service unavailable result of a subscription without a check read
   );
 });
 
-test("the recheck runner records no check once, and the account leaves the recheck queue", async () => {
-  const { identity: provider } = await identity("devin");
-  const result = await run(
+test("a stored failure of a provider with a usage reader still reads unavailable", async () => {
+  const { identity: provider } = await identity("anthropic");
+  const driver = await run(
     Effect.gen(function* () {
-      const { sql, health } = yield* seeded(provider);
-      const queue = makeAccountRecheckQueue(sql);
-      const checks: string[] = [];
-      const executor = {
-        accounts: {
-          health: () =>
-            health
-              .report(stored(provider))
-              .pipe(Effect.map((saved) => ({ account, apps: [], driver: saved?.driver }) as never)),
-          check: (input: { readonly account: string }) =>
-            Effect.gen(function* () {
-              checks.push(input.account);
-              yield* health.check(stored(provider) as never);
-              return { account, apps: [] } as never;
-            }),
-        },
-      };
-      // The stored failure is past six hours, so today the queue claims the account again.
-      const before = (yield* queue.claim("probe")).map((entry) => entry.account);
-      yield* sql`delete from hosted_account_rechecks`;
-      yield* sql`delete from hosted_account_recheck_families`;
-      yield* makeAccountRechecks(sql, executor as never)("run-1");
-      const [row] = yield* sql<{
-        checkable: boolean;
-        status: string | null;
-      }>`select checkable, status from executor_account_driver_checks where account = ${account}`;
-      const [lease] = yield* sql<{
-        outcome: string;
-        waits: number;
-      }>`select outcome, extract(epoch from next_at - finished_at)::int as waits
-        from hosted_account_rechecks where account_id = ${account}`;
-      yield* sql`update hosted_account_rechecks set next_at = now() - interval '1 second'`;
-      yield* sql`update hosted_account_recheck_families set next_at = now() - interval '1 second'`;
-      yield* sql`update executor_account_driver_checks set checked_at = now() - interval '7 hours'`;
-      const again = yield* queue.claim("run-2");
-      return { before, checks, row, lease, again: again.map((entry) => entry.account) };
+      const { health } = yield* seeded(provider, { withCheck: true });
+      return (yield* health.report(stored(provider)))?.driver;
     }),
   );
-  assert.deepEqual(result.before, [account]);
-  assert.deepEqual(result.checks, [account], "the runner asked the SDK to record the account once");
-  assert.deepEqual(result.row, { checkable: false, status: null });
-  assert.equal(result.lease?.outcome, "skipped");
-  assert.ok(result.lease!.waits < 15 * 60, "no 15-minute retry is scheduled");
-  assert.deepEqual(result.again, [], "past the six-hour mark, the account is not claimed again");
+  assert.equal(driver?.checkable, true);
+  assert.equal(driver?.check?.status, "upstream_unavailable");
 });
+
+test("a stored failure stays visible while its registration cannot be resolved", async () => {
+  const { identity: provider } = await identity("anthropic");
+  const driver = await run(
+    Effect.gen(function* () {
+      const { health } = yield* seeded(provider, { withCheck: "unresolved" });
+      return (yield* health.report(stored(provider)))?.driver;
+    }),
+  );
+  // Only a registration known to define no check hides a result; an outage of it hides nothing.
+  assert.equal(driver?.checkable, false);
+  assert.equal(driver?.check?.status, "upstream_unavailable");
+});
+
+for (const storedRow of [true, false])
+  test(`the recheck runner records no check once, and the account leaves the recheck queue (${storedRow ? "stored failure" : "never checked"})`, async () => {
+    const { identity: provider } = await identity("devin");
+    const result = await run(
+      Effect.gen(function* () {
+        const { sql, health } = yield* seeded(provider, { storedRow });
+        const queue = makeAccountRecheckQueue(sql);
+        const checks: string[] = [];
+        const executor = {
+          accounts: {
+            health: () =>
+              health
+                .report(stored(provider))
+                .pipe(
+                  Effect.map((saved) => ({ account, apps: [], driver: saved?.driver }) as never),
+                ),
+            check: (input: { readonly account: string }) =>
+              Effect.gen(function* () {
+                checks.push(input.account);
+                yield* health.check(stored(provider) as never);
+                return { account, apps: [] } as never;
+              }),
+          },
+        };
+        // A stored failure past six hours, or an account never checked, is claimed today.
+        const before = (yield* queue.claim("probe")).map((entry) => entry.account);
+        yield* sql`delete from hosted_account_rechecks`;
+        yield* sql`delete from hosted_account_recheck_families`;
+        yield* makeAccountRechecks(sql, executor as never)("run-1");
+        const [row] = yield* sql<{
+          checkable: boolean;
+          status: string | null;
+        }>`select checkable, status from executor_account_driver_checks where account = ${account}`;
+        const [lease] = yield* sql<{
+          outcome: string;
+          waits: number;
+        }>`select outcome, extract(epoch from next_at - finished_at)::int as waits
+        from hosted_account_rechecks where account_id = ${account}`;
+        yield* sql`update hosted_account_rechecks set next_at = now() - interval '1 second'`;
+        yield* sql`update hosted_account_recheck_families set next_at = now() - interval '1 second'`;
+        yield* sql`update executor_account_driver_checks set checked_at = now() - interval '7 hours'`;
+        const again = yield* queue.claim("run-2");
+        return { before, checks, row, lease, again: again.map((entry) => entry.account) };
+      }),
+    );
+    assert.deepEqual(result.before, [account]);
+    assert.deepEqual(
+      result.checks,
+      [account],
+      "the runner asked the SDK to record the account once",
+    );
+    assert.deepEqual(result.row, { checkable: false, status: null });
+    assert.equal(result.lease?.outcome, "skipped");
+    assert.ok(result.lease!.waits < 15 * 60, "no 15-minute retry is scheduled");
+    assert.deepEqual(result.again, [], "past the six-hour mark, the account is not claimed again");
+  });
