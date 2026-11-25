@@ -66,13 +66,20 @@ const labelKeys = [
   "runtimeRefused",
   "overloaded",
 ] as const;
-const idKeys = ["boot", "responseRequestId"] as const;
+const idKeys = ["responseRequestId"] as const;
+/** The runtime that served the call: kind, slot, image input and boot, or `unplaced` in each. */
+const runtimeKeys = ["runtime", "slot", "imageInput"] as const;
+const bootKey = "boot";
 export type PoolRequestLabels = Partial<
   Record<(typeof labelKeys)[number], string | boolean | undefined> &
-    Record<(typeof idKeys)[number], string | undefined>
+    Record<
+      (typeof idKeys)[number] | (typeof runtimeKeys)[number] | typeof bootKey,
+      string | undefined
+    >
 >;
 const label = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const uuid = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const runtimeWord = /^[A-Za-z0-9._:-]{1,128}$/;
 const routeLabel = /^\/[A-Za-z0-9/:._-]{0,95}$/;
 const kinds = ["model", "socket", "other"];
 const count = (value: number | undefined) =>
@@ -287,6 +294,14 @@ export function poolRequestEvent(
         const value = labels[key];
         if (typeof value === "string" && uuid.test(value)) fields[key] = value.toLowerCase();
       }
+      for (const key of runtimeKeys) {
+        const value = labels[key];
+        if (typeof value === "string" && runtimeWord.test(value)) fields[key] = value;
+      }
+      // A runtime's boot is the UUID it made at start; anything else is not one.
+      const boot = labels[bootKey];
+      if (boot === "unplaced") fields[bootKey] = boot;
+      else if (typeof boot === "string" && uuid.test(boot)) fields[bootKey] = boot.toLowerCase();
     },
     admitted() {
       marks.admitted ??= clock();

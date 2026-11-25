@@ -1,4 +1,5 @@
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
+import { failedOn, placedOn } from "../runtime-placement.worker.ts";
 import { modelLifetimeFetch } from "../model-lifetime.worker.ts";
 import { RuntimeProtection } from "../runtime-protection.ts";
 import { PoolRuntimeUnhealthy } from "../lifecycle.ts";
@@ -47,6 +48,8 @@ export class RuntimeSlotRouter {
     let outbound: Request | undefined;
     let sent = false;
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "slot_authorize";
+    let placed: SlotIdentity | undefined;
+    const runtime = candidate ? "candidate" : "root";
     try {
       request = await authorize(pending.lease.signal);
       step = "slot_selection";
@@ -69,6 +72,7 @@ export class RuntimeSlotRouter {
         pending.bind(executionKey(active.identity));
         return active.identity;
       });
+      placed = identity;
       step = "slot_health";
       const status = healthy(
         await this.deps.driver.health(
@@ -111,10 +115,11 @@ export class RuntimeSlotRouter {
               statusText: upstream.statusText,
               headers,
             });
-      return this.deps.wrap(tagged, pending.lease);
+      return this.deps.wrap(placedOn(tagged, identity, runtime), pending.lease);
     } catch (error) {
       if (!sent) void outbound?.body?.cancel().catch(() => {});
       pending.lease.release();
+      if (placed) failedOn(error, placed, runtime);
       refuseRuntime(step, error);
     }
   }

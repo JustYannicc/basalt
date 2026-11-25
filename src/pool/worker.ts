@@ -125,6 +125,7 @@ import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { admitModelCall, forwardPoolRequest } from "./forward.worker.ts";
 import { poolArrival, stampPoolReceive, type PoolArrival } from "./pool-arrival.ts";
+import { unplaced } from "./runtime-placement.worker.ts";
 import { startPoolRequestEvent } from "../telemetry/pool-request.ts";
 import { pageTemplate } from "../telemetry/privacy.ts";
 import { endpointMetadata } from "./model-history/record.ts";
@@ -1331,6 +1332,8 @@ async function callController(
         defer,
       }));
       event?.set({
+        // The object never answered, so no runtime of it took the call.
+        ...unplaced,
         cause:
           error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
         overloaded: flag("overloaded"),
