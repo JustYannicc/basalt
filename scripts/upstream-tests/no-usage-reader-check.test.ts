@@ -143,23 +143,23 @@ test("a provider with a usage reader still reads unavailable when its read reall
 });
 
 const owner = OwnerId.make("organization:team-a");
-const account = AccountId.make("acc_devin");
-const devinBinding = (provider: string): AccountAcquisitionBinding => ({
+const account = AccountId.make("acc_subscription");
+const bindingOf = (provider: string, method: string): AccountAcquisitionBinding => ({
   account,
   owner,
   provider: ProviderId.make(provider),
-  method: "devin",
+  method,
   driver: "basalt-home",
   driverRevision: "oauth-v1",
   generation: 1,
   revision: "fixture-r1",
   removal: null,
 });
-const stored = (provider: string) => ({
+const stored = (provider: string, method: string) => ({
   id: account,
   owner,
   provider: ProviderId.make(provider),
-  method: "devin",
+  method,
   credentialGeneration: 1,
 });
 
@@ -170,8 +170,9 @@ const stored = (provider: string) => ({
  */
 const seeded = (
   provider: string,
+  method: string,
   {
-    withCheck = false as boolean | "unresolved",
+    withCheck = false,
     storedRow = true,
   }: { withCheck?: boolean | "unresolved"; storedRow?: boolean } = {},
 ) =>
@@ -191,18 +192,18 @@ const seeded = (
     yield* sql`insert into organization values ('team-a')`;
     yield* sql`insert into executor_providers (id, definition) values (${provider}, '{}')`;
     yield* sql`insert into executor_accounts (id, owner, provider, method, label, encrypted_credentials, created_at, credential_generation)
-      values (${account}, ${owner}, ${provider}, 'devin', 'Devin', ${new Uint8Array([1])}, now(), 1)`;
+      values (${account}, ${owner}, ${provider}, ${method}, 'Subscription', ${new Uint8Array([1])}, now(), 1)`;
     yield* sql`insert into hosted_account_access values (${account}, 'team-a', 'shared', null)`;
     yield* sql`insert into executor_account_acquisitions
       (account, owner, provider, method, driver, driver_revision, generation, revision, removal)
-      values (${account}, ${owner}, ${provider}, 'devin', 'basalt-home', 'oauth-v1', 1, 'fixture-r1', null)`;
+      values (${account}, ${owner}, ${provider}, ${method}, 'basalt-home', 'oauth-v1', 1, 'fixture-r1', null)`;
     if (storedRow)
       yield* sql`insert into executor_account_driver_checks
       (account, owner, driver, driver_revision, binding_revision, generation, checkable, status, reason, checked_at)
       values (${account}, ${owner}, 'basalt-home', 'oauth-v1', 'fixture-r1', 1, true,
         'upstream_unavailable', 'unavailable', now() - interval '7 hours')`;
     const db = database(storage);
-    const binding = devinBinding(provider);
+    const binding = bindingOf(provider, method);
     const health = makeDriverAccountHealth(
       db,
       {
@@ -229,8 +230,8 @@ test("a stored Service unavailable result of a subscription without a check read
   const { identity: provider } = await identity("devin");
   const driver = await run(
     Effect.gen(function* () {
-      const { health } = yield* seeded(provider);
-      return (yield* health.report(stored(provider)))?.driver;
+      const { health } = yield* seeded(provider, "devin");
+      return (yield* health.report(stored(provider, "devin")))?.driver;
     }),
   );
   // With no result and nothing able to check it, the account list's Health cell stays empty.
@@ -244,8 +245,8 @@ test("a stored failure of a provider with a usage reader still reads unavailable
   const { identity: provider } = await identity("anthropic");
   const driver = await run(
     Effect.gen(function* () {
-      const { health } = yield* seeded(provider, { withCheck: true });
-      return (yield* health.report(stored(provider)))?.driver;
+      const { health } = yield* seeded(provider, "claude", { withCheck: true });
+      return (yield* health.report(stored(provider, "claude")))?.driver;
     }),
   );
   assert.equal(driver?.checkable, true);
@@ -256,8 +257,8 @@ test("a stored failure stays visible while its registration cannot be resolved",
   const { identity: provider } = await identity("anthropic");
   const driver = await run(
     Effect.gen(function* () {
-      const { health } = yield* seeded(provider, { withCheck: "unresolved" });
-      return (yield* health.report(stored(provider)))?.driver;
+      const { health } = yield* seeded(provider, "claude", { withCheck: "unresolved" });
+      return (yield* health.report(stored(provider, "claude")))?.driver;
     }),
   );
   // Only a registration known to define no check hides a result; an outage of it hides nothing.
@@ -270,22 +271,23 @@ for (const storedRow of [true, false])
     const { identity: provider } = await identity("devin");
     const result = await run(
       Effect.gen(function* () {
-        const { sql, health } = yield* seeded(provider, { storedRow });
+        const { sql, health } = yield* seeded(provider, "devin", { storedRow });
         const queue = makeAccountRecheckQueue(sql);
         const checks: string[] = [];
         const executor = {
           accounts: {
             health: () =>
               health
-                .report(stored(provider))
+                .report(stored(provider, "devin"))
                 .pipe(
                   Effect.map((saved) => ({ account, apps: [], driver: saved?.driver }) as never),
                 ),
             check: (input: { readonly account: string }) =>
               Effect.gen(function* () {
                 checks.push(input.account);
-                yield* health.check(stored(provider) as never);
-                return { account, apps: [] } as never;
+                yield* health.check(stored(provider, "devin") as never);
+                const saved = yield* health.report(stored(provider, "devin"));
+                return { account, apps: [], driver: saved?.driver } as never;
               }),
           },
         };
