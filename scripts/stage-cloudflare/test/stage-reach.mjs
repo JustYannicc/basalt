@@ -31,11 +31,15 @@ export const unaddressableIds = [
   "/accounts/acct/containers/applications/prod-app",
 ];
 
-/** The account one stage shares with production, other stages and look-alikes. */
-export function sharedAccount(prefix) {
+/**
+ * The account one stage shares with production, other stages and look-alikes; `redirects` are the
+ * requests it answers with a redirect instead (fake-account.mjs).
+ */
+export function sharedAccount(prefix, { redirects } = {}) {
   const others = lookAlikes(prefix);
   return fakeAccount({
     accountId,
+    redirects,
     live: {
       applications: [
         application({ id: "own-app", name: `${prefix}-pool` }),

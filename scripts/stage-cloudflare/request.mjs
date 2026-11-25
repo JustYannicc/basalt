@@ -2,11 +2,14 @@
 // `stageRequests` takes the stage's registered prefix, never an ownership test: it derives that
 // itself (ownership.mjs). `send` takes a structured request, never a path: a declared kind, a
 // declared operation of that kind, the row this stage's own listing returned (or, for a Worker, its
-// name), and a body. It builds the URL from a fixed template per kind and operation, and refuses
+// name), and a body checked against its operation's exact schema (bodies.mjs). It builds the URL
+// from a fixed template per kind and operation, and refuses
 // before anything is sent unless every name in the URL is inside the stage's prefix and no name
 // production's records use, and every id in it is the one this stage's own listing recorded for
 // that name, in a strict charset. A resource addressed by id is read back by that id first, and is
-// changed or deleted only when the answer names the recorded, owned name. Account-wide reads take
+// changed or deleted only when the answer names the recorded, owned name. Every request refuses
+// redirects, and any redirect answer is refused, so a request reaches only the URL checked here.
+// Account-wide reads take
 // nothing from the caller, and their rows are filtered by ownership before they are returned.
 // Registry credentials are minted and used here and never returned. Every table below has no
 // prototype, and every field of a request, an option or an answer is read as the object's own, so
@@ -25,6 +28,7 @@ import {
   ownString,
   tagsOf,
 } from "./answers.mjs";
+import { checkedBody, recordedConfiguration } from "./bodies.mjs";
 import { isProductionName, stageOwnership } from "./ownership.mjs";
 
 const API = "https://api.cloudflare.com/client/v4";
@@ -132,6 +136,20 @@ export function unchangedWhenParsed(url) {
   return url;
 }
 
+/**
+ * Why no URL may be built from a recorded row, or undefined when one may: its name must be one
+ * `mayAddress` accepts and its id a plain segment, and a Worker, which has no read-back and is
+ * addressed by its name, must be recorded under that name as its id. Exported only so its refusals
+ * can be tested directly; it sends nothing.
+ */
+export function unaddressable(kind, entry, mayAddress) {
+  if (!mayAddress(entry.name) || typeof entry.id !== "string" || !SEGMENT.test(entry.id))
+    return `the ${kind} row's name or id is not one this stage may address`;
+  if (KINDS[kind].byName && entry.id !== entry.name)
+    return `the ${kind} ${entry.name} is recorded under another id`;
+  return undefined;
+}
+
 /** `value`'s own fields, each read once, refused unless every one is in `allowed`. */
 function ownFields(value, allowed, what) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -199,6 +217,9 @@ export function stageRequests(options) {
     entry.id = kind === "images" ? known.name : known.id;
     entry.name = ownerOf(kind, known);
     entry.known = known;
+    // What a change may send is checked against this, never against the row as it is later.
+    entry.configuration =
+      kind === "applications" ? recordedConfiguration(ownField(row, "configuration")) : undefined;
     entry.tags = Object.freeze([]);
     entry.digests = new Set();
     records.set(row, entry);
@@ -211,25 +232,35 @@ export function stageRequests(options) {
       throw refuse(`the ${kind} row is not one this stage listed as its own`);
     if (!sameRow(snapshot(row), entry.known))
       throw refuse(`the ${kind} row changed after this stage listed it`);
-    if (!stageName(entry.name) || typeof entry.id !== "string" || !SEGMENT.test(entry.id))
-      throw refuse(`the ${kind} row's name or id is not one this stage may address`);
+    const refused = unaddressable(kind, entry, stageName);
+    if (refused) throw refuse(refused);
     return entry;
   }
 
-  /** The one call of the fetcher: an init with no prototype, and the answer read once. */
-  async function exchange(url, method, headers, body) {
+  /**
+   * The one call of the fetcher: an init with no prototype that refuses redirects, and the answer
+   * read once. A redirect answer a transport hands back anyway is refused: the location was never
+   * checked.
+   */
+  async function exchange(url, method, label, headers, body) {
     unchangedWhenParsed(url);
     const init = Object.create(null);
     init.method = method;
     init.headers = headers;
+    init.redirect = "error";
     init.signal = signal();
     if (body !== undefined) init.body = JSON.stringify(body);
-    return answerOf(await fetcher(url, init));
+    const answer = await answerOf(await fetcher(url, init));
+    if (answer.status < 200 || (answer.status >= 300 && answer.status <= 399))
+      throw refuse(
+        `${method} ${label} answered a redirect (HTTP ${answer.status}); a stage request is never redirected`,
+      );
+    return answer;
   }
   const bearer = () =>
     table({ Authorization: `Bearer ${token}`, "Content-Type": "application/json" });
   const v4 = async (url, method, label, { absent = false, body } = {}) =>
-    envelopeOf(await exchange(url, method, bearer(), body), { label, method, absent });
+    envelopeOf(await exchange(url, method, label, bearer(), body), { label, method, absent });
 
   /** A registry authorization for `access`, minted once and never handed out. */
   function authorization(access) {
@@ -347,7 +378,7 @@ export function stageRequests(options) {
       url: `${collection}/${encodeURIComponent(entry.id)}${onResource.below}${query}`,
       method: onResource.method,
       absent: onResource.absent,
-      body,
+      body: onResource.body ? checkedBody(operation, body, entry.configuration) : undefined,
       entry,
     });
   }
@@ -362,7 +393,12 @@ export function stageRequests(options) {
       const headers = Object.create(null);
       headers.Authorization = await authorization(planned.registry);
       if (planned.accept) headers.Accept = planned.accept;
-      const answered = await exchange(planned.url, planned.method, headers);
+      const answered = await exchange(
+        planned.url,
+        planned.method,
+        `registry ${operation}`,
+        headers,
+      );
       return registryAnswer(operation, planned, reference, answered);
     }
     if (planned.list) return listing(kind, operation, planned);

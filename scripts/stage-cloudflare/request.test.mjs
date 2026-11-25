@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as answersModule from "./answers.mjs";
 import * as apiModule from "./api.mjs";
+import * as bodiesModule from "./bodies.mjs";
 import * as ownershipModule from "./ownership.mjs";
 import * as registryModule from "./registry.mjs";
 import * as requestModule from "./request.mjs";
@@ -19,10 +20,17 @@ import {
 } from "./test/stage-reach.mjs";
 
 const { stageCloudflare } = apiModule;
-const { STAGE_PREFIXES } = ownershipModule;
-const { KINDS, stageRequests } = requestModule;
+const { STAGE_PREFIXES, stageOwnership } = ownershipModule;
+const { KINDS, stageRequests, unaddressable } = requestModule;
 const source = (file) => readFileSync(new URL(file, import.meta.url), "utf8");
-const MODULE = ["api.mjs", "request.mjs", "answers.mjs", "registry.mjs", "ownership.mjs"];
+const MODULE = [
+  "api.mjs",
+  "request.mjs",
+  "answers.mjs",
+  "bodies.mjs",
+  "registry.mjs",
+  "ownership.mjs",
+];
 const count = (text, pattern) => [...text.matchAll(pattern)].length;
 
 test("exactly one place in the module calls the fetcher, and nothing else holds it", () => {
@@ -33,6 +41,7 @@ test("exactly one place in the module calls the fetcher, and nothing else holds 
     "api.mjs": 0,
     "request.mjs": 1,
     "answers.mjs": 0,
+    "bodies.mjs": 0,
     "registry.mjs": 0,
     "ownership.mjs": 0,
   });
@@ -40,7 +49,7 @@ test("exactly one place in the module calls the fetcher, and nothing else holds 
   // api.mjs hands its options to the choke point whole; only request.mjs names the fetcher.
   assert.equal(count(source("api.mjs"), /\bfetcher\b/gu), 0);
   assert.match(source("api.mjs"), /stageRequests\(options\)/u);
-  for (const file of ["answers.mjs", "registry.mjs", "ownership.mjs"])
+  for (const file of ["answers.mjs", "bodies.mjs", "registry.mjs", "ownership.mjs"])
     assert.equal(count(source(file), /\bfetch(?:er)?\b|https?:\/\//gu), 0, file);
   assert.equal(count(source("api.mjs"), /https?:\/\//gu), 0);
 });
@@ -57,6 +66,7 @@ const EXPORTS = {
       "the choke point, built from a registered prefix only; every kind and operation is covered below",
     KINDS: "the declared kinds and operations",
     unchangedWhenParsed: "the sender's last check over a URL string; sends nothing",
+    unaddressable: "the sender's check over a recorded row; sends nothing",
   },
   "answers.mjs": {
     DIGEST: "a constant",
@@ -71,6 +81,10 @@ const EXPORTS = {
     tagsOf: "reads an answer it is handed; sends nothing",
     manifestOf: "reads an answer it is handed; sends nothing",
     deletedOf: "reads an answer it is handed; sends nothing",
+  },
+  "bodies.mjs": {
+    checkedBody: "checks and copies a body it is handed; sends nothing",
+    recordedConfiguration: "copies a listed configuration it is handed; sends nothing",
   },
   "registry.mjs": {
     registryOperations: "holds only a send; covered through images and removeImage below",
@@ -90,6 +104,7 @@ test("every export of the module is accounted for", () => {
     ["api.mjs", apiModule],
     ["request.mjs", requestModule],
     ["answers.mjs", answersModule],
+    ["bodies.mjs", bodiesModule],
     ["registry.mjs", registryModule],
     ["ownership.mjs", ownershipModule],
   ])
@@ -522,3 +537,29 @@ for (const prefix of STAGE_PREFIXES)
       assert.deepEqual(ctx.fake.live.tags[`${accountId}/basalt-poolcontainer-production`], ["p1"]);
     }
   });
+
+test("a Worker is addressed only where its recorded id is its name", () => {
+  const prefix = STAGE_PREFIXES[0];
+  const owned = stageOwnership(prefix);
+  const own = `${prefix}-gateway`;
+  assert.equal(unaddressable("scripts", { id: own, name: own }, owned), undefined);
+  for (const id of ["basalt-production-poolworker", `${prefix}-pool`, `${own}x`])
+    assert.equal(
+      unaddressable("scripts", { id, name: own }, owned),
+      `the scripts ${own} is recorded under another id`,
+      id,
+    );
+  assert.equal(
+    unaddressable(
+      "scripts",
+      { id: "basalt-production-poolworker", name: "basalt-production-poolworker" },
+      owned,
+    ),
+    "the scripts row's name or id is not one this stage may address",
+  );
+  // A kind addressed by an opaque id is read back by it instead; its id is not its name.
+  assert.equal(
+    unaddressable("applications", { id: "own-app", name: `${prefix}-pool` }, owned),
+    undefined,
+  );
+});

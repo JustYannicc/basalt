@@ -16,6 +16,12 @@ const run = (env) =>
       ...env,
     },
   });
+/** Requests the scale test sent that would follow a redirect: its token goes only where it built. */
+const unredirected = (operations) =>
+  operations
+    .filter((row) => row.redirect !== "error")
+    .map((row) => `${row.method} ${row.host}${row.path}`);
+
 test("CI refuses production, unsupported stages, branches and local invocation before credentials", () => {
   assert.equal(run({}).status, 0);
   for (const env of [
@@ -117,6 +123,7 @@ test("expiry reclaims partial resources without unused KV access and publishes o
   );
   assert.equal(result.status, 0, result.stderr);
   const operations = readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(unredirected(operations), [], "every provider request refuses redirects");
   assert.ok(!operations.some((row) => row.path.includes("/storage/kv/")));
   assert.ok(
     operations.some((row) => row.method === "DELETE" && row.host === "api.planetscale.com"),
@@ -283,6 +290,14 @@ test("resize submits a described rollout and identifies safe rollout refusal det
       (row) => row.method === "POST" && row.path.endsWith("/rollouts"),
     );
     assert.ok(rollout.body.description);
+    // The resize's own bodies pass the stage module's body check and are sent.
+    const patch = operations.find((row) => row.method === "PATCH");
+    assert.equal(patch.body.max_instances, 1);
+    assert.equal(
+      rollout.body.target_configuration.instance_type,
+      patch.body.configuration.instance_type,
+    );
+    assert.deepEqual(unredirected(operations), [], "every provider request refuses redirects");
     const failure = readFileSync(join(directory, "results", "failure.json"), "utf8");
     assert.doesNotMatch(failure + result.stderr, /private-(token|provider-response)-sentinel/);
     if (refused) {

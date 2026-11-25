@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { stageCloudflare } from "./api.mjs";
 import {
   RELEASE_FIRST_WORDS,
+  RELEASE_STAGE_WORDS,
+  STAGE_PREFIXES,
   isProductionName,
   prefixRefusal,
   stageOwnership,
@@ -98,4 +100,25 @@ test("no stage owns another stage's names, and an unregistered prefix is no stag
       /^Error: Refused stage prefix: a stage prefix is one of STAGE_PREFIXES/u,
       prefix,
     );
+});
+
+test("the registered prefixes and the release words cannot be changed at run time", () => {
+  const fetcher = async () => assert.fail("a refused prefix called the account");
+  for (const [label, words, added] of [
+    ["STAGE_PREFIXES", STAGE_PREFIXES, "basalt-route-scratch"],
+    ["RELEASE_STAGE_WORDS", RELEASE_STAGE_WORDS, "scale"],
+    ["RELEASE_FIRST_WORDS", RELEASE_FIRST_WORDS, "180"],
+  ]) {
+    const before = [...words];
+    assert.throws(() => words.push(added), TypeError, label);
+    assert.throws(() => words.splice(0, 1), TypeError, label);
+    assert.throws(() => (words[0] = added), TypeError, label);
+    assert.deepEqual([...words], before, label);
+  }
+  assert.deepEqual([...STAGE_PREFIXES], stagePrefixes);
+  assert.throws(
+    () =>
+      stageCloudflare({ accountId: "acct", token: "t", prefix: "basalt-route-scratch", fetcher }),
+    /^Error: Refused stage prefix: a stage prefix is one of STAGE_PREFIXES/u,
+  );
 });

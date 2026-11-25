@@ -25,15 +25,24 @@ const COLLECTIONS = {
   mtls_certificates: "certificates",
 };
 
+/** How fetch treats a redirect answer: the method it re-sends with, as the Fetch standard says. */
+const followedMethod = (status, method) =>
+  status === 303 || ((status === 301 || status === 302) && method === "POST") ? "GET" : method;
+
 /**
  * `live` holds the rows of each kind, `bindings` each Worker's plain-text settings, `tags` each
- * registry repository's tags. `calls` lists every method, path and URL as sent, for assertions only.
+ * registry repository's tags. `redirects` maps `"<METHOD> <url>"` to the `{ status, location }` the
+ * account answers that request with instead; the fetcher then treats the answer as fetch does for
+ * the request's `redirect` mode: it re-sends to the location on `follow` (fetch's default), rejects
+ * on `error` and returns the answer on `manual`. `calls` lists every method, path, URL, redirect
+ * mode and body as sent, for assertions only.
  */
 export function fakeAccount({
   accountId = "acct",
   live: rows = {},
   bindings = {},
   tags = {},
+  redirects = {},
   workersSubdomain = "acct-sub",
 } = {}) {
   const live = {
@@ -49,8 +58,23 @@ export function fakeAccount({
   const fetcher = async (url, options = {}) => {
     const { hostname, pathname, searchParams } = new URL(url);
     const method = options.method ?? "GET";
-    const call = { method, host: hostname, path: pathname, url: String(url) };
+    const mode = options.redirect ?? "follow";
+    const call = { method, host: hostname, path: pathname, url: String(url), redirect: mode };
+    if (typeof options.body === "string") call.body = options.body;
     calls.push(call);
+    const redirect = redirects[`${method} ${url}`];
+    if (redirect) {
+      if (mode === "error") throw new TypeError("fetch failed");
+      if (mode === "manual")
+        return new Response(
+          null,
+          init({ status: redirect.status, headers: { location: redirect.location } }),
+        );
+      return fetcher(redirect.location, {
+        ...options,
+        method: followedMethod(redirect.status, method),
+      });
+    }
     if (hostname === "registry.cloudflare.com") return registry(method, pathname);
     const prefix = `/client/v4/accounts/${accountId}/`;
     if (!pathname.startsWith(prefix)) return json({}, { status: 404 });

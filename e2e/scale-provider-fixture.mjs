@@ -39,6 +39,7 @@ globalThis.fetch = async (target, init = {}) => {
     host: url.hostname,
     path: url.pathname,
     method,
+    redirect: init.redirect ?? "follow",
     ...(init.body ? { body: JSON.parse(init.body) } : {}),
   };
   appendFileSync(process.env.SCALE_FIXTURE_CALLS, JSON.stringify(record) + "\n");

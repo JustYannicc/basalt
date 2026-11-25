@@ -9,22 +9,31 @@
 // release name. ownership.test.mjs derives those names from the stack's source and fails when a
 // new one starts with a word missing here.
 //
+// These tables are frozen, so nothing at run time can register a prefix or drop a release word.
+//
 // Stages share the account with each other too. Only a registered prefix is a stage's, and no
 // registered prefix continues another at a word boundary (basalt-route-scratch would own
 // basalt-route-scratch-1-*), so two stages never own the same name.
 
 /** Every stage tool's prefix: scale-180, test-emulated-upstream, test-route-scratch-1 and -2. */
-export const STAGE_PREFIXES = [
+export const STAGE_PREFIXES = Object.freeze([
   "basalt-180-scale",
   "basalt-emulated-upstream",
   "basalt-route-scratch-1",
   "basalt-route-scratch-2",
-];
+]);
 
 /** Words of the release entry's stage names: production, preview-pr-N, test-pr-N, test-rehearsal-N. */
-export const RELEASE_STAGE_WORDS = ["production", "preview", "staging", "test", "rehearsal", "pr"];
+export const RELEASE_STAGE_WORDS = Object.freeze([
+  "production",
+  "preview",
+  "staging",
+  "test",
+  "rehearsal",
+  "pr",
+]);
 /** First words of the names the release stack and its operators give their resources. */
-export const RELEASE_FIRST_WORDS = [
+export const RELEASE_FIRST_WORDS = Object.freeze([
   "api",
   "app",
   "appoutbound",
@@ -56,7 +65,7 @@ export const RELEASE_FIRST_WORDS = [
   "synthetic",
   "vault",
   "vaultattachments",
-];
+]);
 const SHAPE = /^basalt(?:-[a-z0-9]+){2,}$/u;
 
 /**

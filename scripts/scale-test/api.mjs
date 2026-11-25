@@ -22,6 +22,8 @@ export async function pg(method = "GET") {
       headers: {
         Authorization: `${process.env.PLANETSCALE_API_TOKEN_ID}:${process.env.PLANETSCALE_API_TOKEN}`,
       },
+      // The token is sent only to the URL built here, never to a location an answer names.
+      redirect: "error",
       signal: controlSignal(),
     },
   );
