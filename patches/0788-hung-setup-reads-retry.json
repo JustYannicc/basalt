@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-hung-setup-reads-retry",
+  "file": "0788-hung-setup-reads-retry.patch",
+  "content_sha256": "e9799c2b48f928d19a1ab5798fc170e4ca264d4e231601307250a5bbb34f51ff",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

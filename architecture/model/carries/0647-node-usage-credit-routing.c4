@@ -1,7 +1,7 @@
 model {
   extend basalt.modelGateway {
     metadata {
-      constraint "Each retained and duplex WebSocket turn validates the bound credential against current Home funding policy before forwarding bytes. An explicit provider pre-content refusal may retry on the same downstream socket; the new attempt binds funding checks to its selected account. A funding refusal asks the client to reconnect with full context and never transfers an account-owned response ID, forwards the denied successor or interrupts an in-flight turn. Old Home cannot silently treat validation as another dispatch. Wire proofs accept Redis command casing while requiring the validation request type and pinned account identity."
+      constraint "Each retained and duplex WebSocket turn validates the bound credential against current Home funding policy before forwarding bytes. An explicit provider pre-content refusal may retry on the same downstream socket; the new attempt binds funding checks to its selected account. A funding refusal asks the client to reconnect with full context and never transfers an account-owned response ID, forwards the denied successor or interrupts an in-flight turn. Old Home cannot silently treat validation as another dispatch. Wire proofs accept Redis command casing while requiring the validation request type and pinned account identity. The routing applies on top of the metadata-only usage projection."
     }
   }
 }
