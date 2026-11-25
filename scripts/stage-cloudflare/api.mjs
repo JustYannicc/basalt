@@ -1,16 +1,16 @@
-// The Cloudflare account API as the test stages call it. It fails closed: a refused call, a
-// `success: false` envelope or a listing without its array throws, so a wrong path or a missing
-// permission never reads as an empty account. Refusals carry only the operation, the status, the
-// error codes and known field names; remote messages and pointers may hold secrets.
+// The one Cloudflare API caller for isolated test stages. A stage tool names its prefix and gets
+// back operations on what that prefix owns; it never gets a raw path. Every operation checks
+// ownership before it calls Cloudflare, so no stage can read, change or delete a resource the
+// release stack or another stage owns.
+//
+// It fails closed: a refused call, a `success: false` envelope or a listing without its array
+// throws, so a wrong path or a missing permission never reads as an empty account. Refusals carry
+// only the operation, the status, the error codes and known field names; remote messages and
+// pointers may hold secrets.
+import { stageOwnership } from "./ownership.mjs";
+import { REGISTRY, registrySession } from "./registry.mjs";
+
 const API = "https://api.cloudflare.com/client/v4";
-const COLLECTIONS = [
-  "containers/applications",
-  "workers/durable_objects/namespaces",
-  "workers/scripts",
-  "workers/subdomain",
-  "hyperdrive/configs",
-  "mtls_certificates",
-];
 const FIELDS = [
   "description",
   "strategy",
@@ -22,7 +22,34 @@ const FIELDS = [
 ];
 // Refusals are small JSON envelopes; a larger body is cancelled rather than kept.
 const REFUSAL_BYTES = 65536;
+
+/**
+ * What a stage can hold, where it is listed, and the name ownership is decided on. A namespace
+ * belongs to the Worker that defines it; only one whose Worker is gone is judged by its own name.
+ * A Worker is addressed by its name, so it alone can be named without being listed first.
+ */
+const KINDS = {
+  applications: { path: "containers/applications", names: (row) => [row.name] },
+  namespaces: {
+    path: "workers/durable_objects/namespaces",
+    names: (row) => [row.script ? row.script : row.name],
+  },
+  scripts: {
+    path: "workers/scripts",
+    names: (row) => [row.id],
+    byName: true,
+    remove: "?force=true",
+  },
+  drives: { path: "hyperdrive/configs", names: (row) => [row.name] },
+  certificates: { path: "mtls_certificates", names: (row) => [row.name] },
+};
+const COLLECTIONS = [...Object.values(KINDS).map((kind) => kind.path), "workers/subdomain"];
+export const WORKER_KINDS = ["applications", "namespaces", "scripts"];
+
 const own = new WeakSet();
+// Rows a listing of this module returned: only those can be read back, changed or deleted by id.
+const issued = new WeakSet();
+const issue = (row) => (issued.add(row), row);
 
 /** Whether this module raised the error itself, so its message holds no remote text. */
 export const isCloudflareApiError = (error) => own.has(error);
@@ -32,15 +59,11 @@ const fail = (message) => {
   return error;
 };
 
-/** Names a stage owns: those starting with its prefix and a dash. */
-export const ownedBy = (prefix) => (name) =>
-  typeof name === "string" && name.startsWith(`${prefix}-`);
-
 function refusal(path, method, status, data) {
   const collection =
     COLLECTIONS.find(
       (name) => path === name || path.startsWith(`${name}/`) || path.startsWith(`${name}?`),
-    ) ?? "request";
+    ) ?? (path.startsWith("containers/registries/") ? "containers/registries" : "request");
   const operation = collection + (path.endsWith("/rollouts") ? "/rollouts" : "");
   const errors = Array.isArray(data?.errors) ? data.errors.slice(0, 20) : [];
   const codes = [...new Set(errors.map((error) => error?.code).filter(Number.isSafeInteger))];
@@ -77,15 +100,25 @@ async function boundedJson(response) {
 }
 
 /**
- * One account's API. `signal` gives each call its deadline. `cf` throws on any refusal; `find`
- * reads one resource by its id and answers null only when it does not exist.
+ * One stage's view of one account. `prefix` is the stage's (see ownership.mjs); `owns`, when
+ * given, narrows it further. Construction throws on a prefix or predicate that could own a
+ * release name. `signal` gives each call its deadline.
  */
-export function cloudflareApi({
+export function stageCloudflare({
   accountId,
   token,
+  prefix,
+  owns,
   fetcher = fetch,
   signal = () => AbortSignal.timeout(30_000),
 }) {
+  let owned;
+  try {
+    owned = stageOwnership(prefix, owns);
+  } catch (error) {
+    throw fail(error.message);
+  }
+
   const call = (path, method, body) =>
     fetcher(`${API}/accounts/${encodeURIComponent(accountId)}/${path}`, {
       method,
@@ -93,7 +126,13 @@ export function cloudflareApi({
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: signal(),
     });
-  async function answer(path, method, response) {
+  async function send(path, method = "GET", body) {
+    const response = await call(path, method, body);
+    // Only a read of one resource answers absent; a listing or a write never does.
+    if (response.status === 404 && method === "GET" && !path.includes("?")) {
+      await response.body?.cancel();
+      return null;
+    }
     if (!response.ok) throw refusal(path, method, response.status, await boundedJson(response));
     let data;
     try {
@@ -105,21 +144,10 @@ export function cloudflareApi({
     if (data?.success === false) throw refusal(path, method, response.status, data);
     return data;
   }
-  async function cf(path, method = "GET", body) {
-    return answer(path, method, await call(path, method, body));
-  }
-  async function find(path) {
-    const response = await call(path, "GET");
-    if (response.status === 404) {
-      await response.body?.cancel();
-      return null;
-    }
-    return answer(path, "GET", response);
-  }
   async function list(path) {
     const rows = [];
     for (let page = 1; page <= 100; page++) {
-      const data = await find(`${path}?page=${page}&per_page=100`);
+      const data = await send(`${path}?page=${page}&per_page=100`);
       if (!Array.isArray(data?.result)) throw fail("Unrecognized Cloudflare list response");
       rows.push(...data.result);
       if (data.result_info?.total_pages !== undefined) {
@@ -128,28 +156,83 @@ export function cloudflareApi({
     }
     throw fail("Cloudflare inventory exceeded pagination limit");
   }
-  return { cf, find, list };
-}
 
-/** The account's container applications, Durable Object namespaces and Workers, listed at once. */
-export const workerListings = (list) => [
-  list("containers/applications"),
-  list("workers/durable_objects/namespaces"),
-  list("workers/scripts"),
-];
+  const kindOf = (kind) => {
+    if (!Object.hasOwn(KINDS, kind)) throw fail(`Refused: ${String(kind)} is not a stage resource`);
+    return KINDS[kind];
+  };
+  const ownsRow = (kind, row) => KINDS[kind].names(row).every(owned);
+  /** The path of one owned resource, or a refusal before anything is called. */
+  function resource(kind, target) {
+    const spec = kindOf(kind);
+    if (spec.byName && typeof target === "string") {
+      if (!owned(target)) throw fail(`Refused: ${kind} ${target} is not this stage's`);
+      return `${spec.path}/${encodeURIComponent(target)}`;
+    }
+    if (!issued.has(target) || !ownsRow(kind, target) || typeof target.id !== "string")
+      throw fail(`Refused: the ${kind} row is not one this stage listed as its own`);
+    return `${spec.path}/${encodeURIComponent(target.id)}`;
+  }
 
-/**
- * The stage's rows of those listings. A namespace belongs to the stage when its Worker does,
- * unless `ownsNamespace` says otherwise.
- */
-export function ownedWorkers(
-  [applications, namespaces, scripts],
-  owned,
-  ownsNamespace = (row) => owned(row.script),
-) {
+  /** The stage's rows of each kind, listed account-wide at once. */
+  async function inventory(kinds = WORKER_KINDS) {
+    const listed = await Promise.all(kinds.map((kind) => list(kindOf(kind).path)));
+    return Object.fromEntries(
+      kinds.map((kind, index) => [
+        kind,
+        listed[index].filter((row) => ownsRow(kind, row)).map(issue),
+      ]),
+    );
+  }
+  /** One owned resource, or below it `path` (`/settings`); null when it does not exist. */
+  const read = async (kind, target, path = "") => send(`${resource(kind, target)}${path}`);
+  /** A write to one owned resource, or below it `path` (`/rollouts`). */
+  const change = async (kind, target, { method, path = "", body }) => {
+    if (!["PATCH", "POST", "PUT"].includes(method))
+      throw fail(`Refused: ${method} is not a change`);
+    return send(`${resource(kind, target)}${path}`, method, body);
+  };
+  const remove = async (kind, target) =>
+    send(`${resource(kind, target)}${KINDS[kind].remove ?? ""}`, "DELETE");
+
+  const registry = registrySession({
+    accountId,
+    fetcher,
+    signal,
+    owned,
+    issue,
+    issued: (row) => issued.has(row),
+    fail,
+    async credentials(permissions) {
+      const data = await send(`containers/registries/${REGISTRY}/credentials`, "POST", {
+        permissions,
+        expiration_minutes: 15,
+      });
+      const username = data?.result?.username ?? data?.result?.user;
+      if (data?.success !== true || !username || !data.result?.password)
+        throw fail("Registry credentials answered without a username and password");
+      return `Basic ${Buffer.from(`${username}:${data.result.password}`).toString("base64")}`;
+    },
+  });
+
   return {
-    applications: applications.filter((row) => owned(row.name)),
-    namespaces: namespaces.filter(ownsNamespace),
-    scripts: scripts.filter((row) => owned(row.id)),
+    prefix,
+    owned,
+    inventory,
+    read,
+    change,
+    remove,
+    images: registry.images,
+    removeImage: registry.removeImage,
+    /** The account's workers.dev subdomain, from which a stage Worker's origin follows. */
+    subdomain: async () => (await send("workers/subdomain"))?.result?.subdomain,
+    /**
+     * The image every container application in the account runs, and nothing else of it: the
+     * scale test finds its frozen pool image here. No row is returned, so none can be changed.
+     */
+    imageReferences: async () =>
+      (await list(KINDS.applications.path))
+        .map((row) => row.configuration?.image)
+        .filter((image) => typeof image === "string"),
   };
 }

@@ -48,7 +48,7 @@ export function emulatedStage({
 }) {
   /** The stage Worker's own host on the account's workers.dev subdomain. */
   async function origin() {
-    const subdomain = (await api.cf("workers/subdomain"))?.result?.subdomain;
+    const subdomain = await api.subdomain();
     if (!/^[a-z0-9-]{1,63}$/u.test(subdomain ?? ""))
       throw new StageError("The account has no workers.dev subdomain");
     return `${worker}.${subdomain}.workers.dev`;

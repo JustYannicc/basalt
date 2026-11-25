@@ -7,6 +7,8 @@ import { activeDispatches } from "./dispatch-busy.mjs";
 import { countingText } from "./fixtures.mjs";
 import { publicMessage } from "./public-error.mjs";
 import { checkFailures, emulatedStage, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 const worker = "basalt-emulated-upstream-gateway";
 const hour = 60 * 60_000;
@@ -30,8 +32,8 @@ function fakeApi({ resources = none(), lease } = {}) {
       calls.push("destroy");
       return { before: resources, failures: [] };
     },
-    async cf() {
-      return { result: { subdomain: "acctsub" } };
+    async subdomain() {
+      return "acctsub";
     },
     empty: (found) => Object.values(found).every((rows) => rows.length === 0),
     describe: (found) => found.scripts.map((row) => `Worker ${row.id}`).join(", "),
@@ -213,18 +215,16 @@ const dispatch = {
 };
 const subdomain = "acct-secret-sub";
 /** The account answers the lease and the subdomain; every call to the stage fails like undici. */
+const leased = fakeAccount({
+  live: { scripts: [script(worker)] },
+  bindings: { [worker]: { DELETE_BY: String(NOW + hour) } },
+  workersSubdomain: subdomain,
+});
 const unreachable =
   (reachable = []) =>
-  async (url) => {
+  async (url, init) => {
     const { hostname, pathname } = new URL(url);
-    if (hostname === "api.cloudflare.com") {
-      if (pathname.endsWith("/settings"))
-        return Response.json({
-          success: true,
-          result: { bindings: [{ name: "DELETE_BY", text: String(NOW + hour) }] },
-        });
-      return Response.json({ success: true, result: { subdomain } });
-    }
+    if (hostname === "api.cloudflare.com") return leased.fetcher(url, init);
     if (reachable.includes(pathname)) return new Response("{}", { status: 401 });
     throw new TypeError("fetch failed", {
       cause: Object.assign(new Error(`getaddrinfo ENOTFOUND ${hostname}`), {

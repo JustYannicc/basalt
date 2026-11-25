@@ -7,6 +7,14 @@ import { mockRefusal, mockStarter } from "./mock-start.ts";
 import { countingText, fixtures, fixturesFile, fixturesText } from "./fixtures.mjs";
 import { LONG_COUNT, longMatch, longPrompt, shortPrompt } from "./prompts.ts";
 import { verdict } from "./shapes.mjs";
+import {
+  application,
+  envelope,
+  namespace,
+  refusalBody,
+  script,
+} from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 /** A container that listens only after `listenAfter` health probes, and can be stopped. */
 function fakeContainer({ listenAfter = 3 } = {}) {
@@ -256,120 +264,78 @@ test("each refusal the filter keeps is one the entry throws, in its own words", 
   }
 });
 
-/** A fake account holding the stage's resources beside production's. */
-function fakeAccount() {
-  const live = {
-    applications: [
-      { id: "a1", name: "basalt-emulated-upstream-mock" },
-      { id: "a2", name: "basalt-pool" },
-    ],
-    scripts: [{ id: "basalt-emulated-upstream-gateway" }, { id: "basalt-api" }],
-    namespaces: [
-      { id: "n1", class: "Mock", script: "basalt-emulated-upstream-gateway" },
-      { id: "n2", class: "Pool", script: "basalt-api" },
-    ],
-    tags: {
-      "acct/basalt-emulated-upstream-mock": ["h1"],
-      "acct/basalt-poolcontainer-production": ["p1"],
-      "other/basalt-emulated-upstream-mock": ["x1"],
+const prefix = "basalt-emulated-upstream";
+/** The account holding the stage's resources beside production's. */
+const productionBeside = () =>
+  fakeAccount({
+    live: {
+      applications: [
+        application({ id: "a1", name: `${prefix}-mock` }),
+        application({ id: "a2", name: "basalt-production-poolcontainer" }),
+      ],
+      scripts: [script(`${prefix}-gateway`), script("basalt-production-poolworker")],
+      namespaces: [
+        namespace({ id: "n1", className: "Mock", script: `${prefix}-gateway` }),
+        namespace({ id: "n2", className: "Pool", script: "basalt-production-poolworker" }),
+      ],
     },
-  };
-  const deletes = [];
-  const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
-  const fetcher = async (url, init = {}) => {
-    const { pathname } = new URL(url);
-    const method = init.method ?? "GET";
-    if (method === "DELETE") deletes.push(pathname);
-    if (pathname.endsWith("/credentials"))
-      return json({ success: true, result: { username: "u", password: "p" } });
-    if (pathname === "/v2/_catalog") return json({ repositories: Object.keys(live.tags) });
-    const tagList = /^\/v2\/(.+)\/tags\/list$/u.exec(pathname);
-    if (tagList) return json({ tags: live.tags[tagList[1]] });
-    const manifest = /^\/v2\/(.+)\/manifests\/(.+)$/u.exec(pathname);
-    if (manifest) {
-      if (method === "DELETE") {
-        live.tags[manifest[1]] = [];
-        return new Response(null, { status: 202 });
-      }
-      return new Response("{}", {
-        headers: { "docker-content-digest": `sha256:${"a".repeat(64)}` },
-      });
-    }
-    const rest = pathname.replace("/client/v4/accounts/acct/", "");
-    if (method === "DELETE") {
-      const [kind, , id] = rest.split("/");
-      if (kind === "containers")
-        live.applications = live.applications.filter((row) => row.id !== id);
-      else {
-        live.scripts = live.scripts.filter((row) => row.id !== rest.split("/")[2]);
-        live.namespaces = live.namespaces.filter((row) => row.script !== rest.split("/")[2]);
-      }
-      return json({ success: true });
-    }
-    const rows = {
-      "containers/applications": live.applications,
-      "workers/scripts": live.scripts,
-      "workers/durable_objects/namespaces": live.namespaces,
-    }[rest];
-    return rows ? json({ result: rows }) : json({}, 404);
-  };
-  return { live, deletes, fetcher };
-}
+    tags: {
+      [`acct/${prefix}-mock`]: ["h1"],
+      "acct/basalt-poolcontainer-production": ["p1"],
+      [`other/${prefix}-mock`]: ["x1"],
+    },
+  });
+const account = (fetcher) => emulatedAccount({ accountId: "acct", token: "t", prefix, fetcher });
 
 test("the inventory and the destroy touch only what carries the stage's prefix, then prove it gone", async () => {
-  const { live, deletes, fetcher } = fakeAccount();
-  const api = emulatedAccount({
-    accountId: "acct",
-    token: "t",
-    prefix: "basalt-emulated-upstream",
-    fetcher,
-  });
+  const { live, calls, fetcher } = productionBeside();
+  const api = account(fetcher);
   const found = await api.inventory();
   assert.deepEqual(
     api.describe(found),
-    "container application basalt-emulated-upstream-mock, Worker basalt-emulated-upstream-gateway, Durable Object namespace Mock of basalt-emulated-upstream-gateway, registry repository basalt-emulated-upstream-mock (1 tags)",
+    `container application ${prefix}-mock, Worker ${prefix}-gateway, Durable Object namespace Mock of ${prefix}-gateway, registry repository ${prefix}-mock (1 tags)`,
   );
   await api.destroy();
+  const deletes = calls.filter((call) => call.method === "DELETE").map((call) => call.path);
+  assert.ok(deletes.length >= 3);
   assert.ok(
-    deletes.every((path) => path.includes("basalt-emulated-upstream") || path.endsWith("/a1")),
+    deletes.every((path) => path.includes(prefix) || path.endsWith("/a1")),
+    deletes,
   );
   assert.deepEqual(
     live.applications.map((row) => row.name),
-    ["basalt-pool"],
+    ["basalt-production-poolcontainer"],
   );
   assert.deepEqual(
     live.scripts.map((row) => row.id),
-    ["basalt-api"],
+    ["basalt-production-poolworker"],
   );
   assert.deepEqual(live.tags["acct/basalt-poolcontainer-production"], ["p1"]);
-  assert.deepEqual(live.tags["other/basalt-emulated-upstream-mock"], ["x1"]);
+  assert.deepEqual(live.tags[`other/${prefix}-mock`], ["x1"]);
   assert.equal(api.empty(await api.inventory()), true);
 });
 
 test("a destroy that leaves anything behind names what remains", async () => {
-  const { fetcher } = fakeAccount();
+  const { fetcher } = productionBeside();
   // A Worker delete that fails leaves its Worker and namespace in place.
   const failing = (url, init) =>
     init?.method === "DELETE" && url.includes("/workers/scripts/")
-      ? Promise.resolve(new Response("{}", { status: 500 }))
+      ? Promise.resolve(
+          Response.json(refusalBody([{ code: 10013, message: "x" }]), { status: 500 }),
+        )
       : fetcher(url, init);
-  const api = emulatedAccount({
-    accountId: "acct",
-    token: "t",
-    prefix: "basalt-emulated-upstream",
-    fetcher: failing,
-  });
   await assert.rejects(
-    api.destroy(),
-    /remain after teardown: Worker basalt-emulated-upstream-gateway, Durable Object namespace Mock of basalt-emulated-upstream-gateway; failed: Worker basalt-emulated-upstream-gateway: Cloudflare DELETE workers\/scripts failed \(500\)/u,
+    account(failing).destroy(),
+    new RegExp(
+      `remain after teardown: Worker ${prefix}-gateway, Durable Object namespace Mock of ${prefix}-gateway; failed: Worker ${prefix}-gateway: Cloudflare DELETE workers/scripts failed \\(500\\)`,
+      "u",
+    ),
   );
 });
 
-const account = (fetcher) =>
-  emulatedAccount({ accountId: "acct", token: "t", prefix: "basalt-emulated-upstream", fetcher });
-/** The fake account, with one Cloudflare listing answered by `answer` instead. */
+/** The account, with one Cloudflare listing answered by `answer` instead. */
 const withListing = (listing, answer) => {
-  const { fetcher } = fakeAccount();
+  const { fetcher } = productionBeside();
   return (url, init) =>
     new URL(url).pathname.endsWith(`/acct/${listing}`)
       ? Promise.resolve(answer())
@@ -377,30 +343,26 @@ const withListing = (listing, answer) => {
 };
 
 test("a refused, failed or unrecognised listing stops the inventory instead of reading as empty", async () => {
-  const json =
-    (value, status = 200) =>
+  const answer =
+    (body, status = 200) =>
     () =>
-      new Response(JSON.stringify(value), { status });
-  for (const [label, answer, message] of [
-    ["a 404", json({}, 404), /Unrecognized Cloudflare list response/u],
+      Response.json(body, { status });
+  for (const [label, respond, message] of [
+    ["a 404", answer({}, 404), /Cloudflare GET workers\/scripts failed \(404\)/u],
     [
       "a 403",
-      json({ success: false, errors: [{ code: 10000, message: "secret text" }] }, 403),
+      answer(refusalBody([{ code: 10000, message: "secret text" }]), 403),
       /Cloudflare GET workers\/scripts failed \(403\)/u,
     ],
-    [
-      "success false",
-      json({ success: false, result: [] }),
-      /Cloudflare GET workers\/scripts failed \(200\)/u,
-    ],
-    ["no array", json({ success: true, result: {} }), /Unrecognized Cloudflare list response/u],
+    ["success false", answer(refusalBody([])), /Cloudflare GET workers\/scripts failed \(200\)/u],
+    ["no array", answer(envelope({})), /Unrecognized Cloudflare list response/u],
     [
       "no JSON",
       () => new Response("<html>x</html>"),
       /Cloudflare GET workers\/scripts failed \(200\)/u,
     ],
   ]) {
-    const api = account(withListing("workers/scripts", answer));
+    const api = account(withListing("workers/scripts", respond));
     await assert.rejects(api.inventory(), (error) => {
       assert.match(error.message, message, label);
       assert.doesNotMatch(error.message, /secret text|html/u, label);
@@ -411,47 +373,22 @@ test("a refused, failed or unrecognised listing stops the inventory instead of r
   }
 });
 
-test("a listing follows total_pages where the API gives it", async () => {
-  const { fetcher } = fakeAccount();
-  const pages = [];
-  const paged = (url, init) => {
-    const { pathname, searchParams } = new URL(url);
-    if (!pathname.endsWith("/acct/workers/scripts")) return fetcher(url, init);
-    const page = Number(searchParams.get("page"));
-    pages.push(page);
-    const result =
-      page === 2 ? [{ id: "basalt-emulated-upstream-gateway" }] : [{ id: `other-${page}` }];
-    return Promise.resolve(
-      new Response(JSON.stringify({ success: true, result, result_info: { total_pages: 3 } })),
-    );
-  };
-  const found = await account(paged).inventory();
-  assert.deepEqual(pages, [1, 2, 3]);
-  assert.deepEqual(
-    found.scripts.map((row) => row.id),
-    ["basalt-emulated-upstream-gateway"],
-  );
-});
-
 test("a missing Worker reads as no lease; any other refusal of its settings throws", async () => {
   const { fetcher } = fakeAccount();
-  assert.equal(await account(fetcher).lease("basalt-emulated-upstream-gateway"), undefined);
+  assert.equal(await account(fetcher).lease(`${prefix}-gateway`), undefined);
+  const leased = fakeAccount({
+    live: { scripts: [script(`${prefix}-gateway`)] },
+    bindings: { [`${prefix}-gateway`]: { DELETE_BY: "1767225600000" } },
+  });
+  assert.equal(await account(leased.fetcher).lease(`${prefix}-gateway`), 1767225600000);
   const refused = (url, init) =>
     url.includes("/settings")
-      ? Promise.resolve(new Response("{}", { status: 403 }))
+      ? Promise.resolve(Response.json({}, { status: 403 }))
       : fetcher(url, init);
   await assert.rejects(
-    account(refused).lease("basalt-emulated-upstream-gateway"),
+    account(refused).lease(`${prefix}-gateway`),
     /Cloudflare GET workers\/scripts failed \(403\)/u,
   );
-});
-
-test("an empty or unrecognised registry catalog stops the inventory", async () => {
-  const { fetcher } = fakeAccount();
-  const catalog = (body) => (url, init) =>
-    new URL(url).pathname === "/v2/_catalog"
-      ? Promise.resolve(new Response(JSON.stringify(body)))
-      : fetcher(url, init);
-  await assert.rejects(account(catalog({})).inventory(), /without its repository list/u);
-  await assert.rejects(account(catalog({ repositories: [7] })).inventory(), /without a name/u);
+  // The lease is read only from the stage's own Worker.
+  await assert.rejects(account(fetcher).lease("basalt-production-poolworker"), /^Error: Refused/u);
 });

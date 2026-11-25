@@ -2,13 +2,14 @@ model {
   extend basalt {
     stageCloudflare = module "Test stage account API" {
       #basalt
-      description "The deployment provider account calls the scale test and the emulated upstream share: one call, a read of one resource by id, paged listings and a stage's container applications, runtime adapters and their namespaces by name prefix. It fails closed: a refused call, a false success envelope or a listing without its array throws, so a wrong path or a missing permission never reads as an empty account. Only a read by id answers absent, on 404. Refusals carry the operation, status, error codes and known field names, never remote messages. Which stage's names it reads is the caller's; it holds no credential of its own."
+      description "The one deployment provider caller for isolated test stages, shared by the scale test and the emulated upstream and open to any further stage tool without a copy. A caller names its stage prefix, and optionally a predicate that narrows it, and gets back operations, never raw paths: the stage's container applications, runtime adapters and their namespaces (a namespace is owned through the runtime adapter that defines it), database connection configs and client certificates listed account-wide at once; a read, change or delete of one of those by the row the listing returned, or of a runtime adapter by its name; the account's Worker subdomain; the image references the account's container applications run; and the stage's registry repositories with their tags, deleted index first. Construction refuses a prefix that holds a release stage word, starts like a release stack name or is too short, and a predicate that accepts a release stack name; every operation checks ownership again and refuses before calling the provider. Every account read fails closed: a refused call, a false success envelope or a listing without its array throws, so a wrong path or a missing permission never reads as an empty account. Only a read of one resource answers absent, on 404. Refusals carry the operation, status, error codes and known field names, never remote messages. It holds no credential of its own."
       metadata {
         code "scripts/stage-cloudflare"
       }
     }
   }
-  basalt.stageCloudflare -[sync]-> deploymentProvider "read, list and delete account resources, failing closed on any refusal"
-  basalt.scaleTest -[sync]-> basalt.stageCloudflare "find, list and change only the scale stage's resources"
-  basalt.emulatedUpstream -[sync]-> basalt.stageCloudflare "find, list and delete only the emulated stage's resources"
+  basalt.stageCloudflare -[sync]-> deploymentProvider "list, read, change and delete only a stage's own resources, and mint short-lived registry credentials, failing closed on any refusal"
+  basalt.stageCloudflare -[sync]-> containerRegistry "list a stage's own repositories and tags and delete their manifests"
+  basalt.scaleTest -[sync]-> basalt.stageCloudflare "find, change and delete only the scale stage's resources"
+  basalt.emulatedUpstream -[sync]-> basalt.stageCloudflare "find and delete only the emulated stage's resources and registry images"
 }
