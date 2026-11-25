@@ -49,6 +49,7 @@ export class RuntimeSlotRouter {
     let sent = false;
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "slot_authorize";
     let placed: SlotIdentity | undefined;
+    // A cell's own router says root too; the fleet controller re-marks the cell's answer.
     const runtime = candidate ? "candidate" : "root";
     try {
       request = await authorize(pending.lease.signal);
@@ -119,7 +120,8 @@ export class RuntimeSlotRouter {
     } catch (error) {
       if (!sent) void outbound?.body?.cancel().catch(() => {});
       pending.lease.release();
-      if (placed) failedOn(error, placed, runtime);
+      // Only a runtime that was sent the call took it; a refusal before that names no runtime.
+      if (placed && sent) failedOn(error, placed, runtime);
       refuseRuntime(step, error);
     }
   }

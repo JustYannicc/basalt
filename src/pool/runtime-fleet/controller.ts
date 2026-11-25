@@ -749,6 +749,7 @@ export class RuntimeFleet {
       }
       return rootFallbackRefused(request);
     }
+    let sent = false;
     let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
       reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
     try {
@@ -777,6 +778,7 @@ export class RuntimeFleet {
             this.failures.assertAvailable(reservation.identity);
             beforeDispatch();
             dispatched();
+            sent = true;
           }),
           { kind: "runtime", identity: reservation.identity },
         ),
@@ -801,7 +803,8 @@ export class RuntimeFleet {
       });
     } catch (error) {
       rememberRuntimeFailure(step, error);
-      if (reservation.kind === "runtime") failedOn(error, reservation.identity, "cell");
+      // Only a cell that was sent the call took it; a refusal before that names no runtime.
+      if (reservation.kind === "runtime" && sent) failedOn(error, reservation.identity, "cell");
       // A failed front layer leaves the runtime serving: no primary failure, no recovery.
       const layer = runtimeFailureDiagnostic(error, step).runtimeStep === "resume_layer";
       if (reservation.kind === "primary" && !layer) {

@@ -68,12 +68,13 @@ const labelKeys = [
 ] as const;
 const idKeys = ["responseRequestId"] as const;
 /** The runtime that served the call: kind, slot, image input and boot, or `unplaced` in each. */
-const runtimeKeys = ["runtime", "slot", "imageInput"] as const;
+const runtimeKeys = ["slot", "imageInput"] as const;
+const runtimeKinds = ["root", "cell", "candidate", "unplaced", "unknown"];
 const bootKey = "boot";
 export type PoolRequestLabels = Partial<
   Record<(typeof labelKeys)[number], string | boolean | undefined> &
     Record<
-      (typeof idKeys)[number] | (typeof runtimeKeys)[number] | typeof bootKey,
+      (typeof idKeys)[number] | (typeof runtimeKeys)[number] | typeof bootKey | "runtime",
       string | undefined
     >
 >;
@@ -298,9 +299,11 @@ export function poolRequestEvent(
         const value = labels[key];
         if (typeof value === "string" && runtimeWord.test(value)) fields[key] = value;
       }
+      if (labels.runtime !== undefined && runtimeKinds.includes(labels.runtime))
+        fields.runtime = labels.runtime;
       // A runtime's boot is the UUID it made at start; anything else is not one.
       const boot = labels[bootKey];
-      if (boot === "unplaced") fields[bootKey] = boot;
+      if (boot === "unplaced" || boot === "unknown") fields[bootKey] = boot;
       else if (typeof boot === "string" && uuid.test(boot)) fields[bootKey] = boot.toLowerCase();
     },
     admitted() {

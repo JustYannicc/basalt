@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
-import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
+import { ContainerEnded, type SlotIdentity, type SlotTarget } from "./runtime-slots/contract.ts";
 import type { NativeStreamLease } from "./native-streams.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
@@ -26,7 +26,7 @@ const cellImage = "cell-image-input";
 const rootBoot = "0a5b1c9e-1111-4111-8111-000000000001";
 
 /** A fleet with production routing; `add` makes a cell ready on `cellImage`. */
-function fleetOf(rootRestarting = false, cellFails = false) {
+function fleetOf(rootRestarting = false, cellFails?: "before-send" | "after-send") {
   const state = new RuntimeFleetState(new SlotMemory(), 4, () => 100);
   const pending: Promise<unknown>[] = [];
   const selected = new Map<string, SlotIdentity>();
@@ -58,11 +58,13 @@ function fleetOf(rootRestarting = false, cellFails = false) {
       observe: async () => selected.get(value.slotId),
       selected: async () => selected.get(value.slotId),
       forward: async (_request, _port, _pool, beforeDispatch) => {
+        if (cellFails === "before-send") throw new Error("the cell refused before its send");
         beforeDispatch();
-        if (cellFails) {
-          const defect = new RemoteRuntimeDefect(crypto.randomUUID());
-          rememberRuntimeFailure("endpoint_request", defect);
-          throw defect;
+        // The cell's runtime ended after it accepted the call: the fleet builds the refusal.
+        if (cellFails === "after-send") {
+          const ended = new ContainerEnded();
+          rememberRuntimeFailure("endpoint_request", ended);
+          throw ended;
         }
         return new Response("served by a cell");
       },
@@ -125,12 +127,12 @@ function harness(
   options: {
     fetch?: (attempt: number) => Promise<Response>;
     rootRestarting?: boolean;
-    cellFails?: boolean;
+    cellFails?: "before-send" | "after-send";
     warm?: () => Promise<{ boot_id: string }>;
+    /** Wraps the fleet's forward as production routing does, given the forward path's dispatch. */
     route?: (
-      forward: (request: Request) => Promise<Response>,
+      forward: (request: Request, dispatch: () => void) => Promise<Response>,
       request: Request,
-      legacy: (request: Request, beforeDispatch: () => void) => Promise<Response>,
       beforeDispatch: () => void,
     ) => Promise<Response>;
   } = {},
@@ -165,9 +167,8 @@ function harness(
       ) =>
         options.route
           ? options.route(
-              (request) => f.fleet.forward(request, pool, legacy, beforeDispatch),
+              (request, dispatch) => f.fleet.forward(request, pool, legacy, dispatch),
               outbound,
-              legacy,
               beforeDispatch,
             )
           : f.fleet.forward(outbound, pool, legacy, beforeDispatch),
@@ -233,9 +234,9 @@ test("a call that moves from the root to a cell names the cell that answered it"
   let warms = 0;
   const h = harness(context, {
     rootRestarting: true,
-    // The fleet places the first attempt on the root, which is restarting: it fails before its
-    // send, a cell comes up meanwhile, and the next attempt is served there. A call the root had
-    // already sent on is never moved: its outcome is unknown, so it stays the root's.
+    // The fleet reserves the first attempt for the root, which is restarting: it fails before it
+    // is sent the call, a cell comes up meanwhile, and the next attempt is served there. Only a
+    // call no runtime was sent moves; one the root was already sent stays the root's (below).
     warm: async () => {
       if (++warms > 1) return { boot_id: rootBoot };
       await h.fleet.add();
@@ -243,11 +244,11 @@ test("a call that moves from the root to a cell names the cell that answered it"
       rememberRuntimeFailure("endpoint_route", defect);
       throw defect;
     },
-    route: (forward, request) =>
+    route: (forward, request, beforeDispatch) =>
       forwardRecoverably(
         request,
-        (current) => forward(current),
-        () => {},
+        (current, dispatch) => forward(current, dispatch),
+        beforeDispatch,
         async () => {},
         {
           timing: { now: () => 0, pause: async () => {} },
@@ -309,8 +310,22 @@ test("a call the root had sent on and then lost stays the root's, with its unkno
   });
 });
 
-test("a cell's own failure is named on that cell, not the root", async (context) => {
-  const h = harness(context, { cellFails: true });
+/** The fleet's forward behind the real retry, as production wires it. */
+const recovering = (
+  forward: (request: Request, dispatch: () => void) => Promise<Response>,
+  request: Request,
+  beforeDispatch: () => void,
+) =>
+  forwardRecoverably(
+    request,
+    (current, dispatch) => forward(current, dispatch),
+    beforeDispatch,
+    async () => {},
+    { timing: { now: () => 0, pause: async () => {} }, rootHoldMs: async () => 0 },
+  );
+
+test("a cell's failure after its send, and the refusal built from it, name that cell", async (context) => {
+  const h = harness(context, { cellFails: "after-send", route: recovering });
   const added = await h.fleet.add();
   const response = await h.forward(call());
   await response.text();
@@ -321,4 +336,36 @@ test("a cell's own failure is named on that cell, not the root", async (context)
     { runtime: "cell", slot: added.slotId, imageInput: cellImage, boot: added.bootId },
   );
   assert.equal(event.status, response.status);
+});
+
+test("a cell that refuses before it is sent the call is no runtime that took it", async (context) => {
+  const h = harness(context, { cellFails: "before-send" });
+  await h.fleet.add();
+  const response = await h.forward(call());
+  await response.text();
+  await h.drain();
+  const event = runtimeOf(h.events[0]);
+  assert.deepEqual(
+    { runtime: event.runtime, slot: event.slot, imageInput: event.imageInput, boot: event.boot },
+    { runtime: "unplaced", slot: "unplaced", imageInput: "unplaced", boot: "unplaced" },
+  );
+});
+
+test("a mark the root's own container sends is dropped, and the root is named", async (context) => {
+  const forged = `cell forged-slot forged-image ${rootBoot}`;
+  const h = harness(context, {
+    fetch: async () => new Response("root", { headers: { [runtimePlacementHeader]: forged } }),
+  });
+  const response = await h.forward(call());
+  assert.equal(response.headers.has(runtimePlacementHeader), false);
+  await response.text();
+  await h.drain();
+  assert.deepEqual(runtimeOf(h.events[0]), {
+    runtime: "root",
+    slot: "legacy",
+    imageInput: rootImage,
+    boot: rootBoot,
+    status: 200,
+    outcome: "responded",
+  });
 });

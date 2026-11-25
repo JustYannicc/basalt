@@ -5,7 +5,8 @@ import type { SlotIdentity } from "./runtime-slots/contract.ts";
 /**
  * Which runtime a call was placed on. The slot router marks its answers and the fleet controller
  * re-marks a cell's; a refusal built from a runtime's failure carries that runtime too. The pool's
- * forward path reads it into the request event and strips it, so no caller ever receives it.
+ * forward path reads it into the request event and strips it, so no client ever receives it; only
+ * the pool's own hops that read a resumed answer's body see it.
  */
 export const runtimePlacementHeader = "X-Basalt-Runtime-Placement";
 
@@ -15,7 +16,8 @@ const kinds: readonly RuntimeKind[] = ["root", "cell", "candidate"];
 const isKind = (value: string): value is RuntimeKind => kinds.some((kind) => kind === value);
 
 export interface RuntimePlacement {
-  readonly runtime: RuntimeKind | "unplaced";
+  /** `unknown` only where the pool object failed after it may have sent the call on. */
+  readonly runtime: RuntimeKind | "unplaced" | "unknown";
   /** `legacy` for the pool object's own container, otherwise the runtime slot's id. */
   readonly slot: string;
   readonly imageInput: string;
@@ -28,6 +30,14 @@ export const unplaced: RuntimePlacement = {
   slot: "unplaced",
   imageInput: "unplaced",
   boot: "unplaced",
+};
+
+/** A call the pool object ran and then lost: whether a runtime took it can't be known here. */
+export const unknownPlacement: RuntimePlacement = {
+  runtime: "unknown",
+  slot: "unknown",
+  imageInput: "unknown",
+  boot: "unknown",
 };
 
 const failures = new WeakMap<object, RuntimePlacement>();
@@ -93,8 +103,10 @@ export function failurePlacementHeaders(error: unknown): Record<string, string> 
 
 /** Only four closed words decode; anything else is no placement at all. */
 export function runtimePlacement(headers: Headers): RuntimePlacement | undefined {
-  const parts = headers.get(runtimePlacementHeader)?.split(" ");
-  if (parts?.length !== 4 || !parts.every((part) => word.test(part))) return undefined;
-  const [runtime, slot, imageInput, boot] = parts as [string, string, string, string];
-  return isKind(runtime) ? { runtime, slot, imageInput, boot } : undefined;
+  const [runtime, slot, imageInput, boot, ...rest] =
+    headers.get(runtimePlacementHeader)?.split(" ") ?? [];
+  if (rest.length || !runtime || !slot || !imageInput || !boot) return undefined;
+  if (![slot, imageInput, boot].every((part) => word.test(part)) || !isKind(runtime))
+    return undefined;
+  return { runtime, slot, imageInput, boot };
 }
