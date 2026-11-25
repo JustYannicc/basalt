@@ -61,8 +61,8 @@ test("native Workflow event waits preserve the caller and resolve current step a
     ],
   });
   let provider: unknown;
-  const accounts = (region: string) =>
-    Effect.runSync(
+  const accounts = async (region: string) =>
+    await Effect.runPromise(
       Schema.decodeUnknownEffect(HostAccounts)({
         app: {},
         user: {
@@ -135,7 +135,7 @@ test("native Workflow event waits preserve the caller and resolve current step a
             value = {
               state: "execute",
               caller: "workflow-owner",
-              accounts: accounts("prepared"),
+              accounts: await accounts("prepared"),
               seed: {
                 runId: input.run,
                 app: "app_workflow_fixture",
@@ -151,7 +151,7 @@ test("native Workflow event waits preserve the caller and resolve current step a
             break;
           case "context":
             record.contexts++;
-            value = accounts(record.region);
+            value = await accounts(record.region);
             break;
           case "input":
             assert.equal(input.command?.operation, "get");
@@ -223,7 +223,7 @@ test("native Workflow event waits preserve the caller and resolve current step a
     )(await declaration.json()),
   );
   provider = declared.value.accounts.user.service!.definition;
-  accounts("fixture-check");
+  await accounts("fixture-check");
   const { run, record } = start(loaded);
   await command("create", run);
   await Promise.race([
@@ -296,7 +296,7 @@ test("native Workflow event waits preserve the caller and resolve current step a
             message: Schema.String,
           }),
         }),
-      )(finishRequests.find((request) => request.run === bad.run)?.result),
+      )(finishRequests.findLast((request) => request.run === bad.run)?.result),
     );
     assert.equal(finished.detail.message, error.message);
     assert.equal(bad.record.contexts, 0);

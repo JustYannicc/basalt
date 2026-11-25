@@ -54,22 +54,29 @@ test("pool readiness waits for its committed deployment, account and link, witho
       database,
       "team",
       "person",
-      new AbortController().signal,
+      // The code's own cancellation bounds the wait if the notification never comes.
+      AbortSignal.timeout(30_000),
       false,
       true,
     );
     // The waiter has read once and now waits on its notification: its session is idle, and the
-    // readiness select is the last statement it ran.
-    let waited = false;
-    for (let attempt = 0; attempt < 5_000 && !waited; attempt++)
-      waited =
-        (
-          await watcher.query(
-            `select 1 from pg_stat_activity where datname = current_database()
-              and pid <> pg_backend_pid() and state = 'idle' and query like 'select coalesce(%'`,
-          )
-        ).rowCount === 1;
-    assert.ok(waited, "The waiter never read and settled on its notification");
+    // readiness select is the last statement it ran. It stays that way, the same statement end
+    // on the same session, so it is neither past its last read nor reading again on its own.
+    const settled = async () =>
+      (
+        await watcher.query<{ pid: number; changed: string }>(
+          `select pid, state_change::text as changed from pg_stat_activity
+            where datname = current_database() and pid <> pg_backend_pid()
+              and state = 'idle' and query like 'select coalesce(%'`,
+        )
+      ).rows;
+    let first: { pid: number; changed: string } | undefined;
+    for (let attempt = 0; attempt < 5_000 && !first; attempt++) first = (await settled())[0];
+    assert.ok(first, "The waiter never read and settled on its notification");
+    for (let observation = 0; observation < 200; observation++)
+      assert.deepEqual(await settled(), [first], "The waiter read again without a notification");
+    // With a pool of one, the waiter still holds the only client while it waits.
+    assert.equal(database.idleCount, 0);
     // One commit adds the pool's account, its link and its declaration, and wakes the waiter.
     await watcher.query(`begin;
       insert into executor_accounts values ('pool-account', 'organization:team');

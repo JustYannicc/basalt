@@ -13,6 +13,8 @@ run(
   "node",
   [
     "--test",
+    // The suite default the owned unit suite uses; a hung framework proof fails instead of stalling.
+    "--test-timeout=60000",
     "scripts/upstream-tests/compiler-preview-acceptance.build-proof.ts",
     "scripts/upstream-tests/pool-framework.test.ts",
     "scripts/upstream-tests/framework-runner-provenance.build-proof.ts",
