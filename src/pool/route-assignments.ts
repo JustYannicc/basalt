@@ -293,6 +293,31 @@ export class RouteAssignments {
     return answer;
   }
 
+  /**
+   * After a mirror saved a credential, put back what a membership step recorded while it was in
+   * flight: that step's route or hold, and for a plugin provider, disabled.
+   */
+  async reassert(
+    reference: string,
+    provider: string,
+    saved: { proxy: string | undefined; disabled: boolean },
+    signal: AbortSignal,
+  ) {
+    const stored = await this.storage.get(entryPrefix + reference);
+    const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
+    const proxy = entry
+      ? routeProxyUrl(entry.routeId)
+      : (await this.held(reference))
+        ? routeProxyUrl(unassignedRoute)
+        : undefined;
+    if (proxy === undefined) return;
+    if (pluginProviders.has(provider) && !saved.disabled) {
+      await this.storage.put(refusedPrefix + reference, true);
+      await writeDisabled(this.home, reference, true, signal);
+    }
+    if (saved.proxy !== proxy) await writeAuth(this.home, reference, proxy, signal);
+  }
+
   /** Whether the pool disabled this credential because its plugin can't use the route. */
   async refused(reference: string) {
     return (await this.storage.get(refusedPrefix + reference)) === true;
@@ -431,17 +456,10 @@ export class RouteAssignments {
    * next pass resolves them again. It reads storage by key and touches Home only when a route,
    * a hold or a hold to clear is at stake.
    */
+  // Never queued: the membership repair it sits on, and the lease renewals behind that repair,
+  // never wait on another pass. It decides only for members no pool record lists yet, which a
+  // refresh keeps as they are; a mirror racing it re-checks after its save (`reassert`).
   async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
-    // A step with no new member of a known pool decides no route and writes only its pool record,
-    // so the membership repair it sits on (and the lease renewals behind it) never waits on routing.
-    const raw = await this.storage.get(poolPrefix + scope.pool);
-    const known =
-      raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw).references;
-    if (known && accounts.every((account) => known.includes(account)))
-      return this.preparePass(scope, accounts, signal);
-    return this.serial(() => this.preparePass(scope, accounts, signal));
-  }
-  private async preparePass(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
     const record = raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw);
     const known = new Set(record?.references ?? []);
@@ -660,7 +678,8 @@ export class RouteAssignments {
       );
     await this.apply(routes, within(writeMs, signal));
     const at = this.now();
-    // Re-read: a membership step without new members may have changed a record meanwhile.
+    // Re-read: a membership step may have changed a record meanwhile. In a Durable Object this
+    // read and write run under one input gate, so nothing lands between them.
     for (const pool of pools.keys()) {
       const raw = await this.storage.get(poolPrefix + pool);
       if (raw === undefined) continue;

@@ -77,8 +77,9 @@ export async function handleAccountKeyMirror(
     const action = String(value.action);
     // The route decision and the save are one step: a pass can't land between them.
     const mirrorOne = async (): Promise<Response> => {
-      // A request given up on while it waited behind a pass decides and writes nothing.
-      request.signal.throwIfAborted();
+      // A mirror its host has given up on (its envelope expired while it waited behind a pass)
+      // decides and writes nothing; the host sends a fresh one.
+      if ((input.now?.() ?? Date.now()) >= Number(value.expiresAt)) return unavailable();
       const signal = within(writeMs, request.signal);
       const proxy =
         action === "upsert"
@@ -125,7 +126,14 @@ export async function handleAccountKeyMirror(
         if (saved.name !== `${reference}.json`) return unavailable();
         if (!refused && (await input.routes?.refused(reference)))
           await input.routes?.markRefused(reference, false);
-        await enableNewCodexWebSockets(input.home, [reference], value.credential.type);
+        // A membership step isn't queued: what it recorded while this save was in flight wins.
+        await input.routes?.reassert(
+          reference,
+          value.credential.type,
+          { proxy, disabled: refused || value.credential.disabled === true },
+          signal,
+        );
+        await enableNewCodexWebSockets(input.home, [reference], value.credential.type, signal);
       }
       if (action === "remove") await input.routes?.forget(reference);
       return json(null);

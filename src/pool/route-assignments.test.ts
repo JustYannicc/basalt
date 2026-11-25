@@ -907,7 +907,7 @@ test("a mirror's decision and save are one step: a pass can't land between them 
   assert.equal(file.proxy_url, routeProxyUrl(home));
 });
 
-test("a membership step with no new member never waits on a routing pass, and the pass keeps its record", async () => {
+test("a membership step never waits on a routing pass, and the pass keeps its record", async () => {
   const { client } = fakeHome();
   const store = storage();
   const rules = scripted({});
@@ -934,15 +934,98 @@ test("a membership step with no new member never waits on a routing pass, and th
   const pass = routes.refresh(signal());
   // The pass has read its pool records and is waiting on the tools service.
   await inside;
-  // The pass is waiting on the tools service; a step that only drops a member doesn't queue.
-  let stepped = false;
-  await routes.prepare(scope, [mine], signal()).then(() => {
-    stepped = true;
-  });
-  assert.equal(stepped, true);
+  // The pass is waiting on the tools service; a step that drops a member doesn't wait for it,
+  // and neither does one that adds a member to another pool.
   block = false;
+  await routes.prepare(scope, [mine], signal());
+  await routes.prepare({ organization: scope.organization, pool: "other-pool" }, [oauth], signal());
   release();
   await pass;
   const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
   assert.deepEqual(record.references, [mine]);
+});
+
+test("a membership step that routes a plugin credential while a mirror's save is in flight wins after the save", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000b3";
+  const rules = scripted({ [gemini]: { routeId: home, owner } });
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  // A hint-less re-mirror decides "direct" and its save is slow.
+  let release = () => {};
+  state.postGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const posting = new Promise<void>((resolve) => {
+    state.posting = resolve;
+  });
+  const remirror = mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  await posting;
+  // The membership step isn't queued: it routes and disables the credential Home holds now.
+  state.postGate = undefined;
+  await routes.prepare(scope, [gemini], signal());
+  assert.equal(state.files[0]!.disabled, true);
+  release();
+  assert.equal((await remirror).status, 200);
+  // The save replaced the file enabled and direct; the mirror put the step's decision back.
+  const file = state.files.find((row) => row.id === gemini)!;
+  assert.equal(file.disabled, true);
+  assert.equal(file.proxy_url, routeProxyUrl(home));
+});
+
+test("a mirror whose envelope expired while it waited behind a pass decides and writes nothing", async () => {
+  const { client, state } = fakeHome();
+  let release = () => {};
+  let entered = () => {};
+  const resolver: RouteResolver = {
+    resolve: async (_scope, references) => {
+      entered();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return {
+        served: true,
+        revision: 1,
+        resolutions: new Map(references.map((r) => [r, { routeId: null, owner: null }])),
+      };
+    },
+  };
+  const clock = { at: now };
+  const routes = new RouteAssignments(storage(), resolver, client, () => clock.at);
+  await routes.prepare(scope, [], signal()).catch(() => {});
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pass = routes.refresh(signal());
+  await inside;
+  const envelope = await signEnvelope(signingKey, accountMirrorPrefix, {
+    at: now,
+    expiresAt: now + 10_000,
+    reference: mine,
+    action: "upsert",
+    credential: apiKey,
+  });
+  // Known when the mirror has passed its receipt checks and joined the queue.
+  let queued = () => {};
+  const joined = new Promise<void>((resolve) => {
+    queued = resolve;
+  });
+  const serial = routes.serial.bind(routes);
+  routes.serial = <T>(work: () => Promise<T>) => {
+    queued();
+    return serial(work);
+  };
+  const answer = handleAccountKeyMirror(
+    new Request(`https://pool.example${accountMirrorPath}`, {
+      method: "POST",
+      body: JSON.stringify({ envelope }),
+    }),
+    { home: client, signingKey, now: () => clock.at, routes },
+  );
+  await joined;
+  clock.at += 10_000;
+  release();
+  await pass;
+  assert.equal((await answer).status, 503);
+  assert.deepEqual(state.codex, []);
 });
