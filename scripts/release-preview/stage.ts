@@ -2105,7 +2105,15 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         }
         console.log(`Retiring stage ${ordinal}.`);
         await planStage(root, target, source);
-        await destroyStage(root, target, source);
+        // The destroy reads the stage's rows again in its own process; it refuses unless they are
+        // the rows proven here. Only this destroy carries the proof.
+        const { provenDigests, RETIRE_PROVEN } = await import("../release/retire-proof.ts");
+        process.env[RETIRE_PROVEN] = JSON.stringify(provenDigests(stacks, targetConfig.stage));
+        try {
+          await destroyStage(root, target, source);
+        } finally {
+          delete process.env[RETIRE_PROVEN];
+        }
         await verifyStageAbsent(root, target, source);
         result.retired = ordinal;
         result.absent = true;

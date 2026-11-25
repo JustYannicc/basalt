@@ -393,7 +393,8 @@ const {
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
 const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
-const { ownIdentities, stageRows } = await import("./stage-writes.ts");
+const { ownIdentities } = await import("./stage-writes.ts");
+const { provenStageRows, RETIRE_PROVEN } = await import("./retire-proof.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
@@ -485,12 +486,15 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                 process.env.TEST_STAGE_DATABASE === `basalt-preview-${label}`
                   ? [process.env.TEST_STAGE_DATABASE]
                   : [],
+              // A destroy a retire started stops here, before planning, unless the rows the gate
+              // takes as owned are exactly the ones the retire proved.
               owned: ownIdentities(
-                yield* stageRows(store as never, stack, stage) as Fx.Effect<
-                  unknown[],
-                  unknown,
-                  never
-                >,
+                yield* provenStageRows(
+                  store as never,
+                  stack,
+                  stage,
+                  command === "destroy" ? process.env[RETIRE_PROVEN] : undefined,
+                ) as Fx.Effect<unknown[], unknown, never>,
               ),
             };
           }

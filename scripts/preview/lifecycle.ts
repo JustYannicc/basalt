@@ -114,6 +114,9 @@ function safeEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       "NODE_OPTIONS",
       // The stage runner's private output directory: the entry keeps its failure detail there.
       "BASALT_STAGE_OUTPUT_DIR",
+      // What a retire proved of the stage it destroys (release/retire-proof.ts `RETIRE_PROVEN`);
+      // the entry refuses a destroy whose own read of the stage differs.
+      "BASALT_RETIRE_PROVEN",
     ].flatMap((name) => (source[name] === undefined ? [] : [[name, source[name]]])),
   ) as NodeJS.ProcessEnv;
 }
