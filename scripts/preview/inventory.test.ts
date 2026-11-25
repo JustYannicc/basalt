@@ -182,3 +182,29 @@ test("no script launches a package bin with a bare bun exec, which drops its arg
   );
   assert.deepEqual(offenders, []);
 });
+
+test("the state reader runs the CLI with this process's PATH, and a failure shows both output streams", async () => {
+  const seen: NodeJS.ProcessEnv[] = [];
+  const reader = alchemyPreviewStateReader({
+    environment: { CLOUDFLARE_API_TOKEN: "fixture-secret-token" },
+    command: (_args, _cwd, env) => {
+      seen.push(env);
+      return {
+        status: 1,
+        stdout: "Error: Cloudflare State store not found",
+        stderr: "used fixture-secret-token",
+      };
+    },
+  });
+  const error = await reader.read(stage).then(
+    () => undefined,
+    (failure: unknown) => failure,
+  );
+  assert.ok(error instanceof Error && error.cause instanceof Error);
+  assert.match(error.cause.message, /exit 1/);
+  assert.match(error.cause.message, /State store not found/);
+  assert.match(error.cause.message, /used \[redacted\]/);
+  assert.doesNotMatch(error.cause.message, /fixture-secret-token/);
+  assert.equal(seen[0]!.PATH, process.env.PATH);
+  assert.equal(seen[0]!.ALCHEMY_STAGE, stage);
+});

@@ -15,9 +15,14 @@ import {
 import { axiomProviders } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/axiom-provider.ts";
 import { StageBucketCleanup } from "./stage-bucket-cleanup.ts";
 
+// Alchemy's `state` commands take no --stage and open the stack under this placeholder stage.
+const stateCommandStage = "placeholder";
+
 const cleanupState = Layer.unwrap(
   Effect.gen(function* () {
-    const stage = yield* Stage;
+    const opened = yield* Stage;
+    // A state command reads the store for the configured stage; every other command must name it.
+    const stage = opened === stateCommandStage ? (process.env.ALCHEMY_STAGE ?? "") : opened;
     if (!stage.startsWith("test-pr-"))
       return yield* Effect.die(new Error("Preview cleanup is restricted to PR stages."));
     yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(
