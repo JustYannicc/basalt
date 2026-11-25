@@ -1048,3 +1048,16 @@ test("a destroy plan's PlanetScale role and branch admit those deletes, never th
     `DELETE /v1/organizations/org/databases/${database}/branches/test-rehearsal-1`,
   ]);
 });
+
+test("(e) without a stage scope, as production runs, the stage's mTLS rule is not consulted", async (t) => {
+  const run = await guarded(t, {}, (base) =>
+    Effect.tryPromise(() =>
+      fetch(`${base}/accounts/${ACCOUNT}/mtls_certificates`, {
+        method: "POST",
+        body: JSON.stringify({ ca: false, certificates: "not the trust root" }),
+      }),
+    ),
+  );
+  assert.ok(Exit.isSuccess(run.exit));
+  assert.deepEqual(reads(run.received), [`POST /accounts/${ACCOUNT}/mtls_certificates`]);
+});
