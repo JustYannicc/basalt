@@ -43,15 +43,28 @@ const { OAuthGrant } = (await load("packages/sdk/src/contracts/oauth.ts")) as {
 const { makeExecutorStorage } = (await load("packages/sdk/src/implementation/storage.ts")) as {
   makeExecutorStorage: (input: { provider: "postgresql" }) => Work<{ migrate: Work<void> }>;
 };
+/** A reviewed issuer as the generator reads it: its lists, before they are digested. */
 type WholeListIssuer = { issuer: string; scopes: readonly string[]; baseline: readonly string[] };
+type Digested = { issuer: string; scopes: string; baseline: string };
 // Absent before carry 0782; tests that provide issuers then run under the SDK's only rule.
 const scopeRules = (await load("packages/sdk/src/implementation/provider-oauth-scopes.ts")) as {
-  WholeListScopeIssuers?: Context.Reference<{ readonly issuers: readonly WholeListIssuer[] }>;
+  WholeListScopeIssuers?: Context.Reference<{ readonly issuers: readonly Digested[] }>;
+  scopeListDigest?: (scopes: readonly string[]) => string;
   asksWholeList?: (
     server: { issuer: string },
     requested: readonly string[] | undefined,
-    issuers: readonly WholeListIssuer[],
+    issuers: readonly Digested[],
   ) => boolean;
+};
+/** The issuers as the SDK carries them: each list replaced by its digest. */
+const digested = (issuers: readonly WholeListIssuer[]) => {
+  const { scopeListDigest } = scopeRules;
+  assert.ok(scopeListDigest, "carry 0782 digests reviewed lists");
+  return issuers.map(({ issuer, scopes, baseline }) => ({
+    issuer,
+    scopes: scopeListDigest(scopes),
+    baseline: scopeListDigest(baseline),
+  }));
 };
 
 // Cloudflare's reviewed issuer document, as a grant keeps it from discovery at its sign-in.
@@ -211,7 +224,7 @@ const observe = (saved: Saved, issuers: readonly WholeListIssuer[] = grownIssuer
       const { WholeListScopeIssuers } = scopeRules;
       return yield* WholeListScopeIssuers === undefined
         ? work
-        : work.pipe(Effect.provideService(WholeListScopeIssuers, { issuers }));
+        : work.pipe(Effect.provideService(WholeListScopeIssuers, { issuers: digested(issuers) }));
     }) as Effect.Effect<
       { signIn: SignIn; calls: unknown[]; stored: Record<string, unknown> },
       unknown,
@@ -254,9 +267,9 @@ test("a recorded whole-list request survives the issuer removing one scope and a
   const unmarked = await observe({ shared: true, asked, scopes }, droppedIssuers);
   assert.deepEqual(unmarked.signIn, permissions);
   assert.deepEqual(unmarked.calls, refused);
-  // An app version that has not followed the drop yet still asks for the dropped scope.
+  // An app version that has not followed the drop yet still asks for the baseline.
   const lagging = await observe(
-    { shared: true, asked, marked: true, scopes: [...reviewed, ...added] },
+    { shared: true, asked, marked: true, scopes: reviewed },
     droppedIssuers,
   );
   assert.deepEqual(lagging.signIn, saved);
@@ -309,7 +322,8 @@ test("the generated issuers name Cloudflare with its reviewed list and frozen ba
       "utf8",
     ),
   ) as string[];
-  assert.deepEqual(issuers, [{ issuer: issuer.issuer, scopes: reviewed, baseline }]);
+  // Preparation digests with its own copy of the SDK's function; this holds the two equal.
+  assert.deepEqual(issuers, digested([{ issuer: issuer.issuer, scopes: reviewed, baseline }]));
 });
 
 test("a grant that recorded no request is held to every requested scope", async () => {
@@ -368,8 +382,13 @@ test("a grant read by code that does not know the record decodes without it", as
 });
 
 test("a sign-in records a whole-list request only for the marked issuer's whole reviewed list", () => {
-  const { asksWholeList } = scopeRules;
-  assert.ok(asksWholeList, "carry 0782 decides the record at sign-in");
+  const { asksWholeList: decide } = scopeRules;
+  assert.ok(decide, "carry 0782 decides the record at sign-in");
+  const asksWholeList = (
+    server: { issuer: string },
+    requested: readonly string[] | undefined,
+    issuers: readonly WholeListIssuer[],
+  ) => decide(server, requested, digested(issuers));
   const server = { issuer: issuer.issuer };
   // The reviewed list grew; an app version still asking for the earlier list counts too.
   assert.equal(asksWholeList(server, reviewed, grownIssuers), true);

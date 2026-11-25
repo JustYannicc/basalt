@@ -8,7 +8,10 @@ import { SqlClient } from "effect/sql";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import * as sdk from "../../.upstream/packages/sdk/src/core.ts";
 import { defaultUrlPolicy } from "../../.upstream/packages/utils/src/url-policy.ts";
-import { WholeListScopeIssuers } from "../../.upstream/packages/sdk/src/implementation/provider-oauth-scopes.ts";
+import {
+  scopeListDigest,
+  WholeListScopeIssuers,
+} from "../../.upstream/packages/sdk/src/implementation/provider-oauth-scopes.ts";
 
 /** A real sign-in through the SDK: does the saved grant record a whole-list request? */
 const redirectUri = "https://executor.example.test/api/oauth/callback";
@@ -187,7 +190,16 @@ const signIn = (scopes: readonly string[], reviewed: readonly string[] | undefin
         return JSON.parse(new TextDecoder().decode(row.encrypted)) as Record<string, unknown>;
       }).pipe(
         Effect.provideService(WholeListScopeIssuers, {
-          issuers: reviewed === undefined ? [] : [{ issuer, scopes: reviewed, baseline: reviewed }],
+          issuers:
+            reviewed === undefined
+              ? []
+              : [
+                  {
+                    issuer,
+                    scopes: scopeListDigest(reviewed),
+                    baseline: scopeListDigest(reviewed),
+                  },
+                ],
         }),
       ),
     ).pipe(Effect.provide(pgliteLayer()), Effect.provide(NodeCrypto.layer)),

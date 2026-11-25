@@ -92,18 +92,40 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
  
  type Method = ProviderDefinition["auth"][string];
  
-@@ -31,3 +34,69 @@ export const expandsOAuthScopes = (before: Method, after: Method): boolean => {
+@@ -31,3 +34,88 @@ export const expandsOAuthScopes = (before: Method, after: Method): boolean => {
  /** A retained app version cannot erase scopes another compatible version already requested. */
  export const mergeOAuthScopes = (stored: Method | undefined, incoming: Method): Method =>
    stored !== undefined && expandsOAuthScopes(incoming, stored) ? stored : incoming;
 +
++/**
++ * A short name for a set of scope names, so the SDK carries two names per reviewed issuer instead
++ * of its lists. It tells reviewed lists apart and guards nothing secret: a list made to collide
++ * could only spare its own grant a reconnect prompt, and the service still refuses what the token
++ * lacks. Upstream preparation computes the same names; a test holds the two equal.
++ */
++export const scopeListDigest = (scopes: readonly string[]) => {
++  const names = [...new Set(scopes)].sort();
++  const text = names.join("\n");
++  let h1 = 0xdeadbeef ^ names.length;
++  let h2 = 0x41c6ce57 ^ names.length;
++  for (let index = 0; index < text.length; index++) {
++    const code = text.charCodeAt(index);
++    h1 = Math.imul(h1 ^ code, 2654435761);
++    h2 = Math.imul(h2 ^ code, 1597334677);
++  }
++  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
++  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
++  const hex = (value: number) => (value >>> 0).toString(16).padStart(8, "0");
++  return `${names.length}:${hex(h2)}${hex(h1)}`;
++};
++
 +/** An issuer whose reviewed connections ask for its whole published scope list. */
 +export interface WholeListIssuer {
 +  readonly issuer: string;
-+  /** The issuer's reviewed list today. A sign-in asking for all of it records so on its grant. */
-+  readonly scopes: readonly string[];
-+  /** The reviewed list when grants began recording that; earlier grants that asked for it count. */
-+  readonly baseline: readonly string[];
++  /** `scopeListDigest` of the issuer's reviewed list today. */
++  readonly scopes: string;
++  /** `scopeListDigest` of the reviewed list when grants began recording a whole-list request. */
++  readonly baseline: string;
 +}
 +
 +/**
@@ -118,32 +140,30 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +  URL.canParse(left) && URL.canParse(right) && new URL(left).href === new URL(right).href;
 +const reviewedIssuer = (issuers: readonly WholeListIssuer[], issuer: string) =>
 +  issuers.find((reviewed) => sameIssuer(reviewed.issuer, issuer));
-+const covers = (asked: readonly string[], scopes: readonly string[]) =>
-+  scopes.length > 0 && scopes.every((scope) => asked.includes(scope));
++/** Exactly the issuer's reviewed list today, or the baseline an older app version still asks for. */
++const wholeList = (scopes: readonly string[], reviewed: WholeListIssuer) => {
++  if (scopes.length === 0) return false;
++  const digest = scopeListDigest(scopes);
++  return digest === reviewed.scopes || digest === reviewed.baseline;
++};
 +
-+/**
-+ * Whether a sign-in to this server asks for its reviewed issuer's whole list. It is enough to ask
-+ * for every baseline scope the issuer still publishes, so an app version that has not yet followed
-+ * the issuer's latest change still counts.
-+ */
++/** Whether a sign-in to this server asks for its reviewed issuer's whole list. */
 +export const asksWholeList = (
 +  server: { readonly issuer: string },
 +  requested: readonly string[] | undefined,
 +  issuers: readonly WholeListIssuer[],
 +) => {
 +  const reviewed = reviewedIssuer(issuers, server.issuer);
-+  if (reviewed === undefined || requested === undefined) return false;
-+  const kept = reviewed.scopes.filter((scope) => reviewed.baseline.includes(scope));
-+  return covers(requested, kept.length > 0 ? kept : reviewed.scopes);
++  return reviewed !== undefined && requested !== undefined && wholeList(requested, reviewed);
 +};
 +
 +/**
-+ * The requested scopes a saved grant is held to. A grant that asked for its reviewed issuer's
-+ * whole list is not held to a scope it did not ask for that the issuer published since, or that
-+ * the issuer has dropped from the baseline: neither is a permission the grant's tools were built
-+ * on, and the next sign-in or reconnect asks for what the issuer still publishes. Any other scope
-+ * stays required, and every other grant, including an older or narrower request on the same
-+ * issuer, is held to every scope.
++ * The requested scopes a saved grant is held to. When the grant asked for its reviewed issuer's
++ * whole list (recorded at sign-in, or exactly the baseline for grants saved before the record) and
++ * today's request is that issuer's whole list too, the grant is held only to what it asked for: a
++ * scope the list gained or lost since is no permission its tools were built on, and the next
++ * sign-in or reconnect asks for it. Every other grant or request, including an older or narrower
++ * one or one adding a scope outside the reviewed list, is held to every requested scope.
 + */
 +export const scopesHeldToGrant = (
 +  requested: readonly string[],
@@ -154,11 +174,10 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +  const asked = grant.requestedScopes;
 +  const reviewed = reviewedIssuer(issuers, grant.server.issuer);
 +  if (asked === undefined || reviewed === undefined) return requested;
-+  return grant.requestedIssuerList === true || covers(asked, reviewed.baseline)
-+    ? requested.filter(
-+        (scope) =>
-+          asked.includes(scope) ||
-+          (!reviewed.scopes.includes(scope) && !reviewed.baseline.includes(scope)),
-+      )
++  const askedWhole =
++    grant.requestedIssuerList === true ||
++    (asked.length > 0 && scopeListDigest(asked) === reviewed.baseline);
++  return askedWhole && wholeList(requested, reviewed)
++    ? requested.filter((scope) => asked.includes(scope))
 +    : requested;
 +};
