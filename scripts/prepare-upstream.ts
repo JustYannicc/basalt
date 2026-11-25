@@ -26,6 +26,7 @@ import {
   obsidianPluginVersionSource,
 } from "./obsidian-plugin-version.ts";
 import { oauthClientIdRulePath, oauthClientIdRuleSource } from "./oauth-client-id-source.ts";
+import { wholeListIssuersPath, wholeListIssuersSource } from "./oauth-whole-list-issuers-source.ts";
 
 requirePreparedBun();
 
@@ -63,6 +64,8 @@ writeFileSync(
 writeFileSync(join(upstream, obsidianPluginVersionPath), obsidianPluginVersionSource(root));
 // SDK authorization and the hosted deploy check refuse exactly the same client IDs.
 writeFileSync(join(upstream, oauthClientIdRulePath), oauthClientIdRuleSource(root));
+// SDK sign-in state and credential use read the reviewed whole-list issuers.
+writeFileSync(join(upstream, wholeListIssuersPath), wholeListIssuersSource(root));
 // The pool Worker imports the release above, so its revision is computed after it is written.
 writePoolWorkerRevision(root, upstream);
 const dependencies = await installUpstreamDependencies(
