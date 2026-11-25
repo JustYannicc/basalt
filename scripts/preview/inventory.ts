@@ -200,11 +200,12 @@ function runStateCommand(
   return result.stdout;
 }
 
+// Alchemy writes progress lines ("• Refreshing …", "✓ Refreshing …") to stdout beside its result.
 const stdoutLines = (stdout: string) =>
   stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
-    .filter(Boolean);
+    .filter((line) => line && !/^[•✓✗✔✖⚠ℹ]\s/u.test(line));
 
 function parsePaths(stdout: string, prefix: string, environment: NodeJS.ProcessEnv): string[] {
   const paths = stdoutLines(stdout);
