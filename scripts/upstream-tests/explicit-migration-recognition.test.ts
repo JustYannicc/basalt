@@ -16,7 +16,7 @@ const rows = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql`select migration_id, name, created_at::text from private_hosted_migrations order by migration_id`;
 });
-const fixture = (work: Effect.Effect<void, unknown, SqlClient.SqlClient>) =>
+const fixture = <E>(work: Effect.Effect<void, E, SqlClient.SqlClient>) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

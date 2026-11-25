@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Data } from "effect";
 import {
   Effect,
   pgliteLayer,
@@ -20,6 +21,10 @@ import {
   retainedSdk,
   decryptRetained,
 } from "./cloud-upstream-bridge-retained.ts";
+
+class InjectedStepFailure extends Data.TaggedError("InjectedStepFailure")<{
+  readonly message: string;
+}> {}
 
 for (const maximum of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, ...mappedIds])
   test(`Cloud bridge accepts the Basalt prefix ending at ${maximum}`, async () => {
@@ -105,7 +110,7 @@ for (const id of mappedIds)
             Number.parseInt(key) === id
               ? Effect.gen(function* () {
                   yield* step;
-                  return yield* Effect.fail(new Error("injected after SQL"));
+                  return yield* new InjectedStepFailure({ message: "injected after SQL" });
                 })
               : step,
           ]),

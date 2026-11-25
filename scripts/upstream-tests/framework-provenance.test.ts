@@ -232,7 +232,11 @@ test("format1 needs exact approved bytes and does not infer lineage from implici
   const f = await fixture();
   const inlined = { format: 1 as const, ...f.loaded, database: false };
   const loaded = await run(
-    linkWorkerBuild(inlined, () => assert.fail("format1 read an external framework"), build),
+    linkWorkerBuild<never, never>(
+      inlined,
+      () => assert.fail("format1 read an external framework"),
+      build,
+    ),
     [f.release],
   );
   assert.deepEqual(loaded.framework, f.release);
@@ -250,12 +254,14 @@ test("format1 needs exact approved bytes and does not infer lineage from implici
 test("old transport records decode but missing provenance refuses before execution", async () => {
   const f = await fixture();
   const { framework: _framework, ...legacy } = f.loaded;
-  const decoded = Schema.decodeUnknownSync(LoadedWorkerBuild)(legacy);
+  const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(LoadedWorkerBuild)(legacy));
   const error = await refused(admitLoadedFramework(decoded, { build }), [f.release]);
   assert.equal(error.reason, "missing-identity");
   assert.equal(error.build, build);
-  const roundTrip = Schema.decodeUnknownSync(Schema.fromJsonString(LoadedWorkerBuild))(
-    encodeLoadedBuild(f.loaded),
+  const roundTrip = await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.fromJsonString(LoadedWorkerBuild))(
+      encodeLoadedBuild(f.loaded),
+    ),
   );
   assert.deepEqual(roundTrip.framework, f.release);
 });

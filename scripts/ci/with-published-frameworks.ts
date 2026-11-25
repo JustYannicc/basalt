@@ -22,7 +22,9 @@ export async function publishedFrameworkFixtures(
   const lock = JSON.parse(readFileSync(join(upstream, "e2e/npm-packages.json"), "utf8"));
   const fixtures = [];
   for (const [version, release] of Object.entries(lock.packages.apps.versions)) {
-    const pinned = Schema.decodeUnknownSync(Schema.Struct({ integrity: Schema.String }))(release);
+    const pinned = await Effect.runPromise(
+      Schema.decodeUnknownEffect(Schema.Struct({ integrity: Schema.String }))(release),
+    );
     const archive = join(upstream, ".local/test-runtime/npm", `apps-${version}.tgz`);
     const bytes = readFileSync(archive);
     assert.equal(
@@ -30,11 +32,13 @@ export async function publishedFrameworkFixtures(
       pinned.integrity,
       `Published fixture apps@${version} differs from its locked archive`,
     );
-    const runtime = Schema.decodeUnknownSync(Schema.fromJsonString(PublishedAppFramework))(
-      execFileSync("tar", ["-xOf", archive, "package/runtime.json"], {
-        encoding: "utf8",
-        maxBuffer: 32 * 1024 * 1024,
-      }),
+    const runtime = await Effect.runPromise(
+      Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework))(
+        execFileSync("tar", ["-xOf", archive, "package/runtime.json"], {
+          encoding: "utf8",
+          maxBuffer: 32 * 1024 * 1024,
+        }),
+      ),
     );
     assert.equal(runtime.version, version, "The archived release must name its locked version");
     fixtures.push({
@@ -53,14 +57,16 @@ export async function publishedFrameworkFixtures(
 
   // This adapter fixture deliberately advertises current code as the retained protocol it exercises.
   const localArchive = readFileSync(join(upstream, ".local/test-runtime/apps.tgz"));
-  const localRuntime = Schema.decodeUnknownSync(Schema.fromJsonString(PublishedAppFramework))(
-    execFileSync(
-      "tar",
-      ["-xOf", join(upstream, ".local/test-runtime/apps.tgz"), "package/runtime.json"],
-      {
-        encoding: "utf8",
-        maxBuffer: 32 * 1024 * 1024,
-      },
+  const localRuntime = await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework))(
+      execFileSync(
+        "tar",
+        ["-xOf", join(upstream, ".local/test-runtime/apps.tgz"), "package/runtime.json"],
+        {
+          encoding: "utf8",
+          maxBuffer: 32 * 1024 * 1024,
+        },
+      ),
     ),
   );
   const localIdentity = await Effect.runPromise(

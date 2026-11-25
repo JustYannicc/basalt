@@ -39,8 +39,10 @@ export function frameworkSourceEvidence(upstream: string) {
 export async function builtFrameworkEvidence(root: string) {
   const upstream = join(root, ".upstream");
   const bytes = readFileSync(join(upstream, "packages/apps/dist/runtime.json"));
-  const published = Schema.decodeUnknownSync(Schema.fromJsonString(PublishedAppFramework))(
-    bytes.toString("utf8"),
+  const published = await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework))(
+      bytes.toString("utf8"),
+    ),
   );
   if (
     published.version !== servedFrameworkVersion ||

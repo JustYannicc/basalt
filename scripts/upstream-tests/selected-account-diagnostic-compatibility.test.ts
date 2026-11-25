@@ -18,32 +18,36 @@ test("retained selected-account readers accept provenance refusals without chang
     current: true,
     failure,
   };
-  const native = Schema.decodeUnknownSync(AccountHealth)({
-    account: "acc_fixture",
-    info: null,
-    infoCheckedAt: null,
-    apps: [{ app: "app_fixture", checkable: true, check }],
-    driver: {
-      source: { kind: "driver", id: "fixture", version: "1" },
-      checkable: true,
-      check,
-    },
-  });
-  const observations = Schema.decodeUnknownSync(AccountObservationView)({
-    account: native.account,
-    reports: [
-      {
-        source: { kind: "app", id: "app_fixture", label: "Fixture", version: "1" },
-        credentialGeneration: 1,
-        result: null,
-        checkedAt: null,
-        lastAttempt: { attemptedAt: "2026-01-01T00:00:00Z", outcome: "unavailable", failure },
-        freshness: "unavailable",
-        collecting: false,
-        nextAllowedAt: null,
+  const native = await Effect.runPromise(
+    Schema.decodeUnknownEffect(AccountHealth)({
+      account: "acc_fixture",
+      info: null,
+      infoCheckedAt: null,
+      apps: [{ app: "app_fixture", checkable: true, check }],
+      driver: {
+        source: { kind: "driver", id: "fixture", version: "1" },
+        checkable: true,
+        check,
       },
-    ],
-  });
+    }),
+  );
+  const observations = await Effect.runPromise(
+    Schema.decodeUnknownEffect(AccountObservationView)({
+      account: native.account,
+      reports: [
+        {
+          source: { kind: "app", id: "app_fixture", label: "Fixture", version: "1" },
+          credentialGeneration: 1,
+          result: null,
+          checkedAt: null,
+          lastAttempt: { attemptedAt: "2026-01-01T00:00:00Z", outcome: "unavailable", failure },
+          freshness: "unavailable",
+          collecting: false,
+          nextAllowedAt: null,
+        },
+      ],
+    }),
+  );
   const health = await Effect.runPromise(encodeSelectedAccountHealth(native));
   const retainedObservations = selectedAccountObservations(observations);
   const reply = {
@@ -58,8 +62,8 @@ test("retained selected-account readers accept provenance refusals without chang
     },
   };
   for (const protocol of [protocol41, protocol42]) {
-    assert.doesNotThrow(() =>
-      Schema.decodeUnknownSync(protocol.schemas.selectedAccountReadReply)(reply),
+    await Effect.runPromise(
+      Schema.decodeUnknownEffect(protocol.schemas.selectedAccountReadReply)(reply),
     );
   }
   assert.equal(health.apps[0]?.check?.failure?.tag, "RuntimeBuildUnavailable");

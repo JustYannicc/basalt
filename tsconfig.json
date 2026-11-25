@@ -8,6 +8,7 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
+    "jsx": "preserve",
     "types": ["node"],
     "lib": ["ES2024", "DOM"],
     "typeRoots": [
@@ -20,7 +21,13 @@
       ]
     }
   },
-  "include": ["brand.ts", "scripts/**/*.ts", "src/**/*.ts", "e2e/**/*.ts"],
+  "include": [
+    "brand.ts",
+    "scripts/**/*.ts",
+    "scripts/upstream-tests/fixtures/custom-app-result/contract.tsx",
+    "src/**/*.ts",
+    "e2e/**/*.ts"
+  ],
   "exclude": [
     "src/pool/worker.ts",
     "src/pool/runtime.worker.ts",

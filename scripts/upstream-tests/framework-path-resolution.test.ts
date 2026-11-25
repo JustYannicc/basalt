@@ -4,11 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { stableFrameworkPaths } from "../../.upstream/packages/apps/scripts/stable-framework-paths.mjs";
 
-const { build } = createRequire(
+const { build }: typeof import("esbuild") = createRequire(
   new URL("../../.upstream/packages/apps/package.json", import.meta.url),
 )("esbuild");
+// The upstream script ships without declarations, so its one used member is typed here.
+const {
+  stableFrameworkPaths,
+}: { stableFrameworkPaths: (workspace: string) => Promise<{ plugin: import("esbuild").Plugin }> } =
+  await import(
+    new URL("../../.upstream/packages/apps/scripts/stable-framework-paths.mjs", import.meta.url)
+      .href
+  );
 
 for (const [name, manifest, files, expected] of [
   [
@@ -49,7 +56,7 @@ for (const [name, manifest, files, expected] of [
     },
     "effect",
   ],
-])
+] as const)
   test(`stable framework paths preserve ${name}`, async () => {
     const directory = await mkdtemp(join(tmpdir(), "framework-resolution-"));
     try {
@@ -74,7 +81,7 @@ for (const [name, manifest, files, expected] of [
         write: false,
         plugins: [paths.plugin],
       });
-      const bundle = result.outputFiles[0].text;
+      const bundle = result.outputFiles[0]!.text;
       const loaded = await import(
         `data:text/javascript;base64,${Buffer.from(bundle).toString("base64")}`
       );

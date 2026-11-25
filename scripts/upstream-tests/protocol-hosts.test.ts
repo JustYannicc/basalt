@@ -86,8 +86,8 @@ test(`protocol ${credentialHostsProtocol} keeps underscore metadata while still 
   assert.ok(account && "fields" in account && account.fields);
   assert.deepEqual(account.provider.hosts, fixture.hosts);
   assert.match(String(account.fields.token), /^exsec_/);
-  const encoded = adapter.invocation(fixture.invocation(selected));
-  assert.doesNotThrow(() => Schema.decodeUnknownSync(HostInvocation)(JSON.parse(encoded)));
+  const encoded = adapter.invocation(await fixture.invocation(selected));
+  await Effect.runPromise(Schema.decodeUnknownEffect(HostInvocation)(JSON.parse(encoded)));
   for (const host of ["svc_one.example.test", "*.dev_net.test", "_svc"])
     assert.equal(Schema.is(CredentialHost)(host), true);
 });
@@ -97,16 +97,16 @@ for (const version of supportedProtocols.filter((version) => version < credentia
     const adapter = await Effect.runPromise(appProtocol(version));
     const boundary = () => bundleAccounts(adapter, fixture.app, fixture.key, fixture.accounts());
     const selected = await Effect.runPromise(boundary());
-    const encoded = adapter.invocation(fixture.invocation(selected));
+    const encoded = adapter.invocation(await fixture.invocation(selected));
     assert.equal(encoded.includes("svc_one"), false);
     assert.equal(encoded.includes("synthetic-protocol-hosts-token"), version < 7);
     assert.equal(encoded.includes('"oauthScopes"'), version >= 39);
     assert.equal(encoded.includes('"mcpEndpoint"'), version >= 36);
     assert.equal(encoded.includes('"caller"'), version >= 14);
     if (version === 39)
-      assert.doesNotThrow(() => Schema.decodeUnknownSync(PreviousInvocation)(JSON.parse(encoded)));
+      await Effect.runPromise(Schema.decodeUnknownEffect(PreviousInvocation)(JSON.parse(encoded)));
     if (version === 40)
-      assert.doesNotThrow(() => Schema.decodeUnknownSync(FrozenInvocation)(JSON.parse(encoded)));
+      await Effect.runPromise(Schema.decodeUnknownEffect(FrozenInvocation)(JSON.parse(encoded)));
     let generation = 0;
     const execution = adapter.workflow(
       fixture.workflow(() =>
@@ -189,8 +189,10 @@ test("unavailable bindings keep their ID and failure without receiving credentia
   const selected = await Effect.runPromise(
     bundleAccounts(adapter, fixture.app, fixture.key, fixture.accounts(unavailable)),
   );
-  const encoded = adapter.invocation(fixture.invocation(selected));
-  const decoded = Schema.decodeUnknownSync(FrozenInvocation)(JSON.parse(encoded));
+  const encoded = adapter.invocation(await fixture.invocation(selected));
+  const decoded = await Effect.runPromise(
+    Schema.decodeUnknownEffect(FrozenInvocation)(JSON.parse(encoded)),
+  );
   const binding = decoded.accounts.app.one;
   assert.ok(binding && "provider" in binding);
   assert.equal(binding.id, unavailable.id);

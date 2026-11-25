@@ -34,12 +34,14 @@ export const accounts = (selected: HostAccount = account()): HostAccounts => ({
   user: { one: selected, many: [selected], empty: [] },
 });
 
-export const invocation = (selected: HostAccounts) => ({
-  ...Schema.decodeUnknownSync(HostInvocation)({
-    command: { operation: "inspect" },
-    accounts: { app: {} },
-    caller: "caller-protocol-fixture",
-  }),
+export const invocation = async (selected: HostAccounts) => ({
+  ...(await Effect.runPromise(
+    Schema.decodeUnknownEffect(HostInvocation)({
+      command: { operation: "inspect" },
+      accounts: { app: {} },
+      caller: "caller-protocol-fixture",
+    }),
+  )),
   accounts: selected,
 });
 

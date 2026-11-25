@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { LoadedWorkerBuild } from "../../.upstream/packages/sdk/src/contracts/worker-build.ts";
 
 const upstream = resolve(".upstream");
@@ -103,11 +103,15 @@ export async function compileFrameworkFixture(
       },
     ],
   });
-  const framework = Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.String))(
-    JSON.parse(readFileSync(frameworkPath, "utf8")),
+  const framework = await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.String))(
+      JSON.parse(readFileSync(frameworkPath, "utf8")),
+    ),
   );
-  const { version } = Schema.decodeUnknownSync(Schema.Struct({ version: Schema.String }))(
-    JSON.parse(framework["package.json"]!),
+  const { version } = await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.Struct({ version: Schema.String }))(
+      JSON.parse(framework["package.json"]!),
+    ),
   );
   const runtime = new Miniflare({
     modules: [
@@ -138,19 +142,21 @@ export async function compileFrameworkFixture(
       }),
     });
     assert.equal(response.status, 200);
-    const result = Schema.decodeUnknownSync(
-      Schema.Struct({
-        ok: Schema.Literal(true),
-        value: Schema.Struct({
-          loaded: LoadedWorkerBuild,
-          split: LoadedWorkerBuild,
-          inlined: LoadedWorkerBuild,
-          storedFormat: Schema.Literal(2),
-          inlinedFormat: Schema.Literal(1),
-          objectCount: Schema.Literal(3),
+    const result = await Effect.runPromise(
+      Schema.decodeUnknownEffect(
+        Schema.Struct({
+          ok: Schema.Literal(true),
+          value: Schema.Struct({
+            loaded: LoadedWorkerBuild,
+            split: LoadedWorkerBuild,
+            inlined: LoadedWorkerBuild,
+            storedFormat: Schema.Literal(2),
+            inlinedFormat: Schema.Literal(1),
+            objectCount: Schema.Literal(3),
+          }),
         }),
-      }),
-    )(await response.json());
+      )(await response.json()),
+    );
     assert.deepEqual(result.value.split, result.value.loaded);
     assert.deepEqual(result.value.inlined, result.value.loaded);
     return result.value.loaded;
