@@ -272,10 +272,12 @@ export function alchemyPreviewStateReader(
       const list = (...args: string[]) =>
         runStateCommand(command, ["--log-level", "none", "state", "list", ...args, ...flags], env);
       const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
+      // Listing a path the store never held fails, so each level is listed only once it is known
+      // to exist: the store's stack names, a stack's stage directories, then this one stage.
+      const known = stdoutLines(list());
       for (const stack of previewStacks) {
         const prefix = `${stack}/${stage}/`;
-        // Only this stage's own rows are listed: the stack's stage directories, then this one stage.
-        if (!stdoutLines(list(stack)).includes(prefix)) {
+        if (!known.includes(`${stack}/`) || !stdoutLines(list(stack)).includes(prefix)) {
           stacks[stack] = [];
           continue;
         }

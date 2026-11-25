@@ -47,6 +47,8 @@ test("reads exact stage rows and resource values from the configured Alchemy sta
     if (args.includes("list")) {
       // Each stack lists its stage directories; only then is the one stage listed recursively.
       const at = args[args.indexOf("list") + 1];
+      if (at === "--config")
+        return { status: 0, stdout: "basalt/\nbasalt-preview-database/\nbasalt-other/\n" };
       if (at === "basalt") return { status: 0, stdout: `basalt/test-pr-99/\nbasalt/${stage}/\n` };
       if (at === "basalt-preview-database")
         return { status: 0, stdout: `basalt-preview-database/${stage}/\n` };
@@ -220,6 +222,7 @@ test("a listing line outside the stage is refused and named, with secrets redact
     environment: { CLOUDFLARE_API_TOKEN: "fixture-secret-token" },
     command: (args) => {
       const at = args[args.indexOf("list") + 1];
+      if (at === "--config") return { status: 0, stdout: "basalt/\n" };
       if (at === "basalt") return { status: 0, stdout: `basalt/${stage}/\n` };
       if (at === `basalt/${stage}`)
         return { status: 0, stdout: "basalt/production/Router fixture-secret-token\n" };
@@ -233,4 +236,20 @@ test("a listing line outside the stage is refused and named, with secrets redact
       error.message.includes("[redacted]") &&
       !error.message.includes("fixture-secret-token"),
   );
+});
+
+test("a brand-new stage whose stacks the store never held reads as empty without listing them", async () => {
+  const listed: string[] = [];
+  const reader = alchemyPreviewStateReader({
+    environment: {},
+    command: (args) => {
+      const at = args[args.indexOf("list") + 1]!;
+      listed.push(at);
+      if (at === "--config") return { status: 0, stdout: "basalt/\n" };
+      if (at === "basalt") return { status: 0, stdout: "basalt/production/\n" };
+      return { status: 1, stdout: `error: ${at}: path does not exist` };
+    },
+  });
+  assert.deepEqual(await reader.read(stage), { basalt: [], "basalt-preview-database": [] });
+  assert.deepEqual(listed, ["--config", "basalt"]);
 });
