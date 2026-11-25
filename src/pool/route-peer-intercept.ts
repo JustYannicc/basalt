@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { SlotSelection } from "./runtime-slots/contract.ts";
 
 interface RoutePeerHost {
@@ -38,12 +38,9 @@ export async function installRoutePeer(ctx: RoutePeerHost, pool: string) {
  */
 export function servingImage(rootImage: string, selection: unknown): string | null {
   if (selection === undefined) return rootImage || null;
-  let decoded: SlotSelection;
-  try {
-    decoded = Schema.decodeUnknownSync(SlotSelection)(selection);
-  } catch {
-    return null;
-  }
+  const read = Schema.decodeUnknownOption(SlotSelection)(selection);
+  if (Option.isNone(read)) return null;
+  const decoded = read.value;
   const image = decoded.active.target.imageInput;
   return [decoded.candidate, decoded.draining].every(
     (record) => record === undefined || record.target.imageInput === image,

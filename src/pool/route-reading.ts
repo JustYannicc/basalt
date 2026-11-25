@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 const Reading = Schema.Struct({
   state: Schema.Literals(["active", "down", "direct_fallback", "off", "needs_login"]),
@@ -60,10 +60,10 @@ export class RouteReadings {
           timer = setTimeout(() => reject(new Error("timeout")), readingMs);
         }),
       ]).finally(() => clearTimeout(timer));
-      const value = Schema.decodeUnknownSync(Reading)(answer, {
-        onExcessProperty: "ignore",
-      });
-      reading = { ...value };
+      const value = Schema.decodeUnknownOption(Reading)(answer, { onExcessProperty: "ignore" });
+      // A reading that doesn't decode is the gateway's failure, like any other.
+      if (Option.isNone(value)) throw new TypeError("route_gateway_unavailable");
+      reading = { ...value.value };
     } catch (error) {
       // The gateway's refusals cross RPC as an Error whose message is the reason code.
       const reason =
