@@ -105,6 +105,14 @@
     "src/pool/stopped-recovery.ts": {
       "count": 1,
       "reason": "Decodes Basalt's own stop receipt."
+    },
+    "src/route/access.ts": {
+      "count": 1,
+      "reason": "Decodes the route calls Basalt's own tools service makes; unknown fields are refused, so a new field ships to this reader before the tools service sends it."
+    },
+    "src/route/acquisitions.ts": {
+      "count": 1,
+      "reason": "Decodes the claims of route acquisitions Basalt's own tools service signs."
     }
   },
   "landmines-testing/no-test-doubles": {
