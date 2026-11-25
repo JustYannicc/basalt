@@ -38,6 +38,30 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 60_000): 
   throw new Error("The pool did not satisfy its readiness contract within the test budget");
 }
 
+/** The usual readiness budget, plus the first ready's 30 s hold. */
+const firstReadyBudgetMs = 90_000;
+
+/** One closed POOL_READINESS_SETTLED line per boot: how long the first ready waited, and why. */
+async function assertSettledOnce(containerId: string, boots: number): Promise<void> {
+  const prefix = "POOL_READINESS_SETTLED ";
+  const deadline = Date.now() + 5_000;
+  let lines: string[] = [];
+  while (Date.now() < deadline) {
+    lines = docker(["logs", containerId])
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith(prefix));
+    if (lines.length >= boots) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(lines.length, boots, lines.join("\n"));
+  for (const line of lines) {
+    const record = JSON.parse(line.slice(prefix.length)) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(record).sort(), ["ended", "held_ms"]);
+    assert.ok(Number.isInteger(record.held_ms) && (record.held_ms as number) >= 0);
+    assert.ok(["on_time", "bound", "deadline"].includes(String(record.ended)));
+  }
+}
+
 async function waitForStartupPhaseLogs(containerId: string): Promise<string> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -210,6 +234,7 @@ test(
         "Content-Type": "application/json",
         "X-Management-Key": "fixture-management-key",
       };
+      // A boot's first ready waits up to 30 s for the supervisor to be scheduled on time.
       async function ready() {
         return until(async () => {
           const response = await fetch(`${readiness}/ready`, {
@@ -274,11 +299,12 @@ test(
           assert.equal(status.db_rtt_state, "measured");
           assert.ok(Number.isInteger(status.db_rtt_ms) && status.db_rtt_ms! >= 1);
           return status;
-        });
+        }, firstReadyBudgetMs);
       }
       const initial = await ready();
       const startupLogs = await waitForStartupPhaseLogs(containerId);
       assertStartupPhaseLogs(startupLogs);
+      await assertSettledOnce(containerId, 1);
       assert.equal((await fetch(`${node}/v1/models`)).status, 401);
       assert.equal((await fetch(`${home}/v8/management/config`)).status, 401);
       assert.equal((await fetch(`${readiness}/ready`)).status, 401);
@@ -397,6 +423,8 @@ test(
       readiness = origin(8318);
       const restarted = await ready();
       assert.notEqual(restarted.boot_id, initial.boot_id);
+      // Each boot settles its own first ready, once.
+      await assertSettledOnce(containerId, 2);
       await until(catalog);
       // The boot patch must preserve the existing client key and provider credentials.
       assert.ok((await turn("fixture-conversation-after-restart")).length > 0);

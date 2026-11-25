@@ -18,7 +18,7 @@ from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from . import supervisor
+from . import policy_monitor, supervisor
 from .readiness import Readiness, ReadyHandler
 
 try:
@@ -26,6 +26,8 @@ try:
 except ImportError:  # the image before this change has no output module
     Output = None
 from .test_recovery import Clock, Stop
+from .test_readiness_lapse_flip import SETTLED, Counters, Wait
+from .test_readiness_lapse_flip import Clock as MonotonicClock
 
 LAUNCH = {"POOL_LAUNCH_GENERATION": "7", "POOL_LAUNCH_TOKEN": "a" * 64}
 RealChild = supervisor.Child  # the harness patches supervisor.Child while main runs
@@ -226,6 +228,41 @@ class SelectedSupervisorTests(unittest.TestCase):
         )
         self.assertEqual((result, ticks), (1, 0))
         self.assertIn('POOL_SUPERVISOR_STOP {"reason":"policy_fused"}', stderr)
+
+    def test_the_first_ready_waits_for_the_policy_monitor_to_be_on_time(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        counters = Counters(directory.name)
+        waits = Wait(MonotonicClock(), counters)
+        monitor: list[policy_monitor.PolicyHealthMonitor] = []
+        answers: list[bool] = []
+
+        def stall_before_home(ready, _stop):
+            # The real monitor's timing, driven here because the harness stands in for its thread.
+            monitor.append(policy_monitor.PolicyHealthMonitor(
+                ready,
+                "fixture",
+                monotonic_ns=waits.clock,
+                proc_stat=str(counters.proc_stat),
+                cpu_stats=(str(counters.cpu_stat),),
+            ))
+            waits.late_ms = 1_200
+            monitor[0].wait(waits, 0.5)
+
+        def wait_on_time(_launched, ready):
+            answers.append(ready.snapshot()[0])
+            waits.late_ms = 0
+            monitor[0].wait(waits, 0.5)
+
+        result, _launched, _ready, stderr, ticks = self.run_selected(
+            lambda *_args: None, prepare=stall_before_home, on_startup_wait=wait_on_time
+        )
+        self.assertEqual((result, ticks), (0, TICKS))
+        # Every audit passed; the start loop held the ready through the 5 waits after the stall.
+        self.assertEqual(answers, [False] * 5)
+        settled = [line for line in stderr.splitlines() if line.startswith(SETTLED)]
+        self.assertEqual(len(settled), 1)
+        self.assertEqual(json.loads(settled[0].partition(" ")[2])["ended"], "on_time")
 
     def test_a_blocked_output_reader_ends_the_container(self) -> None:
         def block_reader(tick, launched, _ready, clock):

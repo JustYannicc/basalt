@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import threading
@@ -10,11 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from .output import emit
 from .pool_contract import HOME_URL, native_policy_request, request_json
 from .readiness import POLICY_INSTANCE_ID, POLICY_PLUGIN_ID, Readiness
 
 POLICY_REFRESH_SECONDS = 0.5
 POLICY_PROBE_TIMEOUT_SECONDS = 0.25
+POLICY_PROBE_BUDGET_NS = int(POLICY_PROBE_TIMEOUT_SECONDS * 1_000_000_000)
 POLICY_HEALTH_PATH = "/v8/management/plugins"
 
 ProbeState = Literal["healthy", "unavailable", "missed"]
@@ -181,6 +184,9 @@ class PolicyHealthMonitor:
         self._process_time_ns = process_time_ns
         self._proc_stat = proc_stat
         self._cpu_stats = cpu_stats
+        # Timed from construction, before Home starts, so a first ready is held even before the
+        # first wait returns.
+        readiness.note_waits_timed()
 
     def _scheduling(self) -> Scheduling:
         steal, cpus = host_steal(self._proc_stat) or (None, None)
@@ -195,10 +201,12 @@ class PolicyHealthMonitor:
     def wait(self, stop: threading.Event, seconds: float) -> None:
         """The wait between probes. One that returns late is a stall that starved every probe."""
         before = self._scheduling()
+        self.readiness.note_wait_started(seconds)
         stop.wait(seconds)
         after = self._scheduling()
         late_ms = (after.at_ns - before.at_ns) // 1_000_000 - int(seconds * 1000)
         if late_ms < STALL_LATE_MS:
+            self.readiness.note_wait_on_time()
             return
         self.readiness.note_stall(
             late_ms=late_ms,
@@ -212,12 +220,21 @@ class PolicyHealthMonitor:
         generation = self.readiness.policy_observation_generation()
         if generation is None:
             return "missed"
+        started_ns = self._monotonic_ns()
         state, instance = probe_home_policy(self.management_key, self.readiness)
+        # A starved supervisor shows as a slow probe as often as a late wait,
+        # so a probe past its budget, or one that renewed no lease, starts the on-time run again.
+        steady = self._monotonic_ns() - started_ns <= POLICY_PROBE_BUDGET_NS
         if state == "healthy" and instance is not None:
             if not self.readiness.refresh_policy_lease(instance, generation):
+                self.readiness.note_unsteady_probe()
                 return "unavailable"
-        elif state == "unavailable":
-            self.readiness.invalidate_policy(generation)
+        else:
+            steady = False
+            if state == "unavailable":
+                self.readiness.invalidate_policy(generation)
+        if not steady:
+            self.readiness.note_unsteady_probe()
         return state
 
     def run(self, stop: threading.Event) -> None:
@@ -226,3 +243,69 @@ class PolicyHealthMonitor:
             self.check_once()
             remaining = max(0.0, POLICY_REFRESH_SECONDS - (time.monotonic() - started))
             self.wait(stop, remaining)
+
+
+# A cell at its CPU allocation in its first seconds starves the probe, so a ready announced then
+# lapses seconds later and its calls bounce. The first ready waits until the monitor's last 5 waits
+# came back on time with no probe between them slow or failed, about 2.5 s of steady probes. The
+# hold ends 30 s after the services audit first passes, so a cell under steady load still serves,
+# and gives way 5 s before the start's own deadline, so it never fails a start that would serve.
+FIRST_READY_WAITS = 5
+FIRST_READY_HOLD_NS = 30_000_000_000
+FIRST_READY_DEADLINE_MARGIN_NS = 5_000_000_000
+STALL_LATE_NS = STALL_LATE_MS * 1_000_000
+SETTLED_LINE = "POOL_READINESS_SETTLED "
+
+
+class FirstReady:
+    """Passes the supervisor's services audits to readiness, holding the process's first ready."""
+
+    def __init__(
+        self, readiness: Readiness, monotonic_ns: Callable[[], int] = time.monotonic_ns
+    ) -> None:
+        self._readiness = readiness
+        self._monotonic_ns = monotonic_ns
+        self._audit_passed_ns: int | None = None
+        self._announced = False
+
+    def set_ready(
+        self,
+        services_ready: bool,
+        *,
+        audit_revision: int | None = None,
+        remaining_s: float | None = None,
+    ) -> bool:
+        """Records one services audit; says whether the runtime now answers ready. `remaining_s`
+        is the time the start has left before it fails, on the caller's own clock."""
+        if self._announced or not services_ready:
+            self._readiness.set_ready(services_ready, audit_revision=audit_revision)
+            return services_ready and self._readiness.snapshot()[0]
+        now = self._monotonic_ns()
+        if self._audit_passed_ns is None:
+            self._audit_passed_ns = now
+        held_ns = now - self._audit_passed_ns
+        # None: no monitor times its waits, so there is nothing to wait on and no line.
+        timed = self._readiness.waits_on_time() is not None
+        if held_ns >= FIRST_READY_HOLD_NS:
+            ended = "bound"
+        elif (
+            remaining_s is not None
+            and remaining_s * 1_000_000_000 <= FIRST_READY_DEADLINE_MARGIN_NS
+        ):
+            ended = "deadline"
+        else:
+            ended = "on_time"
+        if ended == "on_time":
+            # Held, the audit is reported as not passed, so /ready answers as before any audit.
+            self._readiness.set_ready_if_steady(
+                audit_revision=audit_revision, waits=FIRST_READY_WAITS, overdue_ns=STALL_LATE_NS
+            )
+        else:
+            self._readiness.set_ready(True, audit_revision=audit_revision)
+        if not self._readiness.snapshot()[0]:
+            return False
+        self._announced = True
+        if timed:
+            record = {"held_ms": held_ns // 1_000_000, "ended": ended}
+            emit(SETTLED_LINE + json.dumps(record, separators=(",", ":")), err=True)
+        return True
