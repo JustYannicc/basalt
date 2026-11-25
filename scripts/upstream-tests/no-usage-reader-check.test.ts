@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { Crypto, Effect, Option, Redacted } from "effect";
-import { SqlClient } from "effect/sql";
+import { Crypto, Data, Effect, Option, Redacted, Schema } from "effect";
+import { SqlClient, type SqlError } from "effect/sql";
 import { ProviderError } from "../../.upstream/packages/apps/src/contracts/host.ts";
 import { providerDeclaration } from "../../.upstream/packages/apps/src/host.ts";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
@@ -16,6 +16,7 @@ import {
   AccountAcquisitionUnavailable,
   type AccountAcquisitionBinding,
 } from "../../.upstream/packages/sdk/src/contracts/account-acquisition-driver.ts";
+import { AccountSourceFailure } from "../../.upstream/packages/sdk/src/contracts/account-check-failure.ts";
 import { makeDriverAccountHealth } from "../../.upstream/packages/sdk/src/implementation/account-driver-health.ts";
 import { database } from "../../.upstream/packages/sdk/src/implementation/database.ts";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
@@ -47,6 +48,16 @@ const identity = (lab: keyof typeof providers) =>
       Effect.flatMap((definition) => identifyProvider(definition, crypto)),
     ),
   );
+/** A driver check fails with `unknown`; these are the failures the host records as a reason. */
+class UnexpectedCheckFailure extends Data.TaggedError("UnexpectedCheckFailure")<{
+  readonly cause: unknown;
+}> {}
+const checkFailure = (error: unknown) =>
+  Schema.is(ProviderError)(error) || Schema.is(AccountSourceFailure)(error)
+    ? error
+    : new UnexpectedCheckFailure({ cause: error });
+/** A synthetic failure of the SDK's record of no check. */
+class RecordFailed extends Data.TaggedError("RecordFailed") {}
 const subscriptions = availableProviderCapabilities.filter(
   (capability) => capability.connection === "home-oauth",
 );
@@ -133,13 +144,16 @@ test("a provider with a usage reader still reads unavailable when its read reall
         binding,
         reference: Redacted.make("bound-id"),
       })
-      .pipe(Effect.flip),
+      .pipe(Effect.mapError(checkFailure), Effect.flip),
   );
-  const reason =
-    failure instanceof ProviderError
+  assert.equal(
+    failure._tag === "ProviderError"
       ? failure.reason
-      : (failure as { evidence?: { reason?: string } }).evidence?.reason;
-  assert.equal(reason, "unavailable");
+      : failure._tag === "AccountSourceFailure"
+        ? failure.evidence.reason
+        : failure._tag,
+    "unavailable",
+  );
 });
 
 const owner = OwnerId.make("organization:team-a");
@@ -328,7 +342,7 @@ for (const storedRow of [true, false])
 const runnerPass = (
   provider: string,
   options: {
-    readonly onHealth?: Effect.Effect<unknown, unknown, SqlClient.SqlClient>;
+    readonly onHealth?: Effect.Effect<void, SqlError.SqlError, SqlClient.SqlClient>;
     readonly failRecord?: boolean;
   },
 ) =>
@@ -346,7 +360,7 @@ const runnerPass = (
         check: (input: { readonly account: string }) =>
           Effect.gen(function* () {
             records.push(input.account);
-            if (options.failRecord) return yield* Effect.fail(new Error("synthetic"));
+            if (options.failRecord) return yield* new RecordFailed();
             return { account, apps: [] } as never;
           }),
       },
