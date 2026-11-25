@@ -603,6 +603,28 @@ export class RuntimeFleetState {
       return true;
     });
   }
+  /**
+   * A start the endpoint refused for its own deployment, not for the slot, once its cell proved
+   * nothing was sent: it leaves as a retired slot that never started, its recent end saying why,
+   * so the refusal frees its place without counting against any runtime. False when the row
+   * already left its starting phases.
+   */
+  retireUnstarted(target: SlotTarget, failure: FleetFailure) {
+    return this.change(async (rows, transaction) => {
+      const row = rows.find((value) => sameTarget(value.target, target));
+      if (
+        !row ||
+        row.identity ||
+        row.active !== 0 ||
+        !["reserved", "warming", "uncertain"].includes(row.phase)
+      )
+        return false;
+      await transaction.put(retiredKey(target.slotId), { ...row, phase: "retired" });
+      await this.keepEnd(transaction, { ...row, failure });
+      rows.splice(rows.indexOf(row), 1);
+      return true;
+    });
+  }
   /** A start that never served frees its place once its cell proved the instance gone. */
   reclaimUnstarted(target: SlotTarget) {
     return this.change(async (rows, transaction) => {

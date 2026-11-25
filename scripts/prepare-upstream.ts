@@ -26,6 +26,7 @@ import {
   obsidianPluginVersionSource,
 } from "./obsidian-plugin-version.ts";
 import { oauthClientIdRulePath, oauthClientIdRuleSource } from "./oauth-client-id-source.ts";
+import { wholeListIssuersPath, wholeListIssuersSource } from "./oauth-whole-list-issuers-source.ts";
 
 requirePreparedBun();
 
@@ -63,6 +64,8 @@ writeFileSync(
 writeFileSync(join(upstream, obsidianPluginVersionPath), obsidianPluginVersionSource(root));
 // SDK authorization and the hosted deploy check refuse exactly the same client IDs.
 writeFileSync(join(upstream, oauthClientIdRulePath), oauthClientIdRuleSource(root));
+// SDK sign-in state and credential use read the reviewed whole-list issuers.
+writeFileSync(join(upstream, wholeListIssuersPath), wholeListIssuersSource(root));
 // The pool Worker imports the release above, so its revision is computed after it is written.
 writePoolWorkerRevision(root, upstream);
 const dependencies = await installUpstreamDependencies(
@@ -83,9 +86,11 @@ run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/ru
 // The vault page render tests bundle the Obsidian app's UI with its served packages.
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "e2e/obsidian/vault-page")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/tunnel")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "src/telemetry")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/failure")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/architecture")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/app-lint")]);
+run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/owned-lint")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/startup-profiler")]);
 run("bun", ["install", "--frozen-lockfile", "--cwd", join(root, "scripts/pool-test-runtime")]);
 const modules = join(root, "node_modules");

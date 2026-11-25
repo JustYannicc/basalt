@@ -1,0 +1,257 @@
+diff --git a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+--- a/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
++++ b/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts
+@@ -1,10 +1,9 @@
+ import { AccountId, StorageError, StorageHost, type AppId } from "@executor-js/sdk/core";
+ import { Effect, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+-import { AccountTargets } from "../contracts/account-grants.ts";
+ import { HostedExecutor } from "../contracts/executor.ts";
+ import { OrganizationForbidden } from "../contracts/organization.ts";
+-import { AccountGrants } from "./proofs/account-access.ts";
++import { inspectableAccounts } from "./proofs/account-access.ts";
+ import { nativePoolMembership, sharedPoolMembership } from "./pool-membership.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { historyReadPhase } from "./pool-history-read-phase.ts";
+@@ -12,15 +11,20 @@ import { appUiPhase } from "./app-ui-phase-timing.ts";
+ import { readPool, withPool } from "./pool-backend.ts";
+ import { PoolMembershipReconcileRequired } from "./pool-membership-reconcile.ts";
+ 
+-const inspect = (account: AccountId) =>
+-  appUiPhase(
+-    "overview-history-inspect",
+-    AccountGrants.inspect.pipe(
+-      Effect.provideService(AccountTargets.inspect, { account }),
+-      Effect.as(true),
+-      Effect.catchTag("OrganizationForbidden", () => Effect.succeed(false)),
+-    ),
+-  );
++/**
++ * The accounts the caller may inspect, by AccountGrants.inspect's rule, in one policy read. An
++ * empty list reads and times nothing, as the per-account checks did.
++ */
++const inspectable = (accounts: readonly AccountId[]) =>
++  accounts.length === 0
++    ? Effect.succeed(new Set<AccountId>())
++    : appUiPhase(
++        "overview-history-inspect",
++        inspectableAccounts(accounts).pipe(
++          Effect.map((ids) => new Set<AccountId>(ids)),
++          Effect.catchTag("OrganizationForbidden", () => Effect.succeed(new Set<AccountId>())),
++        ),
++      );
+ 
+ const digest = async (value: string) => {
+   const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+@@ -85,9 +89,9 @@ export const usageSeriesAccounts = (
+   lock: "shared" | "exclusive" = "exclusive",
+ ) =>
+   Effect.gen(function* () {
+-    for (const account of requested ?? []) {
+-      if (!(yield* inspect(account))) return yield* new OrganizationForbidden();
+-    }
++    const readable = yield* inspectable(requested ?? []);
++    if (requested?.some((account) => !readable.has(account)))
++      return yield* new OrganizationForbidden();
+     const executor = yield* Effect.flatten(HostedExecutor);
+     const sql = yield* policyDatabase;
+     // This service resolves only AccountAcquisitionHost.source and rechecks its current binding.
+@@ -111,11 +115,11 @@ export const usageSeriesAccounts = (
+     const source = yield* Effect.tryPromise(() => digest("home-local-v1")).pipe(
+       Effect.mapError(() => new StorageError()),
+     );
++    const allowed = yield* inspectable(accounts.map((account) => account.account));
+     return yield* appUiPhase(
+       "overview-history-references",
+       Effect.forEach(accounts, (account) =>
+         Effect.gen(function* () {
+-          const allowed = yield* inspect(account.account);
+           const history =
+             account.homeReference === null
+               ? []
+@@ -126,7 +130,7 @@ export const usageSeriesAccounts = (
+                     ),
+                   ),
+                 ).pipe(Effect.mapError(() => new StorageError()));
+-          return { account: allowed ? account.account : null, history };
++          return { account: allowed.has(account.account) ? account.account : null, history };
+         }),
+       ),
+     );
+@@ -146,9 +150,10 @@ export const creditRoutingAccounts = (pool: {
+       ...new Map(membership.accounts.map((account) => [account.account, account])).values(),
+     ];
+     if (accounts.length > 500) return yield* new StorageError();
++    const allowed = yield* inspectable(accounts.map((account) => account.account));
+     return yield* Effect.forEach(accounts, (account) =>
+       Effect.gen(function* () {
+-        if (account.homeReference === null || !(yield* inspect(account.account))) return [];
++        if (account.homeReference === null || !allowed.has(account.account)) return [];
+         const home = yield* Effect.try(() => poolHomeReferences(account.homeReference!)).pipe(
+           Effect.mapError(() => new StorageError()),
+         );
+diff --git a/e2e/tests/pool-usage-access-checks.spec.ts b/e2e/tests/pool-usage-access-checks.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/pool-usage-access-checks.spec.ts
+@@ -0,0 +1,160 @@
++import { expect, layer } from "@effect/vitest";
++import { Clock, Effect } from "effect";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { Evidence } from "../support/evidence.ts";
++import { legacyPoolHome } from "../support/legacy-pool-home.ts";
++import {
++  installLegacyPoolHandoffSetup,
++  legacyPoolHandoffFixture,
++} from "../support/legacy-pool-handoff-setup.ts";
++import { Target } from "../support/platform.ts";
++import { poolHistoryDatabase } from "../support/pool-history-database.ts";
++import { poolWorkerRuntime } from "../support/pool-worker-runtime.ts";
++import { openPrivateApp, waitForAppUrl } from "../support/app-pages.ts";
++import { sqlWireProof } from "../support/sql-wire-proof.ts";
++import { scenarios } from "../test-plan.ts";
++
++/** Account policy reads: one per batch, never one per account. */
++const policyRead = /from hosted_account_access p/i;
++
++layer(HostedLive, { excludeTestServices: true })(
++  "Pool usage reads check account access once",
++  (it) => {
++    installLegacyPoolHandoffSetup({ nativeSources: true });
++    it.effect(scenarios.poolUsageAccessChecks.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const api = yield* Api,
++            actors = yield* Actors,
++            target = yield* Target,
++            browser = yield* Browser,
++            evidence = yield* Evidence;
++          const wire = yield* sqlWireProof;
++          const { pool, accounts } = legacyPoolHandoffFixture(context);
++          const home = yield* legacyPoolHome(
++            pool.id,
++            ["codex", "claude", "claude", "claude", "xai"].map((provider, index) => ({
++              id: `synthetic-cloud-native-reference-${index + 1}`,
++              provider,
++            })),
++          );
++          const history = yield* poolHistoryDatabase;
++          const worker = yield* poolWorkerRuntime(
++            target.metadata.origin,
++            home.origin,
++            history.connection,
++          );
++          const peer = (origin: string | null) =>
++            api.request(actors.owner, "POST", "/native-provider-fixture/product-peer", {
++              pool: pool.id,
++              origin,
++            });
++          expect((yield* peer(worker.origin)).status).toBe(200);
++          yield* Effect.addFinalizer(() => peer(null).pipe(Effect.asVoid, Effect.orDie));
++          expect((yield* worker.operations("/model-history/schema/catalog")).status).toBe(200);
++          yield* history.applySchema;
++
++          const path = `/api/organizations/${actors.organization.id}/apps/${pool.id}`;
++          const ids = accounts.map((account) => account.id);
++          expect(ids.length).toBeGreaterThan(1);
++          const now = yield* Clock.currentTimeMillis;
++          const iso = (at: number) => new Date(at).toISOString();
++          const week = { from: iso(now - 7 * 86_400_000), to: iso(now) };
++          yield* browser.login(actors.owner);
++          yield* browser.use("Keep reads explicit", (page) =>
++            page.route("**/*.js", (route) => route.abort()),
++          );
++          yield* openPrivateApp(yield* waitForAppUrl(actors.owner, `${path}/ui`));
++
++          const reads = {
++            // The Accounts tab's reads name every visible account.
++            series: (traceparent: string) =>
++              api
++                .request(
++                  actors.owner,
++                  "POST",
++                  `${path}/pool-usage/series`,
++                  { ...week, bucket: "day", by: ["account"], accounts: ids },
++                  { traceparent },
++                )
++                .pipe(Effect.map((response) => response.status)),
++            lastSuccess: (traceparent: string) =>
++              api
++                .request(
++                  actors.owner,
++                  "POST",
++                  `${path}/pool-usage/last-success`,
++                  { accounts: ids },
++                  { traceparent },
++                )
++                .pipe(Effect.map((response) => response.status)),
++            // The overview's summary names none; it inspects every account in the pool.
++            summary: (traceparent: string) =>
++              browser.use("Overview summary", (page) =>
++                page.evaluate(
++                  ({ input, traceparent }) => {
++                    const context = JSON.parse(
++                      document.getElementById("executor-context")?.textContent ?? "{}",
++                    );
++                    return fetch("/_executor/api/pool-usage/summary", {
++                      method: "POST",
++                      credentials: "same-origin",
++                      headers: { "content-type": "application/json", traceparent },
++                      body: JSON.stringify({
++                        version: context.version ?? context.deployment,
++                        input,
++                      }),
++                    }).then((response) => response.status);
++                  },
++                  { input: week, traceparent },
++                ),
++              ),
++          };
++          const counted: Record<string, { status: number; statements: number; policy: number }> =
++            {};
++          for (const [name, read] of Object.entries(reads)) {
++            const trace = randomUUID().replaceAll("-", "");
++            yield* wire.begin(0);
++            const status = yield* read(`00-${trace}-${trace.slice(0, 16)}-01`);
++            yield* wire.end(trace);
++            const statements = wire.global().filter((item) => item.trace === trace);
++            counted[name] = {
++              status,
++              statements: statements.length,
++              policy: statements.filter((item) => policyRead.test(item.query)).length,
++            };
++          }
++          yield* evidence.json("access-checks.json", { accounts: ids.length, counted });
++          // Requested accounts and the pool's accounts are each checked in one read, so the work
++          // no longer grows with the number of accounts.
++          expect(counted.series).toMatchObject({ status: 200, policy: 2 });
++          expect(counted.lastSuccess).toMatchObject({ status: 200, policy: 2 });
++          expect(counted.summary).toMatchObject({ status: 200, policy: 1 });
++
++          // The administrator may inspect none of the owner's (personal) accounts: naming them must
++          // refuse the read, and reading the whole pool must still answer. Which pool account ids the
++          // answer carries is not checked here.
++          const admin = (body: unknown) =>
++            api
++              .request(
++                actors.admin,
++                "POST",
++                `${path}/pool-usage/${body === undefined ? "series" : "last-success"}`,
++                body ?? { ...week, bucket: "day", by: ["account"] },
++              )
++              .pipe(Effect.map((response) => response.status));
++          const refused = yield* admin({ accounts: ids });
++          const wholePool = yield* admin(undefined);
++          yield* evidence.json("access-checks-admin.json", { refused, wholePool });
++          expect(refused).toBe(403);
++          expect(wholePool).toBe(200);
++        }),
++      ),
++    );
++  },
++);

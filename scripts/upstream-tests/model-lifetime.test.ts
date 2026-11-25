@@ -15,7 +15,9 @@ async function fixture() {
     format: "esm",
     platform: "browser",
     target: "es2023",
-    external: ["cloudflare:workers"],
+    // The pool Worker deploys with nodejs_compat, as this runtime starts it, so Node built-ins stay
+    // imports: evlog's toolkit names `node:async_hooks`, which no browser shim provides.
+    external: ["node:*", "cloudflare:workers"],
     plugins: [
       {
         name: "no-fixture-database",

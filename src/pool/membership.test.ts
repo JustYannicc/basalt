@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import { NativeMemberships } from "./membership.ts";
 import {
   membershipPrefix,
@@ -267,7 +267,7 @@ test("a reserve during an old read repairs the newest selection before re-enabli
   assert.deepEqual(f.home.get("a"), []);
 });
 
-test("a missing current Home binding fails closed while the other pool remains usable", async () => {
+test("a pool whose only Home binding is missing fails closed while the other pool remains usable", async () => {
   const f = fixture(),
     memberships = new NativeMemberships(f.deps);
   await memberships.reserve(await f.request("a"));
@@ -609,6 +609,42 @@ test("retained and unconfirmed pools keep their existing behavior after pool del
   }
 });
 
+test("a pool deleted while reserved and unconfirmed keeps refusing authority", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request());
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+  const installed = f.installed.get("a");
+  const aborted = [...f.aborted];
+  await memberships.retire("a", f.deps.now());
+  // Retire acts only on a confirmed pool: nothing reaches the pool's runtime or Home, and the
+  // reservation's own refusal stands.
+  assert.equal(f.installed.get("a"), installed);
+  assert.deepEqual(f.aborted, aborted);
+  assert.equal(f.home.get("a"), undefined);
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+});
+
+test("retiring a confirmed pool writes its tombstone and authority then refuses", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request());
+  await memberships.tick();
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+  assert.deepEqual(f.home.get("a"), ["auth-a"]);
+  const aborted = f.aborted.length;
+  await memberships.retire("a", f.deps.now());
+  assert.equal(f.aborted.length, aborted + 1);
+  // The pool's runtime is told at once that it has no accounts.
+  assert.deepEqual(f.installed.get("a")?.accounts, []);
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+  // The tombstone refuses the pool's return and a new reservation within its window.
+  await assert.rejects(memberships.ensure("a", "org"), /retired/);
+  await assert.rejects(memberships.reserve(await f.request()), /retired/);
+  await memberships.tick();
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+});
+
 test("a native record from the previous layout retains retirement across a failed install and retry", async () => {
   const f = fixture();
   await f.deps.storage.put("native-pool-memberships-v1", {
@@ -696,4 +732,131 @@ test("a failed initial host read releases initialization so the next request can
   await assert.rejects(memberships.ensure("a", "org"), /temporarily unavailable/);
   await memberships.ensure("a", "org");
   assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+});
+
+// One linked account that doesn't resolve to Home must not refuse the pool's other accounts.
+type SnapshotAccount = NativeMembershipSnapshot["accounts"][number];
+type Unresolve = (account: SnapshotAccount) => SnapshotAccount;
+
+async function partlyUnresolved(unresolve: Unresolve) {
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
+  f.native.set("a", ["auth-a", "auth-c", "auth-d"]);
+  const read = f.deps.read;
+  let unresolved = true;
+  f.deps.read = async (pool, organization) => {
+    const result = await read(pool, organization);
+    return {
+      ...result,
+      accounts: result.accounts.map((account) =>
+        unresolved && account.homeReference === "auth-d" ? unresolve(account) : account,
+      ),
+    };
+  };
+  await memberships.reserve(await f.request("a"));
+  await memberships.tick();
+  return { f, memberships, resolve: () => (unresolved = false) };
+}
+
+const unresolvedCases: ReadonlyArray<readonly [string, Unresolve]> = [
+  ["without a Home reference", (account) => ({ ...account, homeReference: null })],
+  [
+    "just linked and not yet copied",
+    (account) => ({ ...account, driverRevision: null, bindingRevision: null, homeReference: null }),
+  ],
+  [
+    "the host sends as reconnecting (a new generation)",
+    (account) => ({ ...account, generation: 2, homeReference: null }),
+  ],
+];
+for (const [name, unresolve] of unresolvedCases) {
+  test(`an account ${name} is left out while the pool's other accounts are served`, async () => {
+    const { f, memberships, resolve } = await partlyUnresolved(unresolve);
+    // The pool is valid and clean: authority answers with the resolved accounts only.
+    assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a", "auth-c"]);
+    assert.deepEqual(f.installed.get("a")?.accounts, ["auth-a", "auth-c"]);
+    assert.deepEqual(f.home.get("a"), ["auth-a", "auth-c"]);
+    // It rejoins on the next membership read once it resolves.
+    resolve();
+    f.advance(membershipReadMs);
+    await memberships.tick();
+    assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a", "auth-c", "auth-d"]);
+    assert.deepEqual(f.home.get("a"), ["auth-a", "auth-c", "auth-d"]);
+  });
+}
+
+test("an unresolved account is logged once, counted while it repeats, and logged again when it returns", async () => {
+  // Observing spies: the real console still prints.
+  const warned = mock.method(console, "warn");
+  const informed = mock.method(console, "info");
+  try {
+    const { f, memberships, resolve } = await partlyUnresolved((account) => ({
+      ...account,
+      homeReference: null,
+    }));
+    for (let pass = 0; pass < 2; pass++) {
+      f.advance(membershipReadMs);
+      await memberships.tick();
+    }
+    const lines = (spy: typeof warned, event: string) =>
+      spy.mock.calls.map((call) => call.arguments).filter(([name]) => name === event);
+    assert.deepEqual(lines(warned, "POOL_MEMBERSHIP_ACCOUNT_UNRESOLVED"), [
+      [
+        "POOL_MEMBERSHIP_ACCOUNT_UNRESOLVED",
+        { account: "account-auth-d", reason: "no_home_reference" },
+      ],
+    ]);
+    resolve();
+    f.advance(membershipReadMs);
+    await memberships.tick();
+    assert.deepEqual(lines(informed, "POOL_MEMBERSHIP_ACCOUNT_RESOLVED"), [
+      ["POOL_MEMBERSHIP_ACCOUNT_RESOLVED", { account: "account-auth-d", repeats: 2 }],
+    ]);
+  } finally {
+    warned.mock.restore();
+    informed.mock.restore();
+  }
+});
+
+test("an account that was served and stops resolving loses its Home link before the policy is clean again", async () => {
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
+  f.native.set("a", ["auth-a", "auth-d"]);
+  await memberships.reserve(await f.request("a"));
+  await memberships.tick();
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a", "auth-d"]);
+  const read = f.deps.read;
+  f.deps.read = async (pool, organization) => {
+    const result = await read(pool, organization);
+    return {
+      ...result,
+      accounts: result.accounts.map((account) =>
+        account.homeReference === "auth-d" ? { ...account, homeReference: null } : account,
+      ),
+    };
+  };
+  f.advance(membershipReadMs);
+  await memberships.tick();
+  assert.deepEqual(f.home.get("a"), ["auth-a"]);
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+});
+
+test("a pool none of whose linked accounts resolve stays refused and keeps its Home links", async () => {
+  const f = fixture(),
+    memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request("a"));
+  await memberships.tick();
+  const linked = f.home.get("a");
+  const read = f.deps.read;
+  f.deps.read = async (pool, organization) => {
+    const result = await read(pool, organization);
+    return {
+      ...result,
+      accounts: result.accounts.map((account) => ({ ...account, homeReference: null })),
+    };
+  };
+  f.advance(membershipReadMs);
+  await memberships.tick();
+  await assert.rejects(memberships.authority("a"), /refreshing/);
+  assert.deepEqual(f.home.get("a"), linked);
 });

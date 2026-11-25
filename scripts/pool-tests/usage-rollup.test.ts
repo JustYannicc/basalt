@@ -14,6 +14,7 @@ import {
   usageRollupHoldLimitMs,
 } from "../../src/pool/model-history/usage-rollup-backfill.ts";
 import { insertRequests } from "../../src/pool/model-history/store.ts";
+import { postgresCode } from "../../src/pool/model-history/usage-rollup-apply.ts";
 import { seriesFixture, v15Fixture } from "./series-fixture.ts";
 
 /** The raw answer the rollup must reproduce exactly: one group per pool, UTC hour, source and model. */
@@ -288,47 +289,64 @@ test("writers on the 500 ms lock timeout never fail while the backfill runs betw
     const holder = await client();
     const quick = await client();
     let running = true,
-      slowest = 0,
-      written = 0;
+      written = 0,
+      cancelled = 0,
+      maxHoldMs = 0;
+    // A writer's lock timeout cancels its statement; count those instead of stopping at the first.
+    const timedOut = (error: unknown) => {
+      if (postgresCode(error) !== "55P03") throw error;
+      cancelled++;
+    };
     try {
       let n = 0;
       // One writer keeps its transaction, and the pool's shared lock, open 150 ms at a time.
       const holding = (async () => {
         while (running) {
           await holder.query("BEGIN");
-          await insertRequests(holder, [
-            await f.row({
-              timestamp: timestamp(new Date(Date.UTC(2026, 0, 1, n++ % 48, 30)).toISOString()),
-            }),
-          ]);
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          await holder.query("COMMIT");
-          written++;
+          try {
+            await insertRequests(holder, [
+              await f.row({
+                timestamp: timestamp(new Date(Date.UTC(2026, 0, 1, n++ % 48, 30)).toISOString()),
+              }),
+            ]);
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            await holder.query("COMMIT");
+            written++;
+          } catch (error) {
+            await holder.query("ROLLBACK");
+            timedOut(error);
+          }
           await new Promise((resolve) => setTimeout(resolve, 30));
         }
       })();
-      // Another inserts as fast as it can; any wait past 500 ms fails it.
+      // Another inserts as fast as it can.
       const racing = (async () => {
         while (running) {
-          const started = performance.now();
-          await insertRequests(quick, [
-            await f.row({
-              timestamp: timestamp(new Date(Date.UTC(2026, 0, 1, n++ % 48, 40)).toISOString()),
-            }),
-          ]);
-          slowest = Math.max(slowest, performance.now() - started);
-          written++;
+          const row = await f.row({
+            timestamp: timestamp(new Date(Date.UTC(2026, 0, 1, n++ % 48, 40)).toISOString()),
+          });
+          await insertRequests(quick, [row]).then(() => {
+            written++;
+          }, timedOut);
         }
       })();
       let calls = 0;
       for (;;) {
         const result = await runUsageRollup(f.db, plan, 2_000);
+        maxHoldMs = Math.max(maxHoldMs, result.maxHoldMs);
         if (result.status === "complete" || ++calls > 500) break;
       }
       running = false;
       await Promise.all([holding, racing]);
       assert.ok(calls <= 500, "the backfill finished between the writers");
-      assert.ok(slowest < 500, `the quick writer waited ${Math.round(slowest)} ms`);
+      // The product's bounds: no writer is cancelled by its 500 ms lock timeout, and the backfill
+      // never reports a hold past its cap. That report still times the commit's round trip in this
+      // process, so a long stall there reads as a long hold; the product stops on it the same way.
+      assert.equal(cancelled, 0, `${cancelled} writes were cancelled by their 500 ms lock timeout`);
+      assert.ok(
+        maxHoldMs <= usageRollupHoldLimitMs,
+        `the backfill held the pool ${maxHoldMs} ms, past its ${usageRollupHoldLimitMs} ms cap`,
+      );
       assert.ok(written > 0);
     } finally {
       running = false;
