@@ -1,3 +1,4 @@
+import { failedOn, placedOn } from "../runtime-placement.worker.ts";
 import {
   refuseRuntime,
   rememberRuntimeFailure,
@@ -748,6 +749,7 @@ export class RuntimeFleet {
       }
       return rootFallbackRefused(request);
     }
+    let sent = false;
     let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
       reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
     try {
@@ -770,13 +772,18 @@ export class RuntimeFleet {
       if (!sameIdentity(await cell.selected(), reservation.identity))
         throw new FleetRefused("uncertain");
       step = "fleet_forward";
-      const response = stampResumeTarget(
-        await cell.forward(request, 8317, pool, () => {
-          this.failures.assertAvailable(reservation.identity);
-          beforeDispatch();
-          dispatched();
-        }),
-        { kind: "runtime", identity: reservation.identity },
+      const response = placedOn(
+        stampResumeTarget(
+          await cell.forward(request, 8317, pool, () => {
+            this.failures.assertAvailable(reservation.identity);
+            beforeDispatch();
+            dispatched();
+            sent = true;
+          }),
+          { kind: "runtime", identity: reservation.identity },
+        ),
+        reservation.identity,
+        "cell",
       );
       // A marked answer runs through the front layer, and a cut mid-body can't tell a layer exit
       // from a node failure: it never counts against the runtime, which readiness and the layer's
@@ -796,6 +803,8 @@ export class RuntimeFleet {
       });
     } catch (error) {
       rememberRuntimeFailure(step, error);
+      // Only a cell that was sent the call took it; a refusal before that names no runtime.
+      if (reservation.kind === "runtime" && sent) failedOn(error, reservation.identity, "cell");
       // A failed front layer leaves the runtime serving: no primary failure, no recovery.
       const layer = runtimeFailureDiagnostic(error, step).runtimeStep === "resume_layer";
       if (reservation.kind === "primary" && !layer) {
