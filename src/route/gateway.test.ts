@@ -1002,3 +1002,24 @@ test("a node that must not boot is destroyed in order, never taking down a later
   await leaving;
   assert.equal(container.logouts, logouts + 1, "the logout node was taken down");
 });
+
+test("a switch-off's realignment never touches a disconnect's logout node", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.expireKey();
+  assert.ok("url" in (await gateway.login(caller)));
+  container.crash();
+  const held = container.hold("/status");
+  const reading = gateway.reading(caller).catch(() => undefined);
+  await held.reached;
+  // The open sign-in keeps the node, so the switch-off realigns it once the start is done.
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  const logouts = container.logouts;
+  const leaving = gateway.disconnect(caller);
+  await settle();
+  held.release();
+  await reading;
+  await leaving;
+  assert.equal(container.logouts, logouts + 1, "the logout node was taken down");
+  assert.equal(container.running, false);
+});

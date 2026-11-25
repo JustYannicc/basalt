@@ -89,9 +89,13 @@ export class GatewayRuntime {
    * A node that is not up needs nothing: its boot applies storage.
    */
   align() {
+    // Bound to the launch it was asked in: a stop since then took that node away, and the next
+    // one (a disconnect's logout node, say) is not this call's to touch.
+    const launch = this.current;
     const started = this.starting?.run.catch(() => {}) ?? Promise.resolve();
     void started.then(() => {
-      if (this.control.running) this.reconcile(this.current, () => this.host.selection());
+      if (this.control.running && launch === this.current)
+        this.reconcile(launch, () => this.host.selection());
     });
   }
 
