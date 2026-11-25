@@ -113,7 +113,7 @@ export const crashReadyCell = (input: CrashInput) =>
     const proof = Effect.gen(function* () {
       yield* call(() => input.sleep(3_000));
       const halt = input.halted?.();
-      if (halt) return yield* Effect.fail(halt);
+      if (halt) return yield* halt;
       yield* call(() => crashCell(access, target, nonce, input.operator));
       const killedAt = now();
       let detectedMs: number | undefined;

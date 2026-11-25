@@ -406,9 +406,9 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           ),
         );
       // One served turn before anything else: a user at its cap stops the run here, before a kill.
-      yield* call(() => traffic.turn(model));
+      yield* step("send", () => traffic.turn(model));
       // The killed cell is gone after the crash, so its boot is known only from this read.
-      const before = yield* call(() => inspectFleet(access));
+      const before = yield* step("inspect", () => inspectFleet(access));
       const crash = yield* crashReadyCell({
         controller: access,
         go: input.go,
@@ -427,9 +427,9 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         sleep: deps.sleep,
         now: deps.now,
       });
-      if (traffic.capped) return yield* Effect.fail(capReached());
+      if (traffic.capped) return yield* capReached();
       if (crash.status !== "proven") return { ...evidence, crash };
-      const ownTraffic = yield* call(() =>
+      const ownTraffic = yield* step("inspect_after", () =>
         crashTrafficAccepted({
           traffic,
           before,
