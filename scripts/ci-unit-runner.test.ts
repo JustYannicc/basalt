@@ -19,7 +19,14 @@ async function run(root: string, args: string[], onOutput?: (output: string) => 
   const child = spawn(process.execPath, args, {
     cwd: root,
     detached: true,
-    env: { ...process.env, NODE_TEST_CONTEXT: undefined, BASE_SHA: "", HEAD_SHA: "" },
+    env: {
+      ...process.env,
+      NODE_TEST_CONTEXT: undefined,
+      BASE_SHA: "",
+      HEAD_SHA: "",
+      // A unit leg runs this test; the fixture suite is not that leg's share.
+      UNIT_SHARD: undefined,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
