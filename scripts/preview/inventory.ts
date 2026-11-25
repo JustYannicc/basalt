@@ -225,8 +225,13 @@ function parseStageValues(
   paths: readonly string[],
 ): PreviewStateEntry[] {
   let decoded: unknown;
+  // Progress lines precede the JSON on stdout; only the document itself is parsed.
+  const json = stdout
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*[•✓✗✔✖⚠ℹ]\s/u.test(line))
+    .join("\n");
   try {
-    decoded = JSON.parse(stdout);
+    decoded = JSON.parse(json);
   } catch {
     throw new Error("Alchemy returned malformed remote resource state");
   }
