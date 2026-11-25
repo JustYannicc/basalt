@@ -8,6 +8,7 @@ import {
   type Conversation,
   type ModelCatalog,
   type PoolAccess,
+  type Refusal,
   type UsageRecord,
 } from "./types.ts";
 
@@ -42,17 +43,20 @@ async function discardBody(response: Response): Promise<void> {
   }
 }
 
-/** The most a refusal's body is read for its code; the pool's cap refusal is far shorter. */
+/** The most a refusal's body is read for its codes; the pool's refusals are far shorter. */
 const refusalBodyBytes = 8192;
+const token = (value: unknown) =>
+  typeof value === "string" && /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(value) ? value : undefined;
 
 /**
- * Whether a model call's 429 is its user's cap. The pool rewrites only that refusal, to carry
- * `user_period_limit_exceeded` (src/pool/cap-message.ts), and passes a provider's 429 through
- * untouched. Reads a bounded body and never returns or logs it.
+ * A model call's refusal, as codes only. The pool rewrites its user-cap refusal to carry
+ * `user_period_limit_exceeded` (src/pool/cap-message.ts); its node relays a Home refusal as a
+ * `<code>: <message>` message under a generic type and code; a provider's refusal passes through.
+ * Reads a bounded body and never returns or logs any text of it but those codes.
  */
-async function isUserCap(response: Response): Promise<boolean> {
+async function readRefusal(response: Response): Promise<Refusal | undefined> {
   const reader = response.body?.getReader();
-  if (!reader) return false;
+  if (!reader) return undefined;
   const decoder = new TextDecoder();
   let text = "";
   try {
@@ -60,15 +64,17 @@ async function isUserCap(response: Response): Promise<boolean> {
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > refusalBodyBytes) return false;
+      if (bytes > refusalBodyBytes) return undefined;
       text += decoder.decode(part.value, { stream: true });
     }
     const body: unknown = JSON.parse(text + decoder.decode());
-    return (
-      isObject(body) && isObject(body.error) && body.error.code === "user_period_limit_exceeded"
-    );
+    if (!isObject(body) || !isObject(body.error)) return undefined;
+    const message = body.error.message;
+    const prefix =
+      typeof message === "string" ? /^([a-z][a-z0-9_]{0,63}): /u.exec(message)?.[1] : undefined;
+    return { code: token(body.error.code), type: token(body.error.type), prefix };
   } catch {
-    return false;
+    return undefined;
   } finally {
     void reader.cancel().catch(() => {});
   }
@@ -237,9 +243,10 @@ export class PoolAcceptanceClient {
     );
     if (response.status !== 200) {
       const message = `/v1/chat/completions returned HTTP ${response.status}`;
-      if (response.status === 429 && (await isUserCap(response))) throw new UserCapReached(message);
-      await discardBody(response);
-      throw new HttpStatusFailure(response.status, message);
+      const refusal = await readRefusal(response);
+      if (response.status === 429 && refusal?.code === "user_period_limit_exceeded")
+        throw new UserCapReached(message, refusal);
+      throw new HttpStatusFailure(response.status, message, refusal);
     }
     const boot = requireBoot(response);
     return { boot, ...(await verifySse(response, requestStarted, { now: this.now })) };

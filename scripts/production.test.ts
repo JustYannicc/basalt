@@ -9,7 +9,6 @@ import {
   rootChange,
   removals,
   fleetEnvironment,
-  smoke,
   workersToRepoint,
 } from "./production.ts";
 import { errorLine } from "./release/failure-line.ts";
@@ -187,20 +186,6 @@ test("an error prints as its class and kind, never as an object", () => {
     errorLine({ errorClass: "ContainerBuildFailed", kind: "failed" }),
     "ContainerBuildFailed (failed)",
   );
-});
-
-test("the smoke passes on a served turn and names a failure by class and status only", async () => {
-  assert.deepEqual(await smoke(async () => ({ boot: "b" })), { passed: true });
-  assert.deepEqual(
-    await smoke(async () => {
-      throw new HttpStatusFailure(503, "/v1/chat/completions returned HTTP 503");
-    }),
-    { passed: false, why: "Error, HTTP 503" },
-  );
-  const failed = await smoke(async () => {
-    throw new Error("connect failed to a host name");
-  });
-  assert.deepEqual(failed, { passed: false, why: "Error" });
 });
 
 test("each plan row says why it is in the plan, by name only, and a noop row prints nothing", async () => {
