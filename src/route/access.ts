@@ -23,6 +23,9 @@ const Caller = Schema.Union([
 ]);
 const CreateInput = Schema.Struct({ routeId: RouteId, owner: RouteOwner, app: Opaque });
 export const SelectInput = Schema.Struct({ exitId: Schema.NullOr(Opaque), whenDown: WhenDown });
+// Only the tools service, Basalt's own, calls the gateway, and an unknown field is refused. The two
+// deploy as separate Workers and a release does not swap them at the same instant, so a new field
+// ships to this reader first, and only then does the tools service start sending it.
 const strict = { onExcessProperty: "error" } as const;
 
 /** Malformed input crosses the RPC boundary as a reason code, never as schema text. */
