@@ -123,6 +123,12 @@ function exactResourceInventory(inventory: PreviewInventory): {
   return { containers: [...containers.values()], workers: [...workers.values()], complete };
 }
 
+/** A Worker the stage named carries its stage whole; one that lost its tag is still the stage's. */
+export function namedForStage(name: string, stage: string) {
+  if (!/^[a-z0-9-]+$/u.test(stage)) throw new Error("Preview stage name is malformed");
+  return new RegExp(`(?:^|-)${stage}(?:-|$)`, "u").test(name);
+}
+
 function cloudflareApi(account: string, token: string) {
   const headers = { Authorization: `Bearer ${token}` };
   const request = async (
@@ -166,6 +172,10 @@ function cloudflareApi(account: string, token: string) {
         }
         for (const raw of body.result) {
           const worker = record(raw);
+          if (typeof worker.id === "string" && namedForStage(worker.id, stage)) {
+            matched.push(worker.id);
+            continue;
+          }
           if (worker.tags === null || worker.tags === undefined) continue;
           if (!Array.isArray(worker.tags) || worker.tags.some((tag) => typeof tag !== "string"))
             throw new Error("Cloudflare Worker tags are malformed");
@@ -331,6 +341,21 @@ export async function capturePreviewProviderInventory(
   };
 }
 
+/**
+ * A rehearsal stage whose State records no Worker and no container, such as a lane left with only
+ * its buckets or its database after a destroy stopped part way. A stage deployed whole records both.
+ */
+function partialRehearsal(identity: PreviewIdentity, inventory: PreviewInventory) {
+  if (identity.rehearsal === undefined) return false;
+  return !Object.values(inventory.stacks)
+    .flat()
+    .some(({ value }) => {
+      // An output row holds no resource.
+      const type = value && typeof value === "object" ? record(value).resourceType : undefined;
+      return type === "Cloudflare.Worker" || type === "Cloudflare.Container";
+    });
+}
+
 /** Require provider reads and exact-stage Alchemy state to agree that deletion completed. */
 export async function verifyPreviewProvidersAbsent(
   identity: PreviewIdentity,
@@ -364,13 +389,25 @@ export async function verifyPreviewProvidersAbsent(
     )
   )
     throw new Error("Preview Worker domain bindings are still present");
-  if (!exact.workers.some((worker) => worker.hostnames.length > 0))
+  const partial = partialRehearsal(identity, inventory);
+  if (partial) {
+    // Nothing State recorded names a binding, so the provider is read by the stage's own names: a
+    // stage's hostnames all sit under its slug in the test zone. A bucket is found by its recorded
+    // name, or by the stage in its name; one Alchemy cut to 63 characters keeps only a hash of the
+    // stage, so without its State row it is not seen here.
+    const host = new URL(identity.origin).hostname.replace(/^app\./u, "");
+    if (domains.some(({ hostname }) => hostname === host || hostname.endsWith(`.${host}`)))
+      throw new Error("Preview Worker domain bindings are still present");
+  } else if (!exact.workers.some((worker) => worker.hostnames.length > 0))
     throw new Error("Preview state did not identify its custom domains");
 
   const expectedBuckets = bucketNames(inventory);
-  if (expectedBuckets.length) {
-    const present = new Set(await readbacks.listR2Buckets());
-    if (expectedBuckets.some((name) => present.has(name)))
+  if (expectedBuckets.length || partial) {
+    const present = await readbacks.listR2Buckets();
+    if (
+      expectedBuckets.some((name) => present.includes(name)) ||
+      (partial && present.some((name) => name.includes(`-${identity.stage}-`)))
+    )
       throw new Error("Preview Cloudflare R2 buckets are still present");
   }
   const databases = await readbacks.listPlanetScaleDatabases(identity.databaseName);
@@ -379,6 +416,10 @@ export async function verifyPreviewProvidersAbsent(
   for (const namespace of stageNamespaces(identity.sourceNamespace))
     if (await readbacks.artifactsNamespaceExists(namespace))
       throw new Error("Preview Artifacts namespace is still present");
+  // A stage deployed whole proves every paid application and binding gone from what it recorded. A
+  // partial rehearsal recorded none; its Workers, applications and outputs are read by name instead
+  // (the Worker read above, and the stage's own application and output checks after this one).
+  if (partial) return;
   if (
     !inventory.providers.complete ||
     !exact.complete ||
