@@ -683,6 +683,7 @@ test("the REST observer trusts only the box's own heartbeat and counts hosted an
     box: 2,
     boxJobs: ["declared-cloud-3", "client-connection"],
     selecting: 0,
+    hostedWait: 0,
   });
   assert.ok(requests.every((request) => request.authorization === "Bearer t"));
   // This Check's own run is read for its select's start, and its own jobs are never counted.
@@ -1250,7 +1251,7 @@ test("every planned job fits the memory together, since a waiting job may start 
     shard("client-connection", 4),
   ];
   const plan = (free: number, memory: number) =>
-    planBox(shards, free, 60, memory).map((job) => [job.id, job.wave]);
+    planBox(shards, free, 60, { memoryGiB: memory }).map((job) => [job.id, job.wave]);
   // One slot: the second shard waits for the first, but the box may start it beside the first.
   assert.deepEqual(plan(1, 28), [
     ["declared-cloud-1", 1],
@@ -1630,4 +1631,85 @@ test("routing leaves the workflow token's last calls to the Check's own jobs", a
   // An empty count says nothing.
   const blank = fakeGitHub({ others: 10, jobsOf: fast, remaining: () => "" });
   assert.equal((await routeThree(blank.observe)).jobs.length, 3);
+});
+
+test("the REST observer reads the hosted wait from recent starts in the jobs it already lists", async () => {
+  // A hosted job that waited `waited` minutes and started `ago` minutes ago.
+  const startedAfter = (
+    waited: number,
+    ago: number,
+    labels = ["ubuntu-latest"],
+    status = "in_progress",
+  ) => ({
+    name: "fast",
+    status,
+    labels,
+    runner_group_name: labels.includes("basalt-box") ? "Default" : "GitHub Actions",
+    created_at: minutesAgo(ago + waited),
+    started_at: minutesAgo(ago),
+  });
+  const github = fakeGitHub({
+    others: 3,
+    jobsOf: (id) =>
+      id === 100
+        ? [
+            startedAfter(12, 1),
+            startedAfter(9, 4, ["ubuntu-latest"], "completed"),
+            startedAfter(14, 2),
+          ]
+        : id === 101
+          ? [
+              // Not a hosted Linux runner's wait, or too long ago to say what a job queued now gets.
+              startedAfter(40, 1, ["basalt-box"]),
+              startedAfter(60, 1, ["windows-latest"]),
+              startedAfter(50, 30),
+              { ...startedAfter(0, 0), status: "queued", started_at: undefined },
+            ]
+          : [hostedJob("fast")],
+  });
+  const active = await github.observe.active();
+  // The median of 12, 9 and 14.
+  assert.equal(Math.round(active.hostedWait!), 12);
+  // Fewer than three recent starts say nothing.
+  const sparse = fakeGitHub({
+    others: 1,
+    jobsOf: () => [startedAfter(20, 1), startedAfter(20, 2)],
+  });
+  assert.equal((await sparse.observe.active()).hostedWait, 0);
+  // The same number of calls as before: the wait costs none.
+  assert.equal(github.calls.length, 3 + 3);
+});
+
+test("under a saturated hosted queue box jobs wait on the box, each bound to start by the hosted wait", async () => {
+  const route = (hostedWait: number, heartbeatLabel?: string) =>
+    routeBox(
+      input({ slots: "2", heartbeatLabel: heartbeatLabel ?? "basalt-box-heartbeat" }),
+      {
+        heartbeat: async () => ({
+          conclusion: "success",
+          completedAt: minutesAgo(1),
+          log: budgetLog({ ci_budget: 2 }),
+        }),
+        active: async () => ({ hosted: 90, box: 0, hostedWait }),
+      },
+      () => now,
+      noWait,
+    );
+  const calm = await route(0);
+  const saturated = await route(30);
+  assert.ok(saturated.jobs.length > calm.jobs.length, `${saturated.jobs} vs ${calm.jobs}`);
+  const queued = Object.entries(saturated.plan).filter(([, job]) => "by" in job);
+  assert.ok(queued.length > 0);
+  for (const [id, job] of queued) {
+    assert.equal(job.wave, 2, id);
+    assert.equal(job.by, 30, id);
+  }
+  assert.match(
+    saturated.summary,
+    /wait on the box because the hosted queue is saturated \(hosted jobs now wait 30 minutes for a runner\), each to start within that/,
+  );
+  // Under five minutes the queue isn't saturated: nothing waits beyond the floor.
+  assert.deepEqual((await route(4)).plan, calm.plan);
+  // Without the box's own heartbeat runner nothing waits on it, saturated or not.
+  assert.deepEqual((await route(30, "")).plan, (await route(0, "")).plan);
 });
