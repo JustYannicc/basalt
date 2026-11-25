@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import {
+  availableProviderCapabilities,
+  quotaProviderIds,
+} from "./provider-accounts/capabilities.ts";
 import { test } from "node:test";
 import { HomeClient } from "./control.ts";
 import {
@@ -1088,3 +1092,17 @@ test(
     assert.deepEqual(record.references, [mine]);
   },
 );
+
+test("no provider the route blocks has a usage reader", () => {
+  const readers = new Set([
+    ...quotaProviderIds,
+    ...availableProviderCapabilities.flatMap((capability) =>
+      capability.backend !== undefined && capability.quota !== "none" ? [capability.backend] : [],
+    ),
+  ]);
+  for (const provider of pluginProviders)
+    assert.ok(
+      !readers.has(provider),
+      `${provider}: a blocked provider now has a usage reader: its health check would read Service unavailable; make the blocked case answer as not checked`,
+    );
+});
