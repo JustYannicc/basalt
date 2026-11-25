@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { stackConfig } from "./stack-config.ts";
+import { stackConfig, stackRunsOn } from "./stack-config.ts";
 
 const root = resolve("/repo");
 // Previews call the entry from the cloud app, with configs relative to it.
@@ -55,11 +55,12 @@ test("an unknown config is refused, even one beside the known ones", () => {
 // runs stop at once with an empty environment.
 const repo = fileURLToPath(new URL("../../", import.meta.url));
 const entry = fileURLToPath(new URL("./deploy.ts", import.meta.url));
-const runEntry = (...args: string[]) => {
+const runEntry = (...args: string[]) => runEntryWith({}, ...args);
+const runEntryWith = (env: Record<string, string>, ...args: string[]) => {
   const run = spawnSync(process.execPath, [entry, ...args], {
     cwd: repo,
     encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "" },
+    env: { PATH: process.env.PATH ?? "", ...env },
     timeout: 60_000,
   });
   // Proves the claim above: nothing reached a provider before the refusal.
@@ -73,8 +74,7 @@ test("the entry admits the emulated stack only on a test-* stage and refuses eve
   const admitted = runEntry("teardown", "--stage", "test-emulated-upstream", "--config", emulated);
   assert.notEqual(admitted.status, 0);
   assert.match(admitted.output, /A teardown runs only on a test-rehearsal-<n> stage/u);
-  const stageRefusal =
-    /Use --stage production, a disposable test-\* stage, or scale-<n> for the scale stack/u;
+  const stageRefusal = /The stack scripts\/emulated-upstream\/stack\.ts does not run on stage/u;
   for (const stage of ["emulated-upstream", "scale-1", "Test-emulated-upstream", ""]) {
     const refused = runEntry("plan", "--stage", stage, "--config", emulated);
     assert.notEqual(refused.status, 0, stage);
@@ -94,4 +94,32 @@ test("the entry admits the emulated stack only on a test-* stage and refuses eve
       config,
     );
   }
+});
+
+test("a test-only stack is refused on production and on any stage but its own, before anything loads", () => {
+  // As a production run inside Actions: the stage checks after this one would let a plan through.
+  const actions = { GITHUB_ACTIONS: "true", BASALT_RELEASE_CANDIDATE: "a".repeat(40) };
+  for (const [config, own, other] of [
+    ["scripts/preview/stack/alchemy.database.ts", "test-pr-7", "test-rehearsal-1"],
+    ["scripts/preview/stack/alchemy.cleanup.ts", "test-pr-7", "test-emulated-upstream"],
+    ["scripts/preview/stack/alchemy.rehearsal-fixture.ts", "test-rehearsal-1", "test-pr-7"],
+    ["scripts/emulated-upstream/stack.ts", "test-emulated-upstream", "test-pr-7"],
+  ] as const) {
+    for (const stage of ["production", other]) {
+      const refused = runEntryWith(actions, "plan", "--stage", stage, "--config", config);
+      assert.notEqual(refused.status, 0, `${config} on ${stage}`);
+      assert.match(
+        refused.output,
+        new RegExp(
+          `The stack ${config.replaceAll(".", "\\.")} does not run on stage ${stage}`,
+          "u",
+        ),
+      );
+    }
+    // On its own stage the rule admits it; nothing past it is run here, since that would load.
+    assert.equal(stackRunsOn(config, own), true, `${config} on ${own}`);
+  }
+  // The production stack still runs on production: it gets past this check to the next one.
+  const production = runEntryWith(actions, "deploy", "--stage", "production");
+  assert.match(production.output, /Production applies only a reviewed plan digest/u);
 });
