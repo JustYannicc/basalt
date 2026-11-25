@@ -24,6 +24,11 @@ export interface StageScope {
   /** The names and ids the stage's own State rows record for the resources they own. */
   readonly owned: ReadonlyArray<string>;
   /**
+   * The names of the Workers the stage's own State rows record (`ownWorkers`). Only these may be a
+   * domain's service when a delete of a domain the State never recorded is proven.
+   */
+  readonly workers?: ReadonlyArray<string>;
+  /**
    * A rehearsal stage's teardown (`deploy.ts teardown`): what its stack destroys leave without a
    * State row, retained fleet applications and pushed images, is deleted by the stage token in
    * its name. Nothing else is: every other stage run leaves this unset.
@@ -42,7 +47,7 @@ export type StageVerdict =
    */
   | {
       readonly kind: "prove";
-      readonly family: "Worker" | "Workflow" | "container application";
+      readonly family: "Worker" | "Workflow" | "container application" | "Worker domain";
       readonly name: string;
     };
 
@@ -99,6 +104,16 @@ const REPOSITORY_NAME = /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/u;
 const REFERENCE = /^(?:sha256:[a-f0-9]{64}|[A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/u;
 
 /**
+ * Whether a hostname is named for this stage: under its own DNS label in the stage domain. A stage
+ * name outside the disposable shapes never owns a hostname: `test-app` must not reach
+ * `app.<production zone>`.
+ */
+export const stageHostname = (scope: Pick<StageScope, "label" | "domain">, host: string) =>
+  /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
+  !!scope.domain &&
+  (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
+
+/**
  * The verdict on one write, from its method, URL and JSON body. Reads (GET, HEAD) are never
  * judged; every other method is, whatever it does. `isOwned` holds what this run created too.
  */
@@ -114,12 +129,7 @@ export function stageWriteVerdict(
     resource,
     field,
   });
-  // A stage name outside the disposable shapes never owns a hostname: `test-app` must not reach
-  // `app.<production zone>`.
-  const labelled = (host: string) =>
-    /^(?:pr|rehearsal)-[1-9][0-9]*$/u.test(scope.label) &&
-    !!scope.domain &&
-    (host === `${scope.label}.${scope.domain}` || host.endsWith(`.${scope.label}.${scope.domain}`));
+  const labelled = (host: string) => stageHostname(scope, host);
   const path = url.pathname;
   // The registry holds production's images too. The one write a stage sends it is a rehearsal
   // teardown's delete of a manifest or tag in a repository named for the stage.
@@ -220,6 +230,19 @@ export function stageWriteVerdict(
       return refuse(`container application ${decoded(application)}`, "account");
     return { kind: "prove", family: "container application", name: decoded(application) };
   }
+  // Detaching a hostname by an id the stage's State never recorded: only Cloudflare can place it.
+  // The guard's fresh read must show both that the hostname is named for this stage and that it
+  // serves a Worker the stage's State owns; one without the other is refused (wire-guard.ts).
+  const domain = /^\/workers\/domains\/([^/]+)$/u.exec(rest)?.[1];
+  if (domain !== undefined && method === "DELETE" && !isOwned(decoded(domain))) {
+    // That read goes to the request's own origin and account, so both must be the deployment's
+    // before it vouches for anything.
+    if (url.hostname.toLowerCase() !== CLOUDFLARE_API_HOST)
+      return refuse(`Worker domain ${decoded(domain)}`, "host");
+    if (!scope.accountId || decoded(account[1]!) !== scope.accountId)
+      return refuse(`Worker domain ${decoded(domain)}`, "account");
+    return { kind: "prove", family: "Worker domain", name: decoded(domain) };
+  }
   for (const [pattern, family, mode] of ACCOUNT) {
     const match = pattern.exec(rest);
     if (!match) continue;
@@ -242,6 +265,20 @@ const SHARED_KEYS = new Set(["accountId", "zoneId", "zoneName", "storeId", "orga
 const SHARED_TYPES = /^Cloudflare\.SecretsStore/u;
 
 /** The own names and ids from a stage's State rows, both generations of an interrupted update. */
+/** The names of the Workers a stage's State rows record, both generations of an interrupted update. */
+export const ownWorkers = (rows: ReadonlyArray<unknown>) => {
+  const names = new Set<string>();
+  for (const row of rows) {
+    if (!record(row) || !/^Cloudflare\.Worker$/u.test(String(row.resourceType ?? ""))) continue;
+    for (const generation of [row, row.old])
+      if (record(generation) && record(generation.attr)) {
+        const name = generation.attr.workerName;
+        if (typeof name === "string" && name.length > 0) names.add(name);
+      }
+  }
+  return [...names];
+};
+
 export const ownIdentities = (rows: ReadonlyArray<unknown>) => {
   const owned = new Set<string>();
   for (const row of rows) {
