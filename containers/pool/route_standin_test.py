@@ -92,7 +92,7 @@ def receive_frame(connection: socket.socket) -> tuple[int, bytes]:
 
 # The stand-in vendor: the real provider host name, served here with a throwaway CA's certificate,
 # reachable only through the route and only once a test switches it on.
-VENDOR = {"on": False, "hosts": {"api.anthropic.com"}, "port": 8443}
+VENDOR = {"on": False, "hosts": {"api.anthropic.com", "api.typesafe.ai"}, "port": 8443}
 
 
 def gateway(client: socket.socket, route_id: str, allowed: set[str], records: Records) -> None:
@@ -345,6 +345,18 @@ def control_handler(records: Records):
     return Control
 
 
+def vendor_answer(
+    records: Records, issued: dict[str, int], method: str, path: str | None, raw: bytes
+) -> tuple[int, dict[str, object]]:
+    """Every vendor host the rig plays: TypeSafe's two endpoints by path, else the token endpoint."""
+    if path is not None and (path.startswith("/v1/systemone") or path.startswith("/v1/models")):
+        records.add("vendor", {"grant": None, "presented": None, "issued": None, "path": f"{method} {path}"})
+        if path.startswith("/v1/models"):
+            return 200, {"models": [{"name": "jev-latest", "release_date": "2026-10-14"}]}
+        return 200, {"id": "fixture-systemone", "output": "fixture"}
+    return token_answer(records, issued, raw)
+
+
 def token_answer(records: Records, issued: dict[str, int], raw: bytes) -> tuple[int, dict[str, object]]:
     """The vendor's token endpoint: a fresh fixture token for a code or a refresh token."""
     try:
@@ -413,11 +425,38 @@ def h2_vendor(connection, records: Records, issued: dict[str, int]) -> None:
                     if not flags & 1:
                         connection.sendall(h2_frame(8, 0, stream, credit))
             if flags & 1:
-                status, value = token_answer(records, issued, bytes(bodies.pop(stream, b"")))
+                status, value = vendor_answer(
+                    records, issued, "POST", None, bytes(bodies.pop(stream, b""))
+                )
                 answer = json.dumps(value).encode()
                 # HPACK: indexed :status (200 is entry 8, 404 is 13), then one literal header.
                 block = bytes([0x88 if status == 200 else 0x8D]) + b"\x00\x0ccontent-type\x10application/json"
                 connection.sendall(h2_frame(1, 4, stream, block) + h2_frame(0, 1, stream, answer))
+
+
+def http1_vendor(connection, records: Records, issued: dict[str, int]) -> None:
+    """The same vendor over HTTP/1.1, for clients whose transport doesn't offer HTTP/2."""
+    reader = connection.makefile("rb")
+    while True:
+        line = reader.readline(8192)
+        if not line:
+            return
+        method, path, _ = line.decode("latin-1").split(" ", 2)
+        length = 0
+        while True:
+            header = reader.readline(8192)
+            if header in (b"\r\n", b"\n", b""):
+                break
+            name, _, value = header.decode("latin-1").partition(":")
+            if name.strip().lower() == "content-length":
+                length = int(value.strip())
+        status, value = vendor_answer(records, issued, method, path, reader.read(length))
+        answer = json.dumps(value).encode()
+        connection.sendall(
+            f"HTTP/1.1 {status} {'OK' if status == 200 else 'Not Found'}\r\n"
+            f"Content-Type: application/json\r\nContent-Length: {len(answer)}\r\n\r\n".encode()
+            + answer
+        )
 
 
 def serve_vendor(records: Records, directory: str) -> None:
@@ -425,14 +464,17 @@ def serve_vendor(records: Records, directory: str) -> None:
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(f"{directory}/vendor.pem", f"{directory}/vendor-key.pem")
-    context.set_alpn_protocols(["h2"])
+    context.set_alpn_protocols(["h2", "http/1.1"])
     listener = socket.create_server(("127.0.0.1", int(VENDOR["port"])))
     issued = {"count": 0}
 
     def serve(client: socket.socket) -> None:
         try:
             with context.wrap_socket(client, server_side=True) as connection:
-                h2_vendor(connection, records, issued)
+                if connection.selected_alpn_protocol() == "h2":
+                    h2_vendor(connection, records, issued)
+                else:
+                    http1_vendor(connection, records, issued)
         except (OSError, EOFError):
             pass
 

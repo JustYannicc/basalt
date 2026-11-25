@@ -53,6 +53,8 @@ const reference = (n: number) => `12345678-abcd-4000-8000-${String(n).padStart(1
 const [routed, unrouted, refusedRef, downRef, oauthRouted, oauthDirect, teammate, gated, early] = [
   1, 2, 3, 4, 5, 6, 7, 8, 9,
 ].map(reference);
+const typesafeRoute = "rt_" + "t".repeat(26);
+const typesafeRef = reference(20);
 
 function docker(args: string[], timeout = 60_000): string {
   const result = spawnSync("docker", args, { encoding: "utf8", timeout });
@@ -92,11 +94,11 @@ function signVendorCertificates(directory: string): string {
     join(directory, "ca.ext"),
     // It can only ever vouch for the one host the stand-in plays.
     "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign\n" +
-      "nameConstraints=critical,permitted;DNS:api.anthropic.com\n",
+      "nameConstraints=critical,permitted;DNS:api.anthropic.com,permitted;DNS:api.typesafe.ai\n",
   );
   writeFileSync(
     join(directory, "vendor.ext"),
-    "subjectAltName=DNS:api.anthropic.com\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n",
+    "subjectAltName=DNS:api.anthropic.com,DNS:api.typesafe.ai\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n",
   );
   ssl("ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "ca-key.pem");
   ssl("req", "-new", "-key", "ca-key.pem", "-subj", "/CN=route rig throwaway CA", "-out", "ca.csr");
@@ -172,7 +174,12 @@ interface Records {
   connects: { route: string; host: string; port: number; refused: boolean }[];
   dns: string[];
   provider: { from: string; path: string; key: string }[];
-  vendor: { grant: string | null; presented: string | null; issued: number | null }[];
+  vendor: {
+    grant: string | null;
+    presented: string | null;
+    issued: number | null;
+    path?: string;
+  }[];
 }
 
 test(
@@ -848,6 +855,48 @@ test(
         };
       }
 
+      // TypeSafe on its route: the node's native executor makes the model call, the plugin only
+      // discovers models. Every TypeSafe byte reaches the vendor as a CONNECT on the route, none
+      // from the container's own address, and a routed credential's discovery never dials. The
+      // credential is written to Home directly: this case proves the path the pool still refuses.
+      await reset();
+      assert.equal(
+        (
+          await home.data("/credentials", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              type: "typesafe",
+              token: "fixture-typesafe-token",
+              uuid: typesafeRef,
+              proxy_url: routeProxyUrl(typesafeRoute),
+            }),
+          })
+        ).name,
+        `${typesafeRef}.json`,
+      );
+      await new HomeMembership(home).reconcile(scope.pool, [routed, typesafeRef]);
+      await listed(poolKey, ["jev-latest"]);
+      const systemOne = await fetch(`${node}/v1/systemone`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${poolKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "jev-latest", input: "fixture" }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      const systemOneBody = await systemOne.text();
+      assert.equal(systemOne.status, 200, systemOneBody);
+      assert.ok(systemOneBody.includes("fixture-systemone"), systemOneBody);
+      const typesafeSeen = await records();
+      const typesafeHops = typesafeSeen.connects.filter((item) => item.host === "api.typesafe.ai");
+      assert.ok(typesafeHops.length > 0, JSON.stringify(typesafeSeen));
+      for (const item of typesafeHops)
+        assert.deepEqual([item.route, item.port, item.refused], [typesafeRoute, 443, false]);
+      assert.ok(!typesafeSeen.dns.includes("api.typesafe.ai"), "TypeSafe's host was looked up");
+      const typesafePaths = typesafeSeen.vendor.flatMap((item) => (item.path ? [item.path] : []));
+      assert.ok(typesafePaths.includes("POST /v1/systemone"), JSON.stringify(typesafePaths));
+      assert.ok(!typesafePaths.some((path) => path.startsWith("GET /v1/models")));
+      const typesafe = { connects: typesafeHops.length, vendor: typesafePaths };
+
       console.log(
         "ROUTE_PROOF",
         JSON.stringify({
@@ -858,6 +907,7 @@ test(
           bootDirect,
           backgroundDirect,
           signIn,
+          typesafe,
         }),
       );
     } finally {

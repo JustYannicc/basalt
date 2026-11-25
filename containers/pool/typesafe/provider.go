@@ -68,15 +68,35 @@ func tokenFor(storage []byte, metadata map[string]any) (string, error) {
 	return saved.Token, nil
 }
 
+// The models a credential serves when discovery can't, or mustn't, ask TypeSafe.
+func staticModels() (pluginapi.ModelResponse, error) {
+	return modelResponse([]modelCard{
+		{Name: "jev-latest", Description: "Latest stable Jev System One model", ReleaseDate: "2026-10-14"},
+		{Name: "jev-preview", Description: "Latest Jev System One preview alias", ReleaseDate: "2026-10-14"},
+	})
+}
+
+// routed reports whether the credential names its own proxy. The host's callback client is
+// built without the credential, so a call through it would ignore that proxy and go direct.
+func routed(storage []byte, metadata map[string]any) bool {
+	var saved credential
+	if len(storage) > 0 && json.Unmarshal(storage, &saved) == nil && strings.TrimSpace(saved.ProxyURL) != "" {
+		return true
+	}
+	proxy, _ := metadata["proxy_url"].(string)
+	return strings.TrimSpace(proxy) != ""
+}
+
 func modelsForAuth(ctx context.Context, req pluginapi.AuthModelRequest) (pluginapi.ModelResponse, error) {
 	token, errToken := tokenFor(req.StorageJSON, req.Metadata)
 	if errors.Is(errToken, errMissingToken) {
 		// Home's secret-free projection cannot perform authenticated discovery.
 		// Switch to live discovery when router-for-me/CLIProxyAPIHome#177 is released.
-		return modelResponse([]modelCard{
-			{Name: "jev-latest", Description: "Latest stable Jev System One model", ReleaseDate: "2026-10-14"},
-			{Name: "jev-preview", Description: "Latest Jev System One preview alias", ReleaseDate: "2026-10-14"},
-		})
+		return staticModels()
+	}
+	if errToken == nil && routed(req.StorageJSON, req.Metadata) {
+		// A routed credential's traffic leaves only through its route; discovery never dials.
+		return staticModels()
 	}
 	if errToken != nil {
 		return pluginapi.ModelResponse{}, errToken

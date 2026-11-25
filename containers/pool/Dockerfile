@@ -40,7 +40,7 @@ RUN mkdir -p /out/plugins && \
       -o /out/plugins/gemini-cli.so ./cmd/geminicli && \
     cp LICENSE /out/plugins/LICENSE-gemini-cli
 COPY typesafe /build/typesafe
-RUN cd /build/typesafe && CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -buildmode=c-shared -ldflags="-s -w" -o /out/plugins/typesafe.so .
+RUN cd /build/typesafe && go test -p=2 -mod=readonly ./... && CGO_ENABLED=1 go build -p=2 -mod=readonly -trimpath -buildmode=c-shared -ldflags="-s -w" -o /out/plugins/typesafe.so .
 COPY plugin_probe.go /build/plugin_probe.go
 COPY native_policy_home_test.go.tmpl /build/native_policy_home_test.go.tmpl
 COPY native_policy_home_host_helper.go.tmpl /build/native_policy_home_host_helper.go
