@@ -1,0 +1,113 @@
+name: Route scratch stage
+run-name: Route scratch / ${{ inputs.stage }} / ${{ inputs.mode }}
+
+# One scratch stage for the exit-node route proof, dispatched by hand from main with the
+# coordinator's written go. Every deploy is followed by a destroy and a read-back that the stage
+# owns nothing, whatever happened before it. Nothing is uploaded: state, plans and logs stay on the
+# runner.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: test-route-scratch-1 (route gateway with a stand-in image) or test-route-scratch-2 (with an outside exit node; not built yet)
+        required: true
+        type: choice
+        options: [test-route-scratch-1, test-route-scratch-2]
+      mode:
+        description: deploy (deploy, read back, destroy), run (deploy, checks, destroy) or destroy
+        required: true
+        type: choice
+        options: [deploy, run, destroy]
+      go:
+        description: The coordinator's go for this run, coordinator-YYYY-MM-DD-<text>
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One scratch run at a time: two would destroy each other's stage.
+concurrency:
+  group: route-scratch
+  cancel-in-progress: false
+
+jobs:
+  # No credential is loaded in this job, and every other dispatched job needs it.
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stage: ${{ steps.guard.outputs.stage }}
+      mode: ${{ steps.guard.outputs.mode }}
+    env:
+      ROUTE_SCRATCH_STAGE: ${{ inputs.stage }}
+      ROUTE_SCRATCH_MODE: ${{ inputs.mode }}
+      ROUTE_SCRATCH_GO: ${{ inputs.go }}
+    steps:
+      # Expressions compare case-insensitively, so a branch named MAIN would pass a job condition.
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - name: Refuse a wrong stage, mode or go
+        id: guard
+        run: |
+          node scripts/route-scratch/guard.ts
+          echo "stage=$ROUTE_SCRATCH_STAGE" >> "$GITHUB_OUTPUT"
+          echo "mode=$ROUTE_SCRATCH_MODE" >> "$GITHUB_OUTPUT"
+
+  stage-1:
+    needs: gate
+    if: needs.gate.outputs.stage == 'test-route-scratch-1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ROUTE_SCRATCH_STAGE: ${{ needs.gate.outputs.stage }}
+      ROUTE_SCRATCH_MODE: ${{ needs.gate.outputs.mode }}
+      ROUTE_SCRATCH_GO: ${{ inputs.go }}
+    steps:
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.18.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Prepare the deployment toolchain
+        timeout-minutes: 25
+        run: npm run prepare:upstream
+      - name: Deploy, then run the checks or read back the deployment
+        timeout-minutes: 25
+        run: node scripts/route-scratch/run.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      - name: Destroy the stage and read back that nothing is left
+        if: always() && needs.gate.result == 'success' && needs.gate.outputs.mode != 'destroy'
+        timeout-minutes: 10
+        run: node scripts/route-scratch/run.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ROUTE_SCRATCH_MODE: destroy
+
+  # TODO(integrator, s1380): the exit-node run, with its outside exit node. Until it is built this
+  # job refuses, before any credential is loaded.
+  stage-2:
+    needs: gate
+    if: needs.gate.outputs.stage == 'test-route-scratch-2'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse the stage that is not built yet
+        run: |
+          echo "test-route-scratch-2 is not built yet"
+          exit 1

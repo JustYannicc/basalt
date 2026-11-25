@@ -1,0 +1,22 @@
+model {
+  extend basalt {
+    routeScratch = module "Route proof scratch stage" {
+      #basalt
+      description "A dispatched route proof owns one temporary stage: the real route gateway object, pool route peer and acquisition receiver, with a stand-in gateway image that never dials out. It deploys and destroys only through the release entry, keeps its state on the runner, and signs with a key made for the run. After every deploy it deletes whatever the stage owns by name and reads it back as gone. Its checks print pass or fail only."
+      metadata {
+        constraint "The workflow's gate refuses a wrong ref, stage, mode or go text before any credential is loaded, and no rehearsal or preview tooling can take a scratch stage. Everything the stage creates carries its own prefix, and nothing is uploaded."
+        code "scripts/route-scratch|.github/workflows/route-scratch.yml"
+        libraries "asyncio"
+        endpointHosts "login.example.invalid|echo.invalid"
+        bindings "entry=basalt.routePeer"
+      }
+    }
+  }
+  basalt.routeScratch -[sync]-> basalt.routeGatewayObject "deploy the real route gateway object into its own scratch stage, with a stand-in image that never dials out"
+  basalt.routeScratch -[sync]-> basalt.routePeer "open tunnels through the real pool route peer, as a pool would"
+  basalt.routeScratch -[sync]-> basalt.modelGateway "sign the run's envelopes and place the stage in the EU, as the pool does"
+  basalt.routeScratch -[sync]-> basalt.build "keep the release entry's provider output out of the log"
+  basalt.routeScratch -[sync]-> workersDev "call only the scratch stage's own Worker"
+  basalt.routeScratch -[sync]-> deploymentProvider "deploy, read back and remove only the stage's own Worker and container application"
+  basalt.routeScratch -[sync]-> repositoryApi "download workflow actions"
+}

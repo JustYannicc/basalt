@@ -12,7 +12,6 @@ model {
     }
     scaleStage = adapter "Isolated scale stage" {
       #external
-      metadata { hosts "workers.dev" }
       controller = actor "Test pool controller"
       runtime = adapter "Test pool runtime"
       fixtures = adapter "Synthetic provider and load generator" {
@@ -26,6 +25,7 @@ model {
   }
   basalt.scaleTest -[sync]-> basalt.modelGateway "observe production lifecycle and durable state through the scratch container adapter"
   basalt.scaleTest -[sync]-> basalt.scaleStage "call only the validated test gateway"
+  basalt.scaleTest -[sync]-> workersDev "call only the validated test gateway"
   basalt.scaleTest -[sync]-> basalt.scaleStage.controller "wrap the pinned controller with test control operations"
   basalt.scaleTest -[sync]-> basalt.scaleStage.runtime "sample processes, readiness and direct database usage"
   basalt.scaleTest -[sync]-> basalt.scaleStage.fixtures "route synthetic provider requests and drive measured load"

@@ -11,5 +11,5 @@
     "types": ["@cloudflare/workers-types"],
     "lib": ["ES2023"]
   },
-  "include": ["src/pool/worker.ts"]
+  "include": ["src/pool/worker.ts", "scripts/route-scratch/worker.ts"]
 }

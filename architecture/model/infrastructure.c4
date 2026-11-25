@@ -64,6 +64,12 @@ model {
     technology "Google Workspace APIs"
     metadata { hosts "*.googleapis.com" }
   }
+  workersDev = adapter "Shared test endpoints" {
+    #external
+    technology "Cloudflare workers.dev"
+    description "The shared domain where a test stage reaches its own deployed entry point. No stage owns it."
+    metadata { hosts "workers.dev" }
+  }
   repositoryApi = adapter "Repository API" {
     #external
     technology "GitHub API and OAuth"
