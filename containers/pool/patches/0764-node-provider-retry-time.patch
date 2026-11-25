@@ -21,26 +21,46 @@ index 8eb0d3ab..ea52359f 100644
  	if !failed {
  		return failDetail{StatusCode: 200}
  	}
+diff --git a/internal/runtime/executor/antigravity_executor_auth.go b/internal/runtime/executor/antigravity_executor_auth.go
+index 1c6ceb2e..b48fa86c 100644
+--- a/internal/runtime/executor/antigravity_executor_auth.go
++++ b/internal/runtime/executor/antigravity_executor_auth.go
+@@ -106,7 +106,8 @@ func (e *AntigravityExecutor) PrepareRequestAuth(ctx context.Context, auth *clip
+ 	if errProject != nil {
+ 		var upstreamErr *antigravity.HTTPStatusError
+ 		if errors.As(errProject, &upstreamErr) {
+-			cliproxyauth.ReportHomeAuthPreparationFailure(ctx, updated, upstreamErr.StatusCode(), upstreamErr.ResponseBody())
++			// The prepared error holds the provider's retry time from the body or headers.
++			cliproxyauth.ReportHomeAuthPreparationFailureRetryAfter(ctx, updated, upstreamErr.StatusCode(), upstreamErr.ResponseBody(), prepareAntigravityProjectIDError(errProject).RetryAfter())
+ 		}
+ 		if ctx != nil && ctx.Err() != nil && antigravityStatusCodeFromError(errProject) == 0 {
+ 			return nil, errProject
 diff --git a/internal/runtime/executor/basalt_provider_retry_time_test.go b/internal/runtime/executor/basalt_provider_retry_time_test.go
 new file mode 100644
-index 00000000..3040b893
+index 00000000..6760d9fc
 --- /dev/null
 +++ b/internal/runtime/executor/basalt_provider_retry_time_test.go
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,170 @@
 +package executor
 +
 +import (
 +	"context"
 +	"encoding/json"
++	"io"
 +	"net/http"
 +	"strconv"
++	"strings"
 +	"testing"
 +	"time"
 +
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/diagnostics"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 +	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 +)
 +
 +// Home cools a credential only from the usage record the node sends it, which in metadata-only
@@ -101,6 +121,84 @@ index 00000000..3040b893
 +	}
 +}
 +
++type retryTimeSetupDispatcher struct{}
++
++func (retryTimeSetupDispatcher) HeartbeatOK() bool { return true }
++
++func (retryTimeSetupDispatcher) RPopAuth(context.Context, string, string, http.Header, int) ([]byte, error) {
++	return json.Marshal(map[string]any{
++		"model":    "limited-model",
++		"provider": "antigravity",
++		"auth": cliproxyauth.Auth{
++			ID:         "limited-antigravity-setup",
++			Index:      "limited-antigravity-setup",
++			Provider:   "antigravity",
++			Status:     cliproxyauth.StatusActive,
++			Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth},
++			Metadata:   map[string]any{"access_token": "token", "expired": time.Now().Add(time.Hour).Format(time.RFC3339)},
++		},
++	})
++}
++
++func (retryTimeSetupDispatcher) AbortAmbiguousDispatch() {}
++
++// A 429 during Antigravity credential setup under Home dispatch reaches Home as its own record,
++// outside the executor's reporter; it must carry the provider's retry time the same way.
++func TestBasaltProviderRetryTimeReachesHomeOnTheWireFromCredentialSetup(t *testing.T) {
++	t.Setenv(diagnostics.MetadataOnlyEnv, "1")
++	wasEnabled, wasCounted := redisqueue.Enabled(), redisqueue.UsageStatisticsEnabled()
++	redisqueue.SetEnabled(false)
++	redisqueue.SetEnabled(true)
++	redisqueue.SetUsageStatisticsEnabled(true)
++	t.Cleanup(func() {
++		redisqueue.SetEnabled(false)
++		redisqueue.SetEnabled(wasEnabled)
++		redisqueue.SetUsageStatisticsEnabled(wasCounted)
++	})
++	redisqueue.PopOldest(1 << 10)
++
++	cfg := &config.Config{RequestRetry: 1}
++	cfg.Home.Enabled = true
++	manager := cliproxyauth.NewManager(nil, nil, nil)
++	manager.SetConfig(cfg)
++	manager.RegisterExecutor(NewAntigravityExecutor(cfg))
++	manager.PublishHomeDispatch(retryTimeSetupDispatcher{}, executionregistry.New(), 1)
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(*http.Request) (*http.Response, error) {
++		return &http.Response{
++			StatusCode: http.StatusTooManyRequests,
++			Header:     http.Header{"Content-Type": {"application/json"}},
++			Body:       io.NopCloser(strings.NewReader(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"45s"}]}}`)),
++		}, nil
++	}))
++	payload := []byte(`{"model":"limited-model","messages":[{"role":"user","content":"hello"}]}`)
++	if _, errExecute := manager.Execute(ctx, []string{"antigravity"}, cliproxyexecutor.Request{Model: "limited-model", Payload: payload}, cliproxyexecutor.Options{
++		SourceFormat: sdktranslator.FormatOpenAI, ResponseFormat: sdktranslator.FormatOpenAI, OriginalRequest: payload,
++	}); errExecute == nil {
++		t.Fatal("Execute() succeeded, want the credential setup's 429")
++	}
++	for {
++		var sent struct {
++			ExecutorType    string         `json:"executor_type"`
++			Fail            map[string]any `json:"fail"`
++			ResponseHeaders map[string]any `json:"response_headers"`
++		}
++		raw := popUsagePayload(t)
++		if errDecode := json.Unmarshal(raw, &sent); errDecode != nil {
++			t.Fatalf("usage payload: %v", errDecode)
++		}
++		if sent.ExecutorType != "home-result" {
++			continue
++		}
++		if got, _ := sent.Fail["retry_after_ms"].(float64); int64(got) != 45000 {
++			t.Fatalf("setup 429: fail.retry_after_ms = %v, want 45000", sent.Fail["retry_after_ms"])
++		}
++		if body, _ := sent.Fail["body"].(string); body != "" || len(sent.ResponseHeaders) != 0 {
++			t.Fatalf("setup 429: the provider's body or headers left the node: %s", raw)
++		}
++		return
++	}
++}
++
 +func popUsagePayload(t *testing.T) []byte {
 +	t.Helper()
 +	deadline := time.Now().Add(5 * time.Second)
@@ -157,6 +255,57 @@ index 95ce4d7d..fdbf36b9 100644
  func (r *UsageReporter) latency() time.Duration {
  	if r == nil || r.requestedAt.IsZero() {
  		return 0
+diff --git a/sdk/cliproxy/auth/home_result.go b/sdk/cliproxy/auth/home_result.go
+index dad095a5..c8a3026d 100644
+--- a/sdk/cliproxy/auth/home_result.go
++++ b/sdk/cliproxy/auth/home_result.go
+@@ -18,6 +18,12 @@ type homeAuthPreparationModelKey struct{}
+ // credential snapshot used for that call. Report from the preparer, not from each
+ // request waiting on a shared preparation.
+ func ReportHomeAuthPreparationFailure(ctx context.Context, auth *Auth, status int, body []byte) {
++	ReportHomeAuthPreparationFailureRetryAfter(ctx, auth, status, body, nil)
++}
++
++// ReportHomeAuthPreparationFailureRetryAfter also carries a 429's provider retry
++// time, which Home reads as the credential's cooldown end.
++func ReportHomeAuthPreparationFailureRetryAfter(ctx context.Context, auth *Auth, status int, body []byte, retryAfter *time.Duration) {
+ 	if ctx == nil || (status != http.StatusUnauthorized && status != http.StatusTooManyRequests) {
+ 		return
+ 	}
+@@ -25,7 +31,7 @@ func ReportHomeAuthPreparationFailure(ctx context.Context, auth *Auth, status in
+ 	if model == "" || auth == nil {
+ 		return
+ 	}
+-	publishHomeCredentialFailure(ctx, auth, auth.Provider, model, AccessTokenSHA256(auth), status, string(body))
++	publishHomeCredentialFailure(ctx, auth, auth.Provider, model, AccessTokenSHA256(auth), status, string(body), coreusage.ProviderRetryAfterMS(status, retryAfter))
+ }
+ 
+ // ReportHomeUnauthorized publishes a result-only zero-token usage record for an
+@@ -45,10 +51,10 @@ func (m *Manager) reportHomeUnauthorized(ctx context.Context, auth *Auth, provid
+ 	if failureBody == "" {
+ 		failureBody = "upstream unauthorized"
+ 	}
+-	publishHomeCredentialFailure(ctx, auth, provider, model, accessTokenSHA256, http.StatusUnauthorized, failureBody)
++	publishHomeCredentialFailure(ctx, auth, provider, model, accessTokenSHA256, http.StatusUnauthorized, failureBody, 0)
+ }
+ 
+-func publishHomeCredentialFailure(ctx context.Context, auth *Auth, provider, model, accessTokenSHA256 string, status int, failureBody string) {
++func publishHomeCredentialFailure(ctx context.Context, auth *Auth, provider, model, accessTokenSHA256 string, status int, failureBody string, retryAfterMS int64) {
+ 	if auth == nil {
+ 		return
+ 	}
+@@ -98,8 +104,9 @@ func publishHomeCredentialFailure(ctx context.Context, auth *Auth, provider, mod
+ 		RequestedAt:       time.Now(),
+ 		Failed:            true,
+ 		Fail: coreusage.Failure{
+-			StatusCode: status,
+-			Body:       failureBody,
++			StatusCode:   status,
++			Body:         failureBody,
++			RetryAfterMS: retryAfterMS,
+ 		},
+ 	})
+ }
 diff --git a/sdk/cliproxy/usage/manager.go b/sdk/cliproxy/usage/manager.go
 index 04be8d7a..f24745f3 100644
 --- a/sdk/cliproxy/usage/manager.go

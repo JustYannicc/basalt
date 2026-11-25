@@ -1,22 +1,22 @@
 diff --git a/internal/pluginhost/adapters_executors.go b/internal/pluginhost/adapters_executors.go
-index 1b452cc9..66f81862 100644
+index 2ee4a492..a315d3b7 100644
 --- a/internal/pluginhost/adapters_executors.go
 +++ b/internal/pluginhost/adapters_executors.go
-@@ -1039,7 +1039,7 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
- 		reporter.StartResponseTTFT()
+@@ -1103,7 +1103,7 @@ func (a *executorAdapter) executeWithAttribution(ctx context.Context, auth *core
+ 			return coreexecutor.Response{}, nil, errAvailable
+ 		}
  	}
- 
--	pluginResp, errExecute := a.executor.Execute(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
-+	pluginResp, errExecute := a.executor.Execute(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
+-	pluginResp, errExecute := a.executor.Execute(ctx, pluginReq)
++	pluginResp, errExecute := a.executor.Execute(withGenerationHTTP(ctx), pluginReq)
  	if errExecute != nil {
  		return coreexecutor.Response{}, nil, errExecute
  	}
-@@ -1104,7 +1104,7 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
- 		reporter.StartResponseTTFT()
+@@ -1175,7 +1175,7 @@ func (a *executorAdapter) executeStreamWithAttribution(ctx context.Context, auth
+ 			return nil, nil, errAvailable
+ 		}
  	}
- 
--	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
-+	pluginResp, errExecuteStream := a.executor.ExecuteStream(withGenerationHTTP(ctx), buildExecutorRequest(a.host, a.provider, auth, prepared.req, prepared.opts))
+-	pluginResp, errExecuteStream := a.executor.ExecuteStream(ctx, pluginReq)
++	pluginResp, errExecuteStream := a.executor.ExecuteStream(withGenerationHTTP(ctx), pluginReq)
  	if errExecuteStream != nil {
  		return nil, nil, errExecuteStream
  	}
@@ -303,7 +303,7 @@ index c83b2e4d..8cbb7178 100644
  		if retryAfter, parseErr := helps.ParseRetryDelayWithHeaders(headers, body, time.Now()); parseErr == nil && retryAfter != nil {
  			err.retryAfter = retryAfter
 diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
-index b8badeb2..7859e32f 100644
+index 25417961..d4c4061f 100644
 --- a/internal/runtime/executor/antigravity_executor_execute.go
 +++ b/internal/runtime/executor/antigravity_executor_execute.go
 @@ -404,7 +404,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
@@ -316,10 +316,10 @@ index b8badeb2..7859e32f 100644
  		reporter.PublishFailure(ctx, filterErr)
  		return resp, filterErr
 diff --git a/internal/runtime/executor/antigravity_executor_stream.go b/internal/runtime/executor/antigravity_executor_stream.go
-index 4ff85b86..06902bc3 100644
+index a2b46241..316b370d 100644
 --- a/internal/runtime/executor/antigravity_executor_stream.go
 +++ b/internal/runtime/executor/antigravity_executor_stream.go
-@@ -382,7 +382,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+@@ -384,7 +384,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
  			}
  		}
  		if pendingFilterMsg != "" && scanner.Err() == nil && !terminalDelivered {
@@ -358,10 +358,10 @@ index 9390136b..cdd0b7d2 100644
  			reporter.PublishFailureWithDetail(ctx, helps.ParseClaudeUsage(data), errRefusal)
  			return resp, errRefusal
 diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
-index 5a11869a..f1725992 100644
+index 205e9697..d7a328d7 100644
 --- a/internal/runtime/executor/claude_executor_request.go
 +++ b/internal/runtime/executor/claude_executor_request.go
-@@ -891,7 +891,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
+@@ -901,7 +901,7 @@ func classifyClaudeUpstreamErrorWithCooling(statusCode int, headers http.Header,
  	if statusCode == http.StatusTooManyRequests || (statusCode >= 400 && statusCode < 600) {
  		retryAfter = helps.ParseClaudeRateLimitResetForError(headers, body, time.Now())
  	}
@@ -605,7 +605,7 @@ index 8a94b509..4e19a766 100644
  	}
  	log.WithField("outcome", "forwarded").Debug("codex websockets: response.interrupt handled")
 diff --git a/internal/runtime/executor/codex_websockets_executor_test.go b/internal/runtime/executor/codex_websockets_executor_test.go
-index 9c39d062..a5c8ae81 100644
+index 011ff048..e9f00e43 100644
 --- a/internal/runtime/executor/codex_websockets_executor_test.go
 +++ b/internal/runtime/executor/codex_websockets_executor_test.go
 @@ -25,6 +25,7 @@ import (
@@ -616,7 +616,7 @@ index 9c39d062..a5c8ae81 100644
  	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
  	log "github.com/sirupsen/logrus"
  )
-@@ -3349,7 +3350,7 @@ func TestCodexWebsockets_SendErrorLogsSessionObject(t *testing.T) {
+@@ -3399,7 +3400,7 @@ func TestCodexWebsockets_SendErrorLogsSessionObject(t *testing.T) {
  	}
  }
  
@@ -625,7 +625,7 @@ index 9c39d062..a5c8ae81 100644
  	gin.SetMode(gin.TestMode)
  	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
  
-@@ -3366,7 +3367,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3416,7 +3417,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  					if errUpgrade != nil {
  						return
  					}
@@ -638,7 +638,7 @@ index 9c39d062..a5c8ae81 100644
  					for {
  						if _, _, errRead := conn.ReadMessage(); errRead != nil {
  							return
-@@ -3417,8 +3422,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3467,8 +3472,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			} else {
  				_, errExec = exec.Execute(ctx, auth, req, opts)
  			}
@@ -649,7 +649,7 @@ index 9c39d062..a5c8ae81 100644
  			}
  
  			value, exists := ginCtx.Get(logging.DeferredAPIResponseContextKey)
-@@ -3433,16 +3438,16 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3483,16 +3488,16 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			for _, want := range []string{
  				"=== API RESPONSE 1 ===",
  				"Status: 101",
@@ -670,7 +670,7 @@ index 9c39d062..a5c8ae81 100644
  			var transportDials atomic.Int32
  			transportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
  				if transportDials.Add(1) == 1 {
-@@ -3450,7 +3455,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3500,7 +3505,11 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  					if errUpgrade != nil {
  						return
  					}
@@ -683,7 +683,7 @@ index 9c39d062..a5c8ae81 100644
  					for {
  						if _, _, errRead := conn.ReadMessage(); errRead != nil {
  							return
-@@ -3484,8 +3493,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3534,8 +3543,8 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			} else {
  				_, errExec = exec.Execute(subCtx, subAuth, req, subOpts)
  			}
@@ -694,7 +694,7 @@ index 9c39d062..a5c8ae81 100644
  			}
  			subVal, ok := subGinCtx.Get(logging.DeferredAPIResponseContextKey)
  			if !ok {
-@@ -3494,12 +3503,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
+@@ -3544,12 +3553,17 @@ func TestCodexWebsocketReconnectUpgradeRejectionRecordedWhenRequestLogDisabled(t
  			subRendered := string(subVal.(logging.DeferredAPIResponse).RenderAPIResponse())
  			for _, want := range []string{
  				"=== API RESPONSE 1 ===",
@@ -713,10 +713,10 @@ index 9c39d062..a5c8ae81 100644
  				hijacker, ok := w.(http.Hijacker)
  				if !ok {
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index 61b4b737..f67c9ae4 100644
+index e59305f3..45928540 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
-@@ -214,7 +214,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -219,7 +219,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  	}
  	prepared.sessionReceipt = sess.sessionInstructions.Sent(conn, prepared.sessionInstructions)
  	cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -725,7 +725,7 @@ index 61b4b737..f67c9ae4 100644
  		errSend = mapCodexWebsocketWriteError(sess, conn, errSend)
  		helps.RecordAPIWebsocketError(ctx, e.cfg, "send", errSend)
  		if sess != nil && !isEphemeralSession && cliproxyexecutor.DownstreamWebsocket(ctx) {
-@@ -288,7 +288,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -293,7 +293,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  			reporter.StartResponseTTFT()
  			prepared.sessionReceipt = sess.sessionInstructions.Sent(conn, prepared.sessionInstructions)
  			cliproxyexecutor.MarkUpstreamAttempt(ctx)
@@ -734,7 +734,7 @@ index 61b4b737..f67c9ae4 100644
  				errSendRetry = mapCodexWebsocketWriteError(sess, conn, errSendRetry)
  				helps.RecordAPIWebsocketError(ctx, e.cfg, "send_retry", errSendRetry)
  				e.invalidateUpstreamConn(sess, conn, "send_error", errSendRetry)
-@@ -518,7 +518,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -523,7 +523,10 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  						if streamErr.StatusCode() == http.StatusTooManyRequests && streamErr.RetryAfter() != nil {
  							return nil, streamErr
  						}
@@ -760,7 +760,7 @@ index 1bcac577..6168e121 100644
  		if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
  			if seconds, errParse := strconv.ParseInt(raw, 10, 64); errParse == nil && seconds >= 0 {
 diff --git a/internal/runtime/executor/gemini_executor.go b/internal/runtime/executor/gemini_executor.go
-index 42eb3c12..5a8af7e8 100644
+index c85d0c38..a2991dde 100644
 --- a/internal/runtime/executor/gemini_executor.go
 +++ b/internal/runtime/executor/gemini_executor.go
 @@ -273,7 +273,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
@@ -800,7 +800,7 @@ index 42eb3c12..5a8af7e8 100644
  	}
  	for _, cPath := range []string{"candidates", "response.candidates"} {
 diff --git a/internal/runtime/executor/gemini_vertex_executor.go b/internal/runtime/executor/gemini_vertex_executor.go
-index f83534f6..2ac1d1a9 100644
+index 1146a3a5..7b10ab1d 100644
 --- a/internal/runtime/executor/gemini_vertex_executor.go
 +++ b/internal/runtime/executor/gemini_vertex_executor.go
 @@ -600,7 +600,7 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
@@ -1088,10 +1088,10 @@ index 99aac855..95ce4d7d 100644
  		return resp, errRoundTrip
  	}
 diff --git a/internal/runtime/executor/meta_executor_execute.go b/internal/runtime/executor/meta_executor_execute.go
-index 09177ac3..7b161aff 100644
+index d64e305e..42f4ee6b 100644
 --- a/internal/runtime/executor/meta_executor_execute.go
 +++ b/internal/runtime/executor/meta_executor_execute.go
-@@ -482,7 +482,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
+@@ -483,7 +483,7 @@ func isMetaSubscriptionUsageEvent(eventType string, eventData []byte) bool {
  }
  
  func wrapMetaUpstreamError(statusCode int, body []byte) error {
@@ -3028,10 +3028,10 @@ index 1dde55d8..46ade9e6 100644
 +	}
 +}
 diff --git a/sdk/pluginapi/types.go b/sdk/pluginapi/types.go
-index 74e78fb6..32f95334 100644
+index ae3dc1aa..786e73e7 100644
 --- a/sdk/pluginapi/types.go
 +++ b/sdk/pluginapi/types.go
-@@ -1219,6 +1219,9 @@ type HTTPRequest struct {
+@@ -1222,6 +1222,9 @@ type HTTPRequest struct {
  	Body []byte
  	// WireProfile specifies optional outbound HTTP wire profile settings.
  	WireProfile *HTTPWireProfile `json:"wire_profile,omitempty"`

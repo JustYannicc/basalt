@@ -403,7 +403,7 @@
         {
           "identity": "cliproxy-node-dispatch-timing-header",
           "file": "0516-node-dispatch-timing-header.patch",
-          "sha256": "03ea5c326510534c081272a31223e10236898c3fc21c9b07c76a90d9d47b89cb",
+          "sha256": "0623621519b9b77d85ccb0543611feeefd1c177df9c251f9a3d130631fbb7329",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
@@ -448,7 +448,7 @@
         {
           "identity": "cliproxy-node-no-postwrite-replay",
           "file": "0649-node-no-postwrite-replay.patch",
-          "sha256": "6b071e77387bfb1917b8b247e347e76d175fe17f655a19ff4834ba4d86b1a4fe",
+          "sha256": "51ed80ebcd5f440c1994a95fa7f1726d4d422d51ab24d28245cdfd7b9484ba8b",
           "retirement": {
             "mode": "manual",
             "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
@@ -466,7 +466,7 @@
         {
           "identity": "cliproxy-node-generation-submission",
           "file": "0650-node-generation-submission.patch",
-          "sha256": "8181a41c37d2c4e92963d67dfc832523ad96dd1220c356491edc5b244fdc7a4d",
+          "sha256": "fc3adc9137e3d7919d72fb51eff7277aeb95383fdfd8755a4eee7623cd0ad0f8",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
@@ -475,10 +475,10 @@
         {
           "identity": "cliproxy-node-provider-retry-time",
           "file": "0764-node-provider-retry-time.patch",
-          "sha256": "ae3318a23cf1c8a1f96ed2d6e9830dd64a7c62442b529cba523296619a1cbdca",
+          "sha256": "92cc9808fe7fffd9d7ffee3212c513cafeaea4ed8bef4921365068c894929060",
           "retirement": {
             "mode": "manual",
-            "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
+            "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression and the credential-setup one."
           }
         },
         {

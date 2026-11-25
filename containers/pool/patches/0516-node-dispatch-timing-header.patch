@@ -416,18 +416,18 @@ index 00000000..3d680dd0
 +	}
 +}
 diff --git a/internal/home/client.go b/internal/home/client.go
-index 34c77841..7f0f51b7 100644
+index d7add597..aa602389 100644
 --- a/internal/home/client.go
 +++ b/internal/home/client.go
-@@ -1394,6 +1394,7 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
- 	if input, ok := ctx.Value(schedulerContextKey{}).(SchedulerContext); ok {
+@@ -1395,6 +1395,7 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
  		req.SchedulerContext = &input
  	}
+ 	req.ExecutorPlugins, _ = ctx.Value(executorPluginsContextKey{}).(map[string][]string)
 +	req.DispatchTiming = dispatchtiming.FromContext(ctx) != nil
  	keyBytes, errMarshal := json.Marshal(&req)
  	if errMarshal != nil {
  		return nil, errMarshal
-@@ -1416,7 +1417,7 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
+@@ -1417,7 +1418,7 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
  	}()
  	pingStarted := time.Now()
  	errProbe := conn.Ping(ctx).Err()
@@ -436,7 +436,7 @@ index 34c77841..7f0f51b7 100644
  	if errProbe != nil {
  		return nil, errProbe
  	}
-@@ -1424,8 +1425,18 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
+@@ -1425,8 +1426,18 @@ func (c *Client) rPopAuth(ctx context.Context, requestedModel string, sessionID
  		return nil, ErrDispatchFenced
  	}
  	rpopStarted := time.Now()
@@ -458,17 +458,17 @@ index 34c77841..7f0f51b7 100644
  		return nil, ErrAuthNotFound
  	}
 diff --git a/internal/home/requests.go b/internal/home/requests.go
-index 8b6e1828..7f08d00f 100644
+index c2e42d60..7ed9198c 100644
 --- a/internal/home/requests.go
 +++ b/internal/home/requests.go
-@@ -23,6 +23,7 @@ func WithSchedulerContext(ctx context.Context, input SchedulerContext) context.C
+@@ -29,6 +29,7 @@ func WithExecutorPlugins(ctx context.Context, plugins map[string][]string) conte
  
  type authDispatchRequest struct {
- 	SchedulerContext    *SchedulerContext `json:"scheduler_context,omitempty"`
-+	DispatchTiming      bool              `json:"dispatch_timing,omitempty"`
- 	Type                string            `json:"type"`
- 	Model               string            `json:"model"`
- 	Count               int               `json:"count"`
+ 	SchedulerContext    *SchedulerContext   `json:"scheduler_context,omitempty"`
++	DispatchTiming      bool                `json:"dispatch_timing,omitempty"`
+ 	Type                string              `json:"type"`
+ 	Model               string              `json:"model"`
+ 	Count               int                 `json:"count"`
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
 index 21527c9d..a0ef8270 100644
 --- a/sdk/api/handlers/handlers.go
