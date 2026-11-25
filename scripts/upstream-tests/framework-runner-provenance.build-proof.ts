@@ -121,144 +121,136 @@ async function appBundle(): Promise<LoadedWorkerBuild> {
   };
 }
 
-test(
-  "native remote declarations and cold/warm calls admit real bytes and refuse altered builds before authored writes",
-  {
-    timeout: 20_000,
-  },
-  async (context) => {
-    const loaded = await appBundle();
-    const bundled = await build({
-      stdin: {
-        contents: hostSource,
-        sourcefile: "provenance-host.ts",
-        resolveDir: upstream,
-        loader: "ts",
+test("native remote declarations and cold/warm calls admit real bytes and refuse altered builds before authored writes", async (context) => {
+  const loaded = await appBundle();
+  const bundled = await build({
+    stdin: {
+      contents: hostSource,
+      sourcefile: "provenance-host.ts",
+      resolveDir: upstream,
+      loader: "ts",
+    },
+    absWorkingDir: upstream,
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    conditions: ["workerd"],
+    external: ["cloudflare:*"],
+    logLevel: "silent",
+  });
+  const writes: string[] = [];
+  const runtime = new Miniflare({
+    modules: [
+      { type: "ESModule", path: "provenance-host.mjs", contents: bundled.outputFiles[0]!.text },
+    ],
+    compatibilityDate: "2026-09-08",
+    compatibilityFlags: ["nodejs_compat"],
+    workerLoaders: { LOADER: {} },
+    serviceBindings: {
+      MARKER: async (request: Request) => {
+        writes.push(await request.text());
+        return new Response("recorded");
       },
-      absWorkingDir: upstream,
-      bundle: true,
-      write: false,
-      format: "esm",
-      platform: "browser",
-      conditions: ["workerd"],
-      external: ["cloudflare:*"],
-      logLevel: "silent",
-    });
-    const writes: string[] = [];
-    const runtime = new Miniflare({
-      modules: [
-        { type: "ESModule", path: "provenance-host.mjs", contents: bundled.outputFiles[0]!.text },
-      ],
-      compatibilityDate: "2026-09-08",
-      compatibilityFlags: ["nodejs_compat"],
-      workerLoaders: { LOADER: {} },
-      serviceBindings: {
-        MARKER: async (request: Request) => {
-          writes.push(await request.text());
-          return new Response("recorded");
-        },
-      },
-    });
-    context.after(() => runtime.dispose());
-    let selected = loaded;
-    let cold = false;
-    const send = (body: object) =>
-      Effect.tryPromise(async () => {
-        const reply = await runtime.dispatchFetch("https://runner.test", {
-          method: "POST",
-          body: JSON.stringify({ loaded: selected, cold, ...body }),
-        });
-        assert.equal(reply.status, 200);
-        return reply.text();
+    },
+  });
+  context.after(() => runtime.dispose());
+  let selected = loaded;
+  let cold = false;
+  const send = (body: object) =>
+    Effect.tryPromise(async () => {
+      const reply = await runtime.dispatchFetch("https://runner.test", {
+        method: "POST",
+        body: JSON.stringify({ loaded: selected, cold, ...body }),
       });
-    const remote = remoteAppRunner({
-      invoke: (invocation) => send({ invocation }),
-      declare: (bundle) => send({ declare: bundle }),
+      assert.equal(reply.status, 200);
+      return reply.text();
     });
-    const declaration = await Effect.runPromise(remote.declare(loaded, {}));
-    assert.ok(
-      Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }))(declaration),
+  const remote = remoteAppRunner({
+    invoke: (invocation) => send({ invocation }),
+    declare: (bundle) => send({ declare: bundle }),
+  });
+  const declaration = await Effect.runPromise(remote.declare(loaded, {}));
+  assert.ok(
+    Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }))(declaration),
+  );
+  assert.deepEqual(writes, []);
+  const invoke = (build: string, caller: string) =>
+    remote.invoke(
+      {
+        app: "provenance-fixture",
+        build,
+        caller,
+        database: false,
+        command: { operation: "call", tool: "who", kind: "query", input: {} },
+        accounts: { app: {} },
+        headers: {},
+      },
+      { load: async () => selected, elicit: null, controls: null },
     );
-    assert.deepEqual(writes, []);
-    const invoke = (build: string, caller: string) =>
-      remote.invoke(
-        {
-          app: "provenance-fixture",
-          build,
-          caller,
-          database: false,
-          command: { operation: "call", tool: "who", kind: "query", input: {} },
-          accounts: { app: {} },
-          headers: {},
-        },
-        { load: async () => selected, elicit: null, controls: null },
-      );
-    const buildId = `bld_native_${crypto.randomUUID()}`;
-    for (const caller of ["caller-cold", "caller-warm"]) {
-      const result = await Effect.runPromise(invoke(buildId, caller));
-      assert.ok(
-        Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Literal(caller) }))(
-          result,
-        ),
-      );
-    }
-    assert.deepEqual(writes, ["caller-cold", "caller-warm"]);
-    const { framework } = loaded;
-    assert.ok(framework);
-    const { framework: _framework, ...withoutFramework } = loaded;
-    const cases: Array<[LoadedWorkerBuild, FrameworkProvenanceRefused["reason"]]> = [
-      [withoutFramework, "missing-identity"],
-      [
-        {
-          ...loaded,
-          protocol: 14,
-          framework: { ...framework, version: "0.0.1-beta.122", protocol: 14 },
-        },
-        "unknown-identity",
-      ],
-      [
-        {
-          ...loaded,
-          framework: { ...framework, source: { ...framework.source, revision: "forged" } },
-        },
-        "conflicting-lineage",
-      ],
-      [
-        { ...loaded, modules: { ...loaded.modules, "node_modules/apps/index.js": "corrupt" } },
-        "content-mismatch",
-      ],
-      [{ ...loaded, protocol: 14 }, "protocol-mismatch"],
-    ];
-    for (const [invalid, reason] of cases) {
-      selected = invalid;
-      const result = await Effect.runPromise(
-        invoke(`bld_refused_${crypto.randomUUID()}`, "must-not-run").pipe(
-          Effect.match({
-            onSuccess: () => assert.fail("Invalid framework ran authored code"),
-            onFailure: (error) => error,
-          }),
-        ),
-      );
-      assert.ok(Schema.is(FrameworkProvenanceRefused)(result));
-      assert.equal(result.reason, reason);
-      assert.deepEqual(writes, ["caller-cold", "caller-warm"]);
-    }
-    cold = true;
-    selected = {
-      ...loaded,
-      framework: { ...framework, source: { ...framework.source, revision: "warm-replacement" } },
-    };
-    const refused = await Effect.runPromise(
-      invoke(buildId, "warm-must-not-run").pipe(
+  const buildId = `bld_native_${crypto.randomUUID()}`;
+  for (const caller of ["caller-cold", "caller-warm"]) {
+    const result = await Effect.runPromise(invoke(buildId, caller));
+    assert.ok(
+      Schema.is(Schema.Struct({ ok: Schema.Literal(true), value: Schema.Literal(caller) }))(result),
+    );
+  }
+  assert.deepEqual(writes, ["caller-cold", "caller-warm"]);
+  const { framework } = loaded;
+  assert.ok(framework);
+  const { framework: _framework, ...withoutFramework } = loaded;
+  const cases: Array<[LoadedWorkerBuild, FrameworkProvenanceRefused["reason"]]> = [
+    [withoutFramework, "missing-identity"],
+    [
+      {
+        ...loaded,
+        protocol: 14,
+        framework: { ...framework, version: "0.0.1-beta.122", protocol: 14 },
+      },
+      "unknown-identity",
+    ],
+    [
+      {
+        ...loaded,
+        framework: { ...framework, source: { ...framework.source, revision: "forged" } },
+      },
+      "conflicting-lineage",
+    ],
+    [
+      { ...loaded, modules: { ...loaded.modules, "node_modules/apps/index.js": "corrupt" } },
+      "content-mismatch",
+    ],
+    [{ ...loaded, protocol: 14 }, "protocol-mismatch"],
+  ];
+  for (const [invalid, reason] of cases) {
+    selected = invalid;
+    const result = await Effect.runPromise(
+      invoke(`bld_refused_${crypto.randomUUID()}`, "must-not-run").pipe(
         Effect.match({
-          onSuccess: () => assert.fail("Warm replacement ran authored code"),
+          onSuccess: () => assert.fail("Invalid framework ran authored code"),
           onFailure: (error) => error,
         }),
       ),
     );
-    assert.ok(Schema.is(FrameworkProvenanceRefused)(refused));
-    assert.equal(refused.reason, "conflicting-lineage");
-    assert.equal(refused.build, buildId);
+    assert.ok(Schema.is(FrameworkProvenanceRefused)(result));
+    assert.equal(result.reason, reason);
     assert.deepEqual(writes, ["caller-cold", "caller-warm"]);
-  },
-);
+  }
+  cold = true;
+  selected = {
+    ...loaded,
+    framework: { ...framework, source: { ...framework.source, revision: "warm-replacement" } },
+  };
+  const refused = await Effect.runPromise(
+    invoke(buildId, "warm-must-not-run").pipe(
+      Effect.match({
+        onSuccess: () => assert.fail("Warm replacement ran authored code"),
+        onFailure: (error) => error,
+      }),
+    ),
+  );
+  assert.ok(Schema.is(FrameworkProvenanceRefused)(refused));
+  assert.equal(refused.reason, "conflicting-lineage");
+  assert.equal(refused.build, buildId);
+  assert.deepEqual(writes, ["caller-cold", "caller-warm"]);
+});

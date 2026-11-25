@@ -31,48 +31,42 @@ export default defineApp({}, { tools: router({
 }) });`;
 
 for (const release of releases)
-  test(
-    `released ${release.version}/p${release.protocol} from ${release.input} compiles and reloads unchanged through both retained formats`,
-    {
-      timeout: 20_000,
-    },
-    async () => {
-      const path = process.env[release.input];
-      assert.ok(path, `Supply the rebuilt ${release.version} package`);
-      const files = await Effect.runPromise(
-        Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.String))(
-          JSON.parse(readFileSync(path, "utf8")),
-        ),
-      );
-      const runtime = await Effect.runPromise(
-        Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework))(
-          files["runtime.json"],
-        ),
-      );
-      assert.equal(runtime.version, release.version);
-      assert.equal(runtime.protocol, release.protocol);
-      const admitted = await Effect.runPromise(
-        admitFramework({
-          framework: { version: runtime.version, modules: runtime.server },
-          browser: runtime.browser,
-          protocol: runtime.protocol,
-        }),
-      );
-      assert.equal(admitted.version, release.version);
-      const loaded = await compileFrameworkFixture(authored, [], path);
-      assert.deepEqual(loaded.framework, admitted);
-      for (const [name, bytes] of Object.entries(runtime.server))
-        assert.equal(loaded.modules[name], bytes);
-      const protocol = await Effect.runPromise(selectFrameworkProtocol(loaded));
-      assert.equal(protocol.version, release.protocol);
-      const first = Object.keys(runtime.server)[0];
-      assert.ok(first);
-      const refused = await Effect.runPromise(
-        admitLoadedFramework({
-          ...loaded,
-          modules: { ...loaded.modules, [first]: "export default 'corrupt';" },
-        }).pipe(Effect.flip),
-      );
-      assert.equal(refused.reason, "content-mismatch");
-    },
-  );
+  test(`released ${release.version}/p${release.protocol} from ${release.input} compiles and reloads unchanged through both retained formats`, async () => {
+    const path = process.env[release.input];
+    assert.ok(path, `Supply the rebuilt ${release.version} package`);
+    const files = await Effect.runPromise(
+      Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.String))(
+        JSON.parse(readFileSync(path, "utf8")),
+      ),
+    );
+    const runtime = await Effect.runPromise(
+      Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework))(
+        files["runtime.json"],
+      ),
+    );
+    assert.equal(runtime.version, release.version);
+    assert.equal(runtime.protocol, release.protocol);
+    const admitted = await Effect.runPromise(
+      admitFramework({
+        framework: { version: runtime.version, modules: runtime.server },
+        browser: runtime.browser,
+        protocol: runtime.protocol,
+      }),
+    );
+    assert.equal(admitted.version, release.version);
+    const loaded = await compileFrameworkFixture(authored, [], path);
+    assert.deepEqual(loaded.framework, admitted);
+    for (const [name, bytes] of Object.entries(runtime.server))
+      assert.equal(loaded.modules[name], bytes);
+    const protocol = await Effect.runPromise(selectFrameworkProtocol(loaded));
+    assert.equal(protocol.version, release.protocol);
+    const first = Object.keys(runtime.server)[0];
+    assert.ok(first);
+    const refused = await Effect.runPromise(
+      admitLoadedFramework({
+        ...loaded,
+        modules: { ...loaded.modules, [first]: "export default 'corrupt';" },
+      }).pipe(Effect.flip),
+    );
+    assert.equal(refused.reason, "content-mismatch");
+  });

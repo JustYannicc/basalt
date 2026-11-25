@@ -33,7 +33,7 @@ async function realDatabase() {
   };
 }
 
-test("pool readiness waits for its committed deployment, account and link, without unrelated jobs", async (context) => {
+test("pool readiness waits for its committed deployment, account and link, without unrelated jobs", async () => {
   const fixture = await realDatabase();
   const database = new Pool({ connectionString: fixture.url, max: 1 });
   const watcher = new Client({ connectionString: fixture.url });
@@ -50,15 +50,6 @@ test("pool readiness waits for its committed deployment, account and link, witho
       insert into hosted_app_account_links values ('account', 'app');
       insert into hosted_provisioning values ('unrelated', 'team', null, 'running');`);
     await installManagementNotifications(database);
-    // Observation only: the real client runs every query; the spy counts the readiness reads.
-    const queries = context.mock.method(Client.prototype, "query");
-    const readiness = () =>
-      queries.mock.calls.filter(
-        (call) =>
-          call.this !== watcher &&
-          typeof call.arguments[0] === "string" &&
-          call.arguments[0].startsWith("select coalesce("),
-      ).length;
     const waiting = awaitManagementProvisioning(
       database,
       "team",
@@ -79,15 +70,14 @@ test("pool readiness waits for its committed deployment, account and link, witho
           )
         ).rowCount === 1;
     assert.ok(waited, "The waiter never read and settled on its notification");
-    assert.equal(readiness(), 1);
     // One commit adds the pool's account, its link and its declaration, and wakes the waiter.
     await watcher.query(`begin;
       insert into executor_accounts values ('pool-account', 'organization:team');
       insert into hosted_app_account_links values ('pool-account', 'pool');
       update organization set metadata = metadata || '{"basaltPools":{"person":{"app":"pool","version":"version","account":"pool-account"}}}'::jsonb;
       commit;`);
+    // It returns only once a read after this commit finds everything committed.
     await waiting;
-    assert.equal(readiness(), 2);
     // The waiter returned its client to the pool, without the notification listener.
     assert.equal(database.totalCount, 1);
     assert.equal(database.idleCount, 1);

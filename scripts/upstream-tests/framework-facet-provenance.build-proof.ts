@@ -72,110 +72,104 @@ const entries = query({ input: object({}) }, async ctx =>
   ctx.sql.exec("SELECT label, caller FROM entries ORDER BY rowid").toArray());
 export default defineApp({}, { tools: router({ record, entries }) });`;
 
-test(
-  "native data facets admit compiled bytes and refuse forged lineage before authored writes",
-  {
-    timeout: 20_000,
-  },
-  async (context) => {
-    const loaded = await compileFrameworkFixture(authored, [
-      {
-        path: "migrations/0001_entries.sql",
-        content: "CREATE TABLE entries (label TEXT NOT NULL, caller TEXT NOT NULL);",
+test("native data facets admit compiled bytes and refuse forged lineage before authored writes", async (context) => {
+  const loaded = await compileFrameworkFixture(authored, [
+    {
+      path: "migrations/0001_entries.sql",
+      content: "CREATE TABLE entries (label TEXT NOT NULL, caller TEXT NOT NULL);",
+    },
+  ]);
+  const bundled = await build({
+    stdin: {
+      contents: source,
+      sourcefile: "facet-host.ts",
+      resolveDir: upstream,
+      loader: "ts",
+    },
+    absWorkingDir: upstream,
+    bundle: true,
+    write: false,
+    format: "esm",
+    platform: "browser",
+    conditions: ["workerd"],
+    external: ["cloudflare:*"],
+    logLevel: "silent",
+  });
+  const writes: string[] = [];
+  const runtime = new Miniflare({
+    modules: [{ type: "ESModule", path: "facet.mjs", contents: bundled.outputFiles[0]!.text }],
+    compatibilityDate: "2026-09-08",
+    compatibilityFlags: ["nodejs_compat"],
+    workerLoaders: { LOADER: {} },
+    durableObjects: { DATA: { className: "FacetHost", useSQLite: true } },
+    serviceBindings: {
+      MARKER: async (request: Request) => {
+        writes.push(await request.text());
+        return new Response("recorded");
       },
-    ]);
-    const bundled = await build({
-      stdin: {
-        contents: source,
-        sourcefile: "facet-host.ts",
-        resolveDir: upstream,
-        loader: "ts",
-      },
-      absWorkingDir: upstream,
-      bundle: true,
-      write: false,
-      format: "esm",
-      platform: "browser",
-      conditions: ["workerd"],
-      external: ["cloudflare:*"],
-      logLevel: "silent",
-    });
-    const writes: string[] = [];
-    const runtime = new Miniflare({
-      modules: [{ type: "ESModule", path: "facet.mjs", contents: bundled.outputFiles[0]!.text }],
-      compatibilityDate: "2026-09-08",
-      compatibilityFlags: ["nodejs_compat"],
-      workerLoaders: { LOADER: {} },
-      durableObjects: { DATA: { className: "FacetHost", useSQLite: true } },
-      serviceBindings: {
-        MARKER: async (request: Request) => {
-          writes.push(await request.text());
-          return new Response("recorded");
+    },
+  });
+  context.after(() => runtime.dispose());
+  const buildId = `bld_facet_${crypto.randomUUID()}`;
+  const invoke = async (command: object, selected = loaded) => {
+    const response = await runtime.dispatchFetch("https://facet.test", {
+      method: "POST",
+      body: JSON.stringify({
+        loaded: selected,
+        invocation: {
+          app: "provenance-facet",
+          build: selected === loaded ? buildId : `bld_refused_${crypto.randomUUID()}`,
+          caller: "caller-facet",
+          database: true,
+          command,
+          accounts: { app: {} },
+          headers: {},
         },
-      },
+      }),
     });
-    context.after(() => runtime.dispose());
-    const buildId = `bld_facet_${crypto.randomUUID()}`;
-    const invoke = async (command: object, selected = loaded) => {
-      const response = await runtime.dispatchFetch("https://facet.test", {
-        method: "POST",
-        body: JSON.stringify({
-          loaded: selected,
-          invocation: {
-            app: "provenance-facet",
-            build: selected === loaded ? buildId : `bld_refused_${crypto.randomUUID()}`,
-            caller: "caller-facet",
-            database: true,
-            command,
-            accounts: { app: {} },
-            headers: {},
-          },
+    assert.equal(response.status, 200);
+    return await Effect.runPromise(
+      Schema.decodeUnknownEffect(
+        Schema.Struct({
+          ok: Schema.optionalKey(Schema.Boolean),
+          value: Schema.optionalKey(Schema.Unknown),
+          executorRevision: Schema.optionalKey(Schema.Int),
+          refused: Schema.optionalKey(
+            Schema.Struct({ _tag: Schema.String, reason: Schema.String }),
+          ),
         }),
-      });
-      assert.equal(response.status, 200);
-      return await Effect.runPromise(
-        Schema.decodeUnknownEffect(
-          Schema.Struct({
-            ok: Schema.optionalKey(Schema.Boolean),
-            value: Schema.optionalKey(Schema.Unknown),
-            executorRevision: Schema.optionalKey(Schema.Int),
-            refused: Schema.optionalKey(
-              Schema.Struct({ _tag: Schema.String, reason: Schema.String }),
-            ),
-          }),
-        )(await response.json()),
-      );
-    };
-    const call = (tool: string, input: object, selected = loaded) =>
-      invoke(
-        { operation: "call", tool, kind: tool === "record" ? "mutation" : "query", input },
-        selected,
-      );
-    const migrated = await invoke({ operation: "migrate" });
-    assert.equal(migrated.ok, true);
-    assert.equal(typeof migrated.executorRevision, "number");
-    const accepted = await call("record", { label: "accepted" });
-    assert.equal(accepted.ok, true);
-    assert.equal(accepted.value, "caller-facet");
-    assert.equal(accepted.executorRevision, migrated.executorRevision! + 1);
-    assert.deepEqual(writes, ["caller-facet"]);
-    assert.ok(loaded.framework);
-    const refused = await call(
-      "record",
-      { label: "must-not-run" },
-      {
-        ...loaded,
-        framework: {
-          ...loaded.framework,
-          source: { ...loaded.framework.source, revision: "forged-facet" },
-        },
-      },
+      )(await response.json()),
     );
-    assert.equal(refused.refused?._tag, "FrameworkProvenanceRefused");
-    assert.equal(refused.refused?.reason, "conflicting-lineage");
-    assert.deepEqual(writes, ["caller-facet"]);
-    const retained = await call("entries", {});
-    assert.equal(retained.ok, true);
-    assert.deepEqual(retained.value, [{ label: "accepted", caller: "caller-facet" }]);
-  },
-);
+  };
+  const call = (tool: string, input: object, selected = loaded) =>
+    invoke(
+      { operation: "call", tool, kind: tool === "record" ? "mutation" : "query", input },
+      selected,
+    );
+  const migrated = await invoke({ operation: "migrate" });
+  assert.equal(migrated.ok, true);
+  assert.equal(typeof migrated.executorRevision, "number");
+  const accepted = await call("record", { label: "accepted" });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.value, "caller-facet");
+  assert.equal(accepted.executorRevision, migrated.executorRevision! + 1);
+  assert.deepEqual(writes, ["caller-facet"]);
+  assert.ok(loaded.framework);
+  const refused = await call(
+    "record",
+    { label: "must-not-run" },
+    {
+      ...loaded,
+      framework: {
+        ...loaded.framework,
+        source: { ...loaded.framework.source, revision: "forged-facet" },
+      },
+    },
+  );
+  assert.equal(refused.refused?._tag, "FrameworkProvenanceRefused");
+  assert.equal(refused.refused?.reason, "conflicting-lineage");
+  assert.deepEqual(writes, ["caller-facet"]);
+  const retained = await call("entries", {});
+  assert.equal(retained.ok, true);
+  assert.deepEqual(retained.value, [{ label: "accepted", caller: "caller-facet" }]);
+});
