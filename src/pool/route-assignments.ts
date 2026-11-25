@@ -63,12 +63,21 @@ const refreshFloorMs = 15 * 60_000;
  */
 export const unservedPauseMs = 10 * 60_000;
 export const servedPollMs = 60_000;
+/** Backends whose credentials a plugin the pool image ships serves (containers/pool/Dockerfile). */
+export const imageProviderPlugins: ReadonlySet<string> = new Set(["gemini-cli", "typesafe"]);
 /**
- * Backends whose model calls and refreshes a Home plugin makes. No rig case yet proves a plugin
- * sends through the credential's proxy, so a routed owner's credential here is refused: Home keeps
- * it disabled, never used and never refreshed (change 37/39).
+ * Plugin backends proven to send a routed credential's traffic only through its route. TypeSafe's
+ * model calls run in the node's native executor, which uses the credential's proxy (route rig), and
+ * its plugin's discovery never dials for a routed credential (change 45).
  */
-export const pluginProviders: ReadonlySet<string> = new Set(["gemini-cli", "typesafe"]);
+export const routedPluginProviders: ReadonlySet<string> = new Set(["typesafe"]);
+/**
+ * The rest: their plugins make their own calls without the credential's proxy, so a routed owner's
+ * credential here is refused. Home keeps it disabled, never used or refreshed (changes 37/39).
+ */
+export const pluginProviders: ReadonlySet<string> = new Set(
+  [...imageProviderPlugins].filter((name) => !routedPluginProviders.has(name)),
+);
 
 const State = Schema.Struct({
   served: Schema.Boolean,

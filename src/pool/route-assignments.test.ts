@@ -12,6 +12,7 @@ import {
   credentialProxy,
   pluginProviders,
   routeProxyUrl,
+  routedPluginProviders,
   servedPollMs,
   unassignedRoute,
   unservedPauseMs,
@@ -634,7 +635,7 @@ test("a routed owner's plugin-provider credential is kept disabled, never live o
   const clock = { at: now };
   const routes = new RouteAssignments(storage(), rules.resolver, client, () => clock.at);
   const file = (id: string) => state.files.find((row) => row.id === id)!;
-  // The host's route: saved disabled in the same write Home first sees.
+  // TypeSafe is proven: the host's route is written on it, and it stays enabled.
   assert.equal(
     (
       await mirror(
@@ -649,7 +650,9 @@ test("a routed owner's plugin-provider credential is kept disabled, never live o
     ).status,
     200,
   );
-  assert.equal(file(typesafe).disabled, true);
+  assert.equal(file(typesafe).disabled, undefined);
+  assert.equal(file(typesafe).proxy_url, routeProxyUrl(home));
+  assert.equal(await routes.refusesUse(typesafe, "typesafe"), false);
   // Routed by a membership step after it was mirrored: disabled before its proxy changes.
   await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "synthetic" });
   await mirror(client, routes, paused, { type: "gemini-cli", access_token: "synthetic" });
@@ -659,7 +662,7 @@ test("a routed owner's plugin-provider credential is kept disabled, never live o
   await routes.prepare(scope, [gemini, typesafe, paused], signal());
   assert.deepEqual(state.writes.slice(0, 2), [`status:${gemini}:true`, `auth:${gemini}`]);
   assert.equal(file(gemini).disabled, true);
-  assert.deepEqual([...(await routes.refusedReferences())].sort(), [gemini, typesafe].sort());
+  assert.deepEqual([...(await routes.refusedReferences())], [gemini]);
   // The route ends: the pool lifts what it disabled, never the owner's own pause.
   rules.set({
     [gemini]: { routeId: null, owner: null },
@@ -670,7 +673,7 @@ test("a routed owner's plugin-provider credential is kept disabled, never live o
   await routes.tick(signal());
   assert.equal(file(gemini).disabled, false);
   assert.equal(file(paused).disabled, true);
-  assert.equal(file(typesafe).disabled, false);
+  assert.equal(file(typesafe).disabled, undefined);
   assert.deepEqual([...(await routes.refusedReferences())], []);
 });
 
@@ -719,7 +722,12 @@ test("every provider plugin the pool image ships is refused for routed owners un
   // The scheduler veto is a plugin but makes no provider calls.
   const providers = shipped.filter((name) => name !== "basalt-native-policy");
   assert.ok(providers.length > 0);
-  for (const name of providers) assert.ok(pluginProviders.has(name), `${name} is not refused`);
+  // Each is refused for routed owners until a rig case proves it, and then listed as proven.
+  for (const name of providers)
+    assert.ok(
+      pluginProviders.has(name) !== routedPluginProviders.has(name),
+      `${name} must be either refused or proven, never both or neither`,
+    );
 });
 
 test("a re-mirror without a hint keeps a hold, and a refused plugin credential stays disabled", async () => {
