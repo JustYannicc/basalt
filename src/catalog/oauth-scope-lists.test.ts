@@ -65,6 +65,28 @@ test("a whole-list mark and a connection that mirrors its issuer's scopes always
   );
 });
 
+test("a re-pin of a marked connection appends its new list to the history", () => {
+  // Without the append, a stored provider still asking for the outgoing list after a later drop
+  // would match no reviewed list, and every grant would ask to reconnect again.
+  for (const { entry } of marked) {
+    const snapshot = JSON.parse(
+      readFileSync(new URL(metadataSnapshotFile(entry), import.meta.url), "utf8"),
+    ) as { scopes_supported: string[] };
+    const baseline = JSON.parse(
+      readFileSync(new URL(scopeBaselineFile(entry), import.meta.url), "utf8"),
+    ) as string[];
+    const historyUrl = new URL(scopeHistoryFile(entry), import.meta.url);
+    const history = existsSync(historyUrl)
+      ? (JSON.parse(readFileSync(historyUrl, "utf8")) as string[])
+      : [];
+    const today = scopeListDigest(snapshot.scopes_supported);
+    assert.ok(
+      today === (history.at(-1) ?? scopeListDigest(baseline)),
+      `${entry}: append ${today} to ${scopeHistoryFile(entry)}`,
+    );
+  }
+});
+
 test("Cloudflare's scope baseline is the list grants asked for before they recorded it", () => {
   // Never regenerate it: grants saved before carry 0782 are recognized by exactly these scopes.
   const bytes = readFileSync(new URL(scopeBaselineFile("cloudflare"), import.meta.url));

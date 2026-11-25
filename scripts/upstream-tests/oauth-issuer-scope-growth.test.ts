@@ -298,6 +298,26 @@ test("a grant keeps working while its stored provider asks for a list the issuer
   assert.deepEqual(forgotten.calls, refused);
 });
 
+test("a grant without the record counts as whole-list only when it asked for exactly the baseline", async () => {
+  // It asked for a later reviewed list, not the baseline; that list then grew by one more scope.
+  const grown = [...reviewed, ...added];
+  const issuers = [
+    {
+      issuer: issuer.issuer,
+      scopes: [...grown, "synthetic:later"],
+      baseline: reviewed,
+      history: [grown],
+    },
+  ];
+  const scopes = [...grown, "synthetic:later"];
+  const unrecorded = await observe({ shared: true, asked: grown, scopes }, issuers);
+  assert.deepEqual(unrecorded.signIn, permissions);
+  assert.deepEqual(unrecorded.calls, refused);
+  const recorded = await observe({ shared: true, asked: grown, marked: true, scopes }, issuers);
+  assert.deepEqual(recorded.signIn, saved);
+  assert.deepEqual(recorded.calls, working);
+});
+
 test("the three-scope grants from before full access keep their reconnect prompt and refusal", async () => {
   for (const scopes of [reviewed, [...reviewed, ...added]]) {
     const observed = await observe({ shared: true, asked: beforeFullAccess, scopes });

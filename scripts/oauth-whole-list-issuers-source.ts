@@ -14,9 +14,10 @@ export const wholeListIssuersPath = "packages/sdk/src/implementation/oauth-whole
 export const scopeBaselineFile = (entry: string) => `${entry}.oauth-scope-baseline.json`;
 
 /**
- * Digests of the reviewed lists a marked connection asked for between its baseline and today's
- * snapshot, oldest first. Append the outgoing list's digest when a re-pin moves the snapshot, and
- * never remove one: a stored provider may still ask for it after the issuer drops a scope.
+ * Digests of the lists a marked connection was reviewed with after its baseline, oldest first. A
+ * re-pin that moves the snapshot appends the new list's digest (a catalog test requires today's
+ * list to be the baseline or the last entry), and none is ever removed: a stored provider may still
+ * ask for an earlier list after the issuer drops a scope.
  */
 export const scopeHistoryFile = (entry: string) => `${entry}.oauth-scope-history.json`;
 
@@ -91,8 +92,8 @@ export function wholeListIssuers(catalog: string, reviews: readonly OAuthReview[
 }
 
 /**
- * The SDK's `scopeListDigest`, so the generated module carries two short names per issuer instead
- * of its lists. An upstream test holds the generated names equal to the SDK's own.
+ * The SDK's `scopeListDigest`, so the generated module carries one short name per reviewed list
+ * instead of the list. An upstream test holds the generated names equal to the SDK's own.
  */
 export const scopeListDigest = (scopes: readonly string[]) => {
   const names = [...new Set(scopes)].sort();

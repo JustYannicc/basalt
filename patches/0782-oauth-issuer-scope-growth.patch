@@ -98,8 +98,8 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
    stored !== undefined && expandsOAuthScopes(incoming, stored) ? stored : incoming;
 +
 +/**
-+ * A short name for a set of scope names, so the SDK carries two names per reviewed issuer instead
-+ * of its lists. It tells reviewed lists apart and guards nothing secret: a list made to collide
++ * A short name for a set of scope names, so the SDK carries one name per reviewed list instead
++ * of the list. It tells reviewed lists apart and guards nothing secret: a list made to collide
 + * could only spare a grant's reconnect prompt or shared-grant refusal, and the service still
 + * refuses what the token lacks. Upstream preparation computes the same names; a test holds the two
 + * equal.
@@ -160,10 +160,10 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +/**
 + * The requested scopes a saved grant is held to. When the grant asked for its reviewed issuer's
 + * whole list (recorded at sign-in, or exactly the baseline for grants saved before the record) and
-+ * today's request is one of that issuer's reviewed lists too, the grant is held only to what it asked for: a
-+ * scope the list gained or lost since is no permission its tools were built on, and the next
-+ * sign-in or reconnect asks for it. Every other grant or request, including an older or narrower
-+ * one or one adding a scope outside the reviewed list, is held to every requested scope.
++ * today's request is one of that issuer's reviewed lists too, the grant is held only to what it
++ * asked for: a scope the list gained or lost since is no permission its tools were built on, and
++ * the next sign-in or reconnect asks for it. Every other grant or request, including an older or
++ * narrower one or one adding a scope outside the reviewed lists, is held to every requested scope.
 + */
 +export const scopesHeldToGrant = (
 +  requested: readonly string[],
