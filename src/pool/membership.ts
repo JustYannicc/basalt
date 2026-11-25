@@ -54,6 +54,8 @@ export class NativeMemberships {
   private ticking?: Promise<void>;
   private failures = new Map<string, PoolFailureDiagnostic>();
   private installations = new Map<string, Set<Promise<void>>>();
+  /** Reads an unresolved account was seen in since its first log, keyed by pool and account. */
+  private unresolved = new Map<string, number>();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -211,6 +213,33 @@ export class NativeMemberships {
     if (resumed) await this.schedule();
   }
 
+  /** Logs an unresolved account once, counts later sightings, and logs its return with the count. */
+  private noteUnresolved(pool: string, accounts: NativeMembershipSnapshot["accounts"]) {
+    const seen = new Set<string>(),
+      linked = new Set(accounts.map(({ account }) => `${pool}\u0000${account}`));
+    for (const { account, homeReference } of accounts) {
+      if (homeReference !== null) continue;
+      const key = `${pool}\u0000${account}`;
+      seen.add(key);
+      const repeats = this.unresolved.get(key);
+      if (repeats === undefined)
+        console.warn("POOL_MEMBERSHIP_ACCOUNT_UNRESOLVED", {
+          account,
+          reason: "no_home_reference",
+        });
+      this.unresolved.set(key, (repeats ?? -1) + 1);
+    }
+    for (const [key, repeats] of this.unresolved) {
+      if (!key.startsWith(`${pool}\u0000`) || seen.has(key)) continue;
+      this.unresolved.delete(key);
+      // An account unlinked while unresolved simply leaves; only one still linked has resolved.
+      if (!linked.has(key)) continue;
+      console.info("POOL_MEMBERSHIP_ACCOUNT_RESOLVED", {
+        account: key.slice(pool.length + 1),
+        repeats,
+      });
+    }
+  }
   async authority(pool: string): Promise<NativeMembershipPolicy | undefined> {
     return this.run(async (state) => acknowledgedMembership(state[pool], this.now()));
   }
@@ -446,8 +475,14 @@ export class NativeMemberships {
           ),
         ),
       ].sort();
+      this.noteUnresolved(pool, snapshot.accounts);
+      // An account without a Home reference is left out of the policy, so the others keep serving.
+      // A pool none of whose linked accounts resolve stays refused: reconciling it to no accounts
+      // would remove every Home link at once when a release briefly unresolves them all.
       const valid =
-        snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
+        snapshot.native &&
+        (snapshot.accounts.length === 0 ||
+          snapshot.accounts.some((account) => account.homeReference !== null));
       const prepared = await this.run(async (state) => {
         const current = state[pool];
         if (!current || current.retired || current.revision !== before.revision) return undefined;
