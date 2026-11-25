@@ -208,6 +208,7 @@ export class RouteAssignments {
   // Every pass that decides routes and writes them runs alone, so a pass that read older rules
   // can't lift what a newer one refused, and a mirror can't overwrite a pass in flight.
   private queue: Promise<unknown> = Promise.resolve();
+  private queueWaitMs: number;
   private storage: RouteStorage;
   private resolver: RouteResolver;
   private home: HomeClient;
@@ -217,11 +218,13 @@ export class RouteAssignments {
     resolver: RouteResolver,
     home: HomeClient,
     now: () => number = Date.now,
+    queueWaitMs = 2_000,
   ) {
     this.storage = storage;
     this.resolver = resolver;
     this.home = home;
     this.now = now;
+    this.queueWaitMs = queueWaitMs;
   }
 
   private async state(): Promise<State> {
@@ -294,15 +297,10 @@ export class RouteAssignments {
   }
 
   /**
-   * After a mirror saved a credential, put back what a membership step recorded while it was in
-   * flight: that step's route or hold, and for a plugin provider, disabled.
+   * After a mirror's save, Home holds what is on record for the credential: its route or hold,
+   * and for a plugin provider, disabled. Only a routed or held credential is read back.
    */
-  async reassert(
-    reference: string,
-    provider: string,
-    saved: { proxy: string | undefined; disabled: boolean },
-    signal: AbortSignal,
-  ) {
+  async reassert(reference: string, signal: AbortSignal) {
     const stored = await this.storage.get(entryPrefix + reference);
     const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
     const proxy = entry
@@ -311,11 +309,20 @@ export class RouteAssignments {
         ? routeProxyUrl(unassignedRoute)
         : undefined;
     if (proxy === undefined) return;
-    if (pluginProviders.has(provider) && !saved.disabled) {
+    const credential = (await readCredentials(this.home, signal)).get(reference);
+    if (!credential) return;
+    if (
+      credential.kind === "auth" &&
+      pluginProviders.has(credential.provider) &&
+      !credential.disabled
+    ) {
       await this.storage.put(refusedPrefix + reference, true);
       await writeDisabled(this.home, reference, true, signal);
     }
-    if (saved.proxy !== proxy) await writeAuth(this.home, reference, proxy, signal);
+    if (credential.proxy === proxy) return;
+    if (credential.kind === "config")
+      await setHomeConfigProxy(this.home, credential.family, reference, proxy, signal);
+    else await writeAuth(this.home, reference, proxy, signal);
   }
 
   /** Whether the pool disabled this credential because its plugin can't use the route. */
@@ -456,10 +463,38 @@ export class RouteAssignments {
    * next pass resolves them again. It reads storage by key and touches Home only when a route,
    * a hold or a hold to clear is at stake.
    */
-  // Never queued: the membership repair it sits on, and the lease renewals behind that repair,
-  // never wait on another pass. It decides only for members no pool record lists yet, which a
-  // refresh keeps as they are; a mirror racing it re-checks after its save (`reassert`).
+  /**
+   * A membership step decides routes in the queue like every other pass, but the repair it sits
+   * on (and the lease renewals behind that repair) waits for its turn at most `queueWaitMs`.
+   * A step that doesn't get its turn by then decides and writes nothing: its new members stay
+   * new, so the next repair asks again, and a member whose owner has rules is already held by
+   * its mirror. A step with no new member decides nothing and never queues.
+   */
   async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+    const raw = await this.storage.get(poolPrefix + scope.pool);
+    const known =
+      raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw).references;
+    if (known && accounts.every((account) => known.includes(account)))
+      return this.preparePass(scope, accounts, signal);
+    let started = false;
+    let skipped = false;
+    const turn = this.serial(async () => {
+      if (skipped) return;
+      started = true;
+      await this.preparePass(scope, accounts, signal);
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => resolve("late"), this.queueWaitMs);
+    });
+    try {
+      if ((await Promise.race([turn, late])) !== "late" || started) return await turn;
+      skipped = true;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  private async preparePass(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
     const record = raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw);
     const known = new Set(record?.references ?? []);
@@ -499,14 +534,13 @@ export class RouteAssignments {
       }
       if (atStake.size) await this.apply(atStake, within(writeMs, signal));
     }
-    if (!record) {
-      const state = await this.state();
-      if (!state.pools.includes(scope.pool))
-        await this.storage.put(stateKey, {
-          ...state,
-          pools: [...state.pools, scope.pool],
-        } satisfies State);
-    }
+    // Every step re-adds a pool the list lost, so a pool is never dropped from the alarm for good.
+    const state = await this.state();
+    if (!state.pools.includes(scope.pool))
+      await this.storage.put(stateKey, {
+        ...state,
+        pools: [...state.pools, scope.pool],
+      } satisfies State);
     await this.storage.put(poolPrefix + scope.pool, {
       organization: scope.organization,
       revision: record?.revision ?? -1,

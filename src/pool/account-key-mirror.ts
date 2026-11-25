@@ -91,6 +91,7 @@ export async function handleAccountKeyMirror(
           : undefined;
       if (object(value.credential) && value.credential.type === "config") {
         await mirrorHomeConfig(input.home, reference, action, value.credential, signal, proxy);
+        if (action === "upsert") await input.routes?.reassert(reference, signal);
       } else if (action === "remove") {
         const response = await input.home.response(
           `/credentials?id=${encodeURIComponent(reference)}`,
@@ -126,13 +127,8 @@ export async function handleAccountKeyMirror(
         if (saved.name !== `${reference}.json`) return unavailable();
         if (!refused && (await input.routes?.refused(reference)))
           await input.routes?.markRefused(reference, false);
-        // A membership step isn't queued: what it recorded while this save was in flight wins.
-        await input.routes?.reassert(
-          reference,
-          value.credential.type,
-          { proxy, disabled: refused || value.credential.disabled === true },
-          signal,
-        );
+        // What is on record wins over this save: a routed or held credential never stays direct.
+        await input.routes?.reassert(reference, signal);
         await enableNewCodexWebSockets(input.home, [reference], value.credential.type, signal);
       }
       if (action === "remove") await input.routes?.forget(reference);
