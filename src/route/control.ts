@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { GatewayStatus, ReasonCode, epochMs, type Selection } from "./reading.ts";
 
 /** A refusal that crosses the RPC boundary: its message is the reason code and nothing else. */
@@ -46,11 +46,9 @@ const ExitsReply = Schema.Struct({
 const StateReply = Schema.Struct({ state: Schema.String, state_revision: Schema.Number });
 /** A reply the gateway should never send is refused by reason code; its text never travels on. */
 function parse<T, E>(schema: Schema.Codec<T, E>, value: unknown): T {
-  try {
-    return Schema.decodeUnknownSync(schema)(value);
-  } catch {
-    throw new RouteRefused("route_gateway_unavailable");
-  }
+  const decoded = Schema.decodeUnknownOption(schema)(value);
+  if (Option.isNone(decoded)) throw new RouteRefused("route_gateway_unavailable");
+  return decoded.value;
 }
 const controlPort = 8080;
 const socksPort = 1080;

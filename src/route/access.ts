@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { RouteRefused } from "./control.ts";
 import { WhenDown } from "./reading.ts";
 import { routeIdPattern, routeOwnerPattern } from "./acquisition-contract.ts";
@@ -27,11 +27,9 @@ const strict = { onExcessProperty: "error" } as const;
 
 /** Malformed input crosses the RPC boundary as a reason code, never as schema text. */
 export function decode<T, E>(schema: Schema.Codec<T, E>, input: unknown): T {
-  try {
-    return Schema.decodeUnknownSync(schema, strict)(input);
-  } catch {
-    throw new RouteRefused("route_not_permitted");
-  }
+  const decoded = Schema.decodeUnknownOption(schema, strict)(input);
+  if (Option.isNone(decoded)) throw new RouteRefused("route_not_permitted");
+  return decoded.value;
 }
 
 export const metaKey = "route-v1:meta";
