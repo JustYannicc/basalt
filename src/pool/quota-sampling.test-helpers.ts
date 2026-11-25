@@ -2,6 +2,7 @@ import { accountsView, HomeClient, poolGroupPrefix } from "./control.ts";
 import { CapacityHistory } from "./capacity/history.ts";
 import { capacityOverview } from "./capacity/overview.ts";
 import { PoolUsage } from "./pool-usage.ts";
+import { fixtureAllowances } from "./allowances/test/seed-fixture.ts";
 import type { UsageStorage } from "./usage-storage.ts";
 import type { Json } from "./json.ts";
 
@@ -90,6 +91,7 @@ export function quotaSamplingFixture(
   const storage = new Memory();
   const usage = new Usage({
     storage,
+    allowances: fixtureAllowances(storage, () => now),
     client,
     signingKey: "ab".repeat(32),
     audience: async () => [],

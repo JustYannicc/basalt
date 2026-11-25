@@ -4,7 +4,7 @@ import { capacityWeight as resolveWeight } from "./weights.ts";
 import { CapacityHistory, type CapacityExpectedCohort } from "./history.ts";
 import type { CapacityReading } from "./normalize.ts";
 import { ChunkStorage, type UsageStorage } from "../usage-storage.ts";
-import { seedCatalog } from "../allowances/data.ts";
+import { seedFixture } from "../allowances/test/seed-fixture.ts";
 import * as weights from "./weights.ts";
 
 class Memory implements UsageStorage {
@@ -25,7 +25,7 @@ const start = Date.parse("2026-11-03T10:05:00Z");
 // Seed allowances expire on a date, so the real clock would turn a known policy unknown.
 const weightClock = Date.parse("2026-11-13T12:00:00Z");
 const capacityWeight = (provider: string, plan: string, seconds: number) =>
-  resolveWeight(provider, plan, seconds, { now: weightClock });
+  resolveWeight(provider, plan, seconds, { now: weightClock, catalog: seedFixture });
 const expected = (accounts: number): CapacityExpectedCohort[] => [
   { provider: "claude", windowSeconds: 18_000, accounts },
 ];
@@ -840,12 +840,15 @@ test("an account moving between unit cohorts as its calibration forms and lapses
 test("an expired allowance keeps its cohort's training until a source decides", async () => {
   const history = new CapacityHistory(new Memory());
   const expected = [{ provider: "claude", windowSeconds: 604_800, accounts: 1 }];
-  const expiry = seedCatalog.entries.find(
+  const expiry = seedFixture.entries.find(
     (entry) =>
       entry.vendor === "anthropic" && entry.plan === "max_20x" && entry.windowSeconds === 604_800,
   )!.expiresAt!;
   const sample = (at: number, ratio: number) => {
-    const weight = weights.capacityWeight("claude", "Max 20x", 604_800, { now: at });
+    const weight = weights.capacityWeight("claude", "Max 20x", 604_800, {
+      now: at,
+      catalog: seedFixture,
+    });
     return reading("max-seat", ratio * weight.multiplier, {
       plan: "Max 20x",
       windowSeconds: 604_800,
