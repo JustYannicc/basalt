@@ -7,11 +7,19 @@ export const NATIVE_ALLOWLIST = new Set([
   "landmines-testing/strict-msw",
   "landmines-testing/no-unsignaled-poll",
 ]);
-// The rules whose message offers an allowlist entry; every other finding is fixed or baselined.
+// The rules that take a reasoned allowlist entry; every other finding is fixed or baselined.
 const ALLOWLIST_RULES = new Set([
   "basalt/no-direct-cloudflare-api",
   "basalt/no-strict-provider-decode",
+  "landmines-testing/no-test-doubles",
 ]);
+// Rules whose entries may cover only some files. landmines reports every kind of double with one
+// message, so the files are the limit: the wire guard's tests replace the global fetch because
+// the guard under test wraps it.
+const ALLOWLIST_SCOPE: Record<string, RegExp> = {
+  "landmines-testing/no-test-doubles": /^scripts\/release\/wire-guard[\w-]*\.test\.ts$/u,
+};
+const inScope = (rule: string, file: string) => ALLOWLIST_SCOPE[rule]?.test(file) ?? true;
 // A decode the rule recognises as a provider response is never "our own data".
 const NEVER_ALLOWED = "Strict decode of a provider response";
 // The plugins the rules come from. A different specifier could load a rule set that finds nothing.
@@ -55,7 +63,7 @@ const validEntry = (entry: unknown) => {
   );
 };
 const exempt = (allowlist: Allowlist, { rule, file, message }: Diagnostic) =>
-  validEntry(allowlist[rule]?.[file]) && !message.startsWith(NEVER_ALLOWED);
+  validEntry(allowlist[rule]?.[file]) && inScope(rule, file) && !message.startsWith(NEVER_ALLOWED);
 const counted = (rule: string) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlint/parse";
 
 /**
@@ -125,6 +133,12 @@ export function compare(
         `allowlist.json: ${rule} takes no allowlist entries; fix or baseline its findings.`,
       );
     for (const [file, entry] of Object.entries(files)) {
+      if (!inScope(rule, file)) {
+        problems.push(
+          `allowlist.json: ${file} under ${rule} is outside the files this rule's entries may cover (${ALLOWLIST_SCOPE[rule]}); fix or baseline its findings.`,
+        );
+        continue;
+      }
       if (!validEntry(entry)) {
         problems.push(
           `allowlist.json: ${file} under ${rule} needs { "count": <findings>, "reason": "<why this is correct here>" }.`,

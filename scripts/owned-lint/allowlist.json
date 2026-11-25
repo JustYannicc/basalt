@@ -106,5 +106,19 @@
       "count": 1,
       "reason": "Decodes Basalt's own stop receipt."
     }
+  },
+  "landmines-testing/no-test-doubles": {
+    "scripts/release/wire-guard-domain.test.ts": {
+      "count": 2,
+      "reason": "The wire guard under test wraps the global fetch, so the replaced fetch is the transport beneath the subject, not a double of a collaborator."
+    },
+    "scripts/release/wire-guard-root-holes.test.ts": {
+      "count": 2,
+      "reason": "The wire guard under test wraps the global fetch, so the replaced fetch is the transport beneath the subject, not a double of a collaborator."
+    },
+    "scripts/release/wire-guard-root-paths.test.ts": {
+      "count": 2,
+      "reason": "The wire guard under test wraps the global fetch, so the replaced fetch is the transport beneath the subject, not a double of a collaborator."
+    }
   }
 }

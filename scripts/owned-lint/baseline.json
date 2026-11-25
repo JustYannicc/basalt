@@ -206,8 +206,6 @@
     "scripts/release-credentials/export.test.ts": 1,
     "scripts/release-merge/github.test.ts": 3,
     "scripts/release/stage-teardown.test.ts": 2,
-    "scripts/release/wire-guard-root-holes.test.ts": 2,
-    "scripts/release/wire-guard-root-paths.test.ts": 2,
     "scripts/state-store-upgrade/fixture.ts": 1,
     "scripts/upstream-tests/change-failure-hydration.test.ts": 5,
     "scripts/upstream-tests/change-feed.test.ts": 2,
