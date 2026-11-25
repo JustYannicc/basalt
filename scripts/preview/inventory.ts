@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { closeSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
@@ -164,20 +166,34 @@ function defaultStateCommand(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): CommandResult {
-  // `bun exec` runs a shell line, not a package bin: it drops the arguments or misses the bin.
-  const result = spawnSync("bun", ["run", "alchemy", ...args], {
-    cwd,
-    env,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  return {
-    status: result.status,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    error: result.error,
-  };
+  // A file, not a pipe: the CLI exits before a large piped document is flushed, cutting it short.
+  const directory = mkdtempSync(join(tmpdir(), "alchemy-state-"));
+  const path = join(directory, "stdout.json");
+  const fd = openSync(path, "w", 0o600);
+  try {
+    // `bun exec` runs a shell line, not a package bin: it drops the arguments or misses the bin.
+    const result = spawnSync("bun", ["run", "alchemy", ...args], {
+      cwd,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", fd, "pipe"],
+      maxBuffer: 16 * 1024 * 1024,
+    });
+    closeSync(fd);
+    return {
+      status: result.status,
+      stdout: readFileSync(path, "utf8"),
+      stderr: result.stderr ?? "",
+      error: result.error,
+    };
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // Already closed after the command.
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function runStateCommand(
