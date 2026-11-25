@@ -1,9 +1,10 @@
 // Refusals checked only by what reaches the account: whatever a stage tool hands the stage
 // API, no request outside the stage's own resources is sent.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { stageCloudflare } from "./api.mjs";
-import { stageRequests } from "./request.mjs";
+import { stageRequests, unchangedWhenParsed } from "./request.mjs";
 import {
   application,
   certificate,
@@ -213,37 +214,35 @@ test("only a real HTTP Response is read, once, and nothing the answer object def
   assert.ok(fake.live.scripts.some((row) => row.id === "basalt-production-poolworker"));
 });
 
-test("the sender refuses a URL that changes when parsed or holds a dot segment, whatever built it", async () => {
-  const { fake, reach, api } = setup();
-  const found = await api.inventory(["applications", "scripts", "drives"]);
+test("the sender refuses a URL that changes when parsed or holds a dot segment", async () => {
+  // Every check before the sender already keeps dots and separators out of names and ids, so this
+  // last one is reached only by its own inputs and by the sender's one call of the fetcher.
+  const source = readFileSync(new URL("request.mjs", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /async function exchange\(url, [^)]*\) \{\n\s+unchangedWhenParsed\(url\);[^]*?await fetcher\(url, init\)/u,
+  );
+  const { fake, api } = setup();
+  await api.inventory(["applications", "scripts", "drives", "certificates"]);
   const [image] = await api.images();
-  const app = found.applications.find((row) => row.id === "own-app");
-  const before = fake.calls.length;
-  // Every name and id in a URL is encoded through this global; a tampered one is the last way left
-  // to build a URL the checks before the sender did not see.
-  const encode = globalThis.encodeURIComponent;
-  for (const built of [
-    "..",
-    ".",
-    "%2e%2E",
-    ".%2e",
-    "own-app/../prod-app",
-    "own-app/%2e%2e/prod-app",
-  ]) {
-    globalThis.encodeURIComponent = () => built;
-    try {
-      for (const attempt of [
-        () => api.read("applications", app),
-        () => api.remove("applications", app),
-        () => api.remove("drives", found.drives[0]),
-        () => api.settings(found.scripts[0]),
-        () => api.removeImage(image),
-      ])
-        await assert.rejects(attempt(), /^Error: Refused: the request's URL/u, built);
-    } finally {
-      globalThis.encodeURIComponent = encode;
-    }
-  }
-  assert.equal(fake.calls.length, before);
-  assert.deepEqual(outsideCalls(fake, prefix, reach), []);
+  await api.removeImage(image);
+  await api.settings(`${prefix}-gateway`);
+  for (const { url } of fake.calls) assert.equal(unchangedWhenParsed(url), url);
+  const base = `https://api.cloudflare.com/client/v4/accounts/${accountId}`;
+  for (const url of [
+    `${base}/containers/applications/own-app/../prod-app`,
+    `${base}/containers/applications/own-app/%2e%2e/prod-app`,
+    `${base}/containers/applications/own-app/.%2E/prod-app`,
+    `${base}/containers/applications/%2e`,
+    `${base}/containers/applications/./own-app`,
+    `${base}/containers/applications/own-app\\..\\prod-app`,
+    `${base}/containers/applications/own\tapp`,
+    `${base}/containers/applications/own app`,
+    `https://API.cloudflare.com/client/v4/accounts/${accountId}/workers/subdomain`,
+    `https://api.cloudflare.com:443/client/v4/accounts/${accountId}/workers/subdomain`,
+    `https://registry.cloudflare.com/v2/${accountId}/${prefix}-pool/manifests/..`,
+    "registry.cloudflare.com/v2/_catalog",
+    "",
+  ])
+    assert.throws(() => unchangedWhenParsed(url), /^Error: Refused: the request's URL/u, url);
 });

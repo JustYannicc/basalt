@@ -56,6 +56,7 @@ const EXPORTS = {
     stageRequests:
       "the choke point, built from a registered prefix only; every kind and operation is covered below",
     KINDS: "the declared kinds and operations",
+    unchangedWhenParsed: "the sender's last check over a URL string; sends nothing",
   },
   "answers.mjs": {
     DIGEST: "a constant",

@@ -116,9 +116,10 @@ const refuse = (message) => fail(`Refused: ${message}`);
 const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
 /**
  * The last check before a URL is sent, kept whatever the checks before it already prove: the URL
- * must read back exactly as it was built, and no segment of its path may be a dot segment.
+ * must read back exactly as it was built, and no segment of its path may be a dot segment. Exported
+ * only so its refusals can be tested directly; it sends nothing.
  */
-function unchangedWhenParsed(url) {
+export function unchangedWhenParsed(url) {
   let parsed;
   try {
     parsed = new URL(url);
@@ -128,6 +129,7 @@ function unchangedWhenParsed(url) {
   if (parsed.href !== url) throw refuse("the request's URL changes when it is parsed");
   if (parsed.pathname.split("/").some((segment) => DOT_SEGMENT.test(segment)))
     throw refuse("the request's URL holds a dot segment");
+  return url;
 }
 
 /** `value`'s own fields, each read once, refused unless every one is in `allowed`. */
