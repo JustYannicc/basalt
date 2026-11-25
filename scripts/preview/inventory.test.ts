@@ -291,3 +291,32 @@ test("progress lines before a state read's JSON are not part of the document", a
     [router.path],
   );
 });
+
+const oneRouterRead = (read: string) => {
+  const router = row("Router", "Cloudflare.Worker");
+  return {
+    router,
+    reader: alchemyPreviewStateReader({
+      environment: {},
+      command: (args) => {
+        if (args.includes("read"))
+          return {
+            status: 0,
+            stdout: read.replace("DOCUMENT", JSON.stringify(router.value, null, 2)),
+          };
+        const at = args[args.indexOf("list") + 1];
+        if (at === "--config") return { status: 0, stdout: "basalt/\n" };
+        if (at === "basalt") return { status: 0, stdout: `basalt/${stage}/\n` };
+        if (at === `basalt/${stage}`) return { status: 0, stdout: `${router.path}\n` };
+        return { status: 1, stdout: "" };
+      },
+    }),
+  };
+};
+
+test("log lines before a state read's JSON are not part of the document", async () => {
+  const { reader, router } = oneRouterRead("Using the configured backend\nDOCUMENT\n");
+  assert.deepEqual((await reader.read(stage)).basalt, [
+    { path: router.path, value: JSON.parse(JSON.stringify(router.value)) },
+  ]);
+});
