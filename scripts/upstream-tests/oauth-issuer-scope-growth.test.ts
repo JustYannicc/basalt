@@ -2,47 +2,24 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { Context, Crypto, Effect, Redacted, Result, Schema } from "effect";
+import { Crypto, Effect, Redacted, Result, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
+import { providerDeclaration } from "../../.upstream/packages/apps/src/implementation/host.ts";
+import * as sdk from "../../.upstream/packages/sdk/src/core.ts";
+import { accountSignInState } from "../../.upstream/packages/sdk/src/implementation/account-sign-in.ts";
+import { ownedAccount } from "../../.upstream/packages/sdk/src/implementation/accounts.ts";
+import { database } from "../../.upstream/packages/sdk/src/implementation/database.ts";
+import { makeOAuth } from "../../.upstream/packages/sdk/src/implementation/oauth.ts";
+import {
+  asksWholeList as decide,
+  scopeListDigest,
+  WholeListScopeIssuers,
+} from "../../.upstream/packages/sdk/src/implementation/provider-oauth-scopes.ts";
+import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
 import { defaultUrlPolicy } from "../../.upstream/packages/utils/src/url-policy.ts";
 import { catalogProvider, catalogSource, providers, run } from "./cloudflare-family-fixture.ts";
 
-// SDK modules load at runtime, as the other upstream fixtures do, so root types stay small.
-const upstream = new URL("../../.upstream/", import.meta.url);
-const load = (path: string) => import(new URL(path, upstream).href);
-type Definition = { readonly auth: Record<string, Record<string, unknown>> } & Record<
-  string,
-  unknown
->;
-type Work<A> = Effect.Effect<A, unknown, unknown>;
-type SignIn = { state: string; reason?: string };
-const { providerDeclaration } = (await load("packages/apps/src/implementation/host.ts")) as {
-  providerDeclaration: (provider: unknown) => Work<Definition>;
-};
-const { accountSignInState } = (await load(
-  "packages/sdk/src/implementation/account-sign-in.ts",
-)) as { accountSignInState: (...args: unknown[]) => Work<SignIn> };
-const { ownedAccount } = (await load("packages/sdk/src/implementation/accounts.ts")) as {
-  ownedAccount: (db: unknown, input: { account: string; owner: string }) => Work<unknown>;
-};
-const { database } = (await load("packages/sdk/src/implementation/database.ts")) as {
-  database: (storage: unknown) => unknown;
-};
-const { makeOAuth } = (await load("packages/sdk/src/implementation/oauth.ts")) as {
-  makeOAuth: (...args: unknown[]) => {
-    resolve: (
-      account: unknown,
-      definition: Definition,
-    ) => Work<{ fields: Redacted.Redacted<unknown> }>;
-  };
-};
-const { OAuthGrant } = (await load("packages/sdk/src/contracts/oauth.ts")) as {
-  OAuthGrant: Schema.Decoder<Record<string, unknown>>;
-};
-const { makeExecutorStorage } = (await load("packages/sdk/src/implementation/storage.ts")) as {
-  makeExecutorStorage: (input: { provider: "postgresql" }) => Work<{ migrate: Work<void> }>;
-};
 /** A reviewed issuer as the generator reads it: its lists, before they are digested. */
 type WholeListIssuer = {
   issuer: string;
@@ -51,26 +28,12 @@ type WholeListIssuer = {
   /** Lists reviewed between the baseline and today's. */
   history?: readonly (readonly string[])[];
 };
-type Digested = { issuer: string; lists: readonly string[] };
-// Absent before carry 0782; tests that provide issuers then run under the SDK's only rule.
-const scopeRules = (await load("packages/sdk/src/implementation/provider-oauth-scopes.ts")) as {
-  WholeListScopeIssuers?: Context.Reference<{ readonly issuers: readonly Digested[] }>;
-  scopeListDigest?: (scopes: readonly string[]) => string;
-  asksWholeList?: (
-    server: { issuer: string },
-    requested: readonly string[] | undefined,
-    issuers: readonly Digested[],
-  ) => boolean;
-};
 /** The issuers as the SDK carries them: each list replaced by its digest. */
-const digested = (issuers: readonly WholeListIssuer[]) => {
-  const { scopeListDigest } = scopeRules;
-  assert.ok(scopeListDigest, "carry 0782 digests reviewed lists");
-  return issuers.map(({ issuer, scopes, baseline, history = [] }) => ({
+const digested = (issuers: readonly WholeListIssuer[]) =>
+  issuers.map(({ issuer, scopes, baseline, history = [] }) => ({
     issuer,
     lists: [...new Set([baseline, ...history, scopes].map(scopeListDigest))],
   }));
-};
 
 // Cloudflare's reviewed issuer document, as a grant keeps it from discovery at its sign-in.
 const issuer = JSON.parse(
@@ -88,15 +51,27 @@ const reviewed = issuer.scopes_supported;
 const added = ["billing:read", "billing:write"];
 /** What the Cloudflare app asked for before carry 0541 requested the issuer's whole list. */
 const beforeFullAccess = ["user:read", "account:read", "offline_access"];
-const owner = "organization:team-a";
+const owner = sdk.OwnerId.make("organization:team-a");
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value));
-const decodeJson = (bytes: Uint8Array) => JSON.parse(new TextDecoder().decode(bytes));
-const plain = {
-  encrypt: (_id: unknown, fields: Redacted.Redacted<unknown>) =>
-    Effect.succeed(encode(Redacted.value(fields))),
-  decrypt: (_id: unknown, bytes: Redacted.Redacted<Uint8Array>) =>
-    Effect.succeed(Redacted.make(decodeJson(Redacted.value(bytes)))),
-  fingerprint: () => Effect.die("unused"),
+/** A stored record as JSON fields, the shape the plain credentials above write. */
+const decodeRecord = (bytes: Uint8Array) => {
+  const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  assert.ok(typeof value === "object" && value !== null && !Array.isArray(value));
+  return value as Record<string, unknown>;
+};
+// Real encryption is the host's; these paths only need stored records to read back.
+const plain: sdk.Credentials = {
+  encrypt: (_identity, fields) => Effect.succeed(encode(Redacted.value(fields))),
+  decrypt: (_identity, bytes) =>
+    Effect.succeed(
+      Redacted.make(JSON.parse(new TextDecoder().decode(Redacted.value(bytes))) as sdk.JsonObject),
+    ),
+  fingerprint: (purpose, value) =>
+    Effect.succeed(
+      createHash("sha256")
+        .update(`${purpose}\0${Redacted.value(value)}`)
+        .digest("hex"),
+    ),
 };
 const crypto = Crypto.make({
   randomBytes: (size) => new Uint8Array(randomBytes(size)),
@@ -121,11 +96,20 @@ const httpClient = HttpClient.make((request) =>
   }),
 );
 
+/** A declaration's OAuth method, which every Cloudflare declaration has. */
+const oauthOf = (definition: sdk.ProviderDefinition) => {
+  const oauth = definition.auth.oauth;
+  assert.ok(oauth?.type === "oauth2", "a Cloudflare declaration signs in with OAuth");
+  return oauth;
+};
 /** A declaration that now asks for `scopes`. */
-const asking = (definition: Definition, scopes: readonly string[]): Definition => {
-  const oauth = definition.auth.oauth!;
+const asking = (
+  definition: sdk.ProviderDefinition,
+  scopes: readonly string[],
+): sdk.ProviderDefinition => {
+  const oauth = oauthOf(definition);
   assert.deepEqual(oauth.scopes, reviewed, "the declaration mirrors the reviewed issuer list");
-  return { ...definition, auth: { ...definition.auth, oauth: { ...oauth, scopes } } };
+  return { ...definition, auth: { ...definition.auth, oauth: { ...oauth, scopes: [...scopes] } } };
 };
 
 type Saved = {
@@ -164,7 +148,7 @@ const observe = (saved: Saved, issuers: readonly WholeListIssuer[] = grownIssuer
         asking(yield* providerDeclaration(catalogProvider(catalogSource("cloudflare"))), scopes),
         asking(yield* providerDeclaration(providers.cloudflare), scopes),
       ];
-      const provider = "prv_cloudflare";
+      const provider = sdk.ProviderId.make("prv_cloudflare");
       yield* sql`insert into executor_providers (id,definition) values (${provider},${JSON.stringify(declarations[0])})`;
       const id = "acc_cloudflare";
       const grantId = saved.shared ? "acc_grant_cloudflare" : id;
@@ -185,7 +169,7 @@ const observe = (saved: Saved, issuers: readonly WholeListIssuer[] = grownIssuer
           client_id: "https://executor.example.test/oauth/client.json",
           token_endpoint_auth_method: "none",
         },
-        response: declarations[0]!.auth.oauth!.response,
+        response: oauthOf(declarations[0]!).response,
         fields: { access_token: "synthetic-access" },
         refreshToken: "synthetic-refresh",
         expiresAt: Date.now() + (saved.expired ? -60_000 : 3_600_000),
@@ -198,7 +182,7 @@ const observe = (saved: Saved, issuers: readonly WholeListIssuer[] = grownIssuer
       };
       yield* sql`insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
         values (${grantId},${encode(grant)},'ready_1',now(),${owner})`;
-      const account = yield* ownedAccount(db, { account: id, owner });
+      const account = yield* ownedAccount(db, { account: sdk.AccountId.make(id), owner });
       const [row] = yield* sql<{ encrypted: Uint8Array; status: string }>`
         select encrypted, status from executor_oauth_grants where id = ${grantId}`;
       const oauth = makeOAuth(db, plain, crypto, {
@@ -218,23 +202,19 @@ const observe = (saved: Saved, issuers: readonly WholeListIssuer[] = grownIssuer
           const resolved = yield* Effect.result(oauth.resolve(account, definition));
           calls.push(
             Result.isSuccess(resolved)
-              ? (Redacted.value(resolved.success.fields) as { access_token?: string }).access_token
-              : ((resolved.failure as { _tag?: string })._tag ?? "failed"),
+              ? Redacted.value(resolved.success.fields).access_token
+              : resolved.failure._tag,
           );
         }
         const [stored] = yield* sql<{ encrypted: Uint8Array }>`
           select encrypted from executor_oauth_grants where id = ${grantId}`;
-        return { signIn, calls, stored: decodeJson(stored!.encrypted) as Record<string, unknown> };
+        assert.ok(stored, "the grant is still saved");
+        return { signIn, calls, stored: decodeRecord(stored.encrypted) };
       });
-      const { WholeListScopeIssuers } = scopeRules;
-      return yield* WholeListScopeIssuers === undefined
-        ? work
-        : work.pipe(Effect.provideService(WholeListScopeIssuers, { issuers: digested(issuers) }));
-    }) as Effect.Effect<
-      { signIn: SignIn; calls: unknown[]; stored: Record<string, unknown> },
-      unknown,
-      SqlClient.SqlClient
-    >,
+      return yield* work.pipe(
+        Effect.provideService(WholeListScopeIssuers, { issuers: digested(issuers) }),
+      );
+    }),
   );
 
 const saved = { state: "saved", reconnectAt: null };
@@ -350,14 +330,7 @@ test("a scope the issuer does not publish stays required on a whole-list grant",
 });
 
 test("the generated issuers name Cloudflare with its reviewed list and frozen baseline", async () => {
-  const { WholeListScopeIssuers } = scopeRules;
-  assert.ok(WholeListScopeIssuers, "carry 0782 supplies the generated issuers");
-  const reference = WholeListScopeIssuers;
-  const { issuers } = await Effect.runPromise(
-    Effect.gen(function* () {
-      return yield* reference;
-    }),
-  );
+  const { issuers } = await Effect.runPromise(Effect.service(WholeListScopeIssuers));
   const baseline = JSON.parse(
     readFileSync(
       new URL("../../src/catalog/cloudflare.oauth-scope-baseline.json", import.meta.url),
@@ -418,14 +391,12 @@ test("a grant read by code that does not know the record decodes without it", as
     requestedScopes: reviewed,
     aRecordFromALaterRelease: true,
   };
-  const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(OAuthGrant)(grant));
+  const decoded = await Effect.runPromise(Schema.decodeUnknownEffect(sdk.OAuthGrant)(grant));
   assert.equal("aRecordFromALaterRelease" in decoded, false);
-  assert.deepEqual(decoded.requestedScopes, reviewed);
+  assert.deepEqual("requestedScopes" in decoded ? decoded.requestedScopes : undefined, reviewed);
 });
 
 test("a sign-in records a whole-list request only for the marked issuer's whole reviewed list", () => {
-  const { asksWholeList: decide } = scopeRules;
-  assert.ok(decide, "carry 0782 decides the record at sign-in");
   const asksWholeList = (
     server: { issuer: string },
     requested: readonly string[] | undefined,
