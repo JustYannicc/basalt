@@ -4,6 +4,9 @@ import { enableNewCodexWebSockets } from "./codex-websockets.ts";
 import { failureResponse, json, object, readBody, unavailable, type Json } from "./json.ts";
 import {
   pluginProviders,
+  resolveMs,
+  within,
+  writeMs,
   type MirrorRouteHint,
   type RouteAssignments,
 } from "./route-assignments.ts";
@@ -74,23 +77,23 @@ export async function handleAccountKeyMirror(
     const action = String(value.action);
     // The route decision and the save are one step: a pass can't land between them.
     const mirrorOne = async (): Promise<Response> => {
+      // A request given up on while it waited behind a pass decides and writes nothing.
+      request.signal.throwIfAborted();
+      const signal = within(writeMs, request.signal);
       const proxy =
         action === "upsert"
-          ? await input.routes?.proxyFor(reference, routeHint(value), request.signal)
+          ? await input.routes?.proxyFor(
+              reference,
+              routeHint(value),
+              within(resolveMs, request.signal),
+            )
           : undefined;
       if (object(value.credential) && value.credential.type === "config") {
-        await mirrorHomeConfig(
-          input.home,
-          reference,
-          action,
-          value.credential,
-          request.signal,
-          proxy,
-        );
+        await mirrorHomeConfig(input.home, reference, action, value.credential, signal, proxy);
       } else if (action === "remove") {
         const response = await input.home.response(
           `/credentials?id=${encodeURIComponent(reference)}`,
-          { method: "DELETE", signal: request.signal },
+          { method: "DELETE", signal: signal },
         );
         if (!response.ok && response.status !== 404) return unavailable();
       } else {
@@ -110,7 +113,7 @@ export async function handleAccountKeyMirror(
         if (refused) await input.routes?.markRefused(reference, true);
         const saved = await input.home.data("/credentials", {
           method: "POST",
-          signal: request.signal,
+          signal: signal,
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             ...value.credential,

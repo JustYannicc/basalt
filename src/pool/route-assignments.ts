@@ -193,9 +193,9 @@ async function readCredentials(home: HomeClient, signal: AbortSignal) {
 
 const emptyAnswer: RouteAnswer = { served: true, revision: 0, resolutions: new Map() };
 // A resolve answers in well under a second; it never holds a membership step for long.
-const resolveMs = 5_000;
-const writeMs = 30_000;
-const within = (ms: number, signal?: AbortSignal) =>
+export const resolveMs = 5_000;
+export const writeMs = 30_000;
+export const within = (ms: number, signal?: AbortSignal) =>
   signal ? AbortSignal.any([signal, AbortSignal.timeout(ms)]) : AbortSignal.timeout(ms);
 
 /**
@@ -417,13 +417,6 @@ export class RouteAssignments {
     if (failed) return unavailable();
   }
 
-  /**
-   * Called before a pool's membership is reconciled, so its new members are routed before Home
-   * lets them serve. It never fails the membership step on a resolve: only new members whose
-   * owner has rules are then held on the refusing route, everyone else serves as on main, and the
-   * next pass resolves them again. It reads storage by key and touches Home only when a route,
-   * a hold or a hold to clear is at stake.
-   */
   /** Runs `work` after every pass before it; a mirror wraps its decision and its save in one. */
   serial<T>(work: () => Promise<T>): Promise<T> {
     const run = this.queue.then(work, work);
@@ -431,7 +424,21 @@ export class RouteAssignments {
     return run;
   }
 
-  prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+  /**
+   * Called before a pool's membership is reconciled, so its new members are routed before Home
+   * lets them serve. It never fails the membership step on a resolve: only new members whose
+   * owner has rules are then held on the refusing route, everyone else serves as on main, and the
+   * next pass resolves them again. It reads storage by key and touches Home only when a route,
+   * a hold or a hold to clear is at stake.
+   */
+  async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+    // A step with no new member of a known pool decides no route and writes only its pool record,
+    // so the membership repair it sits on (and the lease renewals behind it) never waits on routing.
+    const raw = await this.storage.get(poolPrefix + scope.pool);
+    const known =
+      raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw).references;
+    if (known && accounts.every((account) => known.includes(account)))
+      return this.preparePass(scope, accounts, signal);
     return this.serial(() => this.preparePass(scope, accounts, signal));
   }
   private async preparePass(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
@@ -605,7 +612,11 @@ export class RouteAssignments {
     const pools = await this.pools();
     let due = false;
     for (const [pool, record] of pools) {
-      const poll = await this.ask({ pool, organization: record.organization }, [], signal);
+      const poll = await this.ask(
+        { pool, organization: record.organization },
+        [],
+        within(resolveMs, signal),
+      );
       // While no rules are served nothing can be routed, so there is nothing to rewrite.
       if (!poll.served) return;
       if (poll.revision !== record.revision || this.now() - record.refreshedAt >= refreshFloorMs)
@@ -625,7 +636,7 @@ export class RouteAssignments {
       const answer = await this.ask(
         { pool, organization: record.organization },
         record.references,
-        signal,
+        within(resolveMs, signal),
       );
       revisions.set(pool, answer.revision);
       for (const reference of record.references)
@@ -634,7 +645,7 @@ export class RouteAssignments {
           answer.resolutions.get(reference)!,
         ]);
     }
-    const credentials = await readCredentials(this.home, signal);
+    const credentials = await readCredentials(this.home, within(writeMs, signal));
     const entries = await this.entries();
     const routes = new Map<string, Decision>();
     // A credential no pool claims keeps what it has; one Home no longer holds drops its owner.
@@ -647,13 +658,17 @@ export class RouteAssignments {
             ? combine(answers.get(reference)!)
             : "keep",
       );
-    await this.apply(routes, signal);
+    await this.apply(routes, within(writeMs, signal));
     const at = this.now();
-    for (const [pool, record] of pools)
+    // Re-read: a membership step without new members may have changed a record meanwhile.
+    for (const pool of pools.keys()) {
+      const raw = await this.storage.get(poolPrefix + pool);
+      if (raw === undefined) continue;
       await this.storage.put(poolPrefix + pool, {
-        ...record,
+        ...Schema.decodeUnknownSync(PoolRecord)(raw),
         revision: revisions.get(pool)!,
         refreshedAt: at,
       } satisfies PoolRecord);
+    }
   }
 }

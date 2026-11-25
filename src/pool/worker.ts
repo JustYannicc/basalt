@@ -930,6 +930,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
 
   /** PoolRoutePeer's owner check: only routes this pool assigned to a credential it holds. */
   routeOwner(input: { routeId: string }) {
+    // Never queued behind a pass: a queued Home write's own tunnel may be waiting on this answer.
     return this.routes.routeOwner(input.routeId);
   }
   async migrationInventory(): Promise<void> {

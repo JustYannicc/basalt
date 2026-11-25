@@ -906,3 +906,43 @@ test("a mirror's decision and save are one step: a pass can't land between them 
   assert.equal(file.disabled, true);
   assert.equal(file.proxy_url, routeProxyUrl(home));
 });
+
+test("a membership step with no new member never waits on a routing pass, and the pass keeps its record", async () => {
+  const { client } = fakeHome();
+  const store = storage();
+  const rules = scripted({});
+  let release = () => {};
+  let entered = () => {};
+  let block = false;
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => {
+      if (block) {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return rules.resolver.resolve(scope, references, signal());
+    },
+  };
+  const routes = new RouteAssignments(store, resolver, client, () => now);
+  await routes.prepare(scope, [mine, teammate], signal());
+  block = true;
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pass = routes.refresh(signal());
+  // The pass has read its pool records and is waiting on the tools service.
+  await inside;
+  // The pass is waiting on the tools service; a step that only drops a member doesn't queue.
+  let stepped = false;
+  await routes.prepare(scope, [mine], signal()).then(() => {
+    stepped = true;
+  });
+  assert.equal(stepped, true);
+  block = false;
+  release();
+  await pass;
+  const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
+  assert.deepEqual(record.references, [mine]);
+});
