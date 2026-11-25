@@ -111,7 +111,8 @@ async function runAlchemy(
       config,
     ],
     cloudDirectory,
-    environment,
+    // Provider credentials alone have no PATH or HOME; the CLI needs both to start.
+    { ...safeEnvironment(process.env), ...environment },
   );
 }
 
