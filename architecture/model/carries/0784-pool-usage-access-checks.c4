@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Pool usage summary, series, last-success and credit-routing reads decide which accounts the caller may inspect with one batched policy read per account set, by the same rule as the per-account inspect grant: the requested accounts once and the pool's accounts once. Their database work does not grow with the number of accounts; a requested account the caller may not inspect still refuses the whole read."
+    }
+  }
+}
