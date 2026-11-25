@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A pool subscription is checked through its provider's usage read, so the pool registry gives a check only to subscription providers with a usage reader in Home; one without (Gemini CLI, Kimi .ai, Devin) has no check and reads as no check, never as a failure or as healthy. A driver registration without a check shows no stored result, whatever an earlier registration recorded, and checking it records a row with no result that the automatic recheck queue no longer claims. The recheck runner records that through the SDK instead of skipping, so such an account is not offered again every fifteen minutes. Providers with a reader keep their check and its failures unchanged."
+    }
+  }
+}
