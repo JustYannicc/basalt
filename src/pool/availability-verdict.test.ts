@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { PoolReliability, PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
+import { describeUndelivered } from "../telemetry/pool-monitor.ts";
 
-const env = {
-  POOL_AVAILABILITY_TARGET: "fixture-pool",
-  SENTRY_DSN: "https://fixture_public_key@o123.ingest.de.sentry.io/456",
-};
+// No alert service is configured, so nothing the probe sends is accepted: the verdict must still
+// be readable, and the run's failure must say what went unanswered.
+const env = { POOL_AVAILABILITY_TARGET: "fixture-pool" };
 const historyPool = "0123456789abcdef";
 
 const counts = (requests: number, failures: Record<number, number> = {}) => ({
@@ -28,24 +28,15 @@ const window = (requests: number, failures: Record<number, number> = {}): PoolRe
   proof: counts(0),
 });
 
-/**
- * One probe run with Sentry refusing everything, as it does when its quota is spent. Returns the
- * probe's own lines and the error the run ends with.
- */
+/** One probe run with no alert service answering. Returns the probe's verdict lines and failure. */
 async function probeRun(
   context: TestContext,
   options: {
     slo?: PoolReliabilitySlo;
     rollupStuck?: readonly string[];
     captureStuck?: readonly string[];
-    sentry?: number;
   },
 ) {
-  context.mock.method(
-    globalThis,
-    "fetch",
-    async () => new Response(null, { status: options.sentry ?? 429 }),
-  );
   const lines: unknown[][] = [];
   for (const level of ["error", "warn", "info"] as const)
     context.mock.method(console, level, (...args: unknown[]) => {
@@ -69,7 +60,7 @@ async function probeRun(
   return { verdicts, failure };
 }
 
-test("a pool below its target writes its verdict, windows and counts though Sentry refuses it", async (context) => {
+test("a pool below its target writes its verdict, windows and counts though no alert is accepted", async (context) => {
   const { verdicts, failure } = await probeRun(context, {
     slo: {
       target: 99,
@@ -106,8 +97,8 @@ test("a pool below its target writes its verdict, windows and counts though Sent
   // The delivery line names each refused part and what it carried, with Sentry's status.
   assert.equal(
     failure,
-    "Pool availability alert delivery failed: check_in:in_progress:429 check_in:ok:429 " +
-      "event:pool_request_success_below_target:429 event:pool_request_failing_now:429",
+    "Pool availability alert delivery failed: check_in:in_progress:no_answer check_in:ok:no_answer " +
+      "event:pool_request_success_below_target:no_answer event:pool_request_failing_now:no_answer",
   );
 });
 
@@ -175,12 +166,19 @@ test("a healthy minute writes no verdict, and a refused check-in says only that"
   assert.deepEqual(verdicts, []);
   assert.equal(
     failure,
-    "Pool availability alert delivery failed: check_in:in_progress:429 check_in:ok:429",
+    "Pool availability alert delivery failed: check_in:in_progress:no_answer check_in:ok:no_answer",
   );
 });
 
-test("a healthy minute Sentry accepts writes no verdict and no failure", async (context) => {
-  const { verdicts, failure } = await probeRun(context, { sentry: 202 });
-  assert.deepEqual(verdicts, []);
-  assert.equal(failure, undefined);
+test("each refused part is named with what it carried and the status the alert service gave", () => {
+  assert.equal(
+    describeUndelivered([
+      { part: "check_in", status: "in_progress", http: 429 },
+      { part: "check_in", status: "error", http: 429 },
+      { part: "event", errorCode: "pool_availability_failure", http: 503 },
+      { part: "event", errorCode: "pool_request_failing_now" },
+    ]),
+    "check_in:in_progress:429 check_in:error:429 event:pool_availability_failure:503 " +
+      "event:pool_request_failing_now:no_answer",
+  );
 });
