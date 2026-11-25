@@ -106,7 +106,7 @@ export const identifyStored = (definition: unknown) =>
     Effect.flatMap((decoded) => identifyProvider(decoded, crypto)),
   );
 
-type Files = readonly { readonly path: string; readonly content: string }[];
+export type Files = readonly { readonly path: string; readonly content: string }[];
 /** The catalog Cloudflare app: its first published source, and the current one with every scope. */
 export const catalogSource = (name: "cloudflare.published" | "cloudflare"): Files =>
   (
@@ -274,140 +274,142 @@ export const listed = (app: string) =>
   });
 
 /**
- * Two organizations installed the catalog Cloudflare app before its full-scope declaration and
- * then received the version that only adds scopes, through the real deploy path. Team A also runs
+ * Two organizations installed the catalog Cloudflare app with an earlier declaration (`published`;
+ * `world` uses the first published source) and then received the current one, which only adds
+ * scopes, through the real deploy path. Team A also runs
  * a second app declaring the current provider. Accounts, links and connections are the rows the
  * sign-in and link flows write: an API-token account with credential generation 3 and an OAuth
  * account with its identity and grant in team A, a Jira account, and one API-token account in team B.
  */
-export const world = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const storage = yield* makeExecutorStorage({ provider: "postgresql" });
-  yield* storage.migrate;
-  for (const ddl of runnerTables) yield* sql.unsafe(ddl);
-  const holds: Hold[] = [];
-  const repositories = memoryRepositories();
-  const apps = makeApps(
-    database(storage),
-    fixtureRuntime(holds),
-    crypto,
-    gitSourceStorage(repositories),
-    repositories,
-    memoryRegistry(),
-    memoryBlobs(),
-  );
-  const published = catalogSource("cloudflare.published");
-  const current = catalogSource("cloudflare");
-  const install = (organization: string, name: string, files: Files) =>
-    apps.deploy({ owner: ownerOf(organization), name, files });
-  const redeploy = (organization: string, app: string, files = current) =>
-    apps.deploy({ owner: ownerOf(organization), app, files });
-
-  const toolA = yield* install(teamA, "Cloudflare", published);
-  const scopesA = yield* redeploy(teamA, toolA.app.id);
-  const pipeline = yield* install(teamA, "Pipeline", current);
-  const toolB = yield* install(teamB, "Cloudflare", published);
-  const scopesB = yield* redeploy(teamB, toolB.app.id);
-
-  const requirement = (version: string) =>
-    sql<{
-      provider: string;
-    }>`select requirements::jsonb -> 'accounts' -> 'cloudflare' ->> 'provider' as provider
-      from executor_deployments where id = ${version}`.pipe(
-      Effect.map((rows) => rows[0]!.provider),
+export const worldFrom = (published: Files) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const storage = yield* makeExecutorStorage({ provider: "postgresql" });
+    yield* storage.migrate;
+    for (const ddl of runnerTables) yield* sql.unsafe(ddl);
+    const holds: Hold[] = [];
+    const repositories = memoryRepositories();
+    const apps = makeApps(
+      database(storage),
+      fixtureRuntime(holds),
+      crypto,
+      gitSourceStorage(repositories),
+      repositories,
+      memoryRegistry(),
+      memoryBlobs(),
     );
-  const retained = yield* requirement(scopesA.version.id);
-  const family = yield* requirement(pipeline.version.id);
-  const other = yield* identify(jira);
-  yield* sql`insert into executor_providers (id,definition) values (${other.identity},${JSON.stringify(other.shared)})`;
-  yield* sql`insert into organization values (${teamA},'{}'), (${teamB},'{}')`;
-  yield* sql`insert into member values ('member-a',${teamA},'user-a','owner'),
+    const current = catalogSource("cloudflare");
+    const install = (organization: string, name: string, files: Files) =>
+      apps.deploy({ owner: ownerOf(organization), name, files });
+    const redeploy = (organization: string, app: string, files = current) =>
+      apps.deploy({ owner: ownerOf(organization), app, files });
+
+    const toolA = yield* install(teamA, "Cloudflare", published);
+    const scopesA = yield* redeploy(teamA, toolA.app.id);
+    const pipeline = yield* install(teamA, "Pipeline", current);
+    const toolB = yield* install(teamB, "Cloudflare", published);
+    const scopesB = yield* redeploy(teamB, toolB.app.id);
+
+    const requirement = (version: string) =>
+      sql<{
+        provider: string;
+      }>`select requirements::jsonb -> 'accounts' -> 'cloudflare' ->> 'provider' as provider
+      from executor_deployments where id = ${version}`.pipe(
+        Effect.map((rows) => rows[0]!.provider),
+      );
+    const retained = yield* requirement(scopesA.version.id);
+    const family = yield* requirement(pipeline.version.id);
+    const other = yield* identify(jira);
+    yield* sql`insert into executor_providers (id,definition) values (${other.identity},${JSON.stringify(other.shared)})`;
+    yield* sql`insert into organization values (${teamA},'{}'), (${teamB},'{}')`;
+    yield* sql`insert into member values ('member-a',${teamA},'user-a','owner'),
     ('member-b',${teamA},'user-b','member'), ('member-c',${teamB},'user-c','owner')`;
-  const account = (
-    id: string,
-    organization: string,
-    provider: string,
-    method: string,
-    generation: number,
-    oauth?: { identity: string; grant: string },
-  ) =>
-    sql`insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation,identity_id,oauth_grant_id)
+    const account = (
+      id: string,
+      organization: string,
+      provider: string,
+      method: string,
+      generation: number,
+      oauth?: { identity: string; grant: string },
+    ) =>
+      sql`insert into executor_accounts (id,owner,provider,method,label,encrypted_credentials,created_at,credential_generation,identity_id,oauth_grant_id)
       values (${id},${ownerOf(organization)},${provider},${method},${id},${new Uint8Array(digest(new TextEncoder().encode(id)))},now(),${generation},${oauth?.identity ?? null},${oauth?.grant ?? null})`;
-  yield* account("acc_token", teamA, retained, "apiToken", 3);
-  yield* account("acc_oauth", teamA, retained, "oauth", 1, {
-    identity: "aid_oauth",
-    grant: "grt_oauth",
-  });
-  yield* account("acc_jira", teamA, other.identity, "token", 1);
-  yield* account("acc_team_b", teamB, retained, "apiToken", 1);
-  yield* sql`insert into executor_account_identities (id,owner,placement,issuer,subject,name,label,verified_at,created_at)
+    yield* account("acc_token", teamA, retained, "apiToken", 3);
+    yield* account("acc_oauth", teamA, retained, "oauth", 1, {
+      identity: "aid_oauth",
+      grant: "grt_oauth",
+    });
+    yield* account("acc_jira", teamA, other.identity, "token", 1);
+    yield* account("acc_team_b", teamB, retained, "apiToken", 1);
+    yield* sql`insert into executor_account_identities (id,owner,placement,issuer,subject,name,label,verified_at,created_at)
     values ('aid_oauth',${ownerOf(teamA)},${JSON.stringify([teamA, "personal", "user-b", null, []])},
       'https://dash.cloudflare.com','cf-user-b','User B','user-b@example.invalid',now(),now())`;
-  yield* sql`insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
+    yield* sql`insert into executor_oauth_grants (id,encrypted,status,updated_at,owner)
     values ('grt_oauth',${new Uint8Array([7])},'active',now(),${ownerOf(teamA)})`;
-  yield* sql`insert into hosted_account_access values
+    yield* sql`insert into hosted_account_access values
     ('acc_token',${teamA},'personal','user-a',null), ('acc_oauth',${teamA},'personal','user-b',null),
     ('acc_jira',${teamA},'personal','user-a',null), ('acc_team_b',${teamB},'personal','user-c',null)`;
-  for (const [app, account, subject] of [
-    [toolA.app.id, "acc_token", "user-a"],
-    [toolA.app.id, "acc_oauth", "user-b"],
-    [toolB.app.id, "acc_team_b", "user-c"],
-  ] as const)
-    assert.equal(yield* link(app, account, subject), "linked");
-  const connection = (
-    id: string,
-    organization: string,
-    provider: string,
-    app: string,
-    account: string,
-    method: string,
-  ) =>
-    sql`insert into executor_account_connections (id,owner,provider,reconnect_account,state,revision,oauth_attempt,created_at,expires_at,target)
+    for (const [app, account, subject] of [
+      [toolA.app.id, "acc_token", "user-a"],
+      [toolA.app.id, "acc_oauth", "user-b"],
+      [toolB.app.id, "acc_team_b", "user-c"],
+    ] as const)
+      assert.equal(yield* link(app, account, subject), "linked");
+    const connection = (
+      id: string,
+      organization: string,
+      provider: string,
+      app: string,
+      account: string,
+      method: string,
+    ) =>
+      sql`insert into executor_account_connections (id,owner,provider,reconnect_account,state,revision,oauth_attempt,created_at,expires_at,target)
       values (${id},${ownerOf(organization)},${provider},null,${JSON.stringify({
         status: "completed",
         account: { id: account, owner: ownerOf(organization), provider, method },
       })},'r1',null,now(),now(),${JSON.stringify({ app, requirement: "cloudflare" })})`;
-  yield* connection("con_token", teamA, retained, toolA.app.id, "acc_token", "apiToken");
-  yield* connection("con_team_b", teamB, retained, toolB.app.id, "acc_team_b", "apiToken");
-  const acquisition = (account: string, organization: string) =>
-    sql`insert into executor_account_acquisitions (account,owner,provider,method,driver,driver_revision,generation,revision)
+    yield* connection("con_token", teamA, retained, toolA.app.id, "acc_token", "apiToken");
+    yield* connection("con_team_b", teamB, retained, toolB.app.id, "acc_team_b", "apiToken");
+    const acquisition = (account: string, organization: string) =>
+      sql`insert into executor_account_acquisitions (account,owner,provider,method,driver,driver_revision,generation,revision)
       values (${account},${ownerOf(organization)},${retained},'oauth','fixture','1',1,'r1')`;
-  yield* acquisition("acc_oauth", teamA);
-  yield* acquisition("acc_team_b", teamB);
+    yield* acquisition("acc_oauth", teamA);
+    yield* acquisition("acc_team_b", teamB);
 
-  return {
-    apps,
-    holds,
-    install,
-    redeploy,
-    requirement,
-    retained,
-    family,
-    other: other.identity,
-    toolA: toolA.app.id,
-    toolB: toolB.app.id,
-    pipeline: pipeline.app.id,
-    versionsA: [toolA.version.id, scopesA.version.id],
-    versionsB: [toolB.version.id, scopesB.version.id],
-    pipelineVersion: pipeline.version.id,
-    /** Team A's exact selection: every account still under the retained ref, with its generation. */
-    requestA: {
-      organization: teamA,
-      from: retained,
-      to: family,
-      accounts: [
-        { account: "acc_oauth", generation: 1 },
-        { account: "acc_token", generation: 3 },
-      ],
-    },
-    requestB: {
-      organization: teamB,
-      from: retained,
-      to: family,
-      accounts: [{ account: "acc_team_b", generation: 1 }],
-    },
-  };
-});
+    return {
+      apps,
+      holds,
+      install,
+      redeploy,
+      requirement,
+      retained,
+      family,
+      other: other.identity,
+      toolA: toolA.app.id,
+      toolB: toolB.app.id,
+      pipeline: pipeline.app.id,
+      versionsA: [toolA.version.id, scopesA.version.id],
+      versionsB: [toolB.version.id, scopesB.version.id],
+      pipelineVersion: pipeline.version.id,
+      /** Team A's exact selection: every account still under the retained ref, with its generation. */
+      requestA: {
+        organization: teamA,
+        from: retained,
+        to: family,
+        accounts: [
+          { account: "acc_oauth", generation: 1 },
+          { account: "acc_token", generation: 3 },
+        ],
+      },
+      requestB: {
+        organization: teamB,
+        from: retained,
+        to: family,
+        accounts: [{ account: "acc_team_b", generation: 1 }],
+      },
+    };
+  });
+export const world = worldFrom(catalogSource("cloudflare.published"));
 export type World = Effect.Success<typeof world>;
 
 /** Hold the next build until the returned release is completed. */
