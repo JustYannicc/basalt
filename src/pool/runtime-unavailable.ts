@@ -1,4 +1,5 @@
 import { streamTerminalTypes } from "./stream-splice.ts";
+import { failurePlacementHeaders } from "./runtime-placement.worker.ts";
 import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
 import { retainEndpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 
@@ -22,6 +23,7 @@ export function nativeRuntimeUnavailable(request: Request, error?: unknown) {
         "Retry-After": "1",
         "Cache-Control": "no-store",
         ...(error === undefined ? {} : runtimeFailureHeaders(error, "fleet_forward")),
+        ...failurePlacementHeaders(error),
       },
     },
   );

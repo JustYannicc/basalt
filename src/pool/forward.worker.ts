@@ -1,4 +1,12 @@
 import {
+  failurePlacement,
+  runtimePlacement,
+  runtimePlacementHeader,
+  unplaced,
+  withoutPlacement,
+  type RuntimePlacement,
+} from "./runtime-placement.worker.ts";
+import {
   refuseRuntime,
   runtimeRouteDiagnostic,
   runtimeResponseCause,
@@ -70,6 +78,8 @@ interface Dependencies {
   env: Parameters<typeof gatewayUnavailable>[0] & {
     POOL_APP_SIGNING_KEY: string;
     POOL_APP_SIGNING_KEY_PREVIOUS?: string;
+    /** The image input of this object's own container, named when it serves a call. */
+    POOL_IMAGE_HASH?: string;
   };
   computers: Pick<Computers, "nativeModel" | "observeUsage">;
   memberships: NativeMemberships;
@@ -225,6 +235,9 @@ export async function forwardPoolRequest(
           traceparent: request.headers.get("traceparent"),
           defer: (work) => deps.defer(work),
         }));
+  // Until a runtime takes the call the event says so; each later placement replaces the last.
+  const place = (placement: RuntimePlacement) => event?.set(placement);
+  place(unplaced);
   const settle = (response: Response, outcome: PoolRequestOutcome) => {
     event?.end({ outcome, status: response.status });
     return response;
@@ -296,15 +309,23 @@ export async function forwardPoolRequest(
       const dispatch = () => {
         prepared();
         beforeDispatch();
+        place({
+          runtime: "root",
+          slot: "legacy",
+          imageInput: deps.env.POOL_IMAGE_HASH ?? "unknown",
+          boot: status.boot_id,
+        });
       };
       // The front layer keeps this call's answer only while this container advertises the layer.
       const routed = resumeRoute(forwarded, port, status);
       const sent = routed === "gone" ? forwarded : routed.request;
       const target = routed === "gone" ? port : routed.port;
-      const send = (request: Request) =>
-        target === resumeLayerPort
-          ? toLayer(request, deps.fetch, deps.running)
-          : deps.fetch(request, target);
+      const send = async (request: Request) =>
+        withoutPlacement(
+          await (target === resumeLayerPort
+            ? toLayer(request, deps.fetch, deps.running)
+            : deps.fetch(request, target)),
+        );
       if (port === 8317 && (native !== undefined || modelLease !== undefined))
         return modelLifetimeFetch(sent, send, dispatch);
       dispatch();
@@ -330,6 +351,8 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch, identity)
       : await legacy(outbound);
     guard = "upstream_response";
+    const placed = runtimePlacement(upstream.headers);
+    if (placed) place(placed);
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
     const runtimeCause = runtimeResponseCause(upstream);
     // Routing builds a refusal itself when a runtime never answered: that is not a first byte.
@@ -370,9 +393,13 @@ export async function forwardPoolRequest(
         })().catch(() => console.error("POOL_FIRST_REQUEST_OBSERVATION_PENDING")),
       );
     if (response.status === 101) {
-      if (response.headers.has(dispatchTimingHeader)) {
+      if (
+        response.headers.has(dispatchTimingHeader) ||
+        response.headers.has(runtimePlacementHeader)
+      ) {
         const headers = new Headers(response.headers);
         headers.delete(dispatchTimingHeader);
+        headers.delete(runtimePlacementHeader);
         response = inheritModelLifetime(
           response,
           new Response(null, { status: 101, headers, webSocket: response.webSocket }),
@@ -420,6 +447,7 @@ export async function forwardPoolRequest(
       headers.set(streamResumePoolHeader, admittedPool);
     headers.delete(dispatchTimingHeader);
     stripRuntimeFailureHeaders(headers);
+    headers.delete(runtimePlacementHeader);
     // An unsent answer names this call's own id, the one its terminal start was written under,
     // so the entry's re-send can finish that same row.
     if (modelCall) headers.set(controllerIsolateHeader, isolate().id);
@@ -430,7 +458,6 @@ export async function forwardPoolRequest(
       );
     const observedBoot = upstream.headers.get("X-Signalbox-Pool-Boot") ?? boot;
     if (observedBoot) headers.set("X-Signalbox-Pool-Boot", observedBoot);
-    if (observedBoot) event?.set({ boot: observedBoot });
     const forwarded = new Response(response.body, {
       status: response.status,
       statusText: response.statusText,
@@ -468,6 +495,8 @@ export async function forwardPoolRequest(
   } catch (error) {
     native?.release();
     modelLease?.release();
+    const failedOn = failurePlacement(error);
+    if (failedOn) place(failedOn);
     const diagnostic: GatewayFailureDiagnostic = {
       ...runtimeRouteDiagnostic(error),
       guard,
