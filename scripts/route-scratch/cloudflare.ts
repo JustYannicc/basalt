@@ -2,6 +2,7 @@
  * The Cloudflare reads and deletes a scratch run needs, by name prefix. Failures carry the operation
  * and HTTP status only: provider bodies can hold account details and never reach a log.
  */
+import { registrySession } from "./registry.ts";
 import { gatewayName, prefix, workerName, type Stage } from "./settings.ts";
 
 export class CloudflareRefused extends Error {
@@ -58,15 +59,18 @@ async function list(account: Account, path: string) {
 /** What this stage owns now: everything it names, and nothing that merely shares a word with it. */
 export async function inventory(account: Account, stage: Stage) {
   const owned = (name: unknown) => typeof name === "string" && name.startsWith(`${prefix(stage)}-`);
-  const [applications, namespaces, scripts] = await Promise.all([
+  const [applications, namespaces, scripts, images] = await Promise.all([
     list(account, "containers/applications"),
     list(account, "workers/durable_objects/namespaces"),
     list(account, "workers/scripts"),
+    registrySession(account, stage, "read").images(),
   ]);
   return {
     applications: applications.filter((row) => owned(row.name)),
     namespaces: namespaces.filter((row) => row.script === workerName(stage) || owned(row.name)),
     scripts: scripts.filter((row) => owned(row.id)),
+    // The gateway's image repository, while it still holds a tagged image.
+    images,
   };
 }
 export type Inventory = Awaited<ReturnType<typeof inventory>>;
@@ -83,8 +87,12 @@ export const deployed = (resources: Inventory, stage: Stage) =>
   resources.scripts.some((row) => row.id === workerName(stage)) &&
   resources.applications.some((row) => row.name === gatewayName(stage));
 
-/** Deletes whatever this stage still owns, by id. A Worker delete also removes its namespaces. */
-export async function removeAll(account: Account, resources: Inventory) {
+/**
+ * Deletes whatever this stage still owns: applications, Worker and namespaces by id, then the
+ * gateway image's tagged manifests. A failure is named by kind only, and the read-back after it
+ * decides the run.
+ */
+export async function removeAll(account: Account, stage: Stage, resources: Inventory) {
   const failed: string[] = [];
   const remove = async (kind: string, path: string) => {
     try {
@@ -99,6 +107,10 @@ export async function removeAll(account: Account, resources: Inventory) {
     await remove("worker", `workers/scripts/${String(script.id)}?force=true`);
   for (const namespace of resources.namespaces)
     await remove("namespace", `workers/durable_objects/namespaces/${String(namespace.id)}`);
+  if (resources.images.length)
+    await registrySession(account, stage, "delete")
+      .removeImages(resources.images)
+      .catch(() => failed.push("image"));
   return failed;
 }
 

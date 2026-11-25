@@ -19,4 +19,5 @@ model {
   basalt.routeScratch -[sync]-> workersDev "call only the scratch stage's own Worker"
   basalt.routeScratch -[sync]-> deploymentProvider "deploy, read back and remove only the stage's own Worker and container application"
   basalt.routeScratch -[sync]-> repositoryApi "download workflow actions"
+  basalt.routeScratch -[sync]-> containerRegistry "find the stage's own gateway image by its exact repository and delete it"
 }

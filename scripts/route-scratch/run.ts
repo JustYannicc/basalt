@@ -73,7 +73,7 @@ async function destroy(stage: Stage) {
     console.log(JSON.stringify({ stackDestroy: "failed; deleting by name" })),
   );
   const left = await inventory(account(), stage);
-  const failed = empty(left) ? [] : await removeAll(account(), left);
+  const failed = empty(left) ? [] : await removeAll(account(), stage, left);
   const after = await inventory(account(), stage);
   console.log(
     JSON.stringify({ leftBeforeDelete: counts(left), deleteFailures: failed, left: counts(after) }),
