@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Effect } from "effect";
 import {
   bringRetriesForward,
+  bringRolloutsForward,
+  changeOutboxEmpty,
+  openRollouts,
   provisioningHistory,
   provisioningMoved,
   provisioningSettled,
@@ -47,6 +51,47 @@ test("a deploy's rollout queued for well after the measurement does not hold the
   // The organization's own setup always holds the settle, pool access included.
   assert.equal(provisioningSettled([queued("member-setup", 900_000, 1)], now), false);
   assert.equal(provisioningSettled([job("basalt-pool-access:app_1", "running", 1)], now), false);
+});
+
+test("the deferral reads the database's clock, not the host's", () => {
+  const bundle = "basalt-pool-bundle:7518f356:reconcile-3:c5743dcb-d670-4f4a-9ef8-bde58e94dde7";
+  const due = "2026-11-25T12:57:30.000Z";
+  const at = (observed) => [
+    { ...job(bundle, "queued", 0), available_at: due, observed_at: observed },
+  ];
+  // Two minutes ahead of the database: deferred. Thirty seconds ahead: waited for.
+  assert.equal(provisioningSettled(at("2026-11-25T12:55:30.000Z")), true);
+  assert.equal(provisioningSettled(at("2026-11-25T12:57:00.000Z")), false);
+});
+
+test("a proof runs the organization's rollouts first and waits only for those", async () => {
+  const bundle = "basalt-pool-bundle:7518f356:reconcile-3:c5743dcb-d670-4f4a-9ef8-bde58e94dde7";
+  const jobs = [
+    job(bundle, "queued", 0),
+    job("basalt-pool-token:0123456789abcdef:6f1d2c3b", "succeeded", 1),
+    job("member-setup", "running", 1),
+  ];
+  assert.deepEqual(
+    openRollouts(jobs).map(({ id }) => id),
+    [bundle],
+  );
+  const sent = [];
+  await bringRolloutsForward({ run: async (query) => sent.push(query) }, "org_1");
+  assert.match(sent[0].sql, /status = 'queued' and available_at > now\(\)/u);
+  for (const prefix of ["basalt-pool-bundle:%", "basalt-pool-token:%", "basalt-catalog-apps:%"])
+    assert.ok(sent[0].sql.includes(`'${prefix}'`), prefix);
+  assert.deepEqual(sent[0].params, ["org_1"]);
+});
+
+test("the change outbox is empty only when no change waits for delivery", async () => {
+  const outbox = (count) => ({
+    run: (query) => {
+      assert.deepEqual(query.params, ["organization:org_1"]);
+      return Effect.succeed([{ count }]);
+    },
+  });
+  assert.equal(await Effect.runPromise(changeOutboxEmpty(outbox(0), "org_1")), true);
+  assert.equal(await Effect.runPromise(changeOutboxEmpty(outbox(2), "org_1")), false);
 });
 
 test("only a retry is brought forward; a first attempt keeps its own schedule", async () => {

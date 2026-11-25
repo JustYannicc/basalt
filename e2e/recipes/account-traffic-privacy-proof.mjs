@@ -6,6 +6,9 @@ import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { accountRow } from "../../.upstream/e2e/support/account-rows.ts";
 import {
   bringRetriesForward,
+  bringRolloutsForward,
+  changeOutboxEmpty,
+  openRollouts,
   provisioningJobs,
   provisioningMoved,
   provisioningSettled,
@@ -28,6 +31,17 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
   }), { signal })
 }));`;
 
+/** Repeat a check every 250 ms until it answers true, failing with its message after 180 s. */
+const untilDeadline = (check, message, deadlineMs = 180_000) =>
+  Effect.gen(function* () {
+    const end = Date.now() + deadlineMs;
+    while (Date.now() < end) {
+      if (yield* check) return;
+      yield* Effect.sleep("250 millis");
+    }
+    return yield* Effect.fail(new Error(message()));
+  });
+
 /** Both actors are ordinary members; only B's real tool call may refresh B's private traffic. */
 export const accountTrafficPrivacyProof = ({
   h,
@@ -42,6 +56,21 @@ export const accountTrafficPrivacyProof = ({
     const progress = { phase: "membership", viewers: [], holdSetup, settleFirst };
     diagnostics.privateTraffic = progress;
     const organization = h.actors.organization.id;
+    // A release queues one delayed rollout per organization. It takes the organization's locks, so
+    // it runs now, before the invitation, the held setup lock and the measurement, never inside them.
+    progress.phase = "rollouts";
+    yield* bringRolloutsForward(database, organization);
+    yield* untilDeadline(
+      Effect.gen(function* () {
+        const jobs = yield* provisioningJobs(database, organization);
+        progress.rollouts = openRollouts(jobs);
+        if (progress.rollouts.length === 0) return true;
+        yield* h.request("POST", "/api/onboarding/prepare", {});
+        return false;
+      }),
+      () => `The organization's rollouts did not finish: ${JSON.stringify(progress.rollouts)}`,
+    );
+    progress.phase = "membership";
     if (holdSetup)
       yield* database.hold({
         sql: "select id from organization where id = $1 for no key update",
@@ -153,22 +182,21 @@ export const accountTrafficPrivacyProof = ({
     // A new member's setup commits the organization's account and app heads after the invitation
     // is accepted, at times only on a retry. A's heads are measured once none of the organization's
     // provisioning waits or runs, so only B's tool call falls between the two readings.
-    const settleProvisioning = Effect.gen(function* () {
-      for (let round = 0; round < 120; round++) {
+    // A Cloud retry waits out its workflow's own backoff (5 s, doubling), so the bound is in time.
+    const settleProvisioning = untilDeadline(
+      Effect.gen(function* () {
         const jobs = yield* provisioningJobs(database, organization);
         progress.provisioning = jobs;
-        if (provisioningSettled(jobs)) return jobs;
-        // A retry waits out its backoff; the dispatcher runs it now instead.
+        if (provisioningSettled(jobs) && (yield* changeOutboxEmpty(database, organization)))
+          return true;
         yield* bringRetriesForward(database, organization);
+        // Each request delivers pending changes after it answers and dispatches what is due.
         yield* h.request("POST", "/api/onboarding/prepare", {});
-        yield* Effect.sleep("250 millis");
-      }
-      return yield* Effect.fail(
-        new Error(
-          `The organization's provisioning did not settle: ${JSON.stringify(progress.provisioning)}`,
-        ),
-      );
-    });
+        return false;
+      }),
+      () =>
+        `The organization's provisioning did not settle: ${JSON.stringify(progress.provisioning)}`,
+    );
     progress.phase = "settle";
     if (holdSetup) yield* database.release;
     if (settleFirst) yield* settleProvisioning;

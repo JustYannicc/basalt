@@ -1,8 +1,10 @@
+import { Effect } from "effect";
+
 /** The organization's provisioning queue, as proofs read it before they measure and after they end. */
 export const provisioningJobs = (database, organization) =>
   database.run({
-    sql: `select id, kind, status, attempts, available_at, updated_at from hosted_provisioning
-      where organization_id = $1 order by updated_at, id limit 200`,
+    sql: `select id, kind, status, attempts, available_at, updated_at, now() as observed_at
+      from hosted_provisioning where organization_id = $1 order by updated_at, id limit 200`,
     params: [organization],
   });
 
@@ -28,12 +30,40 @@ const deferred = (job, now) =>
  * Settled: every job of the organization has finished, except a deploy's rollout still queued for
  * well after the measurement. A running rollout, or one due soon, is waited for like setup.
  */
-export const provisioningSettled = (jobs, now = Date.now()) =>
+export const provisioningSettled = (jobs, now = observedAt(jobs)) =>
   jobs.every((job) => !open(job) || deferred(job, now));
+// The database's own clock, as read with the jobs, so a host clock that drifts moves no deferral.
+const observedAt = (jobs) =>
+  jobs.length > 0 && jobs[0].observed_at !== undefined
+    ? new Date(jobs[0].observed_at).getTime()
+    : Date.now();
+
+/** The organization's rollouts still open: they run before a proof starts, never inside it. */
+export const openRollouts = (jobs) => jobs.filter((job) => open(job) && rolloutJob(job));
+
+/** Run the organization's waiting rollouts now: each is queued once per release, delayed. */
+export const bringRolloutsForward = (database, organization) =>
+  database.run({
+    sql: `update hosted_provisioning set available_at = now()
+      where organization_id = $1 and status = 'queued' and available_at > now()
+        and (id like 'basalt-pool-bundle:%' or id like 'basalt-pool-token:%'
+          or id like 'basalt-catalog-apps:%')`,
+    params: [organization],
+  });
+
+/** Changes committed for the organization and not yet delivered to its live subscribers. */
+export const changeOutboxEmpty = (database, organization) =>
+  database
+    .run({
+      sql: `select count(*)::int as count from hosted_change_pending where scope = $1`,
+      params: [`organization:${organization}`],
+    })
+    .pipe(Effect.map((rows) => Number(rows[0]?.count ?? 0) === 0));
 
 /**
- * Bring forward a retry waiting out its backoff. A job waiting for its first attempt keeps its own
- * schedule: a rollout's delay gives the deploy time to finish.
+ * Make a retry waiting out its backoff due now. On self-host the drainer then runs it; on Cloud this
+ * only lets the dispatcher pick it up again, and the workflow's own retry delay still applies. A job
+ * waiting for its first attempt keeps its own schedule.
  */
 export const bringRetriesForward = (database, organization) =>
   database.run({
