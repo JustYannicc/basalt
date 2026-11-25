@@ -2048,36 +2048,27 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
         Object.entries(recorded).map(([fqn, row]) => [fqn, (row as { status: unknown }).status]),
       );
     } else if (mode === "leftovers") {
-      // Read-only. The public record counts each stage's rows by kind under an ordinal; which stage
-      // each ordinal is goes to private output only.
+      // Read-only: every rehearsal stage's State by kind, lanes by number and four-digit stages by
+      // ordinal, and for a whole stage what the provider says bills while it stands. Which stage
+      // each ordinal is, and every recorded id, go to private output only.
       const config = stageEnvironment(subject, source);
       const stages = await readNumberedRehearsalStages(config.stage, {
         environment: config.deploy,
+        lanes: true,
       });
       await writeFile(
-        join(outputs, "numbered-stages.json"),
+        join(outputs, "rehearsal-stages.json"),
         `${JSON.stringify(stages, null, 2)}\n`,
         {
           mode: 0o600,
         },
       );
-      result.numberedStages = stages.map(({ stacks, unreadable }, index) => ({
-        ordinal: index + 1,
-        stacks,
-        ...(unreadable ? { unreadable: true } : {}),
-      }));
-      console.log(`Four-digit rehearsal stages State still lists: ${stages.length}.`);
-      for (const [index, { stacks, unreadable }] of stages.entries())
-        console.log(
-          `  stage ${index + 1}${unreadable ? " (one stack unreadable; why is in private output)" : ""}: ${
-            Object.entries(stacks)
-              .map(([stack, kinds]) => {
-                const rows = Object.entries(kinds).map(([kind, count]) => `${kind} ${count}`);
-                return `${stack}: ${rows.join(", ") || "no rows"}`;
-              })
-              .join("; ") || "no rows"
-          }`,
-        );
+      const { stageReads } = await import("./stage-table-reads.ts");
+      const { stageTable } = await import("./stage-table.ts");
+      const lines = await stageTable(stages, stageReads(config.deploy));
+      console.log(`Rehearsal stages State still lists: ${stages.length}.`);
+      for (const line of lines) console.log(line);
+      result.stages = lines;
     } else if (mode === "retire") {
       // One four-digit stage per run, through the lane's own destroy and absence check. The stage
       // is named by its ordinal only; which stage that is stays in private output.

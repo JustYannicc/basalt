@@ -515,3 +515,24 @@ test("production's databases are read from its own database rows only, and none 
     (error: Error) => error.message === "Production's database rows could not be read",
   );
 });
+
+test("the lanes are read beside the four-digit stages only when asked", async () => {
+  const command: StateCommand = (args) => {
+    const verb = args[args.indexOf("state") + 1];
+    const at = args[args.indexOf("state") + 2];
+    if (verb === "list" && at === "--config") return { status: 0, stdout: "basalt-rehearsal/\n" };
+    if (verb === "list" && at === "basalt-rehearsal")
+      return {
+        status: 0,
+        stdout: [2, 12, 2313].map((n) => `basalt-rehearsal/test-rehearsal-${n}/`).join("\n"),
+      };
+    if (verb === "list") return { status: 0, stdout: "" };
+    throw new Error(`unexpected ${args.join(" ")}`);
+  };
+  const stages = (lanes: boolean) =>
+    readNumberedRehearsalStages("test-rehearsal-1", { command, environment: {}, lanes }).then(
+      (rows) => rows.map(({ stage }) => stage),
+    );
+  assert.deepEqual(await stages(false), ["test-rehearsal-2313"]);
+  assert.deepEqual(await stages(true), ["test-rehearsal-2", "test-rehearsal-2313"]);
+});

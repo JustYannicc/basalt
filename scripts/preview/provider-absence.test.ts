@@ -287,3 +287,16 @@ test("a Worker named for the stage is the stage's even without its tag, and no o
   assert.equal(namedForStage("basalt-router-production", "test-rehearsal-1"), false);
   assert.throws(() => namedForStage("x", "test-.*"));
 });
+
+test("a lane's name never matches another stage's bucket or Worker that begins the same way", () => {
+  for (const other of ["test-rehearsal-2x", "test-rehearsal-2313", "test-rehearsal-22"]) {
+    assert.equal(namedForStage(`basalt-rehearsal-api-${other}`, "test-rehearsal-2"), false, other);
+    // The bucket match is the stage between hyphens, as the absence proof applies it.
+    assert.equal(
+      `basalt-rehearsal-siteassets-${other}-abcdefghijklmnop`.includes("-test-rehearsal-2-"),
+      false,
+      other,
+    );
+  }
+  assert.equal(namedForStage("basalt-rehearsal-api-test-rehearsal-2", "test-rehearsal-2"), true);
+});

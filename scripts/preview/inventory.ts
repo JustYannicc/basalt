@@ -427,6 +427,9 @@ export type NumberedStageRows = {
   readonly stacks: Readonly<Record<PreviewStack, Readonly<Record<string, number>>>>;
   /** Why a stack of this stage could not be read; it can name the stage, so it stays private. */
   readonly unreadable?: string;
+  /** The container applications and Postgres branches its State records, by recorded identity. */
+  readonly containers?: readonly string[];
+  readonly branches?: readonly { readonly database: string; readonly name: string }[];
 };
 
 /**
@@ -436,18 +439,29 @@ export type NumberedStageRows = {
  */
 export async function readNumberedRehearsalStages(
   lane: string,
-  options: { readonly command?: StateCommand; readonly environment?: NodeJS.ProcessEnv } = {},
+  options: {
+    readonly command?: StateCommand;
+    readonly environment?: NodeJS.ProcessEnv;
+    /** The one-digit lanes too, beside the four-digit stages. */
+    readonly lanes?: boolean;
+  } = {},
 ): Promise<NumberedStageRows[]> {
   const { state, env } = laneStateReader(lane, options);
+  const number = options.lanes ? "(?:[1-9]|[1-9][0-9]{3})" : "[1-9][0-9]{3}";
   const found = new Map<
     string,
-    { stacks: Record<PreviewStack, Record<string, number>>; unreadable?: string }
+    {
+      stacks: Record<PreviewStack, Record<string, number>>;
+      unreadable?: string;
+      containers?: string[];
+      branches?: { database: string; name: string }[];
+    }
   >();
   const known = stdoutLines(state("list"));
   for (const stack of previewStacks(lane)) {
     if (!known.includes(`${stack}/`)) continue;
     for (const line of stdoutLines(state("list", stack))) {
-      const stage = new RegExp(`^${stack}/(test-rehearsal-[1-9][0-9]{3})/$`, "u").exec(line)?.[1];
+      const stage = new RegExp(`^${stack}/(test-rehearsal-${number})/$`, "u").exec(line)?.[1];
       if (!stage) continue;
       const entry = found.get(stage) ?? {
         stacks: {} as Record<PreviewStack, Record<string, number>>,
@@ -469,9 +483,19 @@ export async function readNumberedRehearsalStages(
             stage,
             paths,
           )) {
-            const kind = (value as { resourceType?: unknown } | null)?.resourceType;
+            const row = value as { resourceType?: unknown; attr?: Record<string, unknown> } | null;
+            const kind = row?.resourceType;
             const name = typeof kind === "string" ? kind : "output";
             kinds[name] = (kinds[name] ?? 0) + 1;
+            const attr = row?.attr ?? {};
+            if (name === "Cloudflare.Container" && typeof attr.applicationId === "string")
+              (entry.containers ??= []).push(attr.applicationId);
+            if (
+              name === "Planetscale.PostgresBranch" &&
+              typeof attr.database === "string" &&
+              typeof attr.name === "string"
+            )
+              (entry.branches ??= []).push({ database: attr.database, name: attr.name });
           }
         entry.stacks[stack] = kinds;
       } catch (error) {
