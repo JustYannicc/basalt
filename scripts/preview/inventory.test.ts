@@ -320,3 +320,10 @@ test("log lines before a state read's JSON are not part of the document", async 
     { path: router.path, value: JSON.parse(JSON.stringify(router.value)) },
   ]);
 });
+
+test("log lines after a pretty-printed state read's JSON are not part of the document", async () => {
+  const { reader, router } = oneRouterRead("Using the configured backend\nDOCUMENT\nDone in 2s\n");
+  assert.deepEqual((await reader.read(stage)).basalt, [
+    { path: router.path, value: JSON.parse(JSON.stringify(router.value)) },
+  ]);
+});

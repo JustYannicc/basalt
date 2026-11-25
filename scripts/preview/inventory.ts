@@ -228,16 +228,19 @@ function parseStageValues(
   // Progress and log lines precede the JSON on stdout; only the document itself is parsed.
   const lines = stdout.split(/\r?\n/).filter((line) => !/^\s*[•✓✗✔✖⚠ℹ]\s/u.test(line));
   const start = lines.findIndex((line) => /^\s*(?:[{["]|null\b|-?\d)/u.test(line));
-  const json = (start < 0 ? lines : lines.slice(start)).join("\n");
+  // Log lines can follow the document too; a pretty-printed document closes at column 0.
+  const body = start < 0 ? lines : lines.slice(start);
+  const close = body.findLastIndex((line) => /^[}\]]\s*$/u.test(line));
+  const json = (close > 0 ? body.slice(0, close + 1) : body).join("\n");
   try {
     decoded = JSON.parse(json);
   } catch {
     // Name the first lines without values: log and progress text only, never the state document.
-    const preamble = (start < 0 ? lines : lines.slice(0, start))
-      .slice(0, 5)
-      .map((line) => line.replace(/[0-9a-f]{16,}/giu, "[hex]").slice(0, 120));
+    const shown = (part: string[]) =>
+      part.slice(0, 5).map((line) => line.replace(/[0-9a-f]{16,}/giu, "[hex]").slice(0, 120));
+    const after = close > 0 ? body.slice(close + 1) : [];
     throw new Error(
-      `Alchemy returned malformed remote resource state (${lines.length} lines; before the document: ${JSON.stringify(preamble)})`,
+      `Alchemy returned malformed remote resource state (${lines.length} lines; before the document: ${JSON.stringify(shown(start < 0 ? lines : lines.slice(0, start)))}; after it: ${JSON.stringify(shown(after))}; document starts ${JSON.stringify((body[0] ?? "").slice(0, 2))}, ends ${JSON.stringify((body.at(-1) ?? "").slice(-2))})`,
     );
   }
   const prefix = `${stack}/${stage}/`;
