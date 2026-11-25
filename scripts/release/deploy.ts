@@ -493,7 +493,8 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                   store as never,
                   stack,
                   stage,
-                  command === "destroy" ? process.env[RETIRE_PROVEN] : undefined,
+                  command === "destroy",
+                  process.env[RETIRE_PROVEN],
                 ) as Fx.Effect<unknown[], unknown, never>,
               ),
             };

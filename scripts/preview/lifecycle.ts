@@ -648,7 +648,12 @@ export async function destroyStage(
   ] as const) {
     // After a failure only a rehearsal's paid parts still go: its container applications and its
     // database. Everything else waits for the next attempt, which starts where this one stopped.
-    if (failures.length && subject.kind !== "rehearsal") break;
+    // A retire stops at its first failure: a refused proof says nothing of the stage is deleted.
+    if (
+      failures.length &&
+      (subject.kind !== "rehearsal" || process.env.BASALT_RETIRE_PROVEN !== undefined)
+    )
+      break;
     if (failures.length && !paidParts.has(stack)) continue;
     try {
       await action();

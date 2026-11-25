@@ -348,6 +348,14 @@ test("a rehearsal whose application stack refuses still removes its paid parts, 
   assert.deepEqual(calls, ["destroy:basalt", "applications:delete", "destroy:database"]);
 });
 
+test("a retire stops at its first failure: a refused proof leaves the paid parts for the next attempt", async (t) => {
+  process.env.BASALT_RETIRE_PROVEN = "{}";
+  t.after(() => delete process.env.BASALT_RETIRE_PROVEN);
+  const { calls, outcome } = await rehearsalDestroy("none", "basalt");
+  assert.ok(outcome instanceof AggregateError);
+  assert.deepEqual(calls, ["destroy:basalt"]);
+});
+
 test("a rehearsal whose applications delete refuses still removes its database", async () => {
   const { calls, outcome } = await rehearsalDestroy("none", "applications");
   assert.ok(outcome instanceof AggregateError);

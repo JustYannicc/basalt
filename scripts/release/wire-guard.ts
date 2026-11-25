@@ -421,9 +421,11 @@ const checkUnattached = (inner: typeof globalThis.fetch, request: Request, at: A
     url.search = "";
     const authorization = request.headers.get("authorization");
     const read = yield* Effect.tryPromise(async () => {
+      // A redirect is answered, not followed: only this exact application's read may admit.
       const response = await inner(url, {
         method: "GET",
         headers: authorization ? { authorization } : {},
+        redirect: "manual",
       });
       if (!response.ok) throw new Error(`application read answered ${response.status}`);
       return (await response.json()) as unknown;
@@ -478,7 +480,7 @@ const proveStageName = (
         ? `${base}/workers/scripts/${name}/settings`
         : `${base}/workflows/${name}`;
     const response = yield* Effect.promise(() =>
-      inner(read, { headers: authHeaders(request) }).catch(() => undefined),
+      inner(read, { headers: authHeaders(request), redirect: "manual" }).catch(() => undefined),
     );
     if (response?.status === 404) return;
     const body = response?.ok

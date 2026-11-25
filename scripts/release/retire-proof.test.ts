@@ -29,25 +29,15 @@ const proven = [
   bucket("Files", `basalt-rehearsal-files-${STAGE}`),
 ];
 
-/** A State store as deploy.ts reads it: list, then get per fqn. Records every call it answers. */
-const store = (rows: ReadonlyArray<{ fqn: string }>) => {
-  const calls: string[] = [];
-  return {
-    calls,
-    state: {
-      list: (request: { stack: string; stage: string }) =>
-        Effect.sync(() => {
-          calls.push(`list ${request.stack}/${request.stage}`);
-          return rows.map((row) => row.fqn);
-        }),
-      get: (request: { stack: string; stage: string; fqn: string }) =>
-        Effect.sync(() => {
-          calls.push(`get ${request.fqn}`);
-          return rows.find((row) => row.fqn === request.fqn);
-        }),
-    },
-  };
-};
+/** A State store as deploy.ts reads it: list, then get per fqn. */
+const store = (rows: ReadonlyArray<{ fqn: string }>) => ({
+  state: {
+    list: (_request: { stack: string; stage: string }) =>
+      Effect.sync(() => rows.map((row) => row.fqn)),
+    get: (request: { stack: string; stage: string; fqn: string }) =>
+      Effect.sync(() => rows.find((row) => row.fqn === request.fqn)),
+  },
+});
 const handed = (stacks: Record<string, ReadonlyArray<unknown>>) =>
   JSON.stringify(
     provenDigests(
@@ -84,7 +74,10 @@ test("the same rows digest the same on both sides, whatever their order or form"
     STAGE,
   );
   assert.equal(withOutput[STACK], provenRowsDigest(proven));
-  assert.equal(retireProofRefusal(handed({ [STACK]: proven }), STACK, STAGE, printed), undefined);
+  assert.equal(
+    retireProofRefusal(true, handed({ [STACK]: proven }), STACK, STAGE, printed),
+    undefined,
+  );
 });
 
 test("a row added, renamed or retyped since the proof changes the digest", () => {
@@ -111,45 +104,57 @@ test("a destroy refuses before planning when its read is not the rows the retire
     ["a row written since", [...proven, bucket("Late", "production-bucket")]],
     ["an identity changed since", [proven[0], bucket("Files", "production-bucket")]],
   ] as const) {
-    const { state, calls } = store(rows);
-    const exit = await Effect.runPromiseExit(provenStageRows(state, STACK, STAGE, proof));
+    const { state } = store(rows);
+    const exit = await Effect.runPromiseExit(provenStageRows(state, STACK, STAGE, true, proof));
     assert.ok(Exit.isFailure(exit), label);
     const message = String(Cause.squash(exit.cause));
     assert.match(message, /changed since the retire proved them/u, label);
-    // The refusal names no value, and the read was all that happened.
+    // The refusal names no value.
     assert.ok(!message.includes("production-bucket") && !message.includes(STAGE), label);
-    assert.ok(
-      calls.every((call) => call.startsWith("list ") || call.startsWith("get ")),
-      label,
-    );
   }
   // The proof's own rows pass, and they are what the owned set is built from.
   const { state } = store(proven);
-  const rows = await Effect.runPromise(provenStageRows(state, STACK, STAGE, proof));
+  const rows = await Effect.runPromise(provenStageRows(state, STACK, STAGE, true, proof));
   assert.deepEqual(ownIdentities(rows), ownIdentities(proven));
 });
 
 test("a stack the proof names no digest for refuses only when State holds rows of it", () => {
   const proof = handed({ [STACK]: proven });
-  assert.equal(retireProofRefusal(proof, "basalt-preview-database", STAGE, []), undefined);
+  assert.equal(retireProofRefusal(true, proof, "basalt-preview-database", STAGE, []), undefined);
   assert.match(
-    retireProofRefusal(proof, "basalt-preview-database", STAGE, [bucket("Late", "x")]) ?? "",
+    retireProofRefusal(true, proof, "basalt-preview-database", STAGE, [bucket("Late", "x")]) ?? "",
     /proved no rows of this stack/u,
   );
   // A stack proven empty refuses a row that appears in it.
   const empty = handed({ [STACK]: [] });
-  assert.ok(retireProofRefusal(empty, STACK, STAGE, [bucket("Late", "x")]));
-  assert.match(retireProofRefusal("not json", STACK, STAGE, []) ?? "", /could not be read/u);
-  assert.match(retireProofRefusal("[]", STACK, STAGE, []) ?? "", /could not be read/u);
+  assert.ok(retireProofRefusal(true, empty, STACK, STAGE, [bucket("Late", "x")]));
+  assert.match(retireProofRefusal(true, "not json", STACK, STAGE, []) ?? "", /could not be read/u);
+  assert.match(retireProofRefusal(true, "[]", STACK, STAGE, []) ?? "", /could not be read/u);
+});
+
+test("a four-digit stage's destroy without a retire's proof refuses before planning", async () => {
+  const { state } = store(proven);
+  const exit = await Effect.runPromiseExit(provenStageRows(state, STACK, STAGE, true, undefined));
+  assert.ok(Exit.isFailure(exit));
+  assert.match(String(Cause.squash(exit.cause)), /destroyed only by a retire/u);
+  // Its other commands read as before.
+  assert.deepEqual(
+    await Effect.runPromise(provenStageRows(state, STACK, STAGE, false, undefined)),
+    proven,
+  );
 });
 
 test("without a retire's proof, lane destroys and PR previews read exactly as before", async () => {
   const late = [...proven, bucket("Late", "anything")];
-  assert.equal(retireProofRefusal(undefined, STACK, STAGE, late), undefined);
   // The proof binds only the four-digit stages a retire takes.
   const proof = handed({ [STACK]: proven });
   for (const stage of ["test-rehearsal-2", "test-pr-1951"])
-    assert.equal(retireProofRefusal(proof, STACK, stage, late), undefined);
+    assert.equal(retireProofRefusal(true, proof, STACK, stage, late), undefined);
+  for (const stage of ["test-rehearsal-2", "test-pr-1951"])
+    assert.equal(retireProofRefusal(true, undefined, STACK, stage, late), undefined);
   const { state } = store(late);
-  assert.deepEqual(await Effect.runPromise(provenStageRows(state, STACK, STAGE, undefined)), late);
+  assert.deepEqual(
+    await Effect.runPromise(provenStageRows(state, STACK, "test-rehearsal-2", true, undefined)),
+    late,
+  );
 });

@@ -41,15 +41,19 @@ export const provenRowsDigest = (rows: ReadonlyArray<unknown>) => {
 
 /**
  * Why a destroy's own read of one stack does not match what the retire proved, or undefined when it
- * does or no retire started it. Names no value: no row, identity or digest.
+ * does or the stage is no retire's. A four-digit stage is destroyed only by a retire, so a destroy
+ * there without a proof refuses too. Names no value: no row, identity or digest.
  */
 export const retireProofRefusal = (
+  destroying: boolean,
   proven: string | undefined,
   stack: string,
   stage: string,
   rows: ReadonlyArray<unknown>,
 ): string | undefined => {
-  if (proven === undefined || !isRetireStage(stage)) return undefined;
+  if (!destroying || !isRetireStage(stage)) return undefined;
+  if (proven === undefined)
+    return "This stage is destroyed only by a retire, which proves its rows first; nothing is planned or deleted";
   let digests: unknown;
   try {
     digests = JSON.parse(proven);
@@ -75,11 +79,12 @@ export const provenStageRows = (
   state: Parameters<typeof stageRows>[0],
   stack: string,
   stage: string,
+  destroying: boolean,
   proven: string | undefined,
 ) =>
   Effect.gen(function* () {
     const rows = yield* stageRows(state, stack, stage);
-    const refusal = retireProofRefusal(proven, stack, stage, rows);
+    const refusal = retireProofRefusal(destroying, proven, stack, stage, rows);
     if (refusal) return yield* Effect.die(new Error(refusal));
     return rows;
   });
