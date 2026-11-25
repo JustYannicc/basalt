@@ -7,6 +7,7 @@ import type { ControllerState } from "./runtime-state.ts";
 import type { RuntimeConfiguration } from "./configuration.ts";
 import type { PoolStatus } from "../lifecycle.ts";
 import {
+  aliveRefusingMs,
   exitConfirmationMs,
   forcedStopGraceMs,
   forcedStopsPerHour,
@@ -37,8 +38,8 @@ interface Dependencies {
   ctx: ControllerState;
   store: RuntimeWitnessStore;
   activity: RuntimeActivity;
-  /** The endpoint's own health read; a runtime that answers it is serving and is never stopped. */
-  health(identity: SlotIdentity, signal: AbortSignal): Promise<unknown>;
+  /** The selected boot's readiness answer, however late inside `signal` (`RuntimeEndpoint.alive`). */
+  alive(identity: SlotIdentity, signal: AbortSignal): Promise<PoolStatus>;
   /** The container's readiness answer, whoever's boot it is. */
   readiness(configuration: RuntimeConfiguration, signal: AbortSignal): Promise<PoolStatus>;
 }
@@ -61,7 +62,7 @@ export class RuntimeForcedStop {
     if (!(await this.ownsRunningBoot(record, configuration, identity, signal)))
       throw new SlotRefused("identity");
     if (!container.running) return { stopped: true, hard: false };
-    if (await this.serving(identity, signal)) throw new SlotRefused("selection");
+    if (await this.spared(identity, refusingSince, signal)) throw new SlotRefused("selection");
     const held = await this.heldBy(identity, refusingSince);
     if (held && Date.now() - held.stillSince < leakedStreamsMs)
       return { stopped: false, hard: false, waiting: held };
@@ -137,16 +138,32 @@ export class RuntimeForcedStop {
       return "stop_failed";
     }
   }
-  private async serving(identity: SlotIdentity, signal: AbortSignal) {
-    try {
-      await this.deps.health(
-        identity,
-        AbortSignal.any([signal, AbortSignal.timeout(servingReadMs)]),
-      );
-      return true;
-    } catch {
-      return false;
-    }
+  /**
+   * A runtime that answers ready in time to admit a call serves, and is never stopped. One that
+   * answers ready later, inside `servingReadMs`, is slow, not dead: its stop waits until it has
+   * refused for `aliveRefusingMs`. A refusal, another boot, or no answer in time is neither.
+   */
+  private async spared(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
+    const asked = performance.now();
+    const status = await this.deps
+      .alive(identity, AbortSignal.any([signal, AbortSignal.timeout(servingReadMs)]))
+      .catch(() => undefined);
+    // A caller that gave up has decided nothing; its stop isn't this read's.
+    signal.throwIfAborted();
+    if (!status) return false;
+    const serving = (status.policyLeaseUntil ?? 0) > performance.now();
+    const refusingMs = Date.now() - refusingSince;
+    if (!serving && refusingMs >= aliveRefusingMs) return false;
+    console.info(
+      "POOL_RUNTIME_STOP_SPARED",
+      JSON.stringify({
+        slot: identity.slotId,
+        serving,
+        answeredMs: Math.round(performance.now() - asked),
+        refusingMs,
+      }),
+    );
+    return true;
   }
 }
 
