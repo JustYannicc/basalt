@@ -301,8 +301,10 @@ test(
       };
       await ready();
       // The node's own calls at boot, before anything is routed: each lookup is a direct call.
-      await new Promise((resolve) => setTimeout(resolve, 20_000));
-      const bootDirect = [...new Set((await records()).dns)].sort();
+      const bootDirect = await until(async () => {
+        const dns = (await records()).dns;
+        return dns.length ? [...new Set(dns)].sort() : undefined;
+      });
 
       const node = origin(8317);
       // A restart can move the published ports, so each call looks them up.
@@ -606,8 +608,14 @@ test(
       await reset();
       docker(["restart", "--time", "20", pool], 120_000);
       await ready();
-      await new Promise((resolve) => setTimeout(resolve, 20_000));
-      const afterRestart = await records();
+      // Home refreshes the still-expired routed credential at boot: once that refresh reaches its
+      // route, a leak would have shown as a lookup of the routed host.
+      const afterRestart = await until(async () => {
+        const seen = await records();
+        return seen.connects.some((item) => item.route === route && routedHosts.has(item.host))
+          ? seen
+          : undefined;
+      }, 120_000);
       const backgroundDirect = [...new Set(afterRestart.dns)].sort();
       assert.deepEqual(
         afterRestart.dns.filter((name) => routedHosts.has(name)),
