@@ -34,6 +34,8 @@ export interface GatewayDependencies {
   now(): number;
   sleep(ms: number): Promise<void>;
   emit(event: RouteReadingChanged): void;
+  /** One log line; reason codes only, never a state, link or name. */
+  log(line: string): void;
 }
 
 const keys = {
@@ -86,7 +88,12 @@ export class RouteGatewayCore {
 
   constructor(deps: GatewayDependencies) {
     this.deps = deps;
-    this.identity = new RouteIdentityStore(deps.storage, deps.secret, deps.previousSecret);
+    this.identity = new RouteIdentityStore(
+      deps.storage,
+      deps.secret,
+      deps.previousSecret,
+      deps.log,
+    );
     this.access = new RouteAccess(deps.storage, deps.name);
     this.runtime = new GatewayRuntime(
       deps.container,
@@ -347,7 +354,7 @@ export class RouteGatewayCore {
     try {
       if (signingIn) await this.runtime.call(launch, () => this.runtime.control.logout());
     } catch {
-      console.log(JSON.stringify({ route_logout: "route_gateway_unavailable" }));
+      this.deps.log(JSON.stringify({ route_logout: "route_gateway_unavailable" }));
     }
     await this.runtime.stop();
     if (captured === null) return;
@@ -356,7 +363,7 @@ export class RouteGatewayCore {
       await this.runtime.call(logoutLaunch, () => this.runtime.control.logout());
     } catch {
       // The device stays listed in the owner's tailnet until its key expires.
-      console.log(JSON.stringify({ route_logout: "route_gateway_unavailable" }));
+      this.deps.log(JSON.stringify({ route_logout: "route_gateway_unavailable" }));
     }
     await this.runtime.stop();
   }

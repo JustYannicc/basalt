@@ -452,27 +452,33 @@ async function sequence(seed: number, trace: string[]) {
   else assert.equal(container.appliedExit, null, "a gateway routes with no exit selected");
 }
 
-test(
-  "random event sequences keep the route gateway's invariants",
-  { timeout: Math.max(600_000, sequences * 100) },
-  async (t) => {
-    const seeds = only
-      ? [Number(only)]
-      : Array.from({ length: sequences }, (_, index) => index + 1);
-    for (const seed of seeds) {
-      const trace: string[] = [];
-      try {
-        await sequence(seed, trace);
-      } catch (error) {
-        assert.fail(
-          `seed ${seed} (ROUTE_MODEL_SEED=${seed}): ${(error as Error).message}\nevents: ${trace.join(" ")}`,
-        );
-      }
+async function run(seeds: readonly number[]) {
+  for (const seed of seeds) {
+    const trace: string[] = [];
+    try {
+      await sequence(seed, trace);
+    } catch (error) {
+      assert.fail(
+        `seed ${seed} (ROUTE_MODEL_SEED=${seed}): ${(error as Error).message}\nevents: ${trace.join(" ")}`,
+      );
     }
+  }
+}
+
+// Each test runs one block of seeds, so every block fits the suite's own deadline and a soak of any
+// size is only more blocks.
+const block = 100;
+if (only) test(`random event sequence ROUTE_MODEL_SEED=${only}`, () => run([Number(only)]));
+else {
+  for (let first = 1; first <= sequences; first += block) {
+    const last = Math.min(sequences, first + block - 1);
+    test(`random event sequences ${first} to ${last} keep the route gateway's invariants`, () =>
+      run(Array.from({ length: last - first + 1 }, (_, index) => first + index)));
+  }
+  // A run that never signs in, confirms an exit or opens a tunnel proves nothing.
+  test("the random sequences reached every interesting path", (t) => {
     t.diagnostic(`reached ${JSON.stringify(reached)}`);
-    // A run that never signs in, confirms an exit or opens a tunnel proves nothing.
-    if (!only)
-      for (const [path, count] of Object.entries(reached))
-        assert.ok(count > 0, `never reached: ${path}`);
-  },
-);
+    for (const [path, count] of Object.entries(reached))
+      assert.ok(count > 0, `never reached: ${path}`);
+  });
+}

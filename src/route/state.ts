@@ -76,14 +76,17 @@ export class RouteIdentityStore {
   };
   private secret: string;
   private previous: string | undefined;
+  private log: (line: string) => void;
   constructor(
     storage: RouteIdentityStore["storage"],
     secret: string,
     previous: string | undefined,
+    log: (line: string) => void,
   ) {
     this.storage = storage;
     this.secret = secret;
     this.previous = previous;
+    this.log = log;
   }
 
   async exists() {
@@ -107,7 +110,7 @@ export class RouteIdentityStore {
       };
     } catch {
       // Both keys are gone: the seal is useless, and the reading asks for a new sign-in.
-      console.log(JSON.stringify({ route_state: "unreadable" }));
+      this.log(JSON.stringify({ route_state: "unreadable" }));
       return { state: null, reseal: false, unreadable: true };
     }
   }

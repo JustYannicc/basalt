@@ -359,6 +359,7 @@ export class MemoryStorage implements GatewayStorage {
 export function gatewayDependencies(overrides: Partial<GatewayDependencies> = {}) {
   let now = 1_000_000;
   const events: RouteReadingChanged[] = [];
+  const logs: string[] = [];
   const storage = new MemoryStorage();
   const container = new FakeGateway();
   const deps: GatewayDependencies = {
@@ -372,7 +373,8 @@ export function gatewayDependencies(overrides: Partial<GatewayDependencies> = {}
       now += ms;
     },
     emit: (event) => events.push(event),
+    log: (line) => logs.push(line),
     ...overrides,
   };
-  return { deps, storage, container, events, advance: (ms: number) => (now += ms) };
+  return { deps, storage, container, events, logs, advance: (ms: number) => (now += ms) };
 }

@@ -61,6 +61,7 @@ export class RouteGateway extends DurableObject<RouteEnvironment> {
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       emit: emitRouteReadingChanged,
+      log: (line) => console.log(line),
     });
   }
   create(input: unknown) {

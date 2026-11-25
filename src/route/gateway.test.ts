@@ -288,21 +288,16 @@ test("a tunnel opens to the SOCKS port for its owner and refuses when the gatewa
 });
 
 test("the node state and login link never reach a log line", async () => {
-  const lines: string[] = [];
-  const original = console.log;
-  console.log = (...values: unknown[]) => lines.push(values.join(" "));
-  try {
-    const { gateway, container, advance } = await created();
-    await gateway.login(caller);
-    container.approve();
-    advance(2_000);
-    await gateway.alarm();
-    container.reachable = false;
-    await gateway.disconnect(caller);
-  } finally {
-    console.log = original;
-  }
-  const logged = lines.join("\n");
+  const { gateway, container, advance, logs, events } = await created();
+  await gateway.login(caller);
+  container.approve();
+  advance(2_000);
+  await gateway.alarm();
+  container.reachable = false;
+  await gateway.disconnect(caller);
+  // Events go out as log lines too.
+  const logged = [...logs, ...events.map((event) => JSON.stringify(event))].join("\n");
+  assert.ok(logs.length > 0);
   assert.equal(logged.includes("node-state-after-login"), false);
   assert.equal(logged.includes("login.example.invalid"), false);
 });
