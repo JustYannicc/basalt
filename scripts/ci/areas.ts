@@ -108,8 +108,20 @@ export const sharedInputs = [
   "alchemy.run.ts",
   "package.json",
   "tsconfig*.json",
+  // Workflow files, as the Check workflow's triggers, concurrency, permissions, env and defaults
+  // apply to every job. A change inside one Check job's block arrives as that job's input
+  // instead (workflowInputs in affected.ts); the scripts that select and gate jobs are
+  // selectionInputs below.
   ".github/workflows/**",
-  "scripts/ci/**",
+  // Selection parses the workflow and the import graph with this package's pinned tooling.
+  "scripts/architecture/{package.json,bun.lock}",
+  // Unlike the Check's job blocks and the scripts that select and gate jobs, every job executes
+  // these: the setup actions' downloads and preparation, with the declared e2e plans it writes.
+  // A change to one changes what every job runs, so it runs every job.
+  "scripts/ci/{setup-node.mjs,setup-bun.ts,verified-download.mjs,deny-release-downloads.cjs}",
+  "scripts/ci/{node,bun}-assets.json",
+  "scripts/ci/{prepare-e2e,dependency-lifecycles,declarations}.ts",
+  "scripts/ci/{e2e-groups,inherited-tests,upstream-files}.json",
   "scripts/prepare-upstream.ts",
   "scripts/upstream-cache.ts",
   "scripts/upstream-carries.ts",
@@ -174,19 +186,19 @@ export const areas = [
     jobs: ["client-native-product", "production-build"],
   },
   {
+    // Pool data its code and proofs read at runtime. Pool code reaches its jobs through the import
+    // graph, and the e2e product's reads of it are declared in productReads below.
     paths: [
-      "apps/pool/**",
-      "src/pool/**",
-      "containers/pool/**",
-      "scripts/pool-*",
-      "scripts/pool-*/**",
-      "e2e/pool-*.mjs",
-      "e2e/recipes/pool-*.mjs",
+      "src/pool/**/*.{json,txt}",
+      "apps/pool/**/*.{json,html,css}",
+      "scripts/pool-*/**/*.{json,lock,py}",
     ],
     jobs: [...accounts, "pool-runtime", "pool-inventory", "upstream-contracts"],
   },
+  // Only pool-runtime and its pool proofs build the pool image.
+  { paths: ["containers/pool/**"], jobs: ["pool-runtime"] },
   {
-    paths: ["src/catalog/**", "recipes/**", "scripts/connectors*", "scripts/connectors*/**"],
+    paths: ["src/catalog/**", "recipes/**", "scripts/connectors*/**/*.{json,lock}"],
     jobs: accounts,
   },
   {
@@ -222,7 +234,11 @@ export const areas = [
     jobs: ["gitlab-connectors"],
   },
   {
+    // The Workers the stack deploys, which production-build bundles and measures from their entries.
     paths: [
+      "alchemy.run.ts",
+      "infrastructure/**",
+      "src/*.ts",
       "src/catalog/**",
       "src/setup/**",
       "src/site/**",
@@ -330,6 +346,49 @@ export const areas = [
     paths: ["assets/fonts/**", "scripts/docs-fonts/**", ".upstream/apps/docs/**"],
     jobs: ["docs-build"],
   },
+  // `select` plans every declared shard's rows and timeout from the measured durations.
+  {
+    paths: ["scripts/ci/declared-durations.json"],
+    jobs: heavyJobs.filter((job) => job.startsWith("declared-")),
+  },
+];
+
+/**
+ * Reads by computed paths that the import graph cannot follow, declared as edges from the file
+ * that reads them: preparation bundles the whole pool app into the e2e product, the pool
+ * runtime shards list their test files by directory, the Cloudflare family fixture loads its
+ * catalog sources by name, and the Home peer program bundles the peer modules the pool Worker
+ * build checks. Preparation also writes a hash of the pool Worker's sources into the product,
+ * but e2e compares it only with the same generated value, so those sources reach no scenario
+ * through it.
+ */
+export const runtimeReads = [
+  { reader: "scripts/pool-app-bundle.ts", paths: ["apps/pool/**"] },
+  { reader: "scripts/ci/pool-test-shard.ts", paths: ["scripts/pool-tests/*.test.ts"] },
+  {
+    reader: "scripts/upstream-tests/cloudflare-family-fixture.ts",
+    paths: ["src/catalog/cloudflare.json", "src/catalog/cloudflare.published.json"],
+  },
+  { reader: "scripts/pool-peer-program.ts", paths: ["containers/pool/home_peer*.py"] },
+];
+
+/**
+ * The scripts that select, route, gate and report on the Check's jobs, and their data. They run
+ * in `select`, `fast`, `check`, `box-watch`, the re-run workflows or locally, and `fast` runs
+ * their tests (scripts/ci*.test.ts, through the owned unit suite) and actionlint in every Check,
+ * so a change to them runs no heavy job. Heavy jobs touch one corner of them: preparation checks
+ * declarations against `areas.ts` and `inputs.ts`, which `fast`'s preparation also runs on the
+ * same tree. The declared jobs' shard planner, `shards.ts`, and its measured durations are not
+ * listed: each declared shard runs with the rows, timeout and per-file deadline they plan, so
+ * they reach the declared jobs. What a change to one breaks beyond `fast` meets the batch Check,
+ * which runs every heavy job.
+ */
+export const selectionInputs = [
+  "scripts/ci/{affected,areas,reach,import-graph,job-inputs,inputs,e2e-workflow}.ts",
+  "scripts/ci/{select-jobs,unit-tests,box-router,box-watch,box-rerun}.ts",
+  "scripts/ci/{cancel-superseded,reuse,gate,aggregate-retries,retry-history,workflow-run}.ts",
+  "scripts/ci/{retries,fast-local}.ts",
+  "scripts/ci/e2e-exceptions.json",
 ];
 
 export const staticInputs = [
@@ -337,6 +396,7 @@ export const staticInputs = [
   "architecture/**/*.md",
   "docs/**/*.md",
   "README.md",
+  "scripts/ci/README.md",
   "LICENSE",
   "AGENTS.md",
   "CONTRIBUTING.md",

@@ -189,3 +189,20 @@ test("the pipeline guard excludes a merged release bump from an older PR's merge
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("the jobs that start with the Check resolve the comparison commit with select's step", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const comparison = (job: string) =>
+    workflow.jobs[job].steps.find((entry: { id?: string }) => entry.id === "comparison");
+  // select skips it only on a reused Check; the others always resolve it.
+  const { if: reusedOnly, ...select } = comparison("select");
+  assert.equal(reusedOnly, "steps.reuse.outputs.reused != 'true'");
+  for (const job of ["fast", "fast-units"]) {
+    assert.deepEqual(comparison(job), select, job);
+    // Every base the job reads is its own comparison's, never select's output.
+    assert.doesNotMatch(JSON.stringify(workflow.jobs[job]), /needs\.select/, job);
+    assert.equal(workflow.jobs[job].needs, undefined, job);
+  }
+});

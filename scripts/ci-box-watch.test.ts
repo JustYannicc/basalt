@@ -334,20 +334,20 @@ test("the aggregate takes box-watch passed or skipped, never failed or cancelled
   const box = ["declared-cloud-1"];
   for (const result of ["success", "skipped"])
     assert.deepEqual(
-      gateErrors({ ...needs, "box-watch": { result } }, heavyJobs, box, true),
+      gateErrors({ ...needs, "box-watch": { result } }, heavyJobs, box, "full"),
       [],
       result,
     );
   for (const result of ["failure", "cancelled"])
     assert.ok(
-      gateErrors({ ...needs, "box-watch": { result } }, heavyJobs, box, true).some((error) =>
+      gateErrors({ ...needs, "box-watch": { result } }, heavyJobs, box, "full").some((error) =>
         error.startsWith("box-watch:"),
       ),
       result,
     );
   // A Check that routed nothing skips box-watch.
   assert.ok(
-    gateErrors({ ...needs, "box-watch": { result: "skipped" } }, heavyJobs, [], true).every(
+    gateErrors({ ...needs, "box-watch": { result: "skipped" } }, heavyJobs, [], "full").every(
       (error) => !error.startsWith("box-watch:"),
     ),
   );

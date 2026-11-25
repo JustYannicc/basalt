@@ -49,6 +49,8 @@ export function pastBound(row: PhaseRow, now: number) {
 
 /** The fleet alarm's cadence while any row still has work to do. */
 export const upkeepCadenceMs = 2_000;
+/** How long a cell's health read may take; one the fleet alarm starts is answered by then. */
+export const cellHealthReadMs = 2_000;
 
 interface WakeRow extends PhaseRow {
   active: number;

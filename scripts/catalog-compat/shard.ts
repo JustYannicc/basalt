@@ -25,6 +25,13 @@ export const shardEntries = <Entry extends { id: string }>(
       createHash("sha256").update(entry.id).digest().readUInt32BE(0) % shards === shard - 1,
   );
 
+/** The ids, such as test file paths, that hash to this shard: each lands in exactly one. */
+export const shardIds = (ids: readonly string[], shard: Shard) =>
+  shardEntries(
+    ids.map((id) => ({ id })),
+    shard,
+  ).map(({ id }) => id);
+
 /** The packages a full shard must read: the official feed lists well over a thousand, and hashing
  * splits it unevenly, so each of n shards must read at least a thousand divided by n. */
 export const minimumRead = ({ shards }: Pick<Shard, "shards">) => Math.floor(1000 / shards);
