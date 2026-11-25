@@ -296,35 +296,6 @@ export class RouteAssignments {
     return answer;
   }
 
-  /**
-   * After a mirror's save, Home holds what is on record for the credential: its route or hold,
-   * and for a plugin provider, disabled. Only a routed or held credential is read back.
-   */
-  async reassert(reference: string, signal: AbortSignal) {
-    const stored = await this.storage.get(entryPrefix + reference);
-    const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
-    const proxy = entry
-      ? routeProxyUrl(entry.routeId)
-      : (await this.held(reference))
-        ? routeProxyUrl(unassignedRoute)
-        : undefined;
-    if (proxy === undefined) return;
-    const credential = (await readCredentials(this.home, signal)).get(reference);
-    if (!credential) return;
-    if (
-      credential.kind === "auth" &&
-      pluginProviders.has(credential.provider) &&
-      !credential.disabled
-    ) {
-      await this.storage.put(refusedPrefix + reference, true);
-      await writeDisabled(this.home, reference, true, signal);
-    }
-    if (credential.proxy === proxy) return;
-    if (credential.kind === "config")
-      await setHomeConfigProxy(this.home, credential.family, reference, proxy, signal);
-    else await writeAuth(this.home, reference, proxy, signal);
-  }
-
   /** Whether the pool disabled this credential because its plugin can't use the route. */
   async refused(reference: string) {
     return (await this.storage.get(refusedPrefix + reference)) === true;
@@ -462,13 +433,12 @@ export class RouteAssignments {
    * owner has rules are then held on the refusing route, everyone else serves as on main, and the
    * next pass resolves them again. It reads storage by key and touches Home only when a route,
    * a hold or a hold to clear is at stake.
-   */
-  /**
-   * A membership step decides routes in the queue like every other pass, but the repair it sits
-   * on (and the lease renewals behind that repair) waits for its turn at most `queueWaitMs`.
-   * A step that doesn't get its turn by then decides and writes nothing: its new members stay
-   * new, so the next repair asks again, and a member whose owner has rules is already held by
-   * its mirror. A step with no new member decides nothing and never queues.
+   *
+   * It decides in the queue like every other pass, but the repair it sits on (and the lease
+   * renewals behind that repair) waits for its turn at most `queueWaitMs`. A turn that hasn't
+   * started by then still runs when the queue drains, adding the members it decides to the pool
+   * record and removing none; until then the new members serve as they are, and a member whose
+   * mirror said its owner has rules is already held. A step with no new member never queues.
    */
   async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
@@ -477,24 +447,30 @@ export class RouteAssignments {
     if (known && accounts.every((account) => known.includes(account)))
       return this.preparePass(scope, accounts, signal);
     let started = false;
-    let skipped = false;
+    let late = false;
     const turn = this.serial(async () => {
-      if (skipped) return;
       started = true;
-      await this.preparePass(scope, accounts, signal);
+      await this.preparePass(scope, accounts, signal, late);
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<"late">((resolve) => {
+    const waited = new Promise<"late">((resolve) => {
       timer = setTimeout(() => resolve("late"), this.queueWaitMs);
     });
     try {
-      if ((await Promise.race([turn, late])) !== "late" || started) return await turn;
-      skipped = true;
+      if ((await Promise.race([turn, waited])) !== "late" || started) return await turn;
+      late = true;
+      void turn.catch(() => console.error("POOL_ROUTE_MEMBERSHIP_PENDING"));
     } finally {
       clearTimeout(timer);
     }
   }
-  private async preparePass(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+  private async preparePass(
+    scope: RouteScope,
+    accounts: readonly string[],
+    signal?: AbortSignal,
+    // A turn that ran after its repair moved on: it adds what it decided and removes nothing.
+    additive = false,
+  ) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
     const record = raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw);
     const known = new Set(record?.references ?? []);
@@ -546,7 +522,12 @@ export class RouteAssignments {
       revision: record?.revision ?? -1,
       refreshedAt: record?.refreshedAt ?? 0,
       // Unresolved members stay new, so the next membership pass asks for them again.
-      references: members.filter((member) => !unresolved.includes(member)),
+      references: [
+        ...new Set([
+          ...(additive ? known : []),
+          ...members.filter((member) => !unresolved.includes(member)),
+        ]),
+      ],
     } satisfies PoolRecord);
   }
 

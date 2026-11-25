@@ -559,8 +559,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       },
       actual: (pool) => membership.actual(pool),
       invalidateView: (pool) => this.control.invalidateViews(pool),
-      // New members are routed before Home's channel membership lets them serve. Policy installs
-      // and lease renewals never wait on routing.
+      // New members are routed before Home's channel membership lets them serve. A repair waits
+      // for routing at most its own capped step plus 2 s in the queue; policy installs never do.
       reconcile: async (pool, accounts) => {
         const organization = organizations.get(pool);
         if (organization === undefined) throw new Error("Pool organization unknown");

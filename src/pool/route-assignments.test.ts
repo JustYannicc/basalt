@@ -907,95 +907,89 @@ test("a mirror's decision and save are one step: a pass can't land between them 
   assert.equal(file.proxy_url, routeProxyUrl(home));
 });
 
-test("a membership step waits for a routing pass only briefly, decides nothing if it can't, and the pass keeps its record", async () => {
-  const { client } = fakeHome();
-  const store = storage();
-  const rules = scripted({});
-  let release = () => {};
-  let entered = () => {};
-  let block = false;
-  const resolver: RouteResolver = {
-    resolve: async (scope, references) => {
-      if (block) {
-        entered();
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-      return rules.resolver.resolve(scope, references, signal());
-    },
-  };
-  const routes = new RouteAssignments(store, resolver, client, () => now, 20);
-  await routes.prepare(scope, [mine, teammate], signal());
-  block = true;
-  const inside = new Promise<void>((resolve) => {
-    entered = resolve;
-  });
-  const pass = routes.refresh(signal());
-  // The pass has read its pool records and is waiting on the tools service.
-  await inside;
-  // The pass is waiting on the tools service. A step that only drops a member decides nothing
-  // and doesn't queue; one that adds a member gives up its turn and writes nothing.
-  block = false;
-  await routes.prepare(scope, [mine], signal());
-  await routes.prepare({ organization: scope.organization, pool: "other-pool" }, [oauth], signal());
-  assert.equal(store.map.get("route-pool:other-pool"), undefined);
-  release();
-  await pass;
-  const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
-  assert.deepEqual(record.references, [mine]);
-});
+test(
+  "a membership step waits for a routing pass only briefly, decides when the queue drains, and the pass keeps its record",
+  { timeout: 10_000 },
+  async () => {
+    const { client } = fakeHome();
+    const store = storage();
+    const rules = scripted({});
+    let release = () => {};
+    let entered = () => {};
+    let block = false;
+    const resolver: RouteResolver = {
+      resolve: async (scope, references) => {
+        if (block) {
+          entered();
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return rules.resolver.resolve(scope, references, signal());
+      },
+    };
+    const routes = new RouteAssignments(store, resolver, client, () => now, 20);
+    await routes.prepare(scope, [mine, teammate], signal());
+    block = true;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const pass = routes.refresh(signal());
+    // The pass has read its pool records and is waiting on the tools service.
+    await inside;
+    // The pass is waiting on the tools service. A step that only drops a member decides nothing
+    // and doesn't queue; one that adds a member returns after its short wait, undecided.
+    block = false;
+    await routes.prepare(scope, [mine], signal());
+    await routes.prepare(
+      { organization: scope.organization, pool: "other-pool" },
+      [oauth],
+      signal(),
+    );
+    assert.equal(store.map.get("route-pool:other-pool"), undefined);
+    release();
+    await pass;
+    const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
+    assert.deepEqual(record.references, [mine]);
+    // Its turn ran once the queue drained, adding the member it decided.
+    await routes.serial(async () => {});
+    const other = store.map.get("route-pool:other-pool") as { references: string[] };
+    assert.deepEqual(other.references, [oauth]);
+  },
+);
 
-test("a membership step that can't get its turn behind a mirror's save routes the credential on the next repair", async () => {
-  const { client, state } = fakeHome();
-  const gemini = "12345678-abcd-4000-8000-0000000000b3";
-  const rules = scripted({ [gemini]: { routeId: home, owner } });
-  const store = storage();
-  const routes = new RouteAssignments(store, rules.resolver, client, () => now, 20);
-  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
-  let release = () => {};
-  state.postGate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const posting = new Promise<void>((resolve) => {
-    state.posting = resolve;
-  });
-  const remirror = mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
-  await posting;
-  // The mirror holds the queue: the step gives up its turn, deciding and writing nothing.
-  state.postGate = undefined;
-  await routes.prepare(scope, [gemini], signal());
-  assert.equal(store.map.get(`route-pool:${scope.pool}`), undefined);
-  release();
-  assert.equal((await remirror).status, 200);
-  // The next repair asks again and routes it.
-  await routes.prepare(scope, [gemini], signal());
-  const file = state.files.find((row) => row.id === gemini)!;
-  assert.equal(file.disabled, true);
-  assert.equal(file.proxy_url, routeProxyUrl(home));
-});
-
-test("after a mirror's save, what is on record wins: a held key keeps its hold and a held plugin credential stays off", async () => {
-  const { client, state, keyProxy } = fakeHome();
-  const gemini = "12345678-abcd-4000-8000-0000000000b4";
-  const store = storage();
-  const routes = new RouteAssignments(store, scripted({}).resolver, client, () => now);
-  await mirror(client, routes, mine, apiKey);
-  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
-  // Held on record behind the saves' backs.
-  store.map.set(`route-held:${mine}`, true);
-  store.map.set(`route-held:${gemini}`, true);
-  await routes.reassert(mine, signal());
-  await routes.reassert(gemini, signal());
-  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
-  const file = state.files.find((row) => row.id === gemini)!;
-  assert.equal(file.proxy_url, routeProxyUrl(unassignedRoute));
-  assert.equal(file.disabled, true);
-  // Nothing on record: nothing is read or written.
-  state.writes.length = 0;
-  await routes.reassert(teammate, signal());
-  assert.deepEqual(state.writes, []);
-});
+test(
+  "a membership step that can't get its turn behind a mirror's save routes the credential once the save is done",
+  { timeout: 10_000 },
+  async () => {
+    const { client, state } = fakeHome();
+    const gemini = "12345678-abcd-4000-8000-0000000000b3";
+    const rules = scripted({ [gemini]: { routeId: home, owner } });
+    const store = storage();
+    const routes = new RouteAssignments(store, rules.resolver, client, () => now, 20);
+    await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+    let release = () => {};
+    state.postGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const posting = new Promise<void>((resolve) => {
+      state.posting = resolve;
+    });
+    const remirror = mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+    await posting;
+    // The mirror holds the queue: the step returns after its short wait, undecided.
+    state.postGate = undefined;
+    await routes.prepare(scope, [gemini], signal());
+    assert.equal(store.map.get(`route-pool:${scope.pool}`), undefined);
+    release();
+    assert.equal((await remirror).status, 200);
+    // Its turn runs right after the save and routes it, without waiting for the next repair.
+    await routes.serial(async () => {});
+    const file = state.files.find((row) => row.id === gemini)!;
+    assert.equal(file.disabled, true);
+    assert.equal(file.proxy_url, routeProxyUrl(home));
+  },
+);
 
 test("a mirror whose envelope expired while it waited behind a pass decides and writes nothing", async () => {
   const { client, state } = fakeHome();
