@@ -1,0 +1,263 @@
+{
+  "attribution": "Includes adapted PlanYield open dataset, https://planyield.dev/data/, CC BY 4.0. Vendor evidence checked 2026-11-13. Seeds expire; they are not a permanent entitlement table.",
+  "entries": [
+    {
+      "vendor": "openai",
+      "plan": "plus",
+      "windowSeconds": 18000,
+      "full": 1,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "vendor",
+      "verification": "reference",
+      "sources": [
+        "https://learn.chatgpt.com/docs/pricing"
+      ],
+      "checkedAt": 1793750400000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1794960000000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "openai",
+      "plan": "plus",
+      "windowSeconds": 604800,
+      "full": 1,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "vendor",
+      "verification": "reference",
+      "sources": [
+        "https://learn.chatgpt.com/docs/pricing"
+      ],
+      "checkedAt": 1793750400000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1794960000000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "pro",
+      "windowSeconds": 18000,
+      "full": 1,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "reference",
+      "sources": [
+        "https://claude.com/pricing"
+      ],
+      "checkedAt": 1794268800000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795478400000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "pro",
+      "windowSeconds": 604800,
+      "full": 1,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "reference",
+      "sources": [
+        "https://claude.com/pricing"
+      ],
+      "checkedAt": 1794268800000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795478400000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "openai",
+      "plan": "prolite",
+      "windowSeconds": 604800,
+      "full": 10,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers",
+        "https://github.com/openai/codex/blob/69231e119bfca0b14453515e97d99688ce1c47c9/codex-rs/tui/src/subscription.rs",
+        "https://x.com/thsottiaux/status/2119296267545419987"
+      ],
+      "checkedAt": 1794182400000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795392000000,
+      "revision": "seed-prolite-weekly",
+      "sourceId": "openai",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "openai",
+      "plan": "pro",
+      "windowSeconds": 604800,
+      "full": 20,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers",
+        "https://github.com/openai/codex/blob/69231e119bfca0b14453515e97d99688ce1c47c9/codex-rs/tui/src/subscription.rs",
+        "https://x.com/thsottiaux/status/2119296267545419987"
+      ],
+      "checkedAt": 1794182400000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795392000000,
+      "revision": "seed-pro-weekly",
+      "sourceId": "openai",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "openai",
+      "plan": "promax",
+      "windowSeconds": 604800,
+      "full": 50,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers",
+        "https://github.com/openai/codex/blob/69231e119bfca0b14453515e97d99688ce1c47c9/codex-rs/tui/src/subscription.rs",
+        "https://x.com/thsottiaux/status/2119296267545419987"
+      ],
+      "checkedAt": 1794182400000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795392000000,
+      "revision": "seed-promax-weekly",
+      "sourceId": "openai",
+      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_5x",
+      "windowSeconds": 18000,
+      "full": 5,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-10-30",
+      "sourceId": "claude-max",
+      "detail": "Vendor documentation checked on the seed date"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_5x",
+      "windowSeconds": 604800,
+      "full": 5,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-11-09",
+      "sourceId": "claude-max",
+      "detail": "Vendor documentation checked on the seed date"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "ultra",
+      "windowSeconds": 604800,
+      "full": 10,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-11-09",
+      "sourceId": "claude-ultra",
+      "detail": "Vendor documentation checked on the seed date"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_20x",
+      "windowSeconds": 18000,
+      "full": 20,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "policy",
+      "verification": "policy",
+      "sources": [
+        "https://github.com/JustYannicc/basalt/blob/29fa96540/src/pool/capacity/weights.ts"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-10-30",
+      "sourceId": "pool-policy",
+      "detail": "Explicit retained pool policy, not verified vendor allowance"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_20x",
+      "windowSeconds": 604800,
+      "full": 20,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "policy",
+      "verification": "policy",
+      "sources": [
+        "https://github.com/JustYannicc/basalt/blob/29fa96540/src/pool/capacity/weights.ts"
+      ],
+      "checkedAt": 1794528000000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795737600000,
+      "revision": "2026-11-09-max20x-20",
+      "sourceId": "pool-policy",
+      "detail": "Explicit retained pool policy, not verified vendor allowance"
+    }
+  ]
+}
