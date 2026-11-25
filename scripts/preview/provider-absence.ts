@@ -142,7 +142,10 @@ function cloudflareApi(account: string, token: string) {
     if (!response.ok)
       throw new Error(`Cloudflare preview absence readback failed with HTTP ${response.status}`);
     const body = record(await response.json());
-    if (body.success !== true || !Array.isArray(body.errors) || body.errors.length !== 0)
+    // The Workers custom domain list answers `errors: null` on success where other reads answer
+    // `[]`; either is clean, and anything else (a missing list, or any error in it) is not.
+    const clean = body.errors === null || (Array.isArray(body.errors) && body.errors.length === 0);
+    if (body.success !== true || !clean)
       throw new Error("Cloudflare preview absence readback was not authoritative");
     return body;
   };
@@ -232,24 +235,44 @@ function cloudflareApi(account: string, token: string) {
         return { applicationId: item.id, applicationName: item.name };
       });
     },
+    // Read to its last page: an absence proof that saw only the first page proves nothing about
+    // the rest. The list says how many domains there are (`result_info.total_count`).
     async listWorkerDomains() {
-      const url = new URL(`${apiOrigin}/accounts/${encodeURIComponent(account)}/workers/domains`);
-      const body = await request(url);
-      if (!Array.isArray(body.result))
-        throw new Error("Cloudflare Worker domain inventory is malformed");
-      return body.result.map((raw) => {
-        const item = record(raw);
-        if (
-          typeof item.id !== "string" ||
-          !item.id ||
-          typeof item.hostname !== "string" ||
-          !item.hostname ||
-          typeof item.service !== "string" ||
-          !item.service
-        )
-          throw new Error("Cloudflare Worker domain readback is missing its ID, name, or service");
-        return { id: item.id, hostname: item.hostname, service: item.service };
-      });
+      const domains: { id: string; hostname: string; service: string }[] = [];
+      for (let page = 1; page <= 10_000; page++) {
+        const url = new URL(`${apiOrigin}/accounts/${encodeURIComponent(account)}/workers/domains`);
+        url.searchParams.set("page", String(page));
+        const body = await request(url);
+        if (!Array.isArray(body.result))
+          throw new Error("Cloudflare Worker domain inventory is malformed");
+        for (const raw of body.result) {
+          const item = record(raw);
+          if (
+            typeof item.id !== "string" ||
+            !item.id ||
+            typeof item.hostname !== "string" ||
+            !item.hostname ||
+            typeof item.service !== "string" ||
+            !item.service
+          )
+            throw new Error(
+              "Cloudflare Worker domain readback is missing its ID, name, or service",
+            );
+          domains.push({ id: item.id, hostname: item.hostname, service: item.service });
+        }
+        const total =
+          body.result_info === undefined || body.result_info === null
+            ? undefined
+            : record(body.result_info).total_count;
+        if (total !== undefined && (!Number.isSafeInteger(total) || (total as number) < 0))
+          throw new Error("Cloudflare Worker domain pagination is malformed");
+        // Without a total, an empty page ends the list; with one, the list ends when it is read.
+        if (total === undefined ? body.result.length === 0 : domains.length >= (total as number))
+          return domains;
+        if (body.result.length === 0)
+          throw new Error("Cloudflare Worker domain list ended before its total");
+      }
+      throw new Error("Cloudflare Worker domain pagination did not finish");
     },
   };
 }
