@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-held-reads-answer",
+  "file": "0797-held-reads-answer.patch",
+  "content_sha256": "2890793e48b5f4a80656c30572092f7dd28b21a7c4f106088fb60184f75ba136",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

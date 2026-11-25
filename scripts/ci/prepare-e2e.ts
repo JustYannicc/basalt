@@ -20,6 +20,7 @@ export function e2eCorrections(root: string) {
     "accounts-traffic-pending",
     "accounts-traffic-unavailable",
     "accounts-traffic-complete",
+    "held-reads-answer",
   ]
     .map((name) => join(root, `e2e/${name}.patch`))
     .filter(existsSync);

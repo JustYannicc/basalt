@@ -525,6 +525,15 @@
             "mode": "manual",
             "requires": "Carry 0771 changes only a test. It pins the evidence that a call moved accounts after a limit carry 0769's hold caught: two usage-queue payloads under the call's one request_id, the limited account's failed with status 429 and the serving account's completed, while the caller gets only the serving account's bytes. Retire with carry 0769, or when the pinned node pins the same pair, in metadata-only and default modes."
           }
+        },
+        {
+          "identity": "cliproxy-node-nonstream-unknown-outcome",
+          "file": "0790-node-nonstream-unknown-outcome.patch",
+          "sha256": "84c393f9d8e3fe43a60fea7e0887953bbbd9a752a0c2209ba1d9c27bd7df171a",
+          "retirement": {
+            "mode": "manual",
+            "requires": "Carry 0790 ends a non-streamed generation on its credential once its outcome is unknown, whatever scope the failure behind it has: the caller gets the unknown outcome itself and no other credential or retry round receives the request, while the attempt's result is still recorded once with its credential scope. It builds on carry 0649's unknown outcome. Retire with carry 0649, or when the pinned node does the same for local credentials and Home dispatch and passes the non-streamed credential-scoped unknown-outcome regression."
+          }
         }
       ]
     }

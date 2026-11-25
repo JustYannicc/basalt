@@ -3421,6 +3421,9 @@ jobs:
         run: bun run e2e:prepare
       - name: Install Chromium for the account tests
         uses: ./.github/actions/setup-browser
+      - name: Prove a released query hold leaves no request unanswered
+        working-directory: .upstream
+        run: bunx vitest run --config e2e/query-hold.config.ts
       - name: Verify account usage rows and cells
         working-directory: .upstream
         run: >-

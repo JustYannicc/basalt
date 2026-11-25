@@ -6,11 +6,13 @@ import {
   forcedRestartServesWithinHeldStreamsMs,
   forcedRestartServesWithinMs,
   forcedStopGraceMs,
+  aliveRefusingMs,
   leakedStreamsMs,
   readinessReadMs,
   restartStartBoundMs,
   runtimeStartupMs,
   supervisorStopGraceMs,
+  unservingBoundMs,
 } from "./runtime-slots/forced-restart-timing.ts";
 import { poolLifecycle } from "./lifecycle.ts";
 import { policyHealthLeaseMs } from "./runtime-health.ts";
@@ -30,8 +32,8 @@ test("the timing module has no imports and matches the values the runtime enforc
   );
   assert.equal(runtimeStartupMs, poolLifecycle.startupTimeoutMs);
   assert.equal(readinessReadMs, policyHealthLeaseMs);
-  assert.equal(forcedRestartServesWithinMs, 343_000);
-  assert.equal(forcedRestartServesWithinHeldStreamsMs, 583_000);
+  assert.equal(forcedRestartServesWithinMs, 351_500);
+  assert.equal(forcedRestartServesWithinHeldStreamsMs, 591_500);
 });
 
 test("the controller's startup allowance is the supervisor's own startup budget", async () => {
@@ -82,9 +84,13 @@ function stopper(
   record: Record<string, unknown>,
   readiness: () => Promise<unknown>,
   streams?: { active: number; changedAt?: number },
+  alive: (identity: SlotIdentity, signal: AbortSignal) => Promise<unknown> = async () => {
+    throw new SlotRefused("identity");
+  },
 ) {
   context.mock.method(runtimeStopTiming, "stopGrace", async () => {});
   context.mock.method(console, "error", () => {});
+  context.mock.method(console, "info", () => {});
   const signals: number[] = [];
   const container = {
     running: true,
@@ -108,9 +114,7 @@ function stopper(
     },
     store: { read: async () => ({ record, configuration: {} }) },
     activity: { inspect: async () => streams },
-    health: async () => {
-      throw new SlotRefused("identity");
-    },
+    alive,
     readiness,
   } as unknown as ConstructorParameters<typeof RuntimeForcedStop>[0]);
   return { stop, signals };
@@ -178,6 +182,50 @@ test("a restart's own boot is never stopped, while the old container under it is
     else await assert.rejects(result, (error) => error instanceof SlotRefused, name);
     assert.deepEqual(signals, stops ? [15] : [], name);
   }
+});
+
+test("a boot that answers ready in time is never stopped, and one that answers late only from aliveRefusingMs", async (context) => {
+  const record = { identity: selected, authorization: { kind: "start" } };
+  const ready = (leaseFromNow: number) => async () => ({
+    boot_id: selected.bootId,
+    started_at: "started",
+    policyLeaseUntil: performance.now() + leaseFromNow,
+  });
+  const cases: [string, () => Promise<unknown>, number, boolean][] = [
+    ["in time to serve, long past aliveRefusingMs", ready(1_000), aliveRefusingMs + 60_000, false],
+    ["late, inside aliveRefusingMs", ready(-1), aliveRefusingMs - 1_000, false],
+    ["late, from aliveRefusingMs", ready(-1), aliveRefusingMs, true],
+    [
+      "no ready answer",
+      async () => Promise.reject(new SlotRefused("unhealthy")),
+      unservingBoundMs,
+      true,
+    ],
+  ];
+  for (const [name, alive, refusingMs, stops] of cases) {
+    const { stop, signals } = stopper(context, record, async () => ({}), undefined, alive);
+    const result = stop.stop(selected, Date.now() - refusingMs, AbortSignal.timeout(5_000));
+    if (stops) assert.deepEqual(await result, { stopped: true, hard: false }, name);
+    else await assert.rejects(result, (error) => error instanceof SlotRefused, name);
+    assert.deepEqual(signals, stops ? [15] : [], name);
+  }
+});
+
+test("a caller that gives up during the liveness read stops nothing", async (context) => {
+  const caller = new AbortController();
+  const { stop, signals } = stopper(
+    context,
+    { identity: selected, authorization: { kind: "start" } },
+    async () => ({}),
+    undefined,
+    (_identity, signal) =>
+      new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        caller.abort();
+      }),
+  );
+  await assert.rejects(stop.stop(selected, Date.now() - aliveRefusingMs, caller.signal));
+  assert.deepEqual(signals, []);
 });
 
 test("a stamped stream count holds the stop until it has stood still for leakedStreamsMs", async (context) => {
