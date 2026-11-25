@@ -53,6 +53,7 @@ function fakeHome() {
     files: [] as Record<string, unknown>[],
     global: "",
     failFields: false,
+    failStatus: false,
     writes: [] as string[],
   };
   const client = new HomeClient(async (path, init) => {
@@ -88,6 +89,8 @@ function fakeHome() {
       file.proxy_url = body.proxy_url;
       return Response.json({ status: "ok" });
     }
+    if (route === "/credentials/status" && method === "PATCH" && state.failStatus)
+      return new Response(null, { status: 500 });
     if (route === "/credentials/status" && method === "PATCH") {
       const file = state.files.find((item) => item.id === body.name);
       if (!file) return Response.json({ error: "not_found" }, { status: 404 });
@@ -690,9 +693,18 @@ test("every provider plugin the pool image ships is refused for routed owners un
     (match) => match[1]!,
   );
   // Every copy into the plugin directory names one .so, so no plugin arrives unnamed.
-  const copies = dockerfile
+  const instructions = dockerfile
+    .replace(/\\\n/g, " ")
     .split("\n")
-    .filter((row) => /^\s*(COPY|ADD)\b/.test(row) && row.includes("/opt/pool/plugins"));
+    .filter((row) => row.includes("/opt/pool/plugins"));
+  // Nothing is written into the plugin directory but by a COPY of one named .so.
+  for (const line of instructions.filter((row) => /^\s*RUN\b/.test(row)))
+    assert.doesNotMatch(
+      line,
+      /\b(cp|mv|install|ln|curl|wget|tar)\b[^&;|]*\/opt\/pool\/plugins/,
+      line,
+    );
+  const copies = instructions.filter((row) => /^\s*(COPY|ADD)\b/.test(row));
   assert.ok(copies.length >= 3);
   for (const line of copies) assert.match(line, /\/opt\/pool\/plugins\/[a-z0-9-]+\.so(\s|$)/, line);
   // The scheduler veto is a plugin but makes no provider calls.
@@ -723,4 +735,91 @@ test("a re-mirror without a hint keeps a hold, and a refused plugin credential s
   assert.equal(state.files[0]!.disabled, true);
   assert.equal(await routes.refusesUse(gemini, "gemini-cli"), true);
   assert.equal(await routes.refusesUse(mine, "codex"), false);
+});
+
+test("a plugin credential held because its pools disagree stays refused through the owner's pause", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000a6";
+  // Two pools, two routes for the same credential: it is held, with no route entry or hint.
+  const byPool: Record<string, string> = { "pool-a": home, "pool-b": other };
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => ({
+      served: true,
+      revision: 1,
+      resolutions: new Map(
+        references.map((reference) => [reference, { routeId: byPool[scope.pool]!, owner }]),
+      ),
+    }),
+  };
+  const routes = new RouteAssignments(storage(), resolver, client, () => now);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  await routes.prepare({ organization: scope.organization, pool: "pool-a" }, [gemini], signal());
+  await routes.prepare({ organization: scope.organization, pool: "pool-b" }, [gemini], signal());
+  await routes.refresh(signal());
+  assert.equal(state.files[0]!.disabled, true);
+  // The owner pauses: the pool's lift right goes, the refusal stays.
+  await routes.markRefused(gemini, false);
+  assert.equal(await routes.refusesUse(gemini, "gemini-cli"), true);
+});
+
+test("a plugin credential its owner's rules made direct can be paused and resumed", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000a7";
+  const routes = new RouteAssignments(storage(), scripted({}).resolver, client, () => now);
+  await mirror(
+    client,
+    routes,
+    gemini,
+    { type: "gemini-cli", access_token: "x" },
+    {
+      hasRules: true,
+      route: null,
+    },
+  );
+  assert.equal(state.files[0]!.disabled, undefined);
+  assert.equal(await routes.refusesUse(gemini, "gemini-cli"), false);
+});
+
+test("a hold on a plugin credential already on a route is still disabled, and the refusal is recorded before Home's write", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000a8";
+  const byPool: Record<string, string> = { "pool-a": home };
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => ({
+      served: true,
+      revision: Object.keys(byPool).length,
+      resolutions: new Map(
+        references.map((reference) => [
+          reference,
+          byPool[scope.pool]
+            ? { routeId: byPool[scope.pool]!, owner }
+            : { routeId: null, owner: null },
+        ]),
+      ),
+    }),
+  };
+  const routes = new RouteAssignments(storage(), resolver, client, () => now);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  await routes.prepare({ organization: scope.organization, pool: "pool-a" }, [gemini], signal());
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(home));
+  // Re-enabled behind the pool's back while it still names the route.
+  state.files[0]!.disabled = false;
+  await routes.markRefused(gemini, false);
+  // A second pool gives another route: a hold, which keeps the route proxy, still disables it.
+  byPool["pool-b"] = other;
+  state.failStatus = true;
+  state.writes.length = 0;
+  await assert.rejects(routes.refresh(signal()));
+  await assert.rejects(
+    routes.prepare({ organization: scope.organization, pool: "pool-b" }, [gemini], signal()),
+  );
+  // The failed write left the refusal on record, the hold recorded and the proxy untouched.
+  assert.equal(await routes.refused(gemini), true);
+  assert.equal(await routes.refusesUse(gemini, "gemini-cli"), true);
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(home));
+  assert.ok(!state.writes.includes(`auth:${gemini}`));
+  state.failStatus = false;
+  await routes.refresh(signal());
+  assert.equal(state.files[0]!.disabled, true);
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(home));
 });

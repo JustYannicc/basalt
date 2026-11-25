@@ -102,6 +102,8 @@ export async function handleAccountKeyMirror(
       // disabled: Home never uses or refreshes it, and nothing goes direct (change 37/39).
       const refused =
         pluginProviders.has(value.credential.type) && proxy?.includes(routePeerAddress) === true;
+      // The pool's refusal is recorded before Home holds the credential, so it is never lost.
+      if (refused) await input.routes?.markRefused(value.reference, true);
       const saved = await input.home.data("/credentials", {
         method: "POST",
         signal: request.signal,
@@ -114,8 +116,8 @@ export async function handleAccountKeyMirror(
         }),
       });
       if (saved.name !== `${value.reference}.json`) return unavailable();
-      if (refused || (await input.routes?.refused(value.reference)))
-        await input.routes?.markRefused(value.reference, refused);
+      if (!refused && (await input.routes?.refused(value.reference)))
+        await input.routes?.markRefused(value.reference, false);
       await enableNewCodexWebSockets(input.home, [value.reference], value.credential.type);
     }
     if (value.action === "remove") await input.routes?.forget(value.reference);

@@ -52,6 +52,8 @@ const poolPrefix = "route-pool:";
 const hintPrefix = "route-hint:";
 const signInPrefix = "route-sign-in:";
 const refusedPrefix = "route-refused:";
+// A credential the pool holds on the refusing route: its owner has rules, none decided it yet.
+const heldPrefix = "route-held:";
 // Rules change rarely; the revision poll catches edits, the floor catches anything it missed.
 const refreshFloorMs = 15 * 60_000;
 /**
@@ -293,16 +295,24 @@ export class RouteAssignments {
     return (await this.storage.get(refusedPrefix + reference)) === true;
   }
   /**
-   * Whether `provider`'s credential must stay off: its plugin can't use the route that applies, or
-   * the hold its owner's rules put it on. Not the marker, which an owner's pause clears.
+   * Whether `provider`'s credential must stay off: a route applies, which its plugin can't use, or
+   * the pool holds it, or the pool's own refusal hasn't been lifted yet. An owner's pause clears
+   * only the last; a hint alone never refuses, so a credential its rules made direct can resume.
    */
   async refusesUse(reference: string, provider: string) {
     if (!pluginProviders.has(provider)) return false;
     return (
       (await this.storage.get(entryPrefix + reference)) !== undefined ||
-      (await this.hasRules(reference)) ||
+      (await this.held(reference)) ||
       (await this.refused(reference))
     );
+  }
+  private async held(reference: string) {
+    return (await this.storage.get(heldPrefix + reference)) === true;
+  }
+  private async hold(reference: string, held: boolean) {
+    if (held) await this.storage.put(heldPrefix + reference, true);
+    else await this.storage.delete(heldPrefix + reference);
   }
   async refusedReferences(): Promise<ReadonlySet<string>> {
     return new Set((await this.listed(refusedPrefix, Schema.Literal(true))).keys());
@@ -359,6 +369,7 @@ export class RouteAssignments {
         if (decision === null) await this.record(reference, null);
         continue;
       }
+      if (decision === "hold") await this.hold(reference, true);
       const plugin = credential.kind === "auth" && pluginProviders.has(credential.provider);
       // Disabled before its proxy changes, so a refused plugin credential is never live routed.
       // The marker comes first: one without the write only means a harmless lift later.
@@ -388,6 +399,7 @@ export class RouteAssignments {
           await this.storage.delete(refusedPrefix + reference);
         }
         if (decision === null) await this.record(reference, null);
+        if (decision !== "hold") await this.hold(reference, false);
       } catch {
         failed = true;
       }
@@ -479,10 +491,12 @@ export class RouteAssignments {
       if (route !== null && !valid(route)) return unavailable();
       const entry = route && valid(route) ? { routeId: route.routeId, owner: route.owner } : null;
       await this.record(reference, entry);
+      await this.hold(reference, false);
       return entry ? routeProxyUrl(entry.routeId) : undefined;
     }
     if (hint.hasRules === false) {
       await this.record(reference, null);
+      await this.hold(reference, false);
       return undefined;
     }
     if (hint.hasRules === undefined) {
@@ -490,10 +504,8 @@ export class RouteAssignments {
       const stored = await this.storage.get(entryPrefix + reference);
       const kept = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
       if (kept) return routeProxyUrl(kept.routeId);
-      // Nor a hold: only an earlier hasRules:true or a refusal leads here, never a ruleless pool.
-      if ((await this.hasRules(reference)) || (await this.refused(reference)))
-        return routeProxyUrl(unassignedRoute);
-      return undefined;
+      // Nor a hold, which only an owner with rules is ever on.
+      return (await this.held(reference)) ? routeProxyUrl(unassignedRoute) : undefined;
     }
     const answers: (RouteResolution | undefined)[] = [];
     let claimed = false;
@@ -509,8 +521,12 @@ export class RouteAssignments {
     const decision = combine(answers);
     const served = (await this.state()).served;
     // Before any 200 a hasRules:true credential is held too: a 200 decides it, never a 404.
-    if (decision === "hold" || !claimed || !served) return routeProxyUrl(unassignedRoute);
+    if (decision === "hold" || !claimed || !served) {
+      await this.hold(reference, true);
+      return routeProxyUrl(unassignedRoute);
+    }
     await this.record(reference, decision);
+    await this.hold(reference, false);
     return decision ? routeProxyUrl(decision.routeId) : undefined;
   }
 
@@ -547,6 +563,7 @@ export class RouteAssignments {
   async forget(reference: string) {
     await this.storage.delete(hintPrefix + reference);
     await this.storage.delete(refusedPrefix + reference);
+    await this.hold(reference, false);
     await this.record(reference, null);
   }
 
