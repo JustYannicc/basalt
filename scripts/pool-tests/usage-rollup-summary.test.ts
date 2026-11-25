@@ -385,7 +385,7 @@ async function planned(db: HistoryDatabase, text: string, values: unknown[] | un
   return counts;
 }
 
-test("a v16 summary plans each statement's cut hours as one partitioned read and counts its rollup window once", async () => {
+test("a v16 summary plans each selection's cut hours as one partitioned read and counts its rollup window once", async () => {
   await seriesFixture(async (f) => {
     const fixture = await history(f);
     await backfill(f.db, "v16");
@@ -407,11 +407,21 @@ test("a v16 summary plans each statement's cut hours as one partitioned read and
     const plans = [];
     for (const statement of statements.filter(({ text }) => /^\s*WITH bindings/.test(text)))
       plans.push(await planned(f.db, statement.text, statement.values));
-    assert.equal(plans.length, 4, "targets, coverage, daily and hourly read the rollup");
-    const [targets, coverage, daily, hourly] = plans;
-    // The window's off-hour boundaries cut several hours; their raw rows are one read per selection.
-    for (const [name, plan] of Object.entries({ coverage, daily, hourly }))
-      assert.equal(plan!.partitions, partitions, `${name} plans one read of the raw partitions`);
+    // Coverage, daily and hourly are one statement over one selection of the window, so two
+    // statements read the rollup: the targets, then the figures.
+    assert.equal(plans.length, 2, "the targets and the figures statement read the rollup");
+    const [targets, figures] = plans;
+    // The window's off-hour boundaries cut several hours; their raw rows are one read per selection,
+    // and the figures read the window's groups once for all three parts. That this one read answers
+    // what coverage, daily and hourly read separately before is proven by "a summary read from the
+    // v16 rollup is identical to the same summary read from raw rows" and "after its targets, a
+    // summary on the v16 rollup reads its window's groups once".
+    assert.equal(
+      figures!.partitions,
+      partitions,
+      "the figures plan one read of the raw partitions",
+    );
+    assert.equal(figures!.people, 1, "the figures read the people rollup once");
     // The targets statement builds the raw selection, each rollup's selection and the raw window
     // count, one partitioned read each, and reads the v16 window's groups twice: once to count
     // them, once to select them.
