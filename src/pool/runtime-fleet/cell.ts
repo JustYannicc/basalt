@@ -14,7 +14,7 @@ import type { RuntimeProviderReader, RuntimeProviderTarget } from "../runtime-pr
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import type { FleetCell } from "./controller.ts";
 import type { FleetAdmission } from "./admission.ts";
-import { startingBoundMs } from "./phase-bounds.ts";
+import { cellHealthReadMs, startingBoundMs } from "./phase-bounds.ts";
 
 interface Dependencies {
   handoff: RuntimeHandoff;
@@ -101,7 +101,7 @@ export class FleetHandoffCell implements FleetCell {
     return true;
   }
   async healthy(identity: SlotIdentity) {
-    const health = await this.deps.driver.health(identity, AbortSignal.timeout(2_000));
+    const health = await this.deps.driver.health(identity, AbortSignal.timeout(cellHealthReadMs));
     if (!sameIdentity(health.identity, identity)) throw new SlotRefused("identity");
     return health.database;
   }

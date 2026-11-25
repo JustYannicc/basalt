@@ -55,6 +55,21 @@ test("an allowlist entry covers exactly its count, for the rules that offer one"
   );
 });
 
+test("a test-double entry covers only the wire guard's tests, which replace the fetch it wraps", () => {
+  const doubles = "landmines-testing/no-test-doubles";
+  const reason = { count: 1, reason: "The guard under test wraps the global fetch." };
+  const guard = "scripts/release/wire-guard-domain.test.ts";
+  assert.deepEqual(compare([finding(doubles, guard)], {}, { [doubles]: { [guard]: reason } }), []);
+  const elsewhere = "scripts/foo/bar.test.ts";
+  const problems = compare(
+    [finding(doubles, elsewhere)],
+    {},
+    { [doubles]: { [elsewhere]: reason } },
+  );
+  assert.match(problems.join("\n"), /outside the files this rule's entries may cover/u);
+  assert.match(problems.join("\n"), /scripts\/foo\/bar\.test\.ts/u);
+});
+
 test("landmines keeps its own counts and a parse failure is never baselined", () => {
   const problems = compare(
     [
