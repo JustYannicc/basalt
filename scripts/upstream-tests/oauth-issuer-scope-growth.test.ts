@@ -44,8 +44,14 @@ const { makeExecutorStorage } = (await load("packages/sdk/src/implementation/sto
   makeExecutorStorage: (input: { provider: "postgresql" }) => Work<{ migrate: Work<void> }>;
 };
 /** A reviewed issuer as the generator reads it: its lists, before they are digested. */
-type WholeListIssuer = { issuer: string; scopes: readonly string[]; baseline: readonly string[] };
-type Digested = { issuer: string; scopes: string; baseline: string };
+type WholeListIssuer = {
+  issuer: string;
+  scopes: readonly string[];
+  baseline: readonly string[];
+  /** Lists reviewed between the baseline and today's. */
+  history?: readonly (readonly string[])[];
+};
+type Digested = { issuer: string; lists: readonly string[] };
 // Absent before carry 0782; tests that provide issuers then run under the SDK's only rule.
 const scopeRules = (await load("packages/sdk/src/implementation/provider-oauth-scopes.ts")) as {
   WholeListScopeIssuers?: Context.Reference<{ readonly issuers: readonly Digested[] }>;
@@ -60,10 +66,9 @@ const scopeRules = (await load("packages/sdk/src/implementation/provider-oauth-s
 const digested = (issuers: readonly WholeListIssuer[]) => {
   const { scopeListDigest } = scopeRules;
   assert.ok(scopeListDigest, "carry 0782 digests reviewed lists");
-  return issuers.map(({ issuer, scopes, baseline }) => ({
+  return issuers.map(({ issuer, scopes, baseline, history = [] }) => ({
     issuer,
-    scopes: scopeListDigest(scopes),
-    baseline: scopeListDigest(baseline),
+    lists: [...new Set([baseline, ...history, scopes].map(scopeListDigest))],
   }));
 };
 
@@ -276,6 +281,23 @@ test("a recorded whole-list request survives the issuer removing one scope and a
   assert.deepEqual(lagging.calls, working);
 });
 
+test("a grant keeps working while its stored provider asks for a list the issuer has since cut", async () => {
+  // The provider grew to the issuer's list plus two scopes, then the issuer dropped one; a stored
+  // provider keeps asking for the grown list, which the history still names.
+  const grown = [...reviewed, ...added];
+  const cut = grown.filter((scope) => scope !== "zone.write");
+  const history = [{ issuer: issuer.issuer, scopes: cut, baseline: reviewed, history: [grown] }];
+  const observed = await observe({ shared: true, scopes: grown }, history);
+  assert.deepEqual(observed.signIn, saved);
+  assert.deepEqual(observed.calls, working);
+  // Without that history entry the grown list is no reviewed list, so the grant is held to it.
+  const forgotten = await observe({ shared: true, scopes: grown }, [
+    { issuer: issuer.issuer, scopes: cut, baseline: reviewed },
+  ]);
+  assert.deepEqual(forgotten.signIn, permissions);
+  assert.deepEqual(forgotten.calls, refused);
+});
+
 test("the three-scope grants from before full access keep their reconnect prompt and refusal", async () => {
   for (const scopes of [reviewed, [...reviewed, ...added]]) {
     const observed = await observe({ shared: true, asked: beforeFullAccess, scopes });
@@ -402,6 +424,11 @@ test("a sign-in records a whole-list request only for the marked issuer's whole 
   assert.equal(asksWholeList(server, kept, dropped), true);
   assert.equal(asksWholeList(server, reviewed, dropped), true);
   assert.equal(asksWholeList(server, ["zone.read"], grownIssuers), false);
+  // A request beyond every reviewed list is no whole-list request either.
+  assert.equal(
+    asksWholeList(server, [...reviewed, ...added, "synthetic:unpublished"], grownIssuers),
+    false,
+  );
   assert.equal(asksWholeList(server, beforeFullAccess, grownIssuers), false);
   assert.equal(asksWholeList(server, undefined, grownIssuers), false);
   assert.equal(

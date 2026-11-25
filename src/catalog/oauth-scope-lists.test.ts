@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,8 +12,11 @@ import { metadataSnapshotFile } from "../../scripts/catalog-oauth-metadata.ts";
 import {
   metadataIssuer,
   scopeBaselineFile,
+  scopeHistoryFile,
+  scopeListDigest,
   wholeListDecisions,
   wholeListIssuers,
+  wholeListIssuersSource,
 } from "../../scripts/oauth-whole-list-issuers-source.ts";
 
 /**
@@ -154,5 +157,55 @@ test("two marks for one issuer, however it is spelled, are refused", () => {
     );
   } finally {
     rmSync(catalog, { recursive: true, force: true });
+  }
+});
+
+test("the generated lists are the baseline, then the history, then today's reviewed list", () => {
+  const root = mkdtempSync(join(tmpdir(), "basalt-whole-list-"));
+  const catalog = join(root, "src/catalog");
+  try {
+    mkdirSync(catalog, { recursive: true });
+    const write = (file: string, value: unknown) =>
+      writeFileSync(join(catalog, file), JSON.stringify(value));
+    write("oauth-reviews.json", {
+      version: 1,
+      entries: [
+        {
+          entry: "example",
+          package: "@example/app",
+          methods: {
+            oauth: {
+              kind: "automatic",
+              protocol: "cimd",
+              metadata: "https://auth.example.test/.well-known/oauth-authorization-server",
+              metadataSha256: "a".repeat(64),
+              scopeRequest: "issuer-list",
+            },
+          },
+          sourceSha256: "b".repeat(64),
+        },
+      ],
+    });
+    write("example.oauth-metadata.json", {
+      issuer: "https://auth.example.test",
+      scopes_supported: ["read", "write"],
+    });
+    write(scopeBaselineFile("example"), ["read"]);
+    const earlier = scopeListDigest(["read", "admin"]);
+    write(scopeHistoryFile("example"), [earlier]);
+    assert.ok(
+      wholeListIssuersSource(root).includes(
+        JSON.stringify([
+          {
+            issuer: "https://auth.example.test",
+            lists: [scopeListDigest(["read"]), earlier, scopeListDigest(["write", "read"])],
+          },
+        ]),
+      ),
+    );
+    write(scopeHistoryFile("example"), ["read"]);
+    assert.throws(() => wholeListIssuersSource(root), /must be a list of scope list digests/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

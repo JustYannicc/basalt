@@ -100,8 +100,9 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +/**
 + * A short name for a set of scope names, so the SDK carries two names per reviewed issuer instead
 + * of its lists. It tells reviewed lists apart and guards nothing secret: a list made to collide
-+ * could only spare its own grant a reconnect prompt, and the service still refuses what the token
-+ * lacks. Upstream preparation computes the same names; a test holds the two equal.
++ * could only spare a grant's reconnect prompt or shared-grant refusal, and the service still
++ * refuses what the token lacks. Upstream preparation computes the same names; a test holds the two
++ * equal.
 + */
 +export const scopeListDigest = (scopes: readonly string[]) => {
 +  const names = [...new Set(scopes)].sort();
@@ -122,10 +123,12 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +/** An issuer whose reviewed connections ask for its whole published scope list. */
 +export interface WholeListIssuer {
 +  readonly issuer: string;
-+  /** `scopeListDigest` of the issuer's reviewed list today. */
-+  readonly scopes: string;
-+  /** `scopeListDigest` of the reviewed list when grants began recording a whole-list request. */
-+  readonly baseline: string;
++  /**
++   * `scopeListDigest` of every list reviewed since the mark: first the baseline grants asked for
++   * before they recorded a whole-list request, last today's. A stored provider can keep asking for
++   * an earlier one after the issuer drops a scope.
++   */
++  readonly lists: readonly string[];
 +}
 +
 +/**
@@ -140,12 +143,9 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +  URL.canParse(left) && URL.canParse(right) && new URL(left).href === new URL(right).href;
 +const reviewedIssuer = (issuers: readonly WholeListIssuer[], issuer: string) =>
 +  issuers.find((reviewed) => sameIssuer(reviewed.issuer, issuer));
-+/** Exactly the issuer's reviewed list today, or the baseline an older app version still asks for. */
-+const wholeList = (scopes: readonly string[], reviewed: WholeListIssuer) => {
-+  if (scopes.length === 0) return false;
-+  const digest = scopeListDigest(scopes);
-+  return digest === reviewed.scopes || digest === reviewed.baseline;
-+};
++/** Exactly one of the issuer's reviewed lists, today's or one an older version still asks for. */
++const wholeList = (scopes: readonly string[], reviewed: WholeListIssuer) =>
++  scopes.length > 0 && reviewed.lists.includes(scopeListDigest(scopes));
 +
 +/** Whether a sign-in to this server asks for its reviewed issuer's whole list. */
 +export const asksWholeList = (
@@ -160,7 +160,7 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +/**
 + * The requested scopes a saved grant is held to. When the grant asked for its reviewed issuer's
 + * whole list (recorded at sign-in, or exactly the baseline for grants saved before the record) and
-+ * today's request is that issuer's whole list too, the grant is held only to what it asked for: a
++ * today's request is one of that issuer's reviewed lists too, the grant is held only to what it asked for: a
 + * scope the list gained or lost since is no permission its tools were built on, and the next
 + * sign-in or reconnect asks for it. Every other grant or request, including an older or narrower
 + * one or one adding a scope outside the reviewed list, is held to every requested scope.
@@ -176,7 +176,7 @@ diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages
 +  if (asked === undefined || reviewed === undefined) return requested;
 +  const askedWhole =
 +    grant.requestedIssuerList === true ||
-+    (asked.length > 0 && scopeListDigest(asked) === reviewed.baseline);
++    (asked.length > 0 && scopeListDigest(asked) === reviewed.lists[0]);
 +  return askedWhole && wholeList(requested, reviewed)
 +    ? requested.filter((scope) => asked.includes(scope))
 +    : requested;

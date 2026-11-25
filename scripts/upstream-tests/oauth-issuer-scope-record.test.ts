@@ -196,8 +196,7 @@ const signIn = (scopes: readonly string[], reviewed: readonly string[] | undefin
               : [
                   {
                     issuer,
-                    scopes: scopeListDigest(reviewed),
-                    baseline: scopeListDigest(reviewed),
+                    lists: [scopeListDigest(reviewed)],
                   },
                 ],
         }),
