@@ -1,6 +1,7 @@
 import type { HistoryDatabase } from "./schema.ts";
 import { captureHoursCountLimitMs } from "./capture-hours-count.ts";
-import { captureHoursLookbackHours, listedBlocks } from "./capture-hours-plan.ts";
+import type { CaptureHoursMapping } from "./capture-hours-mark.ts";
+import { captureHoursLookbackHours } from "./capture-hours-plan.ts";
 import { captureHoursSession, type CaptureSessionProgress } from "./capture-hours-session.ts";
 
 export { captureHoursInspect } from "./capture-hours-inspect.ts";
@@ -9,8 +10,9 @@ export { captureHoursInspect } from "./capture-hours-inspect.ts";
  * The pool counts each of its settled hours' Home usage rows itself: each model-history pass ends,
  * after the usage rollup's tick, with one tick of at most two bounded sessions of its own. Each
  * counts six-hour blocks of the last 400 days, one short transaction a block, the pools in turn
- * by their newest pending block, and gives at least a quarter of its time to recounting the blocks
- * counted longest ago. Its state is stored apart from the rollup's.
+ * by their newest pending block. A settled hour is counted again only when a history write into
+ * it, or a key remapped into its pool, has made it pending (capture-hours-mark.ts), never on a
+ * timer. Its state is stored apart from the rollup's.
  */
 export const captureHoursAutoKey = "capture-hours-auto-v1";
 
@@ -34,10 +36,6 @@ export interface CaptureHoursAutoBounds {
   /** The same pool stopping on a lock or an error this many times in a row is stuck. */
   readonly failingAfter: number;
   readonly countLimitMs: number;
-  /** The most blocks one recount read lists, the ones counted longest ago. */
-  readonly recount: number;
-  /** The least share of each session's budget the recount gets; pending blocks get the rest. */
-  readonly recountShare: number;
   /** The hours before the settle horizon each pool's counts cover. */
   readonly lookbackHours: number;
 }
@@ -54,8 +52,6 @@ export const captureHoursAutoBounds: CaptureHoursAutoBounds = {
   stuckRetryLimitsMs: [3_000, 10_000],
   failingAfter: 6,
   countLimitMs: captureHoursCountLimitMs,
-  recount: listedBlocks,
-  recountShare: 0.25,
   lookbackHours: captureHoursLookbackHours,
 };
 
@@ -127,8 +123,12 @@ export interface CaptureHoursAutoState {
     readonly pendingBlocks: number;
     readonly pendingHours: number;
   }[];
-  /** The block the recount reached last. */
-  readonly recountPosition?: { readonly pool: string; readonly block: string };
+  /** Home's users and keys at the last tick, to find a remap since (capture-hours-mark.ts). */
+  readonly mapping?: CaptureHoursMapping;
+  /** Each remapped pool still being counted again, with the time before which its counts are. */
+  readonly recount?: Readonly<Record<string, string>>;
+  /** When a remap last found pools to count again, and how many. */
+  readonly lastRemap?: { readonly at: string; readonly pools: number };
   /** The pool whose block was counted last: the next session starts with the one after it. */
   readonly nextPool?: string;
   /** Each pool's blocks that ran out their own limit, by start, counted hour by hour from then on. */
@@ -141,7 +141,7 @@ export interface CaptureHoursAutoState {
   }[];
   /** How long the last plan read took, which grows with the pools against its 3 s limit. */
   readonly planMs?: number;
-  /** The oldest time any settled count was taken: how far the rolling recount lags. */
+  /** The oldest time any settled count was taken. */
   readonly stalestCheckedAt?: string;
   readonly pausedUntil?: string;
   readonly stuck?: readonly CaptureHoursStuck[];

@@ -9,7 +9,7 @@ import {
   type CaptureHoursAutoState,
 } from "../../src/pool/model-history/capture-hours-auto.ts";
 import { countBlockStatement } from "../../src/pool/model-history/capture-hours-count.ts";
-import { recountBlocks } from "../../src/pool/model-history/capture-hours-plan.ts";
+import { remapCaptureHours } from "../../src/pool/model-history/capture-hours-mark.ts";
 import { captureHoursLockClass } from "../../src/pool/model-history/capture-hours-schema.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { poolUsageSummary } from "../../src/pool/model-history/summary.ts";
@@ -666,6 +666,19 @@ async function checkedAt(f: Fixture, pool: string) {
   ).rows.map((row) => [(row.hour as Date).toISOString(), (row.checked_at as Date).getTime()]);
 }
 
+/** Home's mapping as a pass keeps it: a tick on fresh state seeded with it counts nothing again. */
+const mapped = async (f: Fixture) => ({
+  mapping: (await remapCaptureHours(f.db, undefined)).mapping,
+});
+
+/** One pool's hours [from, to) made pending, as a history write into them does. */
+const makePending = (f: Fixture, pool: string, from: number, to: number) =>
+  f.db.query("DELETE FROM basalt_model_capture_hours WHERE pool=$1 AND hour >= $2 AND hour < $3", [
+    pool,
+    new Date(from).toISOString(),
+    new Date(to).toISOString(),
+  ]);
+
 /** Every count settled long ago, the oldest hour counted longest ago. */
 const aged = (f: Fixture) =>
   f.db.query("UPDATE basalt_model_capture_hours SET checked_at=hour + interval '3 hours'");
@@ -690,14 +703,14 @@ function costly(f: Fixture, ms: number) {
   return { clock, counts, db };
 }
 
-test("older blocks are reached when the newest pending ones overflow every session, the pools in turn", async () => {
+test("pending blocks that overflow every session go the pools in turn, newest first, and no settled block is counted again", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, minute));
     await c.native(at(0, minute), true);
     await c.ready();
     // Thirty days counted long ago, then the newest five days' counts gone: 20 pending blocks a
-    // pool, far more than a session's pending share takes.
+    // pool, far more than a session takes.
     const lookback = 30 * 24;
     await c.fill(lookback);
     await aged(f);
@@ -705,24 +718,34 @@ test("older blocks are reached when the newest pending ones overflow every sessi
     await f.db.query("DELETE FROM basalt_model_capture_hours WHERE hour >= $1", [
       new Date(end - 5 * 24 * hour).toISOString(),
     ]);
-    // Each count costs 10 ms of a 100 ms session: about ten blocks, at most 7.5 of them pending.
+    // Each count costs 10 ms of a 100 ms session: about ten blocks a session.
     const { clock, counts, db } = costly(f, 10);
     const storage = memoryStorage();
-    const old = (count: { from: number }) => count.from < end - 5 * 24 * hour;
-    for (let pass = 1; pass <= 6; pass++) {
+    await storage.put(captureHoursAutoKey, await mapped(f));
+    // Settled: a block wholly before the counts gone; the one the cut falls inside is pending.
+    const old = (count: { to: number }) => count.to <= end - 5 * 24 * hour;
+    // Pass after pass until nothing is pending, then one pass more that counts nothing.
+    let passes = 0;
+    for (let left = Number.POSITIVE_INFINITY; left > 0; passes++) {
+      assert.ok(passes < 12, "the pending blocks drain");
       const before = counts.length;
-      await captureHoursTick(storage, (work) => work(db), {
+      const state = await captureHoursTick(storage, (work) => work(db), {
         now: () => clock.at,
         bounds: { lookbackHours: lookback, sessions: 1, sessionMs: 100 },
       });
       const these = counts.slice(before);
-      assert.ok(these.some(old), `pass ${pass} recounted an older block`);
-      assert.ok(
-        these.filter((count) => !old(count)).length <= 8,
-        `pass ${pass}: the pending share stays within three quarters of the session`,
-      );
+      assert.ok(these.length > 0, `pass ${passes + 1} counted`);
+      assert.ok(!these.some(old), `pass ${passes + 1} counted a settled block again`);
+      left = state.pendingHours ?? 0;
       clock.at += 5 * minute;
     }
+    assert.ok(passes >= 3, "they overflowed several sessions");
+    const idle = counts.length;
+    await captureHoursTick(storage, (work) => work(db), {
+      now: () => clock.at,
+      bounds: { lookbackHours: lookback, sessions: 1, sessionMs: 100 },
+    });
+    assert.equal(counts.length, idle, "drained, nothing is counted again");
     const pending = counts.filter((count) => !old(count));
     // The pools in turn, newest block first for each.
     const turns = pending.map((count) => count.pool);
@@ -736,48 +759,31 @@ test("older blocks are reached when the newest pending ones overflow every sessi
         "each pool's newest block first",
       );
     }
-    assert.ok(counts.filter(old).length >= 12, "six passes reached at least twelve older blocks");
   });
 });
 
 for (const position of blockPositions())
-  test(`with the session to spare, the recount takes every block counted over an hour ago, and none counted since (${position.label})`, async () => {
+  test(`an idle pool whose every hour is counted, however long ago, issues no count on a pass (${position.label})`, async () => {
     await seriesFixture(async (f) => {
       await clockAt(f, position.at);
       const c = await captureFixture(f);
       await c.native(at(0, minute));
       await c.ready();
       await c.fill();
-      // Just counted: nothing is recounted.
-      const fresh = costly(f, 0);
-      await captureHoursTick(c.storage, (work) => work(fresh.db), { bounds: { lookbackHours } });
-      assert.deepEqual(fresh.counts, [], "a block counted within the last hour is not recounted");
-      // Every count taken the moment its hour settled: over an hour ago for every hour, the newest
-      // one's too, wherever the horizon stands in its block.
-      await f.db.query(
-        "UPDATE basalt_model_capture_hours SET checked_at=hour + interval '2 hours'",
-      );
+      // Every count taken the moment its hour settled, so over an hour ago for every hour.
+      await aged(f);
       const before = await checkedAt(f, c.poolId);
-      const state = await captureHoursTick(c.storage, (work) => work(f.db), {
-        bounds: { lookbackHours },
-      });
-      assert.equal(state.lastStop, "complete");
-      // Read at the plan: the oldest settled count before this tick's recount.
-      assert.equal(
-        state.stalestCheckedAt,
-        new Date(Date.parse(String(before[0]![0])) + 2 * 3_600_000).toISOString(),
-      );
-      const after = await checkedAt(f, c.poolId);
-      assert.ok(
-        after.every(([, at], n) => at !== before[n]![1]),
-        "every hour was recounted",
-      );
-      assert.equal(state.recountPosition?.pool, c.poolId);
-      assert.equal(captureHoursInspect(state).recountPosition?.block, state.recountPosition?.block);
-      const next = await captureHoursTick(c.storage, (work) => work(f.db), {
-        bounds: { lookbackHours },
-      });
-      assert.ok(Date.parse(next.stalestCheckedAt!) > Date.parse(state.stalestCheckedAt!));
+      const idle = costly(f, 0);
+      for (let pass = 0; pass < 3; pass++) {
+        const state = await captureHoursTick(c.storage, (work) => work(idle.db), {
+          now: () => idle.clock.at,
+          bounds: { lookbackHours },
+        });
+        assert.equal(state.lastStop, "complete");
+        idle.clock.at += 5 * minute;
+      }
+      assert.deepEqual(idle.counts, [], "no history write, no remap: nothing to count");
+      assert.deepEqual(await checkedAt(f, c.poolId), before, "every count stands as taken");
     });
   });
 
@@ -819,19 +825,19 @@ for (const position of blockPositions())
       assert.deepEqual(ranges.slice(0, expected.length), expected);
       const stored = await c.stored();
       for (let at = dense; at < denseEnd; at += hour) assert.equal(stored[key(at)], 0, key(at));
-      // Never whole again: a recount of it goes hour by hour too.
-      await aged(f);
+      // Never whole again: counted again once a write makes it pending, it goes hour by hour too.
+      await makePending(f, c.poolId, dense, denseEnd);
       const later = counts.length;
       await captureHoursTick(storage, (work) => work(timed(f.db, clock, slow, undefined, counts)), {
         now: () => clock.at + 2 * hour,
         bounds: { lookbackHours },
       });
-      const recounted = counts
+      const again = counts
         .slice(later)
         .filter((count) => count.from >= dense && count.from < denseEnd);
-      assert.ok(recounted.length > 0, "the split block was recounted");
+      assert.ok(again.length > 0, "the split block was counted again");
       assert.ok(
-        recounted.every((count) => count.to - count.from === hour),
+        again.every((count) => count.to - count.from === hour),
         "hour by hour",
       );
     });
@@ -851,7 +857,7 @@ test("the tick waits while v17 is not applied", async () => {
   });
 });
 
-test("the tick's plan runs under its own 3 s limit, and its other reads under 1 s", async () => {
+test("the tick's plan and remap read run under their own 3 s limit, and its other reads under 1 s", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, minute));
@@ -865,21 +871,28 @@ test("the tick's plan runs under its own 3 s limit, and its other reads under 1 
         if (text.startsWith("BEGIN")) limit = undefined;
         if (text.startsWith("SELECT set_config('statement_timeout'"))
           limit = Number.parseInt(String(values![0]));
-        if (/basalt_model_capture_hours s|basalt_model_usage_people_ready p/.test(text))
+        if (/basalt_model_capture_hours s|basalt_model_usage_people_ready [pr]/.test(text))
           reads.push({ text, limit });
         return f.db.query(text, values);
       },
     };
-    await captureHoursTick(c.storage, (work) => work(db), { bounds: { lookbackHours } });
-    const kinds = ["usage_people_ready p", "min(s.checked_at)", "DISTINCT ON (o.pool, o.block)"];
+    // With no mapping kept, the pass counts the pool again: its read of the blocks to count runs too.
+    await captureHoursTick(memoryStorage(), (work) => work(db), { bounds: { lookbackHours } });
+    const kinds = [
+      "usage_people_ready p",
+      "usage_people_ready r",
+      "min(s.checked_at)",
+      "ORDER BY s.hour DESC",
+    ];
     for (const kind of kinds)
       assert.ok(
         reads.some((read) => read.text.includes(kind)),
         `the tick read ${kind}`,
       );
-    // The plan, whose cost grows with the pools, under its own 3 s; every other read under 1 s.
+    // The plan and the remap read, whose cost grows with the pools, under their own 3 s; every
+    // other read under 1 s.
     for (const read of reads.filter((entry) => entry.text !== countBlockStatement)) {
-      const plan = read.text.includes("usage_people_ready p");
+      const plan = /usage_people_ready [pr]/.test(read.text);
       assert.ok(
         read.limit !== undefined &&
           read.limit <= (plan ? 3_000 : 1_000) &&
@@ -929,8 +942,10 @@ for (const position of blockPositions())
         (state.split ?? []).map((entry) => [entry.pool, entry.blocks]),
       );
       assert.deepEqual(split, { [c.poolId]: [key(dense)], [c.otherId]: [key(dense - block)] });
-      // Recounted later, both go hour by hour: neither pool's split forgot the other's.
-      await aged(f);
+      // Counted again once made pending, both go hour by hour: neither pool's split forgot the
+      // other's.
+      await makePending(f, c.poolId, dense, dense + block);
+      await makePending(f, c.otherId, dense - block, dense);
       const later = counts.length;
       await captureHoursTick(storage, (work) => work(both), {
         now: () => clock.at + 2 * hour,
@@ -945,7 +960,7 @@ for (const position of blockPositions())
           .filter(
             (count) => count.pool === pool && count.from >= from && count.from < from + block,
           );
-        assert.ok(mine.length > 0, `${pool}'s split block was recounted`);
+        assert.ok(mine.length > 0, `${pool}'s split block was counted again`);
         assert.ok(
           mine.every((count) => count.to - count.from === hour),
           "hour by hour",
@@ -954,46 +969,7 @@ for (const position of blockPositions())
     });
   });
 
-test("a pending block that splits stops at the session's pending share between its hours", async () => {
-  await seriesFixture(async (f) => {
-    const c = await captureFixture(f);
-    await c.native(at(0, minute));
-    await c.ready();
-    const end = await horizon(f);
-    const newest = Math.floor((end - hour) / block) * block;
-    // The block before the newest, a whole six hours, runs out its 1 s limit; each of its hours
-    // then costs 400 ms of a 4 s session, whose pending share is 3 s: five fit, the sixth waits.
-    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
-    const started = clock.at;
-    let recountAt: number | undefined;
-    const base = timed(f.db, clock, {
-      pool: c.poolId,
-      hour: key(newest - block),
-      cost: { ms: 5_000 },
-      blocks: true,
-    });
-    const db: HistoryDatabase = {
-      query: async (text, values) => {
-        if (
-          text === countBlockStatement &&
-          Date.parse(String(values![2])) - Date.parse(String(values![1])) === hour
-        )
-          clock.at += 400;
-        if (text.includes("DISTINCT ON (o.pool, o.block)") && recountAt === undefined)
-          recountAt = clock.at - started;
-        return base.query(text, values);
-      },
-    };
-    await captureHoursTick(memoryStorage(), (work) => work(db), {
-      now: () => clock.at,
-      bounds: { lookbackHours, sessions: 1, sessionMs: 4_000 },
-    });
-    assert.ok(recountAt !== undefined, "the recount had its turn");
-    assert.ok(recountAt <= 3_000, `the pending share ran to ${recountAt} ms of 3,000`);
-  });
-});
-
-test("counts older than the lookback are pruned, at most a thousand a pass, and never recounted", async () => {
+test("counts older than the lookback are pruned, at most a thousand a pass, and never counted again", async () => {
   await seriesFixture(async (f) => {
     const c = await captureFixture(f);
     await c.native(at(0, minute));
@@ -1018,22 +994,6 @@ test("counts older than the lookback are pruned, at most a thousand a pass, and 
           )
         ).rows[0]!.n,
       );
-    // The recount never takes them, though they were counted longest ago.
-    const stale = await recountBlocks(
-      f.db,
-      [c.poolId],
-      100,
-      new Date().toISOString(),
-      lookbackHours,
-    );
-    assert.ok(stale.length > 0);
-    // A block of the lookback ends after it starts, past the lookback's first hour.
-    assert.ok(
-      stale.every(
-        (block) => Date.parse(block.from) >= first && Date.parse(block.to) > Date.parse(block.from),
-      ),
-      "only blocks in the lookback",
-    );
     const counts: { pool: string; from: number; to: number }[] = [];
     const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
     await captureHoursTick(
@@ -1324,7 +1284,7 @@ for (const position of blockPositions())
       await c.ready();
       const end = await horizon(f);
       // A whole, settled block before the newest: its first hour already has its settled count,
-      // taken just now, so no recount reaches the block and only its pending read does.
+      // taken just now, so only the read of its pending hours reaches the block.
       const older = Math.floor((end - hour) / block) * block - block;
       await f.db.query(
         `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
@@ -1344,7 +1304,10 @@ for (const position of blockPositions())
       };
       const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
       const storage = memoryStorage();
-      await storage.put(captureHoursAutoKey, { split: [{ pool: c.poolId, blocks: [key(older)] }] });
+      await storage.put(captureHoursAutoKey, {
+        split: [{ pool: c.poolId, blocks: [key(older)] }],
+        ...(await mapped(f)),
+      });
       const tick = () =>
         captureHoursTick(storage, (work) => work(timesOut), {
           now: () => clock.at,
@@ -1364,7 +1327,7 @@ for (const position of blockPositions())
     });
   });
 
-test("a block the session's share cut is taken up again in the same session, and its pool's pending is exact", async () => {
+test("a block the session's budget cuts stays pending, less exactly the hours it counted", async () => {
   await seriesFixture(async (f) => {
     await clockAt(f, blockPositions()[0]!.at);
     const c = await captureFixture(f);
@@ -1372,9 +1335,7 @@ test("a block the session's share cut is taken up again in the same session, and
     await c.ready();
     const end = await horizon(f);
     // Three whole blocks, all counted hour by hour, each hour 900 ms against its 1 s. Newest first:
-    // the first block takes 5.4 s; the session's pending share (9 s of 12 s) runs out four hours
-    // into the second; its last two hours come after the recount's share, before the session's
-    // 12 s run out inside the third.
+    // the first two blocks take 10.8 s; the session's 12 s run out inside the third.
     const blocks = [end - 3 * block, end - 2 * block, end - block].map(key);
     const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
     const storage = memoryStorage();
@@ -1398,63 +1359,6 @@ test("a block the session's share cut is taken up again in the same session, and
       [[1, 18 - done.settled]],
       "exactly the hours not counted: each counted hour taken off once",
     );
-  });
-});
-
-test("a recount that counts some hours of a block whose read is stuck leaves it stuck", async () => {
-  await seriesFixture(async (f) => {
-    await clockAt(f, blockPositions()[0]!.at);
-    const c = await captureFixture(f);
-    await c.native(at(0, minute));
-    await c.ready();
-    const end = await horizon(f);
-    const newest = end - block;
-    const older = end - 2 * block;
-    // The newest block counted just now; the older one's first five hours long ago, its last not.
-    await f.db.query(
-      `INSERT INTO basalt_model_capture_hours (pool,hour,usage_requests,uncaptured_requests,checked_at)
-      SELECT $1, h, 0, 0, now() FROM generate_series($2::timestamptz, $3::timestamptz, interval '1 hour') h
-      UNION ALL
-      SELECT $1, h, 0, 0, h + interval '3 hours'
-        FROM generate_series($4::timestamptz, $5::timestamptz, interval '1 hour') h`,
-      [
-        c.poolId,
-        new Date(newest).toISOString(),
-        new Date(end - hour).toISOString(),
-        new Date(older).toISOString(),
-        new Date(older + 4 * hour).toISOString(),
-      ],
-    );
-    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
-    const until = new Date(clock.at + 5 * minute).toISOString();
-    // Its read already stuck, in its wait: the pending path leaves the block, the recount reaches it.
-    const storage = memoryStorage();
-    await storage.put(captureHoursAutoKey, {
-      split: [{ pool: c.poolId, blocks: [key(older)] }],
-      slow: [{ pool: c.poolId, hour: key(older), count: 3, until, limit: "read" }],
-      stuck: [{ pool: c.poolId, reason: "slow", hour: key(older), retryAt: until }],
-    });
-    // Each hour 900 ms of a 2.5 s session: the recount counts two of the block's hours, then stops.
-    const state = await captureHoursTick(
-      storage,
-      (work) => work(timed(f.db, clock, { pool: c.poolId, cost: { ms: 900 } })),
-      { now: () => clock.at, bounds: { lookbackHours: 12, sessions: 1, sessionMs: 2_500 } },
-    );
-    const recounted = Number(
-      (
-        await f.db.query(
-          "SELECT count(*)::int AS n FROM basalt_model_capture_hours WHERE pool=$1 AND hour>=$2 AND hour<$3 AND checked_at > now() - interval '1 minute'",
-          [c.poolId, new Date(older).toISOString(), new Date(newest).toISOString()],
-        )
-      ).rows[0]!.n,
-    );
-    assert.ok(recounted >= 1 && recounted < 6, `${recounted} of its hours recounted`);
-    assert.deepEqual(
-      state.stuck?.map((entry) => [entry.pool, entry.reason, entry.hour]),
-      [[c.poolId, "slow", key(older)]],
-      "still stuck: its read has not answered",
-    );
-    assert.equal(state.slow?.find((entry) => entry.limit === "read")?.count, 3);
   });
 });
 

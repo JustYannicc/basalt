@@ -6,6 +6,7 @@ import type {
   CaptureHoursStuck,
 } from "./capture-hours-auto.ts";
 import { countCaptureBlock, countCaptureHour } from "./capture-hours-count.ts";
+import { remapCaptureHours } from "./capture-hours-mark.ts";
 import { postgresCode } from "./usage-rollup-apply.ts";
 import {
   boundedRead,
@@ -82,21 +83,21 @@ const hoursOf = (block: CaptureBlock) => {
 };
 
 /**
- * One session's counting. Pending blocks go round-robin across pools, each pool's newest first, for
- * at most `1 - recountShare` of the budget; then the blocks counted longest ago get the rest, at
- * least that share; then pending blocks again while time is left. A block that runs out its own
- * limit is counted hour by hour from then on, in this session or the next, never whole again.
+ * One session's counting. Pending blocks go round-robin across pools, each pool's newest first,
+ * while time is left; then what is left counts the pools Home remapped again, newest first. Nothing
+ * is counted again otherwise (capture-hours-mark.ts), and nothing on a timer. A block that runs out
+ * its own limit is counted hour by hour from then on, in this session or the next.
  */
 export async function captureHoursSession(
   context: CaptureSessionContext,
 ): Promise<CaptureHoursAutoStop> {
-  const { db, bounds, now, budget, left, stopped, progress } = context;
+  const { db, bounds, now, left, stopped, progress } = context;
   const update = (change: Partial<CaptureHoursAutoState>) => {
     progress.state = { ...progress.state, ...change };
   };
   const state = () => progress.state;
-  // Each read runs under 1 s, and never past what the session has left; the plan, whose cost grows
-  // with the pools, under its own 3 s.
+  // Each read runs under 1 s, and never past what the session has left; the plan and the remap
+  // read, whose cost grows with the pools, under their own 3 s.
   const read = <T>(work: () => Promise<T>) => boundedRead(db, left, work);
   const planStarted = performance.now();
   const plan = await boundedRead(
@@ -107,6 +108,28 @@ export async function captureHoursSession(
   );
   update({ planMs: Math.round((performance.now() - planStarted) * 10) / 10 });
   if (!plan) return "not_applied";
+  // The pools Home remapped since the last tick are counted again, as far back as their counts go.
+  // A failed read fails the tick like the plan's: counting on unseen remaps would hide them.
+  const remap = await boundedRead(
+    db,
+    left,
+    () => remapCaptureHours(db, state().mapping),
+    captureHoursPlanLimitMs,
+  );
+  const recounting = Object.entries({
+    ...state().recount,
+    ...Object.fromEntries(remap.remapped.map((pool) => [pool, remap.at])),
+  }).filter(
+    (entry): entry is [string, string] =>
+      typeof entry[1] === "string" && remap.mapping[entry[0]] !== undefined,
+  );
+  update({
+    mapping: remap.mapping,
+    recount: Object.fromEntries(recounting),
+    ...(remap.remapped.length
+      ? { lastRemap: { at: new Date(now()).toISOString(), pools: remap.remapped.length } }
+      : {}),
+  });
   const { pools, plannedAt } = plan;
   // The tick reached its database and plan, so it is no longer failing as a whole.
   const done = await read(() =>
@@ -146,7 +169,7 @@ export async function captureHoursSession(
     lastSlow: (state().lastSlow ?? []).filter((entry) => known.has(entry.pool)),
     repeat: state().repeat?.pool === "" ? undefined : state().repeat,
     // A split block stays split while its pool is counted and the block is inside the lookback, so
-    // a recount of it goes hour by hour too: each pool keeps its own, at most its lookback's blocks.
+    // a later count of it goes hour by hour too: each pool keeps its own, at most its lookback's.
     split: (state().split ?? []).flatMap((entry) => {
       const blocks = (Array.isArray(entry?.blocks) ? entry.blocks : []).filter(
         (start) => typeof start === "string" && Date.parse(start) > oldestBlock,
@@ -159,7 +182,7 @@ export async function captureHoursSession(
       (await read(() => stalestCapture(db)).catch(() => undefined)) ?? state().stalestCheckedAt,
   });
   // Counts older than the lookback are never complete to the summary: a bounded prune each
-  // session keeps them, and the recount's work, from growing. Its failure stops no count.
+  // session keeps them from growing. Its failure stops no count.
   await boundedRead(
     db,
     left,
@@ -310,7 +333,7 @@ export async function captureHoursSession(
   /**
    * Whether an entry is the read's wait of this block, or the stuck entry it led to: keyed on the
    * block's start, cleared only by the whole block counted or by its read answering, never by one
-   * of its hours counted alone, as a recount or a cut session counts them.
+   * of its hours counted alone, as a cut session counts them.
    */
   const readWait = (block: CaptureBlock, entry: { pool: string; hour?: string; limit?: string }) =>
     entry.limit === "read" && entry.pool === block.pool && entry.hour === startOf(block);
@@ -365,16 +388,15 @@ export async function captureHoursSession(
   /**
    * One block, whole or hour by hour. Returns the session's stop, "rest" to leave the pool for the
    * session, "skip" when some of its hours are left uncounted (slow, or in their slow wait) while
-   * its pool goes on, "mark" once the session has spent `until` between two of its hours, or
-   * undefined once the block is counted. A count that fails in Postgres rests only its pool.
+   * its pool goes on, or undefined once the block is counted. A count that fails in Postgres rests
+   * only its pool. Counted `again`, a block takes every hour of it, settled ones included.
    */
   const countBlock = async (
     block: CaptureBlock,
-    recount = false,
-    until = budget,
-  ): Promise<CaptureHoursAutoStop | "rest" | "skip" | "mark" | undefined> => {
+    again = false,
+  ): Promise<CaptureHoursAutoStop | "rest" | "skip" | undefined> => {
     try {
-      return await countBlockOnce(block, recount, until);
+      return await countBlockOnce(block, again);
     } catch (error) {
       // Only Postgres failing the pool's own statement is the pool's: anything else, a socket's code
       // or a database-wide state, is the tick's, and pauses it whole with no pool named.
@@ -392,9 +414,8 @@ export async function captureHoursSession(
   let countedInBlock = 0;
   const countBlockOnce = async (
     block: CaptureBlock,
-    recount: boolean,
-    until: number,
-  ): Promise<CaptureHoursAutoStop | "rest" | "skip" | "mark" | undefined> => {
+    again: boolean,
+  ): Promise<CaptureHoursAutoStop | "rest" | "skip" | undefined> => {
     if (stopped()) return "handover";
     if (left() <= 0) return "budget";
     progress.working = block.pool;
@@ -428,11 +449,11 @@ export async function captureHoursSession(
       // Past its own limit: from now on hour by hour, starting in this session if time is left.
       markSplit(block);
     }
-    // A recount takes every hour of it; a pending one only the hours without a settled count. A
-    // statement timeout in that read is this pool's own: its first hour waits like a slow hour and
-    // the pool goes on, unless the session's budget cut the read short, which is a budget stop.
+    // Counted again, every hour; else only the hours without a settled count. A statement timeout
+    // in that read is this pool's own: its first hour waits like a slow hour and the pool goes on,
+    // unless the session's budget cut the read short, which is a budget stop.
     let hours: string[];
-    if (recount) hours = hoursOf(block);
+    if (again) hours = hoursOf(block);
     else {
       // A read that ran out its limit is not run again until its own wait ends.
       if (readWaiting(block)) return "skip";
@@ -463,8 +484,6 @@ export async function captureHoursSession(
       }
       if (stopped()) return "handover";
       if (left() <= 0) return "budget";
-      // A split block never takes the session past its share: the rest of it waits its turn.
-      if (budget - left() >= until) return "mark";
       const started = performance.now();
       const result = await countCaptureHour(db, block.pool, hour, left, bounds.countLimitMs);
       if (result.kind === "budget") return "budget";
@@ -509,29 +528,20 @@ export async function captureHoursSession(
   };
   // Each pool's pending blocks the session reached and left waiting, never to be counted this session.
   const skips = new Map<string, number>();
-  // The hours each block cut by the session's share already counted, by pool|from.
-  const partly = new Map<string, number>();
-  const blockKey = (block: CaptureBlock) => `${block.pool}|${block.from}`;
-  /** Pending blocks until the session has spent `until` of its budget. */
-  const fill = async (until: number) => {
-    while (budget - left() < until) {
+  /** Pending blocks while the session has budget left. */
+  const fill = async () => {
+    while (left() > 0) {
       const block = nextPending();
       if (!block) return undefined;
       countedInBlock = 0;
-      const stop = await countBlock(block, false, until);
+      const stop = await countBlock(block);
       update({ nextPool: block.pool });
       if (stop !== undefined) {
-        // Not finished: some of it waits, the session's share or budget ran out inside it, or it
-        // stopped. The block stays pending, less the hours it did count; a block the share cut goes
-        // back on its queue.
+        // Not finished: some of it waits, the budget ran out inside it, or it stopped. The block
+        // stays pending, less the hours it did count.
         const was = pending.get(block.pool)!;
         pending.set(block.pool, { ...was, hours: Math.max(0, was.hours - countedInBlock) });
-        partly.set(blockKey(block), (partly.get(blockKey(block)) ?? 0) + countedInBlock);
         tally();
-        if (stop === "mark") {
-          queues.get(block.pool)!.unshift(block);
-          return undefined;
-        }
         if (stop === "skip") {
           skips.set(block.pool, (skips.get(block.pool) ?? 0) + 1);
           continue;
@@ -542,8 +552,7 @@ export async function captureHoursSession(
       const was = pending.get(block.pool)!;
       pending.set(block.pool, {
         blocks: Math.max(0, was.blocks - 1),
-        // Less what an earlier part of this block, cut by the session's share, already took off.
-        hours: Math.max(0, was.hours - ((block.missing ?? 0) - (partly.get(blockKey(block)) ?? 0))),
+        hours: Math.max(0, was.hours - (block.missing ?? 0)),
       });
       tally();
     }
@@ -666,26 +675,49 @@ export async function captureHoursSession(
     }
     return undefined;
   };
+  /**
+   * What the session has left after pending blocks counts the remapped pools again, each newest
+   * first. A pool is done once no count of it predates its remap; a block left with an hour in its
+   * slow wait keeps its pool for a later session.
+   */
+  const again = async (): Promise<CaptureHoursAutoStop | undefined> => {
+    for (const [pool, before] of Object.entries(state().recount ?? {})) {
+      const tried = new Set<string>();
+      for (let more = true; more;) {
+        if (waiting().has(pool) || resting.has(pool)) break;
+        if (stopped()) return "handover";
+        if (left() <= 0) return "budget";
+        const listed = await read(() => recountBlocks(db, pool, before, bounds.lookbackHours));
+        if (!listed.length) {
+          update({
+            recount: Object.fromEntries(
+              Object.entries(state().recount ?? {}).filter(([name]) => name !== pool),
+            ),
+          });
+          break;
+        }
+        const blocks = listed.filter((block) => !tried.has(block.from));
+        more = blocks.length > 0;
+        for (const block of blocks) {
+          tried.add(block.from);
+          countedInBlock = 0;
+          const stop = await countBlock(block, true);
+          if (stop === "rest") {
+            more = false;
+            break;
+          }
+          if (stop !== undefined && stop !== "skip") return stop;
+        }
+      }
+    }
+    return undefined;
+  };
   const retried = await retryStuck();
   if (retried) return retried;
-  const first = await fill(budget * (1 - bounds.recountShare));
-  if (first) return first;
-  // The guaranteed share: the blocks counted longest ago, for as long as the session lasts.
-  const counting = order.filter((pool) => !waiting().has(pool) && !resting.has(pool));
-  const stale = await read(() =>
-    recountBlocks(db, counting, bounds.recount, plannedAt, bounds.lookbackHours),
-  );
-  for (const block of stale) {
-    if (waiting().has(block.pool) || resting.has(block.pool)) continue;
-    const stop = await countBlock(block, true);
-    if (stop === "budget" || stop === "mark") break;
-    if (stop === "rest" || stop === "skip") continue;
-    if (stop) return stop;
-    update({ recountPosition: { pool: block.pool, block: block.from } });
-  }
-  // What is left of the session goes back to pending blocks.
-  const rest = await fill(budget);
+  const rest = await fill();
   if (rest) return rest;
+  const later = await again();
+  if (later) return later;
   const held = waiting();
   // Pending blocks this session never reached, past the ones it left waiting: the budget stopped it,
   // whether they were still queued or past the plan's listed blocks. What is left past them is only

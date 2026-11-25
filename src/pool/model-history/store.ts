@@ -1,4 +1,5 @@
 import { appAttributionReady } from "./schema.ts";
+import { historyWriteReadiness, homeSource, markWrittenHours } from "./capture-hours-mark.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import type { ModelRequest } from "./record.ts";
 
@@ -155,20 +156,26 @@ export async function insertRequests(
   const existing = await existingRequests(db, records, preserveOriginalAttribution, strictContent);
   const missing = records.filter((row) => !existing.has(row.id));
   if (!records.length) return 0;
-  const appAttribution = await appAttributionReady(db);
+  const { appAttribution, captureHours } = await historyWriteReadiness(db);
   if (!appAttribution && records.some((row) => row.appId != null || row.requirement != null))
     throw new Error("App model attribution migration is not ready");
   if (!missing.length) return 0;
   const { selected, types } = historyRecordLayout(appAttribution);
+  // The hours this fills with Home's rows are counted again (capture-hours-mark.ts).
   const result = await db.query(
-    `INSERT INTO basalt_model_requests (${selected})
-    SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
-    ON CONFLICT (id) DO NOTHING RETURNING id`,
-    [JSON.stringify(missing.map((row) => recordValues(row, appAttribution)))],
+    `WITH inserted AS (INSERT INTO basalt_model_requests (${selected})
+      SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
+      ON CONFLICT (id) DO NOTHING RETURNING id, pool, timestamp, source)
+    ${captureHours ? `, ${markWrittenHours("inserted", "$2")}` : ""}
+    SELECT id FROM inserted`,
+    [
+      JSON.stringify(missing.map((row) => recordValues(row, appAttribution))),
+      ...(captureHours ? [await homeSource()] : []),
+    ],
   );
   // Repeat the ownership check after ON CONFLICT waits for a concurrent import to commit.
   await existingRequests(db, records, preserveOriginalAttribution, strictContent);
-  return result.rowCount ?? result.rows.length;
+  return result.rows.length;
 }
 
 export interface HistoryQuery {

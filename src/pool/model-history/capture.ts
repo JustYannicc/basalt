@@ -2,7 +2,8 @@ import { digest } from "../backend-users.ts";
 import { requireHomePrivacyReady } from "./privacy.ts";
 import { counter, invalidHistory } from "./record.ts";
 import { homeHistorySelect, homeHistorySource, homeRequest } from "./home.ts";
-import { appAttributionReady, type HistoryDatabase } from "./schema.ts";
+import type { HistoryDatabase } from "./schema.ts";
+import { historyWriteReadiness } from "./capture-hours-mark.ts";
 import { historyBatchSize, insertRequests } from "./store.ts";
 import { pendingPoolHistoryChanges, poolHistoryPendingProjection } from "./change-revisions.ts";
 import { projectPoolHistoryChanges } from "./change-projection.ts";
@@ -30,7 +31,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     old: string,
     complete: boolean,
     forward: string,
-    appAttribution: boolean,
+    writes: Awaited<ReturnType<typeof historyWriteReadiness>>,
     journalReady: boolean,
     unprojected: boolean,
     pending: ReturnType<typeof pendingPoolHistoryChanges>;
@@ -63,7 +64,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
       return { state: "inactive" as const, pending };
     }
     await requireHomePrivacyReady(db);
-    appAttribution = await appAttributionReady(db);
+    writes = await historyWriteReadiness(db);
     const next = counter(state.forward_id),
       sweep = counter(state.sweep_id),
       savedSweepUpper = counter(state.sweep_upper);
@@ -136,7 +137,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     fresh = 0,
     caughtUp = false;
   while (!options.stop?.(pages)) {
-    const page = await captureForwardPage(db, source, appAttribution);
+    const page = await captureForwardPage(db, source, writes);
     pages++;
     fresh += page.rows;
     inserted += page.inserted;

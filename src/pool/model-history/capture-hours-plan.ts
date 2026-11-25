@@ -95,7 +95,7 @@ export async function planCaptureHours(
     )
   ).rows;
   return {
-    /** When the plan read the counts: a recount takes only hours counted before it. */
+    /** When the plan read the counts. */
     plannedAt: rows.length ? String(rows[0]!.planned_at) : new Date().toISOString(),
     pools: rows.map((row): CaptureHoursPool => {
       const pool = String(row.pool);
@@ -122,44 +122,36 @@ export async function stalestCapture(db: HistoryDatabase) {
   return typeof row?.at === "string" ? row.at : undefined;
 }
 
+/** The most blocks one read of a remapped pool's counts lists. */
+export const recountListed = 50;
+
 /**
- * The blocks of `pools` to recount, counted longest ago, in one ordered read of the counts' time
- * index: only settled hours inside the lookback counted over an hour ago and before `before`, so a
- * block this tick or the last hour counted is never recounted. Each block comes once, its range
- * clipped to the lookback and horizon; hours older than the lookback are pruned, never recounted.
+ * Up to `recountListed` blocks of `pool` holding a settled count taken before `before`, newest
+ * first, through the counts' primary key; each block once, its range clipped to the lookback and
+ * horizon. A block counted again after `before` drops out, so repeated reads walk the pool back.
  */
 export async function recountBlocks(
   db: HistoryDatabase,
-  pools: readonly string[],
-  limit: number,
+  pool: string,
   before: string,
   lookback: number = captureHoursLookbackHours,
 ) {
-  if (!pools.length) return [];
   return (
     await db.query(
-      `SELECT k.pool, ${iso("GREATEST(k.block, b.first)")} AS lo,
-        ${iso(`LEAST(k.block + interval '${captureBlockHours} hours', b.horizon)`)} AS hi
+      `SELECT DISTINCT ${iso("GREATEST(k.block, b.first)")} AS lo,
+        ${iso(`LEAST(k.block + interval '${captureBlockHours} hours', b.horizon)`)} AS hi, k.block
       FROM (SELECT ${captureSettleHorizon} AS horizon,
           ${captureSettleHorizon} - $4::int * interval '1 hour' AS first) b
       CROSS JOIN LATERAL (
-        SELECT DISTINCT ON (o.pool, o.block) o.pool, o.block, o.checked_at FROM (
-          SELECT s.pool, ${blockOf("s.hour")} AS block, s.checked_at
-          FROM basalt_model_capture_hours s
-          WHERE s.checked_at < LEAST($3::timestamptz, now() - interval '1 hour')
-            AND s.pool=ANY($1::text[]) AND ${captureSettledAfter("s")}
-            AND s.hour >= b.first AND s.hour < b.horizon
-          ORDER BY s.checked_at LIMIT $2::int * ${captureBlockHours}
-        ) o ORDER BY o.pool, o.block, o.checked_at
+        SELECT ${blockOf("s.hour")} AS block FROM basalt_model_capture_hours s
+        WHERE s.pool=$1 AND s.checked_at < $2::timestamptz AND ${captureSettledAfter("s")}
+          AND s.hour >= b.first AND s.hour < b.horizon
+        ORDER BY s.hour DESC LIMIT $3::int * ${captureBlockHours}
       ) k
-      ORDER BY k.checked_at, k.pool, k.block LIMIT $2`,
-      [pools, limit, before, lookback],
+      ORDER BY k.block DESC LIMIT $3`,
+      [pool, before, recountListed, lookback],
     )
-  ).rows.map((row): CaptureBlock => ({
-    pool: String(row.pool),
-    from: String(row.lo),
-    to: String(row.hi),
-  }));
+  ).rows.map((row): CaptureBlock => ({ pool, from: String(row.lo), to: String(row.hi) }));
 }
 
 /** The hours of a block that have no settled count, for a block counted hour by hour. */
