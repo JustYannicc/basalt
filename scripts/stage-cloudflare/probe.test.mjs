@@ -212,3 +212,38 @@ test("only a real HTTP Response is read, once, and nothing the answer object def
   assert.deepEqual(outsideCalls(fake, prefix, reach), []);
   assert.ok(fake.live.scripts.some((row) => row.id === "basalt-production-poolworker"));
 });
+
+test("the sender refuses a URL that changes when parsed or holds a dot segment, whatever built it", async () => {
+  const { fake, reach, api } = setup();
+  const found = await api.inventory(["applications", "scripts", "drives"]);
+  const [image] = await api.images();
+  const app = found.applications.find((row) => row.id === "own-app");
+  const before = fake.calls.length;
+  // Every name and id in a URL is encoded through this global; a tampered one is the last way left
+  // to build a URL the checks before the sender did not see.
+  const encode = globalThis.encodeURIComponent;
+  for (const built of [
+    "..",
+    ".",
+    "%2e%2E",
+    ".%2e",
+    "own-app/../prod-app",
+    "own-app/%2e%2e/prod-app",
+  ]) {
+    globalThis.encodeURIComponent = () => built;
+    try {
+      for (const attempt of [
+        () => api.read("applications", app),
+        () => api.remove("applications", app),
+        () => api.remove("drives", found.drives[0]),
+        () => api.settings(found.scripts[0]),
+        () => api.removeImage(image),
+      ])
+        await assert.rejects(attempt(), /^Error: Refused: the request's URL/u, built);
+    } finally {
+      globalThis.encodeURIComponent = encode;
+    }
+  }
+  assert.equal(fake.calls.length, before);
+  assert.deepEqual(outsideCalls(fake, prefix, reach), []);
+});

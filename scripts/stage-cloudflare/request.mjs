@@ -112,6 +112,24 @@ const step = (fields) => table({ ...STEP, ...fields });
 
 const refuse = (message) => fail(`Refused: ${message}`);
 
+/** A path segment that is `.` or `..`, written plainly or percent-encoded. */
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
+/**
+ * The last check before a URL is sent, kept whatever the checks before it already prove: the URL
+ * must read back exactly as it was built, and no segment of its path may be a dot segment.
+ */
+function unchangedWhenParsed(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw refuse("the request's URL does not parse");
+  }
+  if (parsed.href !== url) throw refuse("the request's URL changes when it is parsed");
+  if (parsed.pathname.split("/").some((segment) => DOT_SEGMENT.test(segment)))
+    throw refuse("the request's URL holds a dot segment");
+}
+
 /** `value`'s own fields, each read once, refused unless every one is in `allowed`. */
 function ownFields(value, allowed, what) {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -198,6 +216,7 @@ export function stageRequests(options) {
 
   /** The one call of the fetcher: an init with no prototype, and the answer read once. */
   async function exchange(url, method, headers, body) {
+    unchangedWhenParsed(url);
     const init = Object.create(null);
     init.method = method;
     init.headers = headers;
