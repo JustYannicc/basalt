@@ -316,7 +316,7 @@ export class RouteGatewayCore {
   }
 
   private closeTunnels() {
-    for (const tunnel of [...this.tunnels]) void tunnel.close().catch(() => {});
+    for (const tunnel of this.tunnels) void tunnel.close().catch(() => {});
   }
 
   async alarm() {
@@ -422,7 +422,7 @@ export class RouteGatewayCore {
       if (error instanceof Stale || since !== this.epoch) return this.current();
       // A start that could not boot (its sign-in node died, or no key opens the seal) reads as
       // signed out, not as down.
-      if (error instanceof Unbootable)
+      if (error instanceof Unbootable && error.reason === "route_needs_login")
         return this.commit(since, async () =>
           this.record(await this.signedOut(await this.deps.storage.get(keys.selection)), true),
         );
@@ -534,6 +534,10 @@ export class RouteGatewayCore {
       await this.commit(since, () => this.deps.storage.delete([keys.loginUntil])).catch(() => {});
       return { refuse: "route_needs_login" as const };
     }
+    // A route start an event overtook launches only while the route still routes: one made for an
+    // exit that was switched off since has no reason to bring a node back.
+    if (purpose === "route" && since !== this.epoch && !(await this.routing()))
+      return { refuse: "route_gateway_unavailable" as const };
     const { routeId } = await this.access.meta();
     const opened = await this.identity.open(routeId);
     if (opened.state !== null && opened.reseal) {

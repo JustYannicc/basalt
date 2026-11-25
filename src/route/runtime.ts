@@ -148,13 +148,14 @@ export class GatewayRuntime {
     identity: string | undefined,
   ): Promise<number> {
     const deadline = this.now() + startDeadlineMs;
-    let planned: BootPlan | undefined;
     await this.stopping;
     for (;;) {
       this.live(launch);
-      // Every launch is planned first, including one after a crash mid-start, so a start that may
-      // not boot (no identity, or a seal no key opens) refuses before launching a container.
-      if (!this.control.running && !planned) {
+      // Every launch is planned first, from what storage holds then, including a relaunch after a
+      // crash mid-start, so a start that may not boot, or no longer has a reason to, refuses before
+      // launching a container.
+      let planned: BootPlan | undefined;
+      if (!this.control.running) {
         planned = await this.host.plan(since, purpose, identity);
         this.live(launch);
         if ("refuse" in planned) throw new Unbootable(planned.refuse);

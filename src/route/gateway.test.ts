@@ -940,3 +940,24 @@ test("a seal no key opens forgets its exit too and reads signed out, not down", 
   assert.equal((await gateway.joinStatus(caller)).state, "connected");
   assert.equal(container.appliedExit, null);
 });
+
+test("a start for an exit switched off since never relaunches after a crash", async () => {
+  const { gateway, container } = await joined();
+  await gateway.select(caller, { exitId: "n1", whenDown: "stop" });
+  container.expireKey();
+  assert.ok("url" in (await gateway.login(caller)));
+  container.crash();
+  let launches = 0;
+  container.onLaunch = () => (launches += 1);
+  const held = container.hold("/status");
+  const reading = gateway.reading(caller);
+  await held.reached;
+  // The open sign-in keeps the node, so the switch-off does not stop the start in flight.
+  await gateway.select(caller, { exitId: null, whenDown: "stop" });
+  container.crash();
+  held.release();
+  await reading.catch(() => {});
+  await settle();
+  assert.equal(launches, 1);
+  assert.equal(container.running, false);
+});
