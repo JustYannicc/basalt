@@ -124,7 +124,7 @@ function exactResourceInventory(inventory: PreviewInventory): {
   return { containers: [...containers.values()], workers: [...workers.values()], complete };
 }
 
-function cloudflareApi(account: string, token: string) {
+function cloudflareApi(account: string, token: string, origin: string) {
   const headers = { Authorization: `Bearer ${token}` };
   const request = async (
     url: URL,
@@ -154,7 +154,7 @@ function cloudflareApi(account: string, token: string) {
       const matched: string[] = [];
       let totalPages: number | undefined;
       for (let page = 1; page <= 10_000; page++) {
-        const url = new URL(`${apiOrigin}/accounts/${encodeURIComponent(account)}/workers/scripts`);
+        const url = new URL(`${origin}/accounts/${encodeURIComponent(account)}/workers/scripts`);
         url.searchParams.set("page", String(page));
         url.searchParams.set("per_page", String(pageSize));
         const body = await request(url);
@@ -198,7 +198,7 @@ function cloudflareApi(account: string, token: string) {
       const perPage = 1000;
       // The pinned provider lists R2 names by jurisdiction and startAfter; the response has no cursor.
       for (let page = 0; page < 10_000; page++) {
-        const url = new URL(`${apiOrigin}/accounts/${encodeURIComponent(account)}/r2/buckets`);
+        const url = new URL(`${origin}/accounts/${encodeURIComponent(account)}/r2/buckets`);
         url.searchParams.set("per_page", String(perPage));
         if (startAfter) url.searchParams.set("start_after", startAfter);
         const body = await request(url, { "cf-r2-jurisdiction": "eu" });
@@ -223,7 +223,7 @@ function cloudflareApi(account: string, token: string) {
     },
     async listContainerApplications() {
       const url = new URL(
-        `${apiOrigin}/accounts/${encodeURIComponent(account)}/containers/applications`,
+        `${origin}/accounts/${encodeURIComponent(account)}/containers/applications`,
       );
       const body = await request(url);
       if (!Array.isArray(body.result))
@@ -240,7 +240,7 @@ function cloudflareApi(account: string, token: string) {
     async listWorkerDomains() {
       const domains: { id: string; hostname: string; service: string }[] = [];
       for (let page = 1; page <= 10_000; page++) {
-        const url = new URL(`${apiOrigin}/accounts/${encodeURIComponent(account)}/workers/domains`);
+        const url = new URL(`${origin}/accounts/${encodeURIComponent(account)}/workers/domains`);
         url.searchParams.set("page", String(page));
         const body = await request(url);
         if (!Array.isArray(body.result))
@@ -279,6 +279,8 @@ function cloudflareApi(account: string, token: string) {
 
 export function providerReadbacks(
   source: NodeJS.ProcessEnv = process.env,
+  // The Cloudflare API's origin; a test serves recorded answers from its own local one.
+  cloudflareOrigin = apiOrigin,
 ): PreviewProviderReadbacks {
   const account = source.CLOUDFLARE_ACCOUNT_ID;
   const token = source.CLOUDFLARE_API_TOKEN;
@@ -293,7 +295,7 @@ export function providerReadbacks(
     !planetScaleToken?.trim()
   )
     throw new Error("Preview provider absence credentials are missing");
-  const cloudflare = cloudflareApi(account, token);
+  const cloudflare = cloudflareApi(account, token, cloudflareOrigin);
   const artifacts = cloudflareArtifactsApi(account, token);
   const planetscale = new PlanetScaleApi({ organization, tokenId, token: planetScaleToken });
   return {

@@ -1,25 +1,42 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { workerDomain, workerDomainList } from "../pool-fleet/test/cloudflare-shapes.ts";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { after, before, test } from "node:test";
+import {
+  workerDomain,
+  workerDomainList,
+  workerDomainNotFound,
+} from "../pool-fleet/test/cloudflare-shapes.ts";
+import { providerReadbacks } from "./provider-absence.ts";
 
-// The control plane captures fetch at import, so the stand-in is installed before the module loads.
-// It serves Cloudflare's recorded Workers custom domain shapes, page by page.
+// A local Cloudflare that answers the domain list, page by page, only with recorded shapes.
 let pages: unknown[] = [];
 const asked: string[] = [];
-globalThis.fetch = (async (input: string | URL | Request) => {
-  const url = new URL(input instanceof Request ? input.url : String(input));
-  asked.push(`${url.pathname.split("/").slice(-2).join("/")}?page=${url.searchParams.get("page")}`);
+const server = createServer((request, response) => {
+  const url = new URL(request.url ?? "/", "http://local");
   const page = Number(url.searchParams.get("page") ?? "1");
-  return Response.json(pages[page - 1] ?? { success: false, errors: [{ code: 1 }] });
-}) as typeof fetch;
-const { providerReadbacks } = await import("./provider-absence.ts");
-const readbacks = providerReadbacks({
-  CLOUDFLARE_ACCOUNT_ID: "fixture-account",
-  CLOUDFLARE_API_TOKEN: "fixture-token",
-  PLANETSCALE_ORGANIZATION: "fixture",
-  PLANETSCALE_API_TOKEN_ID: "fixture",
-  PLANETSCALE_API_TOKEN: "fixture",
+  asked.push(`${url.pathname.split("/").slice(-2).join("/")}?page=${page}`);
+  const body = pages[page - 1];
+  response.writeHead(body === undefined ? 404 : 200, { "content-type": "application/json" });
+  response.end(JSON.stringify(body ?? workerDomainNotFound("domain-unknown")));
 });
+let readbacks: ReturnType<typeof providerReadbacks>;
+before(async () => {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  readbacks = providerReadbacks(
+    {
+      CLOUDFLARE_ACCOUNT_ID: "fixture-account",
+      CLOUDFLARE_API_TOKEN: "fixture-token",
+      PLANETSCALE_ORGANIZATION: "fixture",
+      PLANETSCALE_API_TOKEN_ID: "fixture",
+      PLANETSCALE_API_TOKEN: "fixture",
+    },
+    `http://127.0.0.1:${port}/client/v4`,
+  );
+});
+after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
 const domain = (n: number) => ({
   ...workerDomain,
   id: `domain-${n}`,
@@ -32,9 +49,10 @@ test("the Workers custom domain list, as Cloudflare answers it with null errors,
     (await readbacks.listWorkerDomains()).map(({ hostname }) => hostname),
     ["h1.example.invalid"],
   );
-  // Null or an empty list is clean; an error in it, a missing list, or no success is not.
+  // The recorded list with an error in it, without its error list, or without success is not.
+  const refusal = workerDomainNotFound("domain-1").errors;
   for (const body of [
-    { ...workerDomainList([]), errors: [{ code: 10000, message: "failed" }] },
+    { ...workerDomainList([]), errors: refusal },
     Object.fromEntries(Object.entries(workerDomainList([])).filter(([key]) => key !== "errors")),
     { ...workerDomainList([]), success: false },
   ]) {
