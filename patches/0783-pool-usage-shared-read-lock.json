@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-usage-shared-read-lock",
+  "file": "0783-pool-usage-shared-read-lock.patch",
+  "content_sha256": "096252704e5715f50f20fe09c76c11773cea9327c7a5a214b784d38e2ba47c45",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
