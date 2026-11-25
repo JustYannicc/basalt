@@ -4,6 +4,7 @@ import type { AdmissionProof, StartupWitness } from "./admission-proof.ts";
 import type { RuntimeSlotStorage } from "./storage.ts";
 import type { BoundSlotDriver } from "./transport.ts";
 import { UnservingClock, unservingDecision, type UnservingState } from "./unserving-clock.ts";
+import { aliveRefusingMs, unservingBoundMs } from "./forced-restart-timing.ts";
 
 // A running runtime refusing with one of these is not serving. Fence, selection, policy and
 // draining refusals are deliberate states a forced restart must never fight. Unfence reads the same
@@ -55,6 +56,8 @@ export class RuntimeForcedRestart {
   private storage: RuntimeSlotStorage;
   private driver: BoundSlotDriver;
   private declined?: string;
+  /** After the endpoint spared the boot, no stop is asked for before this; a reset costs one read. */
+  private sparedUntil?: number;
   constructor(storage: RuntimeSlotStorage, driver: BoundSlotDriver) {
     this.storage = storage;
     this.driver = driver;
@@ -70,7 +73,7 @@ export class RuntimeForcedRestart {
     if (!pass.retained.running) return "declined";
     if (!notServing.has(reason) || !holdsSelectedBoot(pass.retained, pass.previous)) {
       // The bound counts only an unbroken stretch of a running, refusing selected boot.
-      this.declined = undefined;
+      this.declined = this.sparedUntil = undefined;
       await this.clock.notRefusing();
       return "declined";
     }
@@ -82,7 +85,7 @@ export class RuntimeForcedRestart {
     const decision = unservingDecision(state, now);
     if (decision === "restart_limit") this.report(await this.clock.needsPerson(decision, now), now);
     if (decision === "needs_person" || decision === "restart_limit") return "stalled";
-    if (decision !== "stop") return "declined";
+    if (decision !== "stop" || now < (this.sparedUntil ?? 0)) return "declined";
     // A fence, candidate or policy edit committed since the pass began must win over the stop.
     const unchanged = await this.storage.transact(async (latest) => {
       const selection = latest.selection;
@@ -101,9 +104,18 @@ export class RuntimeForcedRestart {
     try {
       result = await this.driver.stopRefusing(pass.previous, state.since ?? now, signal);
     } catch (error) {
-      // The endpoint declined for now (a refresh in flight, it answers health, or the container
+      // The endpoint declined for now (a refresh in flight, it answers ready, or the container
       // isn't the selected boot's yet), or the call didn't land. A later pass asks again.
       const declined = runtimeFailureDiagnostic(error, "slot_health").runtimeReason;
+      // Answering ready (`slot_selection`) spares the boot, and its next liveness read waits one
+      // bound: never past the endpoint's limit for a late answer, and past that limit only an answer
+      // in time is spared, which a later ask spares again.
+      if (declined === "slot_selection") {
+        const at = Date.now();
+        const limit = (state.since ?? now) + aliveRefusingMs;
+        this.sparedUntil =
+          at < limit ? Math.min(at + unservingBoundMs, limit) : at + unservingBoundMs;
+      }
       if (declined !== this.declined)
         console.info("POOL_SELECTED_RECOVERY", {
           phase: "stop_declined",
@@ -116,7 +128,7 @@ export class RuntimeForcedRestart {
       if (state.streams) await this.clock.notWaiting();
       return "declined";
     }
-    this.declined = undefined;
+    this.declined = this.sparedUntil = undefined;
     if (!result.waiting && state.streams) await this.clock.notWaiting();
     if (result.waiting) {
       const before = state.streams;

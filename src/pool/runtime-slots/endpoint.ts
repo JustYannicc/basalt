@@ -144,7 +144,7 @@ export class RuntimeEndpoint {
       ctx,
       store: this.store,
       activity: this.activity,
-      health: (identity, signal) => this.health(identity, signal),
+      alive: (identity, signal) => this.alive(identity, signal),
       readiness: (configuration, signal) => this.channel.health(configuration, signal),
     });
   }
@@ -346,7 +346,32 @@ export class RuntimeEndpoint {
     this.bound(intent.target);
     return this.startupStop.inspect(intent);
   }
+  /**
+   * This boot's readiness answer, however late inside `signal`: the health read's identity checks
+   * without its lease window. A forced stop reads it to tell a slow runtime from a dead one.
+   */
+  private async alive(identity: SlotIdentity, signal: AbortSignal) {
+    this.bound(identity);
+    const { record, configuration } = await this.store.read(identity);
+    if (!sameIdentity(record.identity, identity)) throw new SlotRefused("identity");
+    const status = await this.channel.alive(configuration, signal);
+    this.identified(record, status);
+    return status;
+  }
   private checked(record: WitnessRecord, status: PoolStatus) {
+    this.identified(record, status);
+    if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
+      throw new SlotRefused("unhealthy");
+    return {
+      identity: { ...record.authorization.target, bootId: status.boot_id },
+      leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
+      // The whole grant, so the caller counts its own send as the start and the read only once.
+      ...(status.policyLeaseMs ? { grantMs: status.policyLeaseMs } : {}),
+      ...(status.database ? { database: status.database } : {}),
+    };
+  }
+  /** The answer is this record's boot and launch, whatever its lease. */
+  private identified(record: WitnessRecord, status: PoolStatus) {
     if (record.identity && status.boot_id !== record.identity.bootId)
       throw new SlotRefused("identity");
     if (isLaunchAuthorization(record.authorization)) {
@@ -360,15 +385,6 @@ export class RuntimeEndpoint {
       )
         throw new SlotRefused("identity");
     }
-    if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
-      throw new SlotRefused("unhealthy");
-    return {
-      identity: { ...record.authorization.target, bootId: status.boot_id },
-      leaseMs: Math.floor(status.policyLeaseUntil - performance.now()),
-      // The whole grant, so the caller counts its own send as the start and the read only once.
-      ...(status.policyLeaseMs ? { grantMs: status.policyLeaseMs } : {}),
-      ...(status.database ? { database: status.database } : {}),
-    };
   }
   private async complete(target: SlotTarget, signal: AbortSignal) {
     const { record, configuration } = await this.store.read(target);
