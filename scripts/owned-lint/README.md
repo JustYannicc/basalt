@@ -62,6 +62,7 @@ another module, `this.x` aliases, and answer methods taken off the response
 | `no-discarded-child-output` | A child process whose stderr is ignored, other than git exit-status probes. |
 | `no-node-test-doubles` | `node:test` mocks that replace dependency behaviour. Clock control and output capture are allowed. |
 | `no-node-test-flake-masking` | `node:test` subtest and hook timeouts, and conditional or permanent skips. |
+| `no-alchemy-auto-approve` | In a file that names `alchemy` as a command, any standalone `--yes` or `-y`, however the command is assembled. In beta.80 `--yes` also sets `updateStateStore`, which can redeploy the shared State store; apply and destroy run in-process through the release entry. `alchemy.test.ts` covers workflow steps and package scripts. |
 
 ## Third-party rules
 
