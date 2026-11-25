@@ -20,7 +20,7 @@ const answer = {
   refusal: "policy_unproven",
   last_lapse: { step: "plugin_probe", ms: 2_140, at },
   last_flip: { to: "refusing", reason: "policy_unproven", prior_ms: 61_000, at },
-  last_stall: { late_ms: 1_640, cpu_ms: 2, steal_ms: null, throttled_ms: 1_210, at },
+  last_stall: { late_ms: 1_640, cpu_ms: 2, steal_ms: null, throttled_ms: 1_210, cpus: 2, at },
   lapses: 3,
   flips: 2,
   stalls: 4,
@@ -28,7 +28,7 @@ const answer = {
 const decoded = {
   lastLapse: { step: "plugin_probe", ms: 2_140, at },
   lastFlip: { to: "refusing", reason: "policy_unproven", priorMs: 61_000, at },
-  lastStall: { lateMs: 1_640, cpuMs: 2, stealMs: null, throttledMs: 1_210, at },
+  lastStall: { lateMs: 1_640, cpuMs: 2, stealMs: null, throttledMs: 1_210, cpus: 2, at },
   lapses: 3,
   flips: 2,
   stalls: 4,
@@ -90,19 +90,28 @@ test("a malformed value reads as null and keeps its siblings", () => {
 test("a stall's value outside its shape reads as null and keeps its siblings", () => {
   const stall = (value: Record<string, unknown>) =>
     readySignals({
-      last_stall: { late_ms: 1_640, cpu_ms: 2, steal_ms: 0, throttled_ms: 1_210, at, ...value },
+      last_stall: {
+        late_ms: 1_640,
+        cpu_ms: 2,
+        steal_ms: 0,
+        throttled_ms: 1_210,
+        cpus: 2,
+        at,
+        ...value,
+      },
     })?.lastStall;
   for (const late_ms of ["1640", -1, 1.5, true, { ms: 1 }])
     assert.deepEqual(
       stall({ late_ms }),
-      { lateMs: null, cpuMs: 2, stealMs: 0, throttledMs: 1_210, at },
+      { lateMs: null, cpuMs: 2, stealMs: 0, throttledMs: 1_210, cpus: 2, at },
       String(late_ms),
     );
-  assert.deepEqual(stall({ throttled_ms: planted, at: planted }), {
+  assert.deepEqual(stall({ throttled_ms: planted, cpus: 0.5, at: planted }), {
     lateMs: 1_640,
     cpuMs: 2,
     stealMs: 0,
     throttledMs: null,
+    cpus: null,
     at: null,
   });
   assert.deepEqual(readySignals({ last_stall: planted, stalls: "4" }), {
@@ -137,6 +146,7 @@ test("unknown keys are dropped, and no container text survives in any slot", () 
       cpu_ms: planted,
       steal_ms: planted,
       throttled_ms: planted,
+      cpus: planted,
       at: planted,
       lateMs: 7,
     },
@@ -147,7 +157,14 @@ test("unknown keys are dropped, and no container text survives in any slot", () 
   assert.deepEqual(value, {
     lastLapse: { step: null, ms: null, at: null },
     lastFlip: { to: null, reason: null, priorMs: null, at: null },
-    lastStall: { lateMs: null, cpuMs: null, stealMs: null, throttledMs: null, at: null },
+    lastStall: {
+      lateMs: null,
+      cpuMs: null,
+      stealMs: null,
+      throttledMs: null,
+      cpus: null,
+      at: null,
+    },
     lapses: null,
     flips: null,
     stalls: null,

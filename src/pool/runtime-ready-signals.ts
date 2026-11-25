@@ -34,7 +34,9 @@ const At = Instant.pipe(
 /**
  * What a container's readiness answer says about its own recent past: its latest slow probe step
  * (a lapse), its latest change of answer (a flip), its supervisor's latest late wake-up with what
- * the scheduler did meanwhile (a stall), and how many of each since its supervisor started. Each field is absent until its first record, and an older image sends none. Decoding
+ * the scheduler did meanwhile (a stall), and how many of each since its supervisor started. A
+ * stall's steal and throttling are CPU time summed over its `cpus`; how late it was is wall time.
+ * Each field is absent until its first record, and an older image sends none. Decoding
  * keeps only closed values, so the same schema decodes the container's answer and a copy of it
  * that crossed a binding.
  */
@@ -59,6 +61,7 @@ export const ReadySignals = Schema.Struct({
         cpuMs: slot(Count),
         stealMs: slot(Count),
         throttledMs: slot(Count),
+        cpus: slot(Count),
         at: slot(At),
       }),
     ),
@@ -102,6 +105,7 @@ export function readySignals(body: unknown) {
                 cpuMs: stall.cpu_ms,
                 stealMs: stall.steal_ms,
                 throttledMs: stall.throttled_ms,
+                cpus: stall.cpus,
                 at: stall.at,
               }
             : stall,

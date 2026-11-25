@@ -112,20 +112,28 @@ def _ticks_per_second() -> int:
         return 100
 
 
-def steal_ms(path: str = PROC_STAT) -> int | None:
-    """Time the host took this machine's CPUs from it, from the kernel's counter; None unread."""
+def host_steal(path: str = PROC_STAT) -> tuple[int, int] | None:
+    """The time the host took this machine's CPUs from it, summed over them as the kernel counts
+    it, and how many CPUs there are, so a reader can set it against wall time; None unread."""
     try:
         with open(path, encoding="ascii") as stat:
             fields = stat.readline().split()
-        if not fields or fields[0] != "cpu":
+            # The per-CPU lines follow the total; the rest of the file is never read.
+            cpus = 0
+            for line in stat:
+                if not line.startswith("cpu"):
+                    break
+                cpus += 1
+        if not fields or fields[0] != "cpu" or not cpus:
             return None
-        return int(fields[8]) * 1000 // _ticks_per_second()
+        return int(fields[8]) * 1000 // _ticks_per_second(), cpus
     except (OSError, ValueError, IndexError):
         return None
 
 
 def throttled_ms(paths: tuple[str, ...] = CGROUP_CPU_STATS) -> int | None:
-    """Time the container's CPU quota held it back: cgroup v2's microseconds, v1's nanoseconds."""
+    """Time the container's CPU quota held it back, summed over its CPUs as the cgroup counts it:
+    cgroup v2's microseconds, v1's nanoseconds."""
     for path in paths:
         try:
             with open(path, encoding="ascii") as stat:
@@ -147,6 +155,7 @@ class Scheduling:
     at_ns: int
     cpu_ns: int
     steal_ms: int | None
+    cpus: int | None
     throttled_ms: int | None
 
 
@@ -174,10 +183,12 @@ class PolicyHealthMonitor:
         self._cpu_stats = cpu_stats
 
     def _scheduling(self) -> Scheduling:
+        steal, cpus = host_steal(self._proc_stat) or (None, None)
         return Scheduling(
             self._monotonic_ns(),
             self._process_time_ns(),
-            steal_ms(self._proc_stat),
+            steal,
+            cpus,
             throttled_ms(self._cpu_stats),
         )
 
@@ -194,7 +205,7 @@ class PolicyHealthMonitor:
             cpu_ms=(after.cpu_ns - before.cpu_ns) // 1_000_000,
             steal_ms=_grew(after.steal_ms, before.steal_ms),
             throttled_ms=_grew(after.throttled_ms, before.throttled_ms),
-            at_ns=after.at_ns,
+            cpus=after.cpus,
         )
 
     def check_once(self) -> ProbeState:
