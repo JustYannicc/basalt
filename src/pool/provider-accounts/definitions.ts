@@ -107,6 +107,14 @@ export function customEndpointModels(value: string): readonly string[] | undefin
     : undefined;
 }
 
+/** The connect form's check of a custom endpoint: the entry rules only, thrown as the form's words. */
+export function checkCustomEndpoint(fields: { readonly baseUrl: string; readonly models: string }) {
+  if (customEndpointAddress(fields.baseUrl) === undefined)
+    throw new Error(customEndpointRefusals.address);
+  if (customEndpointModels(fields.models) === undefined)
+    throw new Error(customEndpointRefusals.models);
+}
+
 const apiKeyMethod = { mechanism: "api-key" } as const;
 const subscriptionMethod = { mechanism: "interactive", offering: "subscription" } as const;
 
@@ -266,12 +274,7 @@ export const acquisitionProviders = {
     },
     // Applies the entry rules only and sends nothing: the form shows the thrown message, and a
     // gateway answer would prove nothing about the names the pool will ask it for.
-    health: async ({ account }) => {
-      if (customEndpointAddress(account.fields.baseUrl) === undefined)
-        throw new Error(customEndpointRefusals.address);
-      if (customEndpointModels(account.fields.models) === undefined)
-        throw new Error(customEndpointRefusals.models);
-    },
+    health: async ({ account }) => checkCustomEndpoint(account.fields),
   }),
 };
 

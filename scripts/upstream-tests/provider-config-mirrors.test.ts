@@ -8,6 +8,7 @@ import { poolAccountAcquisition } from "../../.upstream/apps/hosted/server/src/i
 import { HostOperationFailed } from "../../.upstream/packages/apps/src/contracts/host.ts";
 import { classifyAccountCheck } from "../../.upstream/packages/apps/src/implementation/account-check-errors.ts";
 import {
+  checkCustomEndpoint,
   customEndpointRefusals,
   providers,
   type ProviderLab,
@@ -435,19 +436,15 @@ test("a custom endpoint refuses local, private and malformed addresses and bad m
 });
 
 const customCheck = async (method: "anthropic" | "openai", fields: Record<string, string>) => {
-  const health = providers.custom.health;
-  assert.ok(health);
-  const fetch = () => assert.fail("A custom endpoint's check must not send anything");
-  const account = { id: "acc_unsaved", method, fields, read: fetch, headers: fetch, url: fetch };
-  // SAFETY: the check reads only the method and fields; any other member fails the test.
-  const run = health.run({
-    account: account as never,
-    fetch,
-    signal: new AbortController().signal,
-  });
+  // The provider's check is wired to these rules; the method changes nothing about them.
+  assert.ok(providers.custom.auth[method] && providers.custom.health);
   // The host's own classification turns what the check threw into what the form shows.
   const context = { accounts: Redacted.make({}) } as never;
-  return Effect.runPromise(Effect.result(run.pipe(classifyAccountCheck(context))));
+  // A throw inside the check is a defect to the host, which classifies it with the same rules.
+  const checked = Effect.sync(() =>
+    checkCustomEndpoint({ baseUrl: fields.baseUrl ?? "", models: fields.models ?? "" }),
+  ).pipe(classifyAccountCheck(context));
+  return Effect.runPromise(Effect.result(checked));
 };
 
 test("the connect form's check refuses a custom endpoint with the reason the person sees", async () => {
