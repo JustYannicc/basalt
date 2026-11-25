@@ -123,7 +123,7 @@ export async function runAvailabilityProbe(
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
   // Written before anything goes to Sentry, so a refused alert never hides what the probe concluded.
-  const verdict = probeVerdict(result);
+  const verdict = probeVerdict(result, unread);
   if (verdict) (verdict.availability ? console.error : console.warn)("POOL_PROBE_VERDICT", verdict);
   // The monitor reports the first eight failures; an episode records only those it reports.
   let next = { pool: target, ...signatures({ ...result, failures: result.failures.slice(0, 8) }) };

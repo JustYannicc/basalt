@@ -1,5 +1,5 @@
 import { deliverEnvelope, eventId, type Delivery } from "./sentry-envelope.ts";
-import type { SentryEnv } from "./sentry-target.ts";
+import { sentryEnvelopeTarget, type SentryEnv } from "./sentry-target.ts";
 import type { PoolReliabilitySlo, UnknownOutcomes } from "../../apps/pool/reliability-contract.ts";
 import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
@@ -71,34 +71,34 @@ export async function startPoolMonitor(env: SentryEnv, schedule: string) {
   return { ...receipt, accepted: opening.delivered, opening };
 }
 
-/** One part of a monitor run Sentry did not accept, and the answer it gave, if any. */
+/**
+ * One part of a monitor run Sentry did not accept: the HTTP status it answered, or that no alert
+ * service is configured; neither means a network failure or timeout with no answer.
+ */
+type Answer = { readonly http?: number; readonly unconfigured?: true };
 export type Undelivered =
-  | {
-      readonly part: "check_in";
-      readonly status: "in_progress" | "ok" | "error";
-      readonly http?: number;
-    }
-  | { readonly part: "event"; readonly errorCode: string; readonly http?: number };
+  | ({ readonly part: "check_in"; readonly status: "in_progress" | "ok" | "error" } & Answer)
+  | ({ readonly part: "event"; readonly errorCode: string } & Answer);
 
-const refused = (delivery: Delivery) =>
-  delivery.status === undefined ? {} : { http: delivery.status };
+const answered = (entry: Answer) =>
+  entry.http ?? (entry.unconfigured ? "unconfigured" : "no_answer");
 
 /** The parts Sentry refused in words a log search can count: part, what it carried, Sentry's status. */
 export function describeUndelivered(undelivered: readonly Undelivered[]) {
   return undelivered
     .map((entry) =>
       entry.part === "check_in"
-        ? `check_in:${entry.status}:${entry.http ?? "no_answer"}`
-        : `event:${entry.errorCode}:${entry.http ?? "no_answer"}`,
+        ? `check_in:${entry.status}:${answered(entry)}`
+        : `event:${entry.errorCode}:${answered(entry)}`,
     )
     .join(" ");
 }
 
-/** Failures as the monitor reports them: closed guards and reasons, the first eight. */
+/** Failures in closed words: guards, reasons, a backend status and a stuck pool's history id. */
 export function closedFailures(
   failures: readonly { guard: string; reason: string; backendStatus?: number; pool?: string }[],
 ) {
-  return failures.slice(0, 8).map((failure) => ({
+  return failures.map((failure) => ({
     guard: guards.has(failure.guard) ? failure.guard : "runtime",
     reason: reasons.has(failure.reason) ? failure.reason : "unknown",
     ...(typeof failure.backendStatus === "number" &&
@@ -133,7 +133,8 @@ export async function capturePoolMonitor(
   eventsDelivered: boolean;
   undelivered: readonly Undelivered[];
 }> {
-  const failures = closedFailures(input.failures);
+  // Sentry takes the first eight; the probe's own verdict line keeps them all.
+  const failures = closedFailures(input.failures.slice(0, 8));
   // Request history measures a separate objective; missing history is not a pool outage.
   const availability = failures.filter((failure) => failure.guard !== "request_reliability");
   const reliability = failures.filter((failure) => failure.guard === "request_reliability");
@@ -181,6 +182,13 @@ export async function capturePoolMonitor(
   // Whether the error events got through apart from the check-ins: an episode's start is recorded
   // as reported on that alone.
   const eventsDelivered = sent.every((event) => event.delivery.delivered);
+  const configured = sentryEnvelopeTarget(env) !== undefined;
+  const refused = (delivery: Delivery): Answer =>
+    delivery.status !== undefined
+      ? { http: delivery.status }
+      : configured
+        ? {}
+        : { unconfigured: true };
   const undelivered: Undelivered[] = [
     ...(receipt.accepted
       ? []

@@ -231,9 +231,8 @@ test("pending classification reports unknown reliability without a monitor error
 
 test("unknown collection diagnostics exclude private fields and invalid counts", async (t) => {
   const diagnostics: unknown[][] = [];
-  t.mock.method(console, "warn", (...args: unknown[]) => {
-    if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
-  });
+  // Every warning, the probe's own verdict line included, is held to the same privacy rule.
+  t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
   const unknown = slo("unavailable");
   await runAvailabilityProbe(
@@ -250,7 +249,10 @@ test("unknown collection diagnostics exclude private fields and invalid counts",
       },
     }),
   );
-  const context = diagnostics[0]![1] as { hour: unknown; reason: string };
+  const context = diagnostics.find(([name]) => name === "POOL_REQUEST_RELIABILITY_UNKNOWN")![1] as {
+    hour: unknown;
+    reason: string;
+  };
   assert.deepEqual(context.hour, {
     requests: null,
     failed: null,

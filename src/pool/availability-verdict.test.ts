@@ -33,7 +33,7 @@ async function probeRun(
   context: TestContext,
   options: {
     slo?: PoolReliabilitySlo;
-    rollupStuck?: readonly string[];
+    rollupStuck?: readonly string[] | "unread";
     captureStuck?: readonly string[];
   },
 ) {
@@ -48,7 +48,13 @@ async function probeRun(
     options.slo ? async () => options.slo! : undefined,
     undefined,
     undefined,
-    options.rollupStuck ? async () => options.rollupStuck! : undefined,
+    options.rollupStuck === "unread"
+      ? async () => {
+          throw new Error("synthetic read failure");
+        }
+      : options.rollupStuck
+        ? async () => options.rollupStuck as readonly string[]
+        : undefined,
     options.captureStuck ? async () => options.captureStuck! : undefined,
   ).then(
     () => undefined,
@@ -81,24 +87,25 @@ test("a pool below its target writes its verdict, windows and counts though no a
   };
   assert.equal(verdict.availability, null);
   assert.deepEqual(verdict.reliability.verdicts, [
-    { state: "below_target", windows: ["hour"] },
+    { state: "below_target", windows: ["current", "hour"] },
     { state: "failing_now", windows: ["current"] },
   ]);
   assert.equal(verdict.reliability.objective.state, "breached");
   assert.deepEqual(verdict.reliability.objective.windows.hour!.real, {
     requests: 400,
     failed: 10,
+    unassigned: 0,
     failures: [
-      { status: 429, count: 4 },
-      { status: 503, count: 6 },
+      { status: 429, count: 4, unassigned: 0 },
+      { status: 503, count: 6, unassigned: 0 },
     ],
   });
   assert.deepEqual(Object.keys(verdict.reliability.objective.windows).sort(), ["current", "hour"]);
   // The delivery line names each refused part and what it carried, with Sentry's status.
   assert.equal(
     failure,
-    "Pool availability alert delivery failed: check_in:in_progress:no_answer check_in:ok:no_answer " +
-      "event:pool_request_success_below_target:no_answer event:pool_request_failing_now:no_answer",
+    "Pool availability alert delivery failed: check_in:in_progress:unconfigured check_in:ok:unconfigured " +
+      "event:pool_request_success_below_target:unconfigured event:pool_request_failing_now:unconfigured",
   );
 });
 
@@ -122,7 +129,7 @@ test("a call failing right now writes a failing_now verdict on the current windo
   };
   assert.deepEqual(verdict.reliability.verdicts, [{ state: "failing_now", windows: ["current"] }]);
   assert.deepEqual(verdict.reliability.objective.windows.current!.real.failures, [
-    { status: 429, count: 1 },
+    { status: 429, count: 1, unassigned: 0 },
   ]);
 });
 
@@ -166,7 +173,30 @@ test("a healthy minute writes no verdict, and a refused check-in says only that"
   assert.deepEqual(verdicts, []);
   assert.equal(
     failure,
-    "Pool availability alert delivery failed: check_in:in_progress:no_answer check_in:ok:no_answer",
+    "Pool availability alert delivery failed: check_in:in_progress:unconfigured check_in:ok:unconfigured",
+  );
+});
+
+test("a stuck state that could not be read this minute writes a verdict saying so", async (context) => {
+  const { verdicts } = await probeRun(context, { rollupStuck: "unread" });
+  assert.deepEqual(verdicts, [
+    {
+      availability: null,
+      reliability: {
+        verdicts: [{ state: "usage_rollup_stuck", windows: [], unread: true }],
+        objective: null,
+      },
+    },
+  ]);
+});
+
+test("the verdict keeps every stuck pool, where an alert takes the first eight", async (context) => {
+  const pools = Array.from({ length: 10 }, (_, index) => index.toString(16).padStart(16, "0"));
+  const { verdicts } = await probeRun(context, { rollupStuck: pools });
+  const verdict = verdicts[0] as { reliability: { verdicts: { pool: string }[] } };
+  assert.deepEqual(
+    verdict.reliability.verdicts.map((entry) => entry.pool),
+    pools,
   );
 });
 
@@ -177,8 +207,9 @@ test("each refused part is named with what it carried and the status the alert s
       { part: "check_in", status: "error", http: 429 },
       { part: "event", errorCode: "pool_availability_failure", http: 503 },
       { part: "event", errorCode: "pool_request_failing_now" },
+      { part: "event", errorCode: "pool_capture_hours_stuck", unconfigured: true },
     ]),
     "check_in:in_progress:429 check_in:error:429 event:pool_availability_failure:503 " +
-      "event:pool_request_failing_now:no_answer",
+      "event:pool_request_failing_now:no_answer event:pool_capture_hours_stuck:unconfigured",
   );
 });
