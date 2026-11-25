@@ -364,7 +364,7 @@ model {
   basalt.releaseUpdates -[sync]-> basalt.router "export exact dedicated owner accounts through pool control API"
   basalt.releaseUpdates -[sync]-> basalt.build "prepare pinned source and verify carried patches"
   basalt.build -[sync]-> basalt.releaseUpdates "validate carry records before applying patches"
-  basalt.releaseUpdates -[sync]-> basalt.deployment "deploy isolated preview; seed native sign-in; destroy and verify absence"
+  basalt.releaseUpdates -[sync]-> basalt.deployment "deploy isolated preview; seed native sign-in once its router, tools and pool deploy; destroy and verify absence"
   basalt.deployment -[sync]-> basalt.releaseUpdates "classify source changes before backup and workflow drain gates"
   basalt.releaseUpdates -[sync]-> basalt.toolsGateway "sign in with native preview auth and use credential-free tool search"
   basalt.releaseUpdates -[sync]-> basalt.setupHost "mint and revoke separate preview computers through public setup routes"
