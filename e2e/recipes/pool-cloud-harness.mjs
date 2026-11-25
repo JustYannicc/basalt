@@ -14,6 +14,7 @@ import { root } from "./harness.mjs";
 import { cloudLocks } from "../../.upstream/e2e/support/cloud-locks.ts";
 import { redactLogText } from "../../src/feedback/logs.ts";
 import { startPoolFixture } from "./pool-fixture.mjs";
+import { poolFixtureSigningKey } from "../../.upstream/e2e/support/cloud-pool-gateway.ts";
 import { provisioningHistory, provisioningJobs } from "./provisioning-diagnostics.mjs";
 
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -42,7 +43,9 @@ const localPoolSetup = async (
       ["apps/hosted/cloud/src/infrastructure/product-services.ts", "poolKey"],
     ].map(async ([path, key]) => ({ path, key, bytes: await readFile(join(upstream, path)) })),
   );
-  const signingKey = randomBytes(32).toString("hex");
+  // The stack's own pool gateway answers the pool Worker's release with this key's version, and
+  // pool bundle and token rollouts wait until it matches the server's key. One key, as in production.
+  const signingKey = poolFixtureSigningKey;
   const catalog = resetOptions
     ? await Promise.all(
         catalogProviders.map(async (lab) =>

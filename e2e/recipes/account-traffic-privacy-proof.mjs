@@ -4,7 +4,12 @@ import { Effect, Redacted } from "effect";
 import { roleHost } from "../../.upstream/e2e/support/role-hosts.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { accountRow } from "../../.upstream/e2e/support/account-rows.ts";
-import { provisioningJobs, provisioningSettled } from "./provisioning-diagnostics.mjs";
+import {
+  bringRetriesForward,
+  provisioningJobs,
+  provisioningMoved,
+  provisioningSettled,
+} from "./provisioning-diagnostics.mjs";
 
 // Red switches for this proof only, read nowhere else. HOLD keeps the organization row lock that
 // member setup takes from before the invitation is accepted until the measurement starts, so the
@@ -154,11 +159,7 @@ export const accountTrafficPrivacyProof = ({
         progress.provisioning = jobs;
         if (provisioningSettled(jobs)) return jobs;
         // A retry waits out its backoff; the dispatcher runs it now instead.
-        yield* database.run({
-          sql: `update hosted_provisioning set available_at = now()
-            where organization_id = $1 and status = 'queued' and available_at > now()`,
-          params: [organization],
-        });
+        yield* bringRetriesForward(database, organization);
         yield* h.request("POST", "/api/onboarding/prepare", {});
         yield* Effect.sleep("250 millis");
       }
@@ -172,6 +173,7 @@ export const accountTrafficPrivacyProof = ({
     if (holdSetup) yield* database.release;
     if (settleFirst) yield* settleProvisioning;
     progress.phase = "private-measure";
+    const openAtFirst = yield* provisioningJobs(database, organization);
     const before = { a: yield* run(() => heads(a)), b: yield* run(() => heads(b)) };
     assert.equal(
       before.a.some(({ resource }) => resource === b.state.account),
@@ -204,6 +206,12 @@ export const accountTrafficPrivacyProof = ({
     assert.equal(counted.accounts.find(({ account }) => account === b.state.account)?.requests, 2);
     yield* run(() => b.cell.getByText("2", { exact: true }).waitFor());
     const after = { a: yield* run(() => heads(a)), b: yield* run(() => heads(b)) };
+    // A job that ran inside the measurement may have moved A's heads: the run is invalid, and says so.
+    const moved = provisioningMoved(openAtFirst, yield* provisioningJobs(database, organization));
+    if (settleFirst && moved.length > 0)
+      return yield* Effect.fail(
+        new Error(`Provisioning ran inside the private measurement: ${JSON.stringify(moved)}`),
+      );
     yield* run(() => Promise.all(viewers.map(({ page }) => flush(page))));
     check(
       "private traffic: B's real tool call refreshes B exactly once",

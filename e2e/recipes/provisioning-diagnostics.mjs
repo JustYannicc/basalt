@@ -6,9 +6,60 @@ export const provisioningJobs = (database, organization) =>
     params: [organization],
   });
 
-/** Settled: none of the organization's jobs waits to run or is running. */
-export const provisioningSettled = (jobs) =>
-  jobs.every(({ status }) => status !== "queued" && status !== "running");
+const open = ({ status }) => status === "queued" || status === "running";
+const ran = ({ status, attempts }) => attempts > 0 || (status !== "queued" && status !== "running");
+
+/**
+ * A deploy queues these for every organization, each delayed so the deploy can finish first: a pool
+ * bundle reconcile, a pool token rotation and a catalog app sweep. Their attempts can commit the
+ * organization's defaults like its own setup does.
+ */
+const rolloutPrefixes = ["basalt-pool-bundle:", "basalt-pool-token:", "basalt-catalog-apps:"];
+export const rolloutJob = ({ id }) => rolloutPrefixes.some((prefix) => id.startsWith(prefix));
+
+/** How far ahead a deferred rollout must be due to stay clear of a measurement that follows. */
+export const measurementMarginMs = 60_000;
+const deferred = (job, now) =>
+  rolloutJob(job) &&
+  job.status === "queued" &&
+  new Date(job.available_at).getTime() > now + measurementMarginMs;
+
+/**
+ * Settled: every job of the organization has finished, except a deploy's rollout still queued for
+ * well after the measurement. A running rollout, or one due soon, is waited for like setup.
+ */
+export const provisioningSettled = (jobs, now = Date.now()) =>
+  jobs.every((job) => !open(job) || deferred(job, now));
+
+/**
+ * Bring forward a retry waiting out its backoff. A job waiting for its first attempt keeps its own
+ * schedule: a rollout's delay gives the deploy time to finish.
+ */
+export const bringRetriesForward = (database, organization) =>
+  database.run({
+    sql: `update hosted_provisioning set available_at = now()
+      where organization_id = $1 and status = 'queued' and attempts > 0 and available_at > now()`,
+    params: [organization],
+  });
+
+/**
+ * Jobs whose attempt can fall inside the measurement between two readings of the queue: one open at
+ * the first that ran an attempt or finished by the second, one already in flight at the first, and
+ * one that appears only at the second and has run. An attempt can commit the organization's
+ * defaults even when its job keeps waiting, so a measurement taken across one is not valid.
+ */
+export const provisioningMoved = (first, second) => [
+  ...first.filter(open).flatMap((job) => {
+    const later = second.find(({ id }) => id === job.id);
+    const inFlight = job.status === "running" && job.attempts > 0;
+    const changed =
+      later === undefined || later.attempts !== job.attempts || later.status !== job.status;
+    return inFlight || changed ? [{ id: job.id, before: job, after: later ?? null }] : [];
+  }),
+  ...second
+    .filter((job) => !first.some(({ id }) => id === job.id) && ran(job))
+    .map((job) => ({ id: job.id, before: null, after: job })),
+];
 
 // The queue keeps no error. The runner logs one line for each attempt that failed or must wait.
 const attemptMessages = [
