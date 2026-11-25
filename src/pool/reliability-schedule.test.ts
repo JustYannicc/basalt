@@ -39,7 +39,9 @@ for (const state of ["breached", "unavailable"] as const)
   test(`a ${state} SLO leaves healthy synthetic availability green`, async (t) => {
     const envelopes: { type: string; payload: Record<string, unknown> }[] = [];
     const diagnostics: unknown[][] = [];
-    t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+    t.mock.method(console, "warn", (...args: unknown[]) => {
+      if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
+    });
     t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
       const lines = new TextDecoder().decode(init.body as ArrayBuffer).split("\n");
       envelopes.push({ type: JSON.parse(lines[1]!).type, payload: JSON.parse(lines[2]!) });
@@ -99,7 +101,9 @@ for (const state of ["breached", "unavailable"] as const)
   test(`a rejected availability RPC preserves the independently ${state} SLO`, async (t) => {
     const messages: Record<string, unknown>[] = [];
     const diagnostics: unknown[][] = [];
-    t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+    t.mock.method(console, "warn", (...args: unknown[]) => {
+      if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
+    });
     t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
       messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
       return new Response(null, { status: 202 });
@@ -147,7 +151,9 @@ for (const state of ["breached", "unavailable"] as const)
 test("a failed collector reports a separate incident and no-traffic stays unmeasured", async (t) => {
   const messages: Record<string, unknown>[] = [];
   const diagnostics: unknown[][] = [];
-  t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
+  });
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
     messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
     return new Response(null, { status: 202 });
@@ -187,7 +193,9 @@ test("a failed collector reports a separate incident and no-traffic stays unmeas
 test("pending classification reports unknown reliability without a monitor error", async (t) => {
   const messages: Record<string, unknown>[] = [];
   const diagnostics: unknown[][] = [];
-  t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
+  });
   t.mock.method(globalThis, "fetch", async (_input: unknown, init: RequestInit) => {
     messages.push(JSON.parse(new TextDecoder().decode(init.body as ArrayBuffer).split("\n")[2]!));
     return new Response(null, { status: 202 });
@@ -223,7 +231,9 @@ test("pending classification reports unknown reliability without a monitor error
 
 test("unknown collection diagnostics exclude private fields and invalid counts", async (t) => {
   const diagnostics: unknown[][] = [];
-  t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
+  });
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 202 }));
   const unknown = slo("unavailable");
   await runAvailabilityProbe(

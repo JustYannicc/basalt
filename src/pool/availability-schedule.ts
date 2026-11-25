@@ -1,4 +1,10 @@
-import { capturePoolMonitor, reliabilityKey, startPoolMonitor } from "../telemetry/pool-monitor.ts";
+import {
+  capturePoolMonitor,
+  describeUndelivered,
+  reliabilityKey,
+  startPoolMonitor,
+} from "../telemetry/pool-monitor.ts";
+import { probeVerdict } from "./availability-verdict.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { awaitProbe, type ProbeResult } from "./availability.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
@@ -116,6 +122,9 @@ export async function runAvailabilityProbe(
     result = { ok: false, failures: [{ guard: "runtime", reason: "unavailable" }] };
   }
   if (!result.ok) console.error("POOL_AVAILABILITY_FAILURE", result.failures);
+  // Written before anything goes to Sentry, so a refused alert never hides what the probe concluded.
+  const verdict = probeVerdict(result);
+  if (verdict) (verdict.availability ? console.error : console.warn)("POOL_PROBE_VERDICT", verdict);
   // The monitor reports the first eight failures; an episode records only those it reports.
   let next = { pool: target, ...signatures({ ...result, failures: result.failures.slice(0, 8) }) };
   const reported = episodes
@@ -139,7 +148,7 @@ export async function runAvailabilityProbe(
       ].sort(),
     };
   const report = episodes ? episodeReport(reported, next, Date.now()) : undefined;
-  const { delivered, eventsDelivered } = await capturePoolMonitor(env, receipt, {
+  const { delivered, eventsDelivered, undelivered } = await capturePoolMonitor(env, receipt, {
     ...result,
     release,
     ...(report ? { report } : {}),
@@ -150,5 +159,8 @@ export async function runAvailabilityProbe(
       () => episodes.write(episodeAfter(reported, next, report, eventsDelivered)),
       AbortSignal.timeout(episodeBudgetMs),
     ).catch(() => console.error("POOL_AVAILABILITY_EPISODE_UNRECORDED"));
-  if (!delivered) throw new Error("Pool availability alert delivery failed");
+  // What Sentry refused and the status it answered, so a refused check-in on a healthy minute
+  // doesn't read as an outage; the probe's own verdict, if any, is the line above.
+  if (!delivered)
+    throw new Error(`Pool availability alert delivery failed: ${describeUndelivered(undelivered)}`);
 }
