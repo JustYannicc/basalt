@@ -18,6 +18,7 @@ import {
 } from "../runtime-slots/contract.ts";
 import { FleetRefused, RuntimeFleetState, type FleetRow, type PrimaryRoute } from "./state.ts";
 import {
+  cellHealthReadMs,
   countStillMs,
   drainingBoundMs,
   inPhaseFor,
@@ -25,6 +26,7 @@ import {
   pastBound,
   quarantineReportMs,
   startingBoundMs,
+  upkeepCadenceMs,
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
@@ -36,7 +38,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
-import { failureIgnored, failureRead, readSuspect } from "./failure-record.ts";
+import { failureIgnored, failureRead, readSuspect, unprovenMs } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { slotKey } from "../runtime-slots/activity.ts";
 import {
@@ -88,6 +90,12 @@ export interface CellCount {
   known: boolean;
   stillMs?: number;
 }
+/**
+ * How long a fenced ready cell can still become ready: the fence decides at the fleet alarm's
+ * first read from `unprovenMs` after its first read that was not good, which upkeep starts within
+ * `upkeepCadenceMs` and the cell answers within `cellHealthReadMs`.
+ */
+export const fenceDecidedMs = unprovenMs + upkeepCadenceMs + cellHealthReadMs;
 export interface FleetCell {
   start(target: SlotTarget): Promise<SlotIdentity>;
   observe(target: SlotTarget, retryUnsent?: boolean): Promise<SlotIdentity | undefined>;
@@ -562,8 +570,9 @@ export class RuntimeFleet {
     return rows.some((row) => row.phase === "ready" && this.serves(row)) ? 0 : hold;
   }
   /**
-   * The cold-start hold: while no cell is ready and one is starting, what is left of that start's
-   * bound. 0 once a ready cell can take the call, and below 0 when nothing can become ready.
+   * The cold-start hold: while no cell is ready and one is starting, or a ready cell is fenced,
+   * what is left of that start's or fence's bound. 0 once a ready cell can take the call, and
+   * below 0 when nothing can become ready.
    */
   async coldHoldMs() {
     const rows = await this.deps.state.inspect();
@@ -575,18 +584,37 @@ export class RuntimeFleet {
    * root's cap: what is left of that start's bound. A start that failed (uncertain) or ran past
    * its bound doesn't count, nor does a growth under way for more than one start bound, so below 0
    * when nothing can become ready: a disabled fleet, no start that can still finish.
+   *
+   * A ready cell fenced by a read that was not good serves again at its next good read, or is
+   * quarantined by its first read that was not good from `unprovenMs` after its first one, so it
+   * can become ready until the fleet alarm's read past that has decided (`fenceDecidedMs`); a
+   * quarantine, even one still being written, ends that at once.
    */
   private startingHoldMs(rows: readonly FleetRow[]) {
     if (this.deps.enabled?.() === false) return -1;
     const now = this.deps.now();
-    const left = rows
-      .filter(
-        (row) =>
-          (row.phase === "reserved" || row.phase === "warming") &&
-          row.phaseAt !== undefined &&
-          !pastBound(row, now),
-      )
-      .map((row) => row.phaseAt! + startingBoundMs - now);
+    const left = [
+      ...rows
+        .filter(
+          (row) =>
+            (row.phase === "reserved" || row.phase === "warming") &&
+            row.phaseAt !== undefined &&
+            !pastBound(row, now),
+        )
+        .map((row) => row.phaseAt! + startingBoundMs - now),
+      ...rows
+        .filter(
+          (row) =>
+            row.phase === "ready" && row.identity && !this.failures.quarantined(row.identity),
+        )
+        .map(
+          (row) =>
+            (readSuspect(row.suspect)?.since ?? this.failures.fencedSince(row.identity!) ?? now) +
+            fenceDecidedMs -
+            now,
+        )
+        .filter((ms) => ms > 0),
+    ];
     if (left.length) return Math.max(0, ...left);
     const growth = this.growing ? this.growingSince + startingBoundMs - now : 0;
     return growth > 0 ? growth : -1;

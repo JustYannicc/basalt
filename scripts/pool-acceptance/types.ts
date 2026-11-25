@@ -2,19 +2,27 @@ export class AcceptanceFailure extends Error {}
 
 export class TransportFailure extends AcceptanceFailure {}
 
+/**
+ * What a refusal's JSON body says, as codes only: `error.code`, `error.type`, and the code a message
+ * begins with (`<code>: …`, how the pool's node relays a Home refusal). Never the message itself.
+ */
+export type Refusal = { readonly code?: string; readonly type?: string; readonly prefix?: string };
+
 export class HttpStatusFailure extends AcceptanceFailure {
   readonly status: number;
+  readonly refusal: Refusal | undefined;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, refusal?: Refusal) {
     super(message);
     this.status = status;
+    this.refusal = refusal;
   }
 }
 
 /** A model call's 429 carrying the pool's cap code: its user's cap, not a failure to serve. */
 export class UserCapReached extends HttpStatusFailure {
-  constructor(message: string) {
-    super(429, message);
+  constructor(message: string, refusal?: Refusal) {
+    super(429, message, refusal);
   }
 }
 

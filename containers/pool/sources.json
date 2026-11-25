@@ -361,13 +361,13 @@
     },
     "node": {
       "repository": "router-for-me/CLIProxyAPI",
-      "commit": "14144df573c77e8e0e1eeaa450d3e63a068372df",
-      "sha256": "4abeb81824c36f7606fd7743c3703ca584405ac96bd8aee889441c79a771a699",
+      "commit": "8cd6817b831f34caa593c76242d2c1f0674bf794",
+      "sha256": "f80d62bfbb9d8466834d05f671262c32efe68269d67d1d5119128e10ad25f58c",
       "patches": [
         {
           "identity": "cliproxy-node-metadata-only-diagnostics",
           "file": "0646-node-metadata-only.patch",
-          "sha256": "2cbb8e38f631147d34728bf3bca80580dac340c4570a9bf632e7d49e34b73289",
+          "sha256": "4205cc9839064f4d2c6acad53aea27c583a72c59cfa4ac26c2f4dfb2389bf929",
           "retirement": {
             "mode": "manual",
             "requires": "Replacement release passes the forced failure, retained-data purge, fingerprint identity, mixed-writer, repeated-boot and response-bearing application-log projection, guard and resumable-cleanup regressions before removing this carry."
@@ -385,7 +385,7 @@
         {
           "identity": "cliproxy-node-usage-credit-routing",
           "file": "0647-node-usage-credit-routing.patch",
-          "sha256": "8c533c1df298c15c92259c73c896fb2850bb294ae233bef72e43755fd2fcf0e1",
+          "sha256": "ecc1f418f09f53d61b85ee3bfe9fe16dbc9bae40942a78f7878d5d5a1de0fddf",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only after the pinned source preserves credit observations, pool-owned policy and plan-before-affinity selection, passes the never-policy and retained WebSocket turn proofs, and preserves existing schema rows through additive upgrades."
@@ -403,7 +403,7 @@
         {
           "identity": "cliproxy-node-dispatch-timing-header",
           "file": "0516-node-dispatch-timing-header.patch",
-          "sha256": "a32b9bc704dcf3783241a9be6025559ed67352c648a5c365f59267410a30b5e9",
+          "sha256": "03ea5c326510534c081272a31223e10236898c3fc21c9b07c76a90d9d47b89cb",
           "retirement": {
             "mode": "manual",
             "requires": "Retire only when the pinned sources preserve the opt-in primary dispatch reply, bounded closed timing transport, failure fencing, legacy compatibility and synthetic-provider response proof through Worker logs without exposing diagnostic headers to clients."
@@ -412,7 +412,7 @@
         {
           "identity": "node-usage-api-shape",
           "file": "0554-node-usage-api-shape.patch",
-          "sha256": "d95b66ad90f6abf87ce43ed39b2f98020a5e0248c61759c6af8c524d8874b3fb",
+          "sha256": "f89f1bf5a31788947ca22a055c9f34b1b4e113ced0cf2fde323a6172f3594e9b",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after metadata-only Node usage publication preserves only allowlisted canonical API paths in its detached context, omits arbitrary paths and all other request metadata, and passes context, queue publication and fresh Home-capture regressions."
@@ -430,7 +430,7 @@
         {
           "identity": "cliproxy-node-terminal-request-id",
           "file": "0648-node-terminal-request-id.patch",
-          "sha256": "e7df8e0f931c0e1096c0a9746657a5571d1c8031bd7e2778fe004b627594e130",
+          "sha256": "dbfe98991016a0857da1aacc93a9369553693b422eabe979e715b8828492a85a",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned Node propagates validated per-request terminal correlation identities through HTTP, multiplexed Responses and duplex successor usage, preserves independent trace and billing execution identities through metadata-only reporting, and passes the request, privacy and model-drain regressions."
@@ -448,7 +448,7 @@
         {
           "identity": "cliproxy-node-no-postwrite-replay",
           "file": "0649-node-no-postwrite-replay.patch",
-          "sha256": "acfdb8d1b7b6f1e70e181e4655befe10a06b1df73a416c59103c1ec010d7b3e2",
+          "sha256": "6b071e77387bfb1917b8b247e347e76d175fe17f655a19ff4834ba4d86b1a4fe",
           "retirement": {
             "mode": "manual",
             "requires": "Retire when the pinned upstream release includes terminal unknown-outcome classification after HTTP submission and passes the real post-write EOF, empty accepted model-pool stream, late truncation, incomplete SSE frames, malformed accepted decoding, submitted POST redirects, header-only framing, terminal request-body closure, generation-only submission tracking with replayable token counting, exactly one request-scoped failed stream result for local and Home observers, JSON document error envelopes, terminal Antigravity credits fallback across model pools and credentials, buffered Claude incomplete-response classification, direct Fast credential-rate-limit result recording and cooldown, internal POST replay, pre-write connect failure and explicit HTTP and SSE refusal regressions. Preserve no replay across models, credentials and retry rounds, public 502 upstream_outcome_unknown with retryable false, existing proxy and protocol selection, and release updates. Re-apply on each source update until the upstream fix is released; remove this carry when that release supplies the same behavior."
@@ -466,7 +466,7 @@
         {
           "identity": "cliproxy-node-generation-submission",
           "file": "0650-node-generation-submission.patch",
-          "sha256": "c84bb8361bd862612183f1b07abd03ecc924d2c7f9ff580586ca7427be1b0f16",
+          "sha256": "8181a41c37d2c4e92963d67dfc832523ad96dd1220c356491edc5b244fdc7a4d",
           "retirement": {
             "mode": "manual",
             "requires": "Retire after the pinned upstream release guards only generation sends, treats every local failure after accepted HTTP responses or ambiguous WebSocket frame writes as terminal unknown, and positively validates provider refusal payloads before allowing failover. Pass actual provider and native public error projections, two-credential HTTP and WebSocket disconnect and partial-write proofs, nil-connection pre-write recovery, plugin and token-count auxiliary controls, and retained Home funding fixtures without weakening assertions. Preserve no automatic replay across models, credentials or retry rounds, native error envelopes and correlation identities. Generic credential, refresh and auxiliary HTTP calls remain untracked. Re-apply on each source update until the upstream release supplies the same behavior."
@@ -475,7 +475,7 @@
         {
           "identity": "cliproxy-node-provider-retry-time",
           "file": "0764-node-provider-retry-time.patch",
-          "sha256": "5502cdd4da913618fb2fa0847e76498333968d3db6124208c5cb506ed7de6b78",
+          "sha256": "ae3318a23cf1c8a1f96ed2d6e9830dd64a7c62442b529cba523296619a1cbdca",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
@@ -511,7 +511,7 @@
         {
           "identity": "cliproxy-node-limit-failover",
           "file": "0769-node-limit-failover.patch",
-          "sha256": "de3555b25f8e37121e48d7cccda602c2e1175db2ad2c8438f71f57d6b096267e",
+          "sha256": "bd46092f0c83537f5d6edb475b557db677848cca332ef749605a656f8beead3c",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0769 keeps an account's limit from reaching the caller while another account of that lab is eligible. Retire when the pinned node holds a Claude stream's message_start, ping and empty block starts until the first generating event, within 48 frames, 1 MiB and 5 s, except for fast requests, turns a rate_limit_error that arrives while holding into the account's own 429 with the 200's retry time so the conductor fails over, releases everything held in order on any other error, end of stream or bound, answers a limit a non-streamed translated call buffered as the account's 429, lets a Home redispatch go ahead when Home did not acknowledge the release of a credential the next pick excludes, never waits twice for that release when a websocket session still holds the credential's selection, makes one more pick within one cancel bound after a retryable home_unavailable and answers the account's own 429 only when that pick fails with home_unavailable again, and passes the bootstrap-hold, realistic-limit, time-bound, byte-identity, off-switch, excluded-release, websocket-release, extra-pick and 25-call burst regressions."

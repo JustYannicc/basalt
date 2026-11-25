@@ -182,25 +182,14 @@ export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) 
     .filter(({ fqn, action }) => ["Migrations", "PoolDatabase"].includes(fqn) && action !== "noop")
     .map(({ fqn }) => fqn);
 
-/** One streamed turn through the public pool. Says why it failed by error class and status only. */
-export async function smoke(send: () => Promise<unknown>) {
-  try {
-    await send();
-    return { passed: true } as const;
-  } catch (error) {
-    const status = (error as { status?: unknown } | undefined)?.status;
-    const name = error instanceof Error ? error.name : "failure";
-    return {
-      passed: false,
-      why: typeof status === "number" ? `${name}, HTTP ${status}` : name,
-    } as const;
-  }
-}
-
 // A rollback Cloudflare refuses over a changed secret is forced only for these: the telemetry
 // secret carries the upstream pin, and AppCompiler's apps version the served framework version
 // (until #1726 binds it plainly). Forced, the earlier version gets back the value it ran with.
 const forceSecrets = new Set(["EXECUTOR_TELEMETRY", "EXECUTOR_APPS_VERSION"]);
+
+// Set right before the first production write. A run that stops before it says so (`unchanged`), and
+// production.yml records every other deploy: one that dies mid-apply never writes that line.
+let began = false;
 
 const say = async (line: string) => {
   console.log(line);
@@ -239,6 +228,22 @@ async function main() {
   // A missing or malformed acceptance device stops here, before anything changes.
   const { acceptanceCredential } = await import("./release/acceptance-device.ts");
   const credential = mode === "deploy" ? acceptanceCredential(process.env) : undefined;
+  const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
+  const { servedBeforeApply, smokeAfterApply, smokeModels } =
+    await import("./release/smoke-models.ts");
+  const turn = (name: string) =>
+    new PoolAcceptanceClient().sendTurn(credential!, name, {
+      id: randomUUID(),
+      expectedRecords: 1,
+    });
+  // Before anything changes, a model the pool serves now (deploy only; a plan sends no turn).
+  let served = model;
+  if (mode === "deploy") {
+    const before = await servedBeforeApply(smokeModels(model), turn);
+    if ("stop" in before) throw new Refused(before.stop);
+    served = before.model;
+    await say(before.line);
+  }
   // Alchemy captures the working directory on its first load and resolves the stack's commands
   // from it; they are declared relative to the cloud app.
   process.chdir(resolve(root, ".upstream/apps/hosted/cloud"));
@@ -416,6 +421,7 @@ async function main() {
           );
         yield* print(`Backed up the pool database before ${steps.join(", ")}: ${name}`);
       }
+      began = true;
       for (const worker of forward) {
         const moved = yield* Effect.exit(
           rollbackTo(
@@ -443,17 +449,11 @@ async function main() {
     }),
   );
   if (mode === "plan") return;
-  const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
   const result = applied
-    ? await smoke(() =>
-        new PoolAcceptanceClient().sendTurn(credential!, model, {
-          id: randomUUID(),
-          expectedRecords: 1,
-        }),
-      )
+    ? await smokeAfterApply(served, turn)
     : ({ passed: false, why: "the apply failed" } as const);
   if (result.passed)
-    return void (await say(`Deployed ${candidate}; the smoke turn on ${model} served.`));
+    return void (await say(`Deployed ${candidate}; the smoke turn on ${served} served.`));
   if (creating) {
     await say(
       `::error::Failed (${result.why}). New Durable Object classes cannot be rolled back: fix forward.`,
@@ -470,7 +470,7 @@ async function main() {
   await say(
     `::error::Failed (${result.why}); re-pointed ${serving.length - failed.length} of ${serving.length} Workers` +
       ` to their versions from before the apply${failed.length ? `; not re-pointed: ${failed.join(", ")}` : ""}.` +
-      " State still records this release, so the next deploy is a new commit, not this one again.",
+      " State still records this release: a plan-only run of this commit again shows them re-pointed forward, and a deploy with that run's digest does it.",
   );
   process.exit(1);
 }
@@ -480,6 +480,8 @@ async function main() {
 if (process.argv[1] === fileURLToPath(import.meta.url))
   await main().catch(async (error: unknown) => {
     const { failureLine } = await import("./release/failure-line.ts");
+    if (!began && process.env.GITHUB_OUTPUT)
+      await appendFile(process.env.GITHUB_OUTPUT, "unchanged=true\n");
     await say(`::error::Stopped: ${error instanceof Refused ? error.message : failureLine(error)}`);
     process.exit(1);
   });

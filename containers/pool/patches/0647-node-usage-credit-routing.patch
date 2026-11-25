@@ -1,6 +1,6 @@
 diff --git a/internal/home/usage_credits.go b/internal/home/usage_credits.go
 new file mode 100644
-index 0000000..1ead41b
+index 00000000..1ead41b1
 --- /dev/null
 +++ b/internal/home/usage_credits.go
 @@ -0,0 +1,43 @@
@@ -49,7 +49,7 @@ index 0000000..1ead41b
 +}
 diff --git a/internal/home/usage_credits_test.go b/internal/home/usage_credits_test.go
 new file mode 100644
-index 0000000..75dbfd2
+index 00000000..75dbfd21
 --- /dev/null
 +++ b/internal/home/usage_credits_test.go
 @@ -0,0 +1,32 @@
@@ -86,11 +86,11 @@ index 0000000..75dbfd2
 +	}
 +}
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
-index 125f204..6fdabe7 100644
+index cdb7084e..5fa7734d 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket.go
 +++ b/sdk/api/handlers/openai/openai_responses_websocket.go
-@@ -944,6 +944,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
- 			cliCtx = cliproxyexecutor.WithDownstreamWebsocket(cliCtx)
+@@ -1036,6 +1036,8 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+ 			}
  			cliCtx = cliproxyexecutor.WithLocalWebsocketTurnTracker(cliCtx)
  			cliCtx = cliproxyexecutor.WithWebsocketInputEpoch(cliCtx, &inputEpoch, msgEpoch)
 +			var fundingAuthID atomic.Value
@@ -98,7 +98,7 @@ index 125f204..6fdabe7 100644
  			if duplexInput != nil {
  				cliCtx = cliproxyexecutor.WithWebsocketInput(cliCtx, duplexInput)
  				cliCtx = cliproxyexecutor.WithWebsocketAuthCheck(cliCtx, func(authID string) bool {
-@@ -959,6 +961,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+@@ -1051,6 +1053,17 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
  							Error:      errors.New("client credential changed during the websocket stream; reconnect"),
  						}
  					}
@@ -116,7 +116,7 @@ index 125f204..6fdabe7 100644
  					if errAuth == nil {
  						return nil, nil
  					}
-@@ -977,6 +990,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+@@ -1069,6 +1082,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
  				if authID == "" || h == nil || h.AuthManager == nil {
  					return
  				}
@@ -126,7 +126,7 @@ index 125f204..6fdabe7 100644
  				pinnedAuthAttempted = pinnedAuthAttempted || (pinnedAuthID != "" && authID == pinnedAuthID)
 diff --git a/sdk/api/handlers/openai/usage_credits_test.go b/sdk/api/handlers/openai/usage_credits_test.go
 new file mode 100644
-index 0000000..2060490
+index 00000000..20604902
 --- /dev/null
 +++ b/sdk/api/handlers/openai/usage_credits_test.go
 @@ -0,0 +1,84 @@
@@ -215,10 +215,10 @@ index 0000000..2060490
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index ddd7a2b..5c2be8c 100644
+index d70b5276..0b414008 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -1029,6 +1029,9 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
+@@ -1035,6 +1035,9 @@ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, o
  		return nil, errRetained
  	}
  	if retainedOK {
@@ -229,10 +229,10 @@ index ddd7a2b..5c2be8c 100644
  	}
  	if errLoss := cliproxyexecutor.WebsocketInputLossError(ctx); errLoss != nil {
 diff --git a/sdk/cliproxy/auth/home_concurrency.go b/sdk/cliproxy/auth/home_concurrency.go
-index 8a3f47a..a946fae 100644
+index aa176358..1ad00f56 100644
 --- a/sdk/cliproxy/auth/home_concurrency.go
 +++ b/sdk/cliproxy/auth/home_concurrency.go
-@@ -255,6 +255,12 @@ func decodeHomeDispatchError(raw []byte) error {
+@@ -263,6 +263,12 @@ func decodeHomeDispatchError(raw []byte) error {
  		return newHomeConcurrencyBusyError(result, time.Duration(detail.RetryAfterMS)*time.Millisecond)
  	case "user_credits_insufficient":
  		result.HTTPStatus = http.StatusPaymentRequired
@@ -246,7 +246,7 @@ index 8a3f47a..a946fae 100644
  		result.HTTPStatus = http.StatusTooManyRequests
  	case "auth_not_found", "auth_unavailable", "refresh_temporarily_unavailable", "home_unavailable",
 diff --git a/sdk/cliproxy/auth/home_execution_paths_test.go b/sdk/cliproxy/auth/home_execution_paths_test.go
-index a09c50b..11e5717 100644
+index 0f1f5491..b7969da0 100644
 --- a/sdk/cliproxy/auth/home_execution_paths_test.go
 +++ b/sdk/cliproxy/auth/home_execution_paths_test.go
 @@ -1558,3 +1558,11 @@ func TestMetadataOnlyHomeDispatchPreservesSelectedModel(t *testing.T) {
@@ -262,7 +262,7 @@ index a09c50b..11e5717 100644
 +	return nil
 +}
 diff --git a/sdk/cliproxy/auth/home_force_mapping_test.go b/sdk/cliproxy/auth/home_force_mapping_test.go
-index fcd3435..75504f6 100644
+index d87988bf..ffbccb41 100644
 --- a/sdk/cliproxy/auth/home_force_mapping_test.go
 +++ b/sdk/cliproxy/auth/home_force_mapping_test.go
 @@ -632,3 +632,11 @@ func TestHomeForceMappingAliasResultRequiresExplicitFlag(t *testing.T) {
@@ -279,7 +279,7 @@ index fcd3435..75504f6 100644
 +}
 diff --git a/sdk/cliproxy/auth/usage_credits.go b/sdk/cliproxy/auth/usage_credits.go
 new file mode 100644
-index 0000000..3bd22b4
+index 00000000..3bd22b43
 --- /dev/null
 +++ b/sdk/cliproxy/auth/usage_credits.go
 @@ -0,0 +1,29 @@
@@ -314,7 +314,7 @@ index 0000000..3bd22b4
 +}
 diff --git a/sdk/cliproxy/auth/usage_credits_test.go b/sdk/cliproxy/auth/usage_credits_test.go
 new file mode 100644
-index 0000000..c03a7e5
+index 00000000..c03a7e5e
 --- /dev/null
 +++ b/sdk/cliproxy/auth/usage_credits_test.go
 @@ -0,0 +1,64 @@

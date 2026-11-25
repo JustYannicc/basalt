@@ -358,10 +358,10 @@ test("the fast lane requires an actual browser installation", () => {
       { result: fastJobs.includes(name) ? "success" : "skipped" },
     ]),
   );
-  assert.deepEqual(gateErrors(needs, [], [], false), []);
+  assert.deepEqual(gateErrors(needs, [], [], "fast"), []);
   for (const result of ["failure", "skipped", "cancelled"])
     assert.ok(
-      gateErrors({ ...needs, "browser-install": { result } }, [], [], false).some((error) =>
+      gateErrors({ ...needs, "browser-install": { result } }, [], [], "fast").some((error) =>
         error.startsWith("browser-install:"),
       ),
     );

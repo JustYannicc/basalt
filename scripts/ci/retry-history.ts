@@ -3,8 +3,11 @@ import type { CheckFile } from "./retry-records.ts";
 /** The declared job a shard's check run belongs to: planShards names shards `<job>-<n>`. */
 export const shardJob = (name: string) => /^(declared-[a-z-]+)-\d+$/.exec(name)?.[1];
 
-/** The aggregate job's run, under either name ci.yml's `check` job can show. */
-export const isCheckJob = (name: string) => name === "check" || name === "check (fast-only)";
+/** The names ci.yml's `check` job shows: the full suite, the affected lane and the fast lane. */
+export const checkNames = ["check", "check (affected)", "check (fast-only)"] as const;
+
+/** The aggregate job's run, under any name ci.yml's `check` job can show. */
+export const isCheckJob = (name: string) => (checkNames as readonly string[]).includes(name);
 
 /**
  * One Check run's retries. `jobs` are the declared jobs that ran; `complete` says every planned
