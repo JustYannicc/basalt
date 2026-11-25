@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 import { readHomeConfigProxies, setHomeConfigProxy } from "./account-config-mirror.ts";
 import type { HomeClient } from "./control.ts";
 import { post, rows, unavailable } from "./json.ts";
@@ -200,6 +200,12 @@ async function readCredentials(home: HomeClient, signal: AbortSignal) {
   return credentials;
 }
 
+/** A stored record that doesn't decode fails the pass, as an unavailable store would. */
+function decodeStored<T>(schema: Schema.Codec<T>, raw: unknown): T {
+  const value = Schema.decodeUnknownOption(schema)(raw);
+  return Option.isSome(value) ? value.value : unavailable();
+}
+
 const emptyAnswer: RouteAnswer = { served: true, revision: 0, resolutions: new Map() };
 // A resolve answers in well under a second; it never holds a membership step for long.
 export const resolveMs = 5_000;
@@ -240,13 +246,13 @@ export class RouteAssignments {
 
   private async state(): Promise<State> {
     const raw = await this.storage.get(stateKey);
-    return raw === undefined ? { served: false, pools: [] } : Schema.decodeUnknownSync(State)(raw);
+    return raw === undefined ? { served: false, pools: [] } : decodeStored(State, raw);
   }
   private async listed<T>(prefix: string, schema: Schema.Codec<T>) {
     return new Map(
       [...(await this.storage.list({ prefix }))].map(([key, value]) => [
         key.slice(prefix.length),
-        Schema.decodeUnknownSync(schema)(value),
+        decodeStored(schema, value),
       ]),
     );
   }
@@ -257,7 +263,7 @@ export class RouteAssignments {
     const pools = new Map<string, PoolRecord>();
     for (const pool of (await this.state()).pools) {
       const raw = await this.storage.get(poolPrefix + pool);
-      if (raw !== undefined) pools.set(pool, Schema.decodeUnknownSync(PoolRecord)(raw));
+      if (raw !== undefined) pools.set(pool, decodeStored(PoolRecord, raw));
     }
     return pools;
   }
@@ -455,8 +461,7 @@ export class RouteAssignments {
     const step = (this.steps.get(scope.pool) ?? 0) + 1;
     this.steps.set(scope.pool, step);
     const raw = await this.storage.get(poolPrefix + scope.pool);
-    const known =
-      raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw).references;
+    const known = raw === undefined ? undefined : decodeStored(PoolRecord, raw).references;
     if (known && accounts.every((account) => known.includes(account)))
       return this.preparePass(scope, accounts, signal);
     let started = false;
@@ -489,7 +494,7 @@ export class RouteAssignments {
     additive = false,
   ) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
-    const record = raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw);
+    const record = raw === undefined ? undefined : decodeStored(PoolRecord, raw);
     const known = new Set(record?.references ?? []);
     const members = [...new Set(accounts)];
     const added = members.filter((account) => !known.has(account));
@@ -510,7 +515,7 @@ export class RouteAssignments {
       const atStake = new Map<string, Decision>();
       for (const reference of added) {
         const stored = await this.storage.get(entryPrefix + reference);
-        const entry = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
+        const entry = stored === undefined ? undefined : decodeStored(Entry, stored);
         const rules = await this.hasRules(reference);
         // Before any 200, the host's hasRules is the only proof of rules: never direct then.
         const decision: Decision = ruleless.has(reference)
@@ -579,7 +584,7 @@ export class RouteAssignments {
     if (hint.hasRules === undefined) {
       // A re-mirror never drops a credential its membership step routed.
       const stored = await this.storage.get(entryPrefix + reference);
-      const kept = stored === undefined ? undefined : Schema.decodeUnknownSync(Entry)(stored);
+      const kept = stored === undefined ? undefined : decodeStored(Entry, stored);
       if (kept) return routeProxyUrl(kept.routeId);
       // Nor a hold, which only an owner with rules is ever on.
       return (await this.held(reference)) ? routeProxyUrl(unassignedRoute) : undefined;
@@ -631,7 +636,7 @@ export class RouteAssignments {
   private async settlePass(session: string, references: readonly string[]) {
     const raw = await this.storage.get(signInPrefix + session);
     if (raw === undefined) return;
-    const route = Schema.decodeUnknownSync(Entry)(raw);
+    const route = decodeStored(Entry, raw);
     // Home saves the route on what it creates; this re-asserts it, so no later call goes direct.
     if (references.length)
       await this.apply(new Map(references.map((reference) => [reference, route])), within(writeMs));
@@ -716,7 +721,7 @@ export class RouteAssignments {
       const raw = await this.storage.get(poolPrefix + pool);
       if (raw === undefined) continue;
       await this.storage.put(poolPrefix + pool, {
-        ...Schema.decodeUnknownSync(PoolRecord)(raw),
+        ...decodeStored(PoolRecord, raw),
         revision: revisions.get(pool)!,
         refreshedAt: at,
       } satisfies PoolRecord);

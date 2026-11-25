@@ -87,19 +87,30 @@ export async function attemptJobs(api: GitHub, run: Run) {
   return jobs;
 }
 
+export type PullRequestRun = {
+  id: number;
+  status: string;
+  head_sha: string;
+  head_repository?: { full_name?: string } | null;
+};
+
+/** The most recent Check runs for a pull request branch, newest first. */
+export async function pullRequestRuns(api: GitHub, branch: string, count = 20) {
+  const body = await api.json<{ workflow_runs?: PullRequestRun[] }>(
+    `/actions/workflows/ci.yml/runs?event=pull_request&branch=${encodeURIComponent(branch)}&per_page=${count}`,
+  );
+  return body.workflow_runs ?? [];
+}
+
 /**
- * Whether a newer Check runs for this pull request's branch. A pull request's Checks share one
- * concurrency group that cancels in progress, so re-running a superseded one would cancel the
- * newest; push runs each have their own group.
+ * Whether a newer Check runs for this pull request's branch. A pull request's Checks of one lane
+ * share a concurrency group that cancels in progress, so re-running a superseded one could cancel
+ * the newest; push runs each have their own group.
  */
 export async function supersededPullRequest(api: GitHub, run: Run, env = process.env) {
   if (env.RUN_EVENT !== "pull_request") return false;
-  const branch = encodeURIComponent(env.HEAD_BRANCH ?? "");
-  const body = await api.json<{
-    workflow_runs?: { id?: number; head_repository?: { full_name?: string } }[];
-  }>(`/actions/workflows/ci.yml/runs?event=pull_request&branch=${branch}&per_page=20`);
   // A fork's pull request may share the branch name; only this repository's own runs count.
-  return (body.workflow_runs ?? []).some(
+  return (await pullRequestRuns(api, env.HEAD_BRANCH ?? "")).some(
     (other) =>
       Number(other.id) > run.id && other.head_repository?.full_name === env.GITHUB_REPOSITORY,
   );

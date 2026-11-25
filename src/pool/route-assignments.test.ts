@@ -1,5 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import {
+  availableProviderCapabilities,
+  quotaProviderIds,
+} from "./provider-accounts/capabilities.ts";
 import { test } from "node:test";
 import { HomeClient } from "./control.ts";
 import {
@@ -60,6 +64,19 @@ function fakeHome() {
     posting: () => {},
     writes: [] as string[],
   };
+  // Home's own model: a write changes its state, and every answer is read from that state.
+  const applyKeys = (groups: unknown) => {
+    state.codex = Array.isArray(groups) ? (groups as Record<string, unknown>[]) : [];
+  };
+  const applyProxy = (file: Record<string, unknown>, proxy: unknown) => {
+    file.proxy_url = typeof proxy === "string" ? proxy : "";
+  };
+  const applyDisabled = (file: Record<string, unknown>, disabled: unknown) => {
+    file.disabled = disabled === true;
+  };
+  const applyGlobal = (proxy: unknown) => {
+    state.global = typeof proxy === "string" ? proxy : "";
+  };
   const client = new HomeClient(async (path, init) => {
     const route = path.replace("/v8/management", "");
     const method = init?.method ?? "GET";
@@ -68,7 +85,7 @@ function fakeHome() {
       if (route !== "/config/api-keys/codex") return new Response(null, { status: 404 });
       if (method === "PUT") {
         state.writes.push("codex");
-        state.codex = body;
+        applyKeys(body);
         return Response.json({ status: "ok" });
       }
       return Response.json(state.codex);
@@ -96,7 +113,7 @@ function fakeHome() {
       const file = state.files.find((item) => item.id === body.id);
       if (!file) return Response.json({ error: "not_found" }, { status: 404 });
       state.writes.push(`auth:${body.id}`);
-      file.proxy_url = body.proxy_url;
+      applyProxy(file, body.proxy_url);
       return Response.json({ status: "ok" });
     }
     if (route === "/credentials/status" && method === "PATCH" && state.failStatus)
@@ -105,12 +122,13 @@ function fakeHome() {
       const file = state.files.find((item) => item.id === body.name);
       if (!file) return Response.json({ error: "not_found" }, { status: 404 });
       state.writes.push(`status:${body.name}:${body.disabled}`);
-      file.disabled = body.disabled;
-      return Response.json({ status: "ok", disabled: body.disabled });
+      applyDisabled(file, body.disabled);
+      // Home answers with the state it now holds.
+      return Response.json({ status: "ok", disabled: file.disabled });
     }
     if (route === "/config" && method === "PATCH") {
       state.writes.push("global");
-      state.global = body.requests["proxy-url"];
+      applyGlobal(body.requests?.["proxy-url"]);
       return Response.json({ status: "ok" });
     }
     if (route === "/config") return Response.json({ requests: { "proxy-url": state.global } });
@@ -915,89 +933,77 @@ test("a mirror's decision and save are one step: a pass can't land between them 
   assert.equal(file.proxy_url, routeProxyUrl(home));
 });
 
-test(
-  "a membership step waits for a routing pass only briefly, decides when the queue drains, and the pass keeps its record",
-  { timeout: 10_000 },
-  async () => {
-    const { client } = fakeHome();
-    const store = storage();
-    const rules = scripted({});
-    let release = () => {};
-    let entered = () => {};
-    let block = false;
-    const resolver: RouteResolver = {
-      resolve: async (scope, references) => {
-        if (block) {
-          entered();
-          await new Promise<void>((resolve) => {
-            release = resolve;
-          });
-        }
-        return rules.resolver.resolve(scope, references, signal());
-      },
-    };
-    const routes = new RouteAssignments(store, resolver, client, () => now, 20);
-    await routes.prepare(scope, [mine, teammate], signal());
-    block = true;
-    const inside = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const pass = routes.refresh(signal());
-    // The pass has read its pool records and is waiting on the tools service.
-    await inside;
-    // The pass is waiting on the tools service. A step that only drops a member decides nothing
-    // and doesn't queue; one that adds a member returns after its short wait, undecided.
-    block = false;
-    await routes.prepare(scope, [mine], signal());
-    await routes.prepare(
-      { organization: scope.organization, pool: "other-pool" },
-      [oauth],
-      signal(),
-    );
-    assert.equal(store.map.get("route-pool:other-pool"), undefined);
-    release();
-    await pass;
-    const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
-    assert.deepEqual(record.references, [mine]);
-    // Its turn ran once the queue drained, adding the member it decided.
-    await routes.serial(async () => {});
-    const other = store.map.get("route-pool:other-pool") as { references: string[] };
-    assert.deepEqual(other.references, [oauth]);
-  },
-);
+test("a membership step waits for a routing pass only briefly, decides when the queue drains, and the pass keeps its record", async () => {
+  const { client } = fakeHome();
+  const store = storage();
+  const rules = scripted({});
+  let release = () => {};
+  let entered = () => {};
+  let block = false;
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => {
+      if (block) {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return rules.resolver.resolve(scope, references, signal());
+    },
+  };
+  const routes = new RouteAssignments(store, resolver, client, () => now, 20);
+  await routes.prepare(scope, [mine, teammate], signal());
+  block = true;
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pass = routes.refresh(signal());
+  // The pass has read its pool records and is waiting on the tools service.
+  await inside;
+  // The pass is waiting on the tools service. A step that only drops a member decides nothing
+  // and doesn't queue; one that adds a member returns after its short wait, undecided.
+  block = false;
+  await routes.prepare(scope, [mine], signal());
+  await routes.prepare({ organization: scope.organization, pool: "other-pool" }, [oauth], signal());
+  assert.equal(store.map.get("route-pool:other-pool"), undefined);
+  release();
+  await pass;
+  const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
+  assert.deepEqual(record.references, [mine]);
+  // Its turn ran once the queue drained, adding the member it decided.
+  await routes.serial(async () => {});
+  const other = store.map.get("route-pool:other-pool") as { references: string[] };
+  assert.deepEqual(other.references, [oauth]);
+});
 
-test(
-  "a membership step that can't get its turn behind a mirror's save routes the credential once the save is done",
-  { timeout: 10_000 },
-  async () => {
-    const { client, state } = fakeHome();
-    const gemini = "12345678-abcd-4000-8000-0000000000b3";
-    const rules = scripted({ [gemini]: { routeId: home, owner } });
-    const store = storage();
-    const routes = new RouteAssignments(store, rules.resolver, client, () => now, 20);
-    await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
-    let release = () => {};
-    state.postGate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const posting = new Promise<void>((resolve) => {
-      state.posting = resolve;
-    });
-    const remirror = mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
-    await posting;
-    // The mirror holds the queue: the step returns after its short wait, undecided.
-    state.postGate = undefined;
-    await routes.prepare(scope, [gemini], signal());
-    assert.equal(store.map.get(`route-pool:${scope.pool}`), undefined);
-    release();
-    assert.equal((await remirror).status, 200);
-    // Its turn runs right after the save and routes it, without waiting for the next repair.
-    await routes.serial(async () => {});
-    const file = state.files.find((row) => row.id === gemini)!;
-    assert.equal(file.disabled, true);
-    assert.equal(file.proxy_url, routeProxyUrl(home));
-  },
-);
+test("a membership step that can't get its turn behind a mirror's save routes the credential once the save is done", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000b3";
+  const rules = scripted({ [gemini]: { routeId: home, owner } });
+  const store = storage();
+  const routes = new RouteAssignments(store, rules.resolver, client, () => now, 20);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  let release = () => {};
+  state.postGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const posting = new Promise<void>((resolve) => {
+    state.posting = resolve;
+  });
+  const remirror = mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  await posting;
+  // The mirror holds the queue: the step returns after its short wait, undecided.
+  state.postGate = undefined;
+  await routes.prepare(scope, [gemini], signal());
+  assert.equal(store.map.get(`route-pool:${scope.pool}`), undefined);
+  release();
+  assert.equal((await remirror).status, 200);
+  // Its turn runs right after the save and routes it, without waiting for the next repair.
+  await routes.serial(async () => {});
+  const file = state.files.find((row) => row.id === gemini)!;
+  assert.equal(file.disabled, true);
+  assert.equal(file.proxy_url, routeProxyUrl(home));
+});
 
 test("a mirror whose envelope expired while it waited behind a pass decides and writes nothing", async () => {
   const { client, state } = fakeHome();
@@ -1056,43 +1062,53 @@ test("a mirror whose envelope expired while it waited behind a pass decides and 
   assert.deepEqual(state.codex, []);
 });
 
-test(
-  "a late membership turn behind a newer step for its pool steps aside, so a member who left isn't put back",
-  { timeout: 10_000 },
-  async () => {
-    const { client } = fakeHome();
-    const store = storage();
-    let release = () => {};
-    let entered = () => {};
-    let block = false;
-    const rules = scripted({});
-    const resolver: RouteResolver = {
-      resolve: async (scope, references) => {
-        if (block) {
-          entered();
-          await new Promise<void>((resolve) => {
-            release = resolve;
-          });
-        }
-        return rules.resolver.resolve(scope, references, signal());
-      },
-    };
-    const routes = new RouteAssignments(store, resolver, client, () => now, 20);
-    await routes.prepare(scope, [mine], signal());
-    block = true;
-    const inside = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const pass = routes.refresh(signal());
-    await inside;
-    block = false;
-    // Teammate joins (late turn queued), then leaves again before that turn runs.
-    await routes.prepare(scope, [mine, teammate], signal());
-    await routes.prepare(scope, [mine], signal());
-    release();
-    await pass;
-    await routes.serial(async () => {});
-    const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
-    assert.deepEqual(record.references, [mine]);
-  },
-);
+test("a late membership turn behind a newer step for its pool steps aside, so a member who left isn't put back", async () => {
+  const { client } = fakeHome();
+  const store = storage();
+  let release = () => {};
+  let entered = () => {};
+  let block = false;
+  const rules = scripted({});
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => {
+      if (block) {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return rules.resolver.resolve(scope, references, signal());
+    },
+  };
+  const routes = new RouteAssignments(store, resolver, client, () => now, 20);
+  await routes.prepare(scope, [mine], signal());
+  block = true;
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pass = routes.refresh(signal());
+  await inside;
+  block = false;
+  // Teammate joins (late turn queued), then leaves again before that turn runs.
+  await routes.prepare(scope, [mine, teammate], signal());
+  await routes.prepare(scope, [mine], signal());
+  release();
+  await pass;
+  await routes.serial(async () => {});
+  const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
+  assert.deepEqual(record.references, [mine]);
+});
+
+test("no provider the route blocks has a usage reader", () => {
+  const readers = new Set([
+    ...quotaProviderIds,
+    ...availableProviderCapabilities.flatMap((capability) =>
+      capability.backend !== undefined && capability.quota !== "none" ? [capability.backend] : [],
+    ),
+  ]);
+  for (const provider of pluginProviders)
+    assert.ok(
+      !readers.has(provider),
+      `${provider}: a blocked provider now has a usage reader: its health check would read Service unavailable; make the blocked case answer as not checked`,
+    );
+});

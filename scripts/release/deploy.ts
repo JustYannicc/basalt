@@ -472,7 +472,7 @@ const {
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
 const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
-const { ownIdentities, stageRows } = await import("./stage-writes.ts");
+const { ownIdentities, ownWorkers, stageRows } = await import("./stage-writes.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
@@ -557,6 +557,11 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             } as never) as unknown as Fx.Effect<StateService, unknown, never>;
             const stack = yield* stackName();
             const label = stage.replace(/^test-/u, "");
+            const rows = yield* stageRows(store as never, stack, stage) as Fx.Effect<
+              unknown[],
+              unknown,
+              never
+            >;
             wire.stage = {
               stack,
               stage,
@@ -567,13 +572,8 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                 process.env.TEST_STAGE_DATABASE === `basalt-preview-${label}`
                   ? [process.env.TEST_STAGE_DATABASE]
                   : [],
-              owned: ownIdentities(
-                yield* stageRows(store as never, stack, stage) as Fx.Effect<
-                  unknown[],
-                  unknown,
-                  never
-                >,
-              ),
+              owned: ownIdentities(rows),
+              workers: ownWorkers(rows),
               // Deletes by the stage token in names; no other command sets it, and the check alone
               // (`--verify-only`) never does, so the wire refuses any delete it sends.
               ...(command === "teardown" && !values["verify-only"] ? { teardown: true } : {}),
