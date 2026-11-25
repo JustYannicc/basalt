@@ -978,7 +978,8 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff"
+          "metadataSha256": "d3d40fdfe4c2c544a49020b7469907eeb3c861276248be4dfec3f2dff86013ff",
+          "scopeRequest": "issuer-list"
         }
       },
       "sourceSha256": "e75baf3eae21dbf746d2824e06b659700610b6da8ce58fa1904d8961ed7171db"

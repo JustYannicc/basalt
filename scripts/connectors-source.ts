@@ -19,6 +19,7 @@ import {
   obsidianPluginVersionSource,
 } from "./obsidian-plugin-version.ts";
 import { oauthClientIdRulePath, oauthClientIdRuleSource } from "./oauth-client-id-source.ts";
+import { wholeListIssuersPath, wholeListIssuersSource } from "./oauth-whole-list-issuers-source.ts";
 import { prepareTestPlans, retiredTestPlanSources } from "./ci/declarations.ts";
 import { e2eCorrections } from "./ci/prepare-e2e.ts";
 import { preparedFrameworkRegistrySource } from "./framework-registry-source.ts";
@@ -181,6 +182,10 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       readFileSync(join(upstream, oauthClientIdRulePath), "utf8") !== oauthClientIdRuleSource(root)
     )
       throw new Error("Generated OAuth client ID rule differs from scripts/oauth-client-id.ts");
+    if (readFileSync(join(upstream, wholeListIssuersPath), "utf8") !== wholeListIssuersSource(root))
+      throw new Error(
+        "Generated whole-list OAuth issuers differ from src/catalog/oauth-reviews.json",
+      );
     const permitted = new Set([
       ...additions,
       ...generated,
@@ -189,6 +194,7 @@ export function verifyConnectorsSource(root: string): { commit: string; patches:
       poolWorkerRevisionPath,
       obsidianPluginVersionPath,
       oauthClientIdRulePath,
+      wholeListIssuersPath,
     ]);
     const extraRuntimeSource = git(["ls-files", "--others", "--exclude-standard"])
       .split("\n")

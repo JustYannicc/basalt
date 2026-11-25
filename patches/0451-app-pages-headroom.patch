@@ -1,6 +1,6 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts b/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts
 new file mode 100644
-index 0000000..b3e3035
+index 000000000..b3e3035fc
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/app-pages-platform.ts
 @@ -0,0 +1,6 @@
@@ -10,8 +10,22 @@ index 0000000..b3e3035
 +import { Layer } from "effect";
 +
 +export const layer = Layer.mergeAll(NodeCrypto.layer, NodePath.layer);
+diff --git a/apps/hosted/cloud/src/infrastructure/app-pages-skill-source.ts b/apps/hosted/cloud/src/infrastructure/app-pages-skill-source.ts
+new file mode 100644
+index 000000000..fdf386875
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/app-pages-skill-source.ts
+@@ -0,0 +1,8 @@
++import { Effect } from "effect";
++
++/**
++ * App pages serve app documents and never read an app's skills, so the skill parser and its YAML
++ * reader stay out of their upload. A call here is a bug: it dies loudly instead of parsing.
++ */
++export const prepareAppSkills = (_files: ReadonlyArray<unknown>) =>
++  Effect.die(new Error("No skill parsing in app pages"));
 diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-index 4373d4b..88f96f8 100644
+index 4373d4b13..6c09871f5 100644
 --- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
 +++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
 @@ -1,3 +1,4 @@
@@ -19,7 +33,7 @@ index 4373d4b..88f96f8 100644
  /** Rolldown output rules for each Worker: upload only reachable modules, within a budget. */
  import * as NodeServices from "@effect/platform-node/NodeServices";
  import type { WorkerProps } from "alchemy/Cloudflare";
-@@ -197,9 +198,37 @@ export const workerBuild = (
+@@ -197,9 +198,42 @@ export const workerBuild = (
            resolve: {
              alias: {
                ...(options.localTestHooks === true ? localTestHooks() : {}),
@@ -48,6 +62,11 @@ index 4373d4b..88f96f8 100644
 +                        new URL("../../../../../packages/apps/package.json", import.meta.url),
 +                      ).resolve("parse5"),
 +                    ).resolve("entities/decode"),
++                    // Pages never read an app's skills, so their parser and YAML stay out.
++                    [new URL(
++                      "../../../../../packages/sdk/src/implementation/skill-source.ts",
++                      import.meta.url,
++                    ).pathname]: new URL("./app-pages-skill-source.ts", import.meta.url).pathname,
 +                  }
 +                : {}),
 +              ...(worker === "oauth-wire"
@@ -62,7 +81,7 @@ index 4373d4b..88f96f8 100644
          },
 diff --git a/packages/apps/src/implementation/ui-document-decode.ts b/packages/apps/src/implementation/ui-document-decode.ts
 new file mode 100644
-index 0000000..68d6a30
+index 000000000..68d6a306f
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-decode.ts
 @@ -0,0 +1,10 @@
@@ -78,7 +97,7 @@ index 0000000..68d6a30
 +};
 diff --git a/packages/apps/src/implementation/ui-document-native.ts b/packages/apps/src/implementation/ui-document-native.ts
 new file mode 100644
-index 0000000..475a615
+index 000000000..475a6156e
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-native.ts
 @@ -0,0 +1,58 @@
@@ -142,7 +161,7 @@ index 0000000..475a615
 +};
 diff --git a/packages/apps/src/implementation/ui-document-resources.ts b/packages/apps/src/implementation/ui-document-resources.ts
 new file mode 100644
-index 0000000..d793622
+index 000000000..d793622d4
 --- /dev/null
 +++ b/packages/apps/src/implementation/ui-document-resources.ts
 @@ -0,0 +1,152 @@
@@ -299,7 +318,7 @@ index 0000000..d793622
 +  };
 +};
 diff --git a/packages/apps/src/implementation/ui-document.ts b/packages/apps/src/implementation/ui-document.ts
-index 8c36597..c294d8f 100644
+index 8c3659727..c294d8f31 100644
 --- a/packages/apps/src/implementation/ui-document.ts
 +++ b/packages/apps/src/implementation/ui-document.ts
 @@ -1,14 +1,8 @@
@@ -471,7 +490,7 @@ index 8c36597..c294d8f 100644
    return serialize(document);
  };
 diff --git a/packages/apps/src/implementation/ui-serving.ts b/packages/apps/src/implementation/ui-serving.ts
-index 8a4e395..4bed39e 100644
+index 8a4e39512..4bed39eb7 100644
 --- a/packages/apps/src/implementation/ui-serving.ts
 +++ b/packages/apps/src/implementation/ui-serving.ts
 @@ -108,13 +108,14 @@ export const appDocument = <E, R>(options: {

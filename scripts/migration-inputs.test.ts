@@ -36,6 +36,7 @@ const copiedSources = [
   "apps/hosted/server/src/implementation/pool-provider-definitions.ts",
   "apps/hosted/server/src/implementation/pool-token.ts",
   "packages/sdk/src/implementation/oauth-client-id.ts",
+  "packages/sdk/src/implementation/oauth-whole-list-issuers.ts",
 ];
 
 test("every file preparation writes into the migration's key is named", () => {

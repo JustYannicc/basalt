@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-oauth-issuer-scope-growth",
+  "file": "0782-oauth-issuer-scope-growth.patch",
+  "content_sha256": "61672c32740a0fcb8630fd99071eada5e6514d2a3cda0a666ee559ac51ba5558",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

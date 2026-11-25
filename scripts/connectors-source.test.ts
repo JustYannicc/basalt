@@ -12,6 +12,7 @@ import {
   obsidianPluginVersionSource,
 } from "./obsidian-plugin-version.ts";
 import { oauthClientIdRulePath, oauthClientIdRuleSource } from "./oauth-client-id-source.ts";
+import { wholeListIssuersPath, wholeListIssuersSource } from "./oauth-whole-list-issuers-source.ts";
 import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
 import { prepareE2e } from "./ci/prepare-e2e.ts";
@@ -159,6 +160,35 @@ function verifyFixture(declaredPlans: boolean, replacement = false) {
     write("scripts/oauth-client-id.ts", "export const clientIdLooksLikeSecret = () => true;\n");
     const clientIdRule = `.upstream/${oauthClientIdRulePath}`;
     write(clientIdRule, oauthClientIdRuleSource(root));
+    write(
+      "src/catalog/oauth-reviews.json",
+      JSON.stringify({
+        version: 1,
+        entries: [
+          {
+            entry: "example",
+            package: "@example/app",
+            methods: {
+              oauth: {
+                kind: "automatic",
+                protocol: "cimd",
+                metadata: "https://auth.example.test/.well-known/oauth-authorization-server",
+                metadataSha256: "a".repeat(64),
+                scopeRequest: "issuer-list",
+              },
+            },
+            sourceSha256: "b".repeat(64),
+          },
+        ],
+      }),
+    );
+    write(
+      "src/catalog/example.oauth-metadata.json",
+      JSON.stringify({ issuer: "https://auth.example.test", scopes_supported: ["read"] }),
+    );
+    write("src/catalog/example.oauth-scope-baseline.json", JSON.stringify(["read"]));
+    const issuerList = `.upstream/${wholeListIssuersPath}`;
+    write(issuerList, wholeListIssuersSource(root));
 
     assert.deepEqual(verifyConnectorsSource(root), {
       commit: pin,
@@ -204,6 +234,9 @@ function verifyFixture(declaredPlans: boolean, replacement = false) {
     write(clientIdRule, oauthClientIdRuleSource(root).replace("true", "false"));
     assert.throws(() => verifyConnectorsSource(root), /Generated OAuth client ID rule differs/);
     write(clientIdRule, oauthClientIdRuleSource(root));
+    write(issuerList, wholeListIssuersSource(root).replace("auth.example.test", "other.test"));
+    assert.throws(() => verifyConnectorsSource(root), /Generated whole-list OAuth issuers differ/);
+    write(issuerList, wholeListIssuersSource(root));
     const extraSource = ".upstream/apps/hosted/cloud/src/implementation/unexpected.ts";
     write(extraSource, "export const unexpected = true;\n");
     assert.throws(

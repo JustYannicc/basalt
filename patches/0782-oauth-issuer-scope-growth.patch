@@ -1,0 +1,187 @@
+diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 5a44da02b..b415daa66 100644
+--- a/packages/sdk/src/contracts/oauth.ts
++++ b/packages/sdk/src/contracts/oauth.ts
+@@ -1756,6 +1756,8 @@ const reusableGrant = {
+   requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
+   /** Unknown on legacy grants and when the service did not confirm its granted scopes. */
+   grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
++  /** The sign-in asked for its reviewed issuer's whole scope list; see `scopesHeldToGrant`. */
++  requestedIssuerList: Schema.optionalKey(Schema.Literal(true)),
+ };
+ /** Private renewal context; machine grants retain scopes and exchange client credentials again. */
+ export const OAuthGrant = /* @__PURE__ */ (() =>
+diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/src/implementation/account-sign-in.ts
+index 2c8b424d1..b475856ff 100644
+--- a/packages/sdk/src/implementation/account-sign-in.ts
++++ b/packages/sdk/src/implementation/account-sign-in.ts
+@@ -5,6 +5,7 @@ import type { Provider } from "../contracts/provider.ts";
+ import type { Credentials, StoredAccount } from "../contracts/storage.ts";
+ import { missingOAuthScopes } from "../contracts/oauth-families.ts";
+ import { accountGrantId } from "./account-identities.ts";
++import { scopesHeldToGrant, WholeListScopeIssuers } from "./provider-oauth-scopes.ts";
+ 
+ export interface SignInGrant {
+   readonly encrypted: Uint8Array;
+@@ -47,7 +48,11 @@ export const accountSignInState = (
+       method.scopes !== undefined &&
+       method.scopes.length > 0 &&
+       saved.grantedScopes !== undefined &&
+-      missingOAuthScopes(method.identity?.issuer, method.scopes, saved.grantedScopes).length > 0
++      missingOAuthScopes(
++        method.identity?.issuer,
++        scopesHeldToGrant(method.scopes, saved, (yield* WholeListScopeIssuers).issuers),
++        saved.grantedScopes,
++      ).length > 0
+     )
+       return { state: "reconnect", reason: "permissions" } as const;
+     return { state: "saved", reconnectAt } as const;
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index aa8cec15a..355f22b0a 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -116,6 +116,11 @@ import {
+ } from "../contracts/shared.ts";
+ import { StoredAccount, type Credentials } from "../contracts/storage.ts";
+ import { type AccountCredential, invocationAccount } from "./provider.ts";
++import {
++  asksWholeList,
++  scopesHeldToGrant,
++  WholeListScopeIssuers,
++} from "./provider-oauth-scopes.ts";
+ import { intersectCredentialHosts } from "./credential-handles.ts";
+ import { inOrder, query, transaction, type Query } from "./database.ts";
+ import {
+@@ -2913,6 +2918,7 @@ export const makeOAuth = (
+       const oauthClient = isFirstPartyAttempt(attempt)
+         ? undefined
+         : (savedClient?.row.id ?? holding?.id ?? attempt.storedClient?.id);
++      const { issuers: wholeList } = yield* WholeListScopeIssuers;
+       /** The grant for the account's credential generation it starts. */
+       const decodedGrantOf = (generation: number) =>
+         decode(
+@@ -2923,6 +2929,9 @@ export const makeOAuth = (
+                 ...issued,
+                 server: attempt.server,
+                 client: attempt.client,
++                ...(asksWholeList(attempt.server, attempt.requestedScopes, wholeList)
++                  ? { requestedIssuerList: true }
++                  : {}),
+                 ...(oauthClient === undefined ? {} : { oauthClient }),
+                 ...(attempt.resource === undefined ? {} : { resource: attempt.resource }),
+                 ...(attempt.tokenRequestFormat === undefined
+@@ -3259,7 +3268,7 @@ export const makeOAuth = (
+             grant.grantedScopes === undefined ||
+             missingOAuthScopes(
+               method.identity?.issuer,
+-              requiredScopes,
++              scopesHeldToGrant(requiredScopes, grant, (yield* WholeListScopeIssuers).issuers),
+               grant.grantedScopes,
+               options?.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes,
+             ).length > 0
+diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages/sdk/src/implementation/provider-oauth-scopes.ts
+index 492e1504d..8343fcefd 100644
+--- a/packages/sdk/src/implementation/provider-oauth-scopes.ts
++++ b/packages/sdk/src/implementation/provider-oauth-scopes.ts
+@@ -1,8 +1,11 @@
+ /** OAuth access may grow without changing where credentials go or how they are used. */
+-import { Schema } from "effect";
++import { Context, Schema } from "effect";
+ import { JsonObject } from "../contracts/shared.ts";
++import { isFirstPartyGrant, type OAuthGrant } from "../contracts/oauth.ts";
+ import type { ProviderDefinition } from "../contracts/provider.ts";
+ import { canonical } from "./provider.ts";
++// Generated by the host's preparation from its reviewed OAuth registry.
++import { wholeListScopeIssuers } from "./oauth-whole-list-issuers.ts";
+ 
+ type Method = ProviderDefinition["auth"][string];
+ 
+@@ -31,3 +34,88 @@ export const expandsOAuthScopes = (before: Method, after: Method): boolean => {
+ /** A retained app version cannot erase scopes another compatible version already requested. */
+ export const mergeOAuthScopes = (stored: Method | undefined, incoming: Method): Method =>
+   stored !== undefined && expandsOAuthScopes(incoming, stored) ? stored : incoming;
++
++/**
++ * A short name for a set of scope names, so the SDK carries one name per reviewed list instead
++ * of the list. It tells reviewed lists apart and guards nothing secret: a list made to collide
++ * could only spare a grant's reconnect prompt or shared-grant refusal, and the service still
++ * refuses what the token lacks. Upstream preparation computes the same names; a test holds the two
++ * equal.
++ */
++export const scopeListDigest = (scopes: readonly string[]) => {
++  const names = [...new Set(scopes)].sort();
++  const text = names.join("\n");
++  let h1 = 0xdeadbeef ^ names.length;
++  let h2 = 0x41c6ce57 ^ names.length;
++  for (let index = 0; index < text.length; index++) {
++    const code = text.charCodeAt(index);
++    h1 = Math.imul(h1 ^ code, 2654435761);
++    h2 = Math.imul(h2 ^ code, 1597334677);
++  }
++  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
++  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
++  const hex = (value: number) => (value >>> 0).toString(16).padStart(8, "0");
++  return `${names.length}:${hex(h2)}${hex(h1)}`;
++};
++
++/** An issuer whose reviewed connections ask for its whole published scope list. */
++export interface WholeListIssuer {
++  readonly issuer: string;
++  /**
++   * `scopeListDigest` of every list reviewed since the mark: first the baseline grants asked for
++   * before they recorded a whole-list request, last today's. A stored provider can keep asking for
++   * an earlier one after the issuer drops a scope.
++   */
++  readonly lists: readonly string[];
++}
++
++/**
++ * The whole-list issuers. The default is generated by the host's preparation from its review
++ * registry; apps cannot mark an issuer.
++ */
++export const WholeListScopeIssuers = Context.Reference<{
++  readonly issuers: readonly WholeListIssuer[];
++}>("executor/WholeListScopeIssuers", { defaultValue: () => ({ issuers: wholeListScopeIssuers }) });
++
++const sameIssuer = (left: string, right: string) =>
++  URL.canParse(left) && URL.canParse(right) && new URL(left).href === new URL(right).href;
++const reviewedIssuer = (issuers: readonly WholeListIssuer[], issuer: string) =>
++  issuers.find((reviewed) => sameIssuer(reviewed.issuer, issuer));
++/** Exactly one of the issuer's reviewed lists, today's or one an older version still asks for. */
++const wholeList = (scopes: readonly string[], reviewed: WholeListIssuer) =>
++  scopes.length > 0 && reviewed.lists.includes(scopeListDigest(scopes));
++
++/** Whether a sign-in to this server asks for its reviewed issuer's whole list. */
++export const asksWholeList = (
++  server: { readonly issuer: string },
++  requested: readonly string[] | undefined,
++  issuers: readonly WholeListIssuer[],
++) => {
++  const reviewed = reviewedIssuer(issuers, server.issuer);
++  return reviewed !== undefined && requested !== undefined && wholeList(requested, reviewed);
++};
++
++/**
++ * The requested scopes a saved grant is held to. When the grant asked for its reviewed issuer's
++ * whole list (recorded at sign-in, or exactly the baseline for grants saved before the record) and
++ * today's request is one of that issuer's reviewed lists too, the grant is held only to what it
++ * asked for: a scope the list gained or lost since is no permission its tools were built on, and
++ * the next sign-in or reconnect asks for it. Every other grant or request, including an older or
++ * narrower one or one adding a scope outside the reviewed lists, is held to every requested scope.
++ */
++export const scopesHeldToGrant = (
++  requested: readonly string[],
++  grant: OAuthGrant,
++  issuers: readonly WholeListIssuer[],
++) => {
++  if (grant.grant === "client_credentials" || isFirstPartyGrant(grant)) return requested;
++  const asked = grant.requestedScopes;
++  const reviewed = reviewedIssuer(issuers, grant.server.issuer);
++  if (asked === undefined || reviewed === undefined) return requested;
++  const askedWhole =
++    grant.requestedIssuerList === true ||
++    (asked.length > 0 && scopeListDigest(asked) === reviewed.lists[0]);
++  return askedWhole && wholeList(requested, reviewed)
++    ? requested.filter((scope) => asked.includes(scope))
++    : requested;
++};
