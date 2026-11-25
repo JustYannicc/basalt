@@ -10,7 +10,11 @@ import {
   liveOAuthMetadata,
   metadataSnapshotFile,
 } from "./catalog-oauth-metadata.ts";
-import { scopeHistoryFile, scopeListDigest } from "./oauth-whole-list-issuers-source.ts";
+import {
+  scopeBaselineFile,
+  scopeHistoryFile,
+  scopeListDigest,
+} from "./oauth-whole-list-issuers-source.ts";
 
 type Evidence = Awaited<ReturnType<typeof liveOAuthMetadata>>;
 type Fields = Record<string, unknown>;
@@ -163,8 +167,15 @@ export function repinMetadata(directory: string, drift: Drift) {
   if (drift.wholeList && scopes?.every((scope): scope is string => typeof scope === "string")) {
     const file = join(directory, scopeHistoryFile(drift.entry));
     const history: string[] = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : [];
+    const baseline = join(directory, scopeBaselineFile(drift.entry));
+    // The list grants are now recognized by: the history's last entry, else the baseline.
+    const latest =
+      history.at(-1) ??
+      (existsSync(baseline)
+        ? scopeListDigest(JSON.parse(readFileSync(baseline, "utf8")))
+        : undefined);
     const digest = scopeListDigest(scopes);
-    if (history.at(-1) !== digest)
+    if (latest !== digest)
       writeFileSync(file, JSON.stringify([...history, digest], null, 2) + "\n");
   }
   const file = join(directory, "oauth-reviews.json");
@@ -191,10 +202,16 @@ export function driftReport(drift: Drift): string {
     "",
     ...drift.changes.map((line) => `- ${line}`),
     "",
+    ...(followsList
+      ? [
+          "This connection asks for its issuer's whole scope list, so its requested scopes must change with `scopes_supported`: land this re-pin together with that change in a pull request of its own (each run rewrites this branch), then close this one. Its catalog test fails until they match. Until then, sign-in keeps asking for the previous list, and saved grants are held to what they asked for.",
+          "",
+        ]
+      : []),
     alert
       ? "**Sign-in already behaves differently.** Values sign-in reads changed:"
       : followsList
-        ? "This connection asks for its issuer's whole scope list, so the scopes it requests must change with `scopes_supported` in this pull request; its catalog test fails until they match. Until then, sign-in keeps asking for the previous list, and saved grants are held to what they asked for."
+        ? "Values sign-in reads are otherwise unchanged."
         : "Values sign-in reads are unchanged, so sign-in behaves as reviewed.",
     ...(alert ? ["", ...[...drift.signIn, ...drift.problems].map((line) => `- ${line}`)] : []),
     "",

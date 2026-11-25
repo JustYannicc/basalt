@@ -172,9 +172,19 @@ test("a whole-list connection's re-pin says its requested scopes must follow and
     assert.equal(drift.length, 1);
     assert.equal(drift[0]!.wholeList, true);
     const report = driftReport(drift[0]!);
-    assert.match(report, /the scopes it requests must change with `scopes_supported`/);
+    assert.match(
+      report,
+      /its requested scopes must change with `scopes_supported`: land this re-pin together/,
+    );
     assert.doesNotMatch(report, /Values sign-in reads are unchanged/);
+    // Without a history, a re-pin that keeps the baseline's list writes none.
+    copyFileSync(
+      join(catalog, "cloudflare.oauth-scope-baseline.json"),
+      join(directory, "cloudflare.oauth-scope-baseline.json"),
+    );
     const history = join(directory, "cloudflare.oauth-scope-history.json");
+    repinMetadata(directory, { ...drift[0]!, document: previous });
+    assert.equal(existsSync(history), false);
     writeFileSync(history, JSON.stringify(["403:0000000000000000"]));
     repinMetadata(directory, drift[0]!);
     const digest = scopeListDigest(published.scopes_supported);
