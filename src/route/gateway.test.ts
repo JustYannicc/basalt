@@ -827,8 +827,8 @@ test("a tunnel whose route reads down while it starts is refused before it conne
   await answer(container, "/status");
   assert.equal((await reading).state, "down");
   await answer(container, "/status");
-  await refusedWith(tunnel, "route_gateway_unavailable");
   assert.ok(!container.waiting.some((request) => request.path === "connect"));
+  await refusedWith(tunnel, "route_gateway_unavailable");
 });
 
 test("a tunnel whose route reads down while it connects is closed and refused", async () => {
