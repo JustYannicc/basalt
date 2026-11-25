@@ -39,6 +39,7 @@ export const RELEASE_FIRST_WORDS = [
   "drive",
   "home",
   "legacy",
+  "mcp",
   "migration",
   "placement",
   "pool",
@@ -57,6 +58,22 @@ export const RELEASE_FIRST_WORDS = [
   "vaultattachments",
 ];
 const SHAPE = /^basalt(?:-[a-z0-9]+){2,}$/u;
+
+/**
+ * Whether production's own records use `name`: `basalt` itself, or a basalt- name whose first word
+ * is a release stage's or one the release stack's names start with. ownership.test.mjs derives
+ * every name the release stack and its tooling spell out, and every name it composes, from their
+ * source and fails when one is not recognised here. No stage prefix starts like this, so a name
+ * this accepts is never a stage's; the caller refuses one anyway, before anything is sent.
+ */
+export function isProductionName(name) {
+  if (typeof name !== "string") return false;
+  if (name === "basalt") return true;
+  const [app, first] = name.split("-");
+  return (
+    app === "basalt" && (RELEASE_FIRST_WORDS.includes(first) || RELEASE_STAGE_WORDS.includes(first))
+  );
+}
 const MAX_PREFIX = 48;
 
 /** Release-style names a caller's predicate must refuse; they are never a stage's. */
@@ -111,5 +128,6 @@ export function stageOwnership(prefix, owns) {
   return (name) =>
     typeof name === "string" &&
     name.startsWith(`${prefix}-`) &&
+    !isProductionName(name) &&
     (owns ? accepts(name) === true : true);
 }

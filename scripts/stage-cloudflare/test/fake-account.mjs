@@ -23,7 +23,7 @@ const COLLECTIONS = {
 
 /**
  * `live` holds the rows of each kind, `bindings` each Worker's plain-text settings, `tags` each
- * registry repository's tags. `calls` lists every method and path asked, for assertions only.
+ * registry repository's tags. `calls` lists every method, path and URL as sent, for assertions only.
  */
 export function fakeAccount({
   accountId = "acct",
@@ -45,7 +45,7 @@ export function fakeAccount({
   const fetcher = async (url, init = {}) => {
     const { hostname, pathname, searchParams } = new URL(url);
     const method = init.method ?? "GET";
-    const call = { method, host: hostname, path: pathname };
+    const call = { method, host: hostname, path: pathname, url: String(url) };
     calls.push(call);
     if (hostname === "registry.cloudflare.com") return registry(method, pathname);
     const prefix = `/client/v4/accounts/${accountId}/`;

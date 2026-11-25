@@ -65,23 +65,20 @@ test("a call throws on any refusal, with codes and known fields but never the re
   );
   const row = (await refused.inventory()).applications[0];
   assert.equal(row.id, listed.id);
-  await assert.rejects(
-    refused.change("applications", row, { method: "PATCH", body: {} }),
-    (error) => {
-      assert.equal(error.message, "Cloudflare PATCH containers/applications failed (400)");
-      assert.deepEqual(error.diagnostic, {
-        provider: "cloudflare",
-        operation: "containers/applications",
-        method: "PATCH",
-        status: 400,
-        codes: [10021],
-        fields: ["max_instances"],
-      });
-      assert.ok(isCloudflareApiError(error));
-      assert.doesNotMatch(JSON.stringify(error.diagnostic), /secret/u);
-      return true;
-    },
-  );
+  await assert.rejects(refused.patch("applications", row, {}), (error) => {
+    assert.equal(error.message, "Cloudflare PATCH containers/applications failed (400)");
+    assert.deepEqual(error.diagnostic, {
+      provider: "cloudflare",
+      operation: "containers/applications",
+      method: "PATCH",
+      status: 400,
+      codes: [10021],
+      fields: ["max_instances"],
+    });
+    assert.ok(isCloudflareApiError(error));
+    assert.doesNotMatch(JSON.stringify(error.diagnostic), /secret/u);
+    return true;
+  });
   const failed = (response) => stage(answering(response)).subdomain();
   await assert.rejects(
     failed(() => Response.json(refusalBody([]))),
@@ -99,7 +96,7 @@ test("a call throws on any refusal, with codes and known fields but never the re
 
 test("only a read of one resource answers absent; a listing never does", async () => {
   const fake = account();
-  assert.equal(await stage(fake.fetcher).read("scripts", `${prefix}-other`, "/settings"), null);
+  assert.equal(await stage(fake.fetcher).settings(`${prefix}-other`), null);
   const lists = (response) => stage(answering(response)).inventory(["scripts"]);
   await assert.rejects(
     lists(() => Response.json({}, { status: 404 })),
@@ -114,7 +111,7 @@ test("only a read of one resource answers absent; a listing never does", async (
     /Unrecognized/u,
   );
   await assert.rejects(
-    stage(answering(() => Response.json({}, { status: 403 }))).read("scripts", `${prefix}-gateway`),
+    stage(answering(() => Response.json({}, { status: 403 }))).settings(`${prefix}-gateway`),
     /Cloudflare GET workers\/scripts failed \(403\)/u,
   );
 });
@@ -175,13 +172,14 @@ test("nothing outside the stage is read, changed or deleted, and the refusal com
     () => api.remove("applications", forged),
     () => api.remove("applications", "a2"),
     () => api.remove("scripts", "basalt-production-poolworker"),
-    () => api.read("scripts", "basalt-production-poolworker", "/settings"),
+    () => api.settings("basalt-production-poolworker"),
     () =>
       api.remove(
         "namespaces",
         fake.live.namespaces.find((row) => row.id === "n3"),
       ),
-    () => api.change("applications", found.applications[0], { method: "DELETE" }),
+    () => api.patch("namespaces", found.namespaces[0], {}),
+    () => api.settings(found.applications[0]),
     () => api.remove("workers/scripts", `${prefix}-gateway`),
     () =>
       api.removeImage({ name: "basalt-poolcontainer-production", path: "acct/x", tags: ["p1"] }),
@@ -197,7 +195,7 @@ test("a stage's own rows are read back, changed and deleted by id", async () => 
   const found = await api.inventory(["applications", "namespaces", "scripts", "drives"]);
   const [app] = found.applications;
   assert.equal((await api.read("applications", app)).result.name, `${prefix}-mock`);
-  const settings = await api.read("scripts", `${prefix}-gateway`, "/settings");
+  const settings = await api.settings(`${prefix}-gateway`);
   assert.ok(settings.result.bindings.some((row) => row.name === "DELETE_BY" && row.text === "1"));
   await api.remove("namespaces", found.namespaces[0]);
   await api.remove("drives", found.drives[0]);
@@ -222,7 +220,7 @@ test("a stage's own rows are read back, changed and deleted by id", async () => 
 test("a stage's images are deleted index first and leave every other repository", async () => {
   const fake = account();
   const api = stage(fake.fetcher);
-  const [image] = await api.images(["pull", "push"]);
+  const [image] = await api.images();
   await api.removeImage(image);
   const deleted = fake.calls.filter(
     (call) => call.method === "DELETE" && call.host === "registry.cloudflare.com",
@@ -232,9 +230,7 @@ test("a stage's images are deleted index first and leave every other repository"
     [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`],
   );
   assert.ok(deleted.every((call) => call.path.startsWith(`/v2/acct/${prefix}-mock/`)));
-  assert.deepEqual(await api.images(), [
-    { name: `${prefix}-mock`, path: `acct/${prefix}-mock`, tags: [] },
-  ]);
+  assert.deepEqual(await api.images(), [{ name: `${prefix}-mock`, tags: [] }]);
   assert.deepEqual(fake.live.tags["acct/basalt-poolcontainer-production"], ["p1"]);
   assert.deepEqual(fake.live.tags[`other/${prefix}-mock`], ["x1"]);
 });
@@ -254,30 +250,7 @@ test("an empty or unrecognised registry answer stops the read instead of reading
   );
 });
 
-test("a path below a resource is one its kind names; nothing climbs out of it", async () => {
-  const fake = account();
-  const api = stage(fake.fetcher);
-  const [app] = (await api.inventory(["applications"])).applications;
-  const before = fake.calls.length;
-  for (const attempt of [
-    () => api.read("scripts", `${prefix}-gateway`, "/../basalt-production-poolworker/settings"),
-    () => api.read("scripts", `${prefix}-gateway`, "/%2e%2e/basalt-production-poolworker"),
-    () =>
-      api.change("scripts", `${prefix}-gateway`, {
-        method: "PUT",
-        path: "/%2e%2e/basalt-production-poolworker",
-        body: {},
-      }),
-    () => api.read("applications", app, "/../a2"),
-    () => api.change("applications", app, { method: "POST", path: "/settings", body: {} }),
-    () => api.read("drives", app, "/rollouts"),
-    () => api.read("scripts", `${prefix}-gateway`, ["/settings"]),
-  ])
-    await assert.rejects(attempt(), /^Error: Refused/u);
-  assert.equal(fake.calls.length, before);
-});
-
-test("a listed row is addressed as it was listed, and only as its own kind", async () => {
+test("a listed row is addressed only as its own kind", async () => {
   const fake = account();
   const api = stage(fake.fetcher);
   const found = await api.inventory(["applications", "certificates"]);
@@ -291,36 +264,6 @@ test("a listed row is addressed as it was listed, and only as its own kind", asy
   ])
     await assert.rejects(attempt(), /^Error: Refused/u);
   assert.equal(fake.calls.length, before);
-  // Pointing a listed row at production after its listing still deletes only what was listed.
-  app.id = "a2";
-  app.name = "basalt-production-poolcontainer";
-  await api.remove("applications", app);
-  assert.deepEqual(
-    fake.live.applications.map((row) => row.id),
-    ["a2", "a3"],
-  );
-  assert.deepEqual(
-    fake.calls
-      .slice(before)
-      .map((call) => `${call.method} ${call.path.split("/").slice(5).join("/")}`),
-    ["DELETE containers/applications/a1"],
-  );
-});
-
-test("a found image is deleted from the repository it was found in, whatever the row says", async () => {
-  const fake = account();
-  const api = stage(fake.fetcher);
-  const [image] = await api.images(["pull", "push"]);
-  image.path = "acct/basalt-poolcontainer-production";
-  image.tags = ["p1"];
-  await api.removeImage(image);
-  const reached = fake.calls.filter(
-    (call) => call.host === "registry.cloudflare.com" && call.path.includes("/manifests/"),
-  );
-  assert.ok(reached.length > 0);
-  assert.ok(reached.every((call) => call.path.startsWith(`/v2/acct/${prefix}-mock/manifests/`)));
-  assert.deepEqual(fake.live.tags["acct/basalt-poolcontainer-production"], ["p1"]);
-  assert.deepEqual(fake.live.tags[`acct/${prefix}-mock`], []);
 });
 
 test("a predicate that throws is refused without its message", () => {

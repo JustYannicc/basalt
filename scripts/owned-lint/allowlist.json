@@ -1,6 +1,6 @@
 {
   "basalt/no-direct-cloudflare-api": {
-    "scripts/stage-cloudflare/api.mjs": {
+    "scripts/stage-cloudflare/request.mjs": {
       "count": 1,
       "reason": "The one Cloudflare API caller for isolated test stages: inventory and prefix-scoped teardown that Alchemy's deploy-time state cannot see after the runner is gone."
     },

@@ -384,7 +384,7 @@ test("a missing Worker reads as no lease; any other refusal of its settings thro
   const refused = (url, init) =>
     url.includes("/settings")
       ? Promise.resolve(Response.json({}, { status: 403 }))
-      : fetcher(url, init);
+      : leased.fetcher(url, init);
   await assert.rejects(
     account(refused).lease(`${prefix}-gateway`),
     /Cloudflare GET workers\/scripts failed \(403\)/u,

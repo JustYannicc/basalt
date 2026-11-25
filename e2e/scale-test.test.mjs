@@ -156,6 +156,7 @@ test("an older expiry leaves a newer Worker lease untouched", async (t) => {
         SCALE_OUTPUT: join(directory, "results"),
         SCALE_FIXTURE_NEWER_LEASE: "true",
         SCALE_FIXTURE_CALLS: calls,
+        CLOUDFLARE_ACCOUNT_ID: "fixture-account",
         CLOUDFLARE_API_TOKEN: "fixture-token",
       },
     },
@@ -190,14 +191,18 @@ test("a delayed run leaves all sizes unmeasured and starts no traffic or resize"
         SCALE_FIXTURE_RUN: "true",
         SCALE_FIXTURE_CALLS: calls,
         SCALE_OUTPUT: join(directory, "results"),
+        CLOUDFLARE_ACCOUNT_ID: "fixture-account",
         CLOUDFLARE_API_TOKEN: "fixture-token",
       },
     },
   );
   assert.equal(result.status, 0, result.stderr);
   const operations = readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
-  assert.equal(operations.length, 1);
-  assert.equal(operations[0].method, "GET");
+  // The Worker's listing, then its settings: reads only.
+  assert.deepEqual(
+    operations.map((row) => `${row.method} ${row.path.split("/").slice(5).join("/")}`),
+    ["GET workers/scripts", "GET workers/scripts/basalt-180-scale-gateway/settings"],
+  );
   const stopped = JSON.parse(readFileSync(join(directory, "results", "size-budget-stop.json")));
   assert.deepEqual(stopped.unmeasuredSizes, ["lite", "basic", "standard-2"]);
   assert.ok(stopped.remainingMs <= 5 * 60_000);
@@ -267,6 +272,7 @@ test("resize submits a described rollout and identifies safe rollout refusal det
           SCALE_FIXTURE_ROLLOUT_REFUSAL: String(refused),
           SCALE_FIXTURE_CALLS: calls,
           SCALE_OUTPUT: join(directory, "results"),
+          CLOUDFLARE_ACCOUNT_ID: "fixture-account",
           CLOUDFLARE_API_TOKEN: "private-token-sentinel",
         },
       },

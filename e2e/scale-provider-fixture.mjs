@@ -2,51 +2,102 @@ import { appendFileSync } from "node:fs";
 import { imageDigest } from "../scripts/scale-test/settings.ts";
 
 const rows = {
-  "containers/applications": [{ id: "fixture-app", name: "basalt-180-scale-pool", account_id: "private-account-sentinel", configuration: { image: "private-production-image-sentinel" } },
-    { id: "foreign-app", name: "production-pool" }],
+  "containers/applications": [
+    {
+      id: "fixture-app",
+      name: "basalt-180-scale-pool",
+      account_id: "private-account-sentinel",
+      configuration: { image: "private-production-image-sentinel" },
+    },
+    { id: "foreign-app", name: "production-pool" },
+  ],
   "workers/scripts": [],
   "workers/durable_objects/namespaces": [],
-  "hyperdrive/configs": [{ id: "fixture-drive", name: "basalt-180-scale-auth", origin: { host: "private-database-host-sentinel", user: "private-role-sentinel" } }],
-  "mtls_certificates": [{ id: "fixture-ca", name: "basalt-180-scale-ca" }],
+  "hyperdrive/configs": [
+    {
+      id: "fixture-drive",
+      name: "basalt-180-scale-auth",
+      origin: { host: "private-database-host-sentinel", user: "private-role-sentinel" },
+    },
+  ],
+  mtls_certificates: [{ id: "fixture-ca", name: "basalt-180-scale-ca" }],
 };
 let database = true;
 if (process.env.SCALE_FIXTURE_RESIZE === "true") {
-  rows["containers/applications"][0].configuration = { image: `fixture-image@${imageDigest}`, instance_type: "basic" };
+  rows["containers/applications"][0].configuration = {
+    image: `fixture-image@${imageDigest}`,
+    instance_type: "basic",
+  };
 }
-if (process.env.SCALE_FIXTURE_NEWER_LEASE === "true") rows["workers/scripts"].push({ id: "basalt-180-scale-gateway" });
+// A Worker's settings are read only for a Worker the stage's listing finds.
+if (process.env.SCALE_FIXTURE_NEWER_LEASE === "true" || process.env.SCALE_FIXTURE_RUN === "true")
+  rows["workers/scripts"].push({ id: "basalt-180-scale-gateway" });
 globalThis.fetch = async (target, init = {}) => {
   const url = new URL(target);
   const method = init.method ?? "GET";
-  const record = { host: url.hostname, path: url.pathname, method, ...(init.body ? { body: JSON.parse(init.body) } : {}) };
+  const record = {
+    host: url.hostname,
+    path: url.pathname,
+    method,
+    ...(init.body ? { body: JSON.parse(init.body) } : {}),
+  };
   appendFileSync(process.env.SCALE_FIXTURE_CALLS, JSON.stringify(record) + "\n");
   const response = (body, status = 200) => Response.json(body, { status });
   if (url.hostname === "api.planetscale.com") {
-    if (!url.pathname.endsWith("/databases/basalt-180-scale-pg")) throw new Error("Unscoped database operation");
-    if (method === "DELETE") { database = false; return response({}); }
-    return database ? response({ name: "basalt-180-scale-pg", private: "private-database-sentinel" }) : response({}, 404);
+    if (!url.pathname.endsWith("/databases/basalt-180-scale-pg"))
+      throw new Error("Unscoped database operation");
+    if (method === "DELETE") {
+      database = false;
+      return response({});
+    }
+    return database
+      ? response({ name: "basalt-180-scale-pg", private: "private-database-sentinel" })
+      : response({}, 404);
   }
   if (url.hostname === "basalt-180-scale-gateway.fixture.workers.dev") return response({}, 503);
   if (url.hostname !== "api.cloudflare.com") throw new Error("Unexpected provider");
-  if (new Headers(init.headers).get("authorization") !== `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`)
+  if (
+    new Headers(init.headers).get("authorization") !== `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`
+  )
     return response({ errors: [{ code: 10000, message: "private-authorization-sentinel" }] }, 401);
   const path = url.pathname.replace(/^\/client\/v4\/accounts\/[^/]+\//, "");
   if (path === "storage/kv/namespaces" || process.env.SCALE_FIXTURE_REFUSAL === "true")
-    return response({ errors: [{ code: 10000, message: "private-provider-response-sentinel" }] }, 401);
-  if (path.endsWith("/settings") && process.env.SCALE_FIXTURE_RUN === "true") return response({ result: { bindings: [
-    { name: "TEST_DEADLINE", text: String(Date.now() + 2 * 60 * 60_000) },
-    { name: "TEST_ORIGIN", text: "https://basalt-180-scale-gateway.fixture.workers.dev" },
-    { name: "POOL_IMAGE_HASH", text: `fixture-image@${imageDigest}` },
-  ] } });
-  if (path.endsWith("/settings")) return process.env.SCALE_FIXTURE_NEWER_LEASE === "true"
-    ? response({ result: { bindings: [{ name: "TEST_DEADLINE", text: "9999999999999" }] } }) : response({}, 404);
-  if (process.env.SCALE_FIXTURE_RESIZE === "true" && path === "containers/applications/fixture-app") {
+    return response(
+      { errors: [{ code: 10000, message: "private-provider-response-sentinel" }] },
+      401,
+    );
+  if (path.endsWith("/settings") && process.env.SCALE_FIXTURE_RUN === "true")
+    return response({
+      result: {
+        bindings: [
+          { name: "TEST_DEADLINE", text: String(Date.now() + 2 * 60 * 60_000) },
+          { name: "TEST_ORIGIN", text: "https://basalt-180-scale-gateway.fixture.workers.dev" },
+          { name: "POOL_IMAGE_HASH", text: `fixture-image@${imageDigest}` },
+        ],
+      },
+    });
+  if (path.endsWith("/settings"))
+    return process.env.SCALE_FIXTURE_NEWER_LEASE === "true"
+      ? response({ result: { bindings: [{ name: "TEST_DEADLINE", text: "9999999999999" }] } })
+      : response({}, 404);
+  if (
+    process.env.SCALE_FIXTURE_RESIZE === "true" &&
+    path === "containers/applications/fixture-app"
+  ) {
     if (method === "PATCH") return response({ success: true });
     return response({ result: { configuration: { instance_type: "lite" } } });
   }
   if (path === "containers/applications/fixture-app/rollouts") {
     const body = JSON.parse(init.body);
     if (!body.description || process.env.SCALE_FIXTURE_ROLLOUT_REFUSAL === "true")
-      return response({ errors: [{ code: 1001, message: "description required private-provider-response-sentinel" }] }, 400);
+      return response(
+        {
+          errors: [
+            { code: 1001, message: "description required private-provider-response-sentinel" },
+          ],
+        },
+        400,
+      );
     return response({ success: true });
   }
   if (method === "DELETE") {

@@ -9,11 +9,8 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
     throw new StageError("The emulated upstream needs the deploy credentials");
   const stage = stageCloudflare({ accountId, token, prefix, fetcher });
 
-  async function inventory(permissions = ["pull"]) {
-    const [workers, repositories] = await Promise.all([
-      stage.inventory(),
-      stage.images(permissions),
-    ]);
+  async function inventory() {
+    const [workers, repositories] = await Promise.all([stage.inventory(), stage.images()]);
     // A repository whose tags are all gone holds nothing the registry can still find.
     return { ...workers, images: repositories.filter((row) => row.tags.length) };
   }
@@ -31,8 +28,7 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
 
   /** Deletes every prefixed resource, then refuses unless a fresh inventory finds none. */
   async function destroy() {
-    const write = ["pull", "push"];
-    const before = await inventory(write);
+    const before = await inventory();
     const failures = [];
     const attempt = async (label, operation) => {
       try {
@@ -48,7 +44,7 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
       await attempt(`Worker ${script.id}`, () => stage.remove("scripts", script));
     for (const image of before.images)
       await attempt(`registry repository ${image.name}`, () => stage.removeImage(image));
-    const after = await inventory(write);
+    const after = await inventory();
     if (!empty(after))
       throw new StageError(
         `Emulated upstream resources remain after teardown: ${describe(after)}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
@@ -59,7 +55,7 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
   /** The Worker's DELETE_BY lease in epoch milliseconds, or undefined when it has none. */
   async function lease(worker) {
     // The Worker read by its name: absent only when the account has no such Worker.
-    const settings = await stage.read("scripts", worker, "/settings");
+    const settings = await stage.settings(worker);
     const text = settings?.result?.bindings?.find((row) => row.name === "DELETE_BY")?.text;
     const at = Number(text);
     return Number.isSafeInteger(at) && at > 0 ? at : undefined;

@@ -98,7 +98,7 @@ async function request(path, body, method = body === undefined ? "GET" : "POST")
   return response.status === 204 ? null : response.json();
 }
 async function settings() {
-  const data = await account().read("scripts", worker, "/settings");
+  const data = await account().settings(worker);
   if (!data) throw new Error("Deploy scale-180 first");
   const bindings = data.result.bindings;
   const value = (name) => bindings.find((row) => row.name === name)?.text;
@@ -251,21 +251,14 @@ async function resize(size) {
     throw new Error("Isolated pool image differs from the frozen target");
   if (app.configuration.instance_type === size) return;
   const configuration = { ...app.configuration, instance_type: size };
-  await cloud.change("applications", app, {
-    method: "PATCH",
-    body: { max_instances: 1, configuration },
-  });
+  await cloud.patch("applications", app, { max_instances: 1, configuration });
   // Use the same immediate rollout as the pinned Alchemy container provider.
-  await cloud.change("applications", app, {
-    method: "POST",
-    path: "/rollouts",
-    body: {
-      description: "Scale test instance size update",
-      strategy: "rolling",
-      kind: "full_auto",
-      step_percentage: 100,
-      target_configuration: configuration,
-    },
+  await cloud.rollout("applications", app, {
+    description: "Scale test instance size update",
+    strategy: "rolling",
+    kind: "full_auto",
+    step_percentage: 100,
+    target_configuration: configuration,
   });
   const observed = await cloud.read("applications", app);
   if (observed?.result?.configuration?.instance_type !== size)
@@ -291,7 +284,7 @@ async function destroy() {
   }
   const expectedDeadline = process.env.SCALE_EXPECT_DEADLINE;
   if (expectedDeadline) {
-    const settings = await cloud.read("scripts", worker, "/settings");
+    const settings = await cloud.settings(worker);
     const observed = settings?.result?.bindings?.find((row) => row.name === "TEST_DEADLINE")?.text;
     if (observed && observed !== expectedDeadline) {
       save("expiry-skipped", { reason: "A different lease owns the stage" });
