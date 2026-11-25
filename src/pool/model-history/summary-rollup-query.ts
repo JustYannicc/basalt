@@ -1,15 +1,8 @@
 import type { OverviewApiPrice, OverviewPriceIssue } from "../../../apps/pool/overview-contract.ts";
 import { importAccountPrefix } from "./import-account-reference.ts";
-import { utcSql } from "./series-query.ts";
-import {
-  maxSummaryCostRows,
-  maxSummaryModelRows,
-  maxSummaryProviderRows,
-} from "./summary-query.ts";
 import type { summarySelection } from "./summary-query.ts";
 import { usageRollupBands } from "./usage-rollup-schema.ts";
 import { usageRollupTargets, type UsageRollupTarget } from "./usage-rollup-targets.ts";
-import { maxSummaryNativeHours } from "./summary-hourly.ts";
 
 type Selection = Awaited<ReturnType<typeof summarySelection>>;
 
@@ -103,26 +96,8 @@ export function rollupSelection(
   };
 }
 
-const count = (filter?: string) =>
+export const rollupCount = (filter?: string) =>
   `coalesce(sum(requests)${filter ? ` FILTER (WHERE ${filter})` : ""},0)::text`;
-
-export function rollupCoverageQuery(selection: Selection) {
-  return {
-    text: `${selection.text} SELECT source,min(first_at) AS first_at,max(last_at) AS last_at,
-      ${utcSql("max(ingested_at)")} AS ingested_at,
-      ${count("saved_account NOT IN ('unmapped','otherAccounts')")} AS mapped,
-      ${count("saved_account='unmapped'")} AS unmapped,
-      ${count("counts_only AND saved_account='otherAccounts'")} AS other,
-      ${count("NOT counts_only AND cost_basis='home-charge'")} AS home_priced,
-      ${count("NOT counts_only AND cost_basis='historical-api-price' AND currency='USD'")} AS imported_priced,
-      ${count("NOT counts_only AND cost_basis='unpriced'")} AS unpriced,
-      ${count("counts_only OR cost_basis='historical-api-price' AND currency<>'USD'")} AS missing,
-      ${count("NOT counts_only AND cost_basis<>'unpriced' AND NOT has_snapshot")} AS missing_snapshot,
-      ${count("NOT counts_only AND cost_basis<>'unpriced' AND NOT has_version")} AS missing_version
-      FROM selected GROUP BY source ORDER BY source LIMIT 501`,
-    values: selection.values,
-  };
-}
 
 const tokens = {
   input: "input_tokens",
@@ -136,10 +111,10 @@ const tokens = {
 /** The series aggregates over groups: every count is a sum of group counts, every sum of sums. */
 export function rollupAggregates(priced = true) {
   return [
-    `${count()} AS requests`,
-    `${count("failed")} AS failed`,
-    `${count("limited")} AS limited`,
-    `${count("failed AND account IS NULL AND source = $6")} AS unassigned`,
+    `${rollupCount()} AS requests`,
+    `${rollupCount("failed")} AS failed`,
+    `${rollupCount("limited")} AS limited`,
+    `${rollupCount("failed AND account IS NULL AND source = $6")} AS unassigned`,
     "max(last_at) FILTER (WHERE NOT failed) AS last_success",
     ...Object.entries(tokens).flatMap(([name, column]) => [
       `sum(${column}_sum)::text AS "${name}Sum"`,
@@ -147,27 +122,27 @@ export function rollupAggregates(priced = true) {
       `coalesce(sum(requests-${column}_known),0)::text AS "${name}Missing"`,
     ]),
     ...["complete", "legacy", "unclassified", "inconsistent"].map(
-      (quality) => `${count(`token_quality = '${quality}'`)} AS ${quality}`,
+      (quality) => `${rollupCount(`token_quality = '${quality}'`)} AS ${quality}`,
     ),
     "sum(cost_sum) FILTER (WHERE cost_basis = 'home-charge')::text AS home_amount",
-    `${count("cost_basis = 'home-charge'")} AS home_priced`,
+    `${rollupCount("cost_basis = 'home-charge'")} AS home_priced`,
     "sum(cost_sum) FILTER (WHERE cost_basis = 'historical-api-price' AND currency = 'USD')::text AS imported_amount",
-    `${count("cost_basis = 'historical-api-price' AND currency = 'USD'")} AS imported_priced`,
-    `${count("cost_basis = 'unpriced'")} AS unpriced`,
+    `${rollupCount("cost_basis = 'historical-api-price' AND currency = 'USD'")} AS imported_priced`,
+    `${rollupCount("cost_basis = 'unpriced'")} AS unpriced`,
     ...["charge-snapshot", "key-at-capture", "import-owner", "unknown"].map(
-      (kind) => `${count(`attribution = '${kind}'`)} AS "${kind}"`,
+      (kind) => `${rollupCount(`attribution = '${kind}'`)} AS "${kind}"`,
     ),
     ...(priced
       ? [
           "round(sum(api_cost),12)::text AS api_amount",
-          `${count("api_cost IS NOT NULL")} AS api_priced`,
-          `${count("api_cost IS NOT NULL AND token_count_estimate")} AS api_token_count_estimates`,
+          `${rollupCount("api_cost IS NOT NULL")} AS api_priced`,
+          `${rollupCount("api_cost IS NOT NULL AND token_count_estimate")} AS api_token_count_estimates`,
           "min(public_price_as_of) FILTER (WHERE api_cost IS NOT NULL) AS api_price_as_of",
           "string_agg(DISTINCT public_price_version, ',' ORDER BY public_price_version) FILTER (WHERE api_cost IS NOT NULL) AS api_price_version",
           "bool_or(public_price_basis='baseline') FILTER (WHERE api_cost IS NOT NULL) AS api_price_baseline",
           "bool_or(public_price_refresh_failed) FILTER (WHERE api_cost IS NOT NULL) AS api_price_refresh_failed",
-          `${count("public_price_version IS NULL")} AS api_missing_prices`,
-          `${count("price_class = 'missing_tokens'")} AS api_missing_tokens`,
+          `${rollupCount("public_price_version IS NULL")} AS api_missing_prices`,
+          `${rollupCount("price_class = 'missing_tokens'")} AS api_missing_tokens`,
         ]
       : []),
     "bool_or(counts_only) AS counts_only",
@@ -225,92 +200,10 @@ export function rollupPricedSql(table = "$7", guard = "NOT s.counts_only") {
     )`;
 }
 
-/** The raw daily statement's grouping sets, over hours instead of requests. */
-export function rollupDailyQuery(
-  selection: Selection,
-  from: string,
-  previousFrom: string,
-  models: boolean,
-) {
-  const modelDaily = models ? ", (counts_only,pv,mv,range_kind,bucket_at,bucket_end)" : "";
-  const kind = `CASE WHEN GROUPING(bucket_at)=1 THEN 'cost'
-    WHEN GROUPING(range_kind)=1 THEN 'history'
-    WHEN GROUPING(mv)=0 THEN 'model' ELSE range_kind END`;
-  const key = `CASE WHEN GROUPING(mv)=1 THEN jsonb_build_object('currency',NULL,'provider',pv)
-    ELSE jsonb_build_object('currency',NULL,'provider',pv,'model',mv) END::text COLLATE "C"`;
-  return {
-    text: `${selection.text}, ${rollupPricedSql()},
-      keyed AS (
-        SELECT *,CASE WHEN counts_only THEN NULL ELSE provider END AS pv,
-          CASE WHEN counts_only THEN NULL ELSE model END AS mv,
-          first_at >= $9::text AS eligible,
-          CASE WHEN first_at >= $9::text THEN 'current'
-            WHEN first_at >= $10::text THEN 'previous' ELSE 'training' END AS range_kind,
-          date_trunc('day',hour AT TIME ZONE 'Europe/Zurich') AT TIME ZONE 'Europe/Zurich' AS bucket_at,
-          (date_trunc('day',hour AT TIME ZONE 'Europe/Zurich') + interval '1 day') AT TIME ZONE 'Europe/Zurich' AS bucket_end
-        FROM priced
-      ), daily AS (
-        SELECT ${kind} AS scope,${key} AS group_key,bucket_at,bucket_end,
-          ${rollupAggregates().join(",\n")}
-        FROM keyed GROUP BY GROUPING SETS (
-          (counts_only,pv,bucket_at,bucket_end),
-          (counts_only,pv,range_kind,bucket_at,bucket_end),
-          (counts_only,pv,mv,eligible)${modelDaily}
-        ) HAVING GROUPING(bucket_at)=1 AND eligible
-          OR GROUPING(bucket_at)=0 AND GROUPING(range_kind)=1
-          OR GROUPING(bucket_at)=0 AND GROUPING(range_kind)=0
-            AND (range_kind='current' OR range_kind='previous' AND GROUPING(mv)=1)
-      ), ranked AS (
-        SELECT *,row_number() OVER (PARTITION BY scope ORDER BY group_key,bucket_at,counts_only) AS row_number
-        FROM daily
-      ) SELECT *,${utcSql("bucket_at")} AS at,${utcSql("bucket_end")} AS end_at
-        FROM ranked WHERE row_number <= CASE scope
-          WHEN 'model' THEN ${maxSummaryModelRows + 1}
-          WHEN 'cost' THEN ${maxSummaryCostRows + 1}
-          ELSE ${maxSummaryProviderRows + 1} END
-        ORDER BY scope,group_key,bucket_at,counts_only`,
-    values: [...selection.values, from, previousFrom],
-  };
-}
-
-/** The raw hourly statement over hours: the heatmap and the native requests per hour. */
-export function rollupHourlyText(selection: Selection, maxHeatmapCells: number) {
-  return `${selection.text}, keyed AS (
-      SELECT *,CASE WHEN counts_only THEN NULL ELSE provider END AS pv,hour AS hour_at,
-        (extract(isodow FROM hour AT TIME ZONE 'Europe/Zurich')-1)::int AS weekday,
-        extract(hour FROM hour AT TIME ZONE 'Europe/Zurich')::int AS clock_hour,
-        first_at >= $9::text AND first_at < $11::text AS heat_eligible,
-        source=$5 AND NOT counts_only AND first_at >= $10::text AS native_eligible
-      FROM selected
-    ), aggregated AS (
-      SELECT CASE WHEN GROUPING(hour_at)=1 THEN 'heatmap' ELSE 'native' END AS kind,
-        pv,weekday,clock_hour,hour_at,${count()} AS requests,
-        sum(total_tokens_sum) FILTER (WHERE NOT counts_only)::text AS tokens,
-        coalesce(sum(total_tokens_known) FILTER (WHERE NOT counts_only),0)::text AS known,
-        (coalesce(sum(requests) FILTER (WHERE counts_only),0)
-          + coalesce(sum(requests-total_tokens_known) FILTER (WHERE NOT counts_only),0))::text AS missing
-      FROM keyed WHERE heat_eligible OR native_eligible GROUP BY GROUPING SETS (
-        (pv,weekday,clock_hour,heat_eligible), (pv,hour_at,native_eligible)
-      ) HAVING GROUPING(hour_at)=1 AND heat_eligible OR GROUPING(hour_at)=0 AND native_eligible
-    ), samples AS (
-      SELECT (extract(isodow FROM at AT TIME ZONE 'Europe/Zurich')-1)::int AS weekday,
-        extract(hour FROM at AT TIME ZONE 'Europe/Zurich')::int AS clock_hour,count(*)::text AS hours
-      FROM generate_series($9::timestamptz,$11::timestamptz-interval '1 hour',interval '1 hour') AS slots(at)
-      GROUP BY weekday,clock_hour
-    ), ranked AS (
-      SELECT a.*,s.hours,row_number() OVER (
-        PARTITION BY kind ORDER BY pv,weekday,clock_hour,hour_at
-      ) AS row_number FROM aggregated a LEFT JOIN samples s USING (weekday,clock_hour)
-    ) SELECT *,${utcSql("hour_at")} AS at FROM ranked
-      WHERE row_number <= CASE kind WHEN 'heatmap' THEN ${maxHeatmapCells + 1}
-        ELSE ${maxSummaryNativeHours + 1} END
-      ORDER BY kind,pv,weekday,clock_hour,hour_at`;
-}
-
 /**
  * The most rollup groups one summary window may read; past it the summary refuses instead. The
- * worst-case fixture's daily statement took 1.6 s locally at 317k groups; half of that leaves room
- * for a slower production instance inside the 5 s limit.
+ * worst-case scale fixture's figures statement, which reads coverage, daily and hourly together,
+ * took 1.7 s locally at 163k groups, inside the 5 s limit each statement has.
  */
 export const maxSummaryRollupGroups = 200_000;
 
