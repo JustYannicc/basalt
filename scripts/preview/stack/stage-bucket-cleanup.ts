@@ -13,6 +13,10 @@ import { Effect } from "effect";
 
 type BucketProvider = Provider.ProviderService<Cloudflare.R2.Bucket>;
 type DeleteInput = Parameters<BucketProvider["delete"]>[0];
+/** What a provider's delete fails with: its own error object, carrying at least a message. */
+interface ProviderFailure {
+  readonly message: string;
+}
 
 /** The name Alchemy's bucket provider creates for a resource with no explicit name. */
 export const stageBucketName = (id: string, instanceId: string) =>
@@ -26,7 +30,10 @@ export const stageBucketDelete = (native: BucketProvider) => (input: DeleteInput
     const own = yield* stageBucketName(input.id, input.instanceId);
     if (!stage.startsWith("test-") || input.olds?.name || input.output.bucketName !== own)
       return yield* Effect.die(new Error("Refusing to empty a bucket this stage did not name."));
-    yield* native.delete({ ...input, olds: { ...input.olds, forceDestroy: true } });
+    // Alchemy's provider interface types every delete's error as any; this view names it.
+    const remove: (input: DeleteInput) => Effect.Effect<void, ProviderFailure> =
+      native.delete.bind(native);
+    yield* remove({ ...input, olds: { ...input.olds, forceDestroy: true } });
   });
 
 /** Takes the place of upstream's `TestStageBucketCleanup` in a cleanup stack. */
