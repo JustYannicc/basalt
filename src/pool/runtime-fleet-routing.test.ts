@@ -1,4 +1,5 @@
-import { readSuspect } from "./runtime-fleet/failure-record.ts";
+import { readFailure, readSuspect } from "./runtime-fleet/failure-record.ts";
+import { upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { deferred, SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
@@ -973,6 +974,132 @@ test("a fence whose durable record could not be written holds calls no longer th
   assert.ok((await f.fleet.coldHoldMs()) > 0);
   f.advance(200 + fenceDecidedMs + 1);
   assert.ok((await f.fleet.coldHoldMs()) < 0, "the fence's own start bounds it");
+});
+
+test("after a fresh slot's start is refused for the endpoint's deployment, growth draws again only at the next pass, and that start serves", async (context) => {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    recentDemandUntil: async () => Number.POSITIVE_INFINITY,
+  });
+  // Growth's first draw is slot-2: its endpoint refuses the start before any send, for identity,
+  // as an object on another upload does.
+  const first = f.target();
+  const refused = f.cell({
+    ...first,
+    slotId: "slot-2",
+    instanceId: "instance-2",
+    homePeerOrdinal: 2,
+  });
+  refused.start = async () => {
+    const cause = new SlotRefused("identity");
+    throw retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  refused.unsent = async () => true;
+  refused.abandon = async () => true;
+  await f.fleet.upkeep();
+  await f.settle();
+  assert.deepEqual(await f.state.inspect(), [], "the refused slot left");
+  const [end] = await f.state.recentEnds();
+  assert.equal(end?.slotId, "slot-2");
+  assert.equal(end?.left, "retired");
+  assert.equal(end?.reason, null);
+  // Its end says why, under a rule that never counts against a runtime.
+  assert.equal(readFailure(end?.failure)?.rule, "deployment");
+  // Past growth's own throttle but inside the pass, nothing more is drawn.
+  f.advance(200 + upkeepCadenceMs / 2);
+  await f.fleet.upkeep();
+  await f.settle();
+  assert.deepEqual(await f.state.inspect(), []);
+  assert.equal(f.calls.starts, 0);
+  // At the next pass the endpoint accepts, as once both run one release, and that start serves.
+  f.advance(200 + upkeepCadenceMs);
+  await f.fleet.upkeep();
+  await f.settle();
+  const rows = await f.state.inspect();
+  assert.equal(f.calls.starts, 1);
+  assert.deepEqual(
+    rows.map((row) => [row.target.slotId, row.phase]),
+    [["slot-3", "ready"]],
+  );
+});
+
+test("a full fleet grows again at the next pass once a deferred start frees its place", async (context) => {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  const f = fixture(1, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    recentDemandUntil: async () => Number.POSITIVE_INFINITY,
+  });
+  // Growth's first draw (slot-2) loses its start's reply, so its row goes uncertain and fills the
+  // fleet's one place. Its first observation finds nothing; its second retries the start, which the
+  // endpoint refuses for identity.
+  const first = f.target();
+  const lost = f.cell({ ...first, slotId: "slot-2", instanceId: "instance-2", homePeerOrdinal: 2 });
+  lost.start = async () => {
+    throw new Error("synthetic: reply lost");
+  };
+  let observations = 0;
+  lost.observe = async () => {
+    if (++observations === 1) return undefined;
+    throw retainRuntimeFailure(
+      runtimeErrorResponse(new SlotRefused("identity"), "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  lost.unsent = async () => true;
+  lost.abandon = async () => true;
+  const pass = async (index: number) => {
+    f.advance(200 + index * upkeepCadenceMs);
+    await f.fleet.upkeep();
+    await f.settle();
+    return (await f.state.inspect()).map((row) => [row.target.slotId, row.phase]);
+  };
+  assert.deepEqual(await pass(0), [["slot-2", "uncertain"]]);
+  // Growth finds the fleet full while the row holds its one place.
+  assert.deepEqual(await pass(1), [["slot-2", "uncertain"]]);
+  assert.deepEqual(await pass(2), [], "the deferred start left");
+  await pass(3);
+  assert.deepEqual(await pass(4), [["slot-3", "ready"]], "growth stayed off after the deferral");
+});
+
+test("a start refused for identity at any other step keeps its quarantine", async (context) => {
+  for (const method of ["error", "warn", "info"] as const)
+    context.mock.method(console, method, () => {});
+  const f = fixture(4, 1, {
+    ...fleetRouting,
+    primaryAvailable: () => true,
+    recentDemandUntil: async () => Number.POSITIVE_INFINITY,
+  });
+  const first = f.target();
+  const refused = f.cell({
+    ...first,
+    slotId: "slot-2",
+    instanceId: "instance-2",
+    homePeerOrdinal: 2,
+  });
+  refused.start = async () => {
+    const cause = new SlotRefused("identity");
+    rememberRuntimeFailure("endpoint_identity", cause);
+    throw retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  refused.unsent = async () => true;
+  refused.abandon = async () => true;
+  await f.fleet.upkeep();
+  await f.settle();
+  const [row] = await f.state.inspect();
+  assert.equal(row?.phase, "quarantined");
+  assert.equal(row?.reason, "start_unproven");
+  assert.equal(readFailure(row?.failure)?.rule, "evidence");
 });
 
 test("a cell whose quarantine is still being written holds no call", async (context) => {
