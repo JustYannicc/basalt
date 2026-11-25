@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { Crypto, Data, Effect, Option, Redacted, Schema } from "effect";
+import { Crypto, Effect, Option, Redacted } from "effect";
 import { SqlClient, type SqlError } from "effect/sql";
-import { ProviderError } from "../../.upstream/packages/apps/src/contracts/host.ts";
 import { providerDeclaration } from "../../.upstream/packages/apps/src/host.ts";
 import { pgliteLayer } from "../../.upstream/packages/fumadb-effect/src/pglite.ts";
 import {
@@ -16,7 +15,9 @@ import {
   AccountAcquisitionUnavailable,
   type AccountAcquisitionBinding,
 } from "../../.upstream/packages/sdk/src/contracts/account-acquisition-driver.ts";
-import { AccountSourceFailure } from "../../.upstream/packages/sdk/src/contracts/account-check-failure.ts";
+import type { AccountHealth } from "../../.upstream/packages/apps/src/contracts/account-health.ts";
+import { StorageError } from "../../.upstream/packages/sdk/src/contracts/shared.ts";
+import { storedAccount } from "../../.upstream/packages/sdk/src/implementation/accounts.ts";
 import { makeDriverAccountHealth } from "../../.upstream/packages/sdk/src/implementation/account-driver-health.ts";
 import { database } from "../../.upstream/packages/sdk/src/implementation/database.ts";
 import { makeExecutorStorage } from "../../.upstream/packages/sdk/src/implementation/storage.ts";
@@ -24,7 +25,12 @@ import { poolAccountAcquisition } from "../../.upstream/apps/hosted/server/src/i
 import { makeAccountRecheckQueue } from "../../.upstream/apps/hosted/server/src/implementation/account-recheck-queue.ts";
 import { migrateAccountRechecks } from "../../.upstream/apps/hosted/server/src/implementation/account-recheck-schema.ts";
 import { makeAccountRechecks } from "../../.upstream/apps/hosted/server/src/implementation/account-rechecks.ts";
+import {
+  accountAcquisitionPath,
+  accountAcquisitionPrefix,
+} from "../../src/pool/account-acquisition-contract.ts";
 import { nativeAccountHealth } from "../../src/pool/account-health.ts";
+import { signEnvelope } from "../../src/pool/token.ts";
 import { HomeClient } from "../../src/pool/control.ts";
 import { QuotaCollection } from "../../src/pool/quota-collection.ts";
 import { providers } from "../../src/pool/provider-accounts/definitions.ts";
@@ -48,16 +54,16 @@ const identity = (lab: keyof typeof providers) =>
       Effect.flatMap((definition) => identifyProvider(definition, crypto)),
     ),
   );
-/** A driver check fails with `unknown`; these are the failures the host records as a reason. */
-class UnexpectedCheckFailure extends Data.TaggedError("UnexpectedCheckFailure")<{
-  readonly cause: unknown;
-}> {}
-const checkFailure = (error: unknown) =>
-  Schema.is(ProviderError)(error) || Schema.is(AccountSourceFailure)(error)
-    ? error
-    : new UnexpectedCheckFailure({ cause: error });
 /** A synthetic failure of the SDK's record of no check. */
-class RecordFailed extends Data.TaggedError("RecordFailed") {}
+type RecheckExecutor = Parameters<typeof makeAccountRechecks>[1];
+/** What the runner reads of an account's health: its driver part alone. */
+const healthOf = (driver: AccountHealth["driver"]): AccountHealth => ({
+  account,
+  info: null,
+  infoCheckedAt: null,
+  apps: [],
+  ...(driver === undefined ? {} : { driver }),
+});
 const subscriptions = availableProviderCapabilities.filter(
   (capability) => capability.connection === "home-oauth",
 );
@@ -81,7 +87,7 @@ test("a subscription without a usage reader has no check; one with a reader keep
   assert.deepEqual(withoutReader.sort(), ["devin", "gemini-cli", "kimi-ai"]);
 });
 
-test("a provider with a usage reader still reads unavailable when its read really fails", async () => {
+test("a provider with a usage reader keeps its check, and the pool answers unavailable when its read really fails", async () => {
   const { registrations: registered } = await registrations();
   const { identity: provider } = await identity("anthropic");
   const registration = registered.find(
@@ -115,45 +121,26 @@ test("a provider with a usage reader still reads unavailable when its read reall
     },
     client,
   );
-  const binding: AccountAcquisitionBinding = {
-    account: AccountId.make("acc_claude"),
-    owner: OwnerId.make("organization:fixture"),
-    provider: ProviderId.make(provider),
-    method: "claude",
-    driver: "basalt-home",
-    driverRevision: "oauth-v1",
-    generation: 1,
-    revision: "fixture-r1",
-    removal: null,
-  };
-  const failure = await Effect.runPromise(
-    registration.driver
-      .check({
-        owner: binding.owner,
-        provider: binding.provider,
-        method: "claude",
-        operation: "fixture-check",
-        deadline: now + 30_000,
-        signal: new AbortController().signal,
-        fetch: async (input, init) =>
-          (await nativeAccountHealth(new Request(input, init), {
-            client,
-            collection,
-            signingKey,
-          }))!,
-        binding,
-        reference: Redacted.make("bound-id"),
-      })
-      .pipe(Effect.mapError(checkFailure), Effect.flip),
+  // The registry's check posts exactly this signed request to the pool; its answer is what the
+  // host records. Calling the driver itself would hold its contract's untyped error.
+  const envelope = await signEnvelope(signingKey, accountAcquisitionPrefix, {
+    owner: "organization:fixture",
+    operation: "fixture-check",
+    action: "check",
+    provider: "claude",
+    reference: "bound-id",
+    at: now,
+    expiresAt: now + 30_000,
+  });
+  const response = await nativeAccountHealth(
+    new Request(`https://pool.example${accountAcquisitionPath}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ envelope }),
+    }),
+    { client, collection, signingKey },
   );
-  assert.equal(
-    failure._tag === "ProviderError"
-      ? failure.reason
-      : failure._tag === "AccountSourceFailure"
-        ? failure.evidence.reason
-        : failure._tag,
-    "unavailable",
-  );
+  assert.equal((await response!.json()).failure, "unavailable");
 });
 
 const owner = OwnerId.make("organization:team-a");
@@ -235,7 +222,7 @@ const seeded = (
       },
       { status: () => "check_failed", message: () => undefined },
     );
-    return { sql, health };
+    return { sql, health, saved: yield* storedAccount(db, account, owner) };
   });
 const run = <A, E>(work: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(Effect.scoped(work).pipe(Effect.provide(pgliteLayer())));
@@ -285,23 +272,21 @@ for (const storedRow of [true, false])
     const { identity: provider } = await identity("devin");
     const result = await run(
       Effect.gen(function* () {
-        const { sql, health } = yield* seeded(provider, "devin", { storedRow });
+        const { sql, health, saved: accountRow } = yield* seeded(provider, "devin", { storedRow });
         const queue = makeAccountRecheckQueue(sql);
         const checks: string[] = [];
-        const executor = {
+        const executor: RecheckExecutor = {
           accounts: {
             health: () =>
               health
                 .report(stored(provider, "devin"))
-                .pipe(
-                  Effect.map((saved) => ({ account, apps: [], driver: saved?.driver }) as never),
-                ),
-            check: (input: { readonly account: string }) =>
+                .pipe(Effect.map((saved) => healthOf(saved?.driver))),
+            check: (input) =>
               Effect.gen(function* () {
                 checks.push(input.account);
-                yield* health.check(stored(provider, "devin") as never);
+                yield* health.check(accountRow);
                 const saved = yield* health.report(stored(provider, "devin"));
-                return { account, apps: [], driver: saved?.driver } as never;
+                return healthOf(saved?.driver);
               }),
           },
         };
@@ -309,7 +294,7 @@ for (const storedRow of [true, false])
         const before = (yield* queue.claim("probe")).map((entry) => entry.account);
         yield* sql`delete from hosted_account_rechecks`;
         yield* sql`delete from hosted_account_recheck_families`;
-        yield* makeAccountRechecks(sql, executor as never)("run-1");
+        yield* makeAccountRechecks(sql, executor)("run-1");
         const [row] = yield* sql<{
           checkable: boolean;
           status: string | null;
@@ -349,23 +334,27 @@ const runnerPass = (
   Effect.gen(function* () {
     const { sql, health } = yield* seeded(provider, "devin");
     const records: string[] = [];
-    const executor = {
+    const executor: RecheckExecutor = {
       accounts: {
         health: () =>
           Effect.gen(function* () {
-            if (options.onHealth) yield* options.onHealth;
+            if (options.onHealth)
+              yield* options.onHealth.pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.mapError(() => new StorageError()),
+              );
             const saved = yield* health.report(stored(provider, "devin"));
-            return { account, apps: [], driver: saved?.driver } as never;
+            return healthOf(saved?.driver);
           }),
-        check: (input: { readonly account: string }) =>
+        check: (input) =>
           Effect.gen(function* () {
             records.push(input.account);
-            if (options.failRecord) return yield* new RecordFailed();
-            return { account, apps: [] } as never;
+            if (options.failRecord) return yield* new StorageError();
+            return healthOf(undefined);
           }),
       },
     };
-    yield* makeAccountRechecks(sql, executor as never)("run-1");
+    yield* makeAccountRechecks(sql, executor)("run-1");
     const [lease] = yield* sql<{
       outcome: string;
       waits: number;
