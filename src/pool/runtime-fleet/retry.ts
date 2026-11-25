@@ -16,6 +16,9 @@ import {
   upstreamOutcomeUnknown,
 } from "../../../clients/contracts/model-error.ts";
 import { retainEndpointRequestId } from "./endpoint-trace.ts";
+import { boundedLog } from "../bounded-log.ts";
+import type { Held, HeldBody } from "../held-body.ts";
+import { heldCopyBody, heldResendMs, keepHeldCopy } from "./held-resend.ts";
 
 const safeReads = new Set(["/v1/models", "/typesafe/v1/models"]);
 /** The model catalog: the only read the fleet sends again after any failure, never a socket. */
@@ -167,6 +170,18 @@ export async function forwardRecoverably(
   };
   const signal = AbortSignal.any([request.signal, deadline.signal]);
   const safe = fleetSafeRead(request);
+  // The calls the entry would send again after an unsent refusal: allow-listed model calls.
+  const resendable =
+    request.method === "POST" &&
+    !request.headers.has("upgrade") &&
+    modelCallReplayable(new URL(request.url).pathname);
+  // Whether a hold has made this call wait. From then on a runtime's refusal before its container
+  // send is sent again from here until the hold's bound, because the entry's replay window and a
+  // device's assertion run out during a hold.
+  let waitedHeld = false;
+  // Such a call's copy of its body past its send, for the re-send below.
+  let copy: HeldBody | undefined;
+  let resends = 0;
   let retained = new Request(request, { signal });
   let recovered = false;
   let retainedOwned = true;
@@ -185,6 +200,9 @@ export async function forwardRecoverably(
   let heldCold = false;
   let rootHoldEndsAt = -Infinity;
   let kicked = false;
+  // The bound the holds in force reported, kept once they end (a cold start's stand-down resets
+  // `holdEndsAt`): a call a hold made wait is sent again until then.
+  let heldUntil = -Infinity;
   // Recovery is advisory. It declines to restart a runtime that is still running, and may fail for
   // other reasons; the request's own next admission re-checks selection, fence, policy and health.
   const tryRecovery = async () => {
@@ -219,6 +237,7 @@ export async function forwardRecoverably(
         held = true;
         heldCold = cold > root;
         holdEndsAt = timing.now() + holdMs;
+        heldUntil = Math.max(heldUntil, holdEndsAt);
       } else if (held) {
         held = kicked = false;
         // A hold that ends before its bound (the root serves, or recovery stands down) leaves the
@@ -234,7 +253,8 @@ export async function forwardRecoverably(
         }
       }
       const current = retained;
-      // Keep a body copy only until the send boundary; never retain an accepted upload for replay.
+      // Keep a body copy only until the send boundary, but for a held call's (below); an upload a
+      // container may have accepted is never sent again.
       let backup = current.body ? current.clone() : undefined;
       let dispatched = false;
       try {
@@ -244,10 +264,16 @@ export async function forwardRecoverably(
               dispatched = true;
               retainedOwned = false;
               if (!safe) clearTimeout(timer);
-              if (backup) {
-                void backup.body?.cancel().catch(() => {});
-                backup = undefined;
-              }
+              // A call a hold made wait keeps a bounded copy until its runtime answers, its next
+              // send or the hold's bound; any other call lets go of its body at the send.
+              const boundLeft = waitedHeld && resendable ? heldUntil - timing.now() : 0;
+              copy?.release();
+              copy =
+                boundLeft > 0
+                  ? keepHeldCopy(backup?.body ?? null, boundLeft + holdBackstopMs)
+                  : undefined;
+              if (!copy) void backup?.body?.cancel().catch(() => {});
+              backup = undefined;
               beforeDispatch();
             }),
           signal,
@@ -256,6 +282,7 @@ export async function forwardRecoverably(
         // Inside a hold's bound the cap's refusal is waited out at the cap's rate: the calls a
         // restart releases together would otherwise lose the ones past its burst.
         if (capPace !== undefined && timing.now() < holdEndsAt && !handover?.()) {
+          waitedHeld = true;
           void response.body?.cancel().catch(() => {});
           void current.body?.cancel().catch(() => {});
           retained = backup ?? new Request(request, { signal });
@@ -277,8 +304,44 @@ export async function forwardRecoverably(
           throw error;
         }
         // The runtime's endpoint refused before its container send: nothing ran, so the entry may
-        // send the call it holds once more.
-        if (dispatched && !safe && reachedNoContainer(error)) return unsentRefusal(request, error);
+        // send the call it holds once more. A call a hold made wait is past the entry's window, so
+        // it is sent again from here, on the entry's pace, until the bound its hold reported; a code
+        // handover's drain, a caller who left or a missing copy end that at once.
+        if (dispatched && !safe && reachedNoContainer(error)) {
+          if (!waitedHeld || !resendable) return unsentRefusal(request, error);
+          const bound = heldUntil;
+          const kept = copy;
+          // Without a copy the send came past the bound. The copy stays counted until the next send
+          // or the end, the finally's release, while the call's own request holds its bytes.
+          const taken: Held | { refused: "bound" } = kept
+            ? await awaitProbe(() => heldCopyBody(kept), signal)
+            : { refused: "bound" };
+          const reason =
+            "refused" in taken
+              ? taken.refused
+              : handover?.()
+                ? "handover"
+                : timing.now() + heldResendMs > bound
+                  ? "bound"
+                  : undefined;
+          const line = {
+            ...runtimeFailureDiagnostic(error, "fleet_forward"),
+            heldMs: Math.round(timing.now() - firstHeldAt!),
+          };
+          if ("refused" in taken || reason) {
+            boundedLog("POOL_HELD_CALL_UNSENT", { ...line, resends, reason });
+            return unsentRefusal(request, error);
+          }
+          boundedLog("POOL_HELD_CALL_RESENT", { ...line, resends: ++resends });
+          retained = new Request(request, { method: "POST", body: taken.body, signal });
+          retainedOwned = true;
+          // Its send cleared the call's deadline; until its next one the hold's own bound holds.
+          clearTimeout(timer);
+          expiresAt = bound + holdBackstopMs;
+          timer = setTimeout(expire, Math.max(0, expiresAt - timing.now()));
+          await timing.pause(heldResendMs, signal);
+          continue;
+        }
         if (dispatched && !safe) return acceptedCrash(request, error);
         retained = backup ?? new Request(request, { signal });
         retainedOwned = true;
@@ -296,6 +359,7 @@ export async function forwardRecoverably(
           refusals = 0;
         } else if (++refusals >= 6) break;
         if (holding) {
+          waitedHeld = true;
           holdUntil(holdable);
           // Once a hold, as a call joins recovery once today, but not awaited: a pass can outlast the
           // bound. It keeps recovery going should its alarm chain break while calls wait for it.
@@ -323,6 +387,7 @@ export async function forwardRecoverably(
     throw error;
   } finally {
     clearTimeout(timer);
+    copy?.release();
     if (retainedOwned) void retained.body?.cancel().catch(() => {});
   }
 }

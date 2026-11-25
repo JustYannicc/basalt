@@ -10,17 +10,22 @@ import { TestStageSlug } from "../../../.upstream/apps/hosted/cloud/src/infrastr
 import { PreviousTestDatabaseCleanup } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/previous-test-database-cleanup.ts";
 import {
   TestStageBuildCleanup,
-  TestStageBucketCleanup,
   TestStageDomainCleanup,
 } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/test-stage-cleanup-providers.ts";
 import { axiomProviders } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/axiom-provider.ts";
+import { StageBucketCleanup } from "./stage-bucket-cleanup.ts";
 
-const cleanupState = Layer.unwrap(Effect.gen(function* () {
-  const stage = yield* Stage;
-  if (!stage.startsWith("test-pr-")) return yield* Effect.die(new Error("Preview cleanup is restricted to PR stages."));
-  yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(Effect.orDie);
-  return Cloudflare.state();
-}));
+const cleanupState = Layer.unwrap(
+  Effect.gen(function* () {
+    const stage = yield* Stage;
+    if (!stage.startsWith("test-pr-"))
+      return yield* Effect.die(new Error("Preview cleanup is restricted to PR stages."));
+    yield* Schema.decodeUnknownEffect(TestStageSlug)(stage.slice("test-".length)).pipe(
+      Effect.orDie,
+    );
+    return Cloudflare.state();
+  }),
+);
 
 export default Alchemy.Stack(
   "basalt",
@@ -29,7 +34,7 @@ export default Alchemy.Stack(
       Cloudflare.providers(),
       Command.providers(),
       TestStageBuildCleanup(),
-      TestStageBucketCleanup(),
+      StageBucketCleanup(),
       axiomProviders,
       Planetscale.providers(),
       Neon.providers(),
