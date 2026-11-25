@@ -82,12 +82,15 @@ export function sharedAccount(prefix) {
   });
 }
 
+// A kind addressed by an opaque id is read back by that id before the stage acts on it: a bare GET
+// of one id, which changes nothing and is the only call that may name an id that is not the
+// stage's. Every other call to such an id, and any call at all to another kind's, is outside.
 const COLLECTIONS = {
-  "containers/applications": { kind: "applications", below: ["", "/rollouts"] },
-  "workers/durable_objects/namespaces": { kind: "namespaces", below: [""] },
+  "containers/applications": { kind: "applications", below: ["", "/rollouts"], readBack: true },
+  "workers/durable_objects/namespaces": { kind: "namespaces", below: [] },
   "workers/scripts": { kind: "scripts", below: ["", "/settings"] },
-  "hyperdrive/configs": { kind: "drives", below: [""] },
-  mtls_certificates: { kind: "certificates", below: [""] },
+  "hyperdrive/configs": { kind: "drives", below: [""], readBack: true },
+  mtls_certificates: { kind: "certificates", below: [""], readBack: true },
 };
 const ownerName = (kind, row) =>
   kind === "namespaces" ? (row.script ?? row.name) : (row.name ?? row.id);
@@ -145,14 +148,17 @@ export function stageReach(fake, prefix) {
       return method === "GET" && !parsed.search ? undefined : "subdomain";
     if (rest === "containers/registries/registry.cloudflare.com/credentials")
       return method === "POST" && !parsed.search ? undefined : "credentials";
-    for (const [path, { kind, below }] of Object.entries(COLLECTIONS)) {
+    for (const [path, { kind, below, readBack }] of Object.entries(COLLECTIONS)) {
       if (rest === path)
         return method === "GET" && /^\?page=\d+&per_page=100$/u.test(parsed.search)
           ? undefined
           : "a listing";
       if (!rest.startsWith(`${path}/`)) continue;
       const [id, ...suffix] = rest.slice(path.length + 1).split("/");
-      if (!ids[kind].has(id)) return `another ${kind} resource`;
+      if (!ids[kind].has(id))
+        return readBack && method === "GET" && !suffix.length && !parsed.search && CLEAN.test(id)
+          ? undefined
+          : `another ${kind} resource`;
       const under = suffix.length ? `/${suffix.join("/")}` : "";
       if (!below.includes(under)) return `a path below ${kind} no stage asks for`;
       const force = kind === "scripts" && method === "DELETE" ? "?force=true" : "";

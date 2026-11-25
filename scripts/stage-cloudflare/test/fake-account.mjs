@@ -13,6 +13,10 @@ import {
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
 const PLATFORM = `sha256:${"b".repeat(64)}`;
+// Answers are built with inits that inherit nothing, so a test that sets fields on Object.prototype
+// changes only what the stage module reads, never what this account answers.
+const init = (fields) => Object.assign(Object.create(null), fields);
+const json = (body, fields = {}) => Response.json(body, init(fields));
 const COLLECTIONS = {
   "containers/applications": "applications",
   "workers/durable_objects/namespaces": "namespaces",
@@ -42,66 +46,66 @@ export function fakeAccount({
     tags: { ...tags },
   };
   const calls = [];
-  const fetcher = async (url, init = {}) => {
+  const fetcher = async (url, options = {}) => {
     const { hostname, pathname, searchParams } = new URL(url);
-    const method = init.method ?? "GET";
+    const method = options.method ?? "GET";
     const call = { method, host: hostname, path: pathname, url: String(url) };
     calls.push(call);
     if (hostname === "registry.cloudflare.com") return registry(method, pathname);
     const prefix = `/client/v4/accounts/${accountId}/`;
-    if (!pathname.startsWith(prefix)) return Response.json({}, { status: 404 });
+    if (!pathname.startsWith(prefix)) return json({}, { status: 404 });
     const rest = pathname.slice(prefix.length);
-    if (rest === "workers/subdomain") return Response.json(subdomain(workersSubdomain));
+    if (rest === "workers/subdomain") return json(subdomain(workersSubdomain));
     if (rest === "containers/registries/registry.cloudflare.com/credentials")
-      return Response.json(registryCredentials());
+      return json(registryCredentials());
     const settingsOf = /^workers\/scripts\/([^/]+)\/settings$/u.exec(rest);
     if (settingsOf) {
       const name = decodeURIComponent(settingsOf[1]);
       return live.scripts.some((row) => row.id === name)
-        ? Response.json(settings(bindings[name]))
-        : Response.json({}, { status: 404 });
+        ? json(settings(bindings[name]))
+        : json({}, { status: 404 });
     }
     const [collection, kind] =
       Object.entries(COLLECTIONS).find(([path]) => rest === path || rest.startsWith(`${path}/`)) ??
       [];
-    if (!kind) return Response.json({}, { status: 404 });
+    if (!kind) return json({}, { status: 404 });
     if (rest === collection) {
       const page = Number(searchParams.get("page") ?? 1);
-      return Response.json(listPage(live[kind].slice((page - 1) * 100, page * 100)));
+      return json(listPage(live[kind].slice((page - 1) * 100, page * 100)));
     }
     const id = decodeURIComponent(rest.slice(collection.length + 1));
     const found = live[kind].find((row) => row.id === id);
     if (method === "DELETE") {
-      if (!found) return Response.json({}, { status: 404 });
+      if (!found) return json({}, { status: 404 });
       live[kind] = live[kind].filter((row) => row !== found);
       // Deleting a Worker deletes the Durable Object namespaces it owns.
       if (kind === "scripts") live.namespaces = live.namespaces.filter((row) => row.script !== id);
-      return Response.json(envelope(null));
+      return json(envelope(null));
     }
-    return found ? Response.json(envelope(found)) : Response.json({}, { status: 404 });
+    return found ? json(envelope(found)) : json({}, { status: 404 });
   };
 
   function registry(method, pathname) {
-    if (pathname === "/v2/_catalog") return Response.json(catalog(Object.keys(live.tags)));
+    if (pathname === "/v2/_catalog") return json(catalog(Object.keys(live.tags)));
     const listing = /^\/v2\/(.+)\/tags\/list$/u.exec(pathname);
     if (listing) {
       const name = decodeURIComponent(listing[1]);
       return name in live.tags
-        ? Response.json(tagList(name, live.tags[name].length ? live.tags[name] : null))
-        : Response.json({}, { status: 404 });
+        ? json(tagList(name, live.tags[name].length ? live.tags[name] : null))
+        : json({}, { status: 404 });
     }
     const manifest = /^\/v2\/(.+)\/manifests\/(.+)$/u.exec(pathname);
-    if (!manifest) return Response.json({}, { status: 404 });
+    if (!manifest) return json({}, { status: 404 });
     const name = decodeURIComponent(manifest[1]);
     const reference = decodeURIComponent(manifest[2]);
-    if (!live.tags[name]?.length) return Response.json({}, { status: 404 });
+    if (!live.tags[name]?.length) return json({}, { status: 404 });
     if (method === "DELETE") {
       // The index goes first; once it is gone no tag reaches the platform manifest either.
       if (reference === DIGEST) live.tags[name] = [];
-      return new Response(null, { status: 202 });
+      return new Response(null, init({ status: 202 }));
     }
     const index = reference === PLATFORM ? { schemaVersion: 2 } : imageIndex([PLATFORM]);
-    return Response.json(index, {
+    return json(index, {
       headers: { "docker-content-digest": reference === PLATFORM ? PLATFORM : DIGEST },
     });
   }

@@ -85,7 +85,12 @@ globalThis.fetch = async (target, init = {}) => {
     path === "containers/applications/fixture-app"
   ) {
     if (method === "PATCH") return response({ success: true });
-    return response({ result: { configuration: { instance_type: "lite" } } });
+    // A read by id answers the whole application, as Cloudflare does: the stage checks its name.
+    const [app] = rows["containers/applications"];
+    return response({
+      success: true,
+      result: { ...app, configuration: { ...app.configuration, instance_type: "lite" } },
+    });
   }
   if (path === "containers/applications/fixture-app/rollouts") {
     const body = JSON.parse(init.body);
@@ -108,6 +113,12 @@ globalThis.fetch = async (target, init = {}) => {
     if (id === "foreign-app") throw new Error("Foreign resource deletion attempted");
     rows[kind] = values.filter((row) => row.id !== id);
     return response({ success: true });
+  }
+  const resource = Object.entries(rows).find(([kind]) => path.startsWith(`${kind}/`));
+  if (method === "GET" && resource) {
+    const [kind, values] = resource;
+    const row = values.find((value) => value.id === path.slice(kind.length + 1));
+    return row ? response({ success: true, result: row }) : response({}, 404);
   }
   if (!(path in rows)) throw new Error("Unexpected provider request");
   return response({ success: true, result: rows[path] });

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import * as answersModule from "./answers.mjs";
 import * as apiModule from "./api.mjs";
-import { STAGE_PREFIXES, stageOwnership } from "./ownership.mjs";
+import * as ownershipModule from "./ownership.mjs";
 import * as registryModule from "./registry.mjs";
 import * as requestModule from "./request.mjs";
 import { productionNames } from "./test/production-names.mjs";
@@ -19,6 +19,7 @@ import {
 } from "./test/stage-reach.mjs";
 
 const { stageCloudflare } = apiModule;
+const { STAGE_PREFIXES } = ownershipModule;
 const { KINDS, stageRequests } = requestModule;
 const source = (file) => readFileSync(new URL(file, import.meta.url), "utf8");
 const MODULE = ["api.mjs", "request.mjs", "answers.mjs", "registry.mjs", "ownership.mjs"];
@@ -36,12 +37,9 @@ test("exactly one place in the module calls the fetcher, and nothing else holds 
     "ownership.mjs": 0,
   });
   for (const file of MODULE) assert.equal(count(source(file), /(?<![\w.])fetch\s*\(/gu), 0, file);
-  // api.mjs only defaults the fetcher and hands it to the choke point; the rest never name it.
-  assert.equal(count(source("api.mjs"), /\bfetcher\b/gu), 2);
-  assert.match(
-    source("api.mjs"),
-    /stageRequests\(\{ accountId, token, owned, fetcher, signal \}\)/u,
-  );
+  // api.mjs hands its options to the choke point whole; only request.mjs names the fetcher.
+  assert.equal(count(source("api.mjs"), /\bfetcher\b/gu), 0);
+  assert.match(source("api.mjs"), /stageRequests\(options\)/u);
   for (const file of ["answers.mjs", "registry.mjs", "ownership.mjs"])
     assert.equal(count(source(file), /\bfetch(?:er)?\b|https?:\/\//gu), 0, file);
   assert.equal(count(source("api.mjs"), /https?:\/\//gu), 0);
@@ -55,13 +53,17 @@ const EXPORTS = {
     WORKER_KINDS: "a constant",
   },
   "request.mjs": {
-    stageRequests: "the choke point, every kind and operation of which is covered below",
+    stageRequests:
+      "the choke point, built from a registered prefix only; every kind and operation is covered below",
     KINDS: "the declared kinds and operations",
   },
   "answers.mjs": {
     DIGEST: "a constant",
     isCloudflareApiError: "a predicate over errors; sends nothing",
     fail: "builds an error; sends nothing",
+    ownField: "reads an object's own field; sends nothing",
+    ownString: "reads an object's own string field; sends nothing",
+    answerOf: "snapshots an answer it is handed; sends nothing",
     envelopeOf: "reads an answer it is handed; sends nothing",
     credentialsOf: "reads an answer it is handed; sends nothing",
     catalogOf: "reads an answer it is handed; sends nothing",
@@ -72,6 +74,15 @@ const EXPORTS = {
   "registry.mjs": {
     registryOperations: "holds only a send; covered through images and removeImage below",
   },
+  "ownership.mjs": {
+    STAGE_PREFIXES: "a constant: the registered prefixes",
+    RELEASE_STAGE_WORDS: "a constant",
+    RELEASE_FIRST_WORDS: "a constant",
+    isProductionName: "a predicate over names; sends nothing",
+    releaseProbes: "names to probe a predicate with; sends nothing",
+    prefixRefusal: "why a prefix is refused; sends nothing",
+    stageOwnership: "builds the ownership predicate the choke point derives; sends nothing",
+  },
 };
 test("every export of the module is accounted for", () => {
   for (const [file, module] of [
@@ -79,6 +90,7 @@ test("every export of the module is accounted for", () => {
     ["request.mjs", requestModule],
     ["answers.mjs", answersModule],
     ["registry.mjs", registryModule],
+    ["ownership.mjs", ownershipModule],
   ])
     assert.deepEqual(Object.keys(module).sort(), Object.keys(EXPORTS[file]).sort(), file);
 });
@@ -117,13 +129,13 @@ const hostileValues = [undefined, null, 7, {}, [], ["x"], { toString: () => "x" 
 async function stage(prefix) {
   const fake = sharedAccount(prefix);
   const reach = stageReach(fake, prefix);
-  const options = { accountId, token: "t", owned: stageOwnership(prefix), fetcher: fake.fetcher };
-  const send = stageRequests({ ...options, signal: () => undefined });
+  const options = { accountId, token: "t", prefix, fetcher: fake.fetcher };
+  const { send } = stageRequests({ ...options, signal: () => undefined });
   const api = stageCloudflare({ accountId, token: "t", prefix, fetcher: fake.fetcher });
   const listed = {};
   for (const kind of ["applications", "namespaces", "scripts", "drives", "certificates", "images"])
     listed[kind] = await send({ kind, operation: "list" });
-  const elsewhere = await stageRequests({ ...options, signal: () => undefined })({
+  const elsewhere = await stageRequests({ ...options, signal: () => undefined }).send({
     kind: "applications",
     operation: "list",
   });
@@ -188,7 +200,6 @@ const LEGIT = {
   }),
   "applications.delete": (ctx) => ({ target: ownRow(ctx.listed, "applications") }),
   "namespaces.list": () => ({}),
-  "namespaces.delete": (ctx) => ({ target: ownRow(ctx.listed, "namespaces") }),
   "scripts.list": () => ({}),
   "scripts.settings": (ctx) => ({ target: ctx.prefix + "-gateway" }),
   "scripts.delete": (ctx) => ({ target: ownRow(ctx.listed, "scripts") }),
@@ -205,13 +216,11 @@ const LEGIT = {
   }),
   "account.subdomain": () => ({}),
   "account.imageReferences": () => ({}),
-  "account.credentials": () => ({ access: "pull" }),
 };
 const pairs = Object.entries(KINDS).flatMap(([kind, spec]) =>
   spec.operations.map((operation) => [kind, operation]),
 );
-const targeted = (kind, operation) =>
-  !["list", "subdomain", "imageReferences", "credentials"].includes(operation);
+const targeted = (kind, operation) => !["list", "subdomain", "imageReferences"].includes(operation);
 
 test("every declared kind and operation has a legitimate case", () => {
   assert.deepEqual(
@@ -248,9 +257,8 @@ for (const prefix of STAGE_PREFIXES)
         { query: "?force=true" },
         { id: "prod-app" },
         { name: "basalt-production-poolworker" },
-        ...(operation === "credentials"
-          ? [{ access: "admin" }, { access: ["pull", "push", "delete"] }, { access: undefined }]
-          : [{ access: "push" }]),
+        { access: "push" },
+        { access: "pull" },
         ...(["patch", "rollout"].includes(operation) ? [] : [{ body: {} }]),
         ...(["manifest", "deleteManifest"].includes(operation) ? [] : [{ reference: "h1" }]),
         ...(targeted(kind, operation)
@@ -279,6 +287,7 @@ for (const prefix of STAGE_PREFIXES)
       const foreign = pairs.filter(([k, op]) => k !== kind && !KINDS[kind].operations.includes(op));
       for (const op of new Set([
         ...foreign.map(([, op]) => op),
+        "credentials",
         "toString",
         "__proto__",
         "GET",
@@ -390,18 +399,39 @@ const OPERATIONS = {
     hostile: (ctx) => targets(ctx, (kind, target) => ctx.api.remove(kind, target)),
     legit: (ctx) => ctx.api.remove("applications", ctx.rows.applications),
   },
-  images: { hostile: () => [], legit: (ctx) => ctx.api.images() },
+  images: {
+    hostile: (ctx) => withArguments(ctx, (...given) => ctx.api.images(...given)),
+    legit: (ctx) => ctx.api.images(),
+  },
   removeImage: {
     hostile: (ctx) => targets(ctx, (kind, target) => ctx.api.removeImage(target), ["images"]),
     legit: (ctx) => ctx.api.removeImage(ctx.rows.images),
   },
-  subdomain: { hostile: () => [], legit: (ctx) => ctx.api.subdomain() },
-  imageReferences: { hostile: () => [], legit: (ctx) => ctx.api.imageReferences() },
+  subdomain: {
+    hostile: (ctx) => withArguments(ctx, (...given) => ctx.api.subdomain(...given)),
+    legit: (ctx) => ctx.api.subdomain(),
+  },
+  imageReferences: {
+    hostile: (ctx) => withArguments(ctx, (...given) => ctx.api.imageReferences(...given)),
+    legit: (ctx) => ctx.api.imageReferences(),
+  },
 };
+// The only keys of the stage API that are not operations. The test below holds this list to exactly
+// these two and checks what each value is, so nothing that sends can be filed here.
 const NOT_OPERATIONS = {
-  prefix: "the stage's prefix",
-  owned: "the ownership predicate; sends nothing",
+  prefix: "the stage's prefix, a string",
+  owned: "the ownership predicate the choke point derived; sends nothing",
 };
+
+/** An operation that takes no argument, handed hostile names, values and rows as arguments. */
+function withArguments(ctx, call) {
+  const given = [
+    ...hostileNames(ctx.prefix),
+    ...hostileValues.filter((value) => value !== undefined),
+    ...Object.values(ctx.rows),
+  ];
+  return given.map((value) => () => call(value));
+}
 
 /** Each hostile name, value and row, for each kind `of` names. */
 function targets(ctx, call, of = kinds) {
@@ -420,12 +450,29 @@ function targets(ctx, call, of = kinds) {
 }
 
 test("every key of the stage API has a hostile and a legitimate case", async () => {
-  const { api } = await stage(STAGE_PREFIXES[0]);
+  const prefix = STAGE_PREFIXES[0];
+  const ctx = { prefix, ...(await stage(prefix)) };
+  const { api } = ctx;
   assert.deepEqual(
     Object.keys(api).sort(),
     [...Object.keys(OPERATIONS), ...Object.keys(NOT_OPERATIONS)].sort(),
   );
+  assert.deepEqual(Object.keys(NOT_OPERATIONS).sort(), ["owned", "prefix"]);
+  assert.equal(api.prefix, prefix);
+  assert.equal(typeof api.owned, "function");
+  assert.equal(api.owned(`${prefix}-gateway`), true);
+  for (const name of [...productionNames, `${prefix}x-gateway`, prefix])
+    assert.equal(api.owned(name), false, name);
   for (const key of Object.keys(OPERATIONS)) assert.equal(typeof api[key], "function", key);
+  ctx.apiListed = {
+    ...(await api.inventory(["applications", "namespaces", "scripts", "drives", "certificates"])),
+    images: await api.images(),
+  };
+  ctx.rows = Object.fromEntries(
+    Object.keys(ctx.apiListed).map((kind) => [kind, ownRow(ctx.apiListed, kind)]),
+  );
+  for (const [key, { hostile }] of Object.entries(OPERATIONS))
+    assert.ok(hostile(ctx).length > 0, `${key} has no hostile case`);
 });
 
 for (const prefix of STAGE_PREFIXES)

@@ -197,7 +197,8 @@ test("a stage's own rows are read back, changed and deleted by id", async () => 
   assert.equal((await api.read("applications", app)).result.name, `${prefix}-mock`);
   const settings = await api.settings(`${prefix}-gateway`);
   assert.ok(settings.result.bindings.some((row) => row.name === "DELETE_BY" && row.text === "1"));
-  await api.remove("namespaces", found.namespaces[0]);
+  // A namespace goes with its Worker; it is never addressed on its own.
+  await assert.rejects(api.remove("namespaces", found.namespaces[0]), /^Error: Refused/u);
   await api.remove("drives", found.drives[0]);
   await api.remove("applications", app);
   await api.remove("scripts", found.scripts[0]);
@@ -205,12 +206,7 @@ test("a stage's own rows are read back, changed and deleted by id", async () => 
     fake.calls
       .filter((call) => call.method === "DELETE")
       .map((call) => call.path.split("/").slice(5).join("/")),
-    [
-      "workers/durable_objects/namespaces/n1",
-      "hyperdrive/configs/d1",
-      "containers/applications/a1",
-      `workers/scripts/${prefix}-gateway`,
-    ],
+    ["hyperdrive/configs/d1", "containers/applications/a1", `workers/scripts/${prefix}-gateway`],
   );
   assert.equal(api.owned(fake.live.applications[0].name), false);
   assert.equal(await api.subdomain(), "acct-sub");

@@ -1,5 +1,9 @@
-// How the stage's choke point (request.mjs) reads what Cloudflare and its registry answer. Every
-// reader fails closed: a refused call, a `success: false` envelope, a listing without its array or a
+// How the stage's choke point (request.mjs) reads what Cloudflare and its registry answer. An answer
+// is read once, the moment it arrives, into a frozen snapshot: its status, the two headers the
+// registry readers need, and its body parsed as plain JSON whose every object has no prototype.
+// Only a real HTTP Response is read, through Response's own accessors, so nothing the answer object
+// itself defines is ever consulted; anything else is refused. Every reader below takes a snapshot
+// and fails closed: a refused call, a `success: false` envelope, a listing without its array or a
 // registry list with a further page throws, so a wrong template or a missing permission never reads
 // as an empty account. Refusals carry only the operation, the status, the error codes and known
 // field names; remote messages and pointers may hold secrets. Nothing here sends a request.
@@ -14,8 +18,8 @@ const FIELDS = [
   "image",
   "max_instances",
 ];
-// Refusals are small JSON envelopes; a larger body is cancelled rather than kept.
-const REFUSAL_BYTES = 65536;
+// A listing page, a Worker's settings or a manifest is far below this; a larger body is not read.
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 const own = new WeakSet();
 /** Whether the stage module raised the error itself, so its message holds no remote text. */
@@ -26,79 +30,133 @@ export const fail = (message) => {
   return error;
 };
 
+/** `value[key]` when `value` is an object holding `key` itself; never a prototype's. */
+export const ownField = (value, key) =>
+  value !== null && typeof value === "object" && Object.hasOwn(value, key) ? value[key] : undefined;
+/** `value[key]` when it is the object's own string. */
+export const ownString = (value, key) => {
+  const field = ownField(value, key);
+  return typeof field === "string" ? field : undefined;
+};
+
+const accessor = (name) => Object.getOwnPropertyDescriptor(Response.prototype, name).get;
+const STATUS = accessor("status");
+const HEADERS = accessor("headers");
+const BODY = accessor("body");
+const HEADER = Headers.prototype.get;
+
+/** Plain JSON in which no object inherits anything, so a missing field reads as undefined. */
+const parse = (text) =>
+  JSON.parse(text, (_key, value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+    const copy = Object.create(null);
+    for (const field of Object.keys(value)) copy[field] = value[field];
+    return copy;
+  });
+
+async function bodyText(stream) {
+  if (stream === null) return "";
+  const reader = stream.getReader();
+  const chunks = [];
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The one read of an answer: `{ status, ok, link, digest, data }`, frozen, where `data` is the body
+ * as plain JSON, or undefined when the body is empty, too large or not JSON. Refuses anything that
+ * is not an HTTP Response.
+ */
+export async function answerOf(response) {
+  let status;
+  let headers;
+  let stream;
+  try {
+    status = STATUS.call(response);
+    headers = HEADERS.call(response);
+    stream = BODY.call(response);
+  } catch {
+    throw fail("Refused: the answer is not an HTTP response");
+  }
+  const text = await bodyText(stream).catch(() => undefined);
+  let data;
+  try {
+    data = text ? parse(text) : undefined;
+  } catch {
+    data = undefined;
+  }
+  const snapshot = Object.create(null);
+  snapshot.status = status;
+  snapshot.ok = status >= 200 && status <= 299;
+  snapshot.link = HEADER.call(headers, "link") ?? "";
+  snapshot.digest = HEADER.call(headers, "docker-content-digest") ?? "";
+  snapshot.data = data;
+  return Object.freeze(snapshot);
+}
+
 function refusal(operation, method, status, data) {
-  const errors = Array.isArray(data?.errors) ? data.errors.slice(0, 20) : [];
-  const codes = [...new Set(errors.map((error) => error?.code).filter(Number.isSafeInteger))];
+  const listed = ownField(data, "errors");
+  const errors = Array.isArray(listed) ? listed.slice(0, 20) : [];
+  const codes = [
+    ...new Set(errors.map((error) => ownField(error, "code")).filter(Number.isSafeInteger)),
+  ];
   const fields = FIELDS.filter((field) =>
-    errors.some(
-      (error) =>
-        typeof error?.message === "string" && new RegExp(`\\b${field}\\b`).test(error.message),
-    ),
+    errors.some((error) => {
+      const message = ownString(error, "message");
+      return message !== undefined && new RegExp(`\\b${field}\\b`).test(message);
+    }),
   );
   const error = fail(`Cloudflare ${method} ${operation} failed (${status})`);
   error.diagnostic = { provider: "cloudflare", operation, method, status, codes, fields };
   return error;
 }
 
-async function boundedJson(response) {
-  const reader = response.body?.getReader();
-  let bytes = 0;
-  const chunks = [];
-  try {
-    while (reader) {
-      const { done, value } = await reader.read();
-      if (done) return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-      bytes += value.byteLength;
-      if (bytes > REFUSAL_BYTES) {
-        await reader.cancel();
-        return undefined;
-      }
-      chunks.push(Buffer.from(value));
-    }
-  } catch {
-    // Diagnostics must not hide the original refusal.
-  }
-  return undefined;
-}
-
 /** A v4 envelope's data, or null for an absent resource where `absent`; throws on any refusal. */
-export async function envelopeOf(response, { label, method, absent }) {
-  if (response.status === 404 && absent) {
-    await response.body?.cancel();
-    return null;
-  }
-  if (!response.ok) throw refusal(label, method, response.status, await boundedJson(response));
-  let data;
-  try {
-    data = await response.json();
-  } catch {
-    // A parse error quotes the body it could not read.
-    throw refusal(label, method, response.status, undefined);
-  }
-  if (data?.success === false) throw refusal(label, method, response.status, data);
-  return data;
+export function envelopeOf(answer, { label, method, absent }) {
+  if (answer.status === 404 && absent) return null;
+  if (!answer.ok) throw refusal(label, method, answer.status, answer.data);
+  // A body that is not JSON may quote what it could not read, so none of it is kept.
+  if (answer.data === undefined) throw refusal(label, method, answer.status, undefined);
+  if (ownField(answer.data, "success") === false)
+    throw refusal(label, method, answer.status, answer.data);
+  return answer.data;
 }
 
 /** The Basic authorization a registry credentials envelope grants. */
 export function credentialsOf(data) {
-  const username = data?.result?.username ?? data?.result?.user;
-  if (data?.success !== true || !username || !data.result?.password)
+  const result = ownField(data, "result");
+  const username = ownString(result, "username") ?? ownString(result, "user");
+  const password = ownString(result, "password");
+  if (ownField(data, "success") !== true || !username || !password)
     throw fail("Registry credentials answered without a username and password");
-  return `Basic ${Buffer.from(`${username}:${data.result.password}`).toString("base64")}`;
+  return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
 // A registry list that says it has another page could hide one of the stage's repositories or tags.
-function singlePage(response, listing) {
-  if (/rel="?next"?/u.test(response.headers.get("link") ?? ""))
+function singlePage(answer, listing) {
+  if (/rel="?next"?/u.test(answer.link))
     throw fail(`The registry ${listing} has more than one page; the check reads only one`);
 }
-const json = (response) => response.json().catch(() => null);
 
 /** Every repository the registry catalog lists. */
-export async function catalogOf(response) {
-  if (!response.ok) throw fail(`Registry catalog read failed (HTTP ${response.status})`);
-  singlePage(response, "catalog");
-  const repositories = (await json(response))?.repositories;
+export function catalogOf(answer) {
+  if (!answer.ok) throw fail(`Registry catalog read failed (HTTP ${answer.status})`);
+  singlePage(answer, "catalog");
+  const repositories = ownField(answer.data, "repositories");
   if (!Array.isArray(repositories))
     throw fail("The registry catalog answered without its repository list");
   if (!repositories.every((repository) => typeof repository === "string"))
@@ -107,42 +165,35 @@ export async function catalogOf(response) {
 }
 
 /** The tags one repository holds; none when it is gone. */
-export async function tagsOf(response) {
-  if (response.status === 404) {
-    await response.body?.cancel();
-    return [];
-  }
-  if (!response.ok) throw fail(`Registry tag list failed (HTTP ${response.status})`);
-  singlePage(response, "tag list");
+export function tagsOf(answer) {
+  if (answer.status === 404) return [];
+  if (!answer.ok) throw fail(`Registry tag list failed (HTTP ${answer.status})`);
+  singlePage(answer, "tag list");
+  if (answer.data === undefined) throw fail("A registry tag list answered without its tags");
   // A repository whose tags are all deleted answers `tags: null`.
-  const tags = (await json(response))?.tags ?? [];
+  const tags = ownField(answer.data, "tags") ?? [];
   if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string"))
     throw fail("A registry tag list answered without its tags");
   return tags;
 }
 
 /** The digest a manifest read names, and the manifests an index names; undefined once it is gone. */
-export async function manifestOf(response) {
-  if (response.status === 404) {
-    await response.body?.cancel();
-    return undefined;
-  }
-  const digest = response.headers.get("docker-content-digest") ?? "";
-  const body = await json(response);
-  if (!response.ok || !DIGEST.test(digest) || body === null)
-    throw fail(`Registry manifest read failed (HTTP ${response.status})`);
-  const children = Array.isArray(body.manifests)
-    ? body.manifests.map((entry) => entry?.digest)
+export function manifestOf(answer) {
+  if (answer.status === 404) return undefined;
+  if (!answer.ok || !DIGEST.test(answer.digest) || answer.data === undefined)
+    throw fail(`Registry manifest read failed (HTTP ${answer.status})`);
+  const manifests = ownField(answer.data, "manifests");
+  const children = Array.isArray(manifests)
+    ? manifests.map((entry) => ownField(entry, "digest"))
     : [];
   if (!children.every((child) => typeof child === "string" && DIGEST.test(child)))
     throw fail("A registry index names a manifest without a digest");
-  return { digest, children };
+  return { digest: answer.digest, children };
 }
 
 /** Whether a manifest delete removed it; one already gone counts as removed. */
-export async function deletedOf(response) {
-  await response.body?.cancel();
-  if (!response.ok && response.status !== 404)
-    throw fail(`Registry manifest delete failed (HTTP ${response.status})`);
-  return response.ok;
+export function deletedOf(answer) {
+  if (!answer.ok && answer.status !== 404)
+    throw fail(`Registry manifest delete failed (HTTP ${answer.status})`);
+  return answer.ok;
 }
