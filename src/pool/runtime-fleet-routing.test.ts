@@ -7,7 +7,7 @@ import type { NativeStreamLease } from "./native-streams.ts";
 import { ControlFailure } from "./json.ts";
 import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { PoolStartupDeadline } from "./lifecycle.ts";
-import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
+import { RuntimeFleet, fenceDecidedMs, type FleetCell } from "./runtime-fleet/controller.ts";
 import type { PrimaryRoute } from "./runtime-fleet/state.ts";
 import { fleetRouting } from "./runtime-fleet/production.ts";
 import { decodeResumeTarget } from "./stream-resume.ts";
@@ -18,7 +18,7 @@ import {
 } from "./runtime-route-diagnostic.ts";
 import { forwardRecoverably, markRootFallbackCap } from "./runtime-fleet/retry.ts";
 import { rootFallbackBurst, rootFallbackPerSecond } from "./runtime-fleet/root-fallback.ts";
-import { RemoteRuntimeDefect } from "./runtime-slots/request-error.ts";
+import { RemoteRuntimeDefect, runtimeErrorResponse } from "./runtime-slots/request-error.ts";
 import { ProviderObservationRefused } from "./runtime-provider/read.ts";
 import { restartStartBoundMs } from "./runtime-slots/forced-restart-timing.ts";
 
@@ -36,6 +36,7 @@ function fixture(
     primaryHoldMs?(): number;
     recoverPrimary?(): Promise<void>;
     enabled?(): boolean;
+    recentDemandUntil?(): Promise<number>;
   } = {},
 ) {
   const state = new RuntimeFleetState(new SlotMemory(), maximum, () => 100);
@@ -721,6 +722,16 @@ async function coldFleet(
     maximum?: number;
     handoverAt?: number;
     disableAt?: number;
+    // The starting cell serves once ready, and its endpoint refuses its first calls before the
+    // container send, as S1's lapse did; a second cell starting meanwhile is ready at its time.
+    refuseFirst?: number;
+    secondReadyAt?: number;
+    // Fleet upkeep passes, as the controller's alarm runs them, with the demand that keeps the
+    // serving cell: the fixture's frozen row clock would otherwise idle it out at once, where in
+    // production a call's demand keeps it 60 s. From `healthFailsFrom` the starting cell's health
+    // reads fail as its call did.
+    upkeepAt?: readonly number[];
+    healthFailsFrom?: number;
   } = {},
 ) {
   for (const method of ["error", "warn", "info"] as const)
@@ -732,10 +743,39 @@ async function coldFleet(
     ...fleetRouting,
     primaryAvailable: () => true,
     enabled: () => enabled,
+    ...(options.upkeepAt ? { recentDemandUntil: async () => Number.POSITIVE_INFINITY } : {}),
   });
   const starting = f.target();
   await f.state.reserve(starting);
   await f.state.dispatch(starting);
+  const second = options.secondReadyAt === undefined ? undefined : f.target();
+  if (second) {
+    await f.state.reserve(second);
+    await f.state.dispatch(second);
+  }
+  let refusals = options.refuseFirst ?? 0;
+  const lapsed = () => {
+    const cause = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_identity", cause);
+    return retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  const cell = f.cell(starting);
+  const forward = cell.forward;
+  cell.forward = async (request, port, pool, beforeDispatch) => {
+    if (refusals <= 0) return forward(request, port, pool, beforeDispatch);
+    refusals--;
+    beforeDispatch();
+    throw lapsed();
+  };
+  if (options.healthFailsFrom !== undefined)
+    cell.healthy = async () => {
+      if (now >= options.healthFailsFrom!) throw lapsed();
+      return undefined;
+    };
+  const upkeeps = [...(options.upkeepAt ?? [])];
   const sleepers = new Set<{ at: number; wake(): void }>();
   const timing = {
     now: () => now,
@@ -765,14 +805,20 @@ async function coldFleet(
         void response.body?.cancel().catch(() => {});
       }),
     );
-  const events = [options.readyAt, options.failAt, options.handoverAt, options.disableAt].filter(
-    (value): value is number => value !== undefined,
-  );
+  const events = [
+    options.readyAt,
+    options.failAt,
+    options.handoverAt,
+    options.disableAt,
+    options.secondReadyAt,
+    ...upkeeps,
+  ].filter((value): value is number => value !== undefined);
   let next = 0;
   for (let turn = 0; turn < 100_000; turn++) {
     f.advance(200 + now);
     if (options.readyAt !== undefined && now >= options.readyAt && !events.includes(-1)) {
       events.push(-1);
+      if (options.refuseFirst !== undefined) f.selected.set(starting.slotId, starting);
       await f.state.ready(starting);
     }
     if (options.failAt !== undefined && now >= options.failAt && !events.includes(-2)) {
@@ -780,6 +826,15 @@ async function coldFleet(
       const [row] = await f.state.inspect();
       if (options.failInto === "uncertain") await f.state.uncertain(starting);
       else await f.state.exceed(starting, "warming", row!.phaseAt!, "start_unproven");
+    }
+    if (second && now >= options.secondReadyAt! && !events.includes(-3)) {
+      events.push(-3);
+      f.selected.set(second.slotId, second);
+      await f.state.ready(second);
+    }
+    while (upkeeps.length && upkeeps[0]! <= now) {
+      upkeeps.shift();
+      await f.fleet.upkeep();
     }
     if (options.handoverAt !== undefined && now >= options.handoverAt) handingOver = true;
     if (options.disableAt !== undefined && now >= options.disableAt) enabled = false;
@@ -822,6 +877,119 @@ test("a steady 3 a second on a cold fleet for 90 s is all served while the cell 
     answers.map((answer) => answer.status),
     Array(270).fill(200),
   );
+});
+
+test("a held call the first ready cell refuses before its container send is served, through that cell's fence and the root's cap", async (context) => {
+  // The cap admits 34 by 20 s; the cell ready then refuses its first call (S1's lapse), which
+  // fences it, while a second cell is still starting, so the other held calls keep holding.
+  const { answers, f } = await coldFleet(context, Array(60).fill(0), {
+    readyAt: 20_000,
+    refuseFirst: 1,
+    secondReadyAt: 40_000,
+  });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(60).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "the second cell took the calls once ready");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 42_000);
+});
+
+// The only cell, ready as the root's cap has admitted 34, refuses its first call before the
+// container send (S1's lapse), and that refusal fences it.
+const fencedAtRelease = { readyAt: 20_000, refuseFirst: 1, maximum: 1 } as const;
+const late = (answers: readonly { status: number; waited: number }[]) =>
+  answers.filter((answer) => answer.status !== 200).map((answer) => answer.waited);
+
+test("a cold fleet's held calls wait for their only cell while a refusal fences it, and all 80 are served", async (context) => {
+  // The controller's alarm reads the cell 2 s later and the read is good, which lifts the fence.
+  const { answers, f } = await coldFleet(context, Array(80).fill(0), {
+    ...fencedAtRelease,
+    upkeepAt: [22_000],
+  });
+  assert.deepEqual(
+    answers.map((answer) => answer.status),
+    Array(80).fill(200),
+  );
+  assert.ok(f.calls.dispatches > 0, "the cell took the calls once its fence lifted");
+  assert.ok(Math.max(...answers.map((answer) => answer.waited)) < 23_000);
+});
+
+test("a fenced cell that is then quarantined releases the held calls at once, not before", async (context) => {
+  // Its next read fails too, 7 s after the first: the second failure quarantines it.
+  const { answers } = await coldFleet(context, Array(80).fill(0), {
+    ...fencedAtRelease,
+    healthFailsFrom: 20_000,
+    upkeepAt: [27_000],
+  });
+  const released = late(answers);
+  assert.ok(released.length > 0, "nothing can become ready, so today's answer comes");
+  for (const waited of released)
+    assert.ok(waited >= 27_000 && waited <= 28_000, `released at ${waited} ms`);
+});
+
+test("a fleet disable while the only cell is fenced releases the held calls at once", async (context) => {
+  const { answers } = await coldFleet(context, Array(80).fill(0), {
+    ...fencedAtRelease,
+    disableAt: 23_000,
+  });
+  const released = late(answers);
+  assert.ok(released.length > 0);
+  for (const waited of released)
+    assert.ok(waited >= 23_000 && waited <= 24_000, `released at ${waited} ms`);
+});
+
+test("a fence that neither lifts nor quarantines holds calls no longer than its fleet alarm takes to decide it", async (context) => {
+  const { answers } = await coldFleet(context, Array(80).fill(0), fencedAtRelease);
+  const released = late(answers);
+  assert.ok(released.length > 0);
+  for (const waited of released)
+    assert.ok(
+      waited >= 20_000 + fenceDecidedMs - 1_000 && waited <= 20_000 + fenceDecidedMs + 1_000,
+      `released at ${waited} ms`,
+    );
+});
+
+test("a fence whose durable record could not be written holds calls no longer than one that was", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(1, 25, { ...fleetRouting, primaryAvailable: () => true });
+  const ready = await f.add();
+  f.cell(ready).forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    const cause = new SlotRefused("unhealthy");
+    rememberRuntimeFailure("endpoint_identity", cause);
+    throw retainRuntimeFailure(
+      runtimeErrorResponse(cause, "endpoint"),
+      new SlotRefused("uncertain"),
+    );
+  };
+  f.state.suspect = () => Promise.reject(new Error("synthetic: storage unavailable"));
+  await assert.rejects(f.fleet.forward(request(), "pool", f.legacy, () => {}));
+  assert.equal((await f.state.inspect())[0]?.suspect, undefined, "no durable fence");
+  const held = await f.fleet.coldHoldMs();
+  assert.ok(held > 0 && held <= fenceDecidedMs, `held ${held} ms`);
+  // The fixture's clock read 200 at the refusal; every later read keeps that start.
+  f.advance(200 + fenceDecidedMs - 1);
+  assert.ok((await f.fleet.coldHoldMs()) > 0);
+  f.advance(200 + fenceDecidedMs + 1);
+  assert.ok((await f.fleet.coldHoldMs()) < 0, "the fence's own start bounds it");
+});
+
+test("a cell whose quarantine is still being written holds no call", async (context) => {
+  context.mock.method(console, "error", () => {});
+  const f = fixture(1, 25, { ...fleetRouting, primaryAvailable: () => true });
+  const ready = await f.add();
+  // A call that fails after its send is evidence; its quarantine's durable write never lands.
+  f.cell(ready).forward = async (_request, _port, _pool, beforeDispatch) => {
+    beforeDispatch();
+    throw new Error("Network connection lost.");
+  };
+  f.state.quarantine = () => new Promise(() => {});
+  assert.equal(await f.fleet.coldHoldMs(), 0);
+  void f.fleet.forward(request(), "pool", f.legacy, () => {}).catch(() => {});
+  for (let flush = 0; flush < 20; flush++) await new Promise(setImmediate);
+  assert.equal((await f.state.inspect())[0]?.phase, "ready", "the durable row still reads ready");
+  assert.ok((await f.fleet.coldHoldMs()) < 0, "a quarantined cell can't become ready");
 });
 
 test("a cold start that fails releases the held calls to today's answer, inside the bound", async (context) => {

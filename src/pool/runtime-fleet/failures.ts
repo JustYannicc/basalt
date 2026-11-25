@@ -28,6 +28,8 @@ export class FleetFailures {
   // When each runtime's latest read that was not good was taken, so a good read that began
   // earlier never lifts its fence, even when that read's own durable write was rolled back.
   private lastMiss = new Map<string, number>();
+  // When each fence began, kept here too: its durable record may not be written.
+  private firstMiss = new Map<string, number>();
   private pending = new Map<string, Promise<void>>();
   private state: RuntimeFleetState;
   private changed: () => void;
@@ -43,6 +45,19 @@ export class FleetFailures {
   fenced(identity: SlotIdentity) {
     const key = executionKey(identity);
     return this.blocked.has(key) || this.suspect.has(key);
+  }
+  /** Quarantined here, even while its durable write is still pending: it never serves again. */
+  quarantined(identity: SlotIdentity) {
+    return this.blocked.has(executionKey(identity));
+  }
+  /** When this isolate first fenced the runtime on a read that was not good, while it still does. */
+  fencedSince(identity: SlotIdentity) {
+    return this.firstMiss.get(executionKey(identity));
+  }
+  private unfence(key: string) {
+    this.suspect.delete(key);
+    this.lastMiss.delete(key);
+    this.firstMiss.delete(key);
   }
   /** A real request failed on the runtime, before or during its answer: evidence, so it quarantines. */
   async failed(
@@ -82,19 +97,22 @@ export class FleetFailures {
     const key = executionKey(identity);
     const wasSuspect = this.suspect.has(key);
     this.suspect.add(key);
+    if (!this.firstMiss.has(key)) this.firstMiss.set(key, read.at);
     this.lastMiss.set(key, Math.max(read.at, this.lastMiss.get(key) ?? read.at));
     const outcome = await this.state.suspect(identity, (current) =>
       nextSuspect(readSuspect(current), read, options),
     );
     if (outcome === "quarantined") {
       this.blocked.add(key);
-      this.suspect.delete(key);
-      this.lastMiss.delete(key);
+      this.unfence(key);
       this.changed();
     }
     // A row that no longer serves takes no call anyway; its durable phase governs from here.
     // A fence held before this read stays until a good read lifts it.
-    if (outcome === "gone" && !wasSuspect && !this.pending.has(key)) this.suspect.delete(key);
+    if (outcome === "gone" && !wasSuspect && !this.pending.has(key)) {
+      this.suspect.delete(key);
+      this.firstMiss.delete(key);
+    }
     return outcome;
   }
   /**
@@ -112,8 +130,7 @@ export class FleetFailures {
       return (last === undefined || last < readAt) && !suspect?.policyOwed?.length;
     });
     if (cleared && !this.pending.has(key) && !newer()) {
-      this.suspect.delete(key);
-      this.lastMiss.delete(key);
+      this.unfence(key);
       return;
     }
     // Good reads but no install that lands: the same 30 s bound as any other proof that never comes.
@@ -127,8 +144,7 @@ export class FleetFailures {
     });
     if (outcome === "quarantined") {
       this.blocked.add(key);
-      this.suspect.delete(key);
-      this.lastMiss.delete(key);
+      this.unfence(key);
       this.changed();
     }
   }

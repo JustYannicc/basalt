@@ -1,0 +1,16 @@
+model {
+  extend basalt {
+    routeGateway = module "Route gateway" {
+      #basalt #v1 #deep
+      description "One container per connected route account and the only device Signalbox puts on the person's private network. A userspace network daemon holds the device identity; a forwarder accepts SOCKS5 CONNECT on port 1080 and is the only thing that dials. Port 8080 is a small JSON control interface for the owning object: start from a stored identity, sign in, list and select exit devices, read status and the opaque identity state, sign out. Neither port is public."
+      metadata {
+        code "containers/route-gateway"
+        libraries "asyncio|socket"
+        constraint "Stop-when-down is enforced by the forwarder, never left to the network daemon: its own proxy dials direct whenever no exit is active, including after control removes the exit from the network map while still reporting it online. Before every connection the forwarder requires routing to be on, a signed-in unexpired device, the selected exit in preferences, that exit present in the network map, still offering an exit route and reported online, and a successful ping within six seconds from a two-second background loop. A failed check refuses with SOCKS reply 2 and logs one reason code; when the person chose direct, the forwarder dials from the gateway's own address instead. Names are passed on unresolved so lookups happen on the exit side. After the daemon's proxy answers and before the client sees the reply, the forwarder checks the exit again and refuses if it is gone, so no request bytes follow a network-map change during the dial. Logs and errors carry reason codes only; device names, network names and sign-in links appear only in control responses. Identity state lives in shared memory and leaves the container only through the control interface."
+      }
+    }
+  }
+
+  basalt.routeGateway -[sync]-> containerRegistry "pull the pinned network daemon and runtime base images"
+  basalt.routeGateway -[tool]-> outsideServices "send a connection through the selected exit device, or direct when the person chose that while the route is down"
+}

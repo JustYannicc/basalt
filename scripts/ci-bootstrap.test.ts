@@ -25,7 +25,7 @@ test("verified cache hits make no request, and corrupt archives fail before use"
   }
 });
 
-test("actionlint cold population uses pinned Go source and fast requires the warmed cache", () => {
+test("actionlint cold population uses pinned Go source in fast, which waits for no other job", () => {
   assert.equal(new URL(actionlintSource.url).host, "proxy.golang.org");
   assert.match(actionlintSource.sha256, /^[a-f0-9]{64}$/);
   const launcher = readFileSync(new URL("./ci/check-workflows.ts", import.meta.url), "utf8");
@@ -35,14 +35,20 @@ test("actionlint cold population uses pinned Go source and fast requires the war
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
   const action = "./.github/actions/setup-actionlint";
-  assert.ok(workflow.jobs.select.steps.some((step: { uses?: string }) => step.uses === action));
-  assert.equal(
-    workflow.jobs.fast.steps.find((step: { uses?: string }) => step.uses === action).with[
-      "require-hit"
-    ],
-    "true",
+  // fast starts with the Check, so no job warms the cache before it: on a miss it builds the
+  // pinned source itself, and it is the only job that lints workflows.
+  const users = Object.entries(workflow.jobs as Record<string, { steps: { uses?: string }[] }>)
+    .filter(([, job]) => job.steps.some((step) => step.uses === action))
+    .map(([id]) => id);
+  assert.deepEqual(users, ["fast"]);
+  const step = workflow.jobs.fast.steps.find((step: { uses?: string }) => step.uses === action);
+  assert.equal(step.with?.["require-hit"], undefined);
+  assert.equal(workflow.jobs.fast.needs, undefined);
+  // Release assets too: fast warms a cold key rather than requiring select's warm.
+  const assets = workflow.jobs.fast.steps.find(
+    (step: { uses?: string }) => step.uses === "./.github/actions/desktop-release-assets",
   );
-  assert.equal(workflow.jobs.fast.needs, "select");
+  assert.deepEqual(assets.with, { warm: "true" });
 });
 
 test("Check toolchain bootstraps use official non-GitHub sources on every runner", async () => {

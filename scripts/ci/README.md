@@ -8,15 +8,21 @@ The complete command automatically enters `heavy-slot` before running any checks
 
 Preparation installs dependencies and builds setup assets. The framework reference build, deployment generation and upstream typecheck can also build generated inputs. These steps require the slot even though they belong to the fast job. During a pause, use named format, type, lint, registry, LikeC4 or fitness checks directly against an already prepared checkout. Those partial checks do not establish a complete fast-gate pass.
 
-The command reads `.github/workflows/ci.yml` and runs every applicable shell step in `fast`, in order, with its environment and working directory. It follows the ordinary PR fast lane. The reviewed fast/full conditions select focused checks and skip full-lane-only commands; skipped steps appear in the plan, console and result record. It stops at the first failure. Preparation rebuilds the generated `.upstream` checkout, just as CI does. Save carry work before running it.
+The command reads `.github/workflows/ci.yml` and runs every applicable shell step in `fast`, in order, with its environment and working directory, then the owned unit tests that CI splits over `fast-units`' legs, as one leg. It follows the `fast` job of an ordinary pull request. The reviewed fast/full conditions select focused checks and skip full-lane-only commands; skipped steps appear in the plan, console and result record. It stops at the first failure. Preparation rebuilds the generated `.upstream` checkout, just as CI does. Save carry work before running it.
 
 `npm run ci:fast -- --base origin/main --list` prints the resolved commits and commands without running checks. A completed run keeps its commit-bound result under `.generated/ci-fast/`.
 
 The workflow is the command list. Adding an unsupported action, expression, condition or custom shell fails locally until the runner understands it. Local Linux and macOS use the same actionlint version and checksum-pinned Go source as CI. Cold builds use the Go module proxy; warm binaries and official Bun npm archives use versioned CI caches. Node installs checksum-pinned archives from the official distribution host without consulting GitHub manifests. ShellCheck must be installed and available on PATH; the launcher fails before linting when it is missing, so local workflow checking retains CI shell diagnostics.
 
-This command runs the complete ordinary PR fast lane; it does not establish full-suite merge eligibility. Targeted checks are useful while editing; only a complete successful `ci:fast` run establishes local fast-gate parity. Heavy product suites remain in the full CI lane.
+This command runs the complete `fast` job of an ordinary pull request; it runs no heavy job and does not establish full-suite merge eligibility. Targeted checks are useful while editing; only a complete successful `ci:fast` run establishes local fast-gate parity. Heavy product suites run only in CI.
 
 After changing `upstream.json`, fetch its exact commit into `.upstream` and run `node scripts/ci/snapshot-upstream-inputs.ts` to regenerate the input file inventory. The command reads that commit's Git tree; prepared or untracked files do not enter the snapshot. The coverage gate independently checks the snapshot against the pin.
+
+## Affected lane
+
+A pull request from this repository runs the fast jobs plus the heavy jobs its changed files reach; [architecture/README.md](../../architecture/README.md) states the rule. A `ci.yml` change outside the job blocks runs every heavy job; one inside a job's block runs that job and the jobs that need it, with the block's synthetic `ci.yml#<job>` path as the reason. The selection and gate scripts listed in `selectionInputs` in `areas.ts` run no heavy job; setup and preparation scripts stay in `sharedInputs`. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
+
+The import graph sees imports, relative file literals, literal path arguments and scripts started with `node` or `bun`. A file read through a computed path is invisible to it: declare that read in `runtimeReads` in `areas.ts`, or give the data an area. A missed dependency still fails in the batch and main Checks, which run every heavy job.
 
 ## Declared e2e shards
 

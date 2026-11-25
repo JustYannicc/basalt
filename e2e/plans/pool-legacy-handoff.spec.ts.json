@@ -33,7 +33,9 @@
     ".upstream/apps/hosted/server/src/implementation/account-resets.ts",
     ".upstream/e2e/support/legacy-pool-handoff-setup.ts",
     ".upstream/e2e/support/pool-history-database.ts",
-    "scripts/pool-tests/history-schema-fixture.ts"
+    "scripts/pool-tests/history-schema-fixture.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts"
   ],
   "fixture": "pool-setup"
 }
