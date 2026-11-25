@@ -138,6 +138,27 @@ func (x *resumeFixture) resume(id string, from int64, boot string) *http.Respons
 	return resp
 }
 
+// waitDetached returns once the layer has seen the reader go. Until then its writer can still
+// hand bytes to the closed socket, and those count as sent.
+func (x *resumeFixture) waitDetached(id string) {
+	x.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if c := x.store.lookup(id); c != nil {
+			c.mu.Lock()
+			reader := c.reader
+			c.mu.Unlock()
+			if !reader {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			x.t.Fatalf("the layer never saw the reader of %s go", id)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (x *resumeFixture) waitEnd(id string, atLeast int64) {
 	x.t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -448,6 +469,7 @@ func TestAResumeFromBeyondTheWritePositionIsGone(t *testing.T) {
 	x.feeds.get(id).parts <- []byte("written")
 	_, _ = io.ReadFull(resp.Body, make([]byte, 7))
 	_ = conn.Close()
+	x.waitDetached(id)
 	x.feeds.get(id).parts <- []byte("-unsent")
 	close(x.feeds.get(id).parts)
 	x.waitEnd(id, 14)
