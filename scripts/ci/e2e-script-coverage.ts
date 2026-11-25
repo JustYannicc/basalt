@@ -15,6 +15,8 @@ import {
 const executedTemplates: Record<string, readonly string[]> = {
   "e2e/obsidian/installed.test.ts": ["e2e/obsidian/installed.fixture.ts.txt"],
 };
+// Runners that run a package script's command: fast-units' legs run `npm run check`'s files.
+const scriptRunners: Record<string, string> = { "scripts/ci/unit-tests.ts": "check" };
 
 export function scriptCoverage(root: string, workflow: Workflow) {
   const scripts = codeFiles(join(root, "e2e")).map((file) => relative(root, file));
@@ -46,13 +48,16 @@ export function scriptCoverage(root: string, workflow: Workflow) {
   for (let i = 0; i < commands.length; i++) {
     const { command, cwd } = commands[i]!;
     const words = commandWords(command);
-    if (cwd === "." && ["npm", "bun"].includes(words[0] ?? "") && words[1] === "run") {
-      const body = packageScripts[words[2] ?? ""];
-      if (body && !commands.some((item) => item.command === body))
-        commands.push(
-          ...shellCommands(body).map((command) => ({ job: commands[i]!.job, command, cwd })),
-        );
-    }
+    const runner = cwd === "." ? executedPaths(command).find((path) => path in scriptRunners) : "";
+    const script =
+      cwd === "." && ["npm", "bun"].includes(words[0] ?? "") && words[1] === "run"
+        ? words[2]
+        : runner && scriptRunners[runner];
+    const body = packageScripts[script ?? ""];
+    if (body && !commands.some((item) => item.command === body))
+      commands.push(
+        ...shellCommands(body).map((command) => ({ job: commands[i]!.job, command, cwd })),
+      );
     for (const argument of executedPaths(command)) {
       const path = relative(root, resolve(root, cwd, argument));
       if (path.startsWith(".upstream/")) continue;

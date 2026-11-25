@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { requestedLane } from "./ci/lane.ts";
 import { checkNames } from "./ci/retry-history.ts";
 import { runInNewContext } from "node:vm";
 
@@ -75,8 +76,9 @@ const laneOf = (github: object) =>
 const checkName = (github: object) =>
   evaluate(workflow.jobs.check.name, {
     needs: {
-      reuse: { outputs: { reused: "false" } },
-      select: { outputs: { full_suite: String(fullSuite(github)), lane: laneOf(github) } },
+      select: {
+        outputs: { reused: "false", full_suite: String(fullSuite(github)), lane: laneOf(github) },
+      },
     },
   });
 const concurrencyGroup = (github: object) =>
@@ -189,4 +191,29 @@ test("every pull request event lands in the concurrency group of its own lane", 
           assert.ok((checkNames as readonly string[]).includes(String(checkName(github))));
         }
   for (const name of checkNames) assert.ok(workflow.jobs.check.name.includes(`'${name}'`), name);
+});
+
+test("the jobs that start with the Check request the lane select's step chooses, for every event", () => {
+  const steps = ["fast", "fast-units"].map((job) =>
+    workflow.jobs[job].steps.find((step: { id?: string }) => step.id === "lane"),
+  );
+  // As select's shell does, the affected condition is read only when the full one is false.
+  const requested = (step: { env: Record<string, string> }, github: object) => {
+    const full = String(evaluate(step.env.FULL_SUITE!, { github }));
+    return requestedLane(
+      full === "true"
+        ? { FULL_SUITE: full }
+        : {
+            FULL_SUITE: full,
+            AFFECTED_LANE: String(evaluate(step.env.AFFECTED_LANE!, { github })),
+          },
+    );
+  };
+  const events: object[] = [push("main"), push("batch/proof")];
+  for (const action of workflow.on.pull_request.types)
+    for (const labels of labelSets)
+      for (const branch of ["feature/proof", "batch/proof"])
+        for (const fork of [false, true]) events.push(pullRequest(action, labels, branch, fork));
+  for (const github of events)
+    for (const step of steps) assert.equal(requested(step, github), laneOf(github));
 });

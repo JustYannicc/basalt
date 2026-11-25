@@ -1,29 +1,25 @@
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { changedInputs, selectPaths } from "./affected.ts";
 import { heavyJobs } from "./areas.ts";
 import { fastConfigs, readDeclarations } from "./declarations.ts";
 import { githubObserver, routeBox } from "./box-router.ts";
-import { fastJobs, type Lane } from "./gate.ts";
+import { fastJobs } from "./gate.ts";
+import { selectLane } from "./lane.ts";
 import { planDeclaredShards, readDeclaredDurations } from "./shards.ts";
 
 const root = process.cwd();
 const full = process.argv.includes("--all");
 const fast = process.argv.includes("--fast");
 if (full && fast) throw new Error("Choose one CI lane");
-let selection;
-try {
-  const { changed, inputs } = full
-    ? { changed: [], inputs: [] }
-    : fast
-      ? { changed: [], inputs: [] }
-      : changedInputs(root, process.env.BASE_SHA ?? "", process.env.HEAD_SHA ?? "");
-  selection = { ...selectPaths(inputs), changed, inputs, full };
-  if (full) selection.jobs = [...heavyJobs];
-} catch {
-  selection = { ...selectPaths([]), jobs: [...heavyJobs], changed: [], inputs: [], full: true };
+// fast and fast-units resolve their lane with the same function, from the same comparison.
+const { lane, selection, resolved } = selectLane(
+  full ? "full" : fast ? "fast" : "affected",
+  root,
+  process.env.BASE_SHA ?? "",
+  process.env.HEAD_SHA ?? "",
+);
+if (!resolved)
   console.log("::warning::Changed inputs could not be resolved. Every heavy CI job is selected.");
-}
 const output = ".generated/ci/selection.json";
 const declared = selection.full ? null : selection.declaredFiles;
 const declarations = readDeclarations();
@@ -53,8 +49,6 @@ const box = await routeBox(
     heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
   }),
 );
-// A changed-inputs selection that could not be resolved ran as the full suite, so it is one.
-const lane: Lane = selection.full ? "full" : fast ? "fast" : "affected";
 const routed = {
   ...selection,
   lane,
@@ -95,7 +89,8 @@ if (process.env.GITHUB_OUTPUT)
       "matrices=" +
       JSON.stringify(matrices) +
       "\n" +
-      // The fast job's e2e configs whose specs the change reaches; the step runs when any is.
+      // The fast e2e configs this change reaches, for the run's record; fast's own lane step
+      // computes the same list, so fast need not wait for select.
       "fast_configs=" +
       JSON.stringify(configs) +
       "\n",
