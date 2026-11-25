@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
 import { ChildProcessFailure, childReport, notStarted } from "../failure/child.ts";
+import { redactCredentials } from "../failure/redact.ts";
 
 export const previewStacks = ["basalt", "basalt-preview-database"] as const;
 export type PreviewStack = (typeof previewStacks)[number];
@@ -199,14 +200,19 @@ function runStateCommand(
   return result.stdout;
 }
 
-function parsePaths(stdout: string): string[] {
-  const paths = stdout
+const stdoutLines = (stdout: string) =>
+  stdout
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+
+function parsePaths(stdout: string, prefix: string, environment: NodeJS.ProcessEnv): string[] {
+  const paths = stdoutLines(stdout);
   for (const path of paths) {
-    if (!/^[^/\s]+\/[^/\s]+\/.+$/.test(path))
-      throw new Error("Alchemy returned a malformed remote state path");
+    if (!/^[^/\s]+\/[^/\s]+\/.+$/.test(path) || !path.startsWith(prefix))
+      throw new Error(
+        `Alchemy returned a malformed remote state path: ${JSON.stringify(redactCredentials(path, environment).slice(0, 160))}`,
+      );
   }
   return paths;
 }
@@ -262,29 +268,20 @@ export function alchemyPreviewStateReader(
         ALCHEMY_STAGE: stage,
         CI: "true",
       };
-      const listed = runStateCommand(
-        command,
-        [
-          "--log-level",
-          "none",
-          "state",
-          "list",
-          "--recursive",
-          "--config",
-          stateConfig,
-          "--backend",
-          "configured",
-          "--no-input",
-        ],
-        env,
-      );
-      const allPaths = parsePaths(listed);
+      const flags = ["--config", stateConfig, "--backend", "configured", "--no-input"];
+      const list = (...args: string[]) =>
+        runStateCommand(command, ["--log-level", "none", "state", "list", ...args, ...flags], env);
       const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
       for (const stack of previewStacks) {
         const prefix = `${stack}/${stage}/`;
-        const paths = allPaths
-          .filter((path) => path.startsWith(prefix))
-          .sort((a, b) => a.localeCompare(b, "en"));
+        // Only this stage's own rows are listed: the stack's stage directories, then this one stage.
+        if (!stdoutLines(list(stack)).includes(prefix)) {
+          stacks[stack] = [];
+          continue;
+        }
+        const paths = parsePaths(list(`${stack}/${stage}`, "--recursive"), prefix, env).sort(
+          (a, b) => a.localeCompare(b, "en"),
+        );
         if (paths.length === 0) {
           stacks[stack] = [];
           continue;
