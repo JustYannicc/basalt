@@ -93,6 +93,8 @@ async function sequence(seed: number, trace: string[]) {
   // Every intent event invoked so far; a select that succeeds must have had none after it.
   let intents = 0;
   let signIns = 0;
+  /** A sign-in link reached the person from the container running now; only such a link can be approved. */
+  let linkOut = false;
   /** Disconnects in flight. */
   let leavingNow = 0;
   let choices = 0;
@@ -129,6 +131,7 @@ async function sequence(seed: number, trace: string[]) {
     expect(allowed, "a container launched that the state does not call for");
     if (left) left.fresh = true;
     if (left?.done) left.launches += 1;
+    linkOut = false;
   };
   container.onStart = (state) => {
     debug("  start", state === null ? "null" : "identity", left ? "after disconnect" : "");
@@ -144,10 +147,17 @@ async function sequence(seed: number, trace: string[]) {
       signIns += 1;
       left = undefined;
       stopped = false;
-      track(gateway.login(caller).finally(() => (signIns -= 1)));
+      track(
+        gateway
+          .login(caller)
+          .then((reply) => {
+            if ("url" in reply) linkOut = true;
+          })
+          .finally(() => (signIns -= 1)),
+      );
     },
     approve() {
-      if (container.running && container.pendingLogin) {
+      if (container.running && container.pendingLogin && linkOut) {
         container.approve();
         // The person approved: the driver polls status next, as it does in the product.
         track(gateway.joinStatus(caller));
