@@ -47,8 +47,16 @@ const issuer = JSON.parse(
   token_endpoint: string;
   scopes_supported: string[];
 };
-const reviewed = issuer.scopes_supported;
-const added = ["billing:read", "billing:write"];
+/** What every Cloudflare grant since full access asked for: the frozen baseline. */
+const reviewed = JSON.parse(
+  readFileSync(
+    new URL("../../src/catalog/cloudflare.oauth-scope-baseline.json", import.meta.url),
+    "utf8",
+  ),
+) as string[];
+/** The scopes Cloudflare published since, which today's declarations also ask for. */
+const added = issuer.scopes_supported.filter((scope) => !reviewed.includes(scope));
+assert.deepEqual(added, ["billing:read", "billing:write"]);
 /** What the Cloudflare app asked for before carry 0541 requested the issuer's whole list. */
 const beforeFullAccess = ["user:read", "account:read", "offline_access"];
 const owner = sdk.OwnerId.make("organization:team-a");
@@ -108,7 +116,11 @@ const asking = (
   scopes: readonly string[],
 ): sdk.ProviderDefinition => {
   const oauth = oauthOf(definition);
-  assert.deepEqual(oauth.scopes, reviewed, "the declaration mirrors the reviewed issuer list");
+  assert.deepEqual(
+    oauth.scopes,
+    issuer.scopes_supported,
+    "the declaration mirrors the reviewed issuer list",
+  );
   return { ...definition, auth: { ...definition.auth, oauth: { ...oauth, scopes: [...scopes] } } };
 };
 
@@ -331,14 +343,18 @@ test("a scope the issuer does not publish stays required on a whole-list grant",
 
 test("the generated issuers name Cloudflare with its reviewed list and frozen baseline", async () => {
   const { issuers } = await Effect.runPromise(Effect.service(WholeListScopeIssuers));
-  const baseline = JSON.parse(
+  const history = JSON.parse(
     readFileSync(
-      new URL("../../src/catalog/cloudflare.oauth-scope-baseline.json", import.meta.url),
+      new URL("../../src/catalog/cloudflare.oauth-scope-history.json", import.meta.url),
       "utf8",
     ),
   ) as string[];
   // Preparation digests with its own copy of the SDK's function; this holds the two equal.
-  assert.deepEqual(issuers, digested([{ issuer: issuer.issuer, scopes: reviewed, baseline }]));
+  const [expected] = digested([
+    { issuer: issuer.issuer, scopes: issuer.scopes_supported, baseline: reviewed },
+  ]);
+  assert.deepEqual(issuers, [{ issuer: issuer.issuer, lists: [expected!.lists[0], ...history] }]);
+  assert.deepEqual(expected!.lists, [expected!.lists[0], ...history]);
 });
 
 test("a grant that recorded no request is held to every requested scope", async () => {

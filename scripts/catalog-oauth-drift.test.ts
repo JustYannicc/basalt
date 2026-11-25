@@ -1,11 +1,19 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { metadataDrift, repinMetadata, signInValues } from "./catalog-oauth-drift.ts";
+import { driftReport, metadataDrift, repinMetadata, signInValues } from "./catalog-oauth-drift.ts";
+import { scopeListDigest } from "./oauth-whole-list-issuers-source.ts";
 import {
   automaticDecisions,
   catalogDocumentSha256,
@@ -92,9 +100,12 @@ test("a benign vendor addition becomes a re-pin with its field diff and no alert
         changes: [`\`scopes_supported\`: added \`"${added}"\``],
         signIn: [],
         problems: [],
+        wholeList: false,
       },
     );
+    assert.match(driftReport(drift[0]!), /Values sign-in reads are unchanged/);
     repinMetadata(directory, drift[0]!);
+    assert.equal(existsSync(join(directory, "elevenlabs.oauth-scope-history.json")), false);
     // The re-pin PR is exactly the committed state the offline check accepts.
     const repinned = load(directory);
     const automatic = repinned.reviews.filter((review) =>
@@ -112,6 +123,65 @@ test("a benign vendor addition becomes a re-pin with its field diff and no alert
       JSON.parse(readFileSync(join(directory, "elevenlabs.oauth-metadata.json"), "utf8")),
       published,
     );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a whole-list connection's re-pin says its requested scopes must follow and extends its history", () => {
+  const directory = mkdtempSync(join(tmpdir(), "catalog-oauth-drift-"));
+  try {
+    const reviews = oauthReviews(
+      JSON.parse(readFileSync(join(catalog, "oauth-reviews.json"), "utf8")),
+    );
+    for (const { entry } of automaticDecisions(reviews))
+      copyFileSync(
+        join(catalog, metadataSnapshotFile(entry)),
+        join(directory, metadataSnapshotFile(entry)),
+      );
+    const published = JSON.parse(
+      readFileSync(join(catalog, "cloudflare.oauth-metadata.json"), "utf8"),
+    );
+    const previous = {
+      ...published,
+      scopes_supported: published.scopes_supported.filter(
+        (scope: string) => !scope.startsWith("billing:"),
+      ),
+    };
+    writeFileSync(
+      join(directory, "cloudflare.oauth-metadata.json"),
+      JSON.stringify(previous, null, 2),
+    );
+    writeFileSync(
+      join(directory, "oauth-reviews.json"),
+      readFileSync(join(catalog, "oauth-reviews.json"), "utf8").replace(
+        catalogDocumentSha256(published),
+        catalogDocumentSha256(previous),
+      ),
+    );
+    const { reviews: pinned, committed } = load(directory);
+    const { drift } = metadataDrift(
+      pinned,
+      committed,
+      publishing(
+        committed,
+        "https://mcp.cloudflare.com/.well-known/oauth-authorization-server",
+        published,
+      ),
+    );
+    assert.equal(drift.length, 1);
+    assert.equal(drift[0]!.wholeList, true);
+    const report = driftReport(drift[0]!);
+    assert.match(report, /the scopes it requests must change with `scopes_supported`/);
+    assert.doesNotMatch(report, /Values sign-in reads are unchanged/);
+    const history = join(directory, "cloudflare.oauth-scope-history.json");
+    writeFileSync(history, JSON.stringify(["403:0000000000000000"]));
+    repinMetadata(directory, drift[0]!);
+    const digest = scopeListDigest(published.scopes_supported);
+    assert.deepEqual(JSON.parse(readFileSync(history, "utf8")), ["403:0000000000000000", digest]);
+    // A second re-pin to the same list leaves the history as it is.
+    repinMetadata(directory, drift[0]!);
+    assert.deepEqual(JSON.parse(readFileSync(history, "utf8")), ["403:0000000000000000", digest]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
