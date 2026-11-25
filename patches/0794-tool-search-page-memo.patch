@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
-index 918515d2c..d9888eb14 100644
+index 4a19d4843..9f48686e7 100644
 --- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 +++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
 @@ -16,6 +16,7 @@ import {
@@ -10,16 +10,16 @@ index 918515d2c..d9888eb14 100644
  import { cloudMcpAppAssets } from "./mcp-app-assets.ts";
  import { cloudAppUiBase } from "../contracts/app-ui.ts";
  import { McpAppAssets, appSandboxAddress, runningPrograms } from "@executor-js/mcp";
-@@ -82,6 +83,8 @@ export const makeMcpSession = Effect.fn(function* ({
+@@ -95,6 +96,8 @@ export const makeMcpSession = Effect.fn(function* ({
      });
      // What each caller's last tool call read, by app and named accounts (CallStateCache).
      const callState = new Map<string, CallState>();
 +    // Ranked pages this object's searches made, bounded by `toolSearchMemoLimits`.
 +    const searchPages = makeToolSearchPageMemo();
-     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
-     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
-       Effect.provideService(CurrentProductBrand, brand),
-@@ -143,6 +146,7 @@ export const makeMcpSession = Effect.fn(function* ({
+     // Protocol sessions are kept in the object's storage, so they outlive its eviction, and so is
+     // the record of the requests it issued, so a resume after a restart learns what became of one.
+     const clock = yield* Clock.Clock;
+@@ -175,6 +178,7 @@ export const makeMcpSession = Effect.fn(function* ({
              ),
            ),
            Effect.provideService(CallStateCache, callState),
@@ -56,10 +56,10 @@ index 4eda04dca..33b11aade 100644
      }).pipe(
        Effect.catchTag("ExceededCapacityError", () =>
 diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
-index 152b721a5..96978e9cf 100644
+index 8fda87ebe..cfa7f53de 100644
 --- a/packages/sdk/src/core.ts
 +++ b/packages/sdk/src/core.ts
-@@ -18,6 +18,12 @@ export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";
+@@ -19,6 +19,12 @@ export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";
  export { bearerChallenge, bearerResourceMetadata } from "./implementation/oauth-challenge.ts";
  export { subscribeAppQuery } from "./implementation/live.ts";
  export { toolCallSpan } from "./implementation/tool-call-overhead.ts";
