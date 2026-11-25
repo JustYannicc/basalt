@@ -182,13 +182,13 @@ test("HITL partitions retain every target scenario exactly once behind required 
     assert.ok(selectPaths([".upstream/packages/sdk/src/workflows.ts"]).jobs.includes(id), id);
     const failed = { ...needs, [id]: { result: "failure" } };
     assert.ok(
-      gateErrors(failed, heavyJobs, [], true).some((error) => error.startsWith(id + ":")),
+      gateErrors(failed, heavyJobs, [], "full").some((error) => error.startsWith(id + ":")),
       id,
     );
   }
   needs["human-in-the-loop-cloud"] = { result: "failure" };
   assert.ok(
-    gateErrors(needs, heavyJobs, [], true).some((error) =>
+    gateErrors(needs, heavyJobs, [], "full").some((error) =>
       error.startsWith("human-in-the-loop-cloud:"),
     ),
   );

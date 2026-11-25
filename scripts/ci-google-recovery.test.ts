@@ -134,8 +134,8 @@ test("account selection and the full aggregate require both Google halves", () =
         },
       ]),
     );
-    assert.deepEqual(gateErrors(needs, heavyJobs, [], true), []);
+    assert.deepEqual(gateErrors(needs, heavyJobs, [], "full"), []);
     needs[id] = { result: "skipped" };
-    assert.ok(gateErrors(needs, heavyJobs, [], true).some((error) => error.startsWith(id + ":")));
+    assert.ok(gateErrors(needs, heavyJobs, [], "full").some((error) => error.startsWith(id + ":")));
   }
 });

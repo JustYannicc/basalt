@@ -242,27 +242,68 @@ export function declaredRuns(
   );
 }
 
+/**
+ * The test configs the fast job runs for the selected declared files, or for all of them. A spec
+ * whose plan names only `fast` runs nowhere else.
+ */
+export function fastConfigs(selected: readonly string[] | null, declarations = readDeclarations()) {
+  return [
+    ...new Set(
+      Object.entries(declarations.files)
+        .filter(([file]) => selected === null || selected.includes(file))
+        .flatMap(([, entry]) => entry.config.filter((item) => item.job === "fast"))
+        .map((item) => item.config),
+    ),
+  ].sort();
+}
+
+type Declarations = ReturnType<typeof readDeclarations>;
+
+/** The CI jobs that run one declared file's scenarios. */
+export const declarationJobs = (
+  entry: Declarations["files"][string],
+  declarations: Declarations,
+) => [
+  ...new Set([
+    ...Object.values(entry.runs)
+      .flat()
+      .map((id) => declarations.groups[id]!.job),
+    ...entry.config.map((item) => item.job),
+  ]),
+];
+
+// Most of the twelve thousand declared inputs are literal paths, so one lookup answers them.
+const inputIndexes = new WeakMap<Declarations, (path: string) => Set<string>>();
+function inputIndex(declarations: Declarations) {
+  if (!inputIndexes.has(declarations)) {
+    const literal = new Map<string, string[]>();
+    const globs: { input: string; file: string }[] = [];
+    for (const [file, entry] of Object.entries(declarations.files))
+      for (const input of entry.inputs)
+        // Only a path of plain characters is certainly literal; anything else is matched as a glob.
+        if (/^[\w./-]+$/.test(input))
+          (literal.get(input) ?? literal.set(input, []).get(input)!).push(file);
+        else globs.push({ input, file });
+    inputIndexes.set(
+      declarations,
+      (path) =>
+        new Set([
+          ...(literal.get(path) ?? []),
+          ...globs.filter(({ input }) => matchesGlob(path, input)).map(({ file }) => file),
+        ]),
+    );
+  }
+  return inputIndexes.get(declarations)!;
+}
+
 export function matchingDeclarations(path: string, declarations = readDeclarations()) {
   const match = /^(?:\.upstream\/e2e\/tests\/|e2e\/plans\/)([a-z0-9-]+\.spec\.ts)(?:\.json)?$/.exec(
     path,
   );
-  const { files, groups } = declarations;
-  return Object.entries(files)
-    .filter(
-      ([file, entry]) =>
-        match?.[1] === file || entry.inputs.some((input) => matchesGlob(path, input)),
-    )
-    .map(([file, entry]) => ({
-      file,
-      jobs: [
-        ...new Set([
-          ...Object.values(entry.runs)
-            .flat()
-            .map((id) => groups[id]!.job),
-          ...entry.config.map((item) => item.job),
-        ]),
-      ],
-    }));
+  const declaring = inputIndex(declarations)(path);
+  return Object.entries(declarations.files)
+    .filter(([file]) => match?.[1] === file || declaring.has(file))
+    .map(([file, entry]) => ({ file, jobs: declarationJobs(entry, declarations) }));
 }
 
 // These journeys use retired product concepts and must be absent from prepared source.

@@ -7,7 +7,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { decideReuse, type ReuseGet } from "./ci/reuse.ts";
-import { reuseGateErrors, fastJobs, conditionalJobs } from "./ci/gate.ts";
+import { reuseGateErrors, fastJobs, conditionalJobs, startJobs } from "./ci/gate.ts";
 import { heavyJobs } from "./ci/areas.ts";
 
 const context = {
@@ -110,11 +110,13 @@ test("missing, malformed and failed commit or workflow reads run the full Check"
   }
 });
 
+// select decides the reuse; the jobs that start beside it run in every Check.
+const ran = ["select", "cpa-pipeline", ...startJobs];
 const reuseNeeds = () =>
   Object.fromEntries(
-    ["reuse", ...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
+    [...fastJobs, ...heavyJobs, ...conditionalJobs].map((job) => [
       job,
-      { result: ["reuse", "cpa-pipeline"].includes(job) ? "success" : "skipped" },
+      { result: ran.includes(job) ? "success" : "skipped" },
     ]),
   );
 
@@ -128,9 +130,20 @@ test("the aggregate accepts only candidate-bound evidence and the main history g
     ref = "refs/heads/main",
   ) => reuseGateErrors(needs, evidence, context, event, ref);
   assert.deepEqual(errors(decision.evidence), []);
+  for (const job of ran)
+    assert.ok(
+      errors(decision.evidence, { ...reuseNeeds(), [job]: { result: "skipped" } }).some((error) =>
+        error.startsWith(job + ":"),
+      ),
+      job,
+    );
+  // A reused Check skips long-started, so every job waiting for selection must skip too.
+  for (const job of ["long-started", "pool-runtime", "client-connection"])
+    assert.ok(errors(decision.evidence, { ...reuseNeeds(), [job]: { result: "success" } }).length);
+  // select decides reuse itself; a separate reuse job is no longer part of the Check.
   assert.ok(
-    errors(decision.evidence, { ...reuseNeeds(), "cpa-pipeline": { result: "skipped" } }).some(
-      (error) => error.startsWith("cpa-pipeline:"),
+    errors(decision.evidence, { ...reuseNeeds(), reuse: { result: "success" } }).includes(
+      "Aggregate gate dependencies differ from the declared CI jobs",
     ),
   );
   for (const evidence of [
@@ -206,26 +219,46 @@ test("workflow skips every suite job only through the verified reuse decision", 
   const workflow = parse(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
   );
-  assert.equal(workflow.jobs.reuse.if, undefined);
-  assert.equal(workflow.jobs.reuse.permissions.actions, "read");
-  assert.equal(workflow.jobs.select.needs, "reuse");
-  assert.match(workflow.jobs.select.if, /always\(\).*needs.reuse.outputs.reused != 'true'/);
+  const select = workflow.jobs.select;
+  assert.equal(workflow.jobs.reuse, undefined);
+  assert.equal(select.needs, undefined);
+  assert.equal(select.if, undefined);
+  assert.equal(select.permissions.actions, "write");
+  // select decides reuse before anything else, and selects nothing once a batch Check stands in.
+  const steps = select.steps as { id?: string; run?: string; if?: string; uses?: string }[];
+  const decision = steps.findIndex((step) => step.id === "reuse");
+  assert.equal(steps[decision]!.run, "node scripts/ci/reuse.ts");
+  assert.deepEqual(
+    steps.slice(0, decision).map((step) => step.uses),
+    ["actions/checkout@v4", "./.github/actions/setup-node"],
+  );
+  for (const step of steps.slice(decision + 1))
+    assert.equal(step.if, "steps.reuse.outputs.reused != 'true'", step.id ?? step.uses ?? "");
+  for (const output of ["reused", "evidence", "run_id", "head_sha"])
+    assert.equal(select.outputs[output], `\${{ steps.reuse.outputs.${output} }}`, output);
+  // Only a reused Check gets the empty selection; any other one without a selection fails.
+  assert.equal(
+    select.outputs.jobs,
+    "${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.jobs }}",
+  );
   for (const [name, job] of Object.entries(workflow.jobs) as [
     string,
-    { needs?: string | string[] },
+    { needs?: string | string[]; if?: string },
   ][]) {
-    if (["reuse", "select", "check"].includes(name)) continue;
+    if (["select", "check", ...startJobs].includes(name)) continue;
     assert.ok([job.needs].flat().includes("select"), `${name} must depend on selection`);
+    // Long-tier jobs skip on a reused Check's empty selection, the rest with long-started.
+    if (![job.needs].flat().includes("long-started") && name !== "cpa-pipeline")
+      assert.match(job.if ?? "", /needs\.select\.outputs\.(?:jobs|box_jobs|reused)\b/, name);
   }
-  assert.deepEqual(workflow.jobs["cpa-pipeline"].needs, ["select", "reuse"]);
-  assert.match(
-    workflow.jobs["cpa-pipeline"].if,
-    /always\(\).*needs.reuse.outputs.reused == 'true'/s,
-  );
+  assert.equal(workflow.jobs["long-started"].if, "needs.select.outputs.reused != 'true'");
+  assert.equal(workflow.jobs["cpa-pipeline"].needs, "select");
+  assert.equal(workflow.jobs["cpa-pipeline"].if, undefined);
   const gate = workflow.jobs.check.steps.find(
     (step: { run?: string }) => step.run === "node scripts/ci/gate.ts",
   );
-  assert.equal(gate.env.CI_REUSE_EVIDENCE, "${{ needs.reuse.outputs.evidence }}");
+  assert.equal(gate.env.CI_REUSED, "${{ needs.select.outputs.reused }}");
+  assert.equal(gate.env.CI_REUSE_EVIDENCE, "${{ needs.select.outputs.evidence }}");
   assert.equal(
     workflow.jobs.check.outputs.reused_run_id,
     "${{ steps.gate.outputs.reused_run_id }}",
