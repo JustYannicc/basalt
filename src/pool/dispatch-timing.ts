@@ -1,29 +1,37 @@
+import type { HomeDispatchStage } from "../telemetry/pool-request.ts";
+
 export const dispatchTimingHeader = "X-Signalbox-Pool-Dispatch-Timing";
 
 const stages = new Set(["authenticate", "selection", "admission", "reply_write", "ping", "rpop"]);
 const outcomes = new Set(["ok", "error", "timeout", "cancelled"]);
 
-/** Container diagnostics cross a trust boundary; only closed timing records reach Worker logs. */
-export function logDispatchTiming(value: string | null): void {
-  if (value === null || value.length > 2048) return;
+/** Container diagnostics cross a trust boundary; only closed timing records are read. */
+function readDispatchTiming(value: string | null): HomeDispatchStage[] {
+  if (value === null || value.length > 2048) return [];
   let metrics: unknown;
   try {
     metrics = JSON.parse(value);
   } catch {
-    return;
+    return [];
   }
-  if (!Array.isArray(metrics) || metrics.length > 6) return;
+  if (!Array.isArray(metrics) || metrics.length > 6) return [];
   const seen = new Set<string>();
-  const records: { stage: string; duration_ms: number; outcome: string }[] = [];
+  const records: HomeDispatchStage[] = [];
   for (const metric of metrics) {
-    if (typeof metric !== "object" || metric === null || Array.isArray(metric)) return;
-    if (Object.keys(metric).sort().join(",") !== "duration_ms,outcome,stage") return;
+    if (typeof metric !== "object" || metric === null || Array.isArray(metric)) return [];
+    if (Object.keys(metric).sort().join(",") !== "duration_ms,outcome,stage") return [];
     const { stage, duration_ms, outcome } = metric;
-    if (typeof stage !== "string" || !stages.has(stage) || seen.has(stage)) return;
-    if (typeof outcome !== "string" || !outcomes.has(outcome)) return;
-    if (!Number.isInteger(duration_ms) || duration_ms < 0 || duration_ms > 86_400_000) return;
+    if (typeof stage !== "string" || !stages.has(stage) || seen.has(stage)) return [];
+    if (typeof outcome !== "string" || !outcomes.has(outcome)) return [];
+    if (!Number.isInteger(duration_ms) || duration_ms < 0 || duration_ms > 86_400_000) return [];
     seen.add(stage);
     records.push({ stage, duration_ms, outcome });
   }
+  return records;
+}
+
+export function logDispatchTiming(value: string | null): HomeDispatchStage[] {
+  const records = readDispatchTiming(value);
   for (const record of records) console.info("POOL_DISPATCH_TIMING", record);
+  return records;
 }
