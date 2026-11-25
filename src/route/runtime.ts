@@ -187,8 +187,10 @@ export class GatewayRuntime {
   ) {
     const plan = planned ?? (await this.host.plan(since, purpose, identity));
     this.live(launch);
+    // A container that must not boot is stopped in order behind earlier destroys, like any stop,
+    // so its destroy can never land on a node started after it.
     if ("refuse" in plan) {
-      await this.control.destroy();
+      await this.stop();
       throw new Unbootable(plan.refuse);
     }
     await this.call(launch, () => this.control.start(plan.state));

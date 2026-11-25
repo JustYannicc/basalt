@@ -766,8 +766,13 @@ test("a burst of tunnels on a down route shares one fresh read", async () => {
   container.exitOnline = false;
   assert.equal((await gateway.reading(caller)).state, "down");
   container.requests = [];
+  await gateway.reading(caller);
+  const read = container.requests.length;
+  container.requests = [];
   await refusedWith(gateway.openTunnel({ owner }), "route_gateway_unavailable");
   const one = container.requests.length;
+  // A tunnel on a down route costs one read and nothing more: no start and no connect.
+  assert.equal(one, read);
   container.requests = [];
   const burst = await Promise.allSettled(
     Array.from({ length: 5 }, () => gateway.openTunnel({ owner })),
@@ -960,4 +965,40 @@ test("a start for an exit switched off since never relaunches after a crash", as
   await settle();
   assert.equal(launches, 1);
   assert.equal(container.running, false);
+});
+
+test("a node that must not boot is destroyed in order, never taking down a later one", async () => {
+  const { gateway, container } = await joined();
+  container.expireKey();
+  assert.ok("url" in (await gateway.login(caller)));
+  // A container left up with no node started in it, as an abandoned start leaves one.
+  container.crash();
+  container.start({ enableInternet: true });
+  container.manual = true;
+  // The poll finds no sign-in node to read; its plan refuses and the container is destroyed.
+  const polled = gateway.joinStatus(caller).catch(() => undefined);
+  await answer(container, "/status");
+  assert.ok(container.waiting.some((request) => request.path === "destroy"));
+  const logouts = container.logouts;
+  const leaving = gateway.disconnect(caller);
+  // Give the disconnect time to queue its own destroy, if it does not wait for the first.
+  for (let tries = 0; tries < 10 && container.waiting.length < 2; tries += 1) await settle();
+  // The newest destroy is answered first, and the oldest lands just before the logout, as a slow
+  // destroy would.
+  for (let round = 0; round < 50; round += 1) {
+    const { waiting } = container;
+    const logout = waiting.find((request) => request.path === "/logout");
+    const oldest = waiting.find((request) => request.path === "destroy");
+    const next =
+      logout && oldest
+        ? oldest
+        : (waiting.find((request) => request.path !== "destroy") ?? waiting.at(-1));
+    if (!next) break;
+    waiting.splice(waiting.indexOf(next), 1);
+    next.release("ok");
+    await settle();
+  }
+  await polled;
+  await leaving;
+  assert.equal(container.logouts, logouts + 1, "the logout node was taken down");
 });
