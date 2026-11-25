@@ -16,6 +16,14 @@ export const forcedStopsPerHour = 3;
  */
 export const leakedStreamsMs = 300_000;
 /**
+ * A selected runtime that still answers ready, however late, but refuses is stopped only once it
+ * has refused this long: a slow runtime and a stuck one look alike until then. Twice the unserving
+ * bound, so a slow runtime that heals has room to, while a stop from it still leaves its restart
+ * time inside a held call's restart bound. Shorter than the stream wait, so the held-streams worst
+ * case below covers it.
+ */
+export const aliveRefusingMs = 2 * unservingBoundMs;
+/**
  * After SIGTERM the supervisor gives its children `CHILD_STOP_GRACE_SECONDS` (60 s, which covers
  * Home's HTTP shutdown and its 45 s refresh drain), then kills them and waits 1 s for each
  * (`terminate_children` in containers/pool/supervisor.py). A test keeps the two in step. With the
@@ -38,7 +46,10 @@ export const runtimeStartupMs = 180_000;
  * forced restart's own start is never stopped again, whatever it answers.
  */
 export const restartStartBoundMs = runtimeStartupMs + 60_000;
-/** The outer bound on the stop's own health and readiness reads. */
+/**
+ * The outer bound on the stop's own reads. Its liveness read waits all of it: an answer that comes
+ * late is a slow runtime, which is never stopped as a dead one.
+ */
 export const servingReadMs = 10_000;
 /** A readiness read gives up after its lease window, whatever the caller allows. */
 export const readinessReadMs = 1_500;
@@ -51,23 +62,30 @@ export const providerReadAllowanceMs = 1_000;
 export const restartTailAllowanceMs = 14_000;
 
 /**
- * Worst case from the first refusal the new code sees to a serving runtime, with no streams held,
- * excluding the time `destroy()` takes and the membership pass that renews an expired pool policy.
+ * Worst case from the first refusal the new code sees to a serving runtime, with no streams held
+ * and no late ready answer, excluding the time `destroy()` takes and the membership pass that
+ * renews an expired pool policy. The stop pass reads twice: whose boot runs, and whether it lives.
  */
 export const forcedRestartServesWithinMs =
   recoveryPassMs +
   unservingBoundMs +
   recoveryWarmMs +
-  2 * readinessReadMs +
+  readinessReadMs +
+  servingReadMs +
   forcedStopGraceMs +
   2 * exitConfirmationMs +
   providerReadAllowanceMs +
   runtimeStartupMs +
   restartTailAllowanceMs +
   recoveryPassMs;
-/** The same, when a non-zero stream count stands still: the stop waits out `leakedStreamsMs`. */
+/**
+ * The same, when a non-zero stream count stands still or the runtime answers ready late: the stop
+ * waits out `leakedStreamsMs` or `aliveRefusingMs`.
+ */
 export const forcedRestartServesWithinHeldStreamsMs =
-  forcedRestartServesWithinMs - unservingBoundMs + Math.max(unservingBoundMs, leakedStreamsMs);
+  forcedRestartServesWithinMs -
+  unservingBoundMs +
+  Math.max(unservingBoundMs, leakedStreamsMs, aliveRefusingMs);
 
 /**
  * What the totals above leave out: the time `destroy()` takes, and the one membership pass that
@@ -83,7 +101,8 @@ export const destroyAndMembershipMs = 120_000;
  * pages a person.
  */
 export const forcedRestartBudgetMs =
-  2 * readinessReadMs +
+  readinessReadMs +
+  servingReadMs +
   forcedStopGraceMs +
   2 * exitConfirmationMs +
   providerReadAllowanceMs +
