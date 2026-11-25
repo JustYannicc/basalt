@@ -8,6 +8,18 @@
 // and does not start with a word the release stack's own names start with, can therefore own no
 // release name. ownership.test.mjs derives those names from the stack's source and fails when a
 // new one starts with a word missing here.
+//
+// Stages share the account with each other too. Only a registered prefix is a stage's, and no
+// registered prefix continues another at a word boundary (basalt-route-scratch would own
+// basalt-route-scratch-1-*), so two stages never own the same name.
+
+/** Every stage tool's prefix: scale-180, test-emulated-upstream, test-route-scratch-1 and -2. */
+export const STAGE_PREFIXES = [
+  "basalt-180-scale",
+  "basalt-emulated-upstream",
+  "basalt-route-scratch-1",
+  "basalt-route-scratch-2",
+];
 
 /** Words of the release entry's stage names: production, preview-pr-N, test-pr-N, test-rehearsal-N. */
 export const RELEASE_STAGE_WORDS = ["production", "preview", "staging", "test", "rehearsal", "pr"];
@@ -66,6 +78,8 @@ export function prefixRefusal(prefix) {
   if (stageWord) return `a stage prefix may not hold the release stage word ${stageWord}`;
   if (RELEASE_FIRST_WORDS.includes(words[0]))
     return `a stage prefix may not start like the release stack's ${words[0]} names`;
+  if (!STAGE_PREFIXES.includes(prefix))
+    return "a stage prefix is one of STAGE_PREFIXES, so no stage owns another's names";
   return undefined;
 }
 
@@ -79,10 +93,21 @@ export function stageOwnership(prefix, owns) {
   if (refused) throw new Error(`Refused stage prefix: ${refused}`);
   if (owns !== undefined && typeof owns !== "function")
     throw new Error("Refused stage ownership: owns must be a function of a name");
-  if (owns && releaseProbes().some((name) => owns(name)))
-    throw new Error("Refused stage ownership: the predicate accepts a release stack's name");
+  // A predicate that throws owns nothing, and what it threw is never shown: it may hold a secret.
+  const accepts = (name) => {
+    try {
+      return owns(name) === true;
+    } catch {
+      return undefined;
+    }
+  };
+  if (owns) {
+    const answers = releaseProbes().map(accepts);
+    if (answers.includes(undefined))
+      throw new Error("Refused stage ownership: the predicate threw on a release stack's name");
+    if (answers.includes(true))
+      throw new Error("Refused stage ownership: the predicate accepts a release stack's name");
+  }
   return (name) =>
-    typeof name === "string" &&
-    name.startsWith(`${prefix}-`) &&
-    (owns ? owns(name) === true : true);
+    typeof name === "string" && name.startsWith(`${prefix}-`) && (owns ? accepts(name) === true : true);
 }

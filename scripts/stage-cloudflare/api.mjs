@@ -26,10 +26,16 @@ const REFUSAL_BYTES = 65536;
 /**
  * What a stage can hold, where it is listed, and the name ownership is decided on. A namespace
  * belongs to the Worker that defines it; only one whose Worker is gone is judged by its own name.
- * A Worker is addressed by its name, so it alone can be named without being listed first.
+ * A Worker is addressed by its name, so it alone can be named without being listed first. `below`
+ * is every path under one resource a read or change may add; anything else could climb out of it
+ * (`/../`, `%2e%2e`), so it is refused.
  */
 const KINDS = {
-  applications: { path: "containers/applications", names: (row) => [row.name] },
+  applications: {
+    path: "containers/applications",
+    names: (row) => [row.name],
+    below: ["", "/rollouts"],
+  },
   namespaces: {
     path: "workers/durable_objects/namespaces",
     names: (row) => [row.script ? row.script : row.name],
@@ -38,6 +44,7 @@ const KINDS = {
     path: "workers/scripts",
     names: (row) => [row.id],
     byName: true,
+    below: ["", "/settings"],
     remove: "?force=true",
   },
   drives: { path: "hyperdrive/configs", names: (row) => [row.name] },
@@ -47,10 +54,6 @@ const COLLECTIONS = [...Object.values(KINDS).map((kind) => kind.path), "workers/
 export const WORKER_KINDS = ["applications", "namespaces", "scripts"];
 
 const own = new WeakSet();
-// Rows a listing of this module returned: only those can be read back, changed or deleted by id.
-const issued = new WeakSet();
-const issue = (row) => (issued.add(row), row);
-
 /** Whether this module raised the error itself, so its message holds no remote text. */
 export const isCloudflareApiError = (error) => own.has(error);
 const fail = (message) => {
@@ -116,8 +119,17 @@ export function stageCloudflare({
   try {
     owned = stageOwnership(prefix, owns);
   } catch (error) {
-    throw fail(error.message);
+    // ownership.mjs raises only fixed refusals; anything else is not printed.
+    const message = String(error?.message);
+    throw fail(message.startsWith("Refused stage ") ? message : "Refused stage ownership");
   }
+  // What each row this stage listed was when its ownership was checked. Paths are built from the
+  // record only, so a row edited after its listing still addresses what was listed.
+  const issued = new WeakMap();
+  const issue = (kind) => (row) => (
+    issued.set(row, Object.freeze({ kind, id: row.id, names: KINDS[kind].names(row) })),
+    row
+  );
 
   const call = (path, method, body) =>
     fetcher(`${API}/accounts/${encodeURIComponent(accountId)}/${path}`, {
@@ -162,16 +174,23 @@ export function stageCloudflare({
     return KINDS[kind];
   };
   const ownsRow = (kind, row) => KINDS[kind].names(row).every(owned);
-  /** The path of one owned resource, or a refusal before anything is called. */
-  function resource(kind, target) {
+  /** The path of one owned resource, or below it `below`; a refusal before anything is called. */
+  function resource(kind, target, below = "") {
     const spec = kindOf(kind);
+    if (!(spec.below ?? [""]).includes(below))
+      throw fail(`Refused: ${kind} has no ${String(below)} below it a stage may call`);
     if (spec.byName && typeof target === "string") {
       if (!owned(target)) throw fail(`Refused: ${kind} ${target} is not this stage's`);
-      return `${spec.path}/${encodeURIComponent(target)}`;
+      return `${spec.path}/${encodeURIComponent(target)}${below}`;
     }
-    if (!issued.has(target) || !ownsRow(kind, target) || typeof target.id !== "string")
+    const listed = issued.get(target);
+    if (
+      listed?.kind !== kind ||
+      typeof listed.id !== "string" ||
+      !listed.names.every(owned)
+    )
       throw fail(`Refused: the ${kind} row is not one this stage listed as its own`);
-    return `${spec.path}/${encodeURIComponent(target.id)}`;
+    return `${spec.path}/${encodeURIComponent(listed.id)}${below}`;
   }
 
   /** The stage's rows of each kind, listed account-wide at once. */
@@ -180,17 +199,17 @@ export function stageCloudflare({
     return Object.fromEntries(
       kinds.map((kind, index) => [
         kind,
-        listed[index].filter((row) => ownsRow(kind, row)).map(issue),
+        listed[index].filter((row) => ownsRow(kind, row)).map(issue(kind)),
       ]),
     );
   }
   /** One owned resource, or below it `path` (`/settings`); null when it does not exist. */
-  const read = async (kind, target, path = "") => send(`${resource(kind, target)}${path}`);
+  const read = async (kind, target, path = "") => send(resource(kind, target, path));
   /** A write to one owned resource, or below it `path` (`/rollouts`). */
   const change = async (kind, target, { method, path = "", body }) => {
     if (!["PATCH", "POST", "PUT"].includes(method))
       throw fail(`Refused: ${method} is not a change`);
-    return send(`${resource(kind, target)}${path}`, method, body);
+    return send(resource(kind, target, path), method, body);
   };
   const remove = async (kind, target) =>
     send(`${resource(kind, target)}${KINDS[kind].remove ?? ""}`, "DELETE");
@@ -200,8 +219,6 @@ export function stageCloudflare({
     fetcher,
     signal,
     owned,
-    issue,
-    issued: (row) => issued.has(row),
     fail,
     async credentials(permissions) {
       const data = await send(`containers/registries/${REGISTRY}/credentials`, "POST", {

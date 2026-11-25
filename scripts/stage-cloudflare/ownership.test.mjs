@@ -56,6 +56,7 @@ const productionNames = [
   "production-pool",
 ];
 // The stage tools' own prefixes: scale-180, test-emulated-upstream, test-route-scratch-1 and -2.
+// Each must be accepted below, so this list and ownership.mjs's STAGE_PREFIXES cannot drift apart.
 const stagePrefixes = [
   "basalt-180-scale",
   "basalt-emulated-upstream",
@@ -124,4 +125,20 @@ test("a predicate that accepts a production name is refused at construction", ()
   assert.equal(owned(`${prefix}-gateway`), true);
   assert.equal(owned(`${prefix}-mock`), false);
   assert.equal(owned("basalt-production-gateway"), false);
+});
+
+test("no stage owns another stage's names, and an unregistered prefix is no stage's", () => {
+  for (const prefix of stagePrefixes)
+    for (const other of stagePrefixes)
+      if (other !== prefix) {
+        assert.ok(!other.startsWith(`${prefix}-`), `${prefix} continues into ${other}`);
+        assert.equal(stageOwnership(prefix)(`${other}-gateway`), false, `${prefix} owns ${other}`);
+      }
+  const fetcher = async () => assert.fail("a refused prefix called the account");
+  for (const prefix of ["basalt-route-scratch", "basalt-180-scale-big", "basalt-other-stage"])
+    assert.throws(
+      () => stageCloudflare({ accountId: "acct", token: "t", prefix, fetcher }),
+      /^Error: Refused stage prefix: a stage prefix is one of STAGE_PREFIXES/u,
+      prefix,
+    );
 });

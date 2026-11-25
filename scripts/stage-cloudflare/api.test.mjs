@@ -253,3 +253,89 @@ test("an empty or unrecognised registry answer stops the read instead of reading
     /Cloudflare POST containers\/registries failed \(403\)/u,
   );
 });
+
+test("a path below a resource is one its kind names; nothing climbs out of it", async () => {
+  const fake = account();
+  const api = stage(fake.fetcher);
+  const [app] = (await api.inventory(["applications"])).applications;
+  const before = fake.calls.length;
+  for (const attempt of [
+    () => api.read("scripts", `${prefix}-gateway`, "/../basalt-production-poolworker/settings"),
+    () => api.read("scripts", `${prefix}-gateway`, "/%2e%2e/basalt-production-poolworker"),
+    () =>
+      api.change("scripts", `${prefix}-gateway`, {
+        method: "PUT",
+        path: "/%2e%2e/basalt-production-poolworker",
+        body: {},
+      }),
+    () => api.read("applications", app, "/../a2"),
+    () => api.change("applications", app, { method: "POST", path: "/settings", body: {} }),
+    () => api.read("drives", app, "/rollouts"),
+    () => api.read("scripts", `${prefix}-gateway`, ["/settings"]),
+  ])
+    await assert.rejects(attempt(), /^Error: Refused/u);
+  assert.equal(fake.calls.length, before);
+});
+
+test("a listed row is addressed as it was listed, and only as its own kind", async () => {
+  const fake = account();
+  const api = stage(fake.fetcher);
+  const found = await api.inventory(["applications", "certificates"]);
+  const [app] = found.applications;
+  const [certificate] = found.certificates;
+  const before = fake.calls.length;
+  for (const attempt of [
+    () => api.remove("applications", certificate),
+    () => api.remove("certificates", app),
+    () => api.remove("scripts", app),
+  ])
+    await assert.rejects(attempt(), /^Error: Refused/u);
+  assert.equal(fake.calls.length, before);
+  // Pointing a listed row at production after its listing still deletes only what was listed.
+  app.id = "a2";
+  app.name = "basalt-production-poolcontainer";
+  await api.remove("applications", app);
+  assert.deepEqual(
+    fake.live.applications.map((row) => row.id),
+    ["a2", "a3"],
+  );
+  assert.deepEqual(
+    fake.calls.slice(before).map((call) => `${call.method} ${call.path.split("/").slice(5).join("/")}`),
+    ["DELETE containers/applications/a1"],
+  );
+});
+
+test("a found image is deleted from the repository it was found in, whatever the row says", async () => {
+  const fake = account();
+  const api = stage(fake.fetcher);
+  const [image] = await api.images(["pull", "push"]);
+  image.path = "acct/basalt-poolcontainer-production";
+  image.tags = ["p1"];
+  await api.removeImage(image);
+  const reached = fake.calls.filter(
+    (call) => call.host === "registry.cloudflare.com" && call.path.includes("/manifests/"),
+  );
+  assert.ok(reached.length > 0);
+  assert.ok(reached.every((call) => call.path.startsWith(`/v2/acct/${prefix}-mock/manifests/`)));
+  assert.deepEqual(fake.live.tags["acct/basalt-poolcontainer-production"], ["p1"]);
+  assert.deepEqual(fake.live.tags[`acct/${prefix}-mock`], []);
+});
+
+test("a predicate that throws is refused without its message", () => {
+  const fake = account();
+  assert.throws(
+    () =>
+      stage(fake.fetcher, {
+        owns: () => {
+          throw new Error("token abc123secret");
+        },
+      }),
+    (error) => {
+      assert.ok(isCloudflareApiError(error));
+      assert.match(error.message, /^Refused stage ownership/u);
+      assert.doesNotMatch(error.message, /secret/u);
+      return true;
+    },
+  );
+  assert.equal(fake.calls.length, 0);
+});

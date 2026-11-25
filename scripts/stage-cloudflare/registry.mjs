@@ -15,19 +15,13 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 
 /**
  * One registry session. `credentials(permissions)` mints a Basic authorization through the account
- * API; `owned` decides the repository name after the account; `issue` and `issued` mark the image
- * rows this module found, so only those can be deleted; `fail` raises a printable error.
+ * API; `owned` decides the repository name after the account; `fail` raises a printable error.
  */
-export function registrySession({
-  accountId,
-  credentials,
-  fetcher,
-  signal,
-  owned,
-  issue,
-  issued,
-  fail,
-}) {
+export function registrySession({ accountId, credentials, fetcher, signal, owned, fail }) {
+  // What each image row `images` returned was when it was found. A delete reads the name and tags
+  // from here, never from the row it is handed, so editing a found row reaches nothing else.
+  const found = new WeakMap();
+  const repositoryPath = (name) => [accountId, name].map(encodeURIComponent).join("/");
   // One credential per permission set; an inventory asks for pull only, a delete for push too.
   const minted = new Map();
   const registry = (path, permissions, init = {}) => {
@@ -56,13 +50,13 @@ export function registrySession({
     const repositories = (await json(catalog))?.repositories;
     if (!Array.isArray(repositories))
       throw fail("The registry catalog answered without its repository list");
-    const found = [];
+    const rows = [];
     for (const repository of repositories) {
       if (typeof repository !== "string")
         throw fail("The registry catalog lists a repository without a name");
       const [owner, name, ...rest] = repository.split("/");
       if (owner !== accountId || rest.length || !owned(name)) continue;
-      const path = [owner, name].map(encodeURIComponent).join("/");
+      const path = repositoryPath(name);
       const tags = await registry(`${path}/tags/list`, permissions);
       let listed = [];
       if (tags.status !== 404) {
@@ -73,9 +67,11 @@ export function registrySession({
         if (!Array.isArray(listed) || !listed.every((tag) => typeof tag === "string"))
           throw fail("A registry tag list answered without its tags");
       } else await tags.body?.cancel();
-      found.push(issue({ name, path, tags: listed }));
+      const row = { name, path, tags: listed };
+      found.set(row, Object.freeze({ name, tags: Object.freeze([...listed]) }));
+      rows.push(row);
     }
-    return found;
+    return rows;
   }
 
   async function manifest(path, reference, permissions) {
@@ -100,20 +96,22 @@ export function registrySession({
 
   /** Deletes every tagged manifest of one repository `images` found, the index before its platforms. */
   async function removeImage(image) {
-    if (!issued(image) || !owned(image.name))
+    const record = found.get(image);
+    if (!record || !owned(record.name))
       throw fail("Refused: the registry repository is not one this stage found");
+    const path = repositoryPath(record.name);
     const write = ["pull", "push"];
-    for (const tag of image.tags) {
-      const tagged = await manifest(image.path, tag, write);
+    for (const tag of record.tags) {
+      const tagged = await manifest(path, tag, write);
       if (!tagged) continue;
       const digests = [tagged.digest];
       for (let next = 0; next < digests.length; next++) {
-        const named = next === 0 ? tagged : await manifest(image.path, digests[next], write);
+        const named = next === 0 ? tagged : await manifest(path, digests[next], write);
         for (const child of named?.children ?? [])
           if (!digests.includes(child)) digests.push(child);
       }
       for (const digest of digests) {
-        const removed = await registry(`${image.path}/manifests/${digest}`, write, {
+        const removed = await registry(`${path}/manifests/${digest}`, write, {
           method: "DELETE",
         });
         await removed.body?.cancel();
