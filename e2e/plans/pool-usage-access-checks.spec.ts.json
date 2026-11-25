@@ -1,0 +1,42 @@
+{
+  "scenarios": {
+    "poolUsageAccessChecks": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "deferOnboarding": true,
+      "title": "Pool usage reads check account access in one policy read per batch, not once per account",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Uses the managed Cloud Postgres wire observer and a synthetic external pool backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host organization pools."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolUsageAccessChecks": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/proofs/account-access.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-summary.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-credit-routing.ts",
+    ".upstream/e2e/support/sql-wire-proof.ts",
+    ".upstream/e2e/support/legacy-pool-handoff-setup.ts",
+    ".upstream/e2e/support/legacy-pool-home.ts",
+    ".upstream/e2e/support/pool-worker-runtime.ts",
+    ".upstream/e2e/support/pool-history-database.ts",
+    "scripts/pool-tests/history-schema-fixture.ts"
+  ],
+  "fixture": "pool-setup"
+}

@@ -17,7 +17,7 @@ interface Inspected {
 // A runtime object still on the Worker version before a deploy runs that version's controller code.
 const olderCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 
-test("a first start refused by a runtime object on older code leaves at once with why, and a fresh slot serves on the next pass", async (context) => {
+test("a first start refused by a runtime object on older code leaves unstarted at once with why, no quarantine, and a fresh slot serves on the next pass", async (context) => {
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "error", () => {});
   const warn = context.mock.method(console, "warn", () => {});
@@ -42,14 +42,18 @@ test("a first start refused by a runtime object on older code leaves at once wit
   assert.equal(first.status, 200);
   await first.body?.cancel();
   await f.settle();
-  const [refused] = (await inspect()).resources;
-  assert.ok(refused && olderSlot);
-  assert.equal(refused.target.slotId, olderSlot);
-  assert.equal(refused.phase, "quarantined", "the refused start did not leave its starting phase");
-  assert.equal(refused.reason, "start_unproven");
-  const failure = readFailure(refused.failure);
+  const refused = await inspect();
+  assert.ok(olderSlot);
+  assert.deepEqual(refused.resources, [], "the refused start still holds a place");
+  // Its end says why, under a rule that never counts against a runtime.
+  const end = refused.recentEnds?.find((entry) => entry.slotId === olderSlot) as
+    | { left?: string; reason?: unknown; failure?: unknown }
+    | undefined;
+  assert.equal(end?.left, "retired");
+  assert.equal(end?.reason, null);
+  const failure = readFailure(end?.failure);
   assert.equal(failure?.path, "start");
-  assert.equal(failure?.rule, "evidence");
+  assert.equal(failure?.rule, "deployment");
   assert.equal(failure?.reads[0]?.step, "endpoint_route");
   assert.equal(failure?.reads[0]?.cause, "slot_identity");
   assert.deepEqual(
@@ -58,26 +62,15 @@ test("a first start refused by a runtime object on older code leaves at once wit
       .map((call) => call.arguments[1]),
     [{ step: "endpoint_route", reason: "slot_identity", cause: null, error: "SlotRefused" }],
   );
-  // The next pass: the fenced endpoint and the absent first-start intent prove nothing runs.
+  assert.equal(
+    warn.mock.calls.filter((call) => call.arguments[0] === "POOL_FLEET_QUARANTINE").length,
+    0,
+    "no quarantine",
+  );
+  // The next pass draws a fresh slot.
   now += 2_000;
   await f.upkeep();
   await f.settle();
-  const after = await inspect();
-  assert.equal(
-    after.resources.find((row) => row.target.slotId === olderSlot),
-    undefined,
-    "the refused row still holds its place",
-  );
-  assert.deepEqual(
-    after.recentEnds?.find((entry) => entry.slotId === olderSlot),
-    {
-      slotId: olderSlot,
-      end: null,
-      left: "quarantined",
-      reason: "start_unproven",
-      failure: refused.failure,
-    },
-  );
   const rows = await f.resourcesWhen((value) => value.some((row) => row.phase === "ready"));
   const fresh = rows.find((row) => row.phase === "ready")!;
   assert.notEqual(fresh.target.slotId, olderSlot);
