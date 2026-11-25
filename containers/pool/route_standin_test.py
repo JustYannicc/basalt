@@ -462,9 +462,20 @@ def http1_vendor(connection, records: Records, issued: dict[str, int]) -> None:
 def serve_vendor(records: Records, directory: str) -> None:
     import ssl
 
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain(f"{directory}/vendor.pem", f"{directory}/vendor-key.pem")
-    context.set_alpn_protocols(["h2", "http/1.1"])
+    def serving(alpn: list[str]) -> ssl.SSLContext:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(f"{directory}/vendor.pem", f"{directory}/vendor-key.pem")
+        context.set_alpn_protocols(alpn)
+        return context
+
+    # Home's Claude client speaks only HTTP/2; TypeSafe's paths are read over HTTP/1.1.
+    context, plain = serving(["h2"]), serving(["http/1.1"])
+
+    def by_name(connection, name, _context) -> None:
+        if name == "api.typesafe.ai":
+            connection.context = plain
+
+    context.sni_callback = by_name
     listener = socket.create_server(("127.0.0.1", int(VENDOR["port"])))
     issued = {"count": 0}
 

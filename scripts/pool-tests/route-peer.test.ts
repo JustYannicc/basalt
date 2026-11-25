@@ -877,7 +877,8 @@ test(
       );
       await new HomeMembership(home).reconcile(scope.pool, [routed, typesafeRef]);
       await listed(poolKey, ["jev-latest"]);
-      const systemOne = await fetch(`${node}/v1/systemone`, {
+      // The pool container was restarted above: read its published port again.
+      const systemOne = await fetch(`${origin(8317)}/v1/systemone`, {
         method: "POST",
         headers: { Authorization: `Bearer ${poolKey}`, "Content-Type": "application/json" },
         body: JSON.stringify({ model: "jev-latest", input: "fixture" }),
