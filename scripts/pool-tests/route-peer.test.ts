@@ -895,6 +895,9 @@ test(
       assert.ok(!typesafeSeen.dns.includes("api.typesafe.ai"), "TypeSafe's host was looked up");
       const typesafePaths = typesafeSeen.vendor.flatMap((item) => (item.path ? [item.path] : []));
       assert.ok(typesafePaths.includes("POST /v1/systemone"), JSON.stringify(typesafePaths));
+      // In this flow the node never runs the plugin's live discovery, with or without the fix (an
+      // image with the old plugin passes here too), so this only guards against it starting to;
+      // the plugin's own tests prove that a routed credential's discovery never dials.
       assert.ok(!typesafePaths.some((path) => path.startsWith("GET /v1/models")));
       const typesafe = { connects: typesafeHops.length, vendor: typesafePaths };
 
