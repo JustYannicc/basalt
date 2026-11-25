@@ -23,11 +23,13 @@ jobs:
   # Decides batch reuse first, then selection. A reused Check selects nothing, so every job that
   # waits for selection skips; `fast` and `fast-units` start with the Check and run in every one.
   select:
-    # Reads the box heartbeat and the hosted load for scripts/ci/box-router.ts, finds a reusable
-    # batch Check, and cancels this pull request's superseded runs.
+    # Reads the box heartbeat, the hosted load and other Checks' box placements for
+    # scripts/ci/box-router.ts, finds a reusable batch Check, and cancels this pull request's
+    # superseded runs.
     permissions:
       contents: read
       actions: write
+      checks: read
     runs-on: ubuntu-latest
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}

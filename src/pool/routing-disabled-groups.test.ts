@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { HomeClient, poolGroupPrefix } from "./control.ts";
 import { PoolUsage } from "./pool-usage.ts";
+import { fixtureAllowances } from "./allowances/test/seed-fixture.ts";
 import { publishRoutingDemand } from "./routing-demand.ts";
 import { readRoutingDecisions } from "./routing-decisions.ts";
 import type { CapacityDemandData } from "./capacity/history.ts";
@@ -87,19 +88,21 @@ test("disabled duplicates do not block publication or current routing inspection
 test("capacity sampling excludes distinct members of disabled duplicate groups", async () => {
   const f = fixture();
   const values = new Map<string, unknown>();
+  const storage = {
+    async get<T>(key: string) {
+      return structuredClone(values.get(key)) as T | undefined;
+    },
+    async put(key: string, value: unknown) {
+      values.set(key, structuredClone(value));
+    },
+    async delete(key: string) {
+      values.delete(key);
+    },
+  };
   await new PoolUsage({
     client: f.client,
-    storage: {
-      async get<T>(key: string) {
-        return structuredClone(values.get(key)) as T | undefined;
-      },
-      async put(key, value) {
-        values.set(key, structuredClone(value));
-      },
-      async delete(key) {
-        values.delete(key);
-      },
-    },
+    storage,
+    allowances: fixtureAllowances(storage, () => now.getTime()),
     signingKey: "ab".repeat(32),
     audience: async () => [],
     now: () => now,
