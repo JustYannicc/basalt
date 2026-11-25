@@ -7,6 +7,7 @@
  *   apply     R1: the same deploy applied, read back, then planned again (must be all noop)
  *   destroy   tear the stage down and prove it gone
  *   leftovers read-only: what State still holds for the four-digit stages from before the lanes
+ *   retire    destroy the next of those stages that holds only buckets and its own database
  *
  * Every apply and destroy goes through the release entry (`scripts/release/deploy.ts`), which never
  * lets Alchemy bootstrap the shared State store; nothing here runs the CLI with `--yes`.
@@ -32,7 +33,12 @@ import {
 } from "../preview/lifecycle.ts";
 import { parseSubjectArgument, stageNames, type StageSubject } from "../preview/subject.ts";
 import { describeError, redactor } from "./redact.ts";
-import { alchemyPreviewStateReader, readNumberedRehearsalStages } from "../preview/inventory.ts";
+import {
+  alchemyPreviewStateReader,
+  readNumberedRehearsalStages,
+  readProductionDatabases,
+} from "../preview/inventory.ts";
+import { databaseRefusal, retirePlan, retireSubject } from "./retire-stage.ts";
 import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
@@ -62,6 +68,7 @@ export const stageModes = [
   "classplan",
   "stateread",
   "leftovers",
+  "retire",
   "redrelease",
   "retry",
   "adopt",
@@ -2071,6 +2078,46 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
               .join("; ") || "no rows"
           }`,
         );
+    } else if (mode === "retire") {
+      // One four-digit stage per run, through the lane's own destroy and absence check. The stage
+      // is named by its ordinal only; which stage that is stays in private output.
+      const config = stageEnvironment(subject, source);
+      const stages = await readNumberedRehearsalStages(config.stage, {
+        environment: config.deploy,
+      });
+      const { lines, candidates } = retirePlan(stages);
+      console.log(`Four-digit rehearsal stages State still lists: ${stages.length}.`);
+      for (const line of lines) console.log(line);
+      result.numberedStages = stages.length;
+      result.retired = null;
+      let production: Awaited<ReturnType<typeof readProductionDatabases>> | undefined;
+      for (const { ordinal, stage } of candidates) {
+        const target = retireSubject(stage);
+        const targetConfig = stageEnvironment(target, source);
+        const stacks = await alchemyPreviewStateReader({ environment: targetConfig.deploy }).read(
+          targetConfig.stage,
+        );
+        production ??= await readProductionDatabases(config.stage, { environment: config.deploy });
+        const refusal = databaseRefusal(
+          Object.values(stacks).flat(),
+          targetConfig.databaseName,
+          production,
+        );
+        // A stage the proof refuses is left as it is, and the next one is tried.
+        if (refusal) {
+          console.log(`  stage ${ordinal} left: ${refusal}; nothing of it deleted`);
+          continue;
+        }
+        console.log(`Retiring stage ${ordinal}.`);
+        await planStage(root, target, source);
+        await destroyStage(root, target, source);
+        await verifyStageAbsent(root, target, source);
+        result.retired = ordinal;
+        result.absent = true;
+        break;
+      }
+      if (result.retired === null)
+        console.log("No four-digit stage this mode can retire; nothing deleted.");
     } else if (mode === "classplan") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks, "classplan"));
     } else if (mode === "heal") {

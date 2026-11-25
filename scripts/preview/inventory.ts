@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { redactor } from "../release-preview/redact.ts";
 import { join } from "node:path";
 import type { PreviewIdentity } from "../environment.ts";
+import { productionRelease } from "../release-barrier/release-stage.ts";
 import {
   previewDatabaseStack,
   rehearsalFixtureStack,
@@ -356,6 +357,70 @@ export function alchemyPreviewStateReader(
   };
 }
 
+/**
+ * The State store opened the way a rehearsal lane opens it, for `list` and `read` only. The
+ * cleanup config admits the lane; paths outside it are read through the same shared store.
+ */
+function laneStateReader(
+  lane: string,
+  options: { readonly command?: StateCommand; readonly environment?: NodeJS.ProcessEnv },
+) {
+  if (subjectFromStage(lane)?.kind !== "rehearsal")
+    throw new Error("Other stages are read only through a rehearsal lane");
+  const command = options.command ?? defaultStateCommand;
+  const env = {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    ...(options.environment ?? process.env),
+    ALCHEMY_STAGE: lane,
+    CI: "true",
+  };
+  const flags = ["--config", stateConfig, "--backend", "configured", "--no-input"];
+  const state = (verb: "list" | "read", ...args: string[]) =>
+    runStateCommand(command, ["--log-level", "none", "state", verb, ...args, ...flags], env);
+  return { state, env };
+}
+
+/**
+ * Production's PlanetScale databases as its own State records them, read only, so a stage's
+ * destroy can prove from rows that it deletes none of them. It refuses when it finds none.
+ */
+export async function readProductionDatabases(
+  lane: string,
+  options: { readonly command?: StateCommand; readonly environment?: NodeJS.ProcessEnv } = {},
+): Promise<{ readonly id?: string; readonly name?: string }[]> {
+  const { state, env } = laneStateReader(lane, options);
+  const at = `${productionRelease.stack}/${productionRelease.stage}`;
+  const databases: { id?: string; name?: string }[] = [];
+  try {
+    // Listing names rows only; just the database rows are read, never production's other State.
+    const paths = parsePaths(state("list", at, "--recursive"), `${at}/`, redactor(env)).filter(
+      (path) => path.endsWith("Database"),
+    );
+    for (const path of paths)
+      for (const { value } of parseStageValues(
+        state("read", path),
+        productionRelease.stack,
+        productionRelease.stage,
+        [path],
+      )) {
+        const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+        const type = typeof row.resourceType === "string" ? row.resourceType : "";
+        if (!/^Planetscale\.\w*Database$/u.test(type)) continue;
+        const attr =
+          row.attr && typeof row.attr === "object" ? (row.attr as Record<string, unknown>) : {};
+        const text = (key: string) =>
+          typeof attr[key] === "string" ? (attr[key] as string) : undefined;
+        databases.push({ id: text("id"), name: text("name") });
+      }
+  } catch {
+    // A failed read's detail could quote production's State; it says only that it failed.
+    throw new Error("Production's database rows could not be read");
+  }
+  if (!databases.length) throw new Error("Production's State records no PlanetScale database");
+  return databases;
+}
+
 /** What State still holds for one stage named before stages were lanes: rows per stack, by kind. */
 export type NumberedStageRows = {
   readonly stage: string;
@@ -373,19 +438,7 @@ export async function readNumberedRehearsalStages(
   lane: string,
   options: { readonly command?: StateCommand; readonly environment?: NodeJS.ProcessEnv } = {},
 ): Promise<NumberedStageRows[]> {
-  if (subjectFromStage(lane)?.kind !== "rehearsal")
-    throw new Error("The numbered stages are read through a rehearsal lane");
-  const command = options.command ?? defaultStateCommand;
-  const env = {
-    PATH: process.env.PATH,
-    HOME: process.env.HOME,
-    ...(options.environment ?? process.env),
-    ALCHEMY_STAGE: lane,
-    CI: "true",
-  };
-  const flags = ["--config", stateConfig, "--backend", "configured", "--no-input"];
-  const state = (...args: string[]) =>
-    runStateCommand(command, ["--log-level", "none", "state", ...args, ...flags], env);
+  const { state, env } = laneStateReader(lane, options);
   const found = new Map<
     string,
     { stacks: Record<PreviewStack, Record<string, number>>; unreadable?: string }

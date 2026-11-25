@@ -9,6 +9,7 @@ import {
   parsePreviewInventory,
   previewStacks,
   readNumberedRehearsalStages,
+  readProductionDatabases,
   type PreviewStateEntry,
   type StateCommand,
 } from "./inventory.ts";
@@ -466,4 +467,51 @@ test("a numbered stage that cannot be read is marked, and the others are still r
   assert.equal(first?.stage, "test-rehearsal-1111");
   assert.match(first?.unreadable ?? "", /malformed remote state path/u);
   assert.deepEqual(second, { stage: "test-rehearsal-2222", stacks: { "basalt-rehearsal": {} } });
+});
+
+test("production's databases are read from its own database rows only, and none found refuses", async () => {
+  const at = "basalt/production";
+  const rows: Record<string, unknown> = {
+    [`${at}/Database`]: {
+      ...(row("Database", "Planetscale.PostgresDatabase").value as object),
+      attr: { id: "prod-id", name: "basalt" },
+    },
+    [`${at}/Api`]: row("Api", "Cloudflare.Worker").value,
+  };
+  const reads: string[] = [];
+  const command =
+    (listed: string[], failRead = false): StateCommand =>
+    (args) => {
+      const verb = args[args.indexOf("state") + 1]!;
+      assert.ok(["list", "read"].includes(verb));
+      if (verb === "list") return { status: 0, stdout: listed.join("\n") };
+      const path = args[args.indexOf("state") + 2]!;
+      reads.push(path);
+      if (failRead) return { status: 1, stdout: `secret value of ${path}` };
+      return { status: 0, stdout: JSON.stringify(rows[path]) };
+    };
+  assert.deepEqual(
+    await readProductionDatabases("test-rehearsal-1", {
+      command: command(Object.keys(rows)),
+      environment: {},
+    }),
+    [{ id: "prod-id", name: "basalt" }],
+  );
+  // Only the database row is read, never production's other State.
+  assert.deepEqual(reads, [`${at}/Database`]);
+  await assert.rejects(
+    readProductionDatabases("test-rehearsal-1", {
+      command: command([`${at}/Api`]),
+      environment: {},
+    }),
+    /records no PlanetScale database/,
+  );
+  // A failed read says only that it failed, never what it read.
+  await assert.rejects(
+    readProductionDatabases("test-rehearsal-1", {
+      command: command([`${at}/Database`], true),
+      environment: {},
+    }),
+    (error: Error) => error.message === "Production's database rows could not be read",
+  );
 });
