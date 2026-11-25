@@ -6,6 +6,8 @@ export const stackConfigs: ReadonlyArray<string> = [
   "scripts/preview/stack/alchemy.database.ts",
   "scripts/preview/stack/alchemy.cleanup.ts",
   "scripts/preview/stack/alchemy.rehearsal-fixture.ts",
+  // The route proof's scratch stages, test-route-scratch-1 and -2, with runner-local state.
+  "scripts/route-scratch/stack.ts",
 ];
 
 /**

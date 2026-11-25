@@ -36,6 +36,8 @@
     "src/route/pool-peer.worker.ts",
     "scripts/preview/stack",
     "scripts/scale-test/stack.ts",
+    "scripts/route-scratch/stack.ts",
+    "scripts/route-scratch/worker.ts",
     "scripts/scale-test/worker.ts",
     "scripts/release/test/plan-worker.ts"
   ]

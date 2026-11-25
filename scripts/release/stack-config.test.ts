@@ -18,6 +18,17 @@ test("the rehearsal fixture stack is accepted from the cloud app and from the re
     });
 });
 
+test("the route scratch stack is accepted from the cloud app and from the repo root", () => {
+  for (const [value, cwd] of [
+    ["../../../../scripts/route-scratch/stack.ts", cloud],
+    ["scripts/route-scratch/stack.ts", root],
+  ] as const)
+    assert.deepEqual(stackConfig(value, root, cwd), {
+      config: "scripts/route-scratch/stack.ts",
+      scaleStack: false,
+    });
+});
+
 test("no config is the production stack; the scale stack is matched by its suffix", () => {
   assert.deepEqual(stackConfig(undefined, root, cloud), {
     config: "alchemy.run.ts",
@@ -31,6 +42,8 @@ test("an unknown config is refused, even one beside the known ones", () => {
   for (const value of [
     "../../../../scripts/preview/stack/alchemy.other.ts",
     "scripts/preview/stack/alchemy.rehearsal-fixture.js",
+    "scripts/route-scratch/worker.ts",
+    "/frozen/candidate/scripts/route-scratch/stack.ts",
     "/elsewhere/alchemy.run.ts",
   ])
     assert.throws(() => stackConfig(value, root, cloud), /^Error: Unknown stack config /u);
