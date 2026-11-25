@@ -198,6 +198,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private peers: RuntimeHomePeerTransport;
   private alarms: PoolAlarms;
   private homeUpkeepTask?: Promise<void>;
+  private modelHistoryTask?: Promise<void>;
   private alarmInFlight = false;
   private control: PoolControl;
   private mirrorHome: HomeClient;
@@ -253,7 +254,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       storage: ctx.storage,
       inFlight: () => this.handoverCount.active,
       busy: () =>
-        this.alarmInFlight || this.homeUpkeepTask !== undefined || this.handoffsInFlight > 0,
+        this.alarmInFlight ||
+        this.homeUpkeepTask !== undefined ||
+        this.modelHistoryTask !== undefined ||
+        this.handoffsInFlight > 0,
       abort: (reason) => ctx.abort(reason),
       defer: (work) => ctx.waitUntil(work.catch(() => console.error("POOL_CODE_HANDOVER_PENDING"))),
     });
@@ -820,17 +824,30 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         ),
       )
       .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
-    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
-      try {
-        await trace.run("model_history", () =>
-          reportWhenDue(this.ctx.storage, "model-history", (progress) =>
-            runModelHistoryPass(this.modelHistoryPass(), progress),
-          ),
-        );
-      } catch {
-        console.error("POOL_MODEL_HISTORY_FAILURE count=1");
-      }
+    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") this.startModelHistory(trace);
+  }
+
+  /**
+   * The model-history pass as its own task: the Home pass's steps never wait for it, one pass runs
+   * at a time, and a code handover waits for it as for the Home pass.
+   */
+  private startModelHistory(trace: PoolUpkeepTrace) {
+    if (this.modelHistoryTask) {
+      trace.event("model_history_shared");
+      return;
     }
+    const work = trace
+      .run("model_history", () =>
+        reportWhenDue(this.ctx.storage, "model-history", (progress) =>
+          runModelHistoryPass(this.modelHistoryPass(), progress),
+        ),
+      )
+      .catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1"))
+      .finally(() => {
+        if (this.modelHistoryTask === work) this.modelHistoryTask = undefined;
+      });
+    this.modelHistoryTask = work;
+    this.ctx.waitUntil(work);
   }
 
   /**
