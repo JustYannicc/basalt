@@ -312,7 +312,8 @@ export class RouteAssignments {
   }
   private async hold(reference: string, held: boolean) {
     if (held) await this.storage.put(heldPrefix + reference, true);
-    else await this.storage.delete(heldPrefix + reference);
+    // Only a recorded hold is deleted, so a pool without rules writes nothing here.
+    else if (await this.held(reference)) await this.storage.delete(heldPrefix + reference);
   }
   async refusedReferences(): Promise<ReadonlySet<string>> {
     return new Set((await this.listed(refusedPrefix, Schema.Literal(true))).keys());
@@ -358,18 +359,24 @@ export class RouteAssignments {
    * fails afterwards so it runs again.
    */
   private async apply(routes: ReadonlyMap<string, Decision>, signal: AbortSignal) {
+    // Routes and holds are on record before Home is read: the owner is known before Home names a
+    // route, a credential Home doesn't hold yet keeps its hold, and a resume racing this pass sees
+    // what it decided.
+    for (const [reference, decision] of routes)
+      if (decision === "hold") await this.hold(reference, true);
+      else if (decision !== "keep" && decision !== null) await this.record(reference, decision);
     const credentials = await readCredentials(this.home, signal);
     let failed = false;
     for (const [reference, decision] of routes) {
       if (decision === "keep") continue;
       const credential = credentials.get(reference);
-      // The owner is known before Home names the route, even for a credential Home hasn't shown yet.
-      if (decision !== "hold" && decision !== null) await this.record(reference, decision);
       if (!credential) {
-        if (decision === null) await this.record(reference, null);
+        if (decision === null) {
+          await this.record(reference, null);
+          await this.hold(reference, false);
+        }
         continue;
       }
-      if (decision === "hold") await this.hold(reference, true);
       const plugin = credential.kind === "auth" && pluginProviders.has(credential.provider);
       // Disabled before its proxy changes, so a refused plugin credential is never live routed.
       // The marker comes first: one without the write only means a harmless lift later.

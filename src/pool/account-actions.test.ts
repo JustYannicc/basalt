@@ -290,6 +290,23 @@ test("a credential its plugin can't route can't be resumed while the route appli
   assert.equal((await f.call("resume")).status, 200);
 });
 
+test("a route that takes effect while a resume is on its way switches the credential off again", async (t) => {
+  let checks = 0;
+  const f = await fixture(t, "codex", [], claudeGrants, {
+    // Free when the resume is checked, routed by the time Home has enabled it.
+    refusesUse: async () => ++checks > 1,
+    refusedReferences: async () => new Set(),
+    markRefused: async () => {},
+  });
+  const resumed = await f.call("resume");
+  assert.equal(resumed.status, 409);
+  assert.equal(((await resumed.json()) as Json).error, "route_unsupported");
+  assert.deepEqual(
+    f.calls.filter((call) => call.path === "/credentials/status").map((call) => call.body.disabled),
+    [false, true],
+  );
+});
+
 test("manual refresh collects a fresh idle account once, retaining the shared persisted cap", async (t) => {
   const f = await fixture(t);
   assert.equal((await f.call("refresh")).status, 200);

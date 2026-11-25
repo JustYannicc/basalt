@@ -54,6 +54,7 @@ function fakeHome() {
     global: "",
     failFields: false,
     failStatus: false,
+    failPost: false,
     writes: [] as string[],
   };
   const client = new HomeClient(async (path, init) => {
@@ -70,6 +71,8 @@ function fakeHome() {
       return Response.json(state.codex);
     }
     if (route === "/credentials" && method === "GET") return Response.json({ files: state.files });
+    if (route === "/credentials" && method === "POST" && state.failPost)
+      return new Response(null, { status: 500 });
     if (route === "/credentials" && method === "POST") {
       state.files = state.files.filter((file) => file.id !== body.uuid);
       state.files.push({
@@ -740,14 +743,18 @@ test("a re-mirror without a hint keeps a hold, and a refused plugin credential s
 test("a plugin credential held because its pools disagree stays refused through the owner's pause", async () => {
   const { client, state } = fakeHome();
   const gemini = "12345678-abcd-4000-8000-0000000000a6";
-  // Two pools, two routes for the same credential: it is held, with no route entry or hint.
-  const byPool: Record<string, string> = { "pool-a": home, "pool-b": other };
+  // Direct in both pools first, then two routes at once: a hold with no route entry or hint.
+  const byPool: Record<string, string | null> = { "pool-a": null, "pool-b": null };
+  let revision = 1;
   const resolver: RouteResolver = {
     resolve: async (scope, references) => ({
       served: true,
-      revision: 1,
+      revision,
       resolutions: new Map(
-        references.map((reference) => [reference, { routeId: byPool[scope.pool]!, owner }]),
+        references.map((reference) => {
+          const routeId = byPool[scope.pool] ?? null;
+          return [reference, routeId ? { routeId, owner } : { routeId: null, owner: null }];
+        }),
       ),
     }),
   };
@@ -755,11 +762,50 @@ test("a plugin credential held because its pools disagree stays refused through 
   await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
   await routes.prepare({ organization: scope.organization, pool: "pool-a" }, [gemini], signal());
   await routes.prepare({ organization: scope.organization, pool: "pool-b" }, [gemini], signal());
+  assert.equal(await routes.refusesUse(gemini, "gemini-cli"), false);
+  byPool["pool-a"] = home;
+  byPool["pool-b"] = other;
+  revision++;
   await routes.refresh(signal());
   assert.equal(state.files[0]!.disabled, true);
-  // The owner pauses: the pool's lift right goes, the refusal stays.
+  assert.equal(await routes.ownRoute(owner, [gemini]), null);
+  // The owner pauses: the pool's lift right goes, the hold still refuses.
   await routes.markRefused(gemini, false);
   assert.equal(await routes.refusesUse(gemini, "gemini-cli"), true);
+});
+
+test("a hold decided before Home holds a plugin credential makes a later hint-less mirror save it disabled", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000a9";
+  const store = storage();
+  const rules = scripted({});
+  rules.fail(true);
+  const routes = new RouteAssignments(store, rules.resolver, client, () => now);
+  // The host said earlier that its owner has rules; Home doesn't hold it yet.
+  store.map.set(`route-hint:${gemini}`, true);
+  await routes.prepare(scope, [gemini], signal());
+  assert.equal(store.map.get(`route-held:${gemini}`), true);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  assert.equal(state.files[0]!.disabled, true);
+  assert.equal(state.files[0]!.proxy_url, routeProxyUrl(unassignedRoute));
+});
+
+test("the mirror records a plugin credential's refusal even when Home's save fails", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000b1";
+  const routes = new RouteAssignments(storage(), scripted({}).resolver, client, () => now);
+  state.failPost = true;
+  const answer = await mirror(
+    client,
+    routes,
+    gemini,
+    { type: "gemini-cli", access_token: "x" },
+    {
+      route: { routeId: home, owner },
+    },
+  );
+  assert.notEqual(answer.status, 200);
+  assert.equal(await routes.refused(gemini), true);
 });
 
 test("a plugin credential its owner's rules made direct can be paused and resumed", async () => {
