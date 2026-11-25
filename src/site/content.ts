@@ -110,7 +110,7 @@ const privacy: LegalPage = {
         "**Your AI agent.** Results from your tools go to the agent you connected, such as Claude Code, Codex or Cursor, and so to that agent's provider. Model requests through your pool go to the model provider whose subscription you connected.",
         `**Cloudflare** hosts ${name} and sends our emails (sign-in codes, invitations and verification links) from ${brand.emailDomain}.`,
         "**PlanetScale** hosts our database (EU).",
-        "**Sentry** (EU) receives error reports and the feedback you send. Error reports contain an error code, the kind of page or request, and your account ID. They don't contain your content.",
+        "**Sentry** (EU) receives error reports, request timings and the feedback you send. Error reports contain an error code, the kind of page or request, and your account ID. Request timings contain the kind of request, its outcome, how long each step took, the size of the response, a random request ID and a short hash that stands for your pool. Neither contains your content.",
         "**PostHog** (US) receives product usage events, such as signing up, connecting an account or calling a tool, with your account ID and, for some events, which app or service was involved. They contain no content, no email address and no IP address.",
         "**Google and GitHub**, if you choose them to sign in.",
       ],
