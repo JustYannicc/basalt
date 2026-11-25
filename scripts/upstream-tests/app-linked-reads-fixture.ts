@@ -172,10 +172,7 @@ export const fixture = <A, E>(
             }),
         },
         apps: {
-          get: () =>
-            Effect.sync(() => {
-              return app;
-            }),
+          get: () => Effect.succeed(app),
         },
         accounts: {
           list: () =>

@@ -4,7 +4,17 @@ export type OAuthDecision =
   | { kind: "deferred"; message: string }
   | { kind: "hosted"; client: string; message: string }
   | { kind: "account-endpoint"; message: string }
-  | { kind: "automatic"; protocol: "dcr" | "cimd"; metadata: string; metadataSha256: string };
+  | {
+      kind: "automatic";
+      protocol: "dcr" | "cimd";
+      metadata: string;
+      metadataSha256: string;
+      /**
+       * The connection asks for the issuer's whole published scope list, so a scope the issuer adds
+       * later never makes an existing grant ask to reconnect (the SDK reads the generated issuers).
+       */
+      scopeRequest?: "issuer-list";
+    };
 
 export interface OAuthReview {
   entry: string;
@@ -54,13 +64,15 @@ export function oauthReviews(value: unknown): readonly OAuthReview[] {
         decision.kind === "automatic" &&
         (decision.protocol === "dcr" || decision.protocol === "cimd") &&
         https(decision.metadata) &&
-        digest(decision.metadataSha256)
+        digest(decision.metadataSha256) &&
+        (decision.scopeRequest === undefined || decision.scopeRequest === "issuer-list")
       )
         methods[method] = {
           kind: "automatic",
           protocol: decision.protocol,
           metadata: decision.metadata,
           metadataSha256: decision.metadataSha256,
+          ...(decision.scopeRequest === "issuer-list" ? { scopeRequest: "issuer-list" } : {}),
         };
       else throw new Error(`Unclassified OAuth method ${entry.entry}/${method}`);
     }

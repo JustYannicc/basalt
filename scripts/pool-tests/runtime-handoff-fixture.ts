@@ -128,6 +128,11 @@ export async function handoffRuntime(
      * Home is still draining when the grace ends and the stop falls to `destroy()`.
      */
     sigtermExits: false,
+    /**
+     * The policy lease the default readiness answer reports. A short one with a slow answer is a
+     * ready answer that comes after its lease, as from a container whose answers are late.
+     */
+    readinessLeaseMs: 1_500,
   };
   const ctx = {
     exports: { PoolHomePeer: ({ props }: { props: { source: HomePeerSource } }) => ({ props }) },
@@ -237,7 +242,9 @@ export async function handoffRuntime(
                 const answered = await hooks.health();
                 request.signal.throwIfAborted();
                 if (answered) return answered;
-                const headers = new Headers({ [policyHealthHeader]: "1500" });
+                const headers = new Headers({
+                  [policyHealthHeader]: String(hooks.readinessLeaseMs),
+                });
                 if (startup.env.POOL_LAUNCH_GENERATION) {
                   headers.set(launchGenerationHeader, startup.env.POOL_LAUNCH_GENERATION);
                   headers.set(

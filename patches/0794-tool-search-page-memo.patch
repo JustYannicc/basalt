@@ -1,0 +1,363 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/mcp-session.ts b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+index 918515d2c..d9888eb14 100644
+--- a/apps/hosted/cloud/src/infrastructure/mcp-session.ts
++++ b/apps/hosted/cloud/src/infrastructure/mcp-session.ts
+@@ -16,6 +16,7 @@ import {
+   mcpSessionKey,
+ } from "@executor-js/hosted-server";
+ import { PgPool } from "@effect/sql-pg";
++import { ToolSearchPageCache, makeToolSearchPageMemo } from "@executor-js/sdk/core";
+ import { cloudMcpAppAssets } from "./mcp-app-assets.ts";
+ import { cloudAppUiBase } from "../contracts/app-ui.ts";
+ import { McpAppAssets, appSandboxAddress, runningPrograms } from "@executor-js/mcp";
+@@ -82,6 +83,8 @@ export const makeMcpSession = Effect.fn(function* ({
+     });
+     // What each caller's last tool call read, by app and named accounts (CallStateCache).
+     const callState = new Map<string, CallState>();
++    // Ranked pages this object's searches made, bounded by `toolSearchMemoLimits`.
++    const searchPages = makeToolSearchPageMemo();
+     // Protocol sessions are kept in the object's storage, so they outlive its eviction.
+     const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
+       Effect.provideService(CurrentProductBrand, brand),
+@@ -143,6 +146,7 @@ export const makeMcpSession = Effect.fn(function* ({
+             ),
+           ),
+           Effect.provideService(CallStateCache, callState),
++          Effect.provideService(ToolSearchPageCache, searchPages),
+         ),
+       ),
+     ).pipe(
+diff --git a/apps/hosted/self-host/src/mcp.ts b/apps/hosted/self-host/src/mcp.ts
+index 4eda04dca..33b11aade 100644
+--- a/apps/hosted/self-host/src/mcp.ts
++++ b/apps/hosted/self-host/src/mcp.ts
+@@ -14,6 +14,7 @@ import {
+ import { embeddedMcpAppAssets } from "@executor-js/mcp/embedded-app-assets";
+ import { McpAppAssets, McpLimits, defaultMcpLimits } from "@executor-js/mcp";
+ import { PgliteClient } from "@effect/sql-pglite";
++import { ToolSearchPageCache, makeToolSearchPageMemo } from "@executor-js/sdk/core";
+ import { Config, Effect, RcMap, Schema } from "effect";
+ import { HttpServerResponse } from "effect/http";
+ import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
+@@ -39,6 +40,7 @@ export const selfHostMcp = Effect.gen(function* () {
+         (handler) => ({
+           ...handler,
+           calls: new Map<string, CallState>(),
++          searchPages: makeToolSearchPageMemo(),
+         }),
+       ),
+     idleTimeToLive: "30 minutes",
+@@ -57,6 +59,7 @@ export const selfHostMcp = Effect.gen(function* () {
+           PgliteClient.pipelined(leaves, { outside, begin: "ISOLATION LEVEL REPEATABLE READ" }),
+         ),
+         Effect.provideService(CallStateCache, handler.calls),
++        Effect.provideService(ToolSearchPageCache, handler.searchPages),
+       );
+     }).pipe(
+       Effect.catchTag("ExceededCapacityError", () =>
+diff --git a/packages/sdk/src/core.ts b/packages/sdk/src/core.ts
+index 152b721a5..96978e9cf 100644
+--- a/packages/sdk/src/core.ts
++++ b/packages/sdk/src/core.ts
+@@ -18,6 +18,12 @@ export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";
+ export { bearerChallenge, bearerResourceMetadata } from "./implementation/oauth-challenge.ts";
+ export { subscribeAppQuery } from "./implementation/live.ts";
+ export { toolCallSpan } from "./implementation/tool-call-overhead.ts";
++export {
++  ToolSearchPageCache,
++  makeToolSearchPageMemo,
++  toolSearchMemoLimits,
++  type ToolSearchPageMemo,
++} from "./implementation/tool-search-memo.ts";
+ export {
+   plainAccount,
+   invocationAccounts,
+diff --git a/packages/sdk/src/implementation/tool-search-memo.ts b/packages/sdk/src/implementation/tool-search-memo.ts
+new file mode 100644
+index 000000000..7f40bac92
+--- /dev/null
++++ b/packages/sdk/src/implementation/tool-search-memo.ts
+@@ -0,0 +1,82 @@
++/**
++ * Ranked search pages one MCP session keeps, so a repeated search does not rank the same rows
++ * again. A page is a function of its ranking input and of the rows of the listings it reads. A
++ * listing's rows are rewritten only by a write that also gives it a newer evaluation time, so an
++ * entry is keyed by the complete input and each target's listing version (digest and time), which
++ * every search reads again, and a page is kept only under the versions its own statement read.
++ * The input carries the request's own authorization outcome: its targets passed this request's
++ * checks and its scopes come from this request's policy, grant and tool availability. A changed
++ * permission is a different key; the memo decides no access.
++ */
++import { Context } from "effect";
++import type { RankedPage } from "./tool-search-store.ts";
++
++export interface ToolSearchPageMemo {
++  readonly get: (key: string, now: number) => RankedPage | undefined;
++  readonly set: (key: string, page: RankedPage, bytes: number, now: number) => void;
++}
++
++/** The session's memo; unset outside an MCP session, where every search ranks its rows. */
++export const ToolSearchPageCache = Context.Reference<ToolSearchPageMemo | undefined>(
++  "executor/ToolSearchPageCache",
++  { defaultValue: () => undefined },
++);
++
++/**
++ * Bounds of one session's memo. Sizes are the page's JSON in UTF-16 bytes; a page larger than
++ * `entryBytes` is not kept. Expired entries are dropped whenever the memo is read or written.
++ */
++export interface ToolSearchMemoLimits {
++  readonly entries: number;
++  readonly entryBytes: number;
++  readonly totalBytes: number;
++  readonly ttlMillis: number;
++}
++
++export const toolSearchMemoLimits: ToolSearchMemoLimits = {
++  entries: 16,
++  entryBytes: 128 * 1024,
++  totalBytes: 512 * 1024,
++  ttlMillis: 5 * 60_000,
++};
++
++/** Least recently used entries go first once a bound is passed. */
++export const makeToolSearchPageMemo = (
++  limits: ToolSearchMemoLimits = toolSearchMemoLimits,
++): ToolSearchPageMemo => {
++  const entries = new Map<
++    string,
++    { readonly page: RankedPage; readonly bytes: number; readonly at: number }
++  >();
++  let total = 0;
++  const drop = (key: string) => {
++    const entry = entries.get(key);
++    if (entry === undefined) return;
++    total -= entry.bytes;
++    entries.delete(key);
++  };
++  const expire = (now: number) => {
++    for (const [key, entry] of entries) if (now - entry.at >= limits.ttlMillis) drop(key);
++  };
++  return {
++    get: (key, now) => {
++      expire(now);
++      const entry = entries.get(key);
++      if (entry === undefined) return undefined;
++      entries.delete(key);
++      entries.set(key, entry);
++      return structuredClone(entry.page);
++    },
++    set: (key, page, bytes, now) => {
++      expire(now);
++      drop(key);
++      if (bytes > limits.entryBytes) return;
++      entries.set(key, { page: structuredClone(page), bytes, at: now });
++      total += bytes;
++      for (const oldest of entries.keys()) {
++        if (entries.size <= limits.entries && total <= limits.totalBytes) break;
++        drop(oldest);
++      }
++    },
++  };
++};
+diff --git a/packages/sdk/src/implementation/tool-search-store.ts b/packages/sdk/src/implementation/tool-search-store.ts
+index e2071a6a7..665b57f5c 100644
+--- a/packages/sdk/src/implementation/tool-search-store.ts
++++ b/packages/sdk/src/implementation/tool-search-store.ts
+@@ -60,6 +60,12 @@ const Kept = Schema.Struct({
+   superseded: Schema.NullOr(Schema.Number),
+ });
+ const Listed = Schema.Struct({ listing: Schema.String });
++const KeptDigest = Schema.Struct({
++  listing: Schema.String,
++  app: Schema.String,
++  target: Schema.NullOr(Schema.String),
++  kept: Schema.String,
++});
+ /** A ranked page as one row: every part of it read in the same statement. */
+ const Ranked = Schema.Struct({
+   total: Schema.Int,
+@@ -77,6 +83,11 @@ const Ranked = Schema.Struct({
+   definitions: Schema.Array(Schema.Tuple([Schema.String, Schema.Int, Json])),
+ });
+ export type RankedPage = typeof Ranked.Type;
++/** A ranked page with each present target's listing version, as `digests` reads it, from its snapshot. */
++const Versioned = Schema.Struct({
++  ...Ranked.fields,
++  kept: Schema.Array(Schema.Tuple([Schema.Int, Schema.String])),
++});
+ 
+ /**
+  * Rows per insert statement: nine parameters each stays well inside Postgres's bound. A batch
+@@ -204,7 +215,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+       );
+       return kept ?? (yield* claim(listing));
+     });
+-  return {
++  const store = {
+     /** The kept rows of a listing of this target, if any. */
+     listing: (listing: ToolSearchListing, target: string) =>
+       sql`select at::float8 as at, digest, routers, superseded::float8 as superseded
+@@ -213,6 +224,30 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+         Effect.map((rows) => rows[0]),
+         failed,
+       ),
++    /**
++     * The version of each target's listing, where the row is the target's own as `page` joins it
++     * (same listing, app and account set); null where `page` finds no listing. A version is the
++     * digest and the evaluation time: a same-digest write that does not rewrite rows keeps the
++     * digest but takes a newer time, and one that does rewrite them always takes a newer time.
++     */
++    digests: (targets: ReadonlyArray<Pick<RankedTarget, "listing" | "app" | "target">>) =>
++      Effect.gen(function* () {
++        if (targets.length === 0) return [];
++        const rows = yield* sql`select listing, app, target, digest || ':' || at::text as kept
++          from executor_tool_search_listings
++          where listing in ${sql.in([...new Set(targets.map((target) => target.listing))])}`.pipe(
++          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(KeptDigest))),
++        );
++        return targets.map(
++          (target) =>
++            rows.find(
++              (row) =>
++                row.listing === target.listing &&
++                row.app === target.app &&
++                row.target === target.target,
++            )?.kept ?? null,
++        );
++      }).pipe(failed),
+     /**
+      * Keep a superseded listing that a target resolves to again for as long as a current one,
+      * so the executions that search it keep finding it.
+@@ -327,7 +362,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+      * read one snapshot: a page never holds a row the scopes did not rank, even while another
+      * evaluation replaces the listing's rows. `missing` names targets whose listing has no rows.
+      */
+-    page: (input: {
++    versionedPage: (input: {
+       readonly targets: ReadonlyArray<RankedTarget>;
+       readonly terms: ReadonlyArray<string>;
+       readonly offset: number;
+@@ -335,7 +370,10 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+     }) =>
+       Effect.gen(function* () {
+         if (input.targets.length === 0)
+-          return { total: 0, missing: [], items: [], definitions: [] } satisfies RankedPage;
++          return {
++            page: { total: 0, missing: [], items: [], definitions: [] } satisfies RankedPage,
++            kept: [],
++          };
+         const { values, permitted } = targets(input.targets);
+         const terms = input.terms.join(" ");
+         const words = new Set(terms.split(" "));
+@@ -388,7 +426,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+         const [page] =
+           yield* sql`with t(ordinal, listing, app, target, labels, length) as (values ${values}),
+           present as (
+-            select t.ordinal from t
++            select t.ordinal, l.digest || ':' || l.at::text as kept from t
+             join executor_tool_search_listings l
+               on l.listing = t.listing and l.app = t.app and l.target = t.target),
+           scope as materialized (
+@@ -445,12 +483,22 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
+               where d.id in (
+                 select shown.listing || ':' || p.position
+                 from shown, json_array_elements_text(shown.definitions) as p(position))),
+-              '[]'::json) as definitions`.pipe(
+-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Ranked))),
++              '[]'::json) as definitions,
++            coalesce((select json_agg(json_build_array(present.ordinal, present.kept)
++              order by present.ordinal) from present), '[]'::json) as kept`.pipe(
++            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Versioned))),
+           );
+-        return page ?? { total: 0, missing: [], items: [], definitions: [] };
++        if (page === undefined)
++          return { page: { total: 0, missing: [], items: [], definitions: [] }, kept: [] };
++        const { kept, ...ranked } = page;
++        return { page: ranked satisfies RankedPage, kept };
+       }).pipe(failed),
+   };
++  return {
++    ...store,
++    page: (input: Parameters<typeof store.versionedPage>[0]) =>
++      Effect.map(store.versionedPage(input), ({ page }) => page),
++  };
+ };
+ export type ToolSearchStore = ReturnType<typeof makeToolSearchStore>;
+ 
+diff --git a/packages/sdk/src/implementation/tool-search.ts b/packages/sdk/src/implementation/tool-search.ts
+index fdef0c0fa..69a9c3125 100644
+--- a/packages/sdk/src/implementation/tool-search.ts
++++ b/packages/sdk/src/implementation/tool-search.ts
+@@ -3,7 +3,7 @@
+  * its target's labels. A listing's rows keep each shared `$defs` entry once, as the durable
+  * listing text does; only a page's tools are put back together with their definitions.
+  */
+-import { Crypto, Effect, JsonPointer, Schema } from "effect";
++import { Clock, Crypto, Effect, JsonPointer, Schema } from "effect";
+ import { Hex } from "effect/encoding";
+ import { type Json, JsonObject, StorageError } from "../contracts/shared.ts";
+ import { invocationEntries, type AppAccounts } from "../contracts/apps.ts";
+@@ -19,6 +19,7 @@ import { restoreTool, shareListing, type StoredTool } from "./listing-json.ts";
+ import type { InvocationSnapshot } from "./tools.ts";
+ import { scopedSelection } from "./selection.ts";
+ import type { SearchToolRow, ToolSearchStore } from "./tool-search-store.ts";
++import { ToolSearchPageCache } from "./tool-search-memo.ts";
+ 
+ /** Lowercase words, with camelCase and snake_case split and a plural `s` removed. */
+ export const words = (text: string): Array<string> =>
+@@ -173,6 +174,45 @@ export const makeToolSearch = (options: {
+       }
+       return { tools: derived, definitions: stored.definitions };
+     });
++  /**
++   * The ranked page, from the session's memo when this exact input ranked these listing versions
++   * before. The versions are read before ranking, and the ranking statement reports the versions
++   * it read in its own snapshot; a page is kept only under the versions it was ranked from.
++   */
++  const memoizedPage = (input: Parameters<ToolSearchStore["page"]>[0]) =>
++    Effect.gen(function* () {
++      const memo = yield* ToolSearchPageCache;
++      if (memo === undefined || input.targets.length === 0) return yield* store.page(input);
++      const before = yield* store.digests(input.targets);
++      const key = yield* digest(
++        JSON.stringify([
++          input.terms,
++          input.offset,
++          input.limit,
++          input.targets.map((target, index) => [
++            target.listing,
++            target.app,
++            target.target,
++            target.labels,
++            target.scopes,
++            target.below ?? null,
++            before[index] ?? null,
++          ]),
++        ]),
++      );
++      const kept = memo.get(key, yield* Clock.currentTimeMillis);
++      yield* Effect.annotateCurrentSpan(
++        "executor.search.memo",
++        kept === undefined ? "miss" : "hit",
++      );
++      if (kept !== undefined) return kept;
++      const { page, kept: read } = yield* store.versionedPage(input);
++      const ranked = new Map(read);
++      if (input.targets.every((_, index) => (ranked.get(index) ?? null) === before[index]))
++        // UTF-16 code units are two bytes each, as the declaration cache counts JSON.
++        memo.set(key, page, JSON.stringify(page).length * 2, yield* Clock.currentTimeMillis);
++      return page;
++    });
+   return {
+     /** The kept rows of the state's listing, if any. */
+     listing: (state: InvocationSnapshot, listing: ToolSearchListing) =>
+@@ -232,7 +272,7 @@ export const makeToolSearch = (options: {
+             labels: rest.labels.flatMap(words),
+           })),
+         );
+-        const ranked = yield* store.page({
++        const ranked = yield* memoizedPage({
+           terms,
+           targets,
+           offset: input.offset,

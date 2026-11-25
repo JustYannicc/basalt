@@ -45,7 +45,7 @@ test("pool seed hash mismatches fail without caching unverified files", async ()
     version,
     path,
   );
-  assert.equal((await Effect.runPromise(Effect.exit(seed.files)))._tag, "Failure");
+  assert.equal((await Effect.runPromiseExit(seed.files))._tag, "Failure");
   assert.deepEqual(await Effect.runPromise(seed.files), files);
   assert.equal(reads, 2);
 });
@@ -60,7 +60,7 @@ test("missing pool seed assets retry on the next use", async () => {
     version,
     path,
   );
-  assert.equal((await Effect.runPromise(Effect.exit(seed.files)))._tag, "Failure");
+  assert.equal((await Effect.runPromiseExit(seed.files))._tag, "Failure");
   assert.deepEqual(await Effect.runPromise(seed.files), files);
   assert.deepEqual(await Effect.runPromise(seed.files), files);
   assert.equal(reads, 2);
@@ -73,5 +73,5 @@ test("pool seed assets must satisfy the SDK SourceFiles schema even with a match
     () => Effect.succeed(new Response(JSON.stringify(invalid))),
     digest,
   );
-  assert.equal((await Effect.runPromise(Effect.exit(seed.files)))._tag, "Failure");
+  assert.equal((await Effect.runPromiseExit(seed.files))._tag, "Failure");
 });

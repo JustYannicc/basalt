@@ -36,7 +36,9 @@ export type FleetFailureRead = typeof FleetFailureRead.Type;
  */
 export const FleetFailure = Schema.Struct({
   path: Schema.Literals(["forward", "stream", "health", "install", "start"]),
-  rule: Schema.Literals(["evidence", "failed_twice", "unproven"]),
+  // `deployment`: a start the endpoint refused for its own deployment, kept only on the slot's
+  // recent end to say why it left unstarted; it never counts against a runtime.
+  rule: Schema.Literals(["evidence", "failed_twice", "unproven", "deployment"]),
   reads: Schema.Array(FleetFailureRead),
 });
 export type FleetFailure = typeof FleetFailure.Type;

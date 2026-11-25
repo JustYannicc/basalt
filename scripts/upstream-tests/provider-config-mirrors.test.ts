@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { Crypto, Effect, Option, Redacted } from "effect";
+import { Crypto, Effect, Option, Redacted, Result, Schema } from "effect";
 import { providerDeclaration } from "../../.upstream/packages/apps/src/host.ts";
 import { AccountId, OwnerId, identifyProvider } from "../../.upstream/packages/sdk/src/core.ts";
 import { poolAccountAcquisition } from "../../.upstream/apps/hosted/server/src/implementation/pool-account-acquisition.ts";
-import { providers, type ProviderLab } from "../../src/pool/provider-accounts/definitions.ts";
+import { HostOperationFailed } from "../../.upstream/packages/apps/src/contracts/host.ts";
+import { classifyAccountCheck } from "../../.upstream/packages/apps/src/implementation/account-check-errors.ts";
+import {
+  checkCustomEndpoint,
+  customEndpointRefusals,
+  providers,
+  type ProviderLab,
+} from "../../src/pool/provider-accounts/definitions.ts";
 import { HomeClient } from "../../src/pool/control.ts";
 import { handleAccountKeyMirror } from "../../src/pool/account-key-mirror.ts";
 import { object, type Json } from "../../src/pool/json.ts";
@@ -317,4 +324,150 @@ test("the largest accepted model catalog reaches signed mirror ingress without t
       ids.map((id) => ({ name: id, alias: id })),
     );
   }
+});
+
+const gatewayFields = (baseUrl: string, models = "emulated-opus, emulated-sol,emulated-opus") => ({
+  baseUrl,
+  models,
+  token: "synthetic-saved-token",
+});
+
+test("a custom endpoint mirrors its own address and only the model names it was given", async () => {
+  const anthropic = await fixture("custom", "anthropic", gatewayFields("https://gateway.example/"));
+  await anthropic.mirror();
+  const named = [
+    { name: "emulated-opus", alias: "emulated-opus" },
+    { name: "emulated-sol", alias: "emulated-sol" },
+  ];
+  assert.deepEqual(anthropic.configs.get("/v8/management/config/api-keys/claude"), [
+    {
+      "base-url": "https://gateway.example",
+      models: named,
+      keys: [{ id: reference, "api-key": "synthetic-saved-token" }],
+    },
+  ]);
+  await anthropic.remove();
+  assert.deepEqual(anthropic.configs.get("/v8/management/config/api-keys/claude"), []);
+
+  // One trailing /v1 is the family's own path, so entering it does not double it.
+  const versioned = await fixture(
+    "custom",
+    "anthropic",
+    gatewayFields("https://gateway.example/v1"),
+  );
+  await versioned.mirror();
+  const [versionedGroup] = versioned.configs.get("/v8/management/config/api-keys/claude") as [Json];
+  assert.equal(versionedGroup["base-url"], "https://gateway.example");
+
+  const openai = await fixture(
+    "custom",
+    "openai",
+    gatewayFields("https://gateway.example/api/v1/"),
+  );
+  await openai.mirror();
+  assert.deepEqual(openai.configs.get("/v8/management/config/api-keys/openai-compatibility"), [
+    {
+      name: `basalt-custom-${reference}`,
+      "base-url": "https://gateway.example/api/v1",
+      models: named,
+      keys: [{ id: reference, "api-key": "synthetic-saved-token" }],
+    },
+  ]);
+  await openai.remove();
+  assert.deepEqual(openai.configs.get("/v8/management/config/api-keys/openai-compatibility"), []);
+});
+
+test("a custom endpoint refuses local, private and malformed addresses and bad model lists before any write", async () => {
+  for (const baseUrl of [
+    "http://gateway.example",
+    "https://user:secret@gateway.example",
+    "https://gateway.example/?key=1",
+    "https://gateway.example/#x",
+    "https://localhost",
+    "https://api.localhost",
+    "https://printer.local",
+    "https://service.internal",
+    "https://router.home.arpa",
+    "https://nas.lan",
+    "https://box.localdomain",
+    "https://models.default.svc",
+    "https://models.default.svc.cluster.local",
+    "https://localhost..",
+    "https://printer.local...",
+    "https://intranet",
+    "https://127.0.0.1",
+    "https://2130706433",
+    "https://0x7f.1",
+    "https://10.1.2.3",
+    "https://172.20.0.1",
+    "https://192.168.1.1",
+    "https://169.254.169.254",
+    "https://100.100.100.100",
+    "https://0.0.0.0",
+    "https://192.0.0.8",
+    "https://192.0.2.1",
+    "https://198.18.0.1",
+    "https://198.19.255.254",
+    "https://198.51.100.7",
+    "https://203.0.113.9",
+    "https://224.0.0.1",
+    "https://255.255.255.255",
+    "https://[::1]",
+    "https://[fe80::1]",
+    "https://[::ffff:127.0.0.1]",
+    "not a url",
+  ]) {
+    const f = await fixture("custom", "anthropic", gatewayFields(baseUrl));
+    await assert.rejects(f.mirror(), /public https address/u, baseUrl);
+    assert.deepEqual(f.calls, [], baseUrl);
+  }
+  for (const models of [
+    " , ",
+    "has space,fine",
+    "tab\tinside",
+    "ok?",
+    "-leading",
+    "a".repeat(129),
+  ]) {
+    const f = await fixture("custom", "openai", gatewayFields("https://gateway.example", models));
+    await assert.rejects(f.mirror(), /model names/u, models);
+    assert.deepEqual(f.calls, [], models);
+  }
+});
+
+const customCheck = async (method: "anthropic" | "openai", fields: Record<string, string>) => {
+  // The provider's check is wired to these rules; the method changes nothing about them.
+  assert.ok(providers.custom.auth[method] && providers.custom.health);
+  // The host's own classification turns what the check threw into what the form shows.
+  const context = { accounts: Redacted.make({}) } as never;
+  // A throw inside the check is a defect to the host, which classifies it with the same rules.
+  const checked = Effect.sync(() =>
+    checkCustomEndpoint({ baseUrl: fields.baseUrl ?? "", models: fields.models ?? "" }),
+  ).pipe(classifyAccountCheck(context));
+  return Effect.runPromise(Effect.result(checked));
+};
+
+test("the connect form's check refuses a custom endpoint with the reason the person sees", async () => {
+  for (const [baseUrl, models, reason] of [
+    ["https://10.1.2.3", "emulated-opus", customEndpointRefusals.address],
+    ["https://nas.lan/v1", "emulated-opus", customEndpointRefusals.address],
+    ["https://gateway.example/?key=1", "emulated-opus", customEndpointRefusals.address],
+    ["https://gateway.example", " , ", customEndpointRefusals.models],
+    ["https://gateway.example", "has space,fine", customEndpointRefusals.models],
+  ] as const) {
+    for (const method of ["anthropic", "openai"] as const) {
+      const result = await customCheck(method, gatewayFields(baseUrl, models));
+      assert.ok(Result.isFailure(result), baseUrl);
+      // The form shows a HostOperationFailed's own message after "Couldn't verify this <method>:".
+      const carried = result.failure;
+      assert.ok(Schema.is(HostOperationFailed)(carried), `${method} ${baseUrl}`);
+      assert.equal(carried.source, "app");
+      assert.equal(carried.message, reason, `${method} ${baseUrl} ${models}`);
+    }
+  }
+  assert.match(customEndpointRefusals.address, /^Enter a public https address/u);
+  assert.match(customEndpointRefusals.models, /^Enter one to 200 model names/u);
+  for (const baseUrl of ["https://gateway.example", "https://gateway.example/api/v1/"])
+    for (const method of ["anthropic", "openai"] as const)
+      assert.ok(Result.isSuccess(await customCheck(method, gatewayFields(baseUrl))), baseUrl);
 });
