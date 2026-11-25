@@ -213,8 +213,9 @@ test("overlapping unchanged requests share one source fill", () =>
         yield* Deferred.await(release);
         return { windows: [1] };
       });
-      const work = Effect.all(
-        [1, 2, 3].map(() => cache("caller", Effect.succeed({ revisions: [] }), read)),
+      const work = Effect.forEach(
+        [1, 2, 3],
+        () => cache("caller", Effect.succeed({ revisions: [] }), read),
         { concurrency: "unbounded" },
       );
       const fiber = yield* work.pipe(Effect.forkChild);

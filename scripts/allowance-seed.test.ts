@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { renewSeed } from "./allowance-seed.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
-const committed = JSON.parse(read("../src/pool/allowances/seed.json"));
+// The table as generated on 13 Nov, frozen: renewal logic is tested on fixed rows, not the shipped ones.
+const committed = JSON.parse(read("../src/pool/allowances/fixtures/seed-2026-11-13.json"));
 const vendor: Record<string, string> = JSON.parse(
   read("../src/pool/allowances/fixtures/vendor-sources.json"),
 );

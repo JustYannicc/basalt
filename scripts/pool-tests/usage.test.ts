@@ -13,6 +13,7 @@ import { readCap } from "../../src/pool/caps.ts";
 import { ComputerHome } from "../../src/pool/computer-home.ts";
 import { handleControl, HomeClient, PoolHome } from "../../src/pool/control.ts";
 import { PoolUsage, summaryPath } from "../../src/pool/pool-usage.ts";
+import { fixtureAllowances } from "../../src/pool/allowances/test/seed-fixture.ts";
 import { UsageLedger } from "../../src/pool/usage-summary.ts";
 import { signPoolToken } from "../../src/pool/token.ts";
 import { MemoryStorage, SharingFixture, type HomeProvider } from "./sharing-fixture.ts";
@@ -279,8 +280,10 @@ test(
       console.log(
         "PASS 1: four person/pool users, ten Home records, two synthetic models with Home credit charges",
       );
+      const storage = new MemoryStorage();
       const usage = new PoolUsage({
-        storage: new MemoryStorage(),
+        storage,
+        allowances: fixtureAllowances(storage, () => Date.now()),
         client,
         signingKey,
         audience: async (pool) => (pool === "pool-a" ? [owner, a, b] : [a]),
