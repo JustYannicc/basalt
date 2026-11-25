@@ -2,11 +2,51 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { PlanAllowances } from "./registry.ts";
-import type { PlanAllowanceCatalog } from "./data.ts";
+import { seedCatalog, type PlanAllowanceCatalog } from "./data.ts";
 import { planAllowance } from "../../../.upstream/packages/apps/src/contracts/account-plan-allowance.ts";
 
-// These tests own their seed. The bundled seed is renewed every few days, so a test that read it
-// would break at each renewal and pass only for the rows that renewal happened to keep.
+// Every test of the pool's logic owns its seed; only the first test here reads the shipped table.
+// The shipped table is renewed every few days, so a logic test that read it would break at each
+// renewal and pass only for the rows that renewal happened to keep.
+test("the shipped table is well formed, names the known plans and was checked before it was written", () => {
+  const generated = /checked (\d{4}-\d{2}-\d{2})\b/u.exec(
+    String((seedCatalog as PlanAllowanceCatalog & { attribution?: unknown }).attribution),
+  );
+  assert.ok(generated, "the attribution names the day its evidence was checked");
+  // A row checked after the table was written would be read as not yet current by any clock
+  // before that check, which a test clock fixed at the last renewal is.
+  const writtenBy = Date.parse(`${generated[1]}T00:00:00Z`) + 86_400_000;
+  assert.ok(seedCatalog.entries.length > 0);
+  for (const entry of seedCatalog.entries) {
+    const key = `${entry.vendor}/${entry.plan}/${entry.windowSeconds}s (${entry.sourceId})`;
+    assert.ok(entry.vendor && entry.plan && entry.windowSeconds > 0, key);
+    assert.ok(entry.unlimited || (Number.isFinite(entry.full) && entry.full! > 0), key);
+    assert.ok(entry.unit.id && entry.kind && entry.verification && entry.revision, key);
+    assert.ok(
+      entry.checkedAt !== null && entry.checkedAt <= writtenBy,
+      `${key} checked after the table`,
+    );
+    assert.ok(entry.expiresAt !== null && entry.expiresAt > entry.checkedAt!, key);
+  }
+  for (const [vendor, plan] of [
+    ["anthropic", "pro"],
+    ["anthropic", "max_5x"],
+    ["anthropic", "max_20x"],
+    ["anthropic", "ultra"],
+    ["openai", "plus"],
+    ["openai", "pro"],
+    ["openai", "prolite"],
+    ["openai", "promax"],
+  ])
+    assert.ok(
+      seedCatalog.entries.some(
+        (entry) =>
+          entry.vendor === vendor && entry.plan === plan && entry.windowSeconds === 604_800,
+      ),
+      `${vendor}/${plan} has a weekly row`,
+    );
+});
+
 const seed: PlanAllowanceCatalog = JSON.parse(
   readFileSync(new URL("./fixtures/seed-max20x.json", import.meta.url), "utf8"),
 );

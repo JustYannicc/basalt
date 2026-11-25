@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { datasetAllowances } from "./dataset.ts";
 import { PlanAllowances } from "./registry.ts";
+import { seedFixture } from "./test/seed-fixture.ts";
 import {
   planAllowance,
   planAllowanceWindows,
@@ -184,6 +185,7 @@ test("a vendor row taking over from an aged-out dataset row keeps the plan's rev
     },
     {
       now: () => clock,
+      seed: seedFixture,
       fetch: async (input) => {
         const url = String(input);
         if (url.includes("planyield")) return Response.json({ ...dataset, as_of: "2026-11-13" });

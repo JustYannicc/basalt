@@ -1,7 +1,7 @@
 model {
   extend basalt.pool {
     metadata {
-      constraint "The shipped allowance seed is a fallback. A source's seed rows count only while that source has no stored state or is unavailable, so a renewed seed changes no decision for a pool whose sources answer; while a source is down, the renewal's newer rows decide with the same size and revision. Rows without a refreshing source, such as pool policy, always count. Allowance tests own their seed fixtures and never read the shipped seed."
+      constraint "The shipped allowance seed is a fallback. A source's seed rows count only while that source has no stored state or is unavailable, so a renewed seed changes no decision for a pool whose sources answer; while a source is down, the renewal's newer rows decide with the same size and revision. Rows without a refreshing source, such as pool policy, always count. Tests of the pool's logic read a frozen copy of the table, never the shipped one, because each renewal re-dates its rows; one test reads the shipped table and checks only its shape, the known plans and that no row was checked after the table was written."
     }
   }
 }
