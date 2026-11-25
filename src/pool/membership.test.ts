@@ -609,6 +609,42 @@ test("retained and unconfirmed pools keep their existing behavior after pool del
   }
 });
 
+test("a pool deleted while reserved and unconfirmed keeps refusing authority", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request());
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+  const installed = f.installed.get("a");
+  const aborted = [...f.aborted];
+  await memberships.retire("a", f.deps.now());
+  // Retire acts only on a confirmed pool: nothing reaches the pool's runtime or Home, and the
+  // reservation's own refusal stands.
+  assert.equal(f.installed.get("a"), installed);
+  assert.deepEqual(f.aborted, aborted);
+  assert.equal(f.home.get("a"), undefined);
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+});
+
+test("retiring a confirmed pool writes its tombstone and authority then refuses", async () => {
+  const f = fixture();
+  const memberships = new NativeMemberships(f.deps);
+  await memberships.reserve(await f.request());
+  await memberships.tick();
+  assert.deepEqual((await memberships.authority("a"))?.accounts, ["auth-a"]);
+  assert.deepEqual(f.home.get("a"), ["auth-a"]);
+  const aborted = f.aborted.length;
+  await memberships.retire("a", f.deps.now());
+  assert.equal(f.aborted.length, aborted + 1);
+  // The pool's runtime is told at once that it has no accounts.
+  assert.deepEqual(f.installed.get("a")?.accounts, []);
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+  // The tombstone refuses the pool's return and a new reservation within its window.
+  await assert.rejects(memberships.ensure("a", "org"), /retired/);
+  await assert.rejects(memberships.reserve(await f.request()), /retired/);
+  await memberships.tick();
+  await assert.rejects(memberships.authority("a"), { status: 503, code: "backend_unavailable" });
+});
+
 test("a native record from the previous layout retains retirement across a failed install and retry", async () => {
   const f = fixture();
   await f.deps.storage.put("native-pool-memberships-v1", {
