@@ -20,10 +20,7 @@ import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
 import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
 import { PoolChanges, publishPoolChanges } from "./change-revisions.ts";
 import { poolChangesPath, readCommittedPoolChanges } from "./change-http.ts";
-import {
-  readPoolHistorySnapshot,
-  deliverPoolHistoryChanges,
-} from "./model-history/change-revisions.ts";
+import { readPoolHistorySnapshot } from "./model-history/change-revisions.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime, PoolRuntimeBlue, PoolRuntimeGreen } from "./runtime-do.worker.ts";
 export { PoolHomePeer } from "./home-peer.worker.ts";
@@ -90,8 +87,9 @@ import { observeAutomaticPool } from "./automatic-observation.ts";
 import { automaticRecoveryAuthority } from "./automatic-authority.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
 import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
-import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
+import { runModelHistoryPass, type ModelHistoryPass } from "./model-history/pass.ts";
+import type { HistoryDatabase } from "./model-history/schema.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
 import {
   handleUsageSeries,
@@ -205,6 +203,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private peers: RuntimeHomePeerTransport;
   private alarms: PoolAlarms;
   private homeUpkeepTask?: Promise<void>;
+  private modelHistoryTask?: Promise<void>;
   private alarmInFlight = false;
   private control: PoolControl;
   private mirrorHome: HomeClient;
@@ -260,7 +259,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       storage: ctx.storage,
       inFlight: () => this.handoverCount.active,
       busy: () =>
-        this.alarmInFlight || this.homeUpkeepTask !== undefined || this.handoffsInFlight > 0,
+        this.alarmInFlight ||
+        this.homeUpkeepTask !== undefined ||
+        this.modelHistoryTask !== undefined ||
+        this.handoffsInFlight > 0,
       abort: (reason) => ctx.abort(reason),
       defer: (work) => ctx.waitUntil(work.catch(() => console.error("POOL_CODE_HANDOVER_PENDING"))),
     });
@@ -827,56 +829,59 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         ),
       )
       .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
-    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
-      try {
-        await trace.run("model_history", () =>
-          reportWhenDue(this.ctx.storage, "model-history", async (progress) => {
-            await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
-              const result = await captureHomeRequests(db);
-              progress.rows = result.state === "active" ? result.scanned : 0;
-              await deliverPoolHistoryChanges(db, result.pending, (changes) =>
-                publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
-              );
-            });
-            // Its own session, so a slow figure cannot fail a capture that already committed.
-            const target = this.env.POOL_AVAILABILITY_TARGET;
-            if (validProbeTarget(target))
-              await recordReliability(this.ctx.storage, target, (now) =>
-                readReliabilityInSession(
-                  this.env.POOL_AUTH_DATABASE?.connectionString,
-                  target,
-                  now,
-                ),
-              ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
-            // Last, and only after a capture that committed: the pool backfills its own usage
-            // rollup in bounded sessions, so nothing above waits behind it. It runs within this
-            // Home pass, which the alarm keeps alive through waitUntil (up to 15 minutes in a
-            // Durable Object). A code handover ends it after the hour in flight, so the handover
-            // waits for one hour's recompute, never the whole tick.
-            await usageRollupTick(
-              this.ctx.storage,
-              (work) =>
-                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
-                  totalTimeoutMs: 20_000,
-                }),
-              { stopped: () => this.handover.draining },
-            ).catch(() => console.error("POOL_USAGE_ROLLUP_TICK_PENDING"));
-            // After the rollup's, in sessions of its own: the pool counts each settled hour's Home
-            // usage rows, so the summary compares counts instead of probing every usage row.
-            await captureHoursTick(
-              this.ctx.storage,
-              (work) =>
-                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
-                  totalTimeoutMs: 20_000,
-                }),
-              { stopped: () => this.handover.draining },
-            ).catch(() => console.error("POOL_CAPTURE_HOURS_TICK_PENDING"));
-          }),
-        );
-      } catch {
-        console.error("POOL_MODEL_HISTORY_FAILURE count=1");
-      }
+    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") this.startModelHistory(trace);
+  }
+
+  /**
+   * The model-history pass as its own task: the Home pass's steps never wait for it, one pass runs
+   * at a time, and a code handover waits for it as for the Home pass.
+   */
+  private startModelHistory(trace: PoolUpkeepTrace) {
+    if (this.modelHistoryTask) {
+      trace.event("model_history_shared");
+      return;
     }
+    const work = trace
+      .run("model_history", () =>
+        reportWhenDue(this.ctx.storage, "model-history", (progress) =>
+          runModelHistoryPass(this.modelHistoryPass(), progress),
+        ),
+      )
+      .catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1"))
+      .finally(() => {
+        if (this.modelHistoryTask === work) this.modelHistoryTask = undefined;
+      });
+    this.modelHistoryTask = work;
+    this.ctx.waitUntil(work);
+  }
+
+  /**
+   * The model-history pass's steps, each in sessions of its own. The rollup and capture-hours ticks
+   * end after the hour in flight once a code handover starts, so the handover waits for one hour's
+   * work, never the whole tick.
+   */
+  private modelHistoryPass(): ModelHistoryPass {
+    const connection = this.env.POOL_AUTH_DATABASE?.connectionString;
+    const session = <T>(work: (db: HistoryDatabase) => Promise<T>) =>
+      withHistoryDatabase(connection, work, { totalTimeoutMs: 20_000 });
+    const target = this.env.POOL_AVAILABILITY_TARGET;
+    const stopped = () => this.handover.draining;
+    return {
+      session: (work) => withHistoryDatabase(connection, work),
+      publish: (changes) =>
+        publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
+      ...(validProbeTarget(target)
+        ? {
+            reliability: () =>
+              recordReliability(this.ctx.storage, target, (now) =>
+                readReliabilityInSession(connection, target, now),
+              ),
+          }
+        : {}),
+      rollup: () => usageRollupTick(this.ctx.storage, session, { stopped }),
+      hours: () => captureHoursTick(this.ctx.storage, session, { stopped }),
+      stopped,
+    };
   }
 
   async migrationInventory(): Promise<void> {
