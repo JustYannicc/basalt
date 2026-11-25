@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { deferred } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
 import { PoolAlarms } from "./alarms.ts";
 import { runtimeAdmissionWaitMs, runtimeRetryTiming } from "./runtime-fleet/retry.ts";
-import { restartStartBoundMs, unservingBoundMs } from "./runtime-slots/forced-restart-timing.ts";
+import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
+import {
+  aliveRefusingMs,
+  restartStartBoundMs,
+  unservingBoundMs,
+} from "./runtime-slots/forced-restart-timing.ts";
 import { UnservingClock } from "./runtime-slots/unserving-clock.ts";
 import { RuntimeSlotStorage } from "./runtime-slots/storage.ts";
 
@@ -237,6 +243,105 @@ test(
     assert.equal(call?.response?.headers.get("Retry-After"), "1");
     await call?.response?.body?.cancel();
     const waited = call!.settledAt! - detected;
+    assert.ok(
+      waited >= restartStartBoundMs && waited <= restartStartBoundMs + 1_000,
+      `answered ${waited} ms after detection`,
+    );
+    assert.equal(root.served.size, 0);
+  },
+);
+
+/**
+ * One call held from a second after detection behind a root whose ready answers come after their
+ * lease, so it admits nothing but lives, while `late` holds; recovery passes every 10 s. No cell
+ * is ready. Records the step at which the root was stopped.
+ */
+async function heldBehindLateRoot(
+  context: TestContext,
+  late: (boot: string, current: string, elapsed: number) => boolean,
+  until: number,
+  { restartFails = false } = {},
+) {
+  const root = await rootUnderRecovery(context);
+  const { f } = root;
+  context.mock.method(runtimeStopTiming, "stopGrace", async () => {});
+  if (restartFails)
+    f.old.ctx.container.start = () => {
+      throw new Error("synthetic: no container instance");
+    };
+  const boot = f.old.identity().bootId;
+  const detected = root.now();
+  f.old.hooks.health = async () => {
+    const slow = late(boot, f.old.identity().bootId, root.now() - detected);
+    f.old.hooks.readinessLeaseMs = slow ? 1 : 1_500;
+    if (slow) await sleep(5);
+  };
+  await pass(f);
+  await root.advance(detected + 1_000);
+  root.call("held");
+  await root.idle();
+  const stoppedAt: number[] = [];
+  for (let at = 10_000; at <= until; at += 10_000) {
+    const signals = f.old.calls.signals.length;
+    await root.advance(detected + at);
+    await pass(f);
+    await root.idle();
+    if (f.old.calls.signals.length > signals) stoppedAt.push(at);
+  }
+  const [call] = root.calls;
+  assert.equal(call?.error, undefined);
+  return { root, call: call!, waited: call!.settledAt! - detected, stoppedAt };
+}
+
+test(
+  "with no ready cell, a call held behind a late root that answers in time again inside aliveRefusingMs is served then, and the root is not stopped",
+  { timeout: 30_000 },
+  async (context) => {
+    const { root, call, waited, stoppedAt } = await heldBehindLateRoot(
+      context,
+      (boot, current, elapsed) => current === boot && elapsed < 100_000,
+      2 * aliveRefusingMs,
+    );
+    assert.deepEqual(stoppedAt, []);
+    assert.equal(call.response?.status, 200);
+    assert.equal(await call.response!.text(), "ok:held");
+    assert.equal(root.served.get("held"), 1);
+    assert.ok(waited >= 100_000 && waited <= 101_000, `served ${waited} ms after detection`);
+  },
+);
+
+test(
+  "with no ready cell, a call held behind a late root stopped at aliveRefusingMs is served by its restart inside the hold",
+  { timeout: 30_000 },
+  async (context) => {
+    const { root, call, waited, stoppedAt } = await heldBehindLateRoot(
+      context,
+      (boot, current) => current === boot,
+      restartStartBoundMs,
+    );
+    assert.deepEqual(stoppedAt, [aliveRefusingMs], "stopped at the limit, not at the 60 s bound");
+    assert.equal(call.response?.status, 200);
+    assert.equal(await call.response!.text(), "ok:held");
+    assert.equal(root.served.get("held"), 1);
+    assert.ok(waited > aliveRefusingMs && waited < restartStartBoundMs, `served at ${waited} ms`);
+  },
+);
+
+test(
+  "with no ready cell, a call held behind a late root whose restart doesn't serve inside the hold gets the retryable 503 240 s after detection",
+  { timeout: 30_000 },
+  async (context) => {
+    // After the stop the platform has no instance to start, so no restart serves inside the hold.
+    const { root, call, waited, stoppedAt } = await heldBehindLateRoot(
+      context,
+      (boot, current) => current === boot,
+      restartStartBoundMs + 20_000,
+      { restartFails: true },
+    );
+    assert.deepEqual(stoppedAt, [aliveRefusingMs]);
+    assert.equal(call.response?.status, 503);
+    assert.equal(call.response?.headers.get("Retry-After"), "1");
+    await call.response?.body?.cancel();
     assert.ok(
       waited >= restartStartBoundMs && waited <= restartStartBoundMs + 1_000,
       `answered ${waited} ms after detection`,
