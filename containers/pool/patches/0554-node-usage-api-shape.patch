@@ -1,5 +1,5 @@
 diff --git a/internal/redisqueue/metadata_only_test.go b/internal/redisqueue/metadata_only_test.go
-index e4dfca7..3106455 100644
+index e4dfca7c..3106455f 100644
 --- a/internal/redisqueue/metadata_only_test.go
 +++ b/internal/redisqueue/metadata_only_test.go
 @@ -49,7 +49,7 @@ func TestUsageQueueMetadataOnlyDropsSensitiveValuesAndKeepsDiagnostics(t *testin
@@ -22,7 +22,7 @@ index e4dfca7..3106455 100644
  		}
  		requireStringField(t, payload, "auth_type", "unknown")
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
-index 0b1f50d..3313038 100644
+index 0b1f50d2..3313038c 100644
 --- a/sdk/cliproxy/usage/metadata_only.go
 +++ b/sdk/cliproxy/usage/metadata_only.go
 @@ -69,7 +69,7 @@ func RegisteredModel(provider, accountID, model string) bool {
@@ -63,7 +63,7 @@ index 0b1f50d..3313038 100644
  func safeQuotaHeaders(provider string, headers http.Header) http.Header {
  	if provider != "codex" {
 diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
-index 9ef9efe..4344c6d 100644
+index 9ef9efea..4344c6dd 100644
 --- a/sdk/cliproxy/usage/metadata_only_test.go
 +++ b/sdk/cliproxy/usage/metadata_only_test.go
 @@ -64,7 +64,7 @@ func TestMetadataOnlyPublishDetachesContextAndKeepsSafeFields(t *testing.T) {
