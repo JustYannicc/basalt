@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import pg from "pg";
+import { ensurePostgresAdministers, ensurePostgresRole } from "./managed-postgres.ts";
 import {
   homeTriggerTargets,
   normalizeHomeTriggerTableOwners,
@@ -64,6 +65,16 @@ interface Fixture {
 }
 
 async function fixture(work: (value: Fixture) => Promise<void>): Promise<void> {
+  // Connections below act as the postgres role, so it has to exist before the first of them opens,
+  // and it has to administer the owner role even when another file created that as the superuser.
+  const setup = new pg.Client({ connectionString: adminValue });
+  await setup.connect();
+  try {
+    await ensurePostgresRole(setup);
+    await ensurePostgresAdministers(setup, owner);
+  } finally {
+    await setup.end();
+  }
   const admin = new pg.Client({ connectionString: clusterUrl() });
   const database = `ownership_${randomUUID().replaceAll("-", "")}`;
   const roles = new Set<string>();

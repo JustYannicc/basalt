@@ -108,7 +108,7 @@ test("affected selection and the full aggregate cannot skip the audited partitio
       },
     ]),
   );
-  assert.deepEqual(gateErrors(needs, heavyJobs, [], true), []);
+  assert.deepEqual(gateErrors(needs, heavyJobs, [], "full"), []);
   needs[job] = { result: "skipped" };
-  assert.ok(gateErrors(needs, heavyJobs, [], true).some((error) => error.startsWith(job + ":")));
+  assert.ok(gateErrors(needs, heavyJobs, [], "full").some((error) => error.startsWith(job + ":")));
 });
