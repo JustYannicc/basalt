@@ -1,5 +1,5 @@
 {
-  "about": "Globs for the files that decide how a production release is made: release code, its workflows, the stack declarations it applies and every carry that patches Alchemy. A change here needs a rehearsal, ships alone and counts against the release tooling budget. Entries for the Alchemy release path match nothing until it lands.",
+  "about": "Globs for the files that decide how a production release is made: release code, its workflows, the stack declarations it applies and every carry that patches Alchemy. The Guardrails checks warn when a change here does not ship alone or grows the release tooling past its budget. Entries for the Alchemy release path match nothing until it lands.",
   "paths": [
     "alchemy.run.ts",
     "infrastructure/**",
