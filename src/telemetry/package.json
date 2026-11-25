@@ -1,0 +1,8 @@
+{
+  "name": "basalt-telemetry",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "evlog": "2.35.1"
+  }
+}

@@ -192,7 +192,7 @@ test("the signed native reader returns only current app links and verified Home 
     [sdk.AccountAcquisitionHost]: {
       source: ({ account }: { account: string }) => {
         const saved = bindings.get(account);
-        if (saved === undefined) return Effect.succeed(undefined);
+        if (saved === undefined) return Effect.void;
         const current = account === "acc_changed" ? changed : saved;
         return Effect.succeed({
           binding: saved,

@@ -97,3 +97,44 @@ export const resolvedApplication = {
 };
 
 export const envelope = (result: unknown) => ({ success: true, result, messages: [], errors: [] });
+
+// Workers custom domains, recorded on 2026-11-25 (structure only: key names, JSON types and the
+// envelope's null-versus-[] kept; every value is made up in the recorded form).
+
+/** An item of GET /accounts/{id}/workers/domains, and the result of a read of one domain. */
+export const workerDomain = {
+  id: "0123456789abcdef0123456789abcdef01234567",
+  zone_id: "0123456789abcdef0123456789abcdef",
+  zone_name: "<zone>",
+  hostname: "<hostname>",
+  service: "<name>",
+  environment: "<environment>",
+  cert_id: "<id>",
+  previews_enabled: false,
+  enabled: true,
+};
+
+/** GET /accounts/{id}/workers/domains: the list answers null for errors and messages. */
+export const workerDomainList = (result: readonly unknown[]) => ({
+  result,
+  success: true,
+  errors: null,
+  messages: null,
+  result_info: { page: 1, per_page: 50, count: result.length, total_count: result.length },
+});
+
+/** GET /accounts/{id}/workers/domains/{domainId}: no result_info, and [] where the list has null. */
+export const workerDomainRead = (result: unknown) => ({
+  result,
+  success: true,
+  errors: [],
+  messages: [],
+});
+
+/** The same read of an id Cloudflare does not know: HTTP 404 with this body. */
+export const workerDomainNotFound = (id: string) => ({
+  result: null,
+  success: false,
+  errors: [{ code: 100114, message: `Origin '${id}' not found.` }],
+  messages: [],
+});
