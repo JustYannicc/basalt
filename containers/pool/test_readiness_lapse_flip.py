@@ -1,10 +1,12 @@
-"""The /ready lapse and flip records: one per transition, only the last kept, closed fields."""
+"""The /ready lapse, flip and stall records: only the last kept, bounded lines, closed fields."""
 
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from . import policy_monitor
@@ -199,6 +201,141 @@ class LapseFlipTests(unittest.TestCase):
             self.readiness.begin_recovery()
         self.assertTrue(held)
         self.assertFalse(any(held))
+
+
+class Counters:
+    """The kernel's steal counter and the cgroup's throttling counter, as files the monitor reads."""
+
+    def __init__(self, directory: str) -> None:
+        self.proc_stat = Path(directory, "stat")
+        self.cpu_stat = Path(directory, "cpu.stat")
+        self.steal_ticks = 1_000
+        self.throttled_usec = 5_000_000
+        self.write()
+
+    def write(self) -> None:
+        self.proc_stat.write_text(
+            f"cpu  100 0 50 9000 3 0 1 {self.steal_ticks} 0 0\ncpu0 100 0 50 9000 3 0 1 0 0 0\n"
+        )
+        self.cpu_stat.write_text(
+            "usage_usec 900\nnr_periods 10\nnr_throttled 2\n"
+            f"throttled_usec {self.throttled_usec}\n"
+        )
+
+
+class Wait:
+    """The probe wait, its clock driven by the test: it returns `late_ms` after it was due, while
+    the host takes `steal_ms` and the quota holds the container back `throttled_ms`."""
+
+    def __init__(self, clock: Clock, counters: Counters | None = None) -> None:
+        self.clock = clock
+        self.counters = counters
+        self.late_ms = 0
+        self.steal_ms = 0
+        self.throttled_ms = 0
+
+    def wait(self, seconds: float) -> bool:
+        self.clock.advance(int(seconds * 1000) + self.late_ms)
+        if self.counters is not None:
+            self.counters.steal_ticks += self.steal_ms * policy_monitor._ticks_per_second() // 1000
+            self.counters.throttled_usec += self.throttled_ms * 1000
+            self.counters.write()
+        return False
+
+    def is_set(self) -> bool:
+        return False
+
+
+class StallTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.clock = Clock()
+        self.lines: list[str] = []
+        patcher = patch.object(readiness_module, "emit", lambda line, err=False: self.lines.append(line))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.readiness = Readiness("key", self.clock)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.counters = Counters(directory.name)
+        self.monitor = policy_monitor.PolicyHealthMonitor(
+            self.readiness,
+            "key",
+            monotonic_ns=self.clock,
+            proc_stat=str(self.counters.proc_stat),
+            cpu_stats=(str(self.counters.cpu_stat),),
+        )
+        self.waits = Wait(self.clock, self.counters)
+
+    def payload(self) -> dict[str, object]:
+        return self.readiness.readiness_response()[1]
+
+    def test_a_wait_that_returns_late_records_the_stall_and_what_the_scheduler_did(self) -> None:
+        self.waits.late_ms, self.waits.steal_ms, self.waits.throttled_ms = 1_200, 300, 900
+        self.monitor.wait(self.waits, 0.5)
+        payload = self.payload()
+        self.assertEqual(payload["stalls"], 1)
+        stall = payload["last_stall"]
+        self.assertEqual(
+            {key: stall[key] for key in ("late_ms", "steal_ms", "throttled_ms")},
+            {"late_ms": 1_200, "steal_ms": 300, "throttled_ms": 900},
+        )
+        # The supervisor's own CPU in that wait: a process that ran says so, one frozen says ~0.
+        self.assertIsInstance(stall["cpu_ms"], int)
+        self.assertGreaterEqual(stall["cpu_ms"], 0)
+        self.assertRegex(str(stall["at"]), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
+        self.assertEqual(len(self.lines), 1)
+        name, _space, body = self.lines[0].partition(" ")
+        self.assertEqual(name, "POOL_SUPERVISOR_STALL")
+        fields = json.loads(body)
+        self.assertEqual(set(fields), {"late_ms", "cpu_ms", "steal_ms", "throttled_ms", "stalls"})
+        self.assertEqual((fields["late_ms"], fields["steal_ms"], fields["throttled_ms"]), (1_200, 300, 900))
+
+    def test_a_counter_that_cannot_be_read_is_null(self) -> None:
+        monitor = policy_monitor.PolicyHealthMonitor(
+            self.readiness,
+            "key",
+            monotonic_ns=self.clock,
+            proc_stat=str(self.counters.proc_stat) + ".absent",
+            cpu_stats=(str(self.counters.cpu_stat) + ".absent",),
+        )
+        self.waits.late_ms = 2_000
+        monitor.wait(self.waits, 0.5)
+        stall = self.payload()["last_stall"]
+        self.assertIsNone(stall["steal_ms"])
+        self.assertIsNone(stall["throttled_ms"])
+        self.assertIn('"steal_ms":null', self.lines[0])
+        for broken in ("", "cpux 1 2 3\n", "cpu 1 2\n", "cpu 1 2 3 4 5 6 7 x\n"):
+            self.counters.proc_stat.write_text(broken)
+            self.assertIsNone(policy_monitor.steal_ms(str(self.counters.proc_stat)), broken)
+        self.counters.cpu_stat.write_text("throttled_usec many\n")
+        self.assertIsNone(policy_monitor.throttled_ms((str(self.counters.cpu_stat),)))
+
+    def test_cgroup_v1_reports_throttling_in_nanoseconds(self) -> None:
+        self.counters.cpu_stat.write_text("nr_periods 10\nnr_throttled 2\nthrottled_time 7000000\n")
+        self.assertEqual(policy_monitor.throttled_ms((str(self.counters.cpu_stat),)), 7)
+
+    def test_a_wait_on_time_records_nothing(self) -> None:
+        for late_ms in (0, 3, policy_monitor.STALL_LATE_MS - 1):
+            self.waits.late_ms = late_ms
+            self.monitor.wait(self.waits, 0.5)
+        payload = self.payload()
+        self.assertNotIn("stalls", payload)
+        self.assertNotIn("last_stall", payload)
+        self.assertEqual(self.lines, [])
+
+    def test_every_stall_is_counted_and_its_line_comes_at_most_every_ten_seconds(self) -> None:
+        for late_ms in (400, 1_600, 900):
+            self.waits.late_ms = late_ms
+            self.monitor.wait(self.waits, 0.5)
+        payload = self.payload()
+        self.assertEqual(payload["stalls"], 3)
+        self.assertEqual(payload["last_stall"]["late_ms"], 900)
+        self.assertEqual(len(self.lines), 1)
+        self.clock.advance(10_000)
+        self.waits.late_ms = 500
+        self.monitor.wait(self.waits, 0.5)
+        self.assertEqual(len(self.lines), 2)
+        self.assertEqual(json.loads(self.lines[1].partition(" ")[2])["stalls"], 4)
 
 
 class LapseFlipPrivacyTests(unittest.TestCase):

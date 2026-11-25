@@ -33,8 +33,8 @@ const At = Instant.pipe(
 
 /**
  * What a container's readiness answer says about its own recent past: its latest slow probe step
- * (a lapse), its latest change of answer (a flip), and how many of each since its supervisor
- * started. Each field is absent until its first record, and an older image sends none. Decoding
+ * (a lapse), its latest change of answer (a flip), its supervisor's latest late wake-up with what
+ * the scheduler did meanwhile (a stall), and how many of each since its supervisor started. Each field is absent until its first record, and an older image sends none. Decoding
  * keeps only closed values, so the same schema decodes the container's answer and a copy of it
  * that crossed a binding.
  */
@@ -52,8 +52,20 @@ export const ReadySignals = Schema.Struct({
       }),
     ),
   ),
+  lastStall: Schema.optionalKey(
+    nullable(
+      Schema.Struct({
+        lateMs: slot(Count),
+        cpuMs: slot(Count),
+        stealMs: slot(Count),
+        throttledMs: slot(Count),
+        at: slot(At),
+      }),
+    ),
+  ),
   lapses: Schema.optionalKey(nullable(Count)),
   flips: Schema.optionalKey(nullable(Count)),
+  stalls: Schema.optionalKey(nullable(Count)),
 });
 export type ReadySignals = typeof ReadySignals.Type;
 
@@ -72,6 +84,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
 export function readySignals(body: unknown) {
   if (!record(body)) return undefined;
   const flip = body.last_flip;
+  const stall = body.last_stall;
   return decodeReadySignals({
     ...("last_lapse" in body ? { lastLapse: body.last_lapse } : {}),
     ...("last_flip" in body
@@ -81,8 +94,22 @@ export function readySignals(body: unknown) {
             : flip,
         }
       : {}),
+    ...("last_stall" in body
+      ? {
+          lastStall: record(stall)
+            ? {
+                lateMs: stall.late_ms,
+                cpuMs: stall.cpu_ms,
+                stealMs: stall.steal_ms,
+                throttledMs: stall.throttled_ms,
+                at: stall.at,
+              }
+            : stall,
+        }
+      : {}),
     ...("lapses" in body ? { lapses: body.lapses } : {}),
     ...("flips" in body ? { flips: body.flips } : {}),
+    ...("stalls" in body ? { stalls: body.stalls } : {}),
   });
 }
 
