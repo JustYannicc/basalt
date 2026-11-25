@@ -900,7 +900,7 @@ test("a named job routes by its exact id, and the gate accepts it only when the 
       { result: conditionalJobs.includes(id) && id !== "workerd-assets" ? "skipped" : "success" },
     ]),
   );
-  assert.deepEqual(gateErrors(needs, heavyJobs, namedIds, true), []);
+  assert.deepEqual(gateErrors(needs, heavyJobs, namedIds, "full"), []);
   const without = heavyJobs.filter((job) => job !== "production-ops-identity");
   assert.ok(
     gateErrors(needs, without, ["production-ops-identity:credentials"]).includes(
@@ -931,8 +931,15 @@ test("no workflow names the box or release runner labels outside the heartbeat's
 
 test("select reads only the routing inputs it needs, and the aggregate holds every routed job", () => {
   const select = workflow.jobs.select;
-  assert.deepEqual(select.permissions, { contents: "read", actions: "read", checks: "read" });
-  assert.equal(select.outputs.box_jobs, "${{ steps.jobs.outputs.box_jobs }}");
+  // Write only to cancel this pull request's superseded runs (scripts/ci/cancel-superseded.ts);
+  // checks to read other Checks' box placements.
+  assert.deepEqual(select.permissions, { contents: "read", actions: "write", checks: "read" });
+  // A reused Check skips the routing step; its empty list routes nothing and skips box-watch.
+  assert.equal(
+    select.outputs.box_jobs,
+    "${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.box_jobs }}",
+  );
+  assert.match(workflow.jobs["box-watch"].if, /needs\.select\.outputs\.box_jobs != '\[\]'/);
   assert.equal(select.outputs.box_label, "${{ steps.jobs.outputs.box_label }}");
   assert.equal(select.outputs.hosted_jobs, undefined);
   assert.equal(select.steps[0].uses, "actions/checkout@v4");
@@ -961,27 +968,32 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
     ]),
   );
   const box = ["declared-cloud-3", "declared-self-host-1"];
-  assert.deepEqual(gateErrors(needs, heavyJobs, box, true), []);
+  assert.deepEqual(gateErrors(needs, heavyJobs, box, "full"), []);
   for (const id of ["declared-self-host", "declared-cloud"])
     for (const result of ["failure", "cancelled", "skipped"])
       assert.ok(
-        gateErrors({ ...needs, [id]: { result } }, heavyJobs, box, true).some((error) =>
+        gateErrors({ ...needs, [id]: { result } }, heavyJobs, box, "full").some((error) =>
           error.startsWith(id + ":"),
         ),
         `${id}: ${result}`,
       );
   for (const invalid of [
     ["client-desktop"],
-    // The fast lane's routing and gate jobs stay hosted.
+    // The fast lane's routing and gate jobs stay hosted, as do the jobs that start with the Check.
     ["select"],
     ["long-started"],
+    ["fast"],
+    ["fast-units"],
+    // No bench has run the pool runtime legs, so none of them routes.
     ["pool-runtime"],
+    ["pool-runtime:contracts"],
+    ["pool-runtime:compatibility"],
     ["declared-cloud"],
     ["declared-cloud-1", "declared-cloud-1"],
     ["x"],
   ])
     assert.ok(
-      gateErrors(needs, heavyJobs, invalid, true).includes("Invalid box-job selection"),
+      gateErrors(needs, heavyJobs, invalid, "full").includes("Invalid box-job selection"),
       invalid.join(),
     );
   assert.ok(
