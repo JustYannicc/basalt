@@ -32,10 +32,10 @@ index 2900839ef..c27e73eed 100644
    "pool-migration-inventory",
    "personal-data-reporting",
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index 410837608..81bef25ad 100644
+index 410837608..d608aad34 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -510,6 +510,14 @@ export default Api.make(
+@@ -510,6 +510,18 @@ export default Api.make(
        Effect.as(jobCompleted),
        handledJob(Effect.logWarning("Idle agent grant expiry failed")),
      );
@@ -44,13 +44,17 @@ index 410837608..81bef25ad 100644
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
-+      Effect.catch(() => Effect.logWarning("Native device cleanup retry failed")),
-+      Effect.asVoid,
++      Effect.as(jobCompleted),
++      Effect.catch((error) =>
++        Effect.logWarning("Native device cleanup retry failed").pipe(
++          Effect.as(jobFailedWith(Cause.fail(error))),
++        ),
++      ),
 +    );
      // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
      const connectionRetention = whenConnectionRetentionEnabled(
        Effect.gen(function* () {
-@@ -554,6 +562,7 @@ export default Api.make(
+@@ -554,6 +566,7 @@ export default Api.make(
        "schedule-wake",
        "site-assets",
        "account-health-rechecks",
@@ -58,7 +62,7 @@ index 410837608..81bef25ad 100644
      );
      yield* jobs.schedule(
        "*/5 * * * *",
-@@ -599,6 +608,7 @@ export default Api.make(
+@@ -599,6 +612,7 @@ export default Api.make(
        "workflow-reconcile": workflowReconcile,
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,
