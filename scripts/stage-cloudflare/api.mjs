@@ -184,11 +184,7 @@ export function stageCloudflare({
       return `${spec.path}/${encodeURIComponent(target)}${below}`;
     }
     const listed = issued.get(target);
-    if (
-      listed?.kind !== kind ||
-      typeof listed.id !== "string" ||
-      !listed.names.every(owned)
-    )
+    if (listed?.kind !== kind || typeof listed.id !== "string" || !listed.names.every(owned))
       throw fail(`Refused: the ${kind} row is not one this stage listed as its own`);
     return `${spec.path}/${encodeURIComponent(listed.id)}${below}`;
   }

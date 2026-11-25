@@ -109,5 +109,7 @@ export function stageOwnership(prefix, owns) {
       throw new Error("Refused stage ownership: the predicate accepts a release stack's name");
   }
   return (name) =>
-    typeof name === "string" && name.startsWith(`${prefix}-`) && (owns ? accepts(name) === true : true);
+    typeof name === "string" &&
+    name.startsWith(`${prefix}-`) &&
+    (owns ? accepts(name) === true : true);
 }

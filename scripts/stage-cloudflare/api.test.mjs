@@ -300,7 +300,9 @@ test("a listed row is addressed as it was listed, and only as its own kind", asy
     ["a2", "a3"],
   );
   assert.deepEqual(
-    fake.calls.slice(before).map((call) => `${call.method} ${call.path.split("/").slice(5).join("/")}`),
+    fake.calls
+      .slice(before)
+      .map((call) => `${call.method} ${call.path.split("/").slice(5).join("/")}`),
     ["DELETE containers/applications/a1"],
   );
 });
