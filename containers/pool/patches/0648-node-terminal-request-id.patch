@@ -1,5 +1,5 @@
 diff --git a/internal/logging/requestid.go b/internal/logging/requestid.go
-index 4c55e06..ba6b282 100644
+index 4c55e065..ba6b282e 100644
 --- a/internal/logging/requestid.go
 +++ b/internal/logging/requestid.go
 @@ -12,6 +12,54 @@ import (
@@ -59,7 +59,7 @@ index 4c55e06..ba6b282 100644
  
 diff --git a/internal/logging/requestid_terminal_test.go b/internal/logging/requestid_terminal_test.go
 new file mode 100644
-index 0000000..b6d92bd
+index 00000000..b6d92bdd
 --- /dev/null
 +++ b/internal/logging/requestid_terminal_test.go
 @@ -0,0 +1,37 @@
@@ -101,10 +101,10 @@ index 0000000..b6d92bd
 +	}
 +}
 diff --git a/internal/redisqueue/plugin.go b/internal/redisqueue/plugin.go
-index 202b641..528ca74 100644
+index f0306d33..8eb0d3ab 100644
 --- a/internal/redisqueue/plugin.go
 +++ b/internal/redisqueue/plugin.go
-@@ -73,10 +73,13 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
+@@ -80,10 +80,13 @@ func (p *usageQueuePlugin) HandleUsage(ctx context.Context, record coreusage.Rec
  			isNativeKey = coreusage.IsNativeAccessProvider(accessProvider)
  		}
  	}
@@ -121,7 +121,7 @@ index 202b641..528ca74 100644
  	executionID := strings.TrimSpace(record.RequestID)
  	if executionID == "" {
 diff --git a/internal/redisqueue/plugin_test.go b/internal/redisqueue/plugin_test.go
-index 0b34177..981a16e 100644
+index a8e1f6b0..6dda153c 100644
 --- a/internal/redisqueue/plugin_test.go
 +++ b/internal/redisqueue/plugin_test.go
 @@ -90,6 +90,33 @@ func TestUsageQueuePluginPayloadIncludesStableFieldsAndSuccess(t *testing.T) {
@@ -159,11 +159,10 @@ index 0b34177..981a16e 100644
  	tests := []struct {
  		provider  string
 diff --git a/internal/runtime/executor/codex_websockets_duplex.go b/internal/runtime/executor/codex_websockets_duplex.go
-index 29cd156..780b2e4 100644
+index 7854d0d9..93381bce 100644
 --- a/internal/runtime/executor/codex_websockets_duplex.go
 +++ b/internal/runtime/executor/codex_websockets_duplex.go
-@@ -13,7 +13,8 @@ import (
- 
+@@ -13,6 +13,7 @@ import (
  	"github.com/MoeForge/moego/json"
  	"github.com/MoeForge/moego/ojson"
  	"github.com/gorilla/websocket"
@@ -188,7 +187,7 @@ index 29cd156..780b2e4 100644
  // streamCodexDuplex owns the already authenticated socket until downstream
  // disconnect. A response terminal event is not a connection terminal event:
  // accepted steering may produce a successor or wait for client tool results.
-@@ -144,7 +155,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -145,7 +156,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  	// request may retry on another credential using the same input channel.
  	inputReady := make(chan struct{})
  	writerDone := make(chan struct{})
@@ -197,7 +196,7 @@ index 29cd156..780b2e4 100644
  	// Only the writer mutates this; the loss path reads it after joining writerDone.
  	// A message the writer took from input but neither sent nor queued was never written.
  	var consumedPayload []byte
-@@ -200,6 +211,27 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -201,6 +212,27 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  				return false
  			}
  		}
@@ -225,7 +224,7 @@ index 29cd156..780b2e4 100644
  		reject := func(message string) bool {
  			return emitDuplexError(http.StatusBadRequest, "invalid_request_error", "", "", message, "")
  		}
-@@ -356,11 +388,16 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -357,11 +389,16 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  			}
  			return payload, curHeaders, true, true
  		}
@@ -243,7 +242,7 @@ index 29cd156..780b2e4 100644
  			eventID := strings.Clone(strings.TrimSpace(ojson.GetBytesNoCopy(payload, "event_id").String()))
  			metadataMu.Lock()
  			isAppend := ojson.GetBytesNoCopy(payload, "type").String() == "response.append"
-@@ -535,7 +572,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -502,7 +539,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  				metadataMu.Lock()
  				localCompactionDeliveredAny = false
  				metadataMu.Unlock()
@@ -252,15 +251,15 @@ index 29cd156..780b2e4 100644
  				if errCompact != nil {
  					if streamCtx.Err() != nil {
  						return false
-@@ -614,6 +651,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
- 				fail(errPrepare)
- 				return false
+@@ -594,6 +631,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 			if errConn := prepared.sessionInstructions.OnConnection(conn); errConn != nil {
+ 				return rejectPreviousResponseNotFound(eventID)
  			}
 +			prepared.terminalRequestID = terminalRequestID
  			if prepared.wsURL != initial.wsURL {
  				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
  				return false
-@@ -649,8 +687,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -630,8 +668,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  			for len(pendingCreates) > 0 && readyForCreate() {
  				item := pendingCreates[0]
  				pendingCreates = pendingCreates[1:]
@@ -271,7 +270,7 @@ index 29cd156..780b2e4 100644
  					return false
  				}
  			}
-@@ -779,7 +817,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -773,7 +811,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  
  				case "response.create", "response.append":
  					if len(pendingCreates) == 0 && readyForCreate() {
@@ -280,7 +279,7 @@ index 29cd156..780b2e4 100644
  							return
  						}
  					} else {
-@@ -787,7 +825,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -781,7 +819,9 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  							fail(fmt.Errorf("too many outstanding response.create requests"))
  							return
  						}
@@ -291,7 +290,7 @@ index 29cd156..780b2e4 100644
  						consumedPayload = nil
  					}
  					continue
-@@ -821,6 +861,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -815,6 +855,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  			}
  		}
  		reporter := initialReporter
@@ -299,7 +298,7 @@ index 29cd156..780b2e4 100644
  		outputItems := make(map[int64][]byte)
  		var outputFallback [][]byte
  		// A business rejection followed by EOF with nothing outstanding stays terminal.
-@@ -878,7 +919,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -872,7 +913,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  							}
  						}
  						for _, queued := range pendingCreates {
@@ -308,7 +307,7 @@ index 29cd156..780b2e4 100644
  						}
  						abandon(consumedPayload, !localCompactionDeliveredAny)
  						if !firstResponse && !responseActive && len(consumedPayload) > 0 && len(turnErr.Abandoned) == 0 && !localCompactionDeliveredAny {
-@@ -901,7 +942,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -895,7 +936,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  							connectionErr = turnErr
  						}
  					}
@@ -317,7 +316,7 @@ index 29cd156..780b2e4 100644
  					send(cliproxyexecutor.StreamChunk{Err: connectionErr})
  				}
  				return
-@@ -928,7 +969,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -927,7 +968,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  					if settings == nil {
  						metadataMu.Unlock()
  						connectionErr := &codexDuplexConnectionError{cause: fmt.Errorf("automatic successor has no retained parent settings")}
@@ -326,9 +325,9 @@ index 29cd156..780b2e4 100644
  						send(cliproxyexecutor.StreamChunk{Err: connectionErr})
  						return
  					}
-@@ -943,8 +984,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -947,8 +988,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+ 					currentSessionReceipt.Observe(payload)
  				}
- 				waitingParent = ""
  				automaticActive = !firstResponse && len(pending) == 0
 +				terminalRequestID := ""
  				if len(pending) > 0 {
@@ -337,7 +336,7 @@ index 29cd156..780b2e4 100644
  				}
  				responseID = createdResponseID
  				latestTurnResponseID = createdResponseID
-@@ -971,7 +1014,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -976,7 +1019,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  				metadataMu.Unlock()
  				wakeWriter()
  				if !wasFirstResponse {
@@ -347,7 +346,7 @@ index 29cd156..780b2e4 100644
  					reporter.SetTranslatedReasoningEffort(current.clientBody, current.to.String())
  					reporter.StartResponseTTFT()
  				}
-@@ -1036,7 +1080,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1041,7 +1085,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  					// Account health is independent of which queued request failed.
  					// The conductor records the original classification without replaying
  					// this already-started stream on another credential.
@@ -356,7 +355,7 @@ index 29cd156..780b2e4 100644
  					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
  						send(cliproxyexecutor.StreamChunk{Err: credentialErr})
  					}
-@@ -1044,6 +1088,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1049,6 +1093,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  				}
  			}
  			eventPrepared, eventReporter := current, reporter
@@ -364,7 +363,7 @@ index 29cd156..780b2e4 100644
  			if !isInitialResponse && (eventType == "response.failed" || eventType == "error") {
  				failedID := ojson.GetBytesNoCopy(payload, "response.id").String()
  				if failedID == "" {
-@@ -1057,7 +1102,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1062,7 +1107,8 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  				ambiguous := failedID == "" && ((len(pending) > 0 && responseActive) || len(unacknowledgedSteers) > 0)
  				if len(pending) > 0 && !currentFailure && !ambiguous {
  					eventPrepared, pending = pending[0], pending[1:]
@@ -374,7 +373,7 @@ index 29cd156..780b2e4 100644
  					eventReporter.SetTranslatedReasoningEffort(eventPrepared.clientBody, eventPrepared.to.String())
  					terminalDeliveryPending = true
  				} else if !ambiguous {
-@@ -1072,7 +1118,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1077,7 +1123,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  					// either request. Preserve the event and fail the socket without
  					// guessing a scope, replaying input, or cooling the credential.
  					connectionErr := &codexDuplexConnectionError{cause: fmt.Errorf("cannot associate websocket failure with a response or pending create")}
@@ -383,7 +382,7 @@ index 29cd156..780b2e4 100644
  					if send(cliproxyexecutor.StreamChunk{Payload: payload}) {
  						send(cliproxyexecutor.StreamChunk{Err: connectionErr})
  					}
-@@ -1094,7 +1140,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1099,7 +1145,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  			}
  			if replayErr != nil {
  				helps.RecordAPIWebsocketError(ctx, e.cfg, "replay_clear_error", replayErr)
@@ -392,7 +391,7 @@ index 29cd156..780b2e4 100644
  				send(cliproxyexecutor.StreamChunk{Err: replayErr})
  				return
  			}
-@@ -1102,7 +1148,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1107,7 +1153,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  				var status interface{ StatusCode() int }
  				terminalBusinessRejection = errors.As(terminalErr, &status) && status.StatusCode() == http.StatusBadRequest
  				helps.RecordAPIWebsocketError(ctx, e.cfg, "upstream_error", terminalErr)
@@ -401,7 +400,7 @@ index 29cd156..780b2e4 100644
  				if isInitialResponse {
  					send(cliproxyexecutor.StreamChunk{Err: terminalErr})
  					return
-@@ -1144,11 +1190,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
+@@ -1152,11 +1198,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
  					cacheCodexReasoningReplayFromCompleted(current.replayScope, payload)
  				}
  				if detail, ok := helps.ParseCodexUsageWithOutputItems(payload, outputItems, outputFallback); ok {
@@ -418,7 +417,7 @@ index 29cd156..780b2e4 100644
  				}
 diff --git a/internal/runtime/executor/codex_websockets_duplex_terminal_test.go b/internal/runtime/executor/codex_websockets_duplex_terminal_test.go
 new file mode 100644
-index 0000000..1927ae4
+index 00000000..1927ae46
 --- /dev/null
 +++ b/internal/runtime/executor/codex_websockets_duplex_terminal_test.go
 @@ -0,0 +1,221 @@
@@ -644,10 +643,10 @@ index 0000000..1927ae4
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index e01dc78..83b7263 100644
+index f82486f4..61b4b737 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
-@@ -861,6 +861,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -882,6 +882,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  // codexWebsocketPrepared contains the request pipeline output shared by the
  // ordinary per-response stream and subsequent creates on a duplex connection.
  type codexWebsocketPrepared struct {
@@ -656,10 +655,10 @@ index e01dc78..83b7263 100644
  	responseFormat       sdktranslator.Format
  	to                   sdktranslator.Format
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index 3627848..148bc77 100644
+index a0ef8270..956b21f4 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
-@@ -653,6 +653,16 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
+@@ -710,6 +710,16 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
  			parentCtx = logging.WithRequestID(parentCtx, requestID)
  		}
  	}
@@ -677,7 +676,7 @@ index 3627848..148bc77 100644
  
  	endpoint := ""
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
-index bf5d47a..2cbaf64 100644
+index bf5d47aa..2cbaf649 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
 +++ b/sdk/api/handlers/handlers_metadata_test.go
 @@ -42,6 +42,26 @@ func TestGetContextWithCancelCapturesClientRequestMetadata(t *testing.T) {
@@ -708,10 +707,10 @@ index bf5d47a..2cbaf64 100644
  	gin.SetMode(gin.TestMode)
  	ginCtx, engine := gin.CreateTestContext(httptest.NewRecorder())
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket.go b/sdk/api/handlers/openai/openai_responses_websocket.go
-index 5febcc2..762fbe5 100644
+index 76d79af5..1b1a1b6c 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket.go
 +++ b/sdk/api/handlers/openai/openai_responses_websocket.go
-@@ -471,9 +471,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+@@ -534,9 +534,10 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
  	localInterrupt := newResponsesLocalInterrupt()
  	// Advanced on every upstream loss: input read under an older epoch predates the loss.
  	var inputEpoch atomic.Uint64
@@ -723,7 +722,7 @@ index 5febcc2..762fbe5 100644
  	var duplexInput <-chan cliproxyexecutor.WebsocketInput
  	if codexResponseSteering {
  		duplexInput = input
-@@ -618,6 +619,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+@@ -681,6 +682,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
  		var msgType int
  		var payload []byte
  		var msgEpoch uint64
@@ -731,7 +730,7 @@ index 5febcc2..762fbe5 100644
  		var errReadMessage error
  		select {
  		case message, ok := <-input:
-@@ -633,6 +635,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+@@ -696,6 +698,7 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
  					continue
  				}
  				msgType, payload, msgEpoch, errReadMessage = websocket.TextMessage, message.Payload, message.Epoch, message.Err
@@ -739,7 +738,7 @@ index 5febcc2..762fbe5 100644
  			}
  		case <-socketCtx.Done():
  			errReadMessage = context.Cause(socketCtx)
-@@ -701,6 +704,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
+@@ -764,6 +767,21 @@ func (h *OpenAIResponsesAPIHandler) ResponsesWebsocket(c *gin.Context) {
  			continue
  		}
  		executionParent := context.WithValue(c.Request.Context(), "gin", c)
@@ -761,7 +760,7 @@ index 5febcc2..762fbe5 100644
  		executionParent, routeOverridesModelResolution := h.PrepareStreamModelRoute(
  			executionParent,
  			h.HandlerType(),
-@@ -1253,6 +1271,9 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
+@@ -1403,6 +1421,9 @@ func websocketUpgradeHeaders(req *http.Request) http.Header {
  	if turnState != "" {
  		headers.Set(wsTurnStateHeader, turnState)
  	}
@@ -772,11 +771,10 @@ index 5febcc2..762fbe5 100644
  }
  
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket_input.go b/sdk/api/handlers/openai/openai_responses_websocket_input.go
-index d74211c..d286466 100644
+index 3701bd3c..3a1ea85b 100644
 --- a/sdk/api/handlers/openai/openai_responses_websocket_input.go
 +++ b/sdk/api/handlers/openai/openai_responses_websocket_input.go
-@@ -14,9 +14,11 @@ import (
- 	"time"
+@@ -14,8 +14,10 @@ import (
  
  	"github.com/MoeForge/moego/json"
  	"github.com/MoeForge/moego/ojson"
@@ -876,7 +874,7 @@ index d74211c..d286466 100644
  		return
 diff --git a/sdk/api/handlers/openai/openai_responses_websocket_terminal_test.go b/sdk/api/handlers/openai/openai_responses_websocket_terminal_test.go
 new file mode 100644
-index 0000000..d12089f
+index 00000000..d12089f7
 --- /dev/null
 +++ b/sdk/api/handlers/openai/openai_responses_websocket_terminal_test.go
 @@ -0,0 +1,92 @@
@@ -973,7 +971,7 @@ index 0000000..d12089f
 +	}
 +}
 diff --git a/sdk/cliproxy/executor/websocket_input.go b/sdk/cliproxy/executor/websocket_input.go
-index 31e2a25..f20f08f 100644
+index 31e2a255..f20f08f3 100644
 --- a/sdk/cliproxy/executor/websocket_input.go
 +++ b/sdk/cliproxy/executor/websocket_input.go
 @@ -22,6 +22,8 @@ type WebsocketInput struct {
@@ -986,7 +984,7 @@ index 31e2a25..f20f08f 100644
  type websocketInputKey struct{}
  
 diff --git a/sdk/cliproxy/usage/metadata_only.go b/sdk/cliproxy/usage/metadata_only.go
-index 3313038..ccf829a 100644
+index 3313038c..ccf829a6 100644
 --- a/sdk/cliproxy/usage/metadata_only.go
 +++ b/sdk/cliproxy/usage/metadata_only.go
 @@ -167,6 +167,9 @@ func RedactForMetadataOnly(ctx context.Context, record Record) (context.Context,
@@ -1000,7 +998,7 @@ index 3313038..ccf829a 100644
  		cleanCtx = internallogging.WithEndpoint(cleanCtx, endpoint)
  	}
 diff --git a/sdk/cliproxy/usage/metadata_only_test.go b/sdk/cliproxy/usage/metadata_only_test.go
-index 4344c6d..f98f01d 100644
+index 4344c6dd..f98f01d3 100644
 --- a/sdk/cliproxy/usage/metadata_only_test.go
 +++ b/sdk/cliproxy/usage/metadata_only_test.go
 @@ -53,6 +53,7 @@ func TestMetadataOnlyPublishDetachesContextAndKeepsSafeFields(t *testing.T) {

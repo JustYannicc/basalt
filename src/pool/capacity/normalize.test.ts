@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { quotaObservation } from "../quota-observation.ts";
-import { capacityReadings } from "./normalize.ts";
+import { capacityReadings as readCapacity } from "./normalize.ts";
+import { seedFixture } from "../allowances/test/seed-fixture.ts";
 
 const now = Date.parse("2026-11-13T12:00:00Z");
+const capacityReadings = (
+  ...[account, provider, quota, at, catalog]: Parameters<typeof readCapacity>
+) => readCapacity(account, provider, quota, at, catalog ?? seedFixture);
 
 test("Home's xAI account week trains capacity once alongside its product breakdown", () => {
   const weekly = {
