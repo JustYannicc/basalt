@@ -6,6 +6,7 @@ import { HomeClient, poolGroupPrefix } from "./control.ts";
 import type { Json } from "./json.ts";
 import { LimitHistory, type UsageStorage } from "./limit-history.ts";
 import { PoolUsage, summaryPath } from "./pool-usage.ts";
+import { fixtureAllowances } from "./allowances/test/seed-fixture.ts";
 import { signPoolToken } from "./token.ts";
 import { QuotaCollection } from "./quota-collection.ts";
 
@@ -145,6 +146,7 @@ async function fixture(
   ]);
   const usage = new PoolUsage({
     storage,
+    allowances: fixtureAllowances(storage, () => now.getTime()),
     client,
     signingKey,
     now: () => now,
@@ -384,6 +386,7 @@ test("alarm samples Home collection status and each detailed window's observatio
   );
   const usage = new PoolUsage({
     storage,
+    allowances: fixtureAllowances(storage, () => clock.getTime()),
     client,
     signingKey,
     audience: async () => [],
@@ -487,6 +490,7 @@ test("the alarm forces an idle account's collection so later samples include its
   const collection = new QuotaCollection(storage, client, { now: () => clock.getTime() });
   const usage = new PoolUsage({
     storage,
+    allowances: fixtureAllowances(storage, () => clock.getTime()),
     client,
     signingKey,
     audience: async () => [],
@@ -561,6 +565,7 @@ test("alarm never collects connector credentials or explicitly unlimited model a
   const collection = new QuotaCollection(storage, client, { now: () => now.getTime() });
   await new PoolUsage({
     storage,
+    allowances: fixtureAllowances(storage, () => now.getTime()),
     client,
     signingKey,
     audience: async () => [],
@@ -639,6 +644,7 @@ test("the alarm shares detailed quota reads across pools and stale accounts leav
   );
   const usage = new PoolUsage({
     storage,
+    allowances: fixtureAllowances(storage, () => clock.getTime()),
     client,
     signingKey,
     audience: async () => [],
