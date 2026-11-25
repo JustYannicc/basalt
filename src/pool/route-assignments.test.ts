@@ -1047,3 +1047,44 @@ test("a mirror whose envelope expired while it waited behind a pass decides and 
   assert.equal((await answer).status, 503);
   assert.deepEqual(state.codex, []);
 });
+
+test(
+  "a late membership turn behind a newer step for its pool steps aside, so a member who left isn't put back",
+  { timeout: 10_000 },
+  async () => {
+    const { client } = fakeHome();
+    const store = storage();
+    let release = () => {};
+    let entered = () => {};
+    let block = false;
+    const rules = scripted({});
+    const resolver: RouteResolver = {
+      resolve: async (scope, references) => {
+        if (block) {
+          entered();
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return rules.resolver.resolve(scope, references, signal());
+      },
+    };
+    const routes = new RouteAssignments(store, resolver, client, () => now, 20);
+    await routes.prepare(scope, [mine], signal());
+    block = true;
+    const inside = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const pass = routes.refresh(signal());
+    await inside;
+    block = false;
+    // Teammate joins (late turn queued), then leaves again before that turn runs.
+    await routes.prepare(scope, [mine, teammate], signal());
+    await routes.prepare(scope, [mine], signal());
+    release();
+    await pass;
+    await routes.serial(async () => {});
+    const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
+    assert.deepEqual(record.references, [mine]);
+  },
+);

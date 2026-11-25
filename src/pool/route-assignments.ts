@@ -209,6 +209,8 @@ export class RouteAssignments {
   // can't lift what a newer one refused, and a mirror can't overwrite a pass in flight.
   private queue: Promise<unknown> = Promise.resolve();
   private queueWaitMs: number;
+  // Per pool, how many membership steps have started: a late turn behind a newer step steps aside.
+  private steps = new Map<string, number>();
   private storage: RouteStorage;
   private resolver: RouteResolver;
   private home: HomeClient;
@@ -441,6 +443,8 @@ export class RouteAssignments {
    * mirror said its owner has rules is already held. A step with no new member never queues.
    */
   async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+    const step = (this.steps.get(scope.pool) ?? 0) + 1;
+    this.steps.set(scope.pool, step);
     const raw = await this.storage.get(poolPrefix + scope.pool);
     const known =
       raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw).references;
@@ -449,6 +453,8 @@ export class RouteAssignments {
     let started = false;
     let late = false;
     const turn = this.serial(async () => {
+      // A newer step for this pool saw a newer membership; it decides its own new members.
+      if (late && this.steps.get(scope.pool) !== step) return;
       started = true;
       await this.preparePass(scope, accounts, signal, late);
     });
@@ -459,7 +465,9 @@ export class RouteAssignments {
     try {
       if ((await Promise.race([turn, waited])) !== "late" || started) return await turn;
       late = true;
-      void turn.catch(() => console.error("POOL_ROUTE_MEMBERSHIP_PENDING"));
+      void turn.catch((error: unknown) =>
+        console.error("POOL_ROUTE_MEMBERSHIP_LATE_TURN_FAILED", String(error)),
+      );
     } finally {
       clearTimeout(timer);
     }
