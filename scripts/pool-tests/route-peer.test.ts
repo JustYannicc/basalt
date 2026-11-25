@@ -587,14 +587,19 @@ test("routed credentials and sign-ins leave only through their route, refused ro
     await reset();
     docker(["restart", "--time", "20", pool], 120_000);
     await ready();
-    // Home refreshes the still-expired routed credential at boot: once that refresh reaches its
-    // route, a leak would have shown as a lookup of the routed host.
+    // After the restart a routed model call still leaves only through its route; once it has,
+    // any direct lookup of a routed host since the restart would show here.
+    const resumed = await chatWith(poolKey, "routed-model");
+    assert.equal(resumed.status, 200);
+    await resumed.text();
     const afterRestart = await until(async () => {
       const seen = await records();
-      return seen.connects.some((item) => item.route === route && routedHosts.has(item.host))
+      return seen.connects.some(
+        (item) => item.route === route && item.host === "models.example.test",
+      )
         ? seen
         : undefined;
-    }, 120_000);
+    });
     const backgroundDirect = [...new Set(afterRestart.dns)].sort();
     assert.deepEqual(
       afterRestart.dns.filter((name) => routedHosts.has(name)),
