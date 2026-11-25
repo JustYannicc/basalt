@@ -359,3 +359,14 @@ test("a rehearsal destroy never runs the images step, and its verify does not re
   assert.equal(outcome, undefined);
   assert.ok(!calls.some((call) => call.startsWith("images:")));
 });
+
+test("a destroy stopped part way prints what State still records, by kind, before it fails", async (t) => {
+  const printed: string[] = [];
+  t.mock.method(console, "log", (line: unknown) => void printed.push(String(line)));
+  const { outcome } = await rehearsalDestroy("none", "basalt");
+  assert.match(String(outcome), /did not finish/u);
+  assert.equal(
+    printed.at(-1),
+    "State still records, by kind: basalt-rehearsal: Cloudflare.Worker 1; basalt-preview-database: none; basalt-rehearsal-fixture: none.",
+  );
+});

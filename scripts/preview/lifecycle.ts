@@ -654,7 +654,15 @@ export async function destroyStage(
       failures.push(new Error("Preview " + stack + " cleanup failed", { cause: error }));
     }
   }
-  if (failures.length) throw new AggregateError(failures, "Preview cleanup did not finish");
+  if (failures.length) {
+    // A destroy stopped part way says exactly what is left, from State, before it fails.
+    const left = await capturePreviewInventory(config, services.stateReader(config.providers)).then(
+      (remaining) => inventoryKindsLine(remaining, "State still records, by kind", false),
+      () => "What State still records could not be read.",
+    );
+    console.log(left);
+    throw new AggregateError(failures, "Preview cleanup did not finish");
+  }
   await updatePreviewManifest(path, subject, "destroyed", undefined, inventory);
 }
 

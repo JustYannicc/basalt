@@ -537,7 +537,11 @@ export function inventoryResourceCount(inventory: PreviewInventory): number {
  * What a destroy is about to delete, before its first step: the State rows of each stack counted by
  * kind, and what the provider read found. Kinds and counts only, so it can go on a public log.
  */
-export function inventoryKindsLine(inventory: PreviewInventory): string {
+export function inventoryKindsLine(
+  inventory: PreviewInventory,
+  lead = "The destroy is about to delete what State records, by kind",
+  providers = true,
+): string {
   const stacks = Object.entries(inventory.stacks).map(([stack, entries]) => {
     const kinds: Record<string, number> = {};
     for (const { path, value } of entries) {
@@ -553,8 +557,10 @@ export function inventoryKindsLine(inventory: PreviewInventory): string {
   });
   const { containers, domains } = inventory.providers;
   return (
-    `The destroy is about to delete what State records, by kind: ${stacks.join("; ") || "nothing"}.` +
-    ` The provider read found ${containers.length} container application(s) and ${domains.length} domain(s).`
+    `${lead}: ${stacks.join("; ") || "nothing"}.` +
+    (providers
+      ? ` The provider read found ${containers.length} container application(s) and ${domains.length} domain(s).`
+      : "")
   );
 }
 
