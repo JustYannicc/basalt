@@ -323,3 +323,68 @@ for (const storedRow of [true, false])
     assert.ok(result.lease!.waits < 15 * 60, "no 15-minute retry is scheduled");
     assert.deepEqual(result.again, [], "past the six-hour mark, the account is not claimed again");
   });
+
+/** One runner pass over the seeded Devin account; `onHealth` runs between the queue's claim and its start. */
+const runnerPass = (
+  provider: string,
+  options: {
+    readonly onHealth?: Effect.Effect<unknown, unknown, SqlClient.SqlClient>;
+    readonly failRecord?: boolean;
+  },
+) =>
+  Effect.gen(function* () {
+    const { sql, health } = yield* seeded(provider, "devin");
+    const records: string[] = [];
+    const executor = {
+      accounts: {
+        health: () =>
+          Effect.gen(function* () {
+            if (options.onHealth) yield* options.onHealth;
+            const saved = yield* health.report(stored(provider, "devin"));
+            return { account, apps: [], driver: saved?.driver } as never;
+          }),
+        check: (input: { readonly account: string }) =>
+          Effect.gen(function* () {
+            records.push(input.account);
+            if (options.failRecord) return yield* Effect.fail(new Error("synthetic"));
+            return { account, apps: [] } as never;
+          }),
+      },
+    };
+    yield* makeAccountRechecks(sql, executor as never)("run-1");
+    const [lease] = yield* sql<{
+      outcome: string;
+      waits: number;
+    }>`select outcome, extract(epoch from next_at - finished_at)::int as waits
+      from hosted_account_rechecks where account_id = ${account}`;
+    return { records, lease };
+  });
+
+test("the runner records no check only while it holds the account's lease and provider family", async () => {
+  const { identity: provider } = await identity("devin");
+  const result = await run(
+    runnerPass(provider, {
+      // Another account of the same provider family takes the family before this pass starts.
+      onHealth: Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`insert into hosted_account_recheck_families values
+          (${provider}, now() + interval '1 hour', 'acc_other', 'other-run')
+          on conflict (provider_key) do update set next_at = excluded.next_at,
+            account_id = excluded.account_id, lease = excluded.lease`;
+      }),
+    }),
+  );
+  assert.deepEqual(result.records, []);
+  assert.equal(result.lease?.outcome, "skipped");
+  assert.equal(result.lease?.waits, 15 * 60);
+});
+
+test("a record of no check that fails, or reports no driver, is tried again in 15 minutes", async () => {
+  const { identity: provider } = await identity("devin");
+  for (const failRecord of [true, false]) {
+    const result = await run(runnerPass(provider, { failRecord }));
+    assert.deepEqual(result.records, [account]);
+    assert.equal(result.lease?.outcome, "skipped");
+    assert.equal(result.lease?.waits, 15 * 60, `failRecord ${failRecord}`);
+  }
+});

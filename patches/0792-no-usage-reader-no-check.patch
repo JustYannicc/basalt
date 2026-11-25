@@ -78,25 +78,35 @@ diff --git a/apps/hosted/server/src/implementation/account-rechecks.ts b/apps/ho
        const authorized = yield* automaticCheckAccounts(sql, [
          { id: target.account, owner: target.owner },
        ]);
-@@ -74,6 +72,18 @@
+@@ -74,12 +72,23 @@
          !(yield* makeAccountRecheckQueue(sql).start(target, lease))
        )
          return { outcome: "skipped" as const, retry: true, cooldown: false };
 +      // A driver without a check sends nothing; the SDK records that once, so this account leaves
 +      // the queue instead of coming back every 15 minutes.
-+      if (target.app === null && before.driver?.checkable !== true) {
-+        const recorded = yield* executor.accounts
-+          .check({ owner: target.owner, account: target.account, apps: [] })
-+          .pipe(Effect.result);
-+        return {
-+          outcome: "skipped" as const,
-+          retry: Result.isFailure(recorded) || recorded.success.driver === undefined,
-+          cooldown: false,
-+        };
-+      }
++      const recording = target.app === null && before.driver?.checkable !== true;
        // The explicit SDK path owns diagnostics and persistence, including phase/tag/vendor reason.
-       const health = yield* executor.accounts.check({
-         owner: target.owner,
+-      const health = yield* executor.accounts.check({
+-        owner: target.owner,
+-        account: target.account,
+-        apps,
+-      });
++      const checked = yield* executor.accounts
++        .check({ owner: target.owner, account: target.account, apps })
++        .pipe(Effect.result);
++      if (Result.isFailure(checked)) {
++        if (recording) return { outcome: "skipped" as const, retry: true, cooldown: false };
++        return yield* Effect.fail(checked.failure);
++      }
++      const health = checked.success;
++      if (recording && health.driver === undefined)
++        return { outcome: "skipped" as const, retry: true, cooldown: false };
++      // A registration that gained a check since the first read was checked for real below.
++      if (recording && health.driver?.checkable !== true)
++        return { outcome: "skipped" as const, retry: false, cooldown: false };
+       const after = target.app === null ? health.driver?.check : health.apps[0]?.check;
+       const rateLimited = [health.driver?.check, ...health.apps.map((app) => app.check)].some(
+         (result) => result?.reason === "rate_limited",
 diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
 --- a/apps/hosted/server/src/implementation/pool-account-registry.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-registry.ts

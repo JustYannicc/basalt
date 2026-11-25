@@ -1,7 +1,7 @@
 {
   "identity": "basalt-no-usage-reader-no-check",
   "file": "0792-no-usage-reader-no-check.patch",
-  "content_sha256": "63755b45d7d9b59011754e23b36f8cfbfd4cd494e14b3dfe0483afb4e6038309",
+  "content_sha256": "8af0cd3123b79b9708ffbb949db878a84892ff5dae21675ea2c4b35312b242c4",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
