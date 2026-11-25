@@ -1,35 +1,45 @@
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { Client, Pool } from "pg";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
-import { awaitManagementProvisioning } from "../../.upstream/apps/hosted/testing/management-provisioning.ts";
+import {
+  awaitManagementProvisioning,
+  installManagementNotifications,
+} from "../../.upstream/apps/hosted/testing/management-provisioning.ts";
 
 const deferred = <A>() => Promise.withResolvers<A>();
 
+const adminUrl = process.env.MIGRATION_TEST_ADMIN_URL;
+
+/** A disposable database on the declared PostgreSQL prerequisite that check:upstream provides. */
+async function realDatabase() {
+  assert.ok(
+    adminUrl && ["localhost", "127.0.0.1"].includes(new URL(adminUrl).hostname),
+    "MIGRATION_TEST_ADMIN_URL must name an isolated loopback PostgreSQL database",
+  );
+  const name = `management_provisioning_${randomBytes(5).toString("hex")}`;
+  const admin = new Client({ connectionString: adminUrl });
+  await admin.connect();
+  await admin.query(`create database ${name}`);
+  const target = new URL(adminUrl);
+  target.pathname = `/${name}`;
+  return {
+    url: target.toString(),
+    close: async () => {
+      await admin.query(`drop database ${name} with (force)`);
+      await admin.end();
+    },
+  };
+}
+
 test("pool readiness waits for its committed deployment, account and link, without unrelated jobs", async (context) => {
-  const sql = new PGlite();
-  const database = new Pool();
-  const releases: (Error | boolean | undefined)[] = [];
-  const client = Object.assign(new Client(), {
-    release: (error?: Error | boolean) => releases.push(error),
-  });
-  let reads = 0;
-  context.mock.method(database, "connect", async () => client);
-  context.mock.method(client, "query", async (text: string, values?: (string | boolean)[]) => {
-    if (text.startsWith("listen ") || text.startsWith("unlisten ")) return { rows: [] };
-    const result = await sql.query<{ ready: boolean }>(text, values);
-    reads++;
-    if (reads === 1) {
-      assert.deepEqual(result.rows, [{ ready: false }]);
-      await sql.exec(`insert into executor_accounts values ('pool-account', 'organization:team');
-        insert into hosted_app_account_links values ('pool-account', 'pool');
-        update organization set metadata = metadata || '{"basaltPools":{"person":{"app":"pool","version":"version","account":"pool-account"}}}'::jsonb;`);
-      client.emit("notification", { channel: "e2e_management_provisioned", payload: "" });
-    }
-    return result;
-  });
+  const fixture = await realDatabase();
+  const database = new Pool({ connectionString: fixture.url, max: 1 });
+  const watcher = new Client({ connectionString: fixture.url });
+  await watcher.connect();
   try {
-    await sql.exec(`create table organization(id text, metadata jsonb);
+    await watcher.query(`create table organization(id text, metadata jsonb);
       create table executor_accounts(id text, owner text);
       create table executor_apps(id text, owner text, active_deployment text);
       create table hosted_app_account_links(account text, app text);
@@ -39,7 +49,17 @@ test("pool readiness waits for its committed deployment, account and link, witho
       insert into executor_apps values ('pool', 'organization:team', 'version');
       insert into hosted_app_account_links values ('account', 'app');
       insert into hosted_provisioning values ('unrelated', 'team', null, 'running');`);
-    await awaitManagementProvisioning(
+    await installManagementNotifications(database);
+    // Observation only: the real client runs every query; the spy counts the readiness reads.
+    const queries = context.mock.method(Client.prototype, "query");
+    const readiness = () =>
+      queries.mock.calls.filter(
+        (call) =>
+          call.this !== watcher &&
+          typeof call.arguments[0] === "string" &&
+          call.arguments[0].startsWith("select coalesce("),
+      ).length;
+    const waiting = awaitManagementProvisioning(
       database,
       "team",
       "person",
@@ -47,12 +67,37 @@ test("pool readiness waits for its committed deployment, account and link, witho
       false,
       true,
     );
-    assert.equal(reads, 2);
-    assert.deepEqual(releases, [false]);
-    assert.equal(client.listenerCount("notification"), 0);
+    // The waiter has read once and now waits on its notification: its session is idle, and the
+    // readiness select is the last statement it ran.
+    let waited = false;
+    for (let attempt = 0; attempt < 5_000 && !waited; attempt++)
+      waited =
+        (
+          await watcher.query(
+            `select 1 from pg_stat_activity where datname = current_database()
+              and pid <> pg_backend_pid() and state = 'idle' and query like 'select coalesce(%'`,
+          )
+        ).rowCount === 1;
+    assert.ok(waited, "The waiter never read and settled on its notification");
+    assert.equal(readiness(), 1);
+    // One commit adds the pool's account, its link and its declaration, and wakes the waiter.
+    await watcher.query(`begin;
+      insert into executor_accounts values ('pool-account', 'organization:team');
+      insert into hosted_app_account_links values ('pool-account', 'pool');
+      update organization set metadata = metadata || '{"basaltPools":{"person":{"app":"pool","version":"version","account":"pool-account"}}}'::jsonb;
+      commit;`);
+    await waiting;
+    assert.equal(readiness(), 2);
+    // The waiter returned its client to the pool, without the notification listener.
+    assert.equal(database.totalCount, 1);
+    assert.equal(database.idleCount, 1);
+    const returned = await database.connect();
+    assert.equal(returned.listenerCount("notification"), 0);
+    returned.release();
   } finally {
     await database.end();
-    await sql.close();
+    await watcher.end();
+    await fixture.close();
   }
 });
 

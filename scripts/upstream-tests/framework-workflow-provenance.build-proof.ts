@@ -3,11 +3,18 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HostAccounts } from "../../.upstream/packages/apps/src/contracts/host.ts";
 import { compileFrameworkFixture } from "./framework-public-compiler-fixture.ts";
 import { authored, host, question } from "./framework-workflow-fixture.ts";
 import type { LoadedWorkerBuild } from "../../.upstream/packages/sdk/src/contracts/worker-build.ts";
+
+// These proofs read the framework bytes scripts/build.ts compiles first, and only it runs them.
+assert.equal(
+  process.env.BASALT_CHECK_BUILT_FRAMEWORK,
+  "1",
+  "Run through scripts/build.ts, which builds the framework these proofs read",
+);
 
 const upstream = resolve(".upstream");
 const require = createRequire(
@@ -27,10 +34,6 @@ const deferred = <T>() => {
 test(
   "native Workflow event waits preserve the caller and resolve current step accounts before authored writes",
   {
-    skip:
-      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
-        ? "The production framework build runs this proof"
-        : false,
     timeout: 30_000,
   },
   async (context) => {
@@ -64,17 +67,21 @@ test(
     });
     let provider: unknown;
     const accounts = (region: string) =>
-      Schema.decodeUnknownSync(HostAccounts)({
-        app: {},
-        user: {
-          service: {
-            id: "acc_workflow_fixture",
-            provider,
-            method: "key",
-            fields: { region, token: "synthetic-" + region },
+      Effect.runSync(
+        Schema.decodeUnknownEffect(HostAccounts)({
+          app: {},
+          user: {
+            service: {
+              id: "acc_workflow_fixture",
+              provider,
+              method: "key",
+              fields: { region, token: "synthetic-" + region },
+            },
           },
-        },
-      });
+        }),
+      );
+    // What each run reported as its finish, kept only to assert on.
+    const finishRequests: Array<{ run: string; result: unknown }> = [];
     const records = new Map<
       string,
       {
@@ -82,7 +89,6 @@ test(
         region: string;
         answered: boolean;
         contexts: number;
-        finish?: unknown;
         parked: ReturnType<typeof deferred<void>>;
         terminal: ReturnType<typeof deferred<{ run: string; output?: unknown; error?: string }>>;
       }
@@ -173,7 +179,7 @@ test(
               };
               break;
             case "finish":
-              record.finish = input.result;
+              finishRequests.push({ run: input.run, result: input.result });
               value = null;
               break;
             default:
@@ -209,16 +215,18 @@ test(
       method: "POST",
       body: JSON.stringify({ operation: "declare", loaded }),
     });
-    const declared = Schema.decodeUnknownSync(
-      Schema.Struct({
-        ok: Schema.Literal(true),
-        value: Schema.Struct({
-          accounts: Schema.Struct({
-            user: Schema.Record(Schema.String, Schema.Struct({ definition: Schema.Unknown })),
+    const declared = await Effect.runPromise(
+      Schema.decodeUnknownEffect(
+        Schema.Struct({
+          ok: Schema.Literal(true),
+          value: Schema.Struct({
+            accounts: Schema.Struct({
+              user: Schema.Record(Schema.String, Schema.Struct({ definition: Schema.Unknown })),
+            }),
           }),
         }),
-      }),
-    )(await declaration.json());
+      )(await declaration.json()),
+    );
     provider = declared.value.accounts.user.service!.definition;
     accounts("fixture-check");
     const { run, record } = start(loaded);
@@ -271,26 +279,30 @@ test(
       await command("create", bad.run);
       const refused = await bad.record.terminal.promise;
       assert.ok(refused.error);
-      const error = Schema.decodeUnknownSync(
-        Schema.Struct({
-          _tag: Schema.Literal("WorkflowFailure"),
-          reason: Schema.Literal("execution"),
-          retryable: Schema.Literal(false),
-          errorName: Schema.Literal("FrameworkProvenanceRefused"),
-          message: Schema.String,
-        }),
-      )(JSON.parse(refused.error));
-      assert.ok(error.message.includes(reason), error.message);
-      const finished = Schema.decodeUnknownSync(
-        Schema.Struct({
-          ok: Schema.Literal(false),
-          error: Schema.Literal("execution"),
-          detail: Schema.Struct({
+      const error = await Effect.runPromise(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            _tag: Schema.Literal("WorkflowFailure"),
+            reason: Schema.Literal("execution"),
+            retryable: Schema.Literal(false),
             errorName: Schema.Literal("FrameworkProvenanceRefused"),
             message: Schema.String,
           }),
-        }),
-      )(records.get(bad.run)!.finish);
+        )(JSON.parse(refused.error)),
+      );
+      assert.ok(error.message.includes(reason), error.message);
+      const finished = await Effect.runPromise(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            ok: Schema.Literal(false),
+            error: Schema.Literal("execution"),
+            detail: Schema.Struct({
+              errorName: Schema.Literal("FrameworkProvenanceRefused"),
+              message: Schema.String,
+            }),
+          }),
+        )(finishRequests.find((request) => request.run === bad.run)?.result),
+      );
       assert.equal(finished.detail.message, error.message);
       assert.equal(bad.record.contexts, 0);
       assert.equal(writes.length, 2);

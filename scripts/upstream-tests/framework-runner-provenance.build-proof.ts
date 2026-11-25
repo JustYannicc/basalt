@@ -15,6 +15,13 @@ import {
 import { remoteAppRunner } from "../../.upstream/packages/sdk/src/implementation/remote-app-runner.ts";
 import { compileFrameworkFixture } from "./framework-public-compiler-fixture.ts";
 
+// These proofs read the framework bytes scripts/build.ts compiles first, and only it runs them.
+assert.equal(
+  process.env.BASALT_CHECK_BUILT_FRAMEWORK,
+  "1",
+  "Run through scripts/build.ts, which builds the framework these proofs read",
+);
+
 const upstream = resolve(".upstream");
 const require = createRequire(
   new URL("../../.upstream/packages/sdk/package.json", import.meta.url),
@@ -52,6 +59,7 @@ export default {
 
 const authored = `
 import { defineApp, query, object, string, router } from "apps";
+
 export default defineApp({}, { tools: router({
   who: query({ input: object({}), output: string() }, async (ctx) => {
     const caller = ctx.user?.id ?? "missing";
@@ -116,10 +124,6 @@ async function appBundle(): Promise<LoadedWorkerBuild> {
 test(
   "native remote declarations and cold/warm calls admit real bytes and refuse altered builds before authored writes",
   {
-    skip:
-      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
-        ? "The production framework build runs this proof"
-        : false,
     timeout: 20_000,
   },
   async (context) => {

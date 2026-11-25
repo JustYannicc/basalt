@@ -7,6 +7,13 @@ import { closedRetainedBuilds } from "../../.upstream/packages/sdk/src/implement
 import { remoteAppRunner } from "../../.upstream/packages/sdk/src/implementation/remote-app-runner.ts";
 import { compileFrameworkFixture } from "./framework-public-compiler-fixture.ts";
 
+// These proofs read the framework bytes scripts/build.ts compiles first, and only it runs them.
+assert.equal(
+  process.env.BASALT_CHECK_BUILT_FRAMEWORK,
+  "1",
+  "Run through scripts/build.ts, which builds the framework these proofs read",
+);
+
 const upstream = resolve(".upstream");
 const require = createRequire(
   new URL("../../.upstream/packages/sdk/package.json", import.meta.url),
@@ -21,6 +28,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Effect, Schema } from "effect";
 import { makeAppRunner, serveAppRunner } from "@executor-js/sdk/workerd";
 import { makeUnverifiedRetainedBuildPin, encodePinReply, decodePinReply } from "./apps/hosted/cloud/src/implementation/unverified-retained-build-pins.ts";
+
 export class Pins extends DurableObject {
   async fetch(request) {
     const pin = makeUnverifiedRetainedBuildPin(this.ctx.storage,
@@ -49,10 +57,6 @@ export default { async fetch(request, env, context) {
 test(
   "a closed retained build serves cold and warm native calls while changed bytes and redeploy declarations refuse",
   {
-    skip:
-      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
-        ? "The production build runs this against compiled framework bytes"
-        : false,
     timeout: 20_000,
   },
   async (context) => {
@@ -145,7 +149,7 @@ test(
       );
     }
     assert.deepEqual(writes, ["cold-caller", "warm-caller"]);
-    const refused = async (operation: Effect.Effect<unknown, unknown>) => {
+    const refused = async <A, E>(operation: Effect.Effect<A, E>) => {
       const failure = await Effect.runPromise(
         operation.pipe(
           Effect.match({

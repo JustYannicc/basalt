@@ -55,6 +55,8 @@ const hostedSteps = ids(
 const cloudSteps = ids(journals.private_cloud_migrations);
 
 async function database() {
+  // A declared prerequisite: CI's check:upstream provides this database, so its absence fails.
+  assert.ok(local, "MIGRATION_TEST_ADMIN_URL must name an isolated loopback PostgreSQL database");
   const name = `executor_storage_gate_${randomBytes(5).toString("hex")}`;
   const admin = new pg.Client({ connectionString: adminUrl });
   await admin.connect();
@@ -142,7 +144,7 @@ for (const { name, values } of [
   { name: "a duplicated storage marker", values: ["4.0.29", "4.0.29"] },
   { name: "an unnormalized storage marker", values: ["4.0.29 "] },
 ])
-  test(`the real migration command refuses ${name} before any DDL`, { skip: !local }, async () => {
+  test(`the real migration command refuses ${name} before any DDL`, async () => {
     const f = await database();
     try {
       await f.client.query("create table private_executor_settings (key text, value text)");
@@ -166,84 +168,72 @@ for (const { name, values } of [
     }
   });
 
-test(
-  "a fresh database runs every hosted and Cloud step, and a second run changes nothing",
-  { skip: !local },
-  async () => {
-    const f = await database();
-    try {
-      const first = await migrate(f.url);
-      assert.equal(first.status, 0, first.output);
-      assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
-      assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
-      const before = await publicCatalogFingerprint(f.client);
-      const second = await migrate(f.url);
-      assert.equal(second.status, 0, second.output);
-      assert.equal(await publicCatalogFingerprint(f.client), before);
-    } finally {
-      await f.close();
-    }
-  },
-);
+test("a fresh database runs every hosted and Cloud step, and a second run changes nothing", async () => {
+  const f = await database();
+  try {
+    const first = await migrate(f.url);
+    assert.equal(first.status, 0, first.output);
+    assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
+    assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
+    const before = await publicCatalogFingerprint(f.client);
+    const second = await migrate(f.url);
+    assert.equal(second.status, 0, second.output);
+    assert.equal(await publicCatalogFingerprint(f.client), before);
+  } finally {
+    await f.close();
+  }
+});
 
-test(
-  "a database at the released prelude migrates every step once, and a retry changes nothing",
-  { skip: !local },
-  async () => {
-    const f = await database();
-    try {
-      await seedPrelude(f.url);
-      const first = await migrate(f.url);
-      assert.equal(first.status, 0, first.output);
-      assert.equal(await storageVersion(f.client), "4.0.30");
-      assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
-      assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
-      // A retry of the same release, as after a failed apply, admits 4.0.30 and runs no DDL change.
-      const before = await publicCatalogFingerprint(f.client);
-      const retry = await migrate(f.url);
-      assert.equal(retry.status, 0, retry.output);
-      assert.equal(await publicCatalogFingerprint(f.client), before);
-    } finally {
-      await f.close();
-    }
-  },
-);
+test("a database at the released prelude migrates every step once, and a retry changes nothing", async () => {
+  const f = await database();
+  try {
+    await seedPrelude(f.url);
+    const first = await migrate(f.url);
+    assert.equal(first.status, 0, first.output);
+    assert.equal(await storageVersion(f.client), "4.0.30");
+    assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
+    assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
+    // A retry of the same release, as after a failed apply, admits 4.0.30 and runs no DDL change.
+    const before = await publicCatalogFingerprint(f.client);
+    const retry = await migrate(f.url);
+    assert.equal(retry.status, 0, retry.output);
+    assert.equal(await publicCatalogFingerprint(f.client), before);
+  } finally {
+    await f.close();
+  }
+});
 
-test(
-  "a release stopped at a bridged Cloud step commits no product step, and its retry completes",
-  { skip: !local },
-  async () => {
-    const f = await database();
-    try {
-      await seedPrelude(f.url);
-      // The first bridged Cloud step fails, as if the earlier attempt stopped there.
-      await f.client.query(`create function fail_bridge_fixture() returns event_trigger
+test("a release stopped at a bridged Cloud step commits no product step, and its retry completes", async () => {
+  const f = await database();
+  try {
+    await seedPrelude(f.url);
+    // The first bridged Cloud step fails, as if the earlier attempt stopped there.
+    await f.client.query(`create function fail_bridge_fixture() returns event_trigger
         language plpgsql as $$ begin
           if exists (select 1 from pg_event_trigger_ddl_commands()
             where object_identity like '%private_v1_session_handoff%') then
             raise exception 'BRIDGE_FIXTURE_STOP';
           end if;
         end $$`);
-      await f.client.query(`create event trigger bridge_fixture_stop
+    await f.client.query(`create event trigger bridge_fixture_stop
         on ddl_command_end execute function fail_bridge_fixture()`);
-      const stopped = await migrate(f.url);
-      assert.equal(stopped.status, 1, stopped.output);
-      assert.match(stopped.output, /run the cloud product steps/);
-      // Product steps share one transaction: the stop leaves the prelude's storage, and the
-      // bridged step's table does not exist half-made.
-      assert.equal(await storageVersion(f.client), "4.0.29");
-      const handoffs = await f.client.query<{ present: boolean }>(
-        "select to_regclass('public.private_v1_session_handoff') is not null as present",
-      );
-      assert.equal(handoffs.rows[0]?.present, false);
-      await f.client.query("drop event trigger bridge_fixture_stop");
-      const retry = await migrate(f.url);
-      assert.equal(retry.status, 0, retry.output);
-      assert.equal(await storageVersion(f.client), "4.0.30");
-      assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
-      assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
-    } finally {
-      await f.close();
-    }
-  },
-);
+    const stopped = await migrate(f.url);
+    assert.equal(stopped.status, 1, stopped.output);
+    assert.match(stopped.output, /run the cloud product steps/);
+    // Product steps share one transaction: the stop leaves the prelude's storage, and the
+    // bridged step's table does not exist half-made.
+    assert.equal(await storageVersion(f.client), "4.0.29");
+    const handoffs = await f.client.query<{ present: boolean }>(
+      "select to_regclass('public.private_v1_session_handoff') is not null as present",
+    );
+    assert.equal(handoffs.rows[0]?.present, false);
+    await f.client.query("drop event trigger bridge_fixture_stop");
+    const retry = await migrate(f.url);
+    assert.equal(retry.status, 0, retry.output);
+    assert.equal(await storageVersion(f.client), "4.0.30");
+    assert.deepEqual(await journal(f.client, "private_cloud_migrations"), cloudSteps);
+    assert.deepEqual(await journal(f.client, "private_hosted_migrations"), hostedSteps);
+  } finally {
+    await f.close();
+  }
+});

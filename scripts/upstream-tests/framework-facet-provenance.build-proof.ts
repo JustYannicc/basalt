@@ -2,8 +2,15 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { compileFrameworkFixture } from "./framework-public-compiler-fixture.ts";
+
+// These proofs read the framework bytes scripts/build.ts compiles first, and only it runs them.
+assert.equal(
+  process.env.BASALT_CHECK_BUILT_FRAMEWORK,
+  "1",
+  "Run through scripts/build.ts, which builds the framework these proofs read",
+);
 
 const upstream = resolve(".upstream");
 const require = createRequire(
@@ -54,6 +61,7 @@ export default {
 
 const authored = `
 import { defineApp, mutation, query, object, string, router } from "apps";
+
 const record = mutation({ input: object({ label: string() }) }, async (ctx, input) => {
   const caller = ctx.user?.id ?? "missing";
   await fetch("https://marker.invalid/facet", { method: "POST", body: caller });
@@ -67,10 +75,6 @@ export default defineApp({}, { tools: router({ record, entries }) });`;
 test(
   "native data facets admit compiled bytes and refuse forged lineage before authored writes",
   {
-    skip:
-      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
-        ? "The production framework build runs this proof"
-        : false,
     timeout: 20_000,
   },
   async (context) => {
@@ -129,16 +133,18 @@ test(
         }),
       });
       assert.equal(response.status, 200);
-      return Schema.decodeUnknownSync(
-        Schema.Struct({
-          ok: Schema.optionalKey(Schema.Boolean),
-          value: Schema.optionalKey(Schema.Unknown),
-          executorRevision: Schema.optionalKey(Schema.Int),
-          refused: Schema.optionalKey(
-            Schema.Struct({ _tag: Schema.String, reason: Schema.String }),
-          ),
-        }),
-      )(await response.json());
+      return await Effect.runPromise(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            ok: Schema.optionalKey(Schema.Boolean),
+            value: Schema.optionalKey(Schema.Unknown),
+            executorRevision: Schema.optionalKey(Schema.Int),
+            refused: Schema.optionalKey(
+              Schema.Struct({ _tag: Schema.String, reason: Schema.String }),
+            ),
+          }),
+        )(await response.json()),
+      );
     };
     const call = (tool: string, input: object, selected = loaded) =>
       invoke(

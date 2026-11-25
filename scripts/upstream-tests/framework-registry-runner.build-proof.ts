@@ -20,6 +20,13 @@ import {
   registryAuthoredBundle,
 } from "./framework-registry-runner-fixture.ts";
 
+// These proofs read the framework bytes scripts/build.ts compiles first, and only it runs them.
+assert.equal(
+  process.env.BASALT_CHECK_BUILT_FRAMEWORK,
+  "1",
+  "Run through scripts/build.ts, which builds the framework these proofs read",
+);
+
 const require = createRequire(
   new URL("../../.upstream/packages/sdk/package.json", import.meta.url),
 );
@@ -63,10 +70,6 @@ async function producer(runtime: typeof PublishedAppFramework.Type, name: string
 test(
   "cumulative defaults run retained A through B and failed C through D and refuse tampered bytes",
   {
-    skip:
-      process.env.BASALT_CHECK_BUILT_FRAMEWORK !== "1"
-        ? "The production framework build runs this proof"
-        : false,
     timeout: 30_000,
   },
   async () => {
@@ -105,8 +108,10 @@ test(
       });
     let host: InstanceType<typeof Miniflare> | undefined;
     try {
-      const runtime = Schema.decodeUnknownSync(Schema.fromJsonString(PublishedAppFramework))(
-        readFileSync(resolve(".upstream/packages/apps/dist/runtime.json"), "utf8"),
+      const runtime = await Effect.runPromise(
+        Schema.decodeUnknownEffect(Schema.fromJsonString(PublishedAppFramework))(
+          readFileSync(resolve(".upstream/packages/apps/dist/runtime.json"), "utf8"),
+        ),
       );
       const a = await producer(runtime, "A"),
         b = await producer(runtime, "B"),
@@ -150,12 +155,14 @@ test(
         const value: unknown = await (
           await send({ retain: true, build, bundle, ...produced })
         ).json();
-        const result = Schema.decodeUnknownSync(
-          Schema.Struct({
-            ok: Schema.Literal(true),
-            value: Schema.Struct({ framework: RetainedFramework }),
-          }),
-        )(value);
+        const result = await Effect.runPromise(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({
+              ok: Schema.Literal(true),
+              value: Schema.Struct({ framework: RetainedFramework }),
+            }),
+          )(value),
+        );
         assert.deepEqual(result.value.framework.provenance, produced.release);
       };
       const invoke = (build: string, caller: string) =>
@@ -180,9 +187,11 @@ test(
         );
       const called = async (build: string, caller: string) => {
         const value = await Effect.runPromise(invoke(build, caller));
-        Schema.decodeUnknownSync(
-          Schema.Struct({ ok: Schema.Literal(true), value: Schema.Literal(caller) }),
-        )(value);
+        await Effect.runPromise(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({ ok: Schema.Literal(true), value: Schema.Literal(caller) }),
+          )(value),
+        );
       };
 
       host = start(sourceA);
@@ -256,8 +265,10 @@ test(
       const key = `frameworks/${a.release.version}-${a.release.sha256}.json`;
       const stored = objects.get(key);
       assert.ok(stored);
-      const retained = Schema.decodeUnknownSync(Schema.fromJsonString(RetainedFramework))(
-        new TextDecoder().decode(stored),
+      const retained = await Effect.runPromise(
+        Schema.decodeUnknownEffect(Schema.fromJsonString(RetainedFramework))(
+          new TextDecoder().decode(stored),
+        ),
       );
       const module = Object.keys(retained.modules).sort()[0]!;
       objects.set(

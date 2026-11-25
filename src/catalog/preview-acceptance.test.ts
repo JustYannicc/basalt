@@ -4,7 +4,8 @@ import { handleCatalog, previewCatalogAcceptance } from "./worker.ts";
 import type { Feed } from "./feed.ts";
 
 const head = "a".repeat(40);
-const publisher: typeof fetch = async () => Response.json({ version: 1, apps: [] });
+// The published feed is empty, so every entry below comes from the catalog's own sources.
+const published: Feed = { version: 1, apps: [] };
 
 test("retired compile acceptance sources and witnesses are limited to the provisioned PR preview", async () => {
   const accepted = previewCatalogAcceptance({
@@ -22,7 +23,7 @@ test("retired compile acceptance sources and witnesses are limited to the provis
   for (const acceptance of [undefined, accepted]) {
     const response = await handleCatalog(
       new Request("https://catalog.example.test/catalog/index.json"),
-      publisher,
+      async () => Response.json(published),
       undefined,
       acceptance,
     );
@@ -41,7 +42,7 @@ test("retired compile acceptance sources and witnesses are limited to the provis
     );
     const source = await handleCatalog(
       new Request("https://catalog.example.test/catalog/apps/gitlab-mcp.json"),
-      publisher,
+      async () => Response.json(published),
       undefined,
       acceptance,
     );
