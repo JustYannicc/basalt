@@ -147,9 +147,16 @@ jobs:
           retention-days: 30
       - name: Clear the label so adding it again runs the mode again
         if: always()
-        # curl, not gh: the box image carries no GitHub CLI.
-        run: >-
-          curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json"
-          "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/labels/$STAGE_LABEL" > /dev/null
+        # curl, not gh: the box image carries no GitHub CLI. This workflow runs only when a label is
+        # added, so a label left on the pull request runs nothing: it only has to be removed before
+        # it is added again. A failure here warns, so the job's colour stays the mode's result.
+        run: |
+          for try in 1 2 3; do
+            curl -fsS -X DELETE -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PULL/labels/$STAGE_LABEL" > /dev/null && exit 0
+            sleep $((try * 5))
+          done
+          echo "::warning::The label $STAGE_LABEL is still on the pull request; remove it before adding it again."
         env:
           GH_TOKEN: ${{ github.token }}
+          PULL: ${{ github.event.pull_request.number }}
