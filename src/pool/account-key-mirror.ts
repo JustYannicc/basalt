@@ -70,58 +70,64 @@ export async function handleAccountKeyMirror(
       !["upsert", "remove"].includes(String(value.action))
     )
       return new Response(null, { status: 401 });
-    const proxy =
-      value.action === "upsert"
-        ? await input.routes?.proxyFor(value.reference, routeHint(value), request.signal)
-        : undefined;
-    if (object(value.credential) && value.credential.type === "config") {
-      await mirrorHomeConfig(
-        input.home,
-        value.reference,
-        String(value.action),
-        value.credential,
-        request.signal,
-        proxy,
-      );
-    } else if (value.action === "remove") {
-      const response = await input.home.response(
-        `/credentials?id=${encodeURIComponent(value.reference)}`,
-        { method: "DELETE", signal: request.signal },
-      );
-      if (!response.ok && response.status !== 404) return unavailable();
-    } else {
-      if (
-        !object(value.credential) ||
-        typeof value.credential.type !== "string" ||
-        !value.credential.type ||
-        "uuid" in value.credential ||
-        "id" in value.credential
-      )
-        return new Response(null, { status: 400 });
-      // A plugin makes its own calls without the credential's proxy, so a routed one is saved
-      // disabled: Home never uses or refreshes it, and nothing goes direct (change 37/39).
-      const refused =
-        pluginProviders.has(value.credential.type) && proxy?.includes(routePeerAddress) === true;
-      // The pool's refusal is recorded before Home holds the credential, so it is never lost.
-      if (refused) await input.routes?.markRefused(value.reference, true);
-      const saved = await input.home.data("/credentials", {
-        method: "POST",
-        signal: request.signal,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ...value.credential,
-          uuid: value.reference,
-          ...(proxy === undefined ? {} : { proxy_url: proxy }),
-          ...(refused ? { disabled: true } : {}),
-        }),
-      });
-      if (saved.name !== `${value.reference}.json`) return unavailable();
-      if (!refused && (await input.routes?.refused(value.reference)))
-        await input.routes?.markRefused(value.reference, false);
-      await enableNewCodexWebSockets(input.home, [value.reference], value.credential.type);
-    }
-    if (value.action === "remove") await input.routes?.forget(value.reference);
-    return json(null);
+    const reference = value.reference;
+    const action = String(value.action);
+    // The route decision and the save are one step: a pass can't land between them.
+    const mirrorOne = async (): Promise<Response> => {
+      const proxy =
+        action === "upsert"
+          ? await input.routes?.proxyFor(reference, routeHint(value), request.signal)
+          : undefined;
+      if (object(value.credential) && value.credential.type === "config") {
+        await mirrorHomeConfig(
+          input.home,
+          reference,
+          action,
+          value.credential,
+          request.signal,
+          proxy,
+        );
+      } else if (action === "remove") {
+        const response = await input.home.response(
+          `/credentials?id=${encodeURIComponent(reference)}`,
+          { method: "DELETE", signal: request.signal },
+        );
+        if (!response.ok && response.status !== 404) return unavailable();
+      } else {
+        if (
+          !object(value.credential) ||
+          typeof value.credential.type !== "string" ||
+          !value.credential.type ||
+          "uuid" in value.credential ||
+          "id" in value.credential
+        )
+          return new Response(null, { status: 400 });
+        // A plugin makes its own calls without the credential's proxy, so a routed one is saved
+        // disabled: Home never uses or refreshes it, and nothing goes direct (change 37/39).
+        const refused =
+          pluginProviders.has(value.credential.type) && proxy?.includes(routePeerAddress) === true;
+        // The pool's refusal is recorded before Home holds the credential, so it is never lost.
+        if (refused) await input.routes?.markRefused(reference, true);
+        const saved = await input.home.data("/credentials", {
+          method: "POST",
+          signal: request.signal,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...value.credential,
+            uuid: reference,
+            ...(proxy === undefined ? {} : { proxy_url: proxy }),
+            ...(refused ? { disabled: true } : {}),
+          }),
+        });
+        if (saved.name !== `${reference}.json`) return unavailable();
+        if (!refused && (await input.routes?.refused(reference)))
+          await input.routes?.markRefused(reference, false);
+        await enableNewCodexWebSockets(input.home, [reference], value.credential.type);
+      }
+      if (action === "remove") await input.routes?.forget(reference);
+      return json(null);
+    };
+    return await (input.routes ? input.routes.serial(mirrorOne) : mirrorOne());
   } catch (error) {
     return failureResponse(error);
   }

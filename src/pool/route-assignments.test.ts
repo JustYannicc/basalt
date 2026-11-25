@@ -55,6 +55,8 @@ function fakeHome() {
     failFields: false,
     failStatus: false,
     failPost: false,
+    postGate: undefined as Promise<void> | undefined,
+    posting: () => {},
     writes: [] as string[],
   };
   const client = new HomeClient(async (path, init) => {
@@ -71,6 +73,10 @@ function fakeHome() {
       return Response.json(state.codex);
     }
     if (route === "/credentials" && method === "GET") return Response.json({ files: state.files });
+    if (route === "/credentials" && method === "POST" && state.postGate) {
+      state.posting();
+      await state.postGate;
+    }
     if (route === "/credentials" && method === "POST" && state.failPost)
       return new Response(null, { status: 500 });
     if (route === "/credentials" && method === "POST") {
@@ -868,4 +874,35 @@ test("a hold on a plugin credential already on a route is still disabled, and th
   await routes.refresh(signal());
   assert.equal(state.files[0]!.disabled, true);
   assert.equal(state.files[0]!.proxy_url, routeProxyUrl(home));
+});
+
+test("a mirror's decision and save are one step: a pass can't land between them and be overwritten", async () => {
+  const { client, state } = fakeHome();
+  const gemini = "12345678-abcd-4000-8000-0000000000b2";
+  const rules = scripted({});
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  await mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  await routes.prepare(scope, [gemini], signal());
+  // A hint-less re-mirror decides "direct", then its save to Home is slow.
+  let release = () => {};
+  state.postGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const posting = new Promise<void>((resolve) => {
+    state.posting = resolve;
+  });
+  const remirror = mirror(client, routes, gemini, { type: "gemini-cli", access_token: "x" });
+  await posting;
+  // Meanwhile the rules route it and a pass runs.
+  rules.set({ [gemini]: { routeId: home, owner } });
+  const pass = routes.refresh(signal());
+  // Every fake here answers in microtasks: one turn of the event loop lets an unqueued pass finish.
+  await new Promise((resolve) => setImmediate(resolve));
+  state.postGate = undefined;
+  release();
+  assert.equal((await remirror).status, 200);
+  await pass;
+  const file = state.files.find((row) => row.id === gemini)!;
+  assert.equal(file.disabled, true);
+  assert.equal(file.proxy_url, routeProxyUrl(home));
 });

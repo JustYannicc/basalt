@@ -205,6 +205,9 @@ const within = (ms: number, signal?: AbortSignal) =>
  */
 export class RouteAssignments {
   private owners?: Map<string, string>;
+  // Every pass that decides routes and writes them runs alone, so a pass that read older rules
+  // can't lift what a newer one refused, and a mirror can't overwrite a pass in flight.
+  private queue: Promise<unknown> = Promise.resolve();
   private storage: RouteStorage;
   private resolver: RouteResolver;
   private home: HomeClient;
@@ -421,7 +424,17 @@ export class RouteAssignments {
    * next pass resolves them again. It reads storage by key and touches Home only when a route,
    * a hold or a hold to clear is at stake.
    */
-  async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+  /** Runs `work` after every pass before it; a mirror wraps its decision and its save in one. */
+  serial<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(work, work);
+    this.queue = run.catch(() => {});
+    return run;
+  }
+
+  prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+    return this.serial(() => this.preparePass(scope, accounts, signal));
+  }
+  private async preparePass(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
     const raw = await this.storage.get(poolPrefix + scope.pool);
     const record = raw === undefined ? undefined : Schema.decodeUnknownSync(PoolRecord)(raw);
     const known = new Set(record?.references ?? []);
@@ -555,7 +568,10 @@ export class RouteAssignments {
     this.owners = undefined;
     await this.storage.put(signInPrefix + session, route);
   }
-  async settleSignIn(session: string, references: readonly string[]) {
+  settleSignIn(session: string, references: readonly string[]) {
+    return this.serial(() => this.settlePass(session, references));
+  }
+  private async settlePass(session: string, references: readonly string[]) {
     const raw = await this.storage.get(signInPrefix + session);
     if (raw === undefined) return;
     const route = Schema.decodeUnknownSync(Entry)(raw);
@@ -575,7 +591,10 @@ export class RouteAssignments {
   }
 
   /** On the pool's alarm: one cheap poll per pool, a full pass when a revision or the floor says so. */
-  async tick(signal: AbortSignal) {
+  tick(signal: AbortSignal) {
+    return this.serial(() => this.tickPass(signal));
+  }
+  private async tickPass(signal: AbortSignal) {
     const state = await this.state();
     if (
       this.now() - (state.polledAt ?? -Infinity) <
@@ -592,10 +611,13 @@ export class RouteAssignments {
       if (poll.revision !== record.revision || this.now() - record.refreshedAt >= refreshFloorMs)
         due = true;
     }
-    if (due) await this.refresh(signal);
+    if (due) await this.refreshPass(signal);
   }
 
-  async refresh(signal: AbortSignal) {
+  refresh(signal: AbortSignal) {
+    return this.serial(() => this.refreshPass(signal));
+  }
+  private async refreshPass(signal: AbortSignal) {
     const pools = await this.pools();
     const answers = new Map<string, RouteResolution[]>();
     const revisions = new Map<string, number>();

@@ -100,12 +100,16 @@ export class AccountActions {
       if (result.status !== "ok" || result.disabled !== disabled) return unavailable();
       // A route that applied while this resume was on its way wins: the credential goes off again.
       if (!disabled && (await this.refusals?.refusesUse(id, String(provider ?? "")))) {
-        const off = await this.client.data("/credentials/status", {
-          ...post({ name: id, disabled: true }),
-          method: "PATCH",
-          signal,
-        });
-        if (off.status !== "ok" || off.disabled !== true) return unavailable();
+        const off = () =>
+          this.client.data("/credentials/status", {
+            ...post({ name: id, disabled: true }),
+            method: "PATCH",
+            signal,
+          });
+        // Once more on failure: a resumed plugin credential must not stay on under a route.
+        const first = await off().catch(() => undefined);
+        const done = first?.status === "ok" && first.disabled === true ? first : await off();
+        if (done.status !== "ok" || done.disabled !== true) return unavailable();
         return fail(409, "route_unsupported", "This account can't use its owner's route yet.");
       }
       // The owner's pause is theirs to lift: the pool never re-enables it when the route ends.
