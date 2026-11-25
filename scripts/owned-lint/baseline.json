@@ -1,4 +1,7 @@
 {
+  "basalt/no-alchemy-auto-approve": {
+    "scripts/owned-lint/alchemy.test.ts": 5
+  },
   "basalt/no-direct-cloudflare-api": {
     "scripts/deploy-safety/token-audit.ts": 1,
     "scripts/ensure-artifacts.ts": 1,
