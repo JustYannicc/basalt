@@ -9,7 +9,7 @@ import {
   parsePreviewInventory,
   previewStacks,
   readNumberedRehearsalStages,
-  readProductionDatabases,
+  readProductionRecords,
   type PreviewStateEntry,
   type StateCommand,
 } from "./inventory.ts";
@@ -469,53 +469,6 @@ test("a numbered stage that cannot be read is marked, and the others are still r
   assert.deepEqual(second, { stage: "test-rehearsal-2222", stacks: { "basalt-rehearsal": {} } });
 });
 
-test("production's databases are read from its own database rows only, and none found refuses", async () => {
-  const at = "basalt/production";
-  const rows: Record<string, unknown> = {
-    [`${at}/Database`]: {
-      ...(row("Database", "Planetscale.PostgresDatabase").value as object),
-      attr: { id: "prod-id", name: "basalt" },
-    },
-    [`${at}/Api`]: row("Api", "Cloudflare.Worker").value,
-  };
-  const reads: string[] = [];
-  const command =
-    (listed: string[], failRead = false): StateCommand =>
-    (args) => {
-      const verb = args[args.indexOf("state") + 1]!;
-      assert.ok(["list", "read"].includes(verb));
-      if (verb === "list") return { status: 0, stdout: listed.join("\n") };
-      const path = args[args.indexOf("state") + 2]!;
-      reads.push(path);
-      if (failRead) return { status: 1, stdout: `secret value of ${path}` };
-      return { status: 0, stdout: JSON.stringify(rows[path]) };
-    };
-  assert.deepEqual(
-    await readProductionDatabases("test-rehearsal-1", {
-      command: command(Object.keys(rows)),
-      environment: {},
-    }),
-    [{ id: "prod-id", name: "basalt" }],
-  );
-  // Only the database row is read, never production's other State.
-  assert.deepEqual(reads, [`${at}/Database`]);
-  await assert.rejects(
-    readProductionDatabases("test-rehearsal-1", {
-      command: command([`${at}/Api`]),
-      environment: {},
-    }),
-    /records no PlanetScale database/,
-  );
-  // A failed read says only that it failed, never what it read.
-  await assert.rejects(
-    readProductionDatabases("test-rehearsal-1", {
-      command: command([`${at}/Database`], true),
-      environment: {},
-    }),
-    (error: Error) => error.message === "Production's database rows could not be read",
-  );
-});
-
 test("the lanes are read beside the four-digit stages only when asked", async () => {
   const command: StateCommand = (args) => {
     const verb = args[args.indexOf("state") + 1];
@@ -535,4 +488,48 @@ test("the lanes are read beside the four-digit stages only when asked", async ()
     );
   assert.deepEqual(await stages(false), ["test-rehearsal-2313"]);
   assert.deepEqual(await stages(true), ["test-rehearsal-2", "test-rehearsal-2313"]);
+});
+
+test("production's databases, ids and names are read once from its State, privately", async () => {
+  const at = "basalt/production";
+  const rows: Record<string, unknown> = {
+    [`${at}/Database`]: {
+      ...(row("Database", "Planetscale.PostgresDatabase").value as object),
+      attr: { id: "prod-id", name: "basalt" },
+    },
+    [`${at}/Api`]: {
+      ...(row("Api", "Cloudflare.Worker").value as object),
+      attr: { workerName: "basalt-api-production" },
+    },
+    [`${at}/Ca`]: {
+      ...(row("Ca", "Cloudflare.MtlsCertificate").value as object),
+      attr: { id: "shared-ca" },
+    },
+  };
+  const command =
+    (shown: Record<string, unknown>, fail = false): StateCommand =>
+    (args) => {
+      const verb = args[args.indexOf("state") + 1]!;
+      assert.ok(["list", "read"].includes(verb));
+      if (fail && verb === "read") return { status: 1, stdout: "secret value" };
+      return verb === "list"
+        ? { status: 0, stdout: Object.keys(shown).join("\n") }
+        : { status: 0, stdout: JSON.stringify(shown) };
+    };
+  const records = await readProductionRecords("test-rehearsal-1", {
+    command: command(rows),
+    environment: {},
+  });
+  assert.deepEqual(records.databases, [{ id: "prod-id", name: "basalt" }]);
+  // The shared trust root is never production's alone, so it is no proof against a stage.
+  assert.deepEqual([...records.identities].sort(), ["basalt", "basalt-api-production", "prod-id"]);
+  await assert.rejects(
+    readProductionRecords("test-rehearsal-1", { command: command(rows, true), environment: {} }),
+    (error: Error) => error.message === "Production's State could not be read",
+  );
+  const { [`${at}/Database`]: _database, ...noDatabase } = rows;
+  await assert.rejects(
+    readProductionRecords("test-rehearsal-1", { command: command(noDatabase), environment: {} }),
+    /records no PlanetScale database/,
+  );
 });

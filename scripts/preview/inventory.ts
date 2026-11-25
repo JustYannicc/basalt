@@ -382,43 +382,48 @@ function laneStateReader(
 }
 
 /**
- * Production's PlanetScale databases as its own State records them, read only, so a stage's
- * destroy can prove from rows that it deletes none of them. It refuses when it finds none.
+ * What production's own State records, read once and read only, so a stage's destroy can prove
+ * from rows that it deletes none of it: its PlanetScale databases, and every id and name as the
+ * stage gate reads a stage's own (`ownIdentities`). Values stay in this process; a failed read says
+ * only that it failed. It refuses when it finds no database.
  */
-export async function readProductionDatabases(
+export async function readProductionRecords(
   lane: string,
   options: { readonly command?: StateCommand; readonly environment?: NodeJS.ProcessEnv } = {},
-): Promise<{ readonly id?: string; readonly name?: string }[]> {
+): Promise<{
+  readonly databases: readonly { readonly id?: string; readonly name?: string }[];
+  readonly identities: ReadonlySet<string>;
+}> {
   const { state, env } = laneStateReader(lane, options);
   const at = `${productionRelease.stack}/${productionRelease.stage}`;
-  const databases: { id?: string; name?: string }[] = [];
   try {
-    // Listing names rows only; just the database rows are read, never production's other State.
-    const paths = parsePaths(state("list", at, "--recursive"), `${at}/`, redactor(env)).filter(
-      (path) => path.endsWith("Database"),
-    );
-    for (const path of paths)
-      for (const { value } of parseStageValues(
-        state("read", path),
-        productionRelease.stack,
-        productionRelease.stage,
-        [path],
-      )) {
-        const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-        const type = typeof row.resourceType === "string" ? row.resourceType : "";
-        if (!/^Planetscale\.\w*Database$/u.test(type)) continue;
-        const attr =
-          row.attr && typeof row.attr === "object" ? (row.attr as Record<string, unknown>) : {};
-        const text = (key: string) =>
-          typeof attr[key] === "string" ? (attr[key] as string) : undefined;
-        databases.push({ id: text("id"), name: text("name") });
-      }
+    const paths = parsePaths(state("list", at, "--recursive"), `${at}/`, redactor(env));
+    const rows = paths.length
+      ? parseStageValues(
+          state("read", at, "--recursive"),
+          productionRelease.stack,
+          productionRelease.stage,
+          paths,
+        ).map(({ value }) => value)
+      : [];
+    const databases = rows.flatMap((value) => {
+      const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+      const type = typeof row.resourceType === "string" ? row.resourceType : "";
+      if (!/^Planetscale\.\w*Database$/u.test(type)) return [];
+      const attr =
+        row.attr && typeof row.attr === "object" ? (row.attr as Record<string, unknown>) : {};
+      const text = (key: string) =>
+        typeof attr[key] === "string" ? (attr[key] as string) : undefined;
+      return [{ id: text("id"), name: text("name") }];
+    });
+    const { ownIdentities } = await import("../release/stage-writes.ts");
+    const identities = new Set(ownIdentities(rows));
+    if (databases.length) return { databases, identities };
   } catch {
     // A failed read's detail could quote production's State; it says only that it failed.
-    throw new Error("Production's database rows could not be read");
+    throw new Error("Production's State could not be read");
   }
-  if (!databases.length) throw new Error("Production's State records no PlanetScale database");
-  return databases;
+  throw new Error("Production's State records no PlanetScale database");
 }
 
 /** What State still holds for one stage named before stages were lanes: rows per stack, by kind. */

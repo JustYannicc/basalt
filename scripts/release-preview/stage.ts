@@ -7,7 +7,7 @@
  *   apply     R1: the same deploy applied, read back, then planned again (must be all noop)
  *   destroy   tear the stage down and prove it gone
  *   leftovers read-only: what State still holds for the four-digit stages from before the lanes
- *   retire    destroy the next of those stages that holds only buckets and its own database
+ *   retire    destroy the next of those stages whose own rows prove it is its own
  *
  * Every apply and destroy goes through the release entry (`scripts/release/deploy.ts`), which never
  * lets Alchemy bootstrap the shared State store; nothing here runs the CLI with `--yes`.
@@ -36,9 +36,9 @@ import { describeError, redactor } from "./redact.ts";
 import {
   alchemyPreviewStateReader,
   readNumberedRehearsalStages,
-  readProductionDatabases,
+  readProductionRecords,
 } from "../preview/inventory.ts";
-import { databaseRefusal, retirePlan, retireSubject } from "./retire-stage.ts";
+import { databaseRefusal, ownershipRefusal, retirePlan, retireSubject } from "./retire-stage.ts";
 import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
@@ -2081,19 +2081,23 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       for (const line of lines) console.log(line);
       result.numberedStages = stages.length;
       result.retired = null;
-      let production: Awaited<ReturnType<typeof readProductionDatabases>> | undefined;
+      let production: Awaited<ReturnType<typeof readProductionRecords>> | undefined;
       for (const { ordinal, stage } of candidates) {
         const target = retireSubject(stage);
         const targetConfig = stageEnvironment(target, source);
         const stacks = await alchemyPreviewStateReader({ environment: targetConfig.deploy }).read(
           targetConfig.stage,
         );
-        production ??= await readProductionDatabases(config.stage, { environment: config.deploy });
-        const refusal = databaseRefusal(
-          Object.values(stacks).flat(),
-          targetConfig.databaseName,
-          production,
-        );
+        production ??= await readProductionRecords(config.stage, { environment: config.deploy });
+        const rows = Object.values(stacks).flat();
+        const refusal =
+          databaseRefusal(rows, targetConfig.databaseName, production.databases) ??
+          (await ownershipRefusal(
+            rows,
+            targetConfig.stage,
+            targetConfig.databaseName,
+            production.identities,
+          ));
         // A stage the proof refuses is left as it is, and the next one is tried.
         if (refusal) {
           console.log(`  stage ${ordinal} left: ${refusal}; nothing of it deleted`);
