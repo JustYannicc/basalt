@@ -3,7 +3,11 @@ import { SlotRefused } from "./contract.ts";
 import type { RetirementProvider } from "./retirement.ts";
 import type { StartupStopRecord } from "./startup-abort-contract.ts";
 
-/** The driver's own report that this boot stopped; only it lets an inactive listing count as gone. */
+/**
+ * The driver's own report that this boot stopped; only it lets an inactive listing count as gone.
+ * Neither release here gives a counted set: they have no time bound and sit outside the fleet
+ * ledger, so every unsettled instance still holds them.
+ */
 const driverStopped = { driverStopped: true } as const;
 
 /** The retained admission names the application even after current release bindings advance. */

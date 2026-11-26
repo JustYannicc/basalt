@@ -45,7 +45,7 @@ export class Root extends DurableObject {
   });
   const driver=new BoundSlotDriver(()=>({fetch:request=>extra.fetch(
    ['held-destroy','held-report','held-body'].includes(fault)?new Request(request,{signal:new AbortController().signal}):request)}));
-  this.cell=new FleetHandoffCell({handoff:{selected:async()=>identity},driver,admission:{},application,provider});
+  this.cell=new FleetHandoffCell({handoff:{selected:async()=>identity},driver,admission:{},application,provider,counted:()=>this.state.counted()});
   return {target:this.target,identity:this.identity,extra,cell:this.cell};
  }
  async setup(fault){

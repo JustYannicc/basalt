@@ -39,6 +39,12 @@ export async function fleetCellFixture(
     rollout = false;
   let credential: string | null = "synthetic-provider-token";
   let ran = false;
+  // Another instance of the application in this state, and whether the fleet ledger counts it.
+  const sibling = {
+    id: "synthetic-sibling",
+    state: undefined as string | undefined,
+    counted: false,
+  };
   const provider = new RuntimeProviderReader({ get: async () => credential }, async (input) => {
     const instances = new URL(input).pathname.endsWith("instances-v2");
     if (instances ? failRuntime : failApplication) return new Response(null, { status: 403 });
@@ -49,16 +55,15 @@ export async function fleetCellFixture(
       errors: [],
       // As on production: once destroyed, the instance stays listed under state=active as inactive.
       result: instances
-        ? ran
-          ? [
-              {
-                id: target.instanceId,
-                application_id: target.applicationId,
-                image: providerFixture.raw.configuration.image,
-                status: { state: running ? "running" : "inactive" },
-              },
-            ]
-          : []
+        ? [
+            ...(ran ? [{ id: target.instanceId, state: running ? "running" : "inactive" }] : []),
+            ...(sibling.state ? [{ id: sibling.id, state: sibling.state }] : []),
+          ].map(({ id, state }) => ({
+            id,
+            application_id: target.applicationId,
+            image: providerFixture.raw.configuration.image,
+            status: { state },
+          }))
         : // As while Cloudflare rolls out a changed image: the same application with a rollout id.
           rollout
           ? { ...providerFixture.raw, active_rollout_id: "synthetic-rollout" }
@@ -94,6 +99,8 @@ export async function fleetCellFixture(
       target,
       code: runtimeFixtureCode,
       provider,
+      // As the ledger does: the cell's own row, and the sibling's while it has one.
+      counted: async () => new Set([target.instanceId, ...(sibling.counted ? [sibling.id] : [])]),
       application: { ...application, color: "blue", imageInput: target.imageInput },
       wrap: runtime.wrap,
       remote: () => {
@@ -148,6 +155,10 @@ export async function fleetCellFixture(
     },
     rollout: (value: boolean) => {
       rollout = value;
+    },
+    /** Lists another instance in `state`, or none without one; `counted` puts it in the ledger. */
+    sibling: (state: string | undefined, counted = false) => {
+      Object.assign(sibling, { state, counted });
     },
     cleanup: async () => {
       await Promise.all(background);
