@@ -10,36 +10,14 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { Capability, ServiceCredentials } from "../contracts/connection.ts";
 import { normalizeModelSearch } from "../contracts/tunnel.ts";
+import { forwardedRequestHeaders, relayedResponseHeader } from "../contracts/tunnel-headers.ts";
 import { modelHeaders } from "./model-headers.ts";
 
-const requestHeaders = new Set([
-  "accept",
-  "content-type",
-  "content-encoding",
-  "mcp-session-id",
-  "mcp-protocol-version",
-  "last-event-id",
-  "anthropic-version",
-  "anthropic-beta",
-  "openai-beta",
-]);
-const responseHeaderNames = new Set([
-  "content-type",
-  "content-encoding",
-  "content-length",
-  "cache-control",
-  "mcp-session-id",
-  "mcp-protocol-version",
-  "retry-after",
-  "x-should-retry",
-  "x-request-id",
-  "request-id",
-]);
 export const maximumRequestBytes = 16 * 1024 * 1024;
 
 export function* forwardedResponseHeaders(headers: IncomingHttpHeaders) {
   for (const [name, value] of Object.entries(headers))
-    if (responseHeaderNames.has(name) && value !== undefined) yield [name, value] as const;
+    if (relayedResponseHeader(name) && value !== undefined) yield [name, value] as const;
 }
 
 function bodyLimit() {
@@ -68,9 +46,7 @@ export async function forwardHttp(
     service.origin,
   );
   if (capability === "models" && target.search) target.search = normalizeModelSearch(target.search);
-  const headers: Record<string, string | string[]> = {};
-  for (const [name, value] of Object.entries(incoming.headers))
-    if (requestHeaders.has(name) && value !== undefined) headers[name] = value;
+  const headers: Record<string, string> = forwardedRequestHeaders(incoming.headers, capability);
   Object.assign(
     headers,
     capability === "models"
