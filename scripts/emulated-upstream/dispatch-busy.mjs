@@ -40,6 +40,7 @@ async function read(env) {
         accept: "application/vnd.github+json",
         "x-github-api-version": "2022-11-28",
       },
+      redirect: "error",
       signal: AbortSignal.timeout(30_000),
     },
   );

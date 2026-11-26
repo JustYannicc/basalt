@@ -95,8 +95,8 @@ export const releaseProbes = () =>
     ]),
   );
 
-/** Why `prefix` cannot be a stage's, or undefined when it can. */
-export function prefixRefusal(prefix) {
+/** Why `prefix` cannot be a stage's, or undefined when it can; `registered` is for its own test. */
+export function prefixRefusal(prefix, registered = STAGE_PREFIXES) {
   if (typeof prefix !== "string" || !SHAPE.test(prefix) || prefix.length > MAX_PREFIX)
     return "a stage prefix is basalt- and at least two more lowercase words, at most 48 characters";
   const words = prefix.split("-").slice(1);
@@ -104,10 +104,10 @@ export function prefixRefusal(prefix) {
   if (stageWord) return `a stage prefix may not hold the release stage word ${stageWord}`;
   if (RELEASE_FIRST_WORDS.includes(words[0]))
     return `a stage prefix may not start like the release stack's ${words[0]} names`;
-  if (!STAGE_PREFIXES.includes(prefix))
+  if (!registered.includes(prefix))
     return "a stage prefix is one of STAGE_PREFIXES, so no stage owns another's names";
   // A prefix that another registered one continues at a word boundary would own that stage's names.
-  const overlapping = STAGE_PREFIXES.find(
+  const overlapping = registered.find(
     (other) =>
       other !== prefix && (other.startsWith(`${prefix}-`) || prefix.startsWith(`${other}-`)),
   );

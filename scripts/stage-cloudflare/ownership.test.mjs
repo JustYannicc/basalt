@@ -131,3 +131,13 @@ test("every registered stage prefix passes on its own, so none overlaps another"
       if (other !== prefix)
         assert.ok(!other.startsWith(`${prefix}-`), `${other} continues ${prefix}`);
 });
+
+test("a registered prefix that another registered one continues is refused", () => {
+  const registered = ["basalt-route-scratch", "basalt-route-scratch-1"];
+  for (const [prefix, other] of [registered, [...registered].reverse()])
+    assert.equal(
+      prefixRefusal(prefix, registered),
+      `a stage prefix may not overlap the registered stage ${other}`,
+    );
+  assert.equal(prefixRefusal("basalt-route-scratch-1", ["basalt-route-scratch-1"]), undefined);
+});

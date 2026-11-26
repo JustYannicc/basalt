@@ -111,3 +111,20 @@ test("a redirect answer a transport hands back is refused, naming the operation 
   );
   assert.deepEqual(outsideCalls(fake, prefix), []);
 });
+
+test("a request the transport cannot send is refused without the URL it was sent to", async () => {
+  const fake = sharedAccount(prefix);
+  // Bun rejects a refused redirect naming the full URL, and DNS or TLS failures can too.
+  const fetcher = async (url) => {
+    throw new TypeError(`UnexpectedRedirect fetching "${url}"`);
+  };
+  const api = stageCloudflare({ accountId, token: "t", prefix, fetcher });
+  const error = await api.inventory(["applications"]).then(
+    () => assert.fail("the listing resolved"),
+    (rejected) => rejected,
+  );
+  assert.equal(error.message, "GET containers/applications could not be sent");
+  assert.ok(!String(error.stack).includes(accountId));
+  assert.equal(error.cause, undefined);
+  assert.deepEqual(fake.calls, []);
+});

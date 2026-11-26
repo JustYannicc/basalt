@@ -4,8 +4,9 @@
 // resource's id. The fields are those the scale test's resize sends (scripts/scale-test/run.mjs): a
 // patch of `max_instances` and `configuration`, then a rollout of that configuration. A
 // configuration may change only `instance_type`; every other field it carries must equal the
-// application's own configuration as the stage's listing recorded it, so its image, environment and
-// network stay its own. What is sent is the checked copy, never the caller's object.
+// application's own configuration, both as the stage's listing recorded it (checked before anything
+// is sent) and as its id answers in the read-back just before the change, so its image, environment
+// and network stay its own even against a listing that lies. What is sent is the checked copy, never the caller's object.
 import { fail } from "./answers.mjs";
 
 const refuse = (message) => fail(`Refused: ${message}`);

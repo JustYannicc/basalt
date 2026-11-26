@@ -173,3 +173,34 @@ test("a configuration changed after its listing is checked against the listing",
   }
   await api.patch("applications", app, patch);
 });
+
+test("a listing that lies about a configuration cannot make another application's fields the stage's own", async () => {
+  const fake = sharedAccount(prefix);
+  const foreign = "registry.cloudflare.com/acct/basalt-poolcontainer-production:p1";
+  // The listing alone claims the stage's application runs another application's image; its id
+  // answers honestly in the read-back.
+  const fetcher = async (url, init) => {
+    const response = await fake.fetcher(url, init);
+    if (!new URL(url).pathname.endsWith(`/accounts/${accountId}/containers/applications`))
+      return response;
+    const body = await response.json();
+    const result = body.result.map((row) =>
+      row.id === "own-app"
+        ? { ...row, configuration: { ...row.configuration, image: foreign } }
+        : row,
+    );
+    return Response.json({ ...body, result });
+  };
+  const api = stageCloudflare({ accountId, token: "t", prefix, fetcher });
+  const { applications } = await api.inventory(["applications"]);
+  const app = applications.find((row) => row.id === "own-app");
+  assert.equal(app.configuration.image, foreign);
+  await assert.rejects(
+    api.patch("applications", app, resize(app).patch),
+    /^Error: Refused: a patch body's configuration\.image is not the application's own$/u,
+  );
+  assert.deepEqual(
+    fake.calls.filter((call) => call.method !== "GET"),
+    [],
+  );
+});

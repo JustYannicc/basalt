@@ -14,6 +14,10 @@
 // of a request, an option or an answer is read as the object's own, so nothing set on
 // Object.prototype changes a request. The fetcher is held only here, in send's closure; answers.mjs
 // reads what comes back, once, failing closed.
+//
+// Not defended: code in the same process (it can replace the fetcher or the runtime itself), and a
+// caller-supplied fetcher that ignores the request's redirect mode. The fetcher is the transport
+// this module trusts with every request; every real caller passes the global fetch unchanged.
 import {
   DIGEST,
   answerOf,
@@ -249,7 +253,14 @@ export function stageRequests(options) {
     init.redirect = "error";
     init.signal = signal();
     if (body !== undefined) init.body = JSON.stringify(body);
-    const answer = await answerOf(await fetcher(url, init));
+    let response;
+    try {
+      response = await fetcher(url, init);
+    } catch {
+      // A transport's own error can name the full URL, which holds the account id.
+      throw fail(`${method} ${label} could not be sent`);
+    }
+    const answer = await answerOf(response);
     if (answer.status < 200 || (answer.status >= 300 && answer.status <= 399))
       throw refuse(
         `${method} ${label} answered a redirect (HTTP ${answer.status}); a stage request is never redirected`,
@@ -401,14 +412,23 @@ export function stageRequests(options) {
       return registryAnswer(operation, planned, reference, answered);
     }
     if (planned.list) return listing(kind, operation, planned);
+    let body = planned.body;
     if (planned.entry && KINDS[kind].readBack) {
       // A read is its own read-back; a change or a delete follows one.
       const found = await readBack(kind, planned.entry, planned.method === "GET");
       if (planned.method === "GET" || found === null) return found;
+      // A listing row can lie about its configuration; what its id answers now is the application's.
+      // The copy already checked is checked again, so the caller's object is read only once.
+      if (body !== undefined)
+        body = checkedBody(
+          operation,
+          body,
+          recordedConfiguration(ownField(ownField(found, "result"), "configuration")),
+        );
     }
     const data = await v4(planned.url, planned.method, planned.label, {
       absent: planned.absent,
-      body: planned.body,
+      body,
     });
     return kind === "account" ? ownString(ownField(data, "result"), "subdomain") : data;
   }
