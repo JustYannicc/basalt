@@ -4,6 +4,8 @@ import {
   FleetConfiguration,
   type FleetApplication,
 } from "../../src/pool/runtime-fleet/configuration.ts";
+import { controllerAdoptionMs } from "../../src/pool/runtime-slots/forced-restart-timing.ts";
+import { countStillMs, retiringBoundMs } from "../../src/pool/runtime-fleet/phase-bounds.ts";
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import {
   containerApplication,
@@ -38,11 +40,43 @@ type FleetView = Awaited<ReturnType<typeof inspectFleet>>;
 type Permission = NonNullable<FleetView["permission"]>;
 type Wanted = { color: "blue" | "green"; applicationId: string; imageInput: string };
 
-/** The controller's code handover window: within it a deploy's code and bindings reach it. */
-export const controllerSettleMs = 300_000;
+/**
+ * The controller's code handover window: within it a deploy's code and bindings reach it. The
+ * platform resets the object onto a Worker version about 300 s after its upload, and can be a few
+ * seconds late, so the window is the controller's own adoption allowance, which adds 30 s for
+ * transport.
+ */
+export const controllerSettleMs = controllerAdoptionMs;
 const settlePollMs = 10_000;
-// A clock that never moves still ends the wait.
+/**
+ * How long the rows of a disabled fleet take to leave when no live stream holds them: a ledger
+ * count no stream moves is lowered to the cell's own after `countStillMs`, a cell at 0 retires
+ * within `retiringBoundMs`, and 30 s covers the upkeep passes between. A live stream holds its cell
+ * for as long as it runs, which no bound covers: that cell is named in the refusal.
+ */
+export const staleRowsDrainMs = countStillMs + retiringBoundMs + 30_000;
+// A clock that never moves still ends each wait.
 const settleReads = controllerSettleMs / settlePollMs + 1;
+const drainReads = staleRowsDrainMs / settlePollMs + 1;
+/** How long the lane waits for a ready cell after it configures the fleet. */
+export const readyCellBoundMs = 300_000;
+
+/**
+ * Configure relabels no occupied row whose application, version, image digest or input the new
+ * configuration doesn't name (configuration.ts, assertOccupied). The same rule, so a row that would
+ * refuse the configure is the row that drains first.
+ */
+const namesRow = (
+  applications: readonly FleetApplication[],
+  target: FleetView["resources"][number]["target"],
+) =>
+  applications.some(
+    (app) =>
+      app.applicationId === target.applicationId &&
+      app.applicationVersion === target.applicationVersion &&
+      app.imageDigest === target.imageDigest &&
+      app.imageInput === target.imageInput,
+  );
 export interface LaneClock {
   sleep(ms: number): Promise<void>;
   now(): number;
@@ -69,10 +103,10 @@ export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
  * once. Past the window, a lost read refuses as controller-not-ready, old code as
  * controller-code-mismatch, and lagging bindings keep their own refusal.
  */
-export const untilSettled = <A>(
+export const untilSettled = <A, E = unknown>(
   settle: Settle,
   access: ControllerAccess,
-  read: Effect.Effect<Settled<A>, unknown>,
+  read: Effect.Effect<Settled<A>, E>,
 ) =>
   Effect.gen(function* () {
     for (let reads = 1; ; reads++) {
@@ -99,6 +133,50 @@ export const untilSettled = <A>(
       yield* Effect.promise(() => settle.clock.sleep(settlePollMs));
     }
   });
+
+/** A read repeated while it refuses only for an application rollout, within one handover window. */
+const untilRolledOut = <A>(clock: LaneClock, read: Effect.Effect<A, FleetLaneRefused>) =>
+  Effect.gen(function* () {
+    const from = clock.now();
+    for (let reads = 1; ; reads++) {
+      const outcome = yield* Effect.result(read);
+      if (Result.isSuccess(outcome)) return outcome.success;
+      const failure = outcome.failure;
+      if (
+        failure.reason !== "application-rollout-active" ||
+        clock.now() - from >= controllerSettleMs ||
+        reads >= settleReads
+      )
+        return yield* failure;
+      yield* Effect.promise(() => clock.sleep(settlePollMs));
+    }
+  });
+
+/** A read's failure as the lane's own refusal, keeping one the lane already typed. */
+export const asLaneRefusal = (error: unknown) =>
+  error instanceof FleetLaneRefused
+    ? error
+    : refuse(
+        "fleet-read-failed",
+        `${describeError(error)}.`,
+        "Read the fleet with the Pool fleet workflow's inspect mode.",
+      );
+
+/** The fleet's permission and standing once the controller answers this checkout's code. */
+export const fleetStanding = (settle: Settle, access: ControllerAccess) =>
+  untilSettled(
+    settle,
+    access,
+    step("inspect", () => inspectFleet(access)).pipe(Effect.map((value) => ({ value }))),
+  ).pipe(
+    Effect.mapError(asLaneRefusal),
+    Effect.map((view) => ({
+      enabled: view.permission?.enabled ?? null,
+      inForce: view.inForce ?? null,
+      notInForce: view.notInForce ?? null,
+      rows: view.resources.length,
+    })),
+  );
 
 /** The selected primary every fleet configuration names as legacy; refuses mid-handoff states. */
 export const selectedPrimary = (access: ControllerAccess) =>
@@ -130,6 +208,11 @@ export const configureFleet = (input: {
   settle: Settle;
   /** Right before the send: from here on a failure may leave the fleet configured by this run. */
   sending?: () => void;
+  /**
+   * A release's re-commit: only a fleet that is on gets its permission renewed. One an operator
+   * turned off, or never configured, stays as it is, and nothing is sent.
+   */
+  enabledOnly?: boolean;
 }) =>
   Effect.gen(function* () {
     const { controller: access, go } = input;
@@ -137,6 +220,7 @@ export const configureFleet = (input: {
     let wanted: Wanted[] | undefined;
     const settled = yield* untilSettled<
       | { retained: Permission }
+      | { off: "fleet-disabled" | "fleet-absent" }
       | {
           legacy: Effect.Success<ReturnType<typeof selectedPrimary>>;
           view: FleetView;
@@ -149,10 +233,12 @@ export const configureFleet = (input: {
         const retained = (yield* step("inspect", () => inspectFleet(access, operationId)))
           .permission;
         if (retained) return { value: { retained } };
+        const view = yield* step("inspect", () => inspectFleet(access));
+        if (input.enabledOnly && !view.permission?.enabled)
+          return { value: { off: view.permission ? "fleet-disabled" : "fleet-absent" } } as const;
         const legacy = yield* selectedPrimary(access).pipe(
           Effect.mapError((error) => atStep("primary_read", error)),
         );
-        const view = yield* step("inspect", () => inspectFleet(access));
         if (!wanted) {
           // Its failures are typed refusals already, which stand at once.
           const bindings = yield* workerPlainBindings(input.cloudflare, access.worker);
@@ -196,13 +282,59 @@ export const configureFleet = (input: {
         operationId,
         digest: settled.retained.digest,
       };
-    const { legacy, view } = settled;
-    const current = view.permission ?? undefined;
-    const applications: FleetApplication[] = [];
-    for (const { color, applicationId, imageInput } of settled.wanted) {
-      const raw = yield* containerApplication(input.cloudflare, applicationId);
-      applications.push(yield* applicationPins(color, applicationId, imageInput, raw));
+    if ("off" in settled) return { status: settled.off, operationId };
+    const { legacy } = settled;
+    let { view } = settled;
+    // The pins this configure commits, read live. Right after a release Cloudflare may still roll
+    // an application it updated, and the controller refuses to observe one that rolls: wait for it
+    // within one handover window, before anything is sent.
+    const readPins = Effect.gen(function* () {
+      const read: FleetApplication[] = [];
+      for (const { color, applicationId, imageInput } of settled.wanted) {
+        const raw = yield* containerApplication(input.cloudflare, applicationId);
+        read.push(yield* applicationPins(color, applicationId, imageInput, raw));
+      }
+      return read;
+    });
+    const applications = yield* untilRolledOut(input.settle.clock, readPins);
+    // After a release rebuilt the cells, the cells it started before still hold rows the new
+    // configuration doesn't name, and configure refuses to relabel them: drain them first.
+    const stale = view.resources.filter((row) => !namesRow(applications, row.target));
+    // A release never turns on a fleet someone turned off: each send is preceded by a read, and a
+    // fleet disabled by anyone but this run's own drain stops it with nothing more sent.
+    let drained: string | undefined;
+    if (stale.length) {
+      if (input.enabledOnly) {
+        const now = (yield* step("inspect", () => inspectFleet(access))).permission;
+        if (!now?.enabled) return { status: "fleet-disabled" as const, operationId, during: true };
+      }
+      input.sending?.();
+      const disabled = yield* disableFleet(access, go);
+      if (input.enabledOnly && disabled.status === "already-disabled")
+        return { status: "fleet-disabled" as const, operationId, during: true };
+      drained = disabled.operationId;
+      const from = input.settle.clock.now();
+      for (let reads = 1; ; reads++) {
+        view = yield* step("inspect", () => inspectFleet(access));
+        // Done once every row left is one the new configuration names, a quarantined one included.
+        if (view.resources.every((row) => namesRow(applications, row.target))) break;
+        if (input.settle.clock.now() - from >= staleRowsDrainMs || reads >= drainReads) {
+          const rows = view.resources
+            .map(
+              (row) =>
+                `${shortHash(row.target.slotId)} ${row.phase} with ${row.active} streams counted`,
+            )
+            .join(", ");
+          return yield* refuse(
+            "stale-rows-remain",
+            `${view.resources.length} rows still occupy the fleet ${staleRowsDrainMs / 1000} s after disabling it to drain the ${stale.length} cells of the image before: ${rows}.`,
+            "A row that still counts streams holds a live one, and leaves when it ends. The fleet stays disabled and the root serves; once fleet-inspect shows no rows, run the fleet lane's configure-and-accept with a new GO.",
+          );
+        }
+        yield* Effect.promise(() => input.settle.clock.sleep(settlePollMs));
+      }
     }
+    const current = view.permission ?? undefined;
     const configuration = yield* Effect.try({
       try: () =>
         Schema.decodeUnknownSync(FleetConfiguration, { onExcessProperty: "error" })({
@@ -229,6 +361,11 @@ export const configureFleet = (input: {
           "Read the pins in the output; one of them is outside the schema.",
         ),
     });
+    if (input.enabledOnly) {
+      const now = (yield* step("inspect", () => inspectFleet(access))).permission;
+      if (!now?.enabled && !(drained && now?.operationId === drained))
+        return { status: "fleet-disabled" as const, operationId, during: true };
+    }
     input.sending?.();
     const sent = yield* step("send", () =>
       sendFleetOperation(
@@ -454,11 +591,11 @@ export const waitForReadyCell = (input: {
             "Configure the fleet with a new coordinator GO.",
           ),
         );
-      if (input.now() - started >= (input.boundMs ?? 300_000))
+      if (input.now() - started >= (input.boundMs ?? readyCellBoundMs))
         return yield* Effect.fail(
           refuse(
             "ready-cell-timeout",
-            `No ready fleet cell within ${Math.round((input.boundMs ?? 300_000) / 1000)} s; rows: ${fleet.resources.map((row) => row.phase).join(",") || "none"}.`,
+            `No ready fleet cell within ${Math.round((input.boundMs ?? readyCellBoundMs) / 1000)} s; rows: ${fleet.resources.map((row) => row.phase).join(",") || "none"}.`,
             "Read the PoolWorker logs for POOL_FLEET_* and the container application's instances.",
           ),
         );
