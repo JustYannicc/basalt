@@ -1,5 +1,6 @@
 import { PoolDependencyFailure, poolDependency } from "./dependency-failure.ts";
 import { diagnosePoolFailure, object, text, unavailable } from "./json.ts";
+import { nativeMembershipReadTimeoutMs } from "./native-contract.ts";
 import { signEnvelope } from "./token.ts";
 import {
   membershipReadPath,
@@ -29,7 +30,7 @@ export async function readNativeMembership(
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ envelope }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(nativeMembershipReadTimeoutMs),
     }),
   );
   if (!response.ok) {
