@@ -7,7 +7,9 @@ import { paths, requestBody } from "./shapes.mjs";
 /** Profile b's latency while the check calls through it; well inside every call's timeout. */
 export const SLOW_MS = 2_000;
 const steps = ["read", "slow", "limited", "restore"];
-const profileCalls = 3;
+const profileCalls = 5;
+/** A call that must not carry b's latency ends well before it. */
+const unslowed = { atMostMs: SLOW_MS / 2, late: "carried profile b's latency" };
 
 /**
  * Sets profile b's faults for the check's own calls, then puts back what it found, even after a
@@ -30,9 +32,10 @@ export async function profileCheck({ base, key, call, model }) {
     control.push({ step, status: answer.status });
     return answer;
   };
+  let found;
   try {
     const read = await set("read", { method: "GET" });
-    const found = chaosFrom({
+    found = chaosFrom({
       rateLimitRate: read.body?.rateLimitRate,
       latencyMs: read.body?.latencyMs,
     });
@@ -43,7 +46,8 @@ export async function profileCheck({ base, key, call, model }) {
       await set("slow", { method: "PUT", body: JSON.stringify(slow) });
       calls.push(
         ...(await Promise.all([
-          model("messages", { kind: "via a", via: "/a" }),
+          model("messages", { kind: "via a", via: "/a", ...unslowed }),
+          model("messages", { kind: "unprefixed beside b's latency", ...unslowed }),
           model("messages", {
             kind: "via b, slow",
             via: "/b",
@@ -56,19 +60,20 @@ export async function profileCheck({ base, key, call, model }) {
         method: "PUT",
         body: JSON.stringify({ rateLimitRate: 1, latencyMs: 0 }),
       });
-      const [refused, beside] = await Promise.all([
+      const [refused, ...beside] = await Promise.all([
         limitedCall(base, headers, call),
         model("messages", { kind: "via a beside b's 429", via: "/a" }),
+        model("messages", { kind: "unprefixed beside b's 429" }),
       ]);
       limited = refused;
-      calls.push(beside);
+      calls.push(...beside);
     } finally {
       await set("restore", { method: "PUT", body: JSON.stringify(found) });
     }
   } catch (error) {
-    return { control, calls, limited, failure: publicMessage(error) };
+    return { control, calls, limited, found, failure: publicMessage(error) };
   }
-  return { control, calls, limited };
+  return { control, calls, limited, found };
 }
 
 /** A short Messages stream through b while b's 429 share is 1: its status and retry time only. */
@@ -134,8 +139,9 @@ export function profileFailures(profiles) {
 
 /** The summary's lines for the profile proof. */
 export function profileSummary(profiles) {
-  const { control = [], calls = [], limited } = profiles ?? {};
+  const { control = [], calls = [], limited, found } = profiles ?? {};
   return [
+    `- profile b found at: ${found ? `429 share ${found.rateLimitRate}, latency ${found.latencyMs} ms` : "unread"}`,
     `- profile b control: ${control.map((row) => `${row.step} HTTP ${row.status}`).join(", ") || "none"}`,
     ...calls.map(
       (row) =>

@@ -93,12 +93,21 @@ export function emulatedStage({
   /**
    * One model call, judged by the pinned load driver's rule for its shape: streamed unless
    * `stream` is false, through a profile's prefix when `via` names one, and no sooner than
-   * `atLeastMs`.
+   * `atLeastMs`, nor later than `atMostMs` when given.
    */
   async function model(
     base,
     shape,
-    { kind, long = false, stream = true, via = "", atLeastMs = 0, early = "ended too soon" },
+    {
+      kind,
+      long = false,
+      stream = true,
+      via = "",
+      atLeastMs = 0,
+      atMostMs = Infinity,
+      early = "ended too soon",
+      late = "took longer than its bound",
+    },
   ) {
     const started = now();
     let answer;
@@ -128,15 +137,15 @@ export function emulatedStage({
       answer.status === 200
         ? verdict(shape, long, answer.body, { stream })
         : { pass: false, reason: "status" };
-    const pace = ms >= atLeastMs;
+    const pace = ms < atLeastMs ? early : ms > atMostMs ? late : undefined;
     return {
       shape,
       kind,
       status: answer.status,
       ms,
       ...judged,
-      pass: judged.pass && pace,
-      reason: judged.reason ?? (pace ? undefined : early),
+      pass: judged.pass && pace === undefined,
+      reason: judged.reason ?? pace,
     };
   }
 

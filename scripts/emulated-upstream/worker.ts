@@ -21,7 +21,12 @@ export class Mock extends DurableObject<Environment> {
         read: () =>
           (this.chaos ??= this.ctx.storage
             .get(profileKey)
-            .then((saved) => chaosFrom(saved) ?? calm)),
+            .then((saved) => chaosFrom(saved) ?? calm)
+            // A failed read is not kept: the next call reads storage again.
+            .catch((error) => {
+              this.chaos = undefined;
+              throw error;
+            })),
         write: async (chaos) => {
           await this.ctx.storage.put(profileKey, chaos);
           this.chaos = Promise.resolve(chaos);

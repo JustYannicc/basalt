@@ -27,18 +27,20 @@ export function requestBody(shape, long, { stream = true } = {}) {
   return { model, max_tokens: limit, stream, messages };
 }
 
+// SSE makes the space after `data:` optional, and the pool's own stream observer reads both forms. A
+// frame that is not a JSON object is an error here, as it is for the providers' SDKs.
 const frames = (text) =>
   text
     .split(/\r?\n/u)
-    .filter((line) => line.startsWith("data: "))
-    .map((line) => line.slice(6))
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(line.startsWith("data: ") ? 6 : 5))
     .filter((data) => data !== "[DONE]")
     .map((data) => {
       try {
-        return JSON.parse(data);
-      } catch {
-        return { type: "unparseable" };
-      }
+        const frame = JSON.parse(data);
+        if (frame && typeof frame === "object" && !Array.isArray(frame)) return frame;
+      } catch {}
+      return { type: "unparseable" };
     });
 
 /** What one finished stream said: its text, whether it ended, its errors and its usage. */
@@ -54,7 +56,10 @@ function streamed(shape, text) {
         .map((f) => f.delta ?? "")
         .join(""),
       terminal: end?.type === "response.completed",
-      errors: all.filter((f) => f.type === "error" || f.type === "response.failed" || f.error),
+      errors: all.filter(
+        (f) =>
+          f.type === "error" || f.type === "unparseable" || f.type === "response.failed" || f.error,
+      ),
       input: end?.response?.usage?.input_tokens,
       output: end?.response?.usage?.output_tokens,
     };
@@ -70,6 +75,7 @@ function streamed(shape, text) {
         (f) =>
           f.error ||
           f.type === "error" ||
+          f.type === "unparseable" ||
           ["length", "content_filter"].includes(f.choices?.[0]?.finish_reason),
       ),
       input: usage?.prompt_tokens,
@@ -88,7 +94,7 @@ function streamed(shape, text) {
       all.filter((f) => f.type === "message_stop").length === 1 &&
       all.filter((f) => f.type === "message_start").length === 1 &&
       ["end_turn", "max_tokens"].includes(stopReason),
-    errors: all.filter((f) => f.type === "error" || f.error),
+    errors: all.filter((f) => f.type === "error" || f.type === "unparseable" || f.error),
     input: start?.input_tokens ?? delta?.input_tokens,
     output: delta?.output_tokens ?? start?.output_tokens,
   };
@@ -146,7 +152,9 @@ function whole(shape, text) {
 export function verdict(shape, long, text, { stream = true } = {}) {
   const read = stream ? streamed(shape, text) : whole(shape, text);
   if (read.unreadable) return { pass: false, reason: "not a JSON answer" };
-  const { out, terminal, errors, input, output } = read;
+  const { terminal, errors, input, output } = read;
+  // A content field of the wrong type is a failed answer, never a thrown verdict.
+  const out = typeof read.out === "string" ? read.out : "";
   const lines = out.trim().split(/\r?\n/u);
   const content = long
     ? lines.length === LONG_COUNT && lines.every((line, index) => line === String(index + 1))

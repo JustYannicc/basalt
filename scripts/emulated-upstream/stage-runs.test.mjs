@@ -129,7 +129,13 @@ const refused = () =>
   );
 const profilesPassing = () => ({
   control: ["read", "slow", "limited", "restore"].map((step) => ({ step, status: 200 })),
-  calls: ["via a", "via b, slow", "via a beside b's 429"].map((kind) => ({
+  calls: [
+    "via a",
+    "unprefixed beside b's latency",
+    "via b, slow",
+    "via a beside b's 429",
+    "unprefixed beside b's 429",
+  ].map((kind) => ({
     shape: "messages",
     kind,
     pass: true,
@@ -155,8 +161,8 @@ test("a check passes only when every part does, and names each part that failed"
   wholes[2] = { ...wholes[2], pass: false, reason: "content not exact" };
   const profiles = profilesPassing();
   profiles.control[3] = { step: "restore", status: 500 };
-  profiles.calls[1] = {
-    ...profiles.calls[1],
+  profiles.calls[2] = {
+    ...profiles.calls[2],
     pass: false,
     reason: "answered before profile b's latency",
   };
@@ -200,7 +206,7 @@ test("a check passes only when every part does, and names each part that failed"
       "profile b slow: HTTP -",
       "profile b limited: HTTP -",
       "profile b restore: HTTP -",
-      "0 of 3 profile calls ran",
+      "0 of 5 profile calls ran",
       "messages via b at a 429 share of 1: HTTP -",
     ],
   );

@@ -512,3 +512,28 @@ test("a missing Worker reads as no lease; any other refusal of its settings thro
   // The lease is read only from the stage's own Worker.
   await assert.rejects(account(fetcher).lease("basalt-production-poolworker"), /^Error: Refused/u);
 });
+
+test("a frame a provider's SDK treats as an error fails the verdict in every shape", () => {
+  for (const shape of ["chat", "messages", "responses"]) {
+    const clean = streamOf(shape, "OK");
+    assert.equal(verdict(shape, false, clean).pass, true, shape);
+    // Each is inserted before the stream's first frame, so the rest of the answer stays clean.
+    const before = (line) => `${line}\n\n${clean}`;
+    for (const [what, line] of [
+      ["error frame without the optional space", `data:${chaos429Body}`],
+      ["frame that is not JSON", "data: {not json"],
+      ["null frame", "data: null"],
+      ["array frame", "data: []"],
+    ])
+      assert.equal(verdict(shape, false, before(line)).reason, "error event", `${shape}: ${what}`);
+  }
+});
+
+test("an answer whose content is not text fails instead of throwing", () => {
+  const answer = JSON.parse(wholeOf("chat", "OK"));
+  answer.choices[0].message.content = { text: "OK" };
+  assert.equal(
+    verdict("chat", false, JSON.stringify(answer), { stream: false }).reason,
+    "content not exact",
+  );
+});
