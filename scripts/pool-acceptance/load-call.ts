@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { readRefusal, type ModelCredential, type PoolAcceptanceClient } from "./client.ts";
-import { callBody, callVerdict, paths, type Shape, type Verdict } from "./load-verdict.mjs";
+import { callBody, callVerdict, paths, type Verdict } from "./load-verdict.mjs";
 import type { LoadKind } from "./load-shape.ts";
-import { isObject, type Refusal } from "./types.ts";
+import { readStream } from "./load-stream.ts";
+import type { Refusal } from "./types.ts";
 
 export interface Clock {
   /** Monotonic milliseconds, for durations. */
@@ -20,7 +21,10 @@ export interface CallContext {
   readonly attemptTimeoutMs: number;
 }
 
-/** complete: a 200 read to its end. cut: a 200 whose body broke off. status: any other status. */
+/**
+ * complete: a 200 read to its end. cut: a 200 whose body broke off. status: any other status, a
+ * redirect included: it is never followed.
+ */
 export type AttemptEnd = "complete" | "status" | "cut" | "timeout" | "transport" | "too_large";
 
 /** One send of a call, as its caller saw it. Ids and codes only: never a body's text. */
@@ -38,6 +42,8 @@ export interface Attempt {
   readonly headersMs?: number;
   readonly firstByteMs?: number;
   readonly firstContentMs?: number;
+  /** The longest wait between two data frames once content had begun. */
+  readonly stallMs?: number;
   readonly totalMs: number;
   readonly verdict?: Verdict;
   /** The answer says a send again may work: a transport failure, a retryable status or Retry-After. */
@@ -55,7 +61,6 @@ export interface CallRecord {
   readonly attempts: readonly Attempt[];
 }
 
-const bodyLimit = 4 * 1024 * 1024;
 const retryAfterCapMs = 60_000;
 const requestIdPattern = /^[A-Za-z0-9-]{8,64}$/u;
 const bootPattern = /^[A-Za-z0-9._:-]{1,128}$/u;
@@ -76,39 +81,6 @@ function retryAfter(value: string | null, wall: number) {
 // What the protocols' own SDKs send again: a timeout, a conflict, a rate limit or a server error.
 const retryStatus = (status: number) =>
   status === 408 || status === 409 || status === 429 || status >= 500;
-
-function frameHasContent(shape: Shape, data: string) {
-  let frame: unknown;
-  try {
-    frame = JSON.parse(data);
-  } catch {
-    return false;
-  }
-  if (!isObject(frame)) return false;
-  const text = (value: unknown) => typeof value === "string" && value !== "";
-  if (shape === "responses")
-    return frame.type === "response.output_text.delta" && text(frame.delta);
-  if (shape === "messages")
-    return (
-      frame.type === "content_block_delta" &&
-      isObject(frame.delta) &&
-      frame.delta.type === "text_delta" &&
-      text(frame.delta.text)
-    );
-  const choice = Array.isArray(frame.choices) ? frame.choices[0] : undefined;
-  return isObject(choice) && isObject(choice.delta) && text(choice.delta.content);
-}
-
-/** Whether a stream's text so far holds its first content; it reads whole lines only. */
-function contentProbe(shape: Shape) {
-  let pending = "";
-  return (chunk: string) => {
-    pending += chunk;
-    const lines = pending.split(/\r?\n/u);
-    pending = lines.pop() ?? "";
-    return lines.some((line) => line.startsWith("data: ") && frameHasContent(shape, line.slice(6)));
-  };
-}
 
 /** One send, timed from just before it leaves: headers, first byte, first content and end. */
 export async function sendAttempt(
@@ -145,6 +117,9 @@ export async function sendAttempt(
           traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-00`,
         },
         body: JSON.stringify(callBody(kind)),
+        // A followed redirect would hide a send and carry the device assertion to its target, which
+        // may be another origin. The 3xx is this send's answer: a status, so the call fails.
+        redirect: "manual",
       },
       path,
       attemptTimeoutMs,
@@ -168,50 +143,17 @@ export async function sendAttempt(
       !capped && (retryStatus(response.status) || answer.retryAfterMs !== undefined);
     return ended({ ...answer, refusal, end: "status", retryable });
   }
-  const reader = response.body?.getReader();
-  const decoder = new TextDecoder();
-  const probe = contentProbe(kind.shape);
-  let text = "";
-  let bytes = 0;
-  let firstByteMs: number | undefined;
-  let firstContentMs: number | undefined;
+  const read = await readStream(response, kind.shape, kind.stream, since, attemptTimeoutMs);
+  const { text, ...timings } = read;
+  if (text === undefined) return ended({ ...answer, ...timings, retryable: false });
+  let verdict: Verdict;
   try {
-    while (reader) {
-      const part = await reader.read();
-      if (part.done) break;
-      if (!part.value.byteLength) continue;
-      firstByteMs ??= since();
-      bytes += part.value.byteLength;
-      if (bytes > bodyLimit) {
-        await reader.cancel().catch(() => {});
-        return ended({
-          ...answer,
-          firstByteMs,
-          firstContentMs,
-          end: "too_large",
-          retryable: false,
-        });
-      }
-      const chunk = decoder.decode(part.value, { stream: true });
-      text += chunk;
-      if (kind.stream && firstContentMs === undefined && probe(chunk)) firstContentMs = since();
-    }
-    text += decoder.decode();
+    verdict = callVerdict(kind, text);
   } catch {
-    const end = since() >= attemptTimeoutMs ? "timeout" : "cut";
-    return ended({ ...answer, firstByteMs, firstContentMs, end, retryable: false });
+    // An answer the pass rule cannot even read (a `data: null` frame, say) is no pass.
+    verdict = { pass: false, reason: "verdict threw" };
   }
-  // An unstreamed answer's content is usable only once all of it has arrived.
-  if (!kind.stream && firstByteMs !== undefined) firstContentMs = since();
-  const verdict = callVerdict(kind, text);
-  return ended({
-    ...answer,
-    firstByteMs,
-    firstContentMs,
-    verdict,
-    end: "complete",
-    retryable: false,
-  });
+  return ended({ ...answer, ...timings, verdict, retryable: false });
 }
 
 export const servedClean = (attempt: Attempt) =>

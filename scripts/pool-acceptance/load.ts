@@ -9,14 +9,22 @@ import {
 } from "./load-call.ts";
 import {
   barClasses,
+  contentWaitMs,
+  delayed,
   judge,
   loadClasses,
-  ttfbMs,
   verdictOf,
   type JudgedCall,
+  type LoadClass,
   type LoadVerdict,
 } from "./load-classes.ts";
-import { delayBarMs, kindRotation, workerStartMs, type LoadShape } from "./load-shape.ts";
+import { kindRotation, workerStartMs, type LoadShape } from "./load-shape.ts";
+
+/** A call as it ended, judged by the bar alone; a kill time can still move it to its own class. */
+export type EndedCall = CallRecord & {
+  readonly classes: readonly LoadClass[];
+  readonly pass: boolean;
+};
 
 export interface LoadInput {
   readonly client: PoolAcceptanceClient;
@@ -26,6 +34,8 @@ export interface LoadInput {
   readonly kill?: () => number | undefined;
   /** How long to wait for a kill time still unknown when the last call ends. */
   readonly killWaitMs?: number;
+  /** Each call as soon as it ends, so a run that is stopped from outside keeps what it sent. */
+  readonly ended?: (call: EndedCall) => void;
   readonly clock?: Clock;
 }
 
@@ -51,10 +61,15 @@ export const systemClock: Clock = {
     }),
 };
 
+// Only the kind of error reaches a record or a public line, never its message.
+const errorKind = (error: unknown) =>
+  error instanceof Error ? error.constructor.name || "Error" : "unknown";
+
 /**
  * Workers send back to back from their ramp step until the duration or the call budget ends. The
- * first call that is not a pass stops every worker from starting another; calls in flight finish
- * and are recorded. A call in flight at the kill time is then sent once more, for its own class.
+ * first call that is not a pass, or a worker that throws, stops every worker from starting another;
+ * calls in flight finish and are recorded. A call in flight at the kill time is then sent once more,
+ * for its own class.
  */
 export async function runLoad(input: LoadInput): Promise<LoadRun> {
   const { shape } = input;
@@ -70,11 +85,12 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   const next = kindRotation(shape.mix);
   const started = clock.now();
   const end = started + shape.durationMs;
-  // Aborted by the first non-pass or the last call of the budget: no worker starts another.
+  // Aborted by the first non-pass, a worker's error or the budget's last call: no worker starts another.
   const halt = new AbortController();
   const records: CallRecord[] = [];
   let sent = 0;
   let firstFailure: number | undefined;
+  let error: string | undefined;
   const worker = async (index: number) => {
     const start = Math.min(started + workerStartMs(shape, index), end);
     await clock.sleep(start - clock.now(), halt.signal);
@@ -85,13 +101,22 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
       const record = await sendCall(context, kind, call, index);
       records.push(record);
       // Whether a call passes never depends on the kill time, so the first non-pass stops the run.
-      if (barClasses(record, kind).length && firstFailure === undefined) {
+      const classes = barClasses(record, kind);
+      input.ended?.({ ...record, classes, pass: classes.length === 0 });
+      if (classes.length && firstFailure === undefined) {
         firstFailure = record.call;
         halt.abort();
       }
     }
   };
-  await Promise.all(Array.from({ length: shape.concurrency }, (_, index) => worker(index)));
+  await Promise.all(
+    Array.from({ length: shape.concurrency }, (_, index) =>
+      worker(index).catch((thrown: unknown) => {
+        error ??= errorKind(thrown);
+        halt.abort();
+      }),
+    ),
+  );
 
   let killAt = input.kill?.();
   const killDeadline = clock.now() + (input.killWaitMs ?? 0);
@@ -107,20 +132,21 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
       .filter((call) => call.inFlight && !call.pass)
       .map(async (call) => {
         const kind = kinds.get(call.kind)!;
-        const resend = await sendAttempt(context, kind, call.traceId, call.attempts.length + 1);
-        call.inFlight!.resend = {
-          ...resend,
-          passed:
-            servedClean(resend) &&
-            resend.boot !== undefined &&
-            ttfbMs(resend) <= kind.ttfbProfileMs + delayBarMs,
-        };
+        try {
+          const resend = await sendAttempt(context, kind, call.traceId, call.attempts.length + 1);
+          call.inFlight!.resend = {
+            ...resend,
+            passed: servedClean(resend) && resend.boot !== undefined && !delayed(resend, kind),
+          };
+        } catch (thrown) {
+          error ??= errorKind(thrown);
+        }
       }),
   );
   return {
     calls,
     killAt,
-    verdict: verdictOf(calls, firstFailure, { armed: input.kill !== undefined, at: killAt }),
+    verdict: verdictOf(calls, firstFailure, { armed: input.kill !== undefined, at: killAt }, error),
   };
 }
 
@@ -136,6 +162,7 @@ export function summaryLines(run: LoadRun, shape: LoadShape): string[] {
     `load status=${verdict.passed ? "passed" : "failed"} calls=${verdict.calls} passes=${verdict.passes} attempts=${verdict.attempts}`,
     `load classes ${loadClasses.map((name) => `${name}=${verdict.counts[name]}`).join(" ")}`,
   ];
+  if (verdict.error) lines.push(`load error=${verdict.error}`);
   const failure = run.calls.find((call) => call.call === verdict.firstFailure);
   if (failure) {
     const last = failure.attempts.at(-1)!;
@@ -148,18 +175,18 @@ export function summaryLines(run: LoadRun, shape: LoadShape): string[] {
   }
   const first = run.calls
     .filter((call) => call.pass)
-    .map((call) => ttfbMs(call.attempts[0]!))
+    .map((call) => contentWaitMs(call.attempts[0]!))
     .sort((a, b) => a - b);
   lines.push(
-    `load first_byte_ms passes p50=${percentile(first, 0.5)} p95=${percentile(first, 0.95)} max=${percentile(first, 1)}`,
+    `load first_content_ms passes p50=${percentile(first, 0.5)} p95=${percentile(first, 0.95)} max=${percentile(first, 1)}`,
     `load boots distinct=${verdict.boots.length} answers=${verdict.boots.join(",") || "0"}`,
     // The pool strips its placement header, so a caller sees the boot and not the runtime.
     "load runtime=not_visible_to_callers join_on=requestId,traceId",
   );
   if (verdict.restart) {
-    const { kill, inFlight, resendPassed, passed } = verdict.restart;
+    const { kill, inFlight, resendPassed, newBoots, goneBoots, passed } = verdict.restart;
     lines.push(
-      `load restart kill=${kill} in_flight=${inFlight} in_flight_cut=${verdict.counts.in_flight_cut} resend_passed=${resendPassed} verdict=${passed ? "passed" : "not_passed"}`,
+      `load restart kill=${kill} in_flight=${inFlight} in_flight_cut=${verdict.counts.in_flight_cut} resend_passed=${resendPassed} new_boots=${newBoots} gone_boots=${goneBoots} verdict=${passed ? "passed" : "not_passed"}`,
     );
   }
   const ramp = shape.ramp

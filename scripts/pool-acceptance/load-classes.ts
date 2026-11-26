@@ -3,8 +3,9 @@ import { delayBarMs, type LoadKind } from "./load-shape.ts";
 
 /**
  * What the zero bar counts. failed: the last send was not a 200 with a terminal event and exact
- * content. retried: more than one send, even if the last passed. delayed: a send's first byte came
- * more than 30 s past its profile's. missing_boot: an answer without the pool's boot header.
+ * content. retried: more than one send, even if the last passed. delayed: a send's first content,
+ * or a wait between its frames after that, came more than 30 s past its profile's time to first
+ * token. missing_boot: an answer without the pool's boot header.
  * in_flight_cut: in flight at the kill time and not clean, in place of those four.
  */
 export type LoadClass = "failed" | "retried" | "delayed" | "missing_boot" | "in_flight_cut";
@@ -16,17 +17,23 @@ export const loadClasses: readonly LoadClass[] = [
   "in_flight_cut",
 ];
 
-/** Time to first byte: of the body, else of the answer's headers, else of the whole wait. */
-export const ttfbMs = (attempt: Attempt) =>
-  attempt.firstByteMs ?? attempt.headersMs ?? attempt.totalMs;
+/**
+ * How long a send waited for its answer: its first content, else the headers of an answer that
+ * never brought any (which fails on its own), else the whole wait for no answer at all.
+ */
+export const contentWaitMs = (attempt: Attempt) =>
+  attempt.firstContentMs ?? attempt.headersMs ?? attempt.totalMs;
+
+/** A send whose first content or a later stall came more than the bar past its profile. */
+export const delayed = (attempt: Attempt, kind: LoadKind) =>
+  Math.max(contentWaitMs(attempt), attempt.stallMs ?? 0) > kind.ttfbProfileMs + delayBarMs;
 
 /** The bar's classes for one call on its own. No class at all is the only pass. */
 export function barClasses(call: CallRecord, kind: LoadKind): LoadClass[] {
   const classes: LoadClass[] = [];
   if (!servedClean(call.attempts.at(-1)!)) classes.push("failed");
   if (call.attempts.length > 1) classes.push("retried");
-  if (call.attempts.some((attempt) => ttfbMs(attempt) > kind.ttfbProfileMs + delayBarMs))
-    classes.push("delayed");
+  if (call.attempts.some((attempt) => delayed(attempt, kind))) classes.push("delayed");
   if (call.attempts.some((attempt) => attempt.status !== undefined && attempt.boot === undefined))
     classes.push("missing_boot");
   return classes;
@@ -72,6 +79,24 @@ export function judge(call: CallRecord, kind: LoadKind, killAt: number | undefin
 
 export type KillSeen = "seen" | "unseen" | "outside_run";
 
+export interface Restart {
+  readonly kill: KillSeen;
+  readonly inFlight: number;
+  readonly resendPassed: number;
+  /** Boots first answering after the kill: a runtime that started. */
+  readonly newBoots: number;
+  /**
+   * Boots of the sends in flight at the kill (else of every send before it) that no send after the
+   * kill answered from: a runtime that went away.
+   */
+  readonly goneBoots: number;
+  /**
+   * Until Yannic decides otherwise, only zero in-flight cuts pass; and only a kill the answers
+   * show, by a boot that went and a boot that came, is a restart at all.
+   */
+  readonly passed: boolean;
+}
+
 export interface LoadVerdict {
   readonly passed: boolean;
   readonly calls: number;
@@ -82,57 +107,87 @@ export interface LoadVerdict {
   readonly firstFailure: number | undefined;
   /** Answers per distinct boot, largest first; the boots themselves stay in the artifact. */
   readonly boots: readonly number[];
-  readonly restart:
-    | {
-        readonly kill: KillSeen;
-        readonly inFlight: number;
-        readonly resendPassed: number;
-        /** Until Yannic decides otherwise, only zero in-flight cuts pass the restart phase. */
-        readonly passed: boolean;
-      }
-    | undefined;
+  readonly restart: Restart | undefined;
+  /** The kind of error that ended the run early, when one did. */
+  readonly error: string | undefined;
+}
+
+// Loops, not spreads: a long run holds more calls than a call's arguments may.
+function restartOf(
+  calls: readonly JudgedCall[],
+  killAt: number | undefined,
+  cuts: number,
+): Restart {
+  let first = Infinity;
+  let last = -Infinity;
+  const before = new Set<string>();
+  const after = new Set<string>();
+  const held = new Set<string>();
+  for (const call of calls) {
+    first = Math.min(first, call.startedAt);
+    last = Math.max(last, call.endedAt);
+    for (const attempt of call.attempts) {
+      if (!attempt.boot || killAt === undefined) continue;
+      (attempt.startedAt > killAt ? after : before).add(attempt.boot);
+      if (attempt.startedAt <= killAt && killAt < attempt.endedAt) held.add(attempt.boot);
+    }
+  }
+  const kill: KillSeen =
+    killAt === undefined ? "unseen" : killAt >= first && killAt <= last ? "seen" : "outside_run";
+  let newBoots = 0;
+  for (const boot of after) if (!before.has(boot)) newBoots += 1;
+  let goneBoots = 0;
+  for (const boot of held.size ? held : before) if (!after.has(boot)) goneBoots += 1;
+  let inFlight = 0;
+  let resendPassed = 0;
+  for (const call of calls) {
+    if (call.inFlight) inFlight += 1;
+    if (call.inFlight?.resend?.passed) resendPassed += 1;
+  }
+  return {
+    kill,
+    inFlight,
+    resendPassed,
+    newBoots,
+    goneBoots,
+    passed: kill === "seen" && cuts === 0 && newBoots > 0 && goneBoots > 0,
+  };
 }
 
 export function verdictOf(
   calls: readonly JudgedCall[],
   firstFailure: number | undefined,
   kill: { armed: boolean; at: number | undefined },
+  error?: string,
 ): LoadVerdict {
   const counts = Object.fromEntries(loadClasses.map((name) => [name, 0])) as Record<
     LoadClass,
     number
   >;
-  for (const call of calls) for (const name of call.classes) counts[name] += 1;
   const served = new Map<string, number>();
-  for (const call of calls)
+  let passes = 0;
+  let attempts = 0;
+  for (const call of calls) {
+    for (const name of call.classes) counts[name] += 1;
+    if (call.pass) passes += 1;
+    attempts += call.attempts.length;
     for (const attempt of call.attempts)
       if (attempt.boot) served.set(attempt.boot, (served.get(attempt.boot) ?? 0) + 1);
-  const passes = calls.filter((call) => call.pass).length;
-  let restart: LoadVerdict["restart"];
-  if (kill.armed) {
-    const first = Math.min(...calls.map((call) => call.startedAt));
-    const last = Math.max(...calls.map((call) => call.endedAt));
-    const seen: KillSeen =
-      kill.at === undefined
-        ? "unseen"
-        : calls.length && kill.at >= first && kill.at <= last
-          ? "seen"
-          : "outside_run";
-    restart = {
-      kill: seen,
-      inFlight: calls.filter((call) => call.inFlight).length,
-      resendPassed: calls.filter((call) => call.inFlight?.resend?.passed).length,
-      passed: seen === "seen" && counts.in_flight_cut === 0,
-    };
   }
+  const restart = kill.armed ? restartOf(calls, kill.at, counts.in_flight_cut) : undefined;
   return {
-    passed: calls.length > 0 && passes === calls.length && (restart?.passed ?? true),
+    passed:
+      error === undefined &&
+      calls.length > 0 &&
+      passes === calls.length &&
+      (restart?.passed ?? true),
     calls: calls.length,
     passes,
-    attempts: calls.reduce((sum, call) => sum + call.attempts.length, 0),
+    attempts,
     counts,
     firstFailure,
     boots: [...served.values()].sort((a, b) => b - a),
     restart,
+    error,
   };
 }

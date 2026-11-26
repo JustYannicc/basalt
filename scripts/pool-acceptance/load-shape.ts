@@ -176,10 +176,13 @@ export function kindRotation(mix: readonly LoadKind[]) {
   };
 }
 
+// An ISO time with its zone, so no runner's local zone moves the kill.
+const isoTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u;
+
 /** A kill time given as epoch milliseconds or an ISO time; anything else is no time. */
 export function killTime(value: string | undefined) {
   const text = value?.trim();
   if (!text) return undefined;
-  const at = /^\d{13}$/u.test(text) ? Number(text) : Date.parse(text);
+  const at = /^\d{13}$/u.test(text) ? Number(text) : isoTime.test(text) ? Date.parse(text) : NaN;
   return Number.isFinite(at) ? at : undefined;
 }

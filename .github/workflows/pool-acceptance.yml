@@ -51,6 +51,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The jobs below run only from main, and a skipped job reads as success: a dispatch from any
+  # other ref fails here instead, before any secret is in reach.
+  refuse-other-refs:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a dispatch from a ref other than main
+        run: |
+          echo "::error::pool acceptance runs only from main"
+          exit 1
+
   acceptance:
     # The pool's signing and acceptance keys only ever run main's code.
     if: github.ref == 'refs/heads/main' && inputs.mode != 'load'

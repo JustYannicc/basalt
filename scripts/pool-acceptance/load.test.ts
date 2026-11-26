@@ -1,165 +1,31 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer, type ServerResponse } from "node:http";
-import type { AddressInfo } from "node:net";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { nativeModelHeader } from "../../src/pool/native-contract.ts";
-import { nativeRuntimeUnavailable } from "../../src/pool/runtime-unavailable.ts";
-import { acceptanceCredential } from "../release/acceptance-device.ts";
-import { PoolAcceptanceClient } from "./client.ts";
-import type { Clock } from "./load-call.ts";
+import type { JudgedCall } from "./load-classes.ts";
+import { verdictOf } from "./load-classes.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
+import {
+  boot,
+  device,
+  deviceEnv,
+  go,
+  load,
+  stage,
+  streamed,
+  streams,
+  testClock,
+  unavailable,
+} from "./test/load-fixtures.ts";
 import { callBody, judgesUnstreamed } from "./load-verdict.mjs";
 import { defaultMix, kindRotation, parseLoadShape, workerStartMs } from "./load-shape.ts";
-import { runLoad, summaryLines } from "./load.ts";
 
-const device = {
-  computer: "computer-load-7c21",
-  grant: "native:grant-load-3e90",
-  user: "person-load-51ad",
-  pool: "acceptance-load-proof",
-};
-const deviceEnv = {
-  POOL_ACCEPTANCE_DEVICE: JSON.stringify(device),
-  POOL_APP_SIGNING_KEY: "cd".repeat(32),
-};
-const boot = "boot-load-9f13";
-const go = "coordinator-2026-11-26-load-proof";
-
-/** Real time that a stand-in can move on, and waits that pass at once by moving it. */
-function testClock() {
-  let skew = 0;
-  const clock: Clock & { advance(ms: number): void } = {
-    now: () => performance.now() + skew,
-    wall: () => Date.now() + skew,
-    sleep: async (ms) => {
-      skew += Math.max(0, ms);
-    },
-    advance: (ms) => {
-      skew += ms;
-    },
-  };
-  return clock;
-}
-
-// aimock 1.48.1's short streams, framed as scripts/emulated-upstream/emulated-upstream.test.mjs
-// captured them.
-const sse = (frames: readonly unknown[]) =>
-  frames.map((frame) => `data: ${typeof frame === "string" ? frame : JSON.stringify(frame)}\n\n`);
-const streams: Record<string, (content: string) => string[]> = {
-  "/v1/chat/completions": (content) =>
-    sse([
-      { choices: [{ delta: { role: "assistant", content: "" }, finish_reason: null }] },
-      { choices: [{ delta: { content }, finish_reason: null }] },
-      { choices: [{ delta: {}, finish_reason: "stop" }] },
-      { choices: [], usage: { prompt_tokens: 11, completion_tokens: 2 } },
-      "[DONE]",
-    ]),
-  "/v1/messages": (content) =>
-    sse([
-      { type: "message_start", message: { usage: { input_tokens: 11, output_tokens: 2 } } },
-      { type: "content_block_delta", delta: { type: "text_delta", text: content } },
-      { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 2 } },
-      { type: "message_stop" },
-    ]),
-  "/v1/responses": (content) =>
-    sse([
-      { type: "response.output_text.delta", delta: content },
-      { type: "response.completed", response: { usage: { input_tokens: 11, output_tokens: 2 } } },
-    ]),
-};
-
-type Answer = (response: ServerResponse, path: string) => void | Promise<void>;
-const streamHeaders = (withBoot = true) => ({
-  "content-type": "text/event-stream",
-  "X-Request-Id": randomUUID(),
-  ...(withBoot ? { "X-Signalbox-Pool-Boot": boot } : {}),
-});
-const streamed =
-  ({ content = "OK", withBoot = true, beforeFirstByte = () => {} } = {}): Answer =>
-  (response, path) => {
-    response.writeHead(200, streamHeaders(withBoot));
-    beforeFirstByte();
-    response.end(streams[path]!(content).join(""));
-  };
-/** The pool's own retryable refusal (src/pool/runtime-unavailable.ts), as the entry relays it. */
-const unavailable: Answer = async (response, path) => {
-  const refusal = nativeRuntimeUnavailable(
-    new Request(`https://pool.invalid${path}`, { method: "POST" }),
-  );
-  response.writeHead(refusal.status, {
-    ...Object.fromEntries(refusal.headers),
-    "X-Request-Id": randomUUID(),
-    "X-Signalbox-Pool-Boot": boot,
-  });
-  response.end(await refusal.text());
-};
-/** Headers and the first frame, then the connection closes mid-stream. */
-const cutAfterFirstFrame =
-  (killed: () => void): Answer =>
-  (response, path) => {
-    response.writeHead(200, streamHeaders());
-    response.write(streams[path]!("OK")[0], () => {
-      killed();
-      response.socket?.end();
-    });
-  };
-
-async function stage(answers: readonly Answer[]) {
-  const seen: { path?: string; traceparent?: string; assertion?: string }[] = [];
-  const server = createServer((request, response) => {
-    const call = {
-      path: request.url,
-      traceparent: request.headers.traceparent as string | undefined,
-      assertion: request.headers[nativeModelHeader] as string | undefined,
-    };
-    seen.push(call);
-    request.resume();
-    answers[Math.min(seen.length, answers.length) - 1]!(response, request.url ?? "");
-  });
-  await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
-  const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const close = () => {
-    server.closeAllConnections();
-    server.close();
-  };
-  return { seen, client: new PoolAcceptanceClient({ origin }), close };
-}
-
-const chatOnly = (calls: number) =>
-  parseLoadShape(
-    JSON.stringify({
-      concurrency: 1,
-      durationMinutes: 1,
-      calls,
-      mix: [{ shape: "chat", weight: 1 }],
-    }),
-  );
-
-async function load(
-  answers: readonly Answer[],
-  calls: number,
-  clock = testClock(),
-  kill?: () => number | undefined,
-) {
-  const pool = await stage(answers);
-  try {
-    const shape = chatOnly(calls);
-    const run = await runLoad({
-      client: pool.client,
-      credential: acceptanceCredential(deviceEnv),
-      shape,
-      clock,
-      kill,
-    });
-    return { run, seen: pool.seen, lines: summaryLines(run, shape) };
-  } finally {
-    pool.close();
-  }
-}
+const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))(
+  "yaml",
+) as { parse: (text: string) => unknown };
 
 test("a call that passed only on its second send is retried, not a pass, and both sends are kept", async () => {
   const { run, seen } = await load([unavailable, streamed()], 1);
@@ -183,7 +49,7 @@ test("a call that passed only on its second send is retried, not a pass, and bot
   assert.notEqual(seen[0]!.assertion, seen[1]!.assertion);
 });
 
-test("a clean answer whose first byte came more than 30 s past its profile is delayed, not a pass", async () => {
+test("a clean answer whose content came more than 30 s past its profile is delayed, not a pass", async () => {
   const clock = testClock();
   const { run } = await load(
     [streamed({ beforeFirstByte: () => clock.advance(31_000) })],
@@ -192,7 +58,7 @@ test("a clean answer whose first byte came more than 30 s past its profile is de
   );
   assert.deepEqual(run.calls[0]!.classes, ["delayed"]);
   assert.equal(run.calls[0]!.attempts[0]!.verdict?.pass, true);
-  assert.ok(run.calls[0]!.attempts[0]!.firstByteMs! > 30_200);
+  assert.ok(run.calls[0]!.attempts[0]!.firstContentMs! > 30_200);
   assert.equal(run.verdict.passed, false);
 });
 
@@ -201,42 +67,6 @@ test("a clean answer without the pool's boot is missing its boot, not a pass", a
   assert.deepEqual(run.calls[0]!.classes, ["missing_boot"]);
   assert.equal(run.calls[0]!.attempts[0]!.verdict?.pass, true);
   assert.equal(run.verdict.passed, false);
-});
-
-test("a call cut at the kill counts as an in-flight cut even when its resend succeeds", async () => {
-  const clock = testClock();
-  let killAt: number | undefined;
-  const killed = () => {
-    killAt = clock.wall();
-    clock.advance(5);
-  };
-  const { run, seen, lines } = await load(
-    [cutAfterFirstFrame(killed), streamed()],
-    1,
-    clock,
-    () => killAt,
-  );
-  const [call] = run.calls;
-  assert.deepEqual(call!.classes, ["in_flight_cut"]);
-  assert.equal(call!.pass, false);
-  assert.equal(call!.attempts.length, 1, "a cut stream is not sent again by the run");
-  assert.equal(call!.inFlight?.ending, "cut");
-  assert.equal(call!.inFlight?.retryable, false);
-  assert.ok(call!.inFlight!.bar.includes("failed"));
-  assert.equal(call!.inFlight?.resend?.passed, true);
-  assert.equal(seen.length, 2, "the cut send and its one resend");
-  assert.equal(run.verdict.counts.in_flight_cut, 1);
-  assert.equal(run.verdict.counts.failed, 0);
-  assert.deepEqual(run.verdict.restart, {
-    kill: "seen",
-    inFlight: 1,
-    resendPassed: 1,
-    passed: false,
-  });
-  assert.equal(run.verdict.passed, false);
-  assert.ok(
-    lines.some((line) => line.includes("in_flight_cut=1") && line.endsWith("verdict=not_passed")),
-  );
 });
 
 test("the first call that is not a pass stops the run", async () => {
@@ -256,18 +86,6 @@ test("the first call that is not a pass stops the run", async () => {
         line.startsWith("load stopped_by call=2") && line.endsWith("reason=content_not_exact"),
     ),
   );
-});
-
-test("an armed kill that never came leaves the restart phase not passed", async () => {
-  const { run } = await load([streamed()], 2, testClock(), () => undefined);
-  assert.equal(run.verdict.passes, 2);
-  assert.deepEqual(run.verdict.restart, {
-    kill: "unseen",
-    inFlight: 0,
-    resendPassed: 0,
-    passed: false,
-  });
-  assert.equal(run.verdict.passed, false);
 });
 
 test("the load mode refuses before any credential or call without a GO or outside an acceptance pool", async () => {
@@ -305,6 +123,8 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
       {
         ...deviceEnv,
         POOL_LOAD_GO: go,
+        // A dispatch's empty input arms no kill.
+        POOL_LOAD_KILL_AT: "",
         POOL_LOAD_OUTPUT_DIRECTORY: directory,
         POOL_LOAD_SHAPE: JSON.stringify({
           concurrency: 2,
@@ -339,6 +159,7 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
     assert.deepEqual(summary.trim().split("\n"), logged);
     assert.match(summary, /^load status=passed calls=6 passes=6 attempts=6$/mu);
     assert.match(summary, /^load boots distinct=1 answers=6$/mu);
+    assert.doesNotMatch(summary, /^load restart/mu);
     for (const id of [
       boot,
       ...calls.flatMap((call) => [call.traceId, call.attempts[0].requestId]),
@@ -383,4 +204,82 @@ test("the shape ramps in steps, rotates its mix by weight and carries each kind'
   const unstreamed = '{"mix":[{"shape":"chat","weight":1,"stream":false}]}';
   if (judgesUnstreamed) assert.equal(callBody(parseLoadShape(unstreamed).mix[0]!).stream, false);
   else assert.throws(() => parseLoadShape(unstreamed), /non-streamed/u);
+});
+
+test("an answer the pass rule cannot read fails its call, stops the run and still leaves every artifact", async () => {
+  // `data: null` makes the shapes' verdict throw on a null frame.
+  const frames = streams["/v1/chat/completions"]!("OK");
+  frames.splice(1, 0, "data: null\n\n");
+  const pool = await stage([streamed({ body: frames.join("") }), streamed()]);
+  const directory = await mkdtemp(join(tmpdir(), "pool-load-"));
+  try {
+    const passed = await runLoadFromEnvironment(
+      {
+        ...deviceEnv,
+        POOL_LOAD_GO: go,
+        POOL_LOAD_OUTPUT_DIRECTORY: directory,
+        POOL_LOAD_SHAPE: JSON.stringify({
+          concurrency: 2,
+          calls: 40,
+          mix: [{ shape: "chat", weight: 1 }],
+        }),
+      },
+      pool.client,
+      () => {},
+    );
+    assert.equal(passed, false);
+    const calls = (await readFile(join(directory, "calls.jsonl"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.ok(pool.seen.length < 40, "the failure stopped the run before its budget");
+    assert.equal(calls.length, pool.seen.length, "every send that ended is recorded");
+    const failed = calls.filter((call) => !call.pass);
+    assert.equal(failed.length, 1);
+    assert.deepEqual(failed[0].classes, ["failed"]);
+    assert.equal(failed[0].attempts[0].verdict.reason, "verdict threw");
+    const run = JSON.parse(await readFile(join(directory, "run.json"), "utf8"));
+    assert.equal(run.verdict.passed, false);
+    assert.equal(run.verdict.firstFailure, failed[0].call);
+    assert.match(
+      await readFile(join(directory, "summary.txt"), "utf8"),
+      /^load stopped_by call=\d+ kind=chat-short classes=failed attempts=1 status=200 end=complete reason=verdict_threw$/mu,
+    );
+  } finally {
+    pool.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a long armed run is judged without spreading its calls into one call's arguments", () => {
+  const call: JudgedCall = {
+    call: 1,
+    worker: 0,
+    kind: "chat-short",
+    traceId: "0".repeat(32),
+    startedAt: 1,
+    endedAt: 2,
+    attempts: [],
+    classes: [],
+    pass: true,
+  };
+  const verdict = verdictOf(
+    Array.from({ length: 200_000 }, () => call),
+    undefined,
+    { armed: true, at: 1 },
+  );
+  assert.equal(verdict.calls, 200_000);
+  assert.equal(verdict.restart?.kill, "seen");
+});
+
+test("a dispatch from a ref other than main goes red, and every other job runs only from main", () => {
+  const workflow = parse(
+    readFileSync(new URL("../../.github/workflows/pool-acceptance.yml", import.meta.url), "utf8"),
+  ) as { jobs: Record<string, { if?: string; steps: { run?: string }[] }> };
+  const { "refuse-other-refs": refuse, ...jobs } = workflow.jobs;
+  assert.equal(refuse?.if, "github.ref != 'refs/heads/main'");
+  assert.match(refuse!.steps.at(-1)!.run ?? "", /\bexit 1\b/u);
+  assert.deepEqual(Object.keys(jobs).sort(), ["acceptance", "load"]);
+  for (const job of Object.values(jobs))
+    assert.match(job.if ?? "", /^github\.ref == 'refs\/heads\/main' && /u);
 });

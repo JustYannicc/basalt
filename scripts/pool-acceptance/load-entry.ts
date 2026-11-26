@@ -1,5 +1,4 @@
-import { readFileSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import {
   acceptanceCredential,
@@ -7,7 +6,7 @@ import {
   AcceptanceDeviceRefused,
 } from "../release/acceptance-device.ts";
 import { PoolAcceptanceClient } from "./client.ts";
-import { runLoad, summaryLines } from "./load.ts";
+import { runLoad, summaryLines, type LoadRun } from "./load.ts";
 import { killTime, parseLoadShape } from "./load-shape.ts";
 import { AcceptanceFailure, isAcceptancePool } from "./types.ts";
 
@@ -16,17 +15,28 @@ export const goPattern = /^coordinator-20[0-9]{2}-[A-Za-z0-9-]{1,96}$/u;
 // A marker is written once the kill is answered, which can be after the last call ends.
 const markerWaitMs = 120_000;
 
+/**
+ * An input the dispatch left empty is unset; one that holds only spaces was meant to say something
+ * and is refused, so a restart phase never runs as if no kill were armed.
+ */
+function given(env: NodeJS.ProcessEnv, name: string) {
+  const value = env[name];
+  if (value === undefined || value === "") return undefined;
+  if (!value.trim()) throw new AcceptanceFailure(`${name} holds only spaces`);
+  return value.trim();
+}
+
 /** Where the restart phase's kill time comes from: a fixed time, or a marker file a kill writes. */
 function killSource(env: NodeJS.ProcessEnv) {
-  const fixed = env.POOL_LOAD_KILL_AT?.trim();
-  if (fixed) {
+  const fixed = given(env, "POOL_LOAD_KILL_AT");
+  const marker = given(env, "POOL_LOAD_KILL_MARKER");
+  if (fixed !== undefined) {
     const at = killTime(fixed);
     if (at === undefined)
       throw new AcceptanceFailure("POOL_LOAD_KILL_AT must be epoch milliseconds or an ISO time");
     return { read: () => at, waitMs: 0 };
   }
-  const marker = env.POOL_LOAD_KILL_MARKER?.trim();
-  if (!marker) return undefined;
+  if (marker === undefined) return undefined;
   const read = () => {
     try {
       return killTime(readFileSync(marker, "utf8"));
@@ -37,15 +47,18 @@ function killSource(env: NodeJS.ProcessEnv) {
   return { read, waitMs: markerWaitMs };
 }
 
+const line = (value: unknown) => `${JSON.stringify(value)}\n`;
+
 /**
- * The load mode: refuses on a missing GO, a bad shape or a device outside an acceptance pool before
- * any credential is read, then runs, writes every call to `calls.jsonl` and the public summary to
- * `summary.txt`, and says whether the run passed.
+ * The load mode: refuses on a missing GO, a bad shape or kill input, or a device outside an
+ * acceptance pool before any credential is read. Each call goes to `calls.jsonl` as it ends; the
+ * calls a kill moved into its own class go to `in-flight.jsonl`, the verdict to `run.json` and the
+ * public summary to `summary.txt`, all written however the run ends. Says whether the run passed.
  */
 export async function runLoadFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   client: PoolAcceptanceClient = new PoolAcceptanceClient(),
-  log: (line: string) => void = console.log,
+  log: (text: string) => void = console.log,
 ): Promise<boolean> {
   if (!goPattern.test(env.POOL_LOAD_GO ?? ""))
     throw new AcceptanceFailure("Load mode needs a go input matching ^coordinator-20YY-");
@@ -65,25 +78,38 @@ export async function runLoadFromEnvironment(
       throw new AcceptanceFailure(`${error.field}: ${error.why}; ${error.fix}`);
     throw error;
   }
-  const run = await runLoad({
-    client,
-    credential,
-    shape,
-    kill: kill?.read,
-    killWaitMs: kill?.waitMs,
-  });
-  const lines = summaryLines(run, shape);
   const directory = env.POOL_LOAD_OUTPUT_DIRECTORY?.trim() || join(".local", "pool-load");
-  await mkdir(directory, { recursive: true });
-  await writeFile(
-    join(directory, "calls.jsonl"),
-    run.calls.map((call) => `${JSON.stringify(call)}\n`).join(""),
+  mkdirSync(directory, { recursive: true });
+  // Written synchronously as each call ends: a cancelled job keeps every call that finished.
+  const calls = openSync(join(directory, "calls.jsonl"), "w");
+  let run: LoadRun | undefined;
+  let failure: string | undefined;
+  try {
+    run = await runLoad({
+      client,
+      credential,
+      shape,
+      kill: kill?.read,
+      killWaitMs: kill?.waitMs,
+      ended: (call) => writeSync(calls, line(call)),
+    });
+  } catch (error) {
+    failure = error instanceof Error ? error.constructor.name || "Error" : "unknown";
+  } finally {
+    closeSync(calls);
+  }
+  const lines = run
+    ? summaryLines(run, shape)
+    : [`load status=failed error=${failure}`, "load calls=see_calls.jsonl"];
+  writeFileSync(
+    join(directory, "in-flight.jsonl"),
+    (run?.calls ?? []).flatMap((call) => (call.inFlight ? [line(call)] : [])).join(""),
   );
-  await writeFile(
+  writeFileSync(
     join(directory, "run.json"),
-    `${JSON.stringify({ shape, killAt: run.killAt, verdict: run.verdict }, null, 2)}\n`,
+    `${JSON.stringify({ shape, killAt: run?.killAt, verdict: run?.verdict, error: failure }, null, 2)}\n`,
   );
-  await writeFile(join(directory, "summary.txt"), `${lines.join("\n")}\n`);
-  for (const line of lines) log(line);
-  return run.verdict.passed;
+  writeFileSync(join(directory, "summary.txt"), `${lines.join("\n")}\n`);
+  for (const text of lines) log(text);
+  return run?.verdict.passed ?? false;
 }
