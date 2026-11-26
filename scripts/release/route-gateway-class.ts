@@ -17,9 +17,20 @@ export type RouteGatewayClass = "declared" | "absent";
 /** The class's container application in the release stack, which the declare release creates. */
 export const routeGatewayFqn = "RouteGateway";
 
+/**
+ * Whether the stage already hosts the class: PoolWorker's State row (or the one it replaces)
+ * records its namespace, or the class's application is recorded. Alchemy uploads PoolWorker with
+ * the class before it creates the application, so either alone means the class exists, as
+ * scripts/production.ts reads the fleet's.
+ */
+export const routeGatewayRecorded = (
+  hostedClasses: readonly string[],
+  applicationRecorded: boolean,
+) => hostedClasses.includes(routeGatewayFqn) || applicationRecorded;
+
 export function routeGatewayClassFor(
   policyValue: RouteGatewayClass | undefined,
-  applicationRecorded: boolean,
+  recorded: boolean,
 ): RouteGatewayClass {
-  return policyValue ?? (applicationRecorded ? "declared" : "absent");
+  return policyValue ?? (recorded ? "declared" : "absent");
 }

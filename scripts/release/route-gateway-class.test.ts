@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { decodeReleasePolicy } from "./policy.ts";
-import { routeGatewayClassFor, routeGatewayFqn } from "./route-gateway-class.ts";
+import {
+  routeGatewayClassFor,
+  routeGatewayFqn,
+  routeGatewayRecorded,
+} from "./route-gateway-class.ts";
 
 const read = async (name: string) =>
   decodeReleasePolicy(
@@ -76,4 +80,25 @@ test("no other policy may create the route gateway's class", async () => {
   for (const name of ordinary)
     for (const classes of Object.values((await read(name)).wire.sqliteClasses))
       assert.ok(!classes.includes("RouteGateway"), name);
+});
+
+test("PoolWorker hosting the class counts as declared, even before its application is recorded", () => {
+  // Alchemy uploads PoolWorker with the class before it creates the application: a declare that
+  // stopped between the two still has the class, and ordinary releases must keep it.
+  assert.equal(routeGatewayRecorded(["PoolLedger", "RouteGateway"], false), true);
+  assert.equal(routeGatewayRecorded([], true), true);
+  assert.equal(routeGatewayRecorded(["PoolLedger"], false), false);
+});
+
+test("the entry sets the class switch before the planning session copies the environment", async () => {
+  // Alchemy's session copies process.env when it opens, so a value set inside the planning run is
+  // never seen by the stack. The switch is set between a first, read-only run and the planning one.
+  const entry = await readFile(new URL("./deploy.ts", import.meta.url), "utf8");
+  const branch = entry.indexOf(
+    'if (command === "plan" || command === "apply" || command === "deploy") {',
+  );
+  const set = entry.indexOf("process.env.ROUTE_GATEWAY_CLASS = routeGatewayClassFor(", branch);
+  const planning = entry.indexOf("const result = await run(", branch);
+  assert.ok(branch > 0 && set > branch && planning > set, "set the switch before the planning run");
+  assert.equal(entry.split("process.env.ROUTE_GATEWAY_CLASS =").length, 2, "set in one place only");
 });
