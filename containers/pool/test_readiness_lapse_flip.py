@@ -371,6 +371,204 @@ class StallTests(unittest.TestCase):
         self.assertEqual(json.loads(self.lines[4].partition(" ")[2])["stalls"], 7)
 
 
+SETTLED = "POOL_READINESS_SETTLED "
+
+
+class FirstReadyTests(unittest.TestCase):
+    """The process's first ready waits until the policy monitor's last 5 waits came back on time."""
+
+    def setUp(self) -> None:
+        self.clock = Clock()
+        self.lines: list[str] = []
+        for module in (readiness_module, policy_monitor):
+            patcher = patch.object(module, "emit", lambda line, err=False: self.lines.append(line))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        healthy = patch.object(
+            policy_monitor, "probe_home_policy", lambda *_: ("healthy", INSTANCE)
+        )
+        healthy.start()
+        self.addCleanup(healthy.stop)
+        self.readiness = Readiness("key", self.clock)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        counters = Counters(directory.name)
+        self.monitor = policy_monitor.PolicyHealthMonitor(
+            self.readiness,
+            "key",
+            monotonic_ns=self.clock,
+            proc_stat=str(counters.proc_stat),
+            cpu_stats=(str(counters.cpu_stat),),
+        )
+        self.waits = Wait(self.clock, counters)
+        self.first = policy_monitor.FirstReady(self.readiness, self.clock)
+
+    def audit(self) -> bool:
+        """One passing services audit, as the supervisor's start loop reports it."""
+        return self.first.set_ready(True, audit_revision=self.readiness.service_audit_revision())
+
+    def turn(self, late_ms: int) -> bool:
+        """One turn of the monitor's loop, a healthy probe and its 0.5 s wait, then one audit."""
+        self.monitor.check_once()
+        self.waits.late_ms = late_ms
+        self.monitor.wait(self.waits, 0.5)
+        return self.audit()
+
+    def settled(self) -> list[dict[str, object]]:
+        return [json.loads(line[len(SETTLED):]) for line in self.lines if line.startswith(SETTLED)]
+
+    def assert_answers_as_before_any_audit(self) -> None:
+        ready, payload, lease_ms = self.readiness.readiness_response()
+        self.assertEqual((ready, lease_ms), (False, 0))
+        # A live lease and no passed audit, never flipped; stall records are the stall line's own.
+        self.assertEqual(
+            {key: value for key, value in payload.items() if key not in ("stalls", "last_stall")},
+            {
+                "boot_id": self.readiness.boot_id,
+                "started_at": self.readiness.started_at,
+                "db_rtt_state": "pending",
+                "refusal": "degraded",
+            },
+        )
+
+    def test_slow_probes_hold_the_first_ready_as_late_waits_do(self) -> None:
+        def slow(*_: object) -> tuple[str, str]:
+            # The probe's own call runs past its 250 ms budget.
+            self.clock.advance(policy_monitor.POLICY_PROBE_BUDGET_NS // 1_000_000 + 1)
+            return "healthy", INSTANCE
+
+        with patch.object(policy_monitor, "probe_home_policy", slow):
+            for _ in range(6):
+                self.assertFalse(self.turn(0))
+                self.assert_answers_as_before_any_audit()
+        # The last slow probe's own wait was on time, so it starts the new run: a probe exactly at
+        # its budget is steady, and 4 such turns make the 5 waits.
+        def at_budget(*_: object) -> tuple[str, str]:
+            self.clock.advance(policy_monitor.POLICY_PROBE_BUDGET_NS // 1_000_000)
+            return "healthy", INSTANCE
+
+        with patch.object(policy_monitor, "probe_home_policy", at_budget):
+            self.assertEqual([self.turn(0) for _ in range(4)], [False, False, False, True])
+        self.assertEqual([line["ended"] for line in self.settled()], ["on_time"])
+
+    def test_a_failed_probe_starts_the_on_time_run_again(self) -> None:
+        for _ in range(4):
+            self.assertFalse(self.turn(0))
+        with patch.object(policy_monitor, "probe_home_policy", lambda *_: ("unavailable", None)):
+            self.monitor.check_once()
+        self.assertEqual(self.readiness.waits_on_time(), 0)
+
+    def test_missed_probes_while_home_boots_leave_no_run_behind(self) -> None:
+        # Connection refused while Home boots: the probe comes back missed at once, every wait on time.
+        with patch.object(policy_monitor, "probe_home_policy", lambda *_: ("missed", None)):
+            for _ in range(10):
+                self.monitor.check_once()
+                self.waits.late_ms = 0
+                self.monitor.wait(self.waits, 0.5)
+        # Home is up: the first healthy probe renews the lease, and the audit still waits.
+        self.monitor.check_once()
+        self.assertFalse(self.audit())
+        self.assert_answers_as_before_any_audit()
+
+    def test_a_refused_lease_refresh_starts_the_on_time_run_again(self) -> None:
+        for _ in range(4):
+            self.assertFalse(self.turn(0))
+        with patch.object(self.readiness, "refresh_policy_lease", lambda *_: False):
+            self.assertEqual(self.monitor.check_once(), "unavailable")
+        self.assertEqual(self.readiness.waits_on_time(), 0)
+
+    def test_a_wait_overdue_but_not_yet_back_holds_the_first_ready(self) -> None:
+        for _ in range(5):
+            self.monitor.check_once()
+            self.waits.late_ms = 0
+            self.monitor.wait(self.waits, 0.5)
+        # The next wait is under way and already 300 ms past due: a stall the monitor hasn't seen.
+        self.monitor.check_once()
+        self.readiness.note_wait_started(0.5)
+        self.clock.advance(800)
+        self.assertFalse(self.audit())
+        self.assert_answers_as_before_any_audit()
+
+    def test_a_failed_audit_between_passing_ones_keeps_the_bound_from_the_first(self) -> None:
+        self.assertFalse(self.turn(500))
+        self.assertFalse(self.first.set_ready(False, audit_revision=self.readiness.service_audit_revision()))
+        for _ in range(29):
+            self.assertFalse(self.turn(500))
+        self.assertTrue(self.turn(500))
+        self.assertEqual([line["ended"] for line in self.settled()], ["bound"])
+        self.assertEqual(self.settled()[0]["held_ms"], 30_000)
+
+    def test_the_hold_gives_way_before_the_start_s_deadline(self) -> None:
+        self.monitor.check_once()
+        margin_s = policy_monitor.FIRST_READY_DEADLINE_MARGIN_NS / 1_000_000_000
+        revision = self.readiness.service_audit_revision()
+        self.assertFalse(self.first.set_ready(True, audit_revision=revision, remaining_s=margin_s + 1))
+        self.assertTrue(self.first.set_ready(True, audit_revision=revision, remaining_s=margin_s))
+        self.assertEqual([line["ended"] for line in self.settled()], ["deadline"])
+
+    def test_a_quiet_start_is_ready_after_five_waits_on_time(self) -> None:
+        # The audit can pass before the monitor has timed a single wait; that is held too.
+        self.monitor.check_once()
+        self.assertFalse(self.audit())
+        self.assert_answers_as_before_any_audit()
+        for _ in range(4):
+            self.assertFalse(self.turn(0))
+            self.assert_answers_as_before_any_audit()
+        self.assertTrue(self.turn(0))
+        self.assertTrue(self.readiness.snapshot()[0])
+        self.assertEqual(self.settled(), [{"held_ms": 2_500, "ended": "on_time"}])
+
+    def test_a_starved_start_holds_the_first_ready_until_five_waits_in_a_row_are_on_time(
+        self,
+    ) -> None:
+        # 250 ms late is a stall and starts the count again; 249 ms is on time.
+        for late_ms in (250, 249, 0, 0, 0, 250, 249, 0, 0, 0):
+            self.assertFalse(self.turn(late_ms), late_ms)
+            self.assert_answers_as_before_any_audit()
+        self.assertTrue(self.turn(0))
+        # From the first passing audit, 750 ms in, to the eleventh turn's.
+        self.assertEqual(self.settled(), [{"held_ms": 5_748, "ended": "on_time"}])
+
+    def test_waits_late_throughout_hold_the_first_ready_for_30_seconds_at_most(self) -> None:
+        # Every 0.5 s wait returns 500 ms late, a stall each turn, inside the 1.5 s lease.
+        for _ in range(30):
+            self.assertFalse(self.turn(500))
+        self.assert_answers_as_before_any_audit()
+        self.assertTrue(self.turn(500))
+        self.assertEqual(self.settled(), [{"held_ms": 30_000, "ended": "bound"}])
+
+    def test_only_the_first_ready_is_held(self) -> None:
+        for late_ms in (0, 0, 0, 0):
+            self.assertFalse(self.turn(late_ms))
+        self.assertTrue(self.turn(0))
+        # A wait 1.2 s late lapses the lease; the next healthy probe renews it, and the runtime is
+        # ready again at once, though no wait since that stall has come back on time.
+        self.assertFalse(self.turn(1_200))
+        self.assertEqual(self.readiness.snapshot()[1]["refusal"], "policy_unproven")
+        self.monitor.check_once()
+        self.assertEqual(self.readiness.waits_on_time(), 0)
+        self.assertTrue(self.audit())
+        self.assertEqual(self.readiness.snapshot()[1]["last_flip"]["to"], "ready")
+
+    def test_the_settled_line_comes_once(self) -> None:
+        self.assertFalse(self.turn(600))
+        for late_ms in (0, 0, 0, 0, 0, 0, 1_200, 0, 300, 0):
+            self.turn(late_ms)
+        self.monitor.check_once()
+        self.assertTrue(self.audit())
+        settled = [line for line in self.lines if line.startswith(SETTLED)]
+        self.assertEqual(settled, [SETTLED + '{"held_ms":2500,"ended":"on_time"}'])
+
+    def test_without_a_monitor_timing_its_waits_the_first_ready_is_not_held(self) -> None:
+        # A real monitor times its waits from construction; only stand-ins in tests time none.
+        readiness = Readiness("key", self.clock)
+        self.assertIsNone(readiness.waits_on_time())
+        self.assertTrue(readiness.refresh_policy_lease(INSTANCE))
+        first = policy_monitor.FirstReady(readiness, self.clock)
+        self.assertTrue(first.set_ready(True, audit_revision=readiness.service_audit_revision()))
+        self.assertEqual(self.settled(), [])
+
+
 class LapseFlipPrivacyTests(unittest.TestCase):
     """The records stay closed whatever Home's and the plugin's answers to the probe carry."""
 
