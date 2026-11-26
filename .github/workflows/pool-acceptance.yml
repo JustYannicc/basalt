@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Full includes a runner-only one-hour quiet interval and assumes otherwise quiet deployment traffic; externally deploy or crash the pool when restart observation is armed
+        description: Full includes a runner-only one-hour quiet interval and assumes otherwise quiet deployment traffic; externally deploy or crash the pool when restart observation is armed; load sends concurrent calls through a dedicated acceptance pool's emulated accounts
         required: true
         type: choice
         options:
           - full
           - restart-observation
+          - load
         default: full
       model:
         description: Model ID from /v1/models; required when the catalog has multiple models
@@ -26,6 +27,21 @@ on:
         required: true
         type: boolean
         default: false
+      go:
+        description: load only, the coordinator's literal GO (coordinator-20YY-...)
+        required: false
+        type: string
+        default: ""
+      load:
+        description: load only, the load shape as JSON (concurrency, durationMinutes, ramp, calls, mix); empty is 5 concurrent for 10 minutes
+        required: false
+        type: string
+        default: ""
+      kill_at:
+        description: load only, the restart phase's kill time (epoch ms or ISO); arms the in-flight-cut class
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -37,7 +53,7 @@ concurrency:
 jobs:
   acceptance:
     # The pool's signing and acceptance keys only ever run main's code.
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.mode != 'load'
     runs-on: ubuntu-latest
     timeout-minutes: 150
     steps:
@@ -59,3 +75,62 @@ jobs:
           POOL_ACCEPTANCE_MODEL: ${{ inputs.model }}
           POOL_ACCEPTANCE_MODE: ${{ inputs.mode }}
           POOL_ACCEPTANCE_TEST_KEY_CONFIRMED: ${{ inputs.confirm_test_key }}
+
+  load:
+    # Main's code only, like every other mode; the device and signing keys reach no other ref.
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'load'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Refuse every ref but main
+        run: test "$GITHUB_REF" = refs/heads/main
+      - name: Refuse a load without a coordinator GO
+        env:
+          GO: ${{ inputs.go }}
+        run: |
+          if ! printf '%s' "$GO" | grep -Eq '^coordinator-20[0-9]{2}-[A-Za-z0-9-]{1,96}$'; then
+            echo "::error::mode load needs a go input matching ^coordinator-20YY-"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - uses: ./.github/actions/setup-bun
+        with:
+          bun-version: 1.4.2
+      # The device signer decodes its secret with Effect, from the pinned SDK's dependencies.
+      - name: Prepare the pinned SDK
+        run: npm run prepare:upstream
+      - name: Run the load
+        run: node scripts/pool-acceptance.ts
+        env:
+          POOL_ACCEPTANCE_MODE: load
+          # Each call signs a fresh assertion for this registered device; the run refuses a device
+          # whose pool is not a dedicated acceptance pool, and never mints an owner token.
+          POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+          POOL_APP_SIGNING_KEY: ${{ secrets.POOL_APP_SIGNING_KEY }}
+          POOL_APP_SIGNING_KEY_PREVIOUS: ${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}
+          POOL_LOAD_GO: ${{ inputs.go }}
+          POOL_LOAD_SHAPE: ${{ inputs.load }}
+          POOL_LOAD_KILL_AT: ${{ inputs.kill_at }}
+          POOL_LOAD_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-load
+      - name: Publish the public summary
+        if: always()
+        env:
+          SUMMARY: ${{ runner.temp }}/pool-load/summary.txt
+        run: |
+          if [ -f "$SUMMARY" ]; then
+            { echo '```'; cat "$SUMMARY"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # Every call record: boots, request and trace ids, statuses and timings. No body text.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pool-load-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pool-load/
+          if-no-files-found: ignore
+          retention-days: 30

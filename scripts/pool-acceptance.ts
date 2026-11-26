@@ -216,6 +216,13 @@ async function main(): Promise<void> {
       if (!passed) process.exitCode = 1;
       return;
     }
+    if (process.env.POOL_ACCEPTANCE_MODE === "load") {
+      const { runLoadFromEnvironment } = await import("./pool-acceptance/load-entry.ts");
+      const passed = await runLoadFromEnvironment();
+      console.log(`acceptance status=${passed ? "passed" : "failed"} mode=load`);
+      if (!passed) process.exitCode = 1;
+      return;
+    }
     await runPoolAcceptance(await configFromEnvironment());
   } catch (error) {
     const message =

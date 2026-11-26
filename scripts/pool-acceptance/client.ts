@@ -54,7 +54,7 @@ const token = (value: unknown) =>
  * `<code>: <message>` message under a generic type and code; a provider's refusal passes through.
  * Reads a bounded body and never returns or logs any text of it but those codes.
  */
-async function readRefusal(response: Response): Promise<Refusal | undefined> {
+export async function readRefusal(response: Response): Promise<Refusal | undefined> {
   const reader = response.body?.getReader();
   if (!reader) return undefined;
   const decoder = new TextDecoder();
@@ -160,7 +160,7 @@ export class PoolAcceptanceClient {
   }
 
   /** The URL a model request is sent to, and its authorization for exactly that URL. */
-  private async authorized(credential: ModelCredential, method: string, path: string) {
+  async authorized(credential: ModelCredential, method: string, path: string) {
     const url = new URL(path, this.origin);
     const headers =
       typeof credential === "string"
