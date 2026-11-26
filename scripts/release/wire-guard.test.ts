@@ -993,6 +993,80 @@ test("a destroy plan's Workflow row admits that Workflow's delete and no other",
   assert.deepEqual(reads(run.received), [`DELETE /accounts/${ACCOUNT}/workflows/${own}`]);
 });
 
+test("a destroy plan's rows the provider no longer has pass the guard, and their 404s come back unrefused", async (t) => {
+  // A lane whose application, Worker, branch and role went before its destroy: each delete the plan
+  // names is admitted and the provider's 404 reaches Alchemy, whose providers take it as deleted.
+  const { destroyTargets } = await import("./plan-summary.ts");
+  const { ownIdentities, ownWorkers } = await import("./stage-writes.ts");
+  const database = "basalt-preview-rehearsal-2";
+  const rows = [
+    {
+      resourceType: "Cloudflare.Container",
+      attr: {
+        applicationId: "app-gone",
+        applicationName: "basalt-rehearsal-test-rehearsal-2-pool",
+      },
+    },
+    {
+      resourceType: "Cloudflare.Worker",
+      attr: { workerName: "basalt-rehearsal-test-rehearsal-2-router" },
+    },
+    {
+      resourceType: "Planetscale.PostgresBranch",
+      attr: { name: "test-rehearsal-2", database, organization: "org" },
+    },
+    {
+      resourceType: "Planetscale.PostgresRole",
+      attr: { id: "role-gone", name: "pscale_api_x", database, branch: "test-rehearsal-2" },
+    },
+  ];
+  const plan = {
+    resources: Object.fromEntries(
+      rows.map((state, index) => [`Row${index}`, { action: "delete", state }]),
+    ),
+    deletions: {},
+  };
+  const config: WireGuardConfig = {
+    deletable: destroyTargets(plan as never),
+    stage: {
+      stack: "basalt-rehearsal",
+      stage: "test-rehearsal-2",
+      label: "rehearsal-2",
+      databases: [database],
+      owned: ownIdentities(rows),
+      workers: ownWorkers(rows),
+      accountId: ACCOUNT,
+    },
+  };
+  const del = (url: string) =>
+    Effect.tryPromise(() => fetch(url, { method: "DELETE" }).then((response) => response.status));
+  const run = await guarded(
+    t,
+    config,
+    (base) =>
+      Effect.all([
+        del(`${base}${appPath("app-gone")}`),
+        del(`${base}/accounts/${ACCOUNT}/workers/scripts/basalt-rehearsal-test-rehearsal-2-router`),
+        del(`${base}/v1/organizations/org/databases/${database}/branches/test-rehearsal-2`),
+        del(
+          `${base}/v1/organizations/org/databases/${database}/branches/test-rehearsal-2/roles/role-gone`,
+        ),
+      ]),
+    { deleteStatus: 404 },
+  );
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  assert.deepEqual(run.exit.value, [404, 404, 404, 404]);
+  assert.ok(Exit.isFailure(run.refused), "nothing was refused");
+  // Every request was the plan's own delete: no proof read, and nothing else.
+  assert.deepEqual(
+    reads(run.received).map((line) => line.split(" ")[0]),
+    ["DELETE", "DELETE", "DELETE", "DELETE"],
+  );
+});
+
 test("a destroy plan's PlanetScale role and branch admit those deletes, never the database", async (t) => {
   const { destroyTargets } = await import("./plan-summary.ts");
   const database = "basalt-preview-rehearsal-1";

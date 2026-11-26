@@ -142,6 +142,34 @@ test("captures pinned Alchemy Container and Worker state attributes plus live do
   );
 });
 
+test("a stage whose State records what the provider no longer has is captured from State and proven gone", async () => {
+  // A lane whose container application and custom domain were already gone before its destroy:
+  // the capture still names them from State, so the destroy's absence check has something to prove.
+  const state = inventory();
+  const gone = {
+    ...readbacks(),
+    async listContainerApplications() {
+      return [];
+    },
+    async listWorkerDomains() {
+      return [];
+    },
+  };
+  const physical = await capturePreviewProviderInventory(identity, state, gone);
+  assert.deepEqual(physical, {
+    complete: true,
+    containers: [{ applicationId: "application-17", applicationName: "basalt-test-pr-17-pool" }],
+    domains: [
+      {
+        id: null,
+        hostname: "app.pr-17.preview.example.invalid",
+        service: "basalt-router-test-pr-17",
+      },
+    ],
+  });
+  await verifyPreviewProvidersAbsent(identity, { ...state, providers: physical }, gone);
+});
+
 test("provider readbacks keep container and custom-domain leaks red", async () => {
   const state = inventory();
   const physical = await capturePreviewProviderInventory(identity, state, readbacks());

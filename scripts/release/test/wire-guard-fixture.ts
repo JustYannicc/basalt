@@ -93,6 +93,8 @@ export interface ServerOptions {
   readonly applications?: Readonly<Record<string, { status?: number; body: unknown }>>;
   /** When set, GET `/workers/scripts/{name}/settings` answers with these tags, by name; others 404. */
   readonly scriptTags?: Readonly<Record<string, ReadonlyArray<string>>>;
+  /** When set, every DELETE answers this status with no body: what the provider says of a gone object. */
+  readonly deleteStatus?: number;
 }
 
 export const startServer = async ({
@@ -100,6 +102,7 @@ export const startServer = async ({
   versionId = "synthetic-version",
   applications = {},
   scriptTags,
+  deleteStatus,
 }: ServerOptions = {}) => {
   const received: Array<Received> = [];
   const server = createServer(async (request, response) => {
@@ -121,6 +124,10 @@ export const startServer = async ({
       metadata,
       authorization: request.headers.authorization,
     });
+    if (deleteStatus !== undefined && request.method === "DELETE") {
+      response.statusCode = deleteStatus;
+      return response.end();
+    }
     response.setHeader("content-type", "application/json");
     const read = /\/containers\/applications\/([^/?]+)$/.exec(path)?.[1];
     if (request.method === "GET" && read !== undefined) {
@@ -226,7 +233,7 @@ export const poolWorkerUpload = (
  * Sends what fetch addresses to the Cloudflare API host to a local server instead, beneath fetch:
  * the guard and the real global fetch run unchanged, and only Node's transport dispatcher (the
  * undici global that both fetch and `undici.setGlobalDispatcher` read) rewrites the origin. A rule
- * keyed on the request's host sees `api.cloudflare.com`, and nothing leaves the machine. Returns the
+ * keyed on the request's host sees `api.cloudflare.com`; any other host but the local server throws. Returns the
  * restore.
  */
 export const routeCloudflareApiTo = (base: string) => {
@@ -243,14 +250,13 @@ export const routeCloudflareApiTo = (base: string) => {
     | undefined;
   if (typeof original?.compose !== "function")
     throw new Error("Node's fetch has no global dispatcher to route through");
-  global[key] = original.compose(
-    (dispatch) => (options, handler) =>
-      dispatch(
-        options.origin !== undefined && new URL(options.origin).hostname === "api.cloudflare.com"
-          ? { ...options, origin: base }
-          : options,
-        handler,
-      ),
-  );
+  global[key] = original.compose((dispatch) => (options, handler) => {
+    const host = options.origin === undefined ? "" : new URL(options.origin).hostname;
+    if (host === "api.cloudflare.com") return dispatch({ ...options, origin: base }, handler);
+    // Only the local server: a request the guard let through to any other host fails here.
+    if (host !== "127.0.0.1" && host !== "localhost")
+      throw new Error(`The test sent a request to ${host || "no host"}`);
+    return dispatch(options, handler);
+  });
   return () => void (global[key] = original);
 };
