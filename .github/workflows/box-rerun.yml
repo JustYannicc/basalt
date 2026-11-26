@@ -1,10 +1,11 @@
 name: Box re-run
 
 # After a Check completes, re-runs its jobs on GitHub's runners when box-watch cancelled it because
-# the self-hosted box took none of its box jobs in time (scripts/ci/box-rerun.ts). workflow_run
-# always runs this file from the default branch, so no pull request's code runs here; it acts only
-# on box-watch's own verdict for that run and attempt, never on a run a person cancelled, and never
-# re-runs a job that failed for real.
+# the self-hosted box took none of its box jobs in time, or when a light job of it waited for the
+# box's light runners and was cancelled before any took it, as light-rescue.yml leaves it
+# (scripts/ci/box-rerun.ts). workflow_run always runs this file from the default branch, so no pull
+# request's code runs here; it acts only on box-watch's own verdict for that run and attempt or on
+# that light job's own record, and never re-runs a job that failed for real.
 on:
   workflow_run:
     workflows: [Check]

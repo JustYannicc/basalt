@@ -4,9 +4,10 @@ import { boxSettings, type BoxInput } from "./box-router.ts";
 
 // The light lane: the Check's seconds-long jobs run on the box's always-online light runners, named
 // by BASALT_CI_LIGHT_LABEL, on the same first attempts box routing takes; everything else, and
-// every job while the variable is empty or names no light label, runs hosted. A job queued for the light runners can't move
-// to hosted runners, so light-rescue.yml re-runs a Check whose light job a down box holds; the
-// re-run is attempt 2, which these jobs' runs-on sends hosted.
+// every job while the variable is empty or names no light label, runs hosted. A job queued for the
+// light runners can't move to hosted runners, so light-rescue.yml cancels a Check whose light job
+// a down box holds, and box-rerun.yml re-runs it once it ends; the re-run is attempt 2, which these
+// jobs' runs-on sends hosted.
 
 /**
  * How a light runner label ends. No label other runners share ends so, which select's runs-on can
@@ -28,6 +29,13 @@ export function selectLightLabel(value: string | undefined) {
   const label = value ?? "";
   return label.toLowerCase().endsWith(lightSuffix) && !/[ ,]/.test(label) ? label : "";
 }
+
+/** How long a light job may wait queued before the light runners count as not taking it. */
+export const queuedMinutes = 3;
+
+/** Whether a job's labels send it to light runners: any label with the suffix does. */
+export const onLightRunners = (labels: readonly unknown[] | undefined) =>
+  (labels ?? []).some((label) => String(label).toLowerCase().endsWith(lightSuffix));
 
 /** The jobs the light lane runs. box-watch is not one: it cancels the Check when the box is down. */
 export const lightJobs = ["select", "long-started", "cpa-pipeline", "check"];
