@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { shipAlone } from "./ship-alone.ts";
+import { changedFiles, comparisonBase, shipAlone } from "./ship-alone.ts";
 import { git, measured } from "./test/history.ts";
 
 // Files a merge into main brought in, compared with main before it.
@@ -36,4 +40,42 @@ test("a change that drops a path from the list is still judged by the list it ch
   const files = ["scripts/release-barrier/entry.ts", "src/pool/worker.ts"];
   assert.equal(shipAlone(files, narrowed).pass, true);
   assert.equal(shipAlone(files, [...new Set([...narrowed, ...measured])]).pass, false);
+});
+
+test("a stacked batch is judged from the batch below it until that batch is on main", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "ship-alone-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const run = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], {
+      cwd: dir,
+      encoding: "utf8",
+    }).trim();
+  const commit = (file: string) => {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), file);
+    run("add", file);
+    run("commit", "-qm", file);
+    return run("rev-parse", "HEAD");
+  };
+  run("init", "-q", "-b", "main");
+  const main = commit("README.md");
+  const lower = commit("src/pool/worker.ts");
+  const upper = commit("scripts/release/deploy.ts");
+  const paths = ["scripts/release/**"];
+  const judged = (base: string, ref: string) =>
+    shipAlone(changedFiles(comparisonBase(base, upper, ref, dir), upper, dir), paths).pass;
+
+  // No batch branch below: the product file of the unmerged lower batch counts, as today.
+  assert.equal(judged(main, "batch/guard-1"), false);
+  run("update-ref", "refs/remotes/origin/batch/mixed-1", lower);
+  run("update-ref", "refs/remotes/origin/batch/guard-1", upper);
+  assert.equal(comparisonBase(main, upper, "batch/guard-1", dir), lower);
+  assert.equal(judged(main, "batch/guard-1"), true);
+  // Only batch branches are judged from below; any other pull request still compares with main.
+  assert.equal(judged(main, "chore/guardrails"), false);
+  // Once the lower batch is on main it is no longer below, and main is the comparison again.
+  run("checkout", "-q", "-b", "next", lower);
+  const merged = commit("docs/pools.md");
+  assert.equal(comparisonBase(merged, upper, "batch/guard-1", dir), merged);
+  assert.equal(judged(merged, "batch/guard-1"), true);
 });
