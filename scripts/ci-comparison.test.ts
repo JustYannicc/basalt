@@ -199,8 +199,12 @@ test("the jobs that start with the Check resolve the comparison commit with sele
   // select skips it only on a reused Check; the others always resolve it.
   const { if: reusedOnly, ...select } = comparison("select");
   assert.equal(reusedOnly, "steps.reuse.outputs.reused != 'true'");
+  // select always resolves afresh; only a start job takes the commit a carried select recorded.
+  assert.equal(select.env.RECORDED_BASE, undefined);
   for (const job of ["fast", "fast-units"]) {
-    assert.deepEqual(comparison(job), select, job);
+    const { RECORDED_BASE, ...env } = comparison(job).env;
+    assert.equal(RECORDED_BASE, "${{ steps.rerun.outputs.base_sha }}", job);
+    assert.deepEqual({ ...comparison(job), env }, select, job);
     // Every base the job reads is its own comparison's, never select's output.
     assert.doesNotMatch(JSON.stringify(workflow.jobs[job]), /needs\.select/, job);
     assert.equal(workflow.jobs[job].needs, undefined, job);
