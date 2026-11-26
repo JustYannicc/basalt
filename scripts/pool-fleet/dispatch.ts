@@ -279,12 +279,10 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         ? !testPoolPattern.test(input.pool ?? "")
         : input.pool !== undefined && input.pool !== ""
     )
-      return yield* Effect.fail(
-        refuse(
-          "test-pool-invalid",
-          "pool must be the test's own pool id (app_ followed by 1 to 124 letters, digits, - or _), and only crash-cell takes it.",
-          "Pass the acceptance device's pool with crash-cell, and leave it empty for every other mode.",
-        ),
+      return yield* refuse(
+        "test-pool-invalid",
+        "pool must be the test's own pool id (app_ followed by 1 to 124 letters, digits, - or _), and only crash-cell takes it.",
+        "Pass the acceptance device's pool with crash-cell, and leave it empty for every other mode.",
       );
     if (input.active && input.active !== "blue" && input.active !== "green")
       return yield* Effect.fail(
@@ -407,12 +405,10 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       // The controller lets the kill cut only this pool's calls, so it must be the one the lane's
       // own calls run in; any other would let it cut a person's calls.
       if (input.pool !== acceptance.pool)
-        return yield* Effect.fail(
-          refuse(
-            "test-pool-mismatch",
-            "pool is not the acceptance device's pool, the one the proof's own calls run in.",
-            "Pass the pool POOL_ACCEPTANCE_DEVICE names.",
-          ),
+        return yield* refuse(
+          "test-pool-mismatch",
+          "pool is not the acceptance device's pool, the one the proof's own calls run in.",
+          "Pass the pool POOL_ACCEPTANCE_DEVICE names.",
         );
       const catalog = yield* call(() => acceptance.client.modelCatalog(acceptance.credential));
       const model = acceptance.model ?? (catalog.ids.length === 1 ? catalog.ids[0]! : undefined);
