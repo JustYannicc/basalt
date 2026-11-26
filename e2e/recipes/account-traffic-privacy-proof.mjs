@@ -4,6 +4,22 @@ import { Effect, Redacted } from "effect";
 import { roleHost } from "../../.upstream/e2e/support/role-hosts.ts";
 import { appsManifest } from "../../.upstream/e2e/support/apps-release.ts";
 import { accountRow } from "../../.upstream/e2e/support/account-rows.ts";
+import {
+  bringRetriesForward,
+  bringRolloutsForward,
+  changeOutboxEmpty,
+  openRollouts,
+  provisioningJobs,
+  provisioningMoved,
+  provisioningSettled,
+} from "./provisioning-diagnostics.mjs";
+
+// Red switches for this proof only, read nowhere else. HOLD keeps the organization row lock that
+// member setup takes from before the invitation is accepted until the measurement starts, so the
+// new member's setup commits land right where A's heads are measured. SETTLE=0 measures without
+// waiting for the organization's provisioning, as this proof did before.
+const holdSetup = process.env.BASALT_E2E_PRIVACY_HOLD_SETUP === "1";
+const settleFirst = process.env.BASALT_E2E_PRIVACY_SETTLE !== "0";
 
 const source = `import { defineApp, defineProvider, secrets, object, string, router, query, accountRouter } from "apps";
 const service = defineProvider({ name: "Private traffic fixture", auth: {
@@ -15,12 +31,51 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
   }), { signal })
 }));`;
 
+/** Repeat a check every 250 ms until it answers true, failing with its message after 180 s. */
+const untilDeadline = (check, message, deadlineMs = 180_000) =>
+  Effect.gen(function* () {
+    const end = Date.now() + deadlineMs;
+    while (Date.now() < end) {
+      if (yield* check) return;
+      yield* Effect.sleep("250 millis");
+    }
+    return yield* Effect.fail(new Error(message()));
+  });
+
 /** Both actors are ordinary members; only B's real tool call may refresh B's private traffic. */
-export const accountTrafficPrivacyProof = ({ h, browser, check, diagnostics, directory }) =>
+export const accountTrafficPrivacyProof = ({
+  h,
+  database,
+  browser,
+  check,
+  diagnostics,
+  directory,
+}) =>
   Effect.gen(function* () {
     const run = (work) => Effect.promise(work).pipe(Effect.timeout("30 seconds"));
-    const progress = { phase: "membership", viewers: [] };
+    const progress = { phase: "membership", viewers: [], holdSetup, settleFirst };
     diagnostics.privateTraffic = progress;
+    const organization = h.actors.organization.id;
+    // A release queues one delayed rollout per organization. It takes the organization's locks, so
+    // it runs now, before the invitation, the held setup lock and the measurement, never inside them.
+    progress.phase = "rollouts";
+    yield* bringRolloutsForward(database, organization);
+    yield* untilDeadline(
+      Effect.gen(function* () {
+        const jobs = yield* provisioningJobs(database, organization);
+        progress.rollouts = openRollouts(jobs);
+        if (progress.rollouts.length === 0) return true;
+        yield* h.request("POST", "/api/onboarding/prepare", {});
+        return false;
+      }),
+      () => `The organization's rollouts did not finish: ${JSON.stringify(progress.rollouts)}`,
+    );
+    progress.phase = "membership";
+    if (holdSetup)
+      yield* database.hold({
+        sql: "select id from organization where id = $1 for no key update",
+        params: [organization],
+      });
     const identity = yield* h.requestAs("admin", "GET", "/api/auth/get-session");
     const invitation = yield* h.request("POST", "/api/auth/organization/invite-member", {
       organizationId: h.actors.organization.id,
@@ -124,6 +179,29 @@ export const accountTrafficPrivacyProof = ({ h, browser, check, diagnostics, dir
       assert.equal(response.status(), 200);
       return (await response.json()).revisions;
     };
+    // A new member's setup commits the organization's account and app heads after the invitation
+    // is accepted, at times only on a retry. A's heads are measured once none of the organization's
+    // provisioning waits or runs, so only B's tool call falls between the two readings.
+    // A Cloud retry waits out its workflow's own backoff (5 s, doubling), so the bound is in time.
+    const settleProvisioning = untilDeadline(
+      Effect.gen(function* () {
+        const jobs = yield* provisioningJobs(database, organization);
+        progress.provisioning = jobs;
+        if (provisioningSettled(jobs) && (yield* changeOutboxEmpty(database, organization)))
+          return true;
+        yield* bringRetriesForward(database, organization);
+        // Each request delivers pending changes after it answers and dispatches what is due.
+        yield* h.request("POST", "/api/onboarding/prepare", {});
+        return false;
+      }),
+      () =>
+        `The organization's provisioning did not settle: ${JSON.stringify(progress.provisioning)}`,
+    );
+    progress.phase = "settle";
+    if (holdSetup) yield* database.release;
+    if (settleFirst) yield* settleProvisioning;
+    progress.phase = "private-measure";
+    const openAtFirst = yield* provisioningJobs(database, organization);
     const before = { a: yield* run(() => heads(a)), b: yield* run(() => heads(b)) };
     assert.equal(
       before.a.some(({ resource }) => resource === b.state.account),
@@ -156,6 +234,12 @@ export const accountTrafficPrivacyProof = ({ h, browser, check, diagnostics, dir
     assert.equal(counted.accounts.find(({ account }) => account === b.state.account)?.requests, 2);
     yield* run(() => b.cell.getByText("2", { exact: true }).waitFor());
     const after = { a: yield* run(() => heads(a)), b: yield* run(() => heads(b)) };
+    // A job that ran inside the measurement may have moved A's heads: the run is invalid, and says so.
+    const moved = provisioningMoved(openAtFirst, yield* provisioningJobs(database, organization));
+    if (settleFirst && moved.length > 0)
+      return yield* Effect.fail(
+        new Error(`Provisioning ran inside the private measurement: ${JSON.stringify(moved)}`),
+      );
     yield* run(() => Promise.all(viewers.map(({ page }) => flush(page))));
     check(
       "private traffic: B's real tool call refreshes B exactly once",
