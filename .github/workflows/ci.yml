@@ -2359,6 +2359,12 @@ jobs:
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+      # First, so no earlier failure keeps it from reading what the push added.
+      - name: Refuse secrets and generated files in the new commits
+        env:
+          BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/check-git-secrets.ts
       - name: Check container Python names and imports
         run: |
           python3 -m venv "$RUNNER_TEMP/container-python-lint"

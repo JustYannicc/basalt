@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { checkGitSecrets, gitSecretReport } from "./git-secrets.ts";
+import { checkGitSecrets, gitSecretReport, pushBase } from "./git-secrets.ts";
 
 const fixture = () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-git-secrets-"));
@@ -144,6 +144,32 @@ test("unstaged and ignored local output are outside staged and new-commit conten
       "apps/hosted/cloud/.local/basalt-worker-sizes.ts",
     );
     assert.deepEqual(checkGitSecrets({ ...f, environment: { API_TOKEN: value } }), []);
+  } finally {
+    f.close();
+  }
+});
+
+test("a run given no base reads every commit since origin/main, so a file a later commit removed still fails", () => {
+  const f = fixture();
+  try {
+    f.git("update-ref", "refs/remotes/origin/main", f.base);
+    const path = "apps/hosted/cloud/scripts/basalt-worker-sizes.ts";
+    f.write(path, "export {};\n");
+    const added = f.commit();
+    f.git("rm", "-q", path);
+    f.commit();
+    assert.equal(pushBase(f.root), f.base);
+    assert.deepEqual(checkGitSecrets({ root: f.root, base: pushBase(f.root), environment: {} }), [
+      {
+        file: path,
+        source: `commit ${added.slice(0, 12)}`,
+        reason: "generated Worker measurement file",
+      },
+    ]);
+    // HEAD's tree alone no longer holds it.
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), []);
+    f.git("update-ref", "-d", "refs/remotes/origin/main");
+    assert.equal(pushBase(f.root), undefined);
   } finally {
     f.close();
   }

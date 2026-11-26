@@ -87,5 +87,23 @@ export function checkGitSecrets(input: {
   return findings;
 }
 
+/**
+ * The base for a run that was given none, as a local preflight is: where `head` left origin/main,
+ * so every commit a push would add is read, one whose file a later commit removed included. With
+ * no origin/main there is none, and the check reads the whole tree instead.
+ */
+export function pushBase(root: string, head = "HEAD") {
+  try {
+    const base = execFileSync("git", ["merge-base", head, "refs/remotes/origin/main"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return base || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export const gitSecretReport = (findings: readonly Finding[]) =>
   findings.map(({ file, source, reason }) => `${file}: refused ${reason} (${source})`).join("\n");
