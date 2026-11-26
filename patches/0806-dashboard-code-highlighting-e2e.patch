@@ -1,0 +1,172 @@
+diff --git a/e2e/tests/dashboard-code-highlighting.spec.ts b/e2e/tests/dashboard-code-highlighting.spec.ts
+new file mode 100644
+index 000000000..9c5492cec
+--- /dev/null
++++ b/e2e/tests/dashboard-code-highlighting.spec.ts
+@@ -0,0 +1,166 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schema } from "effect";
++import type { Page } from "playwright";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { scenarios } from "../test-plan.ts";
++import { appsManifest } from "../support/apps-release.ts";
++
++/** React reports a server/browser markup difference with one of these messages or codes. */
++const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
++/** Text without quotes or angle brackets, so the server's escaping leaves it unchanged. */
++const snippet = "const count: number = 42;\nexport default count;";
++/** A highlighted token carries Shiki's inline colors; the class names only mention the variable. */
++const shikiStyle = /style="[^"]*--shiki-dark/;
++const reader = (page: Page) =>
++  page.getByRole("region", { name: "App skills", exact: true }).locator("pre").first();
++const box = (page: Page) =>
++  reader(page)
++    .boundingBox()
++    .then((value) => {
++      if (value === null) throw new Error("The skill reader's code block is not laid out");
++      return value;
++    });
++
++/**
++ * The dashboard's server build never highlights code (carry 0804 swaps the engine out of the
++ * dashboard Worker). A reader of a shared app gets its skill with the page, so the server sends
++ * the code block as plain text, the browser hydrates that markup unchanged and then colors it.
++ * The browser's engine chunk is held until the plain block is measured, so the colors are the
++ * only change the test can see, and nothing in the block may move when they arrive.
++ */
++layer(HostedLive, { excludeTestServices: true })("Dashboard code highlighting", (it) => {
++  for (const [scenario, viewport] of [
++    [scenarios.dashboardCodeHighlighting, { width: 1440, height: 960 }],
++    [scenarios.dashboardCodeHighlightingMobile, { width: 390, height: 844 }],
++  ] as const)
++    it.effect(scenario.title, (context) =>
++      withHostedCase(
++        context,
++        Effect.gen(function* () {
++          const actors = yield* Actors;
++          const api = yield* Api;
++          const browser = yield* Browser;
++          const prefix = `/api/organizations/${actors.organization.id}/apps`;
++          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++            name: `Code highlighting ${randomUUID().slice(0, 8)}`,
++            files: [
++              {
++                path: "index.ts",
++                content: `import { defineApp } from "apps";\nexport default defineApp({}, async () => ({}));`,
++              },
++              {
++                path: "skills/count/SKILL.md",
++                content: `---\nname: count\ndescription: Count something.\n---\n# Count\n\n\`\`\`ts\n${snippet}\n\`\`\`\n`,
++              },
++              appsManifest,
++            ],
++          });
++          expect(deployed.status).toBe(200);
++          const app = yield* body(App, deployed);
++          yield* Effect.addFinalizer(() =>
++            api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(
++              Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++              Effect.orDie,
++            ),
++          );
++          const access = yield* body(
++            Schema.Struct({ revision: Schema.String }),
++            yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/access`),
++          );
++          expect(
++            (yield* api.request(actors.owner, "PATCH", `${prefix}/${app.id}/access`, {
++              revision: access.revision,
++              audience: { kind: "everyone" },
++            })).status,
++          ).toBe(200);
++          const url = `/org/${actors.organization.slug}/apps/${app.id}?view=skills`;
++
++          yield* browser.login(actors.member);
++          yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
++          const failures: string[] = [];
++          yield* browser.use("Watch hydration", (page) => {
++            page.on("console", (message) => {
++              if (message.type() === "error" && hydrationFailure.test(message.text()))
++                failures.push(message.text());
++            });
++            page.on("pageerror", (error) => {
++              if (hydrationFailure.test(String(error))) failures.push(String(error));
++            });
++            return Promise.resolve();
++          });
++          let release = () => {};
++          const released = new Promise<void>((resolve) => {
++            release = resolve;
++          });
++          const engineRequests: string[] = [];
++          yield* browser.use("Hold the browser's highlight engine", (page) =>
++            page.route(/\/highlight-engine-[\w-]+\.js(?:\?|$)/, (route) => {
++              engineRequests.push(route.request().url());
++              return released.then(() => route.continue());
++            }),
++          );
++
++          const html = yield* browser.use("Read the server-rendered skills page", (page) =>
++            page
++              .context()
++              .request.get(url)
++              .then((response) =>
++                response.text().then((text) => ({ status: response.status(), text })),
++              ),
++          );
++          expect(html.status).toBe(200);
++          for (const line of snippet.split("\n")) expect(html.text).toContain(line);
++          expect(html.text).not.toMatch(shikiStyle);
++
++          yield* browser.use("Open the shared app's skills", (page) => page.goto(url));
++          yield* browser.use("The page hydrates", (page) =>
++            page.locator("html[data-hydrated]").waitFor({ state: "attached" }),
++          );
++          yield* browser.use("The reader shows the server's code block", (page) =>
++            reader(page).locator("code").waitFor({ state: "visible" }),
++          );
++          expect(
++            yield* browser.use("Read the plain code block", (page) =>
++              reader(page).locator("code").textContent(),
++            ),
++          ).toBe(`${snippet}\n`);
++          expect(
++            yield* browser.use("Nothing is colored before the engine loads", (page) =>
++              reader(page).locator("code span[style]").count(),
++            ),
++          ).toBe(0);
++          const before = yield* browser.use("Measure the plain code block", box);
++          yield* browser.checkpoint(`${viewport.width} plain code block before highlighting`);
++
++          yield* Effect.sync(release);
++          yield* browser.use("The code block takes distinct syntax colors", (page) =>
++            expect
++              .poll(() =>
++                reader(page)
++                  .locator("code span[style]")
++                  .evaluateAll(
++                    (tokens) => new Set(tokens.map((token) => getComputedStyle(token).color)).size,
++                  ),
++              )
++              .toBeGreaterThan(1),
++          );
++          expect(engineRequests.length).toBeGreaterThan(0);
++          expect(
++            yield* browser.use("Read the highlighted code block", (page) =>
++              reader(page).locator("code").textContent(),
++            ),
++          ).toBe(`${snippet}\n`);
++          const after = yield* browser.use("Measure the highlighted code block", box);
++          for (const side of ["x", "y", "width", "height"] as const)
++            expect(Math.abs(after[side] - before[side])).toBeLessThanOrEqual(0.5);
++          expect(failures).toEqual([]);
++          yield* browser.checkpoint(`${viewport.width} highlighted code block`);
++        }),
++      ),
++    );
++});

@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-dashboard-code-highlighting-e2e",
+  "file": "0806-dashboard-code-highlighting-e2e.patch",
+  "content_sha256": "da0d1da4203970353c658695e79b6f5ada0c119f1d3d185300d80cd272a48282",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
