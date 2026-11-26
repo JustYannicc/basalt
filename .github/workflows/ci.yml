@@ -84,7 +84,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
@@ -117,6 +120,8 @@ jobs:
           else
             node scripts/ci/select-jobs.ts --fast
           fi
+      # A run's artifact names span its attempts: a select that runs again replaces its record, which
+      # later attempts that carry this select over compare with (scripts/ci/rerun-selection.ts).
       - uses: actions/upload-artifact@v4
         if: steps.reuse.outputs.reused != 'true'
         with:
@@ -124,6 +129,7 @@ jobs:
           path: .generated/ci/selection.json
           include-hidden-files: true
           if-no-files-found: error
+          overwrite: true
   # Watches the jobs this Check queued for the box. A job queued for the box can't move to GitHub's
   # runners, so if the box takes none of them in time (no healthy heartbeat for 5 minutes after
   # box-watch's own probe, or a first-wave job held past its latest start; a second-wave one only
@@ -2323,6 +2329,10 @@ jobs:
   fast:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets a re-run list which jobs run again in its attempt.
+    permissions:
+      actions: read
+      contents: read
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -2342,9 +2352,25 @@ jobs:
       - uses: ./.github/actions/desktop-release-assets
         with:
           warm: "true"
+      # A re-run that carries select over compares with the commit select recorded; main may have
+      # moved the merge-base since (scripts/ci/rerun-selection.ts).
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-selection
+          path: ${{ runner.temp }}/ci-selection
+      - name: Take select's comparison commit when select carries over
+        id: rerun
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
       - name: Resolve the comparison commit
         id: comparison
         env:
+          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
@@ -2352,7 +2378,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
@@ -2505,6 +2534,10 @@ jobs:
   fast-units:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets a re-run list which jobs run again in its attempt.
+    permissions:
+      actions: read
+      contents: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     # One output per leg: a matrix job's legs merge outputs by name (unitLegs in scripts/ci/gate.ts).
@@ -2525,9 +2558,23 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-selection
+          path: ${{ runner.temp }}/ci-selection
+      - name: Take select's comparison commit when select carries over
+        id: rerun
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
       - name: Resolve the comparison commit
         id: comparison
         env:
+          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
@@ -2535,7 +2582,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"

@@ -40,6 +40,8 @@ const resolvers: Record<string, string> = {
   comparison: "the local runner compares with --base",
   lane: "the local runner runs the fast lane",
 };
+/** A step only a re-run attempt runs; the local runner is always a first attempt. */
+export const rerunOnly = "github.run_attempt > 1";
 // The fast lane runs the steps for every lane; it selects no e2e config, so it skips what the
 // full and affected lanes add.
 const everyLane = "steps.lane.outputs.full_suite != 'true'";
@@ -74,6 +76,11 @@ export function fastPlan(document: unknown, context: FastContext) {
     const env = { ...environment(document.env, context), ...environment(job.env, context) };
     const first = job === document.jobs.fast;
     for (const step of job.steps) {
+      if (object(step) && step.if === rerunOnly) {
+        if (typeof step.name !== "string") throw new Error("Fast re-run steps need a name");
+        if (first) skipped.push({ name: step.name, reason: "re-run attempts only" });
+        continue;
+      }
       if (!object(step) || step["continue-on-error"] !== undefined || step.shell !== undefined)
         throw new Error("Unsupported fast step execution settings");
       if (step.uses === "actions/upload-artifact@v4" && step.if === "always()") {
