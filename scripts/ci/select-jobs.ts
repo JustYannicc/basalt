@@ -93,8 +93,8 @@ if (process.env.GITHUB_OUTPUT)
       "matrices=" +
       JSON.stringify(matrices) +
       "\n" +
-      // The fast e2e configs this change reaches, for the run's record; fast's own lane step
-      // computes the same list, so fast need not wait for select.
+      // The fast e2e configs this change reaches, for the run's record; the fast job runs all of
+      // them in every Check.
       "fast_configs=" +
       JSON.stringify(configs) +
       "\n",
@@ -125,7 +125,9 @@ if (process.env.GITHUB_STEP_SUMMARY)
         .join("\n") +
       "\n\n" +
       (configs.length && !selection.full
-        ? "The fast job runs the e2e configs this change reaches: " + configs.join(", ") + ".\n\n"
+        ? "This change reaches the fast e2e configs " +
+          configs.join(", ") +
+          ", which the fast job runs in every Check.\n\n"
         : "") +
       box.summary +
       "\n",

@@ -3,6 +3,7 @@
 // before it starts. Anything else a child process prints is dropped, so no provider text reaches
 // the log.
 import { spawnSync } from "node:child_process";
+import { readFileSync, rmSync } from "node:fs";
 import { StageError } from "./public-error.mjs";
 import { stage } from "./settings.ts";
 
@@ -84,8 +85,53 @@ export function publicEntryLines(stdout = "", stderr = "") {
   return kept.filter((line) => !ACCOUNT_ID.test(line));
 }
 
+// The entry keeps a failure's full message here, in the job's own checkout (deploy.ts keepPrivate).
+const failureDetail = ".local/release/failure.txt";
+// A name from our own source: a class, a command or a field. No dot, slash, space or digit run.
+const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/u;
+const named = (value) => (NAME.test(value ?? "") && !ACCOUNT_ID.test(value) ? value : undefined);
+// A wire guard field names what was refused, from scripts/release/wire-guard.ts: one of its own
+// words, then at most a metadata key or an export's class. Anything else is not printed as one.
+const WIRE_FIELD =
+  /^(?:metadata|bindings|main_module|name|durable_objects|method|host|path|migrations\.[a-z_]{1,40}|exports\.[A-Za-z][A-Za-z0-9]{0,63}\.state)$/u;
+
+/**
+ * One public line for a failed entry, from a closed set, read from its private detail. Only
+ * numbers and names matched by fixed patterns are printed; the message itself never is.
+ */
+export function releaseCause(detail) {
+  if (typeof detail !== "string" || !detail) return "release cause: no_detail";
+  const version = /State store version (\d{1,3}), expected (\d{1,3})\b/u.exec(detail);
+  if (version)
+    return `release cause: state_store_version store=${version[1]} expected=${version[2]}`;
+  const wire = /wire guard refused [A-Z]{3,7} \S+ \([^)]{1,80}\): ([^\s=]{1,80}) = /u.exec(detail);
+  if (wire && WIRE_FIELD.test(wire[1]) && !ACCOUNT_ID.test(wire[1]))
+    return `release cause: wire_refused field=${wire[1]}`;
+  if (/\bUnauthorized\b|Authentication failed/u.test(detail)) return "release cause: unauthorized";
+  const head = /^Release stopped(?: in ([^\s:]+))?(?: at [^\n]*?)?: ([^\s(]+) \(/u.exec(detail);
+  const step = named(head?.[1]) ?? "unknown";
+  const errorClass = named(head?.[2]) ?? "unknown";
+  return `release cause: unclassified class=${errorClass} step=${step}`;
+}
+
+const readDetail = () => {
+  try {
+    return readFileSync(failureDetail, "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
 /** Applies the stage through the release entry, which never redeploys the shared State store. */
 export function runEntry(deleteBy, env = process.env) {
+  // A detail left by an earlier run in this checkout must not name this run's cause; if it cannot be
+  // removed, this run names none.
+  let detailUsable = true;
+  try {
+    rmSync(failureDetail, { force: true });
+  } catch {
+    detailUsable = false;
+  }
   const result = spawnSync("bun", [entry, "deploy", "--stage", stage, "--config", entryConfig], {
     cwd: ".upstream/apps/hosted/cloud",
     env: { ...env, ALCHEMY_STAGE: stage, EMULATED_DELETE_BY: String(deleteBy) },
@@ -94,6 +140,7 @@ export function runEntry(deleteBy, env = process.env) {
     maxBuffer: 8 * 1024 * 1024,
   });
   for (const line of publicEntryLines(result.stdout ?? "", result.stderr ?? "")) console.log(line);
+  if (result.status !== 0) console.log(releaseCause(detailUsable ? readDetail() : undefined));
   if (result.status !== 0)
     throw new StageError(
       `The release entry's deploy exited with ${result.status ?? result.signal ?? "no status"}; its public lines are above, its detail stays private`,
