@@ -58,6 +58,8 @@ export const ReleasePolicy = Schema.Struct({
   env: Schema.Struct({
     POOL_FLEET_BUILD: Schema.optional(Schema.Literal("true")),
     POOL_FLEET_CLASSES: Schema.optional(Schema.Literal("absent")),
+    // The declare release says `declared`; `absent` is the opt-out (route-gateway-class.ts).
+    ROUTE_GATEWAY_CLASS: Schema.optional(Schema.Literals(["declared", "absent"])),
   }),
 });
 export type ReleasePolicy = typeof ReleasePolicy.Type;

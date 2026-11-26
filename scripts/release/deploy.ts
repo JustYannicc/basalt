@@ -478,6 +478,7 @@ const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
 const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
+const { routeGatewayClassFor, routeGatewayFqn } = await import("./route-gateway-class.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
 
@@ -733,6 +734,13 @@ try {
           return yield* Effect.die(
             new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
           );
+        // The route gateway's class follows what this stage records, so no ordinary release
+        // declares it early or drops it later; a policy's own value wins (route-gateway-class.ts).
+        // Set here, by the entry, whatever the job's environment held.
+        process.env.ROUTE_GATEWAY_CLASS = routeGatewayClassFor(
+          policy?.env.ROUTE_GATEWAY_CLASS,
+          (yield* recordedApplication(routeGatewayFqn)) !== undefined,
+        );
         tracker.setPhase("plan");
         let snapshot = yield* planOf("deploy");
         // A build this job has not run plans as changed (its output is missing), and so does every
