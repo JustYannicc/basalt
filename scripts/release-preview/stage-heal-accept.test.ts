@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   candidateTreeEnvironment,
-  candidateTreeKeys,
+  laneSubject,
   overlayExtent,
+  requireCandidateGuard,
   restartExpectArgs,
+  runEntry,
 } from "./stage.ts";
 
 const older =
@@ -38,36 +41,85 @@ test("restartExpectArgs refuses a workflow with no restart acceptance, or a miss
   );
 });
 
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+    cwd,
+    encoding: "utf8",
+  }).trim();
+const served = (version: string) => `export const servedFrameworkVersion = "${version}";\n`;
+const build = (version: string) =>
+  JSON.stringify({
+    "package.json": JSON.stringify({ name: "apps", version }),
+    "runtime.json": JSON.stringify({ protocol: 1, version }),
+  });
+
+/**
+ * A prepared candidate: its own repository, with `.upstream` its own checkout at `upstream.json`
+ * and, unless `built` is false, a framework build of `version`.
+ */
+async function preparedTree(
+  at: string,
+  name: string,
+  version: string,
+  { built = true }: { built?: boolean } = {},
+) {
+  const dir = join(at, name);
+  const upstream = join(dir, ".upstream");
+  await mkdir(upstream, { recursive: true });
+  git(upstream, "init", "-q");
+  git(upstream, "commit", "-q", "--allow-empty", "-m", `upstream for ${name}`);
+  const commit = git(upstream, "rev-parse", "HEAD");
+  await writeFile(join(dir, "upstream.json"), JSON.stringify({ commit }));
+  await writeFile(join(dir, "framework-release.ts"), served(version));
+  if (built) {
+    await mkdir(join(upstream, ".local/basalt-framework"), { recursive: true });
+    await writeFile(join(upstream, ".local/basalt-framework/framework.json"), build(version));
+  }
+  git(dir, "init", "-q");
+  git(dir, "add", "upstream.json", "framework-release.ts");
+  git(dir, "commit", "-q", "-m", "candidate");
+  return { dir, upstream, commit };
+}
+
+/** The stage-identity keys `stageEnvironment` sets: stage, database, origin, State and secrets. */
+const stageIdentityKeys = [
+  "ALCHEMY_STAGE",
+  "CLOUD_SOURCE_NAMESPACE",
+  "TEST_STAGE_DOMAIN",
+  "TEST_STAGE_EXPIRES_AT",
+  "TEST_STAGE_DATABASE",
+  "TEST_STAGE_DATABASE_PROVIDER",
+  "PLANETSCALE_DATABASE_NAME",
+  "PLANETSCALE_ORGANIZATION",
+  "PLANETSCALE_API_TOKEN_ID",
+  "PLANETSCALE_API_TOKEN",
+  "BETTER_AUTH_URL",
+  "EXECUTOR_CATALOG_URL",
+  "EXECUTOR_TELEMETRY_RELAY_URL",
+  "AUTH_EMAIL_DOMAIN",
+  "PREVIEW_STATE_KEY",
+  "CLOUDFLARE_ACCOUNT_ID",
+  "CLOUDFLARE_API_TOKEN",
+  "POOL_DEPLOYMENT_KEY",
+  "TELEMETRY_RELAY_KEY",
+  "EXECUTOR_TELEMETRY_RELAY_TOKEN",
+  "GOOGLE_CLIENT_SECRET",
+  "GITHUB_CLIENT_SECRET",
+  "BETTER_AUTH_SECRET",
+  "EXECUTOR_ENCRYPTION_KEY",
+  "MCP_SESSION_KEY_CURRENT",
+  "MCP_SESSION_KEY_PREVIOUS",
+  "APP_DOMAIN_CONTROL_SECRET",
+  "POOL_MANAGEMENT_KEY",
+  "POOL_APP_SIGNING_KEY",
+  "PREVIEW_SMOKE_EMAIL",
+  "PREVIEW_SMOKE_PASSWORD",
+];
+
 test("a candidate tree releases on its own pin, served version and framework build", async (t) => {
   const at = await mkdtemp(join(tmpdir(), "stage-trees-"));
   t.after(() => rm(at, { recursive: true, force: true }));
-  const git = (cwd: string, ...args: string[]) =>
-    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
-      cwd,
-      encoding: "utf8",
-    }).trim();
-  const served = (version: string) => `export const servedFrameworkVersion = "${version}";\n`;
-  const build = (version: string) =>
-    JSON.stringify({
-      "package.json": JSON.stringify({ name: "apps", version }),
-      "runtime.json": JSON.stringify({ protocol: 1, version }),
-    });
-  /** A prepared candidate: its own repository, with `.upstream` its own checkout at `upstream.json`. */
-  const tree = async (name: string, version: string) => {
-    const dir = join(at, name);
-    const upstream = join(dir, ".upstream");
-    await mkdir(join(upstream, ".local/basalt-framework"), { recursive: true });
-    git(upstream, "init", "-q");
-    git(upstream, "commit", "-q", "--allow-empty", "-m", `upstream for ${name}`);
-    const commit = git(upstream, "rev-parse", "HEAD");
-    await writeFile(join(dir, "upstream.json"), JSON.stringify({ commit }));
-    await writeFile(join(dir, "framework-release.ts"), served(version));
-    await writeFile(join(upstream, ".local/basalt-framework/framework.json"), build(version));
-    git(dir, "init", "-q");
-    git(dir, "add", "upstream.json", "framework-release.ts");
-    git(dir, "commit", "-q", "-m", "candidate");
-    return { dir, upstream, commit };
-  };
+  const tree = (name: string, version: string) => preparedTree(at, name, version);
   const harness = await tree("harness", "1");
   const candidate = await tree("candidate", "2");
   assert.notEqual(candidate.commit, harness.commit);
@@ -79,8 +131,8 @@ test("a candidate tree releases on its own pin, served version and framework bui
     EXECUTOR_APPS_VERSION: "2",
     EXECUTOR_APPS_FRAMEWORK: join(candidate.upstream, ".local/basalt-framework"),
   });
-  // A fixed set: nothing naming the stage, its database or its origin.
-  assert.deepEqual(Object.keys(env).sort(), [...candidateTreeKeys].sort());
+  // Nothing naming the stage, its database, its origin, its State or its secrets.
+  for (const key of stageIdentityKeys) assert.equal(key in env, false, key);
 
   const refused = (pattern: RegExp, why: string) =>
     assert.throws(() => candidateTreeEnvironment(harness.dir, candidate.dir), pattern, why);
@@ -148,6 +200,102 @@ test("a candidate tree releases on its own pin, served version and framework bui
   assert.equal(candidateTreeEnvironment(harness.dir, candidate.dir).EXECUTOR_APPS_VERSION, "2");
 });
 
+test("a candidate whose .upstream is a symbolic link is refused, even onto the harness's own", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-links-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const harness = await preparedTree(at, "harness", "1");
+  const other = await preparedTree(at, "other", "2");
+  for (const [name, target, pin, version] of [
+    ["onto-harness", harness.upstream, harness.commit, "1"],
+    ["onto-other", other.upstream, other.commit, "2"],
+  ] as const) {
+    const dir = join(at, name);
+    await mkdir(dir);
+    await writeFile(join(dir, "upstream.json"), JSON.stringify({ commit: pin }));
+    await writeFile(join(dir, "framework-release.ts"), served(version));
+    git(dir, "init", "-q");
+    git(dir, "add", "upstream.json", "framework-release.ts");
+    git(dir, "commit", "-q", "-m", "candidate");
+    await symlink(target, join(dir, ".upstream"));
+    assert.throws(
+      () => candidateTreeEnvironment(harness.dir, dir),
+      /prepared upstream must not be a symbolic link/u,
+      name,
+    );
+  }
+});
+
+/** A release entry that only records that it ran. */
+async function markingEntry(dir: string) {
+  await mkdir(join(dir, "scripts/release"), { recursive: true });
+  await writeFile(
+    join(dir, "scripts/release/deploy.ts"),
+    'import { writeFileSync } from "node:fs";\nwriteFileSync(new URL("../../entry-ran", import.meta.url), "ran");\n',
+  );
+  return join(dir, "entry-ran");
+}
+
+test("a fresh candidate with no framework build is refused before its entry runs", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-unbuilt-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const candidate = await preparedTree(at, "candidate", "2", { built: false });
+  const ran = await markingEntry(candidate.dir);
+  // As a caller that forgot `withStageBuild(candidate)` would run it.
+  await assert.rejects(
+    runEntry("rollback", laneSubject(2), {}, {}, join(at, "outputs"), {
+      policy: null,
+      include: null,
+      tree: candidate.dir,
+    }),
+    /has no framework build/u,
+  );
+  assert.equal(existsSync(ran), false);
+});
+
+test("on another pin the candidate's own guard tests run once, and a failing one refuses before any entry", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-guard-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const outputs = join(at, "outputs");
+  const guardTest = (body: string) =>
+    `import { test } from "node:test";\nimport { appendFileSync } from "node:fs";\ntest("guard", () => {\n  appendFileSync("guard-runs.txt", "run\\n");\n  ${body}\n});\n`;
+
+  const failing = await preparedTree(at, "failing", "2");
+  const failingRan = await markingEntry(failing.dir);
+  await writeFile(
+    join(failing.dir, "scripts/release/wire-guard.test.ts"),
+    guardTest('throw new Error("the guard lets a write through");'),
+  );
+  for (let attempt = 0; attempt < 2; attempt++)
+    await assert.rejects(
+      runEntry("plan", laneSubject(2), {}, {}, outputs, { policy: null, tree: failing.dir }),
+      /own guard tests failed on its upstream pin/u,
+    );
+  assert.equal(existsSync(failingRan), false);
+  assert.equal(await readFile(join(failing.dir, "guard-runs.txt"), "utf8"), "run\n");
+  const kept = (await readdir(outputs)).filter((name) => name.startsWith("candidate-guard-"));
+  assert.equal(kept.length, 1);
+  assert.match(await readFile(join(outputs, kept[0]!), "utf8"), /the guard lets a write through/u);
+
+  // A passing guard lets the entry go on to the stage env (which refuses here, holding no secrets).
+  const passing = await preparedTree(at, "passing", "3");
+  const passingRan = await markingEntry(passing.dir);
+  await writeFile(join(passing.dir, "scripts/release/state-store-guard.test.ts"), guardTest(""));
+  for (let attempt = 0; attempt < 2; attempt++)
+    await assert.rejects(
+      runEntry("plan", laneSubject(2), {}, {}, outputs, { policy: null, tree: passing.dir }),
+      (error: Error) => !/guard tests/u.test(error.message),
+    );
+  assert.equal(existsSync(passingRan), false);
+  assert.equal(await readFile(join(passing.dir, "guard-runs.txt"), "utf8"), "run\n");
+
+  // On the harness's own pin nothing changed, so a failing guard test is not run at all.
+  const harness = await preparedTree(at, "harness", "4");
+  await writeFile(join(failing.dir, "upstream.json"), JSON.stringify({ commit: harness.commit }));
+  await rm(join(failing.dir, "guard-runs.txt"));
+  await requireCandidateGuard(harness.dir, failing.dir, outputs);
+  assert.equal(existsSync(join(failing.dir, "guard-runs.txt")), false);
+});
+
 test("a heal record measures the stage-only overlay back to the first unmarked commit", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "stage-overlay-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -184,13 +332,13 @@ test("a release run takes only a rehearse/ branch and a named policy from its ca
     { branch: "rehearse/x; rm -rf /", policy: "code" },
     { branch: "rehearse/release-a", policy: "" },
     { branch: "rehearse/release-a", policy: "../../etc/passwd" },
-    { branch: "rehearse/production-PLACEHOLDER", policy: "release" },
   ])
     assert.throws(() => releaseCandidate(JSON.stringify(spec)), /names no/u, JSON.stringify(spec));
-  // The committed file names a placeholder branch until a run is set up; no such branch exists.
+  // The committed file names nothing until a run is set up, so a stray label refuses.
   const { readFileSync } = await import("node:fs");
-  assert.deepEqual(
-    releaseCandidate(readFileSync(new URL("./release-candidate.json", import.meta.url), "utf8")),
-    { branch: "rehearse/production-placeholder", policy: "release" },
+  assert.throws(
+    () =>
+      releaseCandidate(readFileSync(new URL("./release-candidate.json", import.meta.url), "utf8")),
+    /names no rehearse\/ branch/u,
   );
 });

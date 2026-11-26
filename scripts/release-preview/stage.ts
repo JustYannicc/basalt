@@ -16,7 +16,7 @@ import { readRehearsalMark, releaseMarkOf } from "./rehearsal-mark-read.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { previewStageOrigin, stageEnvironment } from "../environment.ts";
@@ -104,7 +104,7 @@ const cloud = join(root, ".upstream/apps/hosted/cloud");
  * The only stage-env keys a candidate tree replaces. Everything naming the stage (its stage,
  * database, origin and secrets) still comes from the harness's `stageEnvironment` for this lane.
  */
-export const candidateTreeKeys = [
+const candidateTreeKeys = [
   "EXECUTOR_BUILD_VERSION",
   "EXECUTOR_APPS_VERSION",
   "EXECUTOR_APPS_FRAMEWORK",
@@ -135,6 +135,11 @@ export function candidateTreeEnvironment(
   if (typeof pin !== "string" || !/^[a-f0-9]{40}$/u.test(pin))
     throw refusal("names no upstream commit in upstream.json");
   const upstream = join(tree, ".upstream");
+  // A link would let `git -C` and `realpath` both read another tree's checkout and build as its own.
+  if (lstatSync(upstream, { throwIfNoEntry: false })?.isSymbolicLink())
+    throw new Error(
+      "The candidate tree's prepared upstream must not be a symbolic link; nothing runs on it",
+    );
   // Its own checkout, not the candidate's repository seen from a plain directory inside it.
   const git = (...args: string[]) => {
     try {
@@ -151,7 +156,8 @@ export function candidateTreeEnvironment(
     throw refusal("has no prepared upstream checkout");
   if (git("rev-parse", "HEAD") !== pin) throw refusal("has an upstream checkout off its own pin");
 
-  // A static read: the candidate's module never runs in this process, which holds the secrets.
+  // Read as text, so a module that only computes its version yields none; the build's recorded
+  // version below must still match it.
   const versions = [
     ...(read(join(tree, "framework-release.ts")) ?? "").matchAll(
       /^export const servedFrameworkVersion = "([0-9A-Za-z.+-]{1,80})";$/gmu,
@@ -183,7 +189,89 @@ export function candidateTreeEnvironment(
   };
 }
 
-async function runEntry(
+/** The upstream commit a tree's upstream.json names, if it names one. */
+function upstreamPin(tree: string) {
+  try {
+    const commit = (
+      JSON.parse(readFileSync(join(tree, "upstream.json"), "utf8")) as { commit?: unknown }
+    ).commit;
+    return typeof commit === "string" ? commit : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a candidate tree releases on another upstream pin than the harness's. */
+const pinMoved = (harness: string, tree: string) =>
+  tree !== harness && upstreamPin(tree) !== upstreamPin(harness);
+
+const guardRuns = new Map<string, Promise<void>>();
+
+/**
+ * On another upstream pin, the candidate's release guard runs on alchemy and effect versions nobody
+ * reviewed with it, so its own guard tests run in its tree first: once per tree and pin in a run,
+ * output kept in the private outputs. On the harness's pin nothing changed, so nothing runs.
+ */
+export function requireCandidateGuard(
+  harness: string,
+  tree: string,
+  outputs: string,
+  source: NodeJS.ProcessEnv = process.env,
+) {
+  if (!pinMoved(harness, tree)) return Promise.resolve();
+  const pin = upstreamPin(tree) ?? "none";
+  const head = (() => {
+    try {
+      return execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: tree,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      return "none";
+    }
+  })();
+  const key = `${resolve(tree)}\0${head}\0${pin}`;
+  const known = guardRuns.get(key);
+  if (known) return known;
+  const run = (async () => {
+    const dir = join(tree, "scripts/release");
+    const files = (existsSync(dir) ? readdirSync(dir) : [])
+      .filter(
+        (name) => /^wire-guard.*\.test\.ts$/u.test(name) || name === "state-store-guard.test.ts",
+      )
+      .sort()
+      .map((name) => join("scripts/release", name));
+    if (!files.length)
+      throw new Error(
+        "The candidate tree has no guard tests to re-prove on its upstream pin; nothing runs on it",
+      );
+    await mkdir(outputs, { recursive: true, mode: 0o700 });
+    const log = join(outputs, `candidate-guard-${pin.slice(0, 12)}.txt`);
+    await writeFile(log, "", { mode: 0o600 });
+    const code = await new Promise<number>((done) => {
+      // No stage env and no secrets: the guard tests need neither.
+      const child = spawn(process.execPath, ["--test", ...files], {
+        cwd: tree,
+        env: { PATH: source.PATH, HOME: source.HOME, TMPDIR: source.TMPDIR },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const keep = (chunk: Buffer) => void appendFile(log, chunk, { mode: 0o600 });
+      child.stdout.on("data", keep);
+      child.stderr.on("data", keep);
+      child.once("error", () => done(1));
+      child.once("close", (status) => done(status ?? 1));
+    });
+    if (code !== 0)
+      throw new Error(
+        `The candidate tree's own guard tests failed on its upstream pin (exit ${code}, output in the private outputs); nothing runs on it`,
+      );
+  })();
+  guardRuns.set(key, run);
+  return run;
+}
+
+export async function runEntry(
   command: "plan" | "deploy" | "apply" | "serving" | "rollback" | "boot" | "accept",
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
@@ -206,6 +294,9 @@ async function runEntry(
   const cloud = join(tree, ".upstream/apps/hosted/cloud");
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
+  // Both before the stage env is composed, so a refused candidate never sees a secret.
+  const own = candidateTreeEnvironment(root, tree);
+  await requireCandidateGuard(root, tree, outputs, source);
   const config = stageEnvironment(subject, source);
   const seed = join(outputs, `seed-${command}-${Date.now()}.json`);
   const log = join(outputs, `entry-${command}-${Date.now()}.log`);
@@ -239,7 +330,7 @@ async function runEntry(
           HOME: source.HOME,
           ...config.deploy,
           ...config.seed,
-          ...candidateTreeEnvironment(root, tree),
+          ...own,
           ...extra,
           ...rollbackPolicyEnv(command, policy),
           PREVIEW_AUTH_SEED_OUTPUT: seed,
@@ -615,6 +706,32 @@ async function stageRelease(
     ...(kind === "classplan" ? declaration.cutover : declaration.baseline),
     POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
   };
+  // After a pin move the harness's fault client decodes State with alchemy the candidate no longer
+  // runs on, so the boot after is the candidate entry's own read; called inside the candidate's
+  // build. The origin is the stage's: the acceptance client's default is production.
+  const bootAfterOf = async () => {
+    if (!pinMoved(root, candidate)) return bootOf("release-after");
+    const out = join(outputs, "release-root-boot-after.json");
+    try {
+      await rm(out, { force: true });
+      const origin = previewStageOrigin(stageNames(subject).slug, source.TEST_STAGE_DOMAIN ?? "");
+      await runEntry("boot", subject, source, { ...env, POOL_ACCEPTANCE_ORIGIN: origin }, outputs, {
+        policy: null,
+        include: null,
+        args: ["--out", out],
+        tree: candidate,
+      });
+      const { boot } = JSON.parse(await readFile(out, "utf8")) as { boot?: unknown };
+      return { boot: boot ?? null, read: "candidate boot entry" };
+    } catch (error) {
+      return {
+        unreadable: redactor(source)(error instanceof Error ? error.message : String(error)).slice(
+          0,
+          1_000,
+        ),
+      };
+    }
+  };
   if (kind === "classplan") {
     // Plan only, as production's read-only plan runs: a refusal is the result, kept in plain text
     // (redacted of secrets) because it names the blocking resource.
@@ -666,8 +783,8 @@ async function stageRelease(
                 changedProps,
               }));
       }
+      result.bootAfter = await bootAfterOf();
     });
-    result.bootAfter = await bootOf("release-after");
     return result;
   }
   const { stage, stack } = stageNames(subject);
@@ -714,8 +831,8 @@ async function stageRelease(
       [];
     result.followUpPlan = "failed" in planned ? planned : { rows: rows.length };
     result.poolWorkerRowsAfter = rows.filter((row) => row.fqn === "PoolWorker");
+    result.bootAfter = await bootAfterOf();
   });
-  result.bootAfter = await bootOf("release-after");
   return result;
 }
 
@@ -1096,12 +1213,15 @@ async function rollbackRetry(
     POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
   };
   try {
-    await runEntry("rollback", subject, source, env, outputs, {
-      policy: null,
-      include: null,
-      args: ["--from", record],
-      tree: candidate,
-    });
+    // The candidate's entry releases only on its own framework build (candidateTreeEnvironment).
+    await withStageBuild(candidate, subject, source, () =>
+      runEntry("rollback", subject, source, env, outputs, {
+        policy: null,
+        include: null,
+        args: ["--from", record],
+        tree: candidate,
+      }).then(() => undefined),
+    );
     result.rollback = { exit: 0 };
   } catch (error) {
     // The refusal's text stays in the private output; the public record keeps only its exit.
