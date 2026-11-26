@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import { run } from "./process.ts";
 import { checkAppPagesRuntimeBundle } from "./app-pages-runtime-bundle.ts";
+import { checkDashboardRuntimeBundle } from "./dashboard-runtime-bundle.ts";
 import { checkMcpRuntimeBundle } from "./mcp-runtime-bundle.ts";
 import { checkSsoRuntimeBundle } from "./sso-runtime-bundle.ts";
 
@@ -46,4 +47,5 @@ run("bun", [".local/basalt-worker-sizes.ts"], cloud, {
 });
 checkMcpRuntimeBundle();
 checkAppPagesRuntimeBundle();
+checkDashboardRuntimeBundle();
 checkSsoRuntimeBundle();

@@ -1,0 +1,87 @@
+diff --git a/apps/hosted/cloud/web/server-highlight-engine.ts b/apps/hosted/cloud/web/server-highlight-engine.ts
+new file mode 100644
+index 000000000..3f9687a83
+--- /dev/null
++++ b/apps/hosted/cloud/web/server-highlight-engine.ts
+@@ -0,0 +1,5 @@
++import { HighlightUnavailable } from "@executor-js/ui/contracts/highlight";
++import { Effect } from "effect";
++
++/** The server render's highlight engine: it never highlights, so code renders as plain text. */
++export const highlighter = Effect.fail(new HighlightUnavailable({}));
+diff --git a/apps/hosted/cloud/web/server-highlight.ts b/apps/hosted/cloud/web/server-highlight.ts
+new file mode 100644
+index 000000000..c0ce24672
+--- /dev/null
++++ b/apps/hosted/cloud/web/server-highlight.ts
+@@ -0,0 +1,32 @@
++import { fileURLToPath } from "node:url";
++import type { Plugin } from "vite-plus";
++
++const engine = "/packages/ui/src/implementation/highlight-engine.ts";
++const stub = fileURLToPath(new URL("./server-highlight-engine.ts", import.meta.url));
++
++/**
++ * Keep Shiki out of the server build, which the dashboard Worker uploads and compiles on every
++ * cold start although no server render can use it: `highlighterAtom` loads the engine with a
++ * dynamic import that cannot settle before the render, so the server always sends plain code and
++ * the browser highlights after hydration. The client build keeps the real engine. The build fails
++ * if the engine is no longer swapped, so a moved import cannot quietly bring Shiki back.
++ */
++export const serverHighlight = (): Plugin => {
++  let swapped = false;
++  return {
++    name: "executor-cloud-server-highlight",
++    apply: "build",
++    enforce: "pre",
++    async resolveId(source, importer, options) {
++      if (this.environment.name !== "ssr" || !source.endsWith("highlight-engine.ts")) return null;
++      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
++      if (!resolved?.id.endsWith(engine)) return null;
++      swapped = true;
++      return stub;
++    },
++    buildEnd(error) {
++      if (this.environment.name === "ssr" && error === undefined && !swapped)
++        this.error(`The server build no longer imports ${engine}; update the highlight swap`);
++    },
++  };
++};
+diff --git a/apps/hosted/cloud/web/tsconfig.json b/apps/hosted/cloud/web/tsconfig.json
+index 49475957d..656f93a6b 100644
+--- a/apps/hosted/cloud/web/tsconfig.json
++++ b/apps/hosted/cloud/web/tsconfig.json
+@@ -7,6 +7,12 @@
+       "@/*": ["./src/*"]
+     }
+   },
+-  "include": ["src", "vite.config.ts", "cloudflare-routes.ts", "server.d.ts"],
++  "include": [
++    "src",
++    "vite.config.ts",
++    "cloudflare-routes.ts",
++    "server-highlight-engine.ts",
++    "server.d.ts"
++  ],
+   "exclude": []
+ }
+diff --git a/apps/hosted/cloud/web/vite.config.ts b/apps/hosted/cloud/web/vite.config.ts
+index 8d03f7873..d6f7d41e9 100644
+--- a/apps/hosted/cloud/web/vite.config.ts
++++ b/apps/hosted/cloud/web/vite.config.ts
+@@ -5,6 +5,7 @@ import { browserOnlySettings } from "./browser-only-settings.ts";
+ import { cloudflareRoutes } from "./cloudflare-routes.ts";
+ import { mainPreload } from "./main-preload.ts";
+ import { reproducibleBuild } from "./reproducible-build.ts";
++import { serverHighlight } from "./server-highlight.ts";
+ 
+ const apiUrl = process.env.HOSTED_API_URL ?? "http://127.0.0.1:4411";
+ 
+@@ -27,6 +28,7 @@ export default mergeConfig(
+     plugins: [
+       cloudflareRoutes(),
+       mainPreload(),
++      serverHighlight(),
+       // The stack sets a release only for stages that report to Sentry. Every such build injects
+       // the same code; only a build holding the upload token sends its source maps.
+       ...(process.env.SENTRY_RELEASE
