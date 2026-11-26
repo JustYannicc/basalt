@@ -1,5 +1,5 @@
 {
-  "description": "The two optional routing fields the host adds to the sbam1 account-mirror payload (interface change 22), next to reference, action and credential. The host decides both without pool scope. hasRules is true only when the contributor has an active rule that routes something and could match this credential (everything, this account, or a pool app). route is that owner's answer at the account and everything levels; pool-app rules wait for the membership step. A host that sends neither field gets exactly main's behaviour. Synthetic values. route is sent (an object or null) only when no pool-app rule could change the answer; when the owner has a pool-app rule that routes and no account-level rule, route is omitted (interface change 24).",
+  "description": "The two optional routing fields the host adds to the sbam1 account-mirror payload (interface change 22), next to reference, action and credential. The host decides both without pool scope. hasRules is true only when the contributor has an active rule that routes something and could match this credential (everything, this account, or a pool app). route is that owner's answer at the account and everything levels; pool-app rules wait for the membership step. A host that sends neither field gets exactly main's behaviour until rules are first served; after that a mirror without the fields is decided like hasRules:true, so a credential nothing placed is never written direct. Synthetic values. route is sent (an object or null) only when no pool-app rule could change the answer; when the owner has a pool-app rule that routes and no account-level rule, route is omitted (interface change 24).",
   "routeId": "rt_aaaaaaaaaaaaaaaaaaaaaaaaaa",
   "owner": "org/example-organization/user/example-user",
   "cases": [
@@ -49,10 +49,10 @@
       "resolveCalls": false
     },
     {
-      "name": "host without the fields",
+      "name": "host without the fields, after rules were served",
       "fields": {},
-      "pool": "direct",
-      "resolveCalls": false
+      "pool": "held",
+      "resolveCalls": true
     }
   ]
 }

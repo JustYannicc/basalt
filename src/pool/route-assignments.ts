@@ -52,8 +52,22 @@ const poolPrefix = "route-pool:";
 const hintPrefix = "route-hint:";
 const signInPrefix = "route-sign-in:";
 const refusedPrefix = "route-refused:";
-// A credential the pool holds on the refusing route: its owner has rules, none decided it yet.
+// A credential the pool holds on the refusing route: nothing has placed it on a route or direct yet.
 const heldPrefix = "route-held:";
+// When and why a hold began and how often it was decided again: the hold's two log lines read it.
+const holdLogPrefix = "route-hold-log:";
+/** Why the pool holds a credential; the only detail its hold and release lines carry. */
+type HoldReason =
+  | "rules_unserved"
+  | "unclaimed"
+  | "routes_disagree"
+  | "resolve_failed"
+  | "late_turn";
+const HoldLog = Schema.Struct({
+  reason: Schema.String,
+  since: Schema.Number,
+  repeats: Schema.Number,
+});
 // Rules change rarely; the revision poll catches edits, the floor catches anything it missed.
 const refreshFloorMs = 15 * 60_000;
 /**
@@ -215,6 +229,12 @@ export class RouteAssignments {
   // can't lift what a newer one refused, and a mirror can't overwrite a pass in flight.
   private queue: Promise<unknown> = Promise.resolve();
   private queueWaitMs: number;
+  // A late step's holds in flight: a membership turn decides only after them, so it can never lift
+  // a hold, or a plugin credential's refusal, that a late hold is still writing.
+  private holding: Promise<unknown> = Promise.resolve();
+  // The alarm's failing passes in a row: one line when they start and one when they end. In
+  // memory: a restarted controller starts a new streak.
+  private failing?: { since: number; failures: number };
   // Per pool, how many membership steps have started: a late turn behind a newer step steps aside.
   private steps = new Map<string, number>();
   private storage: RouteStorage;
@@ -324,10 +344,46 @@ export class RouteAssignments {
   private async held(reference: string) {
     return (await this.storage.get(heldPrefix + reference)) === true;
   }
-  private async hold(reference: string, held: boolean) {
-    if (held) await this.storage.put(heldPrefix + reference, true);
+  /**
+   * Holds `reference` for `reason`, or releases it with `false`. A hold logs once when it begins
+   * and once when it ends, with how long it lasted and how often a pass decided it again, so a
+   * long outage adds one counter per held credential and no lines.
+   */
+  private async hold(reference: string, reason: HoldReason | false) {
+    const held = await this.held(reference);
     // Only a recorded hold is deleted, so a pool without rules writes nothing here.
-    else if (await this.held(reference)) await this.storage.delete(heldPrefix + reference);
+    if (reason === false && !held) return;
+    // A log record that doesn't decode only loses its numbers; it never keeps a hold in place.
+    const log = Option.getOrUndefined(
+      Schema.decodeUnknownOption(HoldLog)(await this.storage.get(holdLogPrefix + reference)),
+    );
+    if (reason !== false) {
+      if (!held) {
+        await this.storage.put(heldPrefix + reference, true);
+        await this.storage.put(holdLogPrefix + reference, {
+          reason,
+          since: this.now(),
+          repeats: 0,
+        });
+        console.error("POOL_ROUTE_MEMBER_HELD", JSON.stringify({ reason }));
+      } else
+        await this.storage.put(holdLogPrefix + reference, {
+          reason: log?.reason ?? reason,
+          since: log?.since ?? this.now(),
+          repeats: (log?.repeats ?? 0) + 1,
+        });
+      return;
+    }
+    await this.storage.delete(heldPrefix + reference);
+    await this.storage.delete(holdLogPrefix + reference);
+    console.error(
+      "POOL_ROUTE_MEMBER_RELEASED",
+      JSON.stringify(
+        log
+          ? { reason: log.reason, heldMs: this.now() - log.since, repeats: log.repeats }
+          : { reason: "unrecorded" },
+      ),
+    );
   }
   async refusedReferences(): Promise<ReadonlySet<string>> {
     return new Set((await this.listed(refusedPrefix, Schema.Literal(true))).keys());
@@ -372,12 +428,18 @@ export class RouteAssignments {
    * credential is written on its own; one failed write doesn't stop the others, and the pass
    * fails afterwards so it runs again.
    */
-  private async apply(routes: ReadonlyMap<string, Decision>, signal: AbortSignal) {
+  private async apply(
+    routes: ReadonlyMap<string, Decision>,
+    signal: AbortSignal,
+    // Why each hold is held; combine's disagreement is the only hold a caller doesn't name.
+    reasons: ReadonlyMap<string, HoldReason> = new Map(),
+  ) {
     // Routes and holds are on record before Home is read: the owner is known before Home names a
     // route, a credential Home doesn't hold yet keeps its hold, and a resume racing this pass sees
     // what it decided.
     for (const [reference, decision] of routes)
-      if (decision === "hold") await this.hold(reference, true);
+      if (decision === "hold")
+        await this.hold(reference, reasons.get(reference) ?? "routes_disagree");
       else if (decision !== "keep" && decision !== null) await this.record(reference, decision);
     const credentials = await readCredentials(this.home, signal);
     let failed = false;
@@ -437,16 +499,17 @@ export class RouteAssignments {
 
   /**
    * Called before a pool's membership is reconciled, so its new members are routed before Home
-   * lets them serve. It never fails the membership step on a resolve: only new members whose
-   * owner has rules are then held on the refusing route, everyone else serves as on main, and the
-   * next pass resolves them again. It reads storage by key and touches Home only when a route,
-   * a hold or a hold to clear is at stake.
+   * lets them serve. It never fails the membership step on a resolve: after rules were served, a
+   * new member nothing placed is held on the refusing route (only a stored route or a
+   * hasRules:false hint decides it without an answer), and the next pass resolves it again. It
+   * reads storage by key and touches Home only when a route, a hold or a hold to clear is at stake.
    *
    * It decides in the queue like every other pass, but the repair it sits on (and the lease
    * renewals behind that repair) waits for its turn at most `queueWaitMs`. A turn that hasn't
    * started by then still runs when the queue drains, adding the members it decides to the pool
-   * record and removing none; until then the new members serve as they are, and a member whose
-   * mirror said its owner has rules is already held. A step with no new member never queues.
+   * record and removing none. Until then a new member nothing placed is held, which costs the
+   * repair one Home read and its writes (bounded by `writeMs`; a failed write fails the repair,
+   * so nothing serves unplaced). A step with no new member never queues.
    */
   async prepare(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
     const step = (this.steps.get(scope.pool) ?? 0) + 1;
@@ -460,7 +523,13 @@ export class RouteAssignments {
     const turn = this.serial(async () => {
       // A newer step for this pool saw a newer membership; it decides its own new members.
       if (late && this.steps.get(scope.pool) !== step) return;
+      // Started before it waits, so its step never turns late (and holds) behind it.
       started = true;
+      // Every late hold, including any that starts while this one waits, lands before it decides.
+      for (let seen: Promise<unknown> | undefined; seen !== this.holding;) {
+        seen = this.holding;
+        await seen.catch(() => {});
+      }
       await this.preparePass(scope, accounts, signal, late);
     });
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -473,9 +542,42 @@ export class RouteAssignments {
       void turn.catch((error: unknown) =>
         console.error("POOL_ROUTE_MEMBERSHIP_LATE_TURN_FAILED", String(error)),
       );
+      // Home serves the new members as soon as this step returns: until the turn decides them,
+      // one nothing has placed waits on the refusing route instead of serving direct.
+      const holds = this.holdUnplaced(scope, accounts, signal);
+      this.holding = Promise.all([this.holding.catch(() => {}), holds]);
+      await holds;
     } finally {
       clearTimeout(timer);
     }
+  }
+  /**
+   * A late step's new members that nothing placed: no `hasRules:false` hint, no route on record,
+   * no hold. Only after rules were served; before that nothing is routed. It runs outside the
+   * queue, but every membership turn waits for it, so only a mirror can race it, and it writes
+   * nothing but the refusing route, never over a route already in Home. The worst such a race can
+   * leave is a credential refused until its turn routes it (or, if that resolve fails too, until
+   * the next refresh), never one sent direct.
+   */
+  private async holdUnplaced(scope: RouteScope, accounts: readonly string[], signal?: AbortSignal) {
+    if (!(await this.state()).served) return;
+    const raw = await this.storage.get(poolPrefix + scope.pool);
+    const known = new Set(raw === undefined ? [] : decodeStored(PoolRecord, raw).references);
+    const holds = new Map<string, Decision>();
+    for (const reference of new Set(accounts))
+      if (
+        !known.has(reference) &&
+        (await this.storage.get(hintPrefix + reference)) !== false &&
+        (await this.storage.get(entryPrefix + reference)) === undefined &&
+        !(await this.held(reference))
+      )
+        holds.set(reference, "hold");
+    if (holds.size)
+      await this.apply(
+        holds,
+        within(writeMs, signal),
+        new Map([...holds.keys()].map((reference) => [reference, "late_turn"])),
+      );
   }
   private async preparePass(
     scope: RouteScope,
@@ -504,24 +606,34 @@ export class RouteAssignments {
           unresolved = asked;
         }
       const atStake = new Map<string, Decision>();
+      const reasons = new Map<string, HoldReason>();
       for (const reference of added) {
         const stored = await this.storage.get(entryPrefix + reference);
         const entry = stored === undefined ? undefined : decodeStored(Entry, stored);
         const rules = await this.hasRules(reference);
-        // Before any 200, the host's hasRules is the only proof of rules: never direct then.
+        const held = await this.held(reference);
+        // Before any 200, the host's hasRules is the only proof of rules: never direct then. A
+        // failed resolve can only come after one (`ask`), so a member it leaves unplaced is held:
+        // only a stored route keeps what Home has, and only a hasRules:false hint serves direct.
         const decision: Decision = ruleless.has(reference)
           ? null
           : answer
             ? !answer.served && rules
               ? "hold"
               : combine([answer.resolutions.get(reference), entry])
-            : rules
-              ? "hold"
-              : "keep";
-        if (decision !== "keep" && (decision !== null || entry || rules))
+            : entry
+              ? "keep"
+              : "hold";
+        if (decision === "hold")
+          reasons.set(
+            reference,
+            !answer ? "resolve_failed" : !answer.served ? "rules_unserved" : "routes_disagree",
+          );
+        // A held member is always at stake, so the first answer that places it releases it.
+        if (decision !== "keep" && (decision !== null || entry || rules || held))
           atStake.set(reference, decision);
       }
-      if (atStake.size) await this.apply(atStake, within(writeMs, signal));
+      if (atStake.size) await this.apply(atStake, within(writeMs, signal), reasons);
     }
     // Every step re-adds a pool the list lost, so a pool is never dropped from the alarm for good.
     const state = await this.state();
@@ -550,8 +662,10 @@ export class RouteAssignments {
    * - The host's pool-free route is written at once; a malformed one answers 503.
    * - An owner with rules: every pool here is asked; if none claims it yet, or the pools
    *   disagree, it waits on the refusing route, and a failed resolve answers 503.
-   * - Anyone else, or a host that sends no hint, is mirrored exactly as before with no resolve
-   *   call; without a hint a route its membership step already assigned is kept.
+   * - Anyone else is mirrored exactly as before with no resolve call; without a hint a route its
+   *   membership step already assigned is kept. Once rules are served, a mirror without a hint
+   *   is decided like an owner with rules: Home refreshes what it holds before any membership
+   *   step could route it, so nothing unplaced is written direct then.
    */
   async proxyFor(
     reference: string,
@@ -577,8 +691,19 @@ export class RouteAssignments {
       const stored = await this.storage.get(entryPrefix + reference);
       const kept = stored === undefined ? undefined : decodeStored(Entry, stored);
       if (kept) return routeProxyUrl(kept.routeId);
-      // Nor a hold, which only an owner with rules is ever on.
-      return (await this.held(reference)) ? routeProxyUrl(unassignedRoute) : undefined;
+      // Nor a hold.
+      if (await this.held(reference)) return routeProxyUrl(unassignedRoute);
+      // Before any 200 nothing is routed, and a host that said its owner has no rules is believed:
+      // both stay exactly as on main.
+      if (
+        !(await this.state()).served ||
+        (await this.storage.get(hintPrefix + reference)) === false
+      )
+        return undefined;
+      // A pool member a pass already placed direct stays so: a token rotation never waits on, or
+      // fails with, the tools service.
+      for (const record of (await this.pools()).values())
+        if (record.references.includes(reference)) return undefined;
     }
     const answers: (RouteResolution | undefined)[] = [];
     let claimed = false;
@@ -595,7 +720,10 @@ export class RouteAssignments {
     const served = (await this.state()).served;
     // Before any 200 a hasRules:true credential is held too: a 200 decides it, never a 404.
     if (decision === "hold" || !claimed || !served) {
-      await this.hold(reference, true);
+      await this.hold(
+        reference,
+        decision === "hold" ? "routes_disagree" : !served ? "rules_unserved" : "unclaimed",
+      );
       return routeProxyUrl(unassignedRoute);
     }
     await this.record(reference, decision);
@@ -644,16 +772,36 @@ export class RouteAssignments {
   }
 
   /** On the pool's alarm: one cheap poll per pool, a full pass when a revision or the floor says so. */
-  tick(signal: AbortSignal) {
-    return this.serial(() => this.tickPass(signal));
+  async tick(signal: AbortSignal) {
+    try {
+      const asked = await this.serial(() => this.tickPass(signal));
+      if (asked && this.failing) {
+        console.error(
+          "POOL_ROUTE_ASSIGNMENTS_RECOVERED",
+          JSON.stringify({
+            failures: this.failing.failures,
+            pendingMs: this.now() - this.failing.since,
+          }),
+        );
+        this.failing = undefined;
+      }
+    } catch (error) {
+      if (this.failing) this.failing.failures++;
+      else {
+        this.failing = { since: this.now(), failures: 1 };
+        console.error("POOL_ROUTE_ASSIGNMENTS_PENDING");
+      }
+      throw error;
+    }
   }
-  private async tickPass(signal: AbortSignal) {
+  /** Whether it asked the tools service; between polls it doesn't. */
+  private async tickPass(signal: AbortSignal): Promise<boolean> {
     const state = await this.state();
     if (
       this.now() - (state.polledAt ?? -Infinity) <
       (state.served ? servedPollMs : unservedPauseMs)
     )
-      return;
+      return false;
     await this.storage.put(stateKey, { ...state, polledAt: this.now() } satisfies State);
     const pools = await this.pools();
     let due = false;
@@ -664,11 +812,12 @@ export class RouteAssignments {
         within(resolveMs, signal),
       );
       // While no rules are served nothing can be routed, so there is nothing to rewrite.
-      if (!poll.served) return;
+      if (!poll.served) return true;
       if (poll.revision !== record.revision || this.now() - record.refreshedAt >= refreshFloorMs)
         due = true;
     }
     if (due) await this.refreshPass(signal);
+    return true;
   }
 
   refresh(signal: AbortSignal) {

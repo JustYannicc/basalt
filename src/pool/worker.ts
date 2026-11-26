@@ -565,7 +565,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       actual: (pool) => membership.actual(pool),
       invalidateView: (pool) => this.control.invalidateViews(pool),
       // New members are routed before Home's channel membership lets them serve. A repair waits
-      // for routing at most its own capped step plus 2 s in the queue; policy installs never do.
+      // for routing at most its own capped step plus 2 s in the queue, and when its turn is late,
+      // for the holds of its unplaced new members; policy installs never do.
       reconcile: async (pool, accounts) => {
         const organization = organizations.get(pool);
         if (organization === undefined) throw new Error("Pool organization unknown");
@@ -848,9 +849,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.handoff.warm(() => this.lifecycle.then((lifecycle) => lifecycle.warm())),
     );
     // After warmth, so routing can never delay it.
+    // RouteAssignments logs its own failure streak, once when it starts and once when it ends.
     await trace
       .run("routes", () => this.routes.tick(AbortSignal.timeout(60_000)))
-      .catch(() => console.error("POOL_ROUTE_ASSIGNMENTS_PENDING"));
+      .catch(() => undefined);
     await trace.run("first_request", () =>
       reportWhenDue(this.ctx.storage, "first-request", (progress) =>
         this.computers.observeUsage(undefined, true, progress),

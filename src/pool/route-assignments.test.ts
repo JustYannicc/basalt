@@ -61,6 +61,8 @@ function fakeHome() {
     failPost: false,
     postGate: undefined as Promise<void> | undefined,
     posting: () => {},
+    fieldsGate: undefined as Promise<void> | undefined,
+    patching: () => {},
     writes: [] as string[],
   };
   // Home's own model: a write changes its state, and every answer is read from that state.
@@ -108,6 +110,10 @@ function fakeHome() {
     }
     if (route === "/credentials/fields" && method === "PATCH" && state.failFields)
       return new Response(null, { status: 500 });
+    if (route === "/credentials/fields" && method === "PATCH" && state.fieldsGate) {
+      state.patching();
+      await state.fieldsGate;
+    }
     if (route === "/credentials/fields" && method === "PATCH") {
       const file = state.files.find((item) => item.id === body.id);
       if (!file) return Response.json({ error: "not_found" }, { status: 404 });
@@ -212,6 +218,12 @@ const apiKey = {
 const claude = { type: "claude", access_token: "synthetic" };
 const signal = () => AbortSignal.timeout(5_000);
 const refreshFloor = 15 * 60_000;
+// The log lines a test's console.error saw, by name, with their one JSON argument parsed.
+function logged(calls: readonly { arguments: unknown[] }[], name: string) {
+  return calls
+    .filter((call) => call.arguments[0] === name)
+    .map((call) => (call.arguments[1] === undefined ? {} : JSON.parse(String(call.arguments[1]))));
+}
 
 test("a pool member is routed before the pool may serve it, and re-mirrors keep the route", async () => {
   const { client, keyProxy, state } = fakeHome();
@@ -234,7 +246,7 @@ test("a pool member is routed before the pool may serve it, and re-mirrors keep 
   assert.equal(rules.calls.length, before);
 });
 
-test("a failed resolve in the membership step holds only new members whose owner has rules, and never fails the step", async () => {
+test("a failed resolve in the membership step never fails the step, and a host-said ruleless member serves", async () => {
   const { client, keyProxy, state } = fakeHome();
   const warm = "12345678-abcd-4000-8000-00000000000e";
   const rules = scripted({});
@@ -268,13 +280,14 @@ test("a failed resolve in the membership step holds only new members whose owner
 test("no route rules anywhere: a new unclaimed credential is mirrored, refreshed and served exactly as on main", async () => {
   for (const served of [false, true]) {
     const { client, state } = fakeHome();
-    // Served or not, no rule routes anything.
+    // Served or not, no rule routes anything. A host that says there are none is mirrored as on
+    // main either way; one that sends no hint only before rules are served (next test).
     const rules = scripted({});
     rules.serve(served);
     const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
     await routes.prepare(scope, [], signal());
     await routes.refresh(signal());
-    for (const hint of [{}, { hasRules: false }]) {
+    for (const hint of served ? [{ hasRules: false }] : [{}, { hasRules: false }]) {
       const calls = rules.calls.length;
       assert.equal((await mirror(client, routes, mine, apiKey, hint)).status, 200);
       assert.equal((await mirror(client, routes, oauth, claude, hint)).status, 200);
@@ -291,6 +304,36 @@ test("no route rules anywhere: a new unclaimed credential is mirrored, refreshed
     await routes.refresh(signal());
     assert.deepEqual(state.writes, []);
   }
+});
+
+test("once rules are served, a mirror without a hint is never written direct: it waits for its membership step", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const { client, keyProxy, state } = fakeHome();
+  const rules = scripted({});
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  await routes.prepare(scope, [], signal());
+  await routes.refresh(signal());
+  assert.equal((await mirror(client, routes, mine, apiKey)).status, 200);
+  assert.equal((await mirror(client, routes, oauth, claude)).status, 200);
+  // Home refreshes the OAuth record as soon as it holds it: it already refuses.
+  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  const file = () => state.files.find((row) => row.id === oauth)!;
+  assert.equal(file().proxy_url, routeProxyUrl(unassignedRoute));
+  // Its membership step places both: no rule routes them, so they serve direct from then on.
+  await routes.prepare(scope, [mine, oauth], signal());
+  assert.equal(keyProxy(mine), "");
+  assert.equal(file().proxy_url, "");
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_HELD"), [
+    { reason: "unclaimed" },
+    { reason: "unclaimed" },
+  ]);
+  assert.equal(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_RELEASED").length, 2);
+  // A member it placed direct keeps that on a token rotation, even while the service is down.
+  rules.fail(true);
+  const calls = rules.calls.length;
+  assert.equal((await mirror(client, routes, mine, { ...apiKey, token: "rotated" })).status, 200);
+  assert.equal(keyProxy(mine), "");
+  assert.equal(rules.calls.length, calls);
 });
 
 test("an unreachable tools service that never answered 200 leaves everything direct: no hold and no 503", async () => {
@@ -395,6 +438,9 @@ test("a malformed route never becomes direct, and one failing write doesn't stop
   const { client, keyProxy, state } = fakeHome();
   const rules = scripted({ [mine]: { routeId: home, owner }, [oauth]: { routeId: home, owner } });
   const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  // Mirrored before rules are served, so both start direct.
+  await mirror(client, routes, mine, apiKey);
+  await mirror(client, routes, oauth, claude);
   await routes.prepare(scope, [], signal());
   await routes.refresh(signal());
   assert.equal(
@@ -406,8 +452,6 @@ test("a malformed route never becomes direct, and one failing write doesn't stop
     ).status,
     503,
   );
-  await mirror(client, routes, mine, apiKey);
-  await mirror(client, routes, oauth, claude);
   // Home refuses the OAuth record's write: the API key is still routed, and the pass fails.
   state.failFields = true;
   await assert.rejects(routes.prepare(scope, [mine, oauth], signal()));
@@ -556,8 +600,9 @@ test("a 200 that leaves a reference out means rules are served and fails: only a
   const routes = new RouteAssignments(storage(), partial, client, () => now);
   await routes.prepare(scope, [teammate], signal());
   assert.equal((await mirror(client, routes, mine, apiKey, { hasRules: true })).status, 503);
-  // Nobody without rules is touched: no hint, or a host that says there are none.
-  assert.equal((await mirror(client, routes, oauth, claude)).status, 200);
+  // Rules are served, so a mirror without a hint is decided too: a failed answer writes nothing.
+  assert.equal((await mirror(client, routes, oauth, claude)).status, 503);
+  // Nobody whose host says there are no rules is touched.
   assert.equal((await mirror(client, routes, mine, apiKey, { hasRules: false })).status, 200);
   assert.equal(keyProxy(mine), "");
 });
@@ -1089,6 +1134,184 @@ test("a late membership turn behind a newer step for its pool steps aside, so a 
   await routes.serial(async () => {});
   const record = store.map.get(`route-pool:${scope.pool}`) as { references: string[] };
   assert.deepEqual(record.references, [mine]);
+});
+
+test("after rules were served, a new member nothing placed is held when its resolve fails, and the first answer releases it", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const { client, keyProxy } = fakeHome();
+  const store = storage();
+  const rules = scripted({});
+  const clock = { at: now };
+  const routes = new RouteAssignments(store, rules.resolver, client, () => clock.at);
+  // Mirrored before any 200, so Home holds it direct, as main does.
+  await mirror(client, routes, mine, apiKey);
+  await routes.prepare(scope, [], signal());
+  await routes.refresh(signal());
+  rules.fail(true);
+  // No route on record and no hasRules:false hint: it waits on the refusing route.
+  await routes.prepare(scope, [mine], signal());
+  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  // An hour of outage: every step decides it again, and adds no line and no record.
+  for (let step = 0; step < 3; step++) {
+    clock.at += 20 * 60_000;
+    await routes.prepare(scope, [mine], signal());
+  }
+  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_HELD"), [
+    { reason: "resolve_failed" },
+  ]);
+  assert.equal([...store.map.keys()].filter((key) => key.startsWith("route-hold-log:")).length, 1);
+  // The first answer places it: no rule, so direct, and the hold ends with one line.
+  rules.fail(false);
+  await routes.prepare(scope, [mine], signal());
+  assert.equal(keyProxy(mine), "");
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_RELEASED"), [
+    { reason: "resolve_failed", heldMs: 60 * 60_000, repeats: 3 },
+  ]);
+  // Neither line names the credential or any address.
+  for (const call of errors.mock.calls) assert.ok(!JSON.stringify(call.arguments).includes(mine));
+  assert.equal([...store.map.keys()].filter((key) => key.startsWith("route-hold-log:")).length, 0);
+});
+
+test("a failed resolve after rules were served never holds a member its host called ruleless, nor moves one with a route", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const { client, keyProxy } = fakeHome();
+  const rules = scripted({ [mine]: { routeId: home, owner } });
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => now);
+  await routes.prepare(scope, [], signal());
+  await routes.refresh(signal());
+  await mirror(client, routes, teammate, apiKey, { hasRules: false });
+  await mirror(client, routes, mine, apiKey, { hasRules: true, route: { routeId: home, owner } });
+  rules.fail(true);
+  const calls = rules.calls.length;
+  await routes.prepare(scope, [teammate, mine], signal());
+  // The ruleless member serves at once, the routed one keeps its route.
+  assert.equal(keyProxy(teammate), "");
+  assert.equal(keyProxy(mine), routeProxyUrl(home));
+  // Only the routed one was asked about, and neither was held.
+  assert.equal(rules.calls.length, calls + 1);
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_HELD"), []);
+});
+
+test("a late membership turn holds the new members nothing placed until it decides them", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const { client, keyProxy } = fakeHome();
+  const rules = scripted({});
+  let release = () => {};
+  let entered = () => {};
+  let block = false;
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => {
+      if (block) {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return rules.resolver.resolve(scope, references, signal());
+    },
+  };
+  const routes = new RouteAssignments(storage(), resolver, client, () => now, 20);
+  await mirror(client, routes, mine, apiKey);
+  await mirror(client, routes, teammate, apiKey, { hasRules: false });
+  await routes.prepare(scope, [], signal());
+  // Rules are served from here on.
+  await routes.refresh(signal());
+  block = true;
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pass = routes.refresh(signal());
+  await inside;
+  block = false;
+  // The pass holds the queue, so the step returns undecided; Home serves its members right after.
+  await routes.prepare(scope, [mine, teammate], signal());
+  assert.equal(keyProxy(mine), routeProxyUrl(unassignedRoute));
+  assert.equal(keyProxy(teammate), "");
+  release();
+  await pass;
+  await routes.serial(async () => {});
+  // Its turn decided it: no rule, so direct.
+  assert.equal(keyProxy(mine), "");
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_HELD"), [{ reason: "late_turn" }]);
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_MEMBER_RELEASED"), [
+    { reason: "late_turn", heldMs: 0, repeats: 0 },
+  ]);
+});
+
+test("a late turn decides only after its step's hold has landed, so the hold can't outlive the decision", async () => {
+  const { client, state } = fakeHome();
+  const rules = scripted({});
+  let release = () => {};
+  let entered = () => {};
+  let block = false;
+  const resolver: RouteResolver = {
+    resolve: async (scope, references) => {
+      if (block) {
+        entered();
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return rules.resolver.resolve(scope, references, signal());
+    },
+  };
+  const routes = new RouteAssignments(storage(), resolver, client, () => now, 20);
+  await mirror(client, routes, oauth, claude);
+  await routes.prepare(scope, [], signal());
+  await routes.refresh(signal());
+  block = true;
+  const inside = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const pass = routes.refresh(signal());
+  await inside;
+  block = false;
+  // The late step's hold is on its way to Home when the queue drains.
+  let open = () => {};
+  state.fieldsGate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  const patching = new Promise<void>((resolve) => {
+    state.patching = resolve;
+  });
+  const step = routes.prepare(scope, [oauth], signal());
+  await patching;
+  state.fieldsGate = undefined;
+  release();
+  await pass;
+  // Let the drained queue run whatever it may run before the hold lands; all of it is in memory.
+  for (let turn = 0; turn < 5; turn++) await new Promise<void>((resolve) => setImmediate(resolve));
+  open();
+  await step;
+  await routes.serial(async () => {});
+  // The turn read Home after the hold: no rule, so direct, and nothing left refusing.
+  assert.equal(state.files.find((file) => file.id === oauth)!.proxy_url, "");
+});
+
+test("a routing alarm that keeps failing logs once when it starts and once when it ends", async (t) => {
+  const errors = t.mock.method(console, "error", () => {});
+  const { client } = fakeHome();
+  const rules = scripted({});
+  const clock = { at: now };
+  const routes = new RouteAssignments(storage(), rules.resolver, client, () => clock.at);
+  await routes.prepare(scope, [], signal());
+  // Rules are served from here on, so a failure is one.
+  await routes.refresh(signal());
+  rules.fail(true);
+  for (let minute = 0; minute < 3; minute++) {
+    clock.at += servedPollMs;
+    await assert.rejects(routes.tick(signal()));
+    // Between polls the alarm asks nothing, which neither fails nor ends the streak.
+    await routes.tick(signal());
+  }
+  assert.equal(logged(errors.mock.calls, "POOL_ROUTE_ASSIGNMENTS_PENDING").length, 1);
+  rules.fail(false);
+  clock.at += servedPollMs;
+  await routes.tick(signal());
+  assert.deepEqual(logged(errors.mock.calls, "POOL_ROUTE_ASSIGNMENTS_RECOVERED"), [
+    { failures: 3, pendingMs: 3 * servedPollMs },
+  ]);
 });
 
 test("no provider the route blocks has a usage reader", () => {
