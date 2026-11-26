@@ -182,9 +182,12 @@ export class FleetHandoffCell implements FleetCell {
   }
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
-    const counted = await this.deps.counted();
-    await trace.run("provider_observe", () =>
-      this.deps.provider.retiring(this.deps.application, identity.instanceId, counted),
+    await trace.run("provider_observe", async () =>
+      this.deps.provider.retiring(
+        this.deps.application,
+        identity.instanceId,
+        await this.deps.counted(),
+      ),
     );
     await begin();
     const signal = AbortSignal.timeout(2_000);

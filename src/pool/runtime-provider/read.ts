@@ -77,11 +77,14 @@ interface Listed {
  * Another instance that may still start or stop and that nothing in `counted` counts. Absence frees
  * a place in the ledger, so such an instance holds every release, as does the retire read that
  * begins one. A counted instance keeps its own place until its own absence is proven, so its start
- * or stop can't take the provider past the ledger.
+ * or stop can't take the provider past the ledger. One in a state the reference doesn't document
+ * holds whether counted or not: the absence proof can't read it, so the retire read waits too.
  */
 const holding = (listed: readonly Listed[], instanceId: string, counted: ReadonlySet<string>) =>
   listed.find(
-    (value) => value.id !== instanceId && unsettled(value.state) && !counted.has(value.id),
+    (value) =>
+      value.id !== instanceId &&
+      (!documentedStates.has(value.state) || (unsettled(value.state) && !counted.has(value.id))),
   );
 const nothingCounted: ReadonlySet<string> = new Set();
 /** What a caller vouches for beyond the provider's listing; each fact has one owner. */

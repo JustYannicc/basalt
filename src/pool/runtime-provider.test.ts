@@ -747,7 +747,8 @@ test("beside a counted sibling, an uncounted unsettled one still holds, and the 
     await refusal(f.reader.retiring(f.expected, id, new Set([...counted, id]))),
     refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
   );
-  // A state the reader can't read refuses the absence even for a counted instance.
+  // A state the reader can't read refuses the absence even for a counted instance, so the retire
+  // read that would begin that release refuses too, and the row waits draining.
   const unread = await fixture({
     listing: (target, image, app) => [
       destroyed(target, image, app),
@@ -760,6 +761,19 @@ test("beside a counted sibling, an uncounted unsettled one still holds, and the 
       counted,
     }),
     false,
+  );
+  const unreadRunning = await fixture({
+    listing: (target, image, app) => [
+      running(target, image, app),
+      inState(running("counted", image, app), "hibernating"),
+    ],
+  });
+  const own = unreadRunning.manifest.target.instanceId;
+  assert.deepEqual(
+    await refusal(
+      unreadRunning.reader.retiring(unreadRunning.expected, own, new Set([...counted, own])),
+    ),
+    refused("retire", { reason: "sibling_unsettled", state: "other" }),
   );
 });
 

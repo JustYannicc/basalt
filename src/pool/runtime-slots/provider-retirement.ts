@@ -5,8 +5,8 @@ import type { StartupStopRecord } from "./startup-abort-contract.ts";
 
 /**
  * The driver's own report that this boot stopped; only it lets an inactive listing count as gone.
- * Neither release here gives a counted set: they have no time bound and sit outside the fleet
- * ledger, so every unsettled instance still holds them.
+ * Neither release here gives a counted set: nothing quarantines them at a time bound, so waiting
+ * while any other instance may start or stop costs them nothing.
  */
 const driverStopped = { driverStopped: true } as const;
 
