@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { configsReached } from "./ci/e2e-workflow.ts";
-import { fastPlan, runFastSteps } from "./ci/fast-plan.ts";
+import { fastPlan, onlyOnRerun, runFastSteps } from "./ci/fast-plan.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -44,6 +44,7 @@ test("the local plan preserves every real CI shell command, in its original orde
           step.run !== undefined &&
           step.if !== "steps.lane.outputs.full_suite == 'true'" &&
           step.if !== configsReached &&
+          !onlyOnRerun(step.if) &&
           !["comparison", "lane"].includes(step.id ?? ""),
       )
       .map((step: { run: string }) => step.run);
@@ -64,6 +65,15 @@ test("the local plan preserves every real CI shell command, in its original orde
       .filter((step) => step.reason.startsWith("the local runner"))
       .map((step) => step.name),
     ["Resolve the comparison commit", "Resolve the lane select chooses"],
+  );
+  // A local run is a first attempt, so it never reads a selection select recorded.
+  assert.deepEqual(
+    plan.skipped.filter((step) => step.reason === "re-run attempts only").map((step) => step.name),
+    [
+      "Check whether select carries over into this re-run",
+      "Download the selection select recorded",
+      "Take select's comparison commit",
+    ],
   );
   assert.ok(plan.steps.some((step) => step.command === "node scripts/batch-preflight.ts"));
   const upstream = actual.jobs.fast.steps.find(
