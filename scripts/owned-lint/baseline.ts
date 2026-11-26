@@ -23,6 +23,11 @@ const ALLOWLIST_SCOPE: Record<string, RegExp> = {
   "landmines-testing/no-test-doubles": /^scripts\/release\/wire-guard[\w-]*\.test\.ts$/u,
 };
 const inScope = (rule: string, file: string) => ALLOWLIST_SCOPE[rule]?.test(file) ?? true;
+// Rules that report more than one kind of finding, and the only kind their entries may cover: a
+// real hold can justify a raised timeout, never a retry.
+const ALLOWLIST_MESSAGE: Record<string, string> = {
+  "landmines-testing/no-flake-masking": "Do not raise a test's timeout.",
+};
 // A decode the rule recognises as a provider response is never "our own data".
 const NEVER_ALLOWED = "Strict decode of a provider response";
 // The plugins the rules come from. A different specifier could load a rule set that finds nothing.
@@ -66,7 +71,10 @@ const validEntry = (entry: unknown) => {
   );
 };
 const exempt = (allowlist: Allowlist, { rule, file, message }: Diagnostic) =>
-  validEntry(allowlist[rule]?.[file]) && inScope(rule, file) && !message.startsWith(NEVER_ALLOWED);
+  validEntry(allowlist[rule]?.[file]) &&
+  inScope(rule, file) &&
+  message.startsWith(ALLOWLIST_MESSAGE[rule] ?? "") &&
+  !message.startsWith(NEVER_ALLOWED);
 const counted = (rule: string) => !NATIVE_ALLOWLIST.has(rule) && rule !== "oxlint/parse";
 
 /**

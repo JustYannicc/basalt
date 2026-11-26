@@ -33,7 +33,8 @@ Existing findings are recorded with an exact count per rule and file, so only ne
   guard under test wraps the global fetch, so the replaced fetch is the transport beneath the
   subject, not a double of a collaborator. Its bodies still fall under the provider-response rule.
   `no-flake-masking` takes one only in `scripts/import-cpamp-bulk.test.ts`, whose ACK test holds
-  an upload past 30 s as its proof; its count stays 1, so a second raised timeout there fails. You
+  an upload past 30 s as its proof. It covers that raised timeout and never a retry; its count
+  stays 1, so a second raised timeout there fails. You
   write these entries by hand; `--write-baseline` leaves them alone. With `BASE_SHA`, the
   check lists new or raised entries for review. No entry covers a decode the rule recognises
   as a provider response.

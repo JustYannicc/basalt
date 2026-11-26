@@ -76,6 +76,21 @@ test("a test-double entry covers only the wire guard's tests, which replace the 
 test("a raised-timeout entry covers one timeout in the bulk CLI's test file and nowhere else", () => {
   const masking = "landmines-testing/no-flake-masking";
   const file = "scripts/import-cpamp-bulk.test.ts";
+  // landmines' own messages for the two kinds of finding this rule reports.
+  const timeout = (path: string, line = 1) => ({
+    rule: masking,
+    file: path,
+    line,
+    message:
+      "Do not raise a test's timeout. Wait on the event the test depends on, or move slow shared setup into a beforeAll hook.",
+  });
+  const retry = (path: string, line = 1) => ({
+    rule: masking,
+    file: path,
+    line,
+    message:
+      "Do not retry tests. A test that passes on rerun is a flake: wait on the event it depends on and file the failure under the flaky-test tracker.",
+  });
   const committed: Allowlist = JSON.parse(
     readFileSync(join(import.meta.dirname, "allowlist.json"), "utf8"),
   );
@@ -86,19 +101,19 @@ test("a raised-timeout entry covers one timeout in the bulk CLI's test file and 
       "The real hold of more than 30 s is the proof for carry 0655; a shorter hold would prove a constant.",
   });
   const allowlist = { [masking]: { [file]: entry } };
-  assert.deepEqual(compare([finding(masking, file, 412)], {}, allowlist), []);
+  assert.deepEqual(compare([timeout(file, 412)], {}, allowlist), []);
   assert.match(allowlistAdditions(allowlist, {})[0]!, /allowlisted 0 -> 1: The real hold/u);
 
-  const [second, ...rest] = compare(
-    [finding(masking, file, 412), finding(masking, file, 430)],
-    {},
-    allowlist,
-  );
+  const [second, ...rest] = compare([timeout(file, 412), timeout(file, 430)], {}, allowlist);
   assert.deepEqual(rest, []);
   assert.match(
     second!,
     /^scripts\/import-cpamp-bulk\.test\.ts: landmines-testing\/no-flake-masking found 2, allowlist allows 1 \("The real hold of more than 30 s is the proof for carry 0655[^"]*"\)[\s\S]*scripts\/owned-lint\/allowlist\.json[\s\S]*import-cpamp-bulk\.test\.ts:430/u,
   );
+  // The reason covers a raised timeout only; a retry in the same file fails as it would anywhere.
+  assert.deepEqual(compare([timeout(file, 412), retry(file, 420)], {}, allowlist), [
+    `${file}:420 ${masking}: ${retry(file).message}`,
+  ]);
 
   for (const near of [
     "scripts/pool-tests/import-cpamp-bulk.test.ts",
@@ -107,7 +122,7 @@ test("a raised-timeout entry covers one timeout in the bulk CLI's test file and 
     "scripts/import-cpamp-bulk.test.tsx",
     "scripts/import-cpamp-bulk-2.test.ts",
   ]) {
-    const problems = compare([finding(masking, near)], {}, { [masking]: { [near]: entry } });
+    const problems = compare([timeout(near)], {}, { [masking]: { [near]: entry } });
     assert.ok(
       problems.some((problem) => problem.includes(`${near} under ${masking} is outside`)),
       near,
