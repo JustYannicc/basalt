@@ -14,6 +14,7 @@
     "patches/0309-normalized-container-resources.*",
     "patches/0311-container-publication-outputs.*",
     "patches/0329-declared-container-instances.*",
+    "patches/0378-dashboard-render-lifetime-diagnostics.*",
     "scripts/release/**",
     "scripts/release-merge/main-candidate.ts",
     "scripts/pool-fleet/**",
