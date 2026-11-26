@@ -182,7 +182,8 @@ const decide = (text: string | undefined, list = jobs, at = run) =>
   rerunDecision(at, text, list, "basalt-box");
 
 test("box-rerun acts only on box-watch's own verdict for that very run's first attempt", () => {
-  // A Check a person cancelled, or a superseded run force-cancelled: no verdict, nothing happens.
+  // A Check a person cancelled, or a superseded run force-cancelled: no verdict and no light job
+  // held, nothing happens.
   assert.equal(decide(undefined).action, "none");
   for (const text of [
     "",

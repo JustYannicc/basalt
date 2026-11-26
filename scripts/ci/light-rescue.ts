@@ -142,8 +142,8 @@ async function boxDown(
   return undefined;
 }
 
-/** This repository's own active first-attempt Checks, newest first. */
-async function activeChecks(env: RescueEnv, api: Client) {
+/** This repository's own active first-attempt Checks old enough to hold a light job, newest first. */
+async function activeChecks(env: RescueEnv, api: Client, at: number) {
   const listed = new Map<number, Json>();
   for (const status of ["in_progress", "queued"])
     for (let page = 1; ; page++) {
@@ -159,7 +159,8 @@ async function activeChecks(env: RescueEnv, api: Client) {
     (run) =>
       String(run.path).split("@")[0] === checkPath &&
       Number(run.run_attempt) === 1 &&
-      record(run.head_repository).full_name === env.repository,
+      record(run.head_repository).full_name === env.repository &&
+      at - Date.parse(String(run.created_at)) >= queuedMinutes * minute,
   );
 }
 
@@ -195,7 +196,7 @@ export async function rescue(
   const at = clock.now();
   let checks: Json[];
   try {
-    checks = await activeChecks(env, api);
+    checks = await activeChecks(env, api, at);
   } catch (error) {
     line(`the Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
     return true;

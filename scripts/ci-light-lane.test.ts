@@ -19,6 +19,7 @@ import {
   type LightInput,
 } from "./ci/light-lane.ts";
 import { maxCalls, rescue } from "./ci/light-rescue.ts";
+import { attemptJobs } from "./ci/workflow-run.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const read = (path: string) => readFileSync(new URL("../" + path, import.meta.url), "utf8");
@@ -308,7 +309,7 @@ const start = Date.parse("2026-11-26T12:00:00Z");
 const ago = (minutes: number) => new Date(start - minutes * 60_000).toISOString();
 type Box = { age: number; healthy?: boolean; budget?: number } | "none";
 type FakeJob = { name: string; status: string; labels: string[]; queued: number };
-type FakeRun = { id: number; jobs: FakeJob[]; attempt?: number; head?: string };
+type FakeRun = { id: number; jobs: FakeJob[]; attempt?: number; head?: string; age?: number };
 const lightJob = (name: string, status: string, queued: number, light = label): FakeJob => ({
   name,
   status,
@@ -359,6 +360,7 @@ function fakeGitHub(
     path: ".github/workflows/ci.yml",
     run_attempt: run.attempt ?? 1,
     head_repository: { full_name: run.head ?? repository },
+    created_at: ago(run.age ?? 30),
   }));
   routes.set("GET /actions/workflows/ci.yml/runs?status=in_progress&per_page=100&page=1", () => ({
     workflow_runs: listed.slice(0, Math.ceil(listed.length / 2)),
@@ -452,10 +454,12 @@ test("a down box leaves young, started, re-run, fork and hosted jobs alone", asy
     { id: 203, attempt: 2, jobs: [lightJob("check", "queued", 10)] },
     { id: 204, head: "fork/repo", jobs: [lightJob("select", "queued", 10)] },
     { id: 205, jobs: [{ ...lightJob("fast", "queued", 10), labels: ["ubuntu-latest"] }] },
+    // A Check younger than the wait can't hold a light job yet: its jobs aren't even read.
+    { id: 206, age: 2, jobs: [lightJob("select", "queued", 10)] },
   ]);
   assert.equal(await github.rescue(), true);
   assert.deepEqual(github.posts(), []);
-  for (const id of [203, 204])
+  for (const id of [203, 204, 206])
     assert.ok(
       !github.requests.some((request) => request.includes(`/actions/runs/${id}/`)),
       String(id),
@@ -539,28 +543,42 @@ const rerunJob = (
   labels,
   runnerName,
   createdAt: ago(waited + 1),
+  startedAt: runnerName ? ago(1) : ago(waited + 1),
   completedAt: ago(1),
 });
 const cancelledRun: Run = { id: 7, attempt: 1, conclusion: "cancelled" };
-const decideLight = (jobs: RerunJob[], superseded = false) =>
-  rerunDecision(cancelledRun, undefined, jobs, "basalt-box", superseded);
+const decideLight = (jobs: RerunJob[], superseded = false, boxUp: boolean | undefined = false) =>
+  rerunDecision(cancelledRun, undefined, jobs, "basalt-box", superseded, boxUp);
 
-test("box-rerun re-runs a Check whose light job waited for a runner that never came", () => {
+test("box-rerun re-runs a Check whose light job waited for a runner while the box was not up", () => {
   const stranded = rerunJob(1, "select", [label], "cancelled", queuedMinutes);
   const hosted = rerunJob(2, "fast", ["ubuntu-latest"], "cancelled", 10, "GitHub Actions 1");
   assert.deepEqual(decideLight([stranded, hosted]), { action: "rerun", stuck: [1] });
+  // A heartbeat that can't be read counts as not up: a rescued run is never left cancelled.
+  assert.equal(decideLight([stranded], false, undefined).action, "rerun");
   // GitHub reports a never-run job's runner as "", not null.
   assert.deepEqual(decideLight([{ ...stranded, runnerName: "" }]), { action: "rerun", stuck: [1] });
   // Any label with the light suffix counts, whatever the variable says now.
   assert.equal(decideLight([{ ...stranded, labels: ["Other-Light"] }]).action, "rerun");
-  // Not long enough, taken by a runner, not cancelled, or no light job: not the rescue's state.
+  // A light runner that took it only after the wait, in the seconds before the cancel landed.
+  assert.equal(
+    decideLight([rerunJob(1, "select", [label], "cancelled", queuedMinutes, "basalt-box-16")])
+      .action,
+    "rerun",
+  );
+  // Not long enough, taken in time, not cancelled, or no light job: not the rescue's state.
   for (const job of [
     rerunJob(1, "select", [label], "cancelled", queuedMinutes - 1),
-    rerunJob(1, "select", [label], "cancelled", 10, "basalt-box-16"),
+    { ...rerunJob(1, "select", [label], "cancelled", 10, "basalt-box-16"), startedAt: ago(10) },
     rerunJob(1, "select", [label], "success", 10),
     rerunJob(1, "fast", ["ubuntu-latest"], "cancelled", 10),
   ])
     assert.equal(decideLight([job, hosted]).action, "none", JSON.stringify(job));
+  // With the box up, the light runners were only busy, and a person's cancel stands.
+  assert.deepEqual(decideLight([stranded], false, true), {
+    action: "none",
+    why: "the box is up, so its light runners were only busy and the cancel was a person's",
+  });
   // Only a cancelled first attempt.
   for (const run of [
     { ...cancelledRun, attempt: 2 },
@@ -569,6 +587,68 @@ test("box-rerun re-runs a Check whose light job waited for a runner that never c
     assert.equal(rerunDecision(run, undefined, [stranded], "basalt-box").action, "none");
   // Never past a newer Check of its pull request.
   assert.equal(decideLight([stranded], true).action, "none");
+  // A verdict that doesn't hold for this run leaves the light path.
+  const other = JSON.stringify({
+    run: 8,
+    attempt: 1,
+    reason: "box-down",
+    stuck: [1],
+    cutOff: [],
+    at: ago(1),
+  });
+  assert.deepEqual(rerunDecision(cancelledRun, other, [stranded], "basalt-box"), {
+    action: "rerun",
+    stuck: [1],
+  });
+  // So does one for this run that names a job the box never held.
+  const unheld = JSON.stringify({ ...JSON.parse(other), run: 7, stuck: [99] });
+  assert.deepEqual(rerunDecision(cancelledRun, unheld, [stranded], "basalt-box"), {
+    action: "rerun",
+    stuck: [1],
+  });
+});
+
+test("box-rerun reads a rescued run's jobs as GitHub lists them", async () => {
+  // A job cancelled while queued, as GitHub returns it: no runner, started at its creation.
+  const page = {
+    total_count: 2,
+    jobs: [
+      {
+        id: 31,
+        name: "select",
+        conclusion: "cancelled",
+        labels: [label],
+        runner_id: 0,
+        runner_name: "",
+        created_at: ago(9),
+        started_at: ago(9),
+        completed_at: ago(1),
+      },
+      {
+        id: 32,
+        name: "fast",
+        conclusion: "cancelled",
+        labels: ["ubuntu-latest"],
+        runner_id: 5,
+        runner_name: "GitHub Actions 5",
+        created_at: ago(9),
+        started_at: ago(8),
+        completed_at: ago(1),
+      },
+    ],
+  };
+  const github = {
+    call: async () => new Response("{}"),
+    json: async <T>(path: string) => {
+      assert.equal(path, "/actions/runs/7/attempts/1/jobs?per_page=50&page=1");
+      return page as T;
+    },
+  };
+  const jobs = await attemptJobs(github, cancelledRun);
+  assert.deepEqual(rerunDecision(cancelledRun, undefined, jobs, "basalt-box", false, false), {
+    action: "rerun",
+    stuck: [31],
+  });
 });
 
 test("box-rerun leaves a light-held Check with a real failure for a person; a lost runner is none", () => {

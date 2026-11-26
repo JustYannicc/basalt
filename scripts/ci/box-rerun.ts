@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { boxIsUp, githubObserver } from "./box-router.ts";
 import { onLightRunners, queuedMinutes } from "./light-lane.ts";
 import { isCheckJob } from "./retry-history.ts";
 import {
@@ -71,13 +72,16 @@ export function rerunDecision(
   boxLabel: string,
   /** A newer Check runs for this pull request; re-running this one would cancel it. */
   superseded = false,
+  /** The box's heartbeat shows it up now; read only for a run with a light job held. */
+  boxUp?: boolean,
 ): RerunDecision {
   if (run.conclusion !== "cancelled") return { action: "none", why: "the run was not cancelled" };
   if (run.attempt !== 1) return { action: "none", why: "only a first attempt routes to the box" };
   const verdict = parseVerdict(verdictText);
-  if (!verdict) return lightDecision(jobs, boxLabel, superseded);
-  if (verdict.run !== run.id || verdict.attempt !== run.attempt)
-    return { action: "none", why: "box-watch's verdict names another run or attempt" };
+  // A verdict that doesn't hold for this run leaves the light path, which reads only the run's own
+  // jobs, so a forged verdict gains nothing.
+  const light = () => lightDecision(jobs, boxLabel, superseded, boxUp);
+  if (!verdict || verdict.run !== run.id || verdict.attempt !== run.attempt) return light();
   // A forged verdict can't name jobs the box never held: each stuck job must be a box job of this
   // attempt that the cancel stopped before it got a runner, or that the box only took after the
   // verdict, in the seconds before the cancel landed.
@@ -93,8 +97,7 @@ export function rerunDecision(
       (job.labels ?? []).some((value) => value.toLowerCase() === label)
     );
   });
-  if (!label || unheld.length)
-    return { action: "none", why: "box-watch's verdict names jobs the box never held" };
+  if (!label || unheld.length) return light();
   if (superseded)
     return {
       action: "none",
@@ -119,31 +122,42 @@ export function rerunDecision(
 }
 
 /**
- * A Check without box-watch's verdict is re-run when one of its light jobs waited `queuedMinutes`
- * and was cancelled before any runner took it: the light runners were not taking jobs. That is the
- * state light-rescue.yml's cancel leaves, whatever stopped that rescue afterwards; a Check a person
- * cancelled in that state runs hosted too, as the rescue would have had it.
+ * The light jobs of a cancelled run that waited `queuedMinutes` for a light runner: cancelled before
+ * any took one, or taken only after that wait, in the seconds before the cancel landed.
+ */
+export function lightHeld(jobs: readonly RerunJob[]) {
+  const waited = (job: RerunJob) =>
+    Date.parse((job.runnerName ? job.startedAt : job.completedAt) ?? "") -
+      Date.parse(job.createdAt ?? "") >=
+    queuedMinutes * 60_000;
+  return jobs
+    .filter((job) => job.conclusion === "cancelled" && onLightRunners(job.labels) && waited(job))
+    .map((job) => job.id);
+}
+
+/**
+ * A Check without box-watch's verdict is re-run when one of its light jobs waited for the light
+ * runners and was cancelled while the box's heartbeat does not show it up: the state
+ * light-rescue.yml's cancel leaves, whatever stopped that rescue afterwards. With the box up the
+ * wait was a busy queue, and a person's cancel stands. A heartbeat that can't be read counts as not
+ * up, so a rescued run is never left cancelled.
  */
 function lightDecision(
   jobs: readonly RerunJob[],
   boxLabel: string,
   superseded: boolean,
+  boxUp: boolean | undefined,
 ): RerunDecision {
-  const waited = (job: RerunJob) =>
-    Date.parse(job.completedAt ?? "") - Date.parse(job.createdAt ?? "") >= queuedMinutes * 60_000;
-  const stuck = jobs
-    .filter(
-      (job) =>
-        job.conclusion === "cancelled" &&
-        !job.runnerName &&
-        onLightRunners(job.labels) &&
-        waited(job),
-    )
-    .map((job) => job.id);
+  const stuck = lightHeld(jobs);
   if (!stuck.length)
     return {
       action: "none",
       why: "box-watch did not cancel this run, and no light job of it waited for a runner that never came",
+    };
+  if (boxUp)
+    return {
+      action: "none",
+      why: "the box is up, so its light runners were only busy and the cancel was a person's",
     };
   if (superseded)
     return {
@@ -177,7 +191,25 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const verdict = path && existsSync(path) ? readFileSync(path, "utf8") : undefined;
   const jobs = await attemptJobs(api, run);
   const superseded = await supersededPullRequest(api, run, env);
-  const decision = rerunDecision(run, verdict, jobs, env.BOX_LABEL ?? "", superseded);
+  // The box's state, read as light-rescue.yml reads it, only for a run with a light job held.
+  const boxUp = lightHeld(jobs).length
+    ? await githubObserver(
+        {
+          api: env.GITHUB_API_URL ?? "https://api.github.com",
+          repository: env.GITHUB_REPOSITORY ?? "",
+          token: env.GITHUB_TOKEN ?? "",
+          runId: "",
+          label: env.BOX_LABEL ?? "",
+          heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
+        },
+        fetch,
+        Date.now,
+      )
+        .heartbeat()
+        .then((heartbeat) => boxIsUp(heartbeat, Date.now()))
+        .catch(() => false)
+    : undefined;
+  const decision = rerunDecision(run, verdict, jobs, env.BOX_LABEL ?? "", superseded, boxUp);
   if (decision.action === "none") say(`Box re-run: nothing to do, because ${decision.why}.`);
   else if (decision.action === "report")
     say(
