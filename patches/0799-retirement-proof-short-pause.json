@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-retirement-proof-short-pause",
+  "file": "0799-retirement-proof-short-pause.patch",
+  "content_sha256": "82d10d41928f085acc97299b8dd85687298df33e293d87b5b580a3138eb7ee0c",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

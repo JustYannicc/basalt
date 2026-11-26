@@ -1,0 +1,24 @@
+model {
+  extend basalt {
+    emulatedUpstream = module "Emulated model upstream" {
+      #basalt
+      description "A stage the coordinator dispatches by hand with a written go serves the pinned open-source mock with the load proof's fixtures, so a test pool's custom endpoint accounts stream exact, model-paced answers without spending any real account. The stage, test-emulated-upstream, owns one keyed Worker, the runtime adapter namespace it binds and one container application, all named basalt-emulated-upstream-*, plus that container's image in the account registry. Deploy refuses while anything with the prefix exists, records a ten-hour lease in the Worker's DELETE_BY variable and applies through the release entry with runner-local state; a failed, cancelled or timed-out deploy tears down once it has started. The Worker refuses an unkeyed call before the container starts, starts the mock once and forwards only after its health route answers; the mock checks the same key. Check refuses past the lease, streams a short and a long call in each shape, judged by the pinned load driver's pass rule, and confirms that both the Worker and the mock itself refuse a call without the right key. Destroy deletes the prefixed container application, Worker and image manifests through the shared test stage account API and verifies none of them, nor the Worker's runtime adapter namespace, remains; an hourly scheduled expiry runs it once the lease has passed or when a run left a partial stage. The expiry has its own concurrency group, so it never cancels a queued dispatch, and does nothing while a dispatched run of the workflow is queued or running; the next hour retries. Every account read goes through that shared module and fails closed: a refused call or an answer without its list stops the run instead of reading as an empty account. Through it, account-wide, the stage reads the container application, Worker script and runtime adapter namespace lists, the account's Worker subdomain and the registry catalog, and mints short-lived registry pull and push credentials; itself it reads this workflow's own runs with the job token and uses the account deploy token; the key lives only in the repository's emulated-upstream environment, which deploy and check read. Production state, pools and accounts are outside this boundary."
+      metadata {
+        code "scripts/emulated-upstream|containers/emulated-upstream|.github/workflows/emulated-upstream.yml"
+        bindings "gateway=basalt.emulatedStage|container.getTcpPort=basalt.emulatedStage.mock|mock=basalt.emulatedStage.mock|mock(env)=basalt.emulatedStage.mock"
+      }
+    }
+    emulatedStage = adapter "Emulated upstream stage" {
+      #external
+      mock = adapter "Pinned mock container" {
+        metadata { endpointHosts "mock" }
+      }
+    }
+  }
+  basalt.emulatedUpstream -[sync]-> basalt.emulatedStage "stream each shape and confirm refusal without the key"
+  basalt.emulatedUpstream -[sync]-> basalt.emulatedStage.mock "start the keyed mock and forward calls to it"
+  basalt.emulatedUpstream -[sync]-> deploymentProvider "provision, list and remove only the emulated stage's resources"
+  basalt.emulatedUpstream -[sync]-> repositoryApi "download workflow actions and read the workflow's own runs"
+  basalt.emulatedUpstream -[sync]-> containerRegistry "pull the pinned mock image and push the stage's image"
+  basalt.emulatedUpstream -[sync]-> basalt.modelGateway "reuse the pool's EU container placement"
+}
