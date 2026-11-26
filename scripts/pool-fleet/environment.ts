@@ -20,7 +20,6 @@ export const dispatchInput = (env: NodeJS.ProcessEnv): DispatchInput => ({
   active: env.POOL_FLEET_ACTIVE || undefined,
   key: env.POOL_FLEET_KEY || undefined,
   targetActive: env.POOL_FLEET_TARGET_ACTIVE || undefined,
-  pool: env.POOL_FLEET_POOL || undefined,
   ref: env.GITHUB_REF ?? "",
   event: env.GITHUB_EVENT_NAME ?? "",
 });

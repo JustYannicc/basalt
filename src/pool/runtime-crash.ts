@@ -188,11 +188,11 @@ export class RuntimeCrash {
         capacityExpiresAt <= Date.now()
       )
         throw new SlotRefused("selection");
-      // Read in this decision, beside the ledger count it is checked against. A call admitted to
-      // the cell after this commits is not seen. The cell signals only before the capacity proof's
-      // expiry by its own clock, under 1 s after that proof began, so that is the whole window. No
-      // existing fence keeps new calls off a ready cell without changing what this kill proves: a
-      // drain moves the row out of ready for good, and the health fence records the cell as failed.
+      // Read in this decision, beside the ledger count it is checked against. A call placed on the
+      // cell after this commits is not seen here, but the cell runs the kill in the same queue that
+      // admits its model calls: one reaching the cell after the kill waits behind it, finds the
+      // container stopped and is placed again unsent. Only a call whose whole path to the cell
+      // beats the kill's single hop is admitted and cut, inside the capacity proof's 1 s bound.
       if (cell)
         assertOnlyPool(command.onlyPool, target!.active, this.deps.inFlight(command.identity));
       await transaction.put(crashNonceKey(command.nonce), submitted);

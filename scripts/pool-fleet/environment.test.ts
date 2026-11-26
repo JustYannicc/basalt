@@ -4,7 +4,11 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { nativeModelHeader, nativeModelPrefix } from "../../src/pool/native-contract.ts";
 import { openEnvelope, verifyPoolToken } from "../../src/pool/token.ts";
-import { acceptanceFromEnvironment, dependenciesFromEnvironment } from "./environment.ts";
+import {
+  acceptanceFromEnvironment,
+  dependenciesFromEnvironment,
+  dispatchInput,
+} from "./environment.ts";
 import { FleetLaneRefused } from "./errors.ts";
 
 const signingKey = "ab".repeat(32);
@@ -69,6 +73,7 @@ test("a device outside a dedicated acceptance pool runs device-only: no owner to
     mint,
   );
   assert.ok(!(personal instanceof FleetLaneRefused), String(personal));
+  assert.equal(personal.pool, "pool-of-a-person", "the crash's pool is the secret's own");
   assert.equal("access" in personal, false, "no owner access at all, not a dummy");
   assert.deepEqual(minted, [], "signPoolToken is never called for a pool holding people's work");
   // The device still signs its own model calls.
@@ -104,4 +109,33 @@ test("the fleet workflow passes the acceptance device as a secret and no stored 
   assert.equal(env?.POOL_ACCEPTANCE_DEVICE, "${{ secrets.POOL_ACCEPTANCE_DEVICE }}");
   assert.equal(env?.POOL_APP_SIGNING_KEY, "${{ secrets.POOL_APP_SIGNING_KEY }}");
   assert.equal(env?.POOL_APP_SIGNING_KEY_PREVIOUS, "${{ secrets.POOL_APP_SIGNING_KEY_PREVIOUS }}");
+});
+
+test("no workflow input or step env carries a pool: the crash's pool comes from the device secret", async () => {
+  const { parse } = createRequire(new URL("../architecture/package.json", import.meta.url))("yaml");
+  const text = await readFile(
+    new URL("../../.github/workflows/pool-fleet.yml", import.meta.url),
+    "utf8",
+  );
+  const workflow = parse(text) as {
+    on: { workflow_dispatch: { inputs: Record<string, unknown> } };
+    jobs: { fleet: { steps: { env?: Record<string, string> }[] } };
+  };
+  // GitHub prints inputs and every step's env in clear; only secrets are masked.
+  const inputs = ["mode", "go", "active", "key", "target-active"];
+  assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs), inputs);
+  assert.deepEqual(
+    [...new Set([...text.matchAll(/inputs\.([a-z-]+)/gu)].map((match) => match[1]))].sort(),
+    [...inputs].sort(),
+  );
+  // Every step's env reads only masked secrets, variables, the runner or the inputs above.
+  for (const step of workflow.jobs.fleet.steps)
+    for (const [name, value] of Object.entries(step.env ?? {}))
+      for (const [, expression] of value.matchAll(/\$\{\{(.*?)\}\}/gu))
+        for (const [, context] of expression!.matchAll(/\b([a-z]+)\.[A-Za-z_-]+/gu))
+          assert.ok(
+            ["secrets", "vars", "runner", "inputs"].includes(context!),
+            `${name}: ${expression}`,
+          );
+  assert.equal("pool" in dispatchInput({ POOL_FLEET_POOL: "app_x" }), false);
 });

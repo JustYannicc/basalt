@@ -25,7 +25,10 @@ export interface CrashInput {
   controller: ControllerAccess;
   go: string;
   operator: string;
-  /** The test's own pool, which `request` calls run in: the only pool whose calls the kill may cut. */
+  /**
+   * The test's own pool, which `request` calls run in: the only pool whose calls the kill may cut.
+   * It comes from a masked secret and never reaches this lane's output.
+   */
   pool: string;
   /** One request through the public pool API; the loop numbers them so callers can vary the kind. */
   request: (index: number) => Promise<unknown>;
@@ -39,8 +42,9 @@ export interface CrashInput {
  * The production restart proof (R3): hard-kill one ready cell that is not the primary while a
  * request loop runs. The controller refuses while another pool's call, or one whose pool it can't
  * name, is in flight on the cell, and the cell refuses in-process when its Home is the elected
- * master. The fleet inspect doesn't say whose calls a cell holds, so the target is the first ready
- * cell and the controller's refusal is what keeps other pools' calls whole.
+ * master. The fleet inspect doesn't say whose calls a cell holds, so the lane tries the ready cells
+ * in order and the controller's refusal is what keeps other pools' calls whole. That refusal spends
+ * no nonce, so the next cell is tried under the same GO, each at most once.
  */
 export const crashReadyCell = (input: CrashInput) =>
   Effect.gen(function* () {
@@ -74,7 +78,6 @@ export const crashReadyCell = (input: CrashInput) =>
           "Run configure-and-accept first, or send traffic so a cell starts, then rerun.",
         ),
       );
-    const target = ready[0]!.identity!;
     const before = cells(fleet.resources).length;
     const outcomes: { startedAt: number; ok: boolean }[] = [];
     let running = true;
@@ -95,17 +98,32 @@ export const crashReadyCell = (input: CrashInput) =>
     });
     const proof = Effect.gen(function* () {
       yield* call(() => input.sleep(3_000));
-      yield* call(() => crashCell(access, target, nonce, input.operator, input.pool)).pipe(
-        Effect.mapError((error) =>
-          workerAnswer(error) === "other_pool_in_flight"
-            ? refuse(
-                "other-pool-in-flight",
-                "The controller refused the kill: a call from a pool other than the test's own, or one whose pool it can't name, is in flight on the cell. Nothing was killed.",
-                "Rerun under the same GO when only the test's calls run on the cells; POOL_CRASH_REFUSED in the PoolWorker logs counts the calls that refused it.",
-              )
-            : error,
-        ),
-      );
+      let sentTo: SlotIdentity | undefined;
+      let cellsTried = 0;
+      for (const row of ready) {
+        cellsTried++;
+        const killed = yield* call(() =>
+          crashCell(access, row.identity!, nonce, input.operator, input.pool),
+        ).pipe(
+          Effect.as(true),
+          // That refusal spent no nonce, so the next ready cell is asked under the same one.
+          Effect.catchIf(
+            (error) => workerAnswer(error) === "other_pool_in_flight",
+            () => Effect.succeed(false),
+          ),
+        );
+        if (killed) {
+          sentTo = row.identity!;
+          break;
+        }
+      }
+      if (!sentTo)
+        return yield* refuse(
+          "other-pool-in-flight",
+          `The controller refused the kill on every ready non-primary cell (${cellsTried} tried): a call from a pool other than the test's own, or one whose pool it can't name, was in flight on each. Nothing was killed.`,
+          "Rerun under the same GO when only the test's calls run on the cells; POOL_CRASH_REFUSED in the PoolWorker logs counts the calls that refused it.",
+        );
+      const target = sentTo;
       const killedAt = now();
       let detectedMs: number | undefined;
       while (true) {
@@ -118,7 +136,7 @@ export const crashReadyCell = (input: CrashInput) =>
           detectedMs !== undefined &&
           live.filter((row) => !same(row.identity, target)).length >= before
         )
-          return { killedAt, detectedMs, restartedMs: elapsed };
+          return { target, cellsTried, killedAt, detectedMs, restartedMs: elapsed };
         if (detectedMs === undefined && elapsed > detectBound)
           return yield* Effect.fail(
             refuse(
@@ -153,6 +171,7 @@ export const crashReadyCell = (input: CrashInput) =>
           "Traffic did not move to the primary and the other cells; read the PoolWorker logs.",
         ),
       );
+    const { target } = measured;
     return {
       status: "proven" as const,
       nonce,
@@ -162,6 +181,8 @@ export const crashReadyCell = (input: CrashInput) =>
       killedAt: measured.killedAt,
       detectedMs: measured.detectedMs,
       restartedMs: measured.restartedMs,
+      // Cells tried in order until the controller let one be killed; the earlier ones were refused.
+      cellsTried: measured.cellsTried,
       bounds: { detectMs: detectBound, restartMs: restartBound },
       requests: { total: outcomes.length, afterCrash: after.length, failedAfter, failedInFlight },
     };

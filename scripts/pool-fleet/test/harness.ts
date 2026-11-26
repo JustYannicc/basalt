@@ -89,8 +89,12 @@ export interface HarnessOptions {
   bindingsLag?: () => boolean;
   /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
   handoffFailure?: (action: string) => Error | Response | undefined;
-  /** The controller's own refusal of a crash it received, answered through the real handler. */
-  crashRefusal?: () => Error | undefined;
+  /** The controller's own refusal of a crash it received for a cell, through the real handler. */
+  crashRefusal?: (identity: SlotIdentity) => Error | undefined;
+  /** Ready cells the controller starts once the fleet is enabled; 1 when unset. */
+  cells?: number;
+  /** The pool the acceptance device's secret names; `testPool` when unset. */
+  devicePool?: string;
 }
 
 /** The pool the acceptance device's calls run in, as a real pool's id is shaped. */
@@ -203,15 +207,43 @@ export async function harness(options: HarnessOptions = {}) {
     homePeerOrdinal: 1,
     bootId: "cell-boot",
   };
+  const cells: SlotIdentity[] = Array.from({ length: options.cells ?? 1 }, (_, index) =>
+    index === 0
+      ? cell
+      : {
+          ...cell,
+          slotId: `runtime-cell-${index + 1}`,
+          instanceId: "abcd"[index - 1]!.repeat(64),
+          homePeerOrdinal: index + 1,
+          bootId: `cell-${index + 1}-boot`,
+        },
+  );
+  const resourcesKey = "runtime-fleet-v1:resources";
+  type Resource = { target: SlotIdentity; identity: SlotIdentity; phase: string; active: number };
+  /** Replaces one cell's row, leaving the others as they are. */
+  const setCell = (slotId: string, row: (current: Resource) => Resource) =>
+    storage.values.set(
+      resourcesKey,
+      (storage.values.get(resourcesKey) as Resource[]).map((current) =>
+        current.target.slotId === slotId ? row(current) : current,
+      ),
+    );
   storage.afterCommit = (draft) => {
     const record = draft.get("runtime-fleet-v1:configuration") as { enabled?: boolean } | undefined;
-    if (options.startCell !== false && record?.enabled && !draft.has("runtime-fleet-v1:resources"))
-      storage.values.set("runtime-fleet-v1:resources", [
-        { target: cell, identity: cell, phase: "ready", active: 0, lastUsedAt: 0 },
-      ]);
+    if (options.startCell !== false && record?.enabled && !draft.has(resourcesKey))
+      storage.values.set(
+        resourcesKey,
+        cells.map((value) => ({
+          target: value,
+          identity: value,
+          phase: "ready",
+          active: 0,
+          lastUsedAt: 0,
+        })),
+      );
   };
   const actions: string[] = [];
-  const crashes: { kind?: string; onlyPool?: string; identity: SlotIdentity }[] = [];
+  const crashes: { kind?: string; onlyPool?: string; nonce: string; identity: SlotIdentity }[] = [];
   const retires: { operationId: string; go: string; key: string }[] = [];
   const checks: string[] = [];
   // What the cell's 8317 read returns to the next fleet-retire.
@@ -222,6 +254,7 @@ export async function harness(options: HarnessOptions = {}) {
       | undefined,
   };
   let restart = 0;
+  let restarting = cell;
   const enabled = async () => (await configuration.inspect())?.enabled === true;
   const providerRequests: string[] = [];
   const providerSecret = {
@@ -235,15 +268,11 @@ export async function harness(options: HarnessOptions = {}) {
     inspect: async (operationId) => {
       // After a kill: two reads show the cell gone, then a replacement boots in the same instance.
       if (restart > 0 && --restart === 0)
-        storage.values.set("runtime-fleet-v1:resources", [
-          {
-            target: cell,
-            identity: { ...cell, bootId: "cell-boot-2" },
-            phase: "ready",
-            active: 0,
-            lastUsedAt: 0,
-          },
-        ]);
+        setCell(restarting.slotId, (row) => ({
+          ...row,
+          identity: { ...restarting, bootId: `${restarting.bootId}-2` },
+          phase: "ready",
+        }));
       return {
         permission: await configuration.inspect(operationId),
         resources: await state.inspect(),
@@ -253,12 +282,11 @@ export async function harness(options: HarnessOptions = {}) {
     },
     crash: async (command) => {
       crashes.push(command);
-      const refused = options.crashRefusal?.();
+      const refused = options.crashRefusal?.(command.identity);
       if (refused) throw refused;
       await storage.put(crashNonceKey(command.nonce), { command, status: "returned" });
-      storage.values.set("runtime-fleet-v1:resources", [
-        { target: cell, identity: cell, phase: "warming", active: 0, lastUsedAt: 0 },
-      ]);
+      restarting = cells.find((value) => value.slotId === command.identity.slotId)!;
+      setCell(restarting.slotId, (row) => ({ ...row, phase: "warming" }));
       restart = 3;
       return { signalled: true };
     },
@@ -458,7 +486,7 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
-      pool: testPool,
+      pool: options.devicePool ?? testPool,
       ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
     },
     sleep: async () => {},

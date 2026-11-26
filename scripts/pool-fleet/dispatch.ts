@@ -58,15 +58,16 @@ export interface DispatchInput {
   key?: string;
   /** configure-and-accept only: the growth target to configure, 1 to 100,000. */
   targetActive?: string;
-  /** crash-cell only: the test's own pool, which must be the acceptance device's. */
-  pool?: string;
   ref: string;
   event: string;
 }
 export interface FleetAcceptance {
   client: PoolAcceptanceClient;
   credential: ModelAuth;
-  /** The pool the device's calls run in. Never printed: it comes from a masked secret. */
+  /**
+   * The pool the device's calls run in, and the only one a crash may cut. It comes from a masked
+   * secret, so no input, env value, log line or output ever carries it.
+   */
   pool: string;
   model?: string;
   /** Present only for a dedicated acceptance pool; absent, the lane never sends an owner token. */
@@ -273,17 +274,6 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           "Leave it empty to keep the configured value, or pass one in range with configure-and-accept.",
         ),
       );
-    // The value is never echoed: a mistyped pool may be someone's real one.
-    if (
-      mode === "crash-cell"
-        ? !testPoolPattern.test(input.pool ?? "")
-        : input.pool !== undefined && input.pool !== ""
-    )
-      return yield* refuse(
-        "test-pool-invalid",
-        "pool must be the test's own pool id (app_ followed by 1 to 124 letters, digits, - or _), and only crash-cell takes it.",
-        "Pass the acceptance device's pool with crash-cell, and leave it empty for every other mode.",
-      );
     if (input.active && input.active !== "blue" && input.active !== "green")
       return yield* Effect.fail(
         refuse(
@@ -402,13 +392,13 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       );
     if (mode === "accept") return { ...evidence, acceptance: yield* accept() };
     if (mode === "crash-cell") {
-      // The controller lets the kill cut only this pool's calls, so it must be the one the lane's
-      // own calls run in; any other would let it cut a person's calls.
-      if (input.pool !== acceptance.pool)
+      // The controller lets the kill cut only the device's own pool's calls. Its value is never
+      // echoed: it comes from a masked secret.
+      if (!testPoolPattern.test(acceptance.pool))
         return yield* refuse(
-          "test-pool-mismatch",
-          "pool is not the acceptance device's pool, the one the proof's own calls run in.",
-          "Pass the pool POOL_ACCEPTANCE_DEVICE names.",
+          "test-pool-invalid",
+          "The acceptance device's pool (POOL_ACCEPTANCE_DEVICE) is not a real pool's id (app_ followed by 1 to 124 letters, digits, - or _); the crash may cut only that pool's calls.",
+          "Register the acceptance device in an app pool and update the POOL_ACCEPTANCE_DEVICE secret.",
         );
       const catalog = yield* call(() => acceptance.client.modelCatalog(acceptance.credential));
       const model = acceptance.model ?? (catalog.ids.length === 1 ? catalog.ids[0]! : undefined);
