@@ -435,3 +435,28 @@ test("a failed entry names its cause from a closed set, and never its message", 
     "release cause: unclassified class=WireRefused step=deploy",
   );
 });
+
+test("a cause line never carries an id, a host or a field outside the wire guard's own words", () => {
+  const hex = "0123456789abcdef0123456789abcdef";
+  for (const [detail, line] of [
+    // An unknown migration key that is an id, and an error tag that is one.
+    [
+      `Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (Worker): migrations.${hex} = 1. why`,
+      "release cause: unclassified class=WireRefused step=deploy",
+    ],
+    [
+      `Release stopped in deploy: ${hex} (failed): x`,
+      "release cause: unclassified class=unknown step=deploy",
+    ],
+    // A resource text that imitates the refusal's own shape.
+    [
+      "Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (W): secret-host.example.com = 1). y",
+      "release cause: unclassified class=WireRefused step=deploy",
+    ],
+    [
+      "Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (Worker): exports.Mock.state = deleted. y",
+      "release cause: wire_refused field=exports.Mock.state",
+    ],
+  ])
+    assert.equal(releaseCause(detail), line);
+});
