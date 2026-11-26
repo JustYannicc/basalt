@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { test } from "node:test";
 import { heavyJobs } from "./ci/areas.ts";
 import { conditionalJobs, fastJobs, gateErrors, longJobs, startJobs } from "./ci/gate.ts";
+import { laterRunsOn } from "./ci/light-lane.ts";
 
 type Job = { needs?: string | string[]; if?: string } & Record<string, unknown>;
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
@@ -50,7 +51,7 @@ test("the long tier names real jobs once and the trivial job only orders the sta
     // A reused Check skips it, and with it every job outside the long tier.
     if: "needs.select.outputs.reused != 'true'",
     permissions: {},
-    "runs-on": "ubuntu-latest",
+    "runs-on": laterRunsOn,
     "timeout-minutes": 2,
     steps: [{ run: "true" }],
   });

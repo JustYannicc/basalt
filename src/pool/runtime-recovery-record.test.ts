@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { lastRecovery, RecoveryRecords } from "./runtime-slots/recovery-record.ts";
+import { ProviderObservationRefused } from "./runtime-provider/read.ts";
 import { RuntimeSlotStorage } from "./runtime-slots/storage.ts";
 
 const boot = (bootId: string): SlotIdentity => ({
@@ -74,4 +75,29 @@ test("healthy passes read the record once, and write only to end an open recover
   await records.ready(20);
   await records.ready(30);
   assert.equal((await lastRecovery(memory))?.readyAt, 20);
+});
+
+test("a provider refusal's round keeps its read and its own reason, with the status or state behind it", async () => {
+  const memory = new SlotMemory();
+  const records = new RecoveryRecords(new RuntimeSlotStorage(memory));
+  await records.round(boot("first"), 1_000);
+  // As the recovery's observe names its read on the way out.
+  const limited = new ProviderObservationRefused({ reason: "read_status", status: 429 });
+  limited.read = "recovery";
+  await records.refused(1, 1_100, limited);
+  const stopping = new ProviderObservationRefused({
+    reason: "sibling_unsettled",
+    state: "stopping",
+  });
+  stopping.read = "recovery";
+  await records.refused(1, 1_200, stopping);
+  const provider = {
+    class: "ProviderObservationRefused",
+    provider: "provider_observation_refused",
+    read: "recovery",
+  };
+  assert.deepEqual((await lastRecovery(memory))?.refusals, [
+    { round: 1, at: 1_100, reason: "read_status", ...provider, status: 429 },
+    { round: 1, at: 1_200, reason: "sibling_unsettled", ...provider, state: "stopping" },
+  ]);
 });
