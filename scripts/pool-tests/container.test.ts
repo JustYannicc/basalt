@@ -226,8 +226,10 @@ test(
             refresh_in_flight?: number;
             lapses?: number;
             flips?: number;
+            stalls?: number;
             last_lapse?: Record<string, unknown>;
             last_flip?: Record<string, unknown>;
+            last_stall?: Record<string, unknown>;
           };
           // The resume layer starts with the runtime and is advertised once its own probe passes.
           if (status.resume !== "v1") return;
@@ -236,19 +238,31 @@ test(
             refresh_in_flight: refreshInFlight,
             lapses,
             flips,
+            stalls,
             last_lapse: lastLapse,
             last_flip: lastFlip,
+            last_stall: lastStall,
             ...stable
           } = status;
           if (refreshInFlight !== undefined)
             assert.ok(Number.isInteger(refreshInFlight) && refreshInFlight >= 0);
-          // The readiness records are closed: two counters and the last of each.
-          for (const count of [lapses, flips])
+          // The readiness records are closed: a counter and the last of each. A loaded machine can
+          // stall the supervisor, so a stall may be there.
+          for (const count of [lapses, flips, stalls])
             if (count !== undefined) assert.ok(Number.isInteger(count) && count >= 1);
           if (lastLapse !== undefined)
             assert.deepEqual(Object.keys(lastLapse).sort(), ["at", "ms", "step"]);
           if (lastFlip !== undefined)
             assert.deepEqual(Object.keys(lastFlip).sort(), ["at", "prior_ms", "reason", "to"]);
+          if (lastStall !== undefined)
+            assert.deepEqual(Object.keys(lastStall).sort(), [
+              "at",
+              "cpu_ms",
+              "cpus",
+              "late_ms",
+              "steal_ms",
+              "throttled_ms",
+            ]);
           // Home measures its distance over its own database pool before the node starts.
           assert.deepEqual(Object.keys(stable).sort(), [
             "boot_id",

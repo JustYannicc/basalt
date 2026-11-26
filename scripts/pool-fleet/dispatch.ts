@@ -134,8 +134,10 @@ const readySummary = (value: unknown) => {
     ? {
         lastLapse: ready.lastLapse ?? null,
         lastFlip: ready.lastFlip ?? null,
+        lastStall: ready.lastStall ?? null,
         lapses: ready.lapses ?? null,
         flips: ready.flips ?? null,
+        stalls: ready.stalls ?? null,
       }
     : null;
 };
