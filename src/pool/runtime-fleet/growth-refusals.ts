@@ -33,8 +33,8 @@ interface Episode {
 
 /**
  * What growth's refusals say. A refusal logs when any of its fields changes. Each slot whose start
- * is refused has its own episode, counting every refused try of that start, growth's first and
- * upkeep's retries: once it has lasted `stillRefusedMs` it warns once more, and that slot's
+ * fails has its own episode, counting every failed try of that start, growth's first and upkeep's
+ * retries, a refusal or a start that doesn't answer yet: once it has lasted `stillRefusedMs` it warns once more, and that slot's
  * admission logs how long it lasted and how many tries were refused. An episode whose slot leaves
  * unadmitted ends without a line. Episodes live in memory, so a replaced isolate opens a fresh one
  * at the start's next refused try.
@@ -87,7 +87,10 @@ export class GrowthRefusals {
     this.episodes.delete(slot);
     console.info("POOL_FLEET_GROWTH_RECOVERED", this.summary(episode));
   }
-  /** Ends, with no line, each episode whose slot no longer starts: given up, quarantined, gone. */
+  /**
+   * Ends, with no line, each episode whose slot no longer starts: given up, quarantined, gone.
+   * Slot ids are never reused, so this only bounds the map, to the starts the fleet can hold.
+   */
   settle(rows: readonly FleetRow[]) {
     const starting = new Set(
       rows
@@ -96,12 +99,16 @@ export class GrowthRefusals {
     );
     for (const slot of this.episodes.keys()) if (!starting.has(slot)) this.episodes.delete(slot);
   }
-  /** The episode so far, named by its latest refusal: what was still in the way. */
+  /** The episode so far, named by its latest failed try: what was still in the way. */
   private summary(episode: Episode) {
     const { latest } = episode;
     return {
       refusedMs: this.now() - episode.since,
       attempts: episode.attempts,
+      // A start that doesn't answer yet has no reason, only its error's class, step and cause.
+      error: latest.error,
+      step: latest.step,
+      cause: latest.cause,
       read: latest.read ?? null,
       reason: latest.reason,
       ...(latest.status === undefined ? {} : { status: latest.status }),

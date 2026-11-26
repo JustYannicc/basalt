@@ -93,9 +93,12 @@ const refused = (reason: string) => ({
   provider: "provider_observation_refused",
   read: "launch",
 });
+/** What a provider refusal's latest try adds beside its reason: its class, no step, no cause. */
+const refusedTry = { error: "ProviderObservationRefused", step: null, cause: null };
 const rollout = (refusedMs: number, attempts: number) => ({
   refusedMs,
   attempts,
+  ...refusedTry,
   read: "launch",
   reason: "rollout_active",
 });
@@ -143,7 +146,13 @@ test("any other refusal warns with its read and reason, and a short episode reco
   g.f.failApplication(false);
   await g.pass();
   assert.deepEqual(g.info("POOL_FLEET_GROWTH_RECOVERED"), [
-    { refusedMs: upkeepCadenceMs, attempts: 1, read: "launch", reason: "credential_refused" },
+    {
+      refusedMs: upkeepCadenceMs,
+      attempts: 1,
+      ...refusedTry,
+      read: "launch",
+      reason: "credential_refused",
+    },
   ]);
   assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
 });
@@ -274,13 +283,14 @@ async function standIns(context: TestContext, demand: number) {
 const limited = (refusedMs: number, attempts: number) => ({
   refusedMs,
   attempts,
+  ...refusedTry,
   read: "launch",
   reason: "read_status",
   status: 429,
 });
 const phases = (rows: readonly FleetRow[]) => rows.map((row) => [row.target.slotId, row.phase]);
 
-test("a start given up while refused ends its episode, so a long refusal an hour later gets its own still line", async (context) => {
+test("a new slot refused long after an earlier slot's episode gets its own still line", async (context) => {
   const g = await standIns(context, 1);
   // Still refused at 30 s, it warns once.
   let rows = await g.pass();
@@ -347,5 +357,80 @@ test("another cell admitted meanwhile ends only its own episode, never one of a 
   assert.deepEqual(g.info("POOL_FLEET_GROWTH_RECOVERED"), [
     limited(3 * upkeepCadenceMs, 3),
     limited(stillRefusedMs + upkeepCadenceMs, stillAfter + 1),
+  ]);
+});
+
+test("a start still booting when the isolate is replaced reports its failed tries by class, then recovers", async (context) => {
+  const g = captured(context);
+  let now = 1_000_000;
+  let booting = true;
+  const state = new RuntimeFleetState(new SlotMemory(), 4, () => now);
+  const target: SlotTarget = {
+    format: "pool-runtime-slot-v1",
+    controllerId: "controller",
+    slotId: "slot-1",
+    applicationId: "blue",
+    applicationVersion: "1",
+    instanceId: "instance-1",
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    imageInput: "image",
+    homePeerOrdinal: 1,
+  };
+  const cell = (isolate: number) => (): FleetCell => ({
+    // The first isolate's start was sent and doesn't return before the isolate is replaced.
+    start: () => new Promise(() => {}),
+    observe: async () => {
+      if (isolate === 1) return undefined;
+      // A booting endpoint doesn't answer the new isolate's 2 s observe in time.
+      if (booting) throw new DOMException("The operation timed out", "TimeoutError");
+      return { ...target, bootId: "boot-1" };
+    },
+    selected: async () => undefined,
+    forward: async () => new Response(null, { status: 503 }),
+    install: async () => {},
+    abortPool: () => {},
+    drain: async () => ({ active: 0, known: true }),
+    retire: async () => false,
+    retired: async () => false,
+    failed: async () => false,
+    abandon: async () => false,
+  });
+  const fleet = (isolate: number, pending: Promise<unknown>[]) =>
+    new RuntimeFleet({
+      state,
+      target: async () => target,
+      cell: cell(isolate),
+      legacyActive: async () => 0,
+      currentRequests: () => 1,
+      targetActive: 1,
+      idleMilliseconds: 600_000,
+      maximum: 4,
+      defer: (work) => {
+        pending.push(work);
+      },
+      wrap: (response) => response,
+      now: () => now,
+    });
+  await fleet(1, []).upkeep();
+  for (let index = 0; index < 20; index++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(phases(await state.inspect()), [["slot-1", "warming"]]);
+  const pending: Promise<unknown>[] = [];
+  const replaced = fleet(2, pending);
+  const pass = async () => {
+    now += upkeepCadenceMs;
+    await replaced.upkeep();
+    while (pending.length) await Promise.allSettled(pending.splice(0));
+  };
+  for (let index = 0; index < stillAfter + 4; index++) await pass();
+  const failed = { error: "Timeout", step: null, cause: null, read: null, reason: null };
+  // Nothing refused it, so no refused line; the warming start's failed tries still have a length.
+  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_REFUSED"), []);
+  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), [
+    { refusedMs: stillRefusedMs, attempts: stillAfter + 1, ...failed },
+  ]);
+  booting = false;
+  await pass();
+  assert.deepEqual(g.info("POOL_FLEET_GROWTH_RECOVERED"), [
+    { refusedMs: stillRefusedMs + 4 * upkeepCadenceMs, attempts: stillAfter + 4, ...failed },
   ]);
 });

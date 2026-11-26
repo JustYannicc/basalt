@@ -419,7 +419,6 @@ export class RuntimeFleet {
       (row.identity && !sameIdentity(row.identity, identity))
     )
       return;
-    this.refusals.started(identity.slotId);
     const database = await cell
       .healthy?.(identity)
       .then((value) => value ?? undefined)
@@ -442,12 +441,15 @@ export class RuntimeFleet {
                 : (await this.neededNow(identity, database))
                   ? "admit_needed"
                   : "redraw";
+    // Only once the admission's own write has committed: a failed write leaves the episode open.
     if (decision === "redraw") {
       if (!(await this.deps.state.redraw(identity, database))) return;
+      this.refusals.started(identity.slotId);
       logPlacement(identity, database, decision, draw);
       return;
     }
     await this.deps.state.ready(identity, database);
+    this.refusals.started(identity.slotId);
     logPlacement(identity, database, decision, draw);
   }
   /**
