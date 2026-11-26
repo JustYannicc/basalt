@@ -3,10 +3,12 @@ import { test } from "node:test";
 import {
   alchemyPreviewStateReader,
   readProductionRecords,
+  type PreviewStateEntry,
   type StateCommand,
 } from "../preview/inventory.ts";
 import {
   databaseRefusal,
+  leftoversProof,
   ownershipRefusal,
   proveStages,
   retirePlan,
@@ -362,4 +364,138 @@ test("leftovers' proof pass reads and proves every stage, and plans, deletes and
   ]);
   // Only lists and reads reached the store; nothing was planned or destroyed.
   assert.ok(verbs.length > 0 && verbs.every((verb) => verb === "list" || verb === "read"));
+});
+
+/** Stages read from memory: `rows` by stage, with production recording `production` above. */
+const memoryReads = (rows: Record<string, PreviewStateEntry[]>) => ({
+  target: (name: string) => ({
+    stage: name,
+    database: `basalt-preview-${name.slice("test-".length)}`,
+    read: async () => ({ "basalt-rehearsal": rows[name] ?? [] }),
+  }),
+  production: async () => ({
+    databases: [{ id: "prod-id", name: "basalt" }],
+    identities: production,
+  }),
+});
+const foreignWorker = row("Cloudflare.Worker", {
+  workerName: "basalt-rehearsal-api-test-rehearsal-5678-abcdefghijklmnop",
+});
+
+test("a retire takes the first stage that proves, after skipping the ones refused", async () => {
+  const taken: string[] = [];
+  const refusals: RetireRefusal[] = [];
+  const lines: string[] = [];
+  const result = await proveStages(
+    [
+      { ordinal: 1, stage: "test-rehearsal-9999" },
+      { ordinal: 2, stage: "test-rehearsal-8888", unreadable: "private" },
+      { ordinal: 3, stage },
+      { ordinal: 4, stage: "test-rehearsal-7777" },
+    ],
+    {
+      ...memoryReads({ "test-rehearsal-9999": [foreignWorker], [stage]: whole }),
+      refusals,
+      phases: {},
+      log: (line) => lines.push(line),
+      take: async (name, stacks) => {
+        taken.push(name);
+        assert.deepEqual(stacks, { "basalt-rehearsal": whole });
+      },
+    },
+  );
+  assert.deepEqual(result, { taken: 3 });
+  // Only the first stage that proves is taken; the one after it is never read.
+  assert.deepEqual(taken, [stage]);
+  assert.deepEqual(
+    refusals.map(({ ordinal, key }) => ({ ordinal, key })),
+    [{ ordinal: 1, key: "workerName" }],
+  );
+  assert.deepEqual(lines, [
+    "  stage 1 left: a Cloudflare.Worker row names an object that is not this stage's (workerName); nothing of it deleted",
+    "  stage 2 left: its State could not be read",
+    "Retiring stage 3.",
+  ]);
+});
+
+test("refusals found before a failed take are kept", async () => {
+  const refusals: RetireRefusal[] = [];
+  await assert.rejects(
+    proveStages(
+      [
+        { ordinal: 1, stage: "test-rehearsal-9999" },
+        { ordinal: 2, stage },
+      ],
+      {
+        ...memoryReads({ "test-rehearsal-9999": [foreignWorker], [stage]: whole }),
+        refusals,
+        phases: {},
+        log: () => {},
+        take: async () => {
+          throw new Error("the destroy failed");
+        },
+      },
+    ),
+    /the destroy failed/u,
+  );
+  assert.deepEqual(
+    refusals.map(({ ordinal, stage: name }) => ({ ordinal, name })),
+    [{ ordinal: 1, name: "test-rehearsal-9999" }],
+  );
+});
+
+test("leftovers' proof pass failing leaves the mode's result, marked unreadable, refusals written", async () => {
+  const lines: string[] = [];
+  const kept: string[] = [];
+  let written: readonly RetireRefusal[] | undefined;
+  const reads = memoryReads({ "test-rehearsal-9999": [foreignWorker], [stage]: whole });
+  const proof = await leftoversProof(
+    [
+      { ordinal: 1, stage: "test-rehearsal-9999" },
+      { ordinal: 2, stage },
+    ],
+    {
+      ...reads,
+      target: (name) =>
+        name === stage
+          ? {
+              ...reads.target(name),
+              read: () => Promise.reject(new Error("state read for test-rehearsal-1234 refused")),
+            }
+          : reads.target(name),
+      phases: {},
+      log: (line) => lines.push(line),
+      writeRefusals: async (refusals) => {
+        written = [...refusals];
+      },
+      keepPrivate: async (text) => {
+        kept.push(text);
+      },
+    },
+  );
+  assert.equal(proof, "unreadable");
+  assert.deepEqual(
+    written?.map(({ ordinal }) => ordinal),
+    [1],
+  );
+  // The error's text reaches only the private outputs; the public lines say only that it failed.
+  assert.match(kept.join("\n"), /state read for test-rehearsal-1234 refused/u);
+  assert.equal(lines.at(-1), "The retire proof could not be read; the table above stands");
+  assert.ok(lines.every((line) => !/test-rehearsal-\d|refused/u.test(line)));
+
+  // A pass that reads and proves returns its public lines, and writes its refusals too.
+  written = undefined;
+  const lines2: string[] = [];
+  const passed = await leftoversProof([{ ordinal: 1, stage }], {
+    ...reads,
+    phases: {},
+    log: (line) => lines2.push(line),
+    writeRefusals: async (refusals) => {
+      written = [...refusals];
+    },
+    keepPrivate: async () => assert.fail("nothing to keep"),
+  });
+  assert.deepEqual(passed, ["  stage 1: retirable"]);
+  assert.deepEqual(lines2, passed);
+  assert.deepEqual(written, []);
 });

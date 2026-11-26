@@ -306,3 +306,46 @@ export async function proveStages(
   }
   return { taken: undefined };
 }
+
+/**
+ * The leftovers mode's pass of the retire proof, which only reads and never decides the mode: any
+ * failure leaves `"unreadable"` and one public line, its text goes to `keepPrivate` only, and the
+ * refusals found before it are written either way.
+ */
+export async function leftoversProof(
+  stages: Parameters<typeof proveStages>[0],
+  io: Omit<Parameters<typeof proveStages>[1], "refusals" | "take"> & {
+    writeRefusals(refusals: readonly RetireRefusal[]): Promise<void>;
+    keepPrivate(text: string): Promise<void>;
+  },
+): Promise<string[] | "unreadable"> {
+  const proof: string[] = [];
+  const refusals: RetireRefusal[] = [];
+  let failure: unknown;
+  try {
+    await proveStages(stages, {
+      target: io.target,
+      production: io.production,
+      phases: io.phases,
+      refusals,
+      log: (line) => {
+        io.log(line);
+        proof.push(line);
+      },
+    });
+  } catch (error) {
+    failure = error;
+  } finally {
+    try {
+      await io.writeRefusals(refusals);
+    } catch (error) {
+      failure ??= error;
+    }
+  }
+  if (failure === undefined) return proof;
+  await io
+    .keepPrivate(failure instanceof Error ? (failure.stack ?? failure.message) : String(failure))
+    .catch(() => undefined);
+  io.log("The retire proof could not be read; the table above stands");
+  return "unreadable";
+}

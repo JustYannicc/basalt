@@ -5,15 +5,14 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { laneSubject, overlayExtent, restartExpectArgs, runEntry } from "./stage.ts";
 import {
   candidateTreeEnvironment,
-  laneSubject,
-  overlayExtent,
   requireCandidateGuard,
-  restartExpectArgs,
-  runEntry,
+  requireSameStateDecoder,
   sameStateDecoder,
-} from "./stage.ts";
+  testsRan,
+} from "./stage-candidate.ts";
 
 const older =
   'if [ -n "$within" ]; then expect=(--expect restart --root-boot .local/release/root-boot.json --serving .local/release/serving.json --within "$within"); fi';
@@ -226,6 +225,29 @@ test("a candidate whose .upstream is a symbolic link is refused, even onto the h
   }
 });
 
+test("a candidate whose framework build is a link, or resolves outside its upstream, is refused", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-framework-links-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const harness = await preparedTree(at, "harness", "1");
+  const candidate = await preparedTree(at, "candidate", "2", { built: false });
+  const other = await preparedTree(at, "other", "2");
+  const local = join(candidate.upstream, ".local");
+  // The framework directory itself a link onto another tree's build of the same version.
+  await mkdir(local, { recursive: true });
+  await symlink(join(other.upstream, ".local/basalt-framework"), join(local, "basalt-framework"));
+  assert.throws(
+    () => candidateTreeEnvironment(harness.dir, candidate.dir),
+    /framework build must be its own/u,
+  );
+  // `.local` a link, so the framework path is a plain directory that resolves into another tree.
+  await rm(local, { recursive: true, force: true });
+  await symlink(join(other.upstream, ".local"), local);
+  assert.throws(
+    () => candidateTreeEnvironment(harness.dir, candidate.dir),
+    /framework build must be its own/u,
+  );
+});
+
 /** A release entry that only records that it ran. */
 async function markingEntry(dir: string) {
   await mkdir(join(dir, "scripts/release"), { recursive: true });
@@ -277,7 +299,7 @@ test("on another pin the candidate's own guard tests run once, and a failing one
   assert.equal(kept.length, 1);
   assert.match(await readFile(join(outputs, kept[0]!), "utf8"), /the guard lets a write through/u);
 
-  // A passing guard lets the entry go on to the stage env (which refuses here, holding no secrets).
+  // A passing guard lets the entry go on (to the decoder check, which refuses this bare tree).
   const passing = await preparedTree(at, "passing", "3");
   const passingRan = await markingEntry(passing.dir);
   await writeFile(join(passing.dir, "scripts/release/state-store-guard.test.ts"), guardTest(""));
@@ -289,6 +311,22 @@ test("on another pin the candidate's own guard tests run once, and a failing one
   assert.equal(existsSync(passingRan), false);
   assert.equal(await readFile(join(passing.dir, "guard-runs.txt"), "utf8"), "run\n");
 
+  // A guard file that holds no test, or only a skipped one, proves nothing: `node --test` exits 0.
+  for (const [name, body] of [
+    ["empty", "export {};\n"],
+    ["skipped", 'import { test } from "node:test";\ntest("guard", { skip: true }, () => {});\n'],
+  ] as const) {
+    const hollow = await preparedTree(at, name, "5");
+    const hollowRan = await markingEntry(hollow.dir);
+    await writeFile(join(hollow.dir, "scripts/release/wire-guard.test.ts"), body);
+    await assert.rejects(
+      runEntry("plan", laneSubject(2), {}, {}, outputs, { policy: null, tree: hollow.dir }),
+      /own guard tests ran no tests/u,
+      name,
+    );
+    assert.equal(existsSync(hollowRan), false, name);
+  }
+
   // On the harness's own pin nothing changed, so a failing guard test is not run at all.
   const harness = await preparedTree(at, "harness", "4");
   await writeFile(join(failing.dir, "upstream.json"), JSON.stringify({ commit: harness.commit }));
@@ -297,34 +335,148 @@ test("on another pin the candidate's own guard tests run once, and a failing one
   assert.equal(existsSync(join(failing.dir, "guard-runs.txt")), false);
 });
 
+test("the guard child gets no stage secret from the harness's environment", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-guard-env-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const harness = await preparedTree(at, "harness", "1");
+  const candidate = await preparedTree(at, "candidate", "2");
+  await mkdir(join(candidate.dir, "scripts/release"), { recursive: true });
+  await writeFile(
+    join(candidate.dir, "scripts/release/state-store-guard.test.ts"),
+    'import { test } from "node:test";\nimport { writeFileSync } from "node:fs";\ntest("guard", () => {\n  writeFileSync("guard-env.json", JSON.stringify(process.env));\n});\n',
+  );
+  await requireCandidateGuard(harness.dir, candidate.dir, join(at, "outputs"), {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    TMPDIR: process.env.TMPDIR,
+    CLOUDFLARE_API_TOKEN: "cloudflare-token-value",
+    PREVIEW_STATE_KEY: "preview-state-key-value",
+  });
+  const seen = await readFile(join(candidate.dir, "guard-env.json"), "utf8");
+  const env = JSON.parse(seen) as Record<string, string>;
+  assert.equal("CLOUDFLARE_API_TOKEN" in env, false);
+  assert.equal("PREVIEW_STATE_KEY" in env, false);
+  assert.doesNotMatch(seen, /cloudflare-token-value|preview-state-key-value/u);
+});
+
+test("testsRan counts only tests that ran, not suites, skips or a file that held none", () => {
+  const files = ["scripts/release/wire-guard.test.ts"];
+  const block = (type: string) => ["  ---", "  duration_ms: 1", `  type: '${type}'`, "  ..."];
+  const tap = (...entries: [line: string, type: string][]) =>
+    ["TAP version 13", ...entries.flatMap(([line, type]) => [line, ...block(type)])].join("\n");
+  assert.equal(testsRan(tap([`ok 1 - ${files[0]}`, "test"]), files), 0);
+  assert.equal(
+    testsRan(tap(["ok 1 - guard # SKIP", "test"], ["ok 2 - x # TODO", "test"]), files),
+    0,
+  );
+  assert.equal(testsRan(tap(["ok 1 - a suite", "suite"]), files), 0);
+  assert.equal(testsRan(tap(["ok 1 - guard", "test"], ["    not ok 1 - inner", "test"]), files), 2);
+  assert.equal(testsRan("", files), 0);
+});
+
+type Decoded = { version: string; store?: string; patch?: string };
+
+/** A prepared tree's cloud app resolving alchemy and effect through bun's store, as installed. */
+async function decoderTree(at: string, packages: Record<string, Decoded>) {
+  const upstream = join(at, ".upstream");
+  for (const [name, { version, store = `${name}@${version}`, patch }] of Object.entries(packages)) {
+    const installed = join(upstream, "node_modules/.bun", store, "node_modules", name);
+    await mkdir(installed, { recursive: true });
+    await writeFile(join(installed, "package.json"), JSON.stringify({ name, version }));
+    const linked = join(upstream, "apps/hosted/cloud/node_modules");
+    await mkdir(linked, { recursive: true });
+    await symlink(installed, join(linked, name));
+    if (patch !== undefined) {
+      await mkdir(join(upstream, "patches"), { recursive: true });
+      await writeFile(join(upstream, "patches", `${name}@${version}.patch`), patch);
+    }
+  }
+  return at;
+}
+
 test("the harness's fault read stays the boot proof only while both trees decode State alike", async (t) => {
   const base = await mkdtemp(join(tmpdir(), "state-decoder-"));
   t.after(() => rm(base, { recursive: true, force: true }));
-  const tree = async (name: string, versions: Record<string, string>) => {
-    const at = join(base, name);
-    for (const [pkg, version] of Object.entries(versions)) {
-      const dir = join(at, ".upstream/apps/hosted/cloud/node_modules", pkg);
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, "package.json"), JSON.stringify({ name: pkg, version }));
-    }
-    return at;
+  const alchemy = {
+    version: "2.0.0-beta.80",
+    store: "alchemy@2.0.0-beta.80+088b6a62490bc67b",
+    patch: "--- a\n+++ b\n@@ one\n",
   };
-  const harness = await tree("harness", { alchemy: "2.0.0-beta.80", effect: "4.0.1" });
-  assert.ok(
-    sameStateDecoder(harness, await tree("same", { alchemy: "2.0.0-beta.80", effect: "4.0.1" })),
-  );
-  assert.ok(
-    !sameStateDecoder(
-      harness,
-      await tree("alchemy", { alchemy: "2.0.0-beta.81", effect: "4.0.1" }),
-    ),
-  );
-  assert.ok(
-    !sameStateDecoder(harness, await tree("effect", { alchemy: "2.0.0-beta.80", effect: "4.0.2" })),
-  );
-  // A tree whose versions cannot be read never counts as the same decoder.
-  assert.ok(!sameStateDecoder(harness, await tree("missing", { alchemy: "2.0.0-beta.80" })));
+  const effect = { version: "4.0.1", patch: "--- a\n+++ b\n@@ effect\n" };
+  let count = 0;
+  const tree = (packages: Record<string, Decoded>) =>
+    decoderTree(join(base, `tree-${(count += 1)}`), packages);
+  const harness = await tree({ alchemy, effect });
+  const differs = async (why: string, packages: Record<string, Decoded>) =>
+    assert.ok(!sameStateDecoder(harness, await tree(packages)), why);
+
+  assert.ok(sameStateDecoder(harness, await tree({ alchemy, effect })));
+  await differs("alchemy version", { alchemy: { ...alchemy, version: "2.0.0-beta.81" }, effect });
+  await differs("effect version", { alchemy, effect: { ...effect, version: "4.0.2" } });
+  await differs("store hash", {
+    alchemy: { ...alchemy, store: "alchemy@2.0.0-beta.80+1111111111111111" },
+    effect,
+  });
+  // Same version and store entry, another patch: the version alone would read the same.
+  await differs("patch bytes", {
+    alchemy: { ...alchemy, patch: "--- a\n+++ b\n@@ two\n" },
+    effect,
+  });
+  await differs("patch missing on one side", { alchemy: { ...alchemy, patch: undefined }, effect });
+  // Neither tree patching a package is the same for that package.
+  const unpatched = { alchemy: { ...alchemy, patch: undefined }, effect };
+  assert.ok(sameStateDecoder(await tree(unpatched), await tree(unpatched)));
+
+  // A tree whose decoder cannot be read never counts as the same decoder.
+  await differs("effect missing", { alchemy });
+  const plain = join(base, "plain");
+  for (const { name, version } of [
+    { name: "alchemy", version: alchemy.version },
+    { name: "effect", version: effect.version },
+  ]) {
+    const dir = join(plain, ".upstream/apps/hosted/cloud/node_modules", name);
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, "package.json"), JSON.stringify({ name, version }));
+  }
+  assert.ok(!sameStateDecoder(harness, plain), "not in a bun store");
   assert.ok(!sameStateDecoder(join(base, "nowhere"), join(base, "nowhere")));
+});
+
+test("a moved pin with another State decoder is refused before any entry runs", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-decoder-refusal-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const decoder = {
+    alchemy: { version: "2.0.0-beta.80", patch: "one" },
+    effect: { version: "4.0.1" },
+  };
+  const harness = await preparedTree(at, "harness", "1");
+  const moved = await preparedTree(at, "moved", "2");
+  await decoderTree(harness.dir, decoder);
+  await decoderTree(moved.dir, { ...decoder, alchemy: { ...decoder.alchemy, patch: "two" } });
+  assert.throws(
+    () => requireSameStateDecoder(harness.dir, moved.dir),
+    /alchemy or effect build differs from the harness's.*nothing is deployed/u,
+  );
+  // The same decoder on a moved pin, or any decoder on the harness's own pin, goes on.
+  const same = await preparedTree(at, "same", "3");
+  await decoderTree(same.dir, decoder);
+  requireSameStateDecoder(harness.dir, same.dir);
+  requireSameStateDecoder(moved.dir, moved.dir);
+
+  // Through the entry: its guard passes, and the decoder refusal stops it before it runs.
+  const ran = await markingEntry(moved.dir);
+  await writeFile(
+    join(moved.dir, "scripts/release/state-store-guard.test.ts"),
+    'import { test } from "node:test";\ntest("guard", () => {});\n',
+  );
+  await assert.rejects(
+    runEntry("deploy", laneSubject(2), {}, {}, join(at, "outputs"), {
+      policy: null,
+      tree: moved.dir,
+    }),
+    /alchemy or effect build differs from the harness's/u,
+  );
+  assert.equal(existsSync(ran), false);
 });
 
 test("a heal record measures the stage-only overlay back to the first unmarked commit", async (t) => {
