@@ -7,7 +7,6 @@ import { carryTargets, selectPaths } from "./ci/affected.ts";
 import { heavyJobs } from "./ci/areas.ts";
 import { declaredJobs } from "./ci/box-router.ts";
 import { fastConfigs, readDeclarations } from "./ci/declarations.ts";
-import { configsReached } from "./ci/e2e-workflow.ts";
 import { readWorkflow } from "./ci/job-inputs.ts";
 
 // Inputs the import graph cannot see on its own: product files inside the unprepared upstream,
@@ -88,10 +87,11 @@ test("a change that reaches a fast-declared spec runs its config in the lane", (
     "emulator-failures.config.ts",
   ]);
   assert.deepEqual(fastConfigs(select(["docs/pools.md"]).declaredFiles, declarations), []);
-  // The step that runs them runs in a lane Check whenever selection names one.
+  // The step that runs them runs in every Check, whatever selection names.
   const steps = readWorkflow(root).jobs.fast!.steps!;
   for (const config of fastConfigs(null, declarations)) {
     const step = steps.find((step) => step.run?.includes(`--config e2e/${config}`));
-    assert.equal(step?.if, configsReached, config);
+    assert.ok(step, config);
+    assert.equal(step.if, undefined, config);
   }
 });
