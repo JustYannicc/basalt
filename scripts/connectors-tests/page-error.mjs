@@ -14,16 +14,8 @@ const names = new Set([
   "SyntaxError",
   "TypeError",
   "URIError",
-  "AbortError",
-  "DataCloneError",
-  "InvalidStateError",
-  "NetworkError",
-  "NotAllowedError",
-  "NotFoundError",
-  "NotSupportedError",
-  "QuotaExceededError",
-  "SecurityError",
-  "TimeoutError",
+  // Chromium reports every DOMException under this class name, never its specific kind.
+  "DOMException",
 ]);
 const fn = /^[A-Za-z_$][\w$]{0,63}$/;
 const file = /^[A-Za-z0-9._-]{1,128}\.m?js$/;
