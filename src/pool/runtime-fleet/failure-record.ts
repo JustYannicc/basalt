@@ -32,7 +32,8 @@ export type FleetFailureRead = typeof FleetFailureRead.Type;
  * Why a cell was quarantined: the path that saw it, the rule that fired (hard evidence, two failed
  * reads far enough apart, or no good read for too long), and every read that counted. Rows and
  * recent ends store it opaquely, so a path an older reader lacks is dropped there, never a failed
- * decode; `start` is a start its endpoint refused before the first-start intent was written.
+ * decode; `start` is a start refused before the first-start intent was written, by its endpoint
+ * or, under `unsent`, by the Worker's own reads until its bound.
  */
 export const FleetFailure = Schema.Struct({
   path: Schema.Literals(["forward", "stream", "health", "install", "start"]),
