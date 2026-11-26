@@ -68,10 +68,13 @@ export async function runBounded(
   let untracked: string | undefined;
   const observe = () => {
     if (child.pid === undefined) return;
+    // Only the latest listing counts: one that works again finds every group still in the tree,
+    // and what a failed one missed is the same blind spot as the time between two samples.
     try {
       for (const group of treeGroups(child.pid)) groups.add(group);
+      untracked = undefined;
     } catch (error) {
-      untracked ??= `could not list its process tree (${(error as Error).message})`;
+      untracked = `could not list its process tree (${(error as Error).message})`;
     }
   };
   const signal = (name: NodeJS.Signals) => groups.forEach((group) => signalGroup(group, name));
