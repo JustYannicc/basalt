@@ -43,6 +43,32 @@ export const entryRefusals = [
 ];
 const refusals = new Set(entryRefusals.map((message) => `error: ${message}`));
 
+/**
+ * Every progress tag Alchemy 2.0.0-beta.80 emits, exactly as its event union declares them
+ * (alchemy/src/Report.ts). A dotted tag is shown only when it is one of these, so no hostname can
+ * pass as a tag; any other value goes through the dot-free identifier rule like every other field.
+ */
+export const progressTags = new Set([
+  "apply.resource.note",
+  "apply.resource.status",
+  "plan.resource.started",
+  "plan.resource.completed",
+  "plan.action.completed",
+  "plan.phase",
+  "state.bootstrap.started",
+  "state.bootstrap.completed",
+  "nuke.scan.started",
+  "nuke.scan.provider.started",
+  "nuke.pass.started",
+  "nuke.scan.provider.completed",
+  "nuke.resource.deleted",
+  "nuke.resource.failed",
+  "provider.configure.started",
+  "provider.configure.completed",
+  "provider.refresh.started",
+  "provider.refresh.completed",
+]);
+
 const isEvent = (line) => {
   if (!line.startsWith("{")) return false;
   try {
@@ -55,7 +81,7 @@ const isEvent = (line) => {
         ([key, value]) =>
           EVENT_KEYS.has(key) &&
           (typeof value === "string"
-            ? IDENTIFIER.test(value)
+            ? IDENTIFIER.test(value) || (key === "_tag" && progressTags.has(value))
             : Number.isFinite(value) || typeof value === "boolean"),
       )
     );

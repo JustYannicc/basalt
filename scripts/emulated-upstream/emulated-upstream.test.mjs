@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { emulatedAccount } from "./cloudflare.mjs";
-import { entryConfig, entryRefusals, publicEntryLines, releaseCause } from "./entry-output.mjs";
+import {
+  entryConfig,
+  entryRefusals,
+  progressTags,
+  publicEntryLines,
+  releaseCause,
+} from "./entry-output.mjs";
 import { mockRefusal, mockStarter } from "./mock-start.ts";
 import { countingText, fixtures, fixturesFile, fixturesText } from "./fixtures.mjs";
 import { LONG_COUNT, longMatch, longPrompt, shortPrompt } from "./prompts.ts";
@@ -459,4 +465,25 @@ test("a cause line never carries an id, a host or a field outside the wire guard
     ],
   ])
     assert.equal(releaseCause(detail), line);
+});
+
+test("a progress event shows only with one of the framework's own tags, never a host-shaped one", () => {
+  const event = (tag, extra = {}) => JSON.stringify({ _tag: tag, status: "created", ...extra });
+  const shown = [...progressTags].map((tag) => event(tag, { fqn: "Gateway" }));
+  assert.deepEqual(publicEntryLines(shown.join("\n")), shown);
+  assert.equal(progressTags.size, 18);
+  const dropped = [
+    "api.cloudflare.com",
+    "basalt-emulated-upstream-gateway.example.workers.dev",
+    "plan.phases",
+    "plan.phas",
+    "Plan.phase",
+    "plan.phase ",
+    " plan.phase",
+    "plan..phase",
+    "apply.resource.statuz",
+  ].map((tag) => event(tag));
+  // A listed tag is a tag only under `_tag`: any other field keeps the dot-free rule.
+  dropped.push(JSON.stringify({ _tag: "plan.phase", fqn: "plan.phase" }));
+  assert.deepEqual(publicEntryLines(dropped.join("\n")), []);
 });
