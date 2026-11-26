@@ -1,5 +1,9 @@
 {
   "basalt/no-direct-cloudflare-api": {
+    "scripts/stage-cloudflare/request.mjs": {
+      "count": 1,
+      "reason": "The one Cloudflare API caller for isolated test stages: inventory and prefix-scoped teardown that Alchemy's deploy-time state cannot see after the runner is gone."
+    },
     "src/pool/runtime-provider/read.ts": {
       "count": 2,
       "reason": "The live pool reads its own container applications at run time; Alchemy acts at deploy time only."
