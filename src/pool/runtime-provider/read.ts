@@ -6,6 +6,21 @@ import {
 import { decodeProviderApplication, type ContainerAttributes } from "./application.ts";
 import { canonicalProviderValue, providerDigest } from "./canonical.ts";
 import { runtimeApplicationSettings } from "./settings.ts";
+import {
+  closed,
+  ProviderCredentialRefused,
+  refused,
+  siblingState,
+  UndocumentedInstanceState,
+  type ObservationRead,
+} from "./refusal.ts";
+
+export {
+  ProviderCredentialRefused,
+  ProviderObservationRefused,
+  type ObservationRead,
+  type ObservationRefusal,
+} from "./refusal.ts";
 
 export interface RuntimeProviderTarget {
   accountId: string;
@@ -71,77 +86,6 @@ type AbsenceRefusal =
   | "failed"
   | "listed";
 const Pagination = Schema.Struct({ next_page_token: Schema.optional(Schema.String) });
-/** Which caller's read was refused; observe() names it on the way out. */
-export type ObservationRead =
-  | "launch"
-  | "attested"
-  | "configure"
-  | "retire"
-  | "root_retire"
-  | "recovery"
-  | "provider_observe";
-const siblingStates = [
-  "provisioning",
-  "failed",
-  "stopping",
-  "stopped",
-  "unhealthy",
-  "unknown",
-] as const;
-type SiblingState = (typeof siblingStates)[number] | "other";
-const siblingState = (state: string): SiblingState =>
-  siblingStates.find((value) => value === state) ?? "other";
-/**
- * Why an observation was refused, as closed values only: never message text, never an id. An HTTP
- * answer keeps its status, a pin its field, an unsettled sibling its state.
- */
-export type ObservationRefusal =
-  | { reason: "read_status"; status: number }
-  | {
-      reason: "mismatch";
-      field: "account" | "application" | "version" | "namespace" | "image" | "settings";
-    }
-  | { reason: "sibling_unsettled"; state: SiblingState }
-  | {
-      reason:
-        | "credential_unavailable"
-        | "credential_refused"
-        | "fetch_failed"
-        | "body_too_large"
-        | "envelope_error"
-        | "decode_failed"
-        | "rollout_active"
-        | "instance_not_running"
-        | "changed_between_reads"
-        | "slow"
-        | "target_invalid";
-    };
-export class ProviderObservationRefused extends Error {
-  readonly status = "unknown";
-  readonly code: "provider_observation_refused" | "provider_fetch_failed";
-  readonly refusal: ObservationRefusal;
-  read?: ObservationRead;
-  constructor(refusal: ObservationRefusal) {
-    super("Pool provider observation refused");
-    this.refusal = refusal;
-    this.code =
-      refusal.reason === "fetch_failed" ? "provider_fetch_failed" : "provider_observation_refused";
-  }
-}
-/** A state outside the documented list: never absent, never proof, and named on its own. */
-class UndocumentedInstanceState extends ProviderObservationRefused {}
-/** No credential, or one the provider refuses: nothing reads it again until a person acts. */
-export class ProviderCredentialRefused extends ProviderObservationRefused {
-  constructor() {
-    super({ reason: "credential_refused" });
-  }
-}
-const refused = (refusal: ObservationRefusal) => new ProviderObservationRefused(refusal);
-/** Anything a decode or parse threw becomes a closed refusal; our own refusals pass unchanged. */
-function closed(error: unknown, otherwise: ObservationRefusal) {
-  return error instanceof ProviderObservationRefused ? error : refused(otherwise);
-}
-
 /** A read-only credential observes actual provider state; desired bindings never stand in for it. */
 export class RuntimeProviderReader {
   private token: string | { get(): Promise<string | null> } | undefined;
@@ -159,7 +103,9 @@ export class RuntimeProviderReader {
   }
   private async credential(signal: AbortSignal) {
     const unavailable = () => refused({ reason: "credential_unavailable" });
-    if (signal.aborted) throw unavailable();
+    // The observation ran out of time, which says nothing about the credential.
+    const slow = () => refused({ reason: "slow" });
+    if (signal.aborted) throw slow();
     if (typeof this.token === "string") return this.token;
     let pending;
     try {
@@ -168,7 +114,7 @@ export class RuntimeProviderReader {
       throw unavailable();
     }
     return new Promise<string | null | undefined>((resolve, reject) => {
-      const abort = () => reject(unavailable());
+      const abort = () => reject(slow());
       signal.addEventListener("abort", abort, { once: true });
       Promise.resolve(pending).then(
         (value) => {

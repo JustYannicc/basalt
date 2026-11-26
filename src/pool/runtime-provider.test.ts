@@ -566,7 +566,7 @@ test("a body over the limit, a body that isn't JSON and a failed fetch each say 
     );
 });
 
-test("a token read that fails or is aborted is unavailable; an empty one is refused", async () => {
+test("a token read that fails is unavailable, one the deadline cut is slow, and an empty one is refused", async () => {
   const f = await fixture();
   const unreachable = async (): Promise<Response> => assert.fail("no token, no provider call");
   const failing = {
@@ -574,9 +574,10 @@ test("a token read that fails or is aborted is unavailable; an empty one is refu
       throw new Error("synthetic secret store failure");
     },
   };
+  const stalled = { get: () => new Promise<string>(() => {}) };
   for (const [credential, signal, reason] of [
     [failing, undefined, "credential_unavailable"],
-    [{ get: () => new Promise<string>(() => {}) }, AbortSignal.abort(), "credential_unavailable"],
+    [stalled, AbortSignal.abort(), "slow"],
     [{ get: async () => null }, undefined, "credential_refused"],
     [{ get: async () => "" }, undefined, "credential_refused"],
   ] as const)
@@ -591,6 +592,37 @@ test("a token read that fails or is aborted is unavailable; an empty one is refu
       ),
       { code: "provider_observation_refused", read: "recovery", reason },
     );
+  // The observation's deadline fires while the token read is still pending.
+  const deadline = new AbortController();
+  const observation = new RuntimeProviderReader(stalled, unreachable).observe(
+    "recovery",
+    f.expected,
+    undefined,
+    deadline.signal,
+  );
+  deadline.abort();
+  assert.deepEqual(await refusal(observation), {
+    code: "provider_observation_refused",
+    read: "recovery",
+    reason: "slow",
+  });
+  // A fetch that throws stays a failed fetch, even when the deadline is what cut it.
+  const cut = new AbortController();
+  const aborted = async (): Promise<Response> => {
+    cut.abort();
+    throw new DOMException("The operation was aborted", "AbortError");
+  };
+  assert.deepEqual(
+    await refusal(
+      new RuntimeProviderReader("synthetic-token", aborted).observe(
+        "recovery",
+        f.expected,
+        undefined,
+        cut.signal,
+      ),
+    ),
+    { code: "provider_fetch_failed", read: "recovery", reason: "fetch_failed" },
+  );
 });
 
 // The recorded running shape with another documented state: no stopping or starting instance was

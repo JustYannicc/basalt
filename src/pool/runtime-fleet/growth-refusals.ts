@@ -1,7 +1,7 @@
 import { errorClass, providerFields } from "../pending-failure.ts";
 import { runtimeFailureCause, runtimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import { SlotRefused } from "../runtime-slots/contract.ts";
-import { FleetRefused } from "./state.ts";
+import { FleetRefused, type FleetRow } from "./state.ts";
 
 /** A refusal episode still refused this long logs once more: its retries are otherwise silent. */
 export const stillRefusedMs = 30_000;
@@ -11,7 +11,7 @@ export const stillRefusedMs = 30_000;
  * and cause when the error carries them, a local refusal's own reason, and the error's class. A
  * provider refusal adds the read it refused and its own reason, with any status, pin or state.
  */
-export function growthRefusal(error: unknown) {
+function growthRefusal(error: unknown) {
   const diagnostic = runtimeRouteDiagnostic(error);
   return {
     step: diagnostic?.runtimeStep ?? null,
@@ -24,21 +24,25 @@ export function growthRefusal(error: unknown) {
   };
 }
 type Refusal = ReturnType<typeof growthRefusal>;
-
-// A rollout right after a cell image change is expected; every other refusal warns.
-const write = (line: string, refusal: Refusal, fields: object) =>
-  (refusal.reason === "rollout_active" ? console.info : console.warn)(line, fields);
+interface Episode {
+  since: number;
+  attempts: number;
+  latest: Refusal;
+  still: boolean;
+}
 
 /**
- * What growth's refusals say. A refusal logs when any of its fields changes. An episode runs from
- * the first refusal to the next cell that starts, counting every refused try, growth's own and
- * the retries of its unsent start: once it has lasted `stillRefusedMs` it logs once more, and the
- * start that ends it logs how long it lasted and how many tries were refused.
+ * What growth's refusals say. A refusal logs when any of its fields changes. Each slot whose start
+ * is refused has its own episode, counting every refused try of that start, growth's first and
+ * upkeep's retries: once it has lasted `stillRefusedMs` it warns once more, and that slot's
+ * admission logs how long it lasted and how many tries were refused. An episode whose slot leaves
+ * unadmitted ends without a line. Episodes live in memory, so a replaced isolate opens a fresh one
+ * at the start's next refused try.
  */
 export class GrowthRefusals {
   private now: () => number;
   private logged?: string;
-  private episode?: { since: number; attempts: number; latest: Refusal; still: boolean };
+  private episodes = new Map<string, Episode>();
   constructor(now: () => number) {
     this.now = now;
   }
@@ -46,36 +50,54 @@ export class GrowthRefusals {
   refused(error: unknown) {
     const refusal = growthRefusal(error);
     const key = JSON.stringify(refusal);
-    if (key !== this.logged) write("POOL_FLEET_GROWTH_REFUSED", refusal, refusal);
+    // A rollout right after a cell image change is expected; every other refusal warns.
+    if (key !== this.logged)
+      (refusal.reason === "rollout_active" ? console.info : console.warn)(
+        "POOL_FLEET_GROWTH_REFUSED",
+        refusal,
+      );
     this.logged = key;
-    this.count(refusal);
   }
-  /** A retried start that was refused counts against an open episode and logs no line of its own. */
-  retried(error: unknown) {
-    if (this.episode) this.count(growthRefusal(error));
+  /** A refused try of this slot's start opens or extends its episode, with no line of its own. */
+  startRefused(slot: string, error: unknown) {
+    const now = this.now();
+    const refusal = growthRefusal(error);
+    const episode = this.episodes.get(slot) ?? {
+      since: now,
+      attempts: 0,
+      latest: refusal,
+      still: false,
+    };
+    this.episodes.set(slot, episode);
+    episode.attempts++;
+    episode.latest = refusal;
+    if (episode.still || now - episode.since < stillRefusedMs) return;
+    episode.still = true;
+    // However expected the reason, a start held this long holds scale-out with it.
+    console.warn("POOL_FLEET_GROWTH_STILL_REFUSED", this.summary(episode));
   }
   /** A pass that ended unrefused, so the same refusal logs again. */
   passed() {
     this.logged = undefined;
   }
-  started() {
+  started(slot: string) {
     this.logged = undefined;
-    const episode = this.episode;
+    const episode = this.episodes.get(slot);
     if (!episode) return;
-    this.episode = undefined;
+    this.episodes.delete(slot);
     console.info("POOL_FLEET_GROWTH_RECOVERED", this.summary(episode));
   }
-  private count(refusal: Refusal) {
-    const now = this.now();
-    const episode = (this.episode ??= { since: now, attempts: 0, latest: refusal, still: false });
-    episode.attempts++;
-    episode.latest = refusal;
-    if (episode.still || now - episode.since < stillRefusedMs) return;
-    episode.still = true;
-    write("POOL_FLEET_GROWTH_STILL_REFUSED", refusal, this.summary(episode));
+  /** Ends, with no line, each episode whose slot no longer starts: given up, quarantined, gone. */
+  settle(rows: readonly FleetRow[]) {
+    const starting = new Set(
+      rows
+        .filter((row) => ["reserved", "warming", "uncertain"].includes(row.phase))
+        .map((row) => row.target.slotId),
+    );
+    for (const slot of this.episodes.keys()) if (!starting.has(slot)) this.episodes.delete(slot);
   }
   /** The episode so far, named by its latest refusal: what was still in the way. */
-  private summary(episode: { since: number; attempts: number; latest: Refusal }) {
+  private summary(episode: Episode) {
     const { latest } = episode;
     return {
       refusedMs: this.now() - episode.since,

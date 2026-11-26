@@ -294,6 +294,8 @@ export class RuntimeFleet {
     while (true) {
       if (this.deps.enabled?.() === false) return;
       const rows = await this.deps.state.inspect();
+      // Before growth can reserve again, so no episode outlives the start it counted.
+      this.refusals.settle(rows);
       const physical = await this.deps.state.physicalCount();
       if (physical >= this.deps.maximum) this.atCapacity = true;
       const desired = await this.demandedCells(rows);
@@ -334,6 +336,7 @@ export class RuntimeFleet {
       cell = this.cell(target);
       await this.admit(cell, await cell.start(target));
     } catch (error) {
+      this.refusals.startRefused(target.slotId, error);
       if (cell && (await this.refusedUnsent(cell, target, error))) {
         if (deploymentRefused(error)) await this.deferStart(cell, target, error, began);
         else await this.startRefused(target, error, began);
@@ -416,7 +419,7 @@ export class RuntimeFleet {
       (row.identity && !sameIdentity(row.identity, identity))
     )
       return;
-    this.refusals.started();
+    this.refusals.started(identity.slotId);
     const database = await cell
       .healthy?.(identity)
       .then((value) => value ?? undefined)
@@ -974,10 +977,7 @@ export class RuntimeFleet {
         return;
       }
       if (pastBound(row, now)) return this.exceed(row, "start_unproven");
-      return this.start(row.target).catch((error: unknown) => {
-        this.refusals.retried(error);
-        throw error;
-      });
+      return this.start(row.target);
     }
     if (row.phase === "warming" || row.phase === "uncertain") {
       // Past its bound a start is no longer observed: it holds its place until abandon() proves it.
@@ -988,7 +988,7 @@ export class RuntimeFleet {
         observed = await cell.observe(row.target, enabled);
       } catch (error) {
         // The observation retries an unsent start, which can be refused just as growth's was.
-        if (!row.identity) this.refusals.retried(error);
+        if (!row.identity) this.refusals.startRefused(row.target.slotId, error);
         if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
           if (deploymentRefused(error)) await this.deferStart(cell, row.target, error, began);
           else await this.startRefused(row.target, error, began);
