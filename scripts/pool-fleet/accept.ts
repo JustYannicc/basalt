@@ -80,15 +80,19 @@ export const quotaRefused = "acceptance-quota-refused";
 export const cooldownRefused = "acceptance-cooldown-refused";
 
 /**
- * A burst's turns, all settled: a failure stands for the burst, and one that is not the pool's
- * quota refusal goes first, so a quota refusal never hides another turn's failure.
+ * A burst's turns, all settled: a failure stands for the burst. One that is neither the pool's
+ * quota refusal nor the run's spent turn budget goes first, so neither hides another turn's
+ * failure; a quota refusal comes before a spent budget, so a cooldown is never hidden by it.
  */
 async function settledBurst<A>(turns: readonly Promise<A>[]) {
   const results = await Promise.allSettled(turns);
   const failures = results.flatMap((result) =>
     result.status === "rejected" ? [result.reason] : [],
   );
-  const failure = failures.find((reason) => !quotaRefusal(reason)) ?? failures[0];
+  const failure =
+    failures.find((reason) => !quotaRefusal(reason) && !turnBudgetSpent(reason)) ??
+    failures.find((reason) => quotaRefusal(reason)) ??
+    failures[0];
   if (failures.length) throw failure;
   return results.map((result) => (result as PromiseFulfilledResult<A>).value);
 }
@@ -106,13 +110,20 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   const first = selectModel(catalog.ids, input.model);
   const accounts = input.access ? await input.client.testAccountIds(input.access) : undefined;
   input.log(`models status=200 count=${catalog.ids.length}`);
+  // Every runtime the controller reported over the whole run, the turns of refused models included.
+  const known = new Set<string>();
+  const observe = async () => {
+    const serving = await servingBoots(input);
+    for (const boot of [serving.primary, ...serving.cells]) known.add(boot);
+    return serving;
+  };
   const tried: string[] = [];
   let cooled = false;
   // The model the turn budget ran out on, when refused models had spent it first.
   let spentOn: string | undefined;
   for (const model of smokeModels(first).filter((id) => catalog.ids.includes(id)))
     try {
-      const accepted = await acceptOn(input, model, accounts, traffic);
+      const accepted = await acceptOn(input, model, accounts, traffic, known, observe);
       return tried.length ? { ...accepted, quotaRefused: tried } : accepted;
     } catch (error) {
       const quota = quotaRefusal(error);
@@ -124,13 +135,15 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
         break;
       }
       if (!quota) throw error;
+      // A refused model's served turns are vouched for by a read now, not only by later ones.
+      await observe();
       if (quota === "model_cooldown") cooled = true;
       tried.push(`${model}: ${turnFailure(error)}`);
       input.log(`model=${model} refused for quota; trying the next acceptance model`);
     }
   // Every model refused, or the budget spent by those refused before another could prove a cell.
   const refused = spentOn
-    ? `The run's turn budget ran out on ${spentOn} after the pool refused ${tried.join("; ")} for quota`
+    ? `The run's turn budget ran out on ${spentOn} after the pool refused other models for quota (${tried.join("; ")})`
     : `Every acceptance model the pool lists was refused for ${cooled ? "quota" : "funding"} (${tried.join("; ")})`;
   throw cooled
     ? refuse(
@@ -150,15 +163,11 @@ async function acceptOn(
   model: string,
   accounts: Set<string> | undefined,
   traffic: OwnTraffic,
+  known: ReadonlySet<string>,
+  observe: () => Promise<{ primary: string; cells: Set<string> }>,
 ) {
   const { client, log, access } = input;
   const burst = input.burst ?? 6;
-  const known = new Set<string>();
-  const observe = async () => {
-    const serving = await servingBoots(input);
-    for (const boot of [serving.primary, ...serving.cells]) known.add(boot);
-    return serving;
-  };
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
     // Ready cells take every turn; the root serves only while no cell is ready.

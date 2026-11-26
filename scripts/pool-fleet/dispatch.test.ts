@@ -188,7 +188,7 @@ test("a turn budget spent by turns refused for quota ends as the quota refusal, 
     assert.match(cause, /acceptance-quota-refused/u);
     assert.match(
       cause,
-      /turn budget ran out on gpt-6\.1-sol after the pool refused claude-opus-5-5/u,
+      /turn budget ran out on gpt-6\.1-sol after the pool refused other models for quota \(claude-opus-5-5/u,
     );
     assert.doesNotMatch(cause, /turn-budget|cell-served-proof-missing/u);
     // A quota refusal leaves the permission in force, unproven, as main's quota branch does.
@@ -198,6 +198,38 @@ test("a turn budget spent by turns refused for quota ends as the quota refusal, 
       lane.modelCalls.filter(({ call }) => call === "POST /v1/chat/completions").length,
       19,
     );
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a cooldown in the burst the budget cuts short still ends as cooldown-refused and disables the fleet", async () => {
+  // The first model is refused for funding; the next one's cells never serve, and the one turn of
+  // its third burst the budget still allows is cooled down. A cooldown may be the cell's own node,
+  // so it must not hide behind the budget refusals of that burst's other turns.
+  let laterTurns = 0;
+  const lane = await harness({
+    models: ["claude-opus-5-5", "gpt-6.1-sol"],
+    quota: (model) =>
+      model === "claude-opus-5-5"
+        ? "usage_credit_policy_denied"
+        : ++laterTurns === 13
+          ? "model_cooldown"
+          : undefined,
+    boot: () => "primary-boot",
+  });
+  try {
+    const deps = lane.deps();
+    if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...deps,
+      acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+    });
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /acceptance-cooldown-refused/u);
+    assert.doesNotMatch(cause, /acceptance-quota-refused|turn-budget/u);
+    assert.equal((await lane.configuration.inspect())?.enabled, false);
   } finally {
     await lane.close();
   }

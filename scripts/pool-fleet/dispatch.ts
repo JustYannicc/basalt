@@ -510,7 +510,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     // fails to serve does (accept.ts).
     if (attempt.failure instanceof FleetLaneRefused && attempt.failure.reason === quotaRefused) {
       deps.log(
-        `configure_and_accept status=unproven; every acceptance model was refused for funding`,
+        `configure_and_accept status=unproven; the acceptance models were refused for funding`,
       );
       return yield* Effect.fail({
         cause,
