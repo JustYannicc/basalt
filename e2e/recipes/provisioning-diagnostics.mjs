@@ -118,12 +118,14 @@ const recordAt = (lines, index) => {
 // A catalog sweep reports every app that failed as one "storage" step failure; the app's own line
 // names the error. Its record names the job only in the attempt's annotations, after the message.
 const sweepMessage = "Catalog app update failed";
-// The errors the sweep's steps can log: the catalog's read, the app's source, build and deploy,
-// and the record's write. Any other value is published as `other`, so the evidence never carries
-// more than an error class, whatever the line holds.
+// The errors the sweep's steps can log: the catalog read, the app's source, build and deploy,
+// and the record write with its app lookup. Any other value is published as `other`, so the
+// evidence never carries more than an error class, whatever the line holds.
 const sweepCauses = new Set([
   "AccountNotFound",
   "AccountSelectionInvalid",
+  "AppNotDeployed",
+  "AppNotFound",
   "BuildBusy",
   "BuildMemoryExceeded",
   "BuildUnanswered",
@@ -132,6 +134,7 @@ const sweepCauses = new Set([
   "SqlError",
   "StorageError",
   "VersionBuildFailed",
+  "VersionNotFound",
 ]);
 // A catalog entry's name, such as `executor`: never an app id, an organization or a URL.
 const appKind = /^[a-z][a-z0-9-]{0,63}$/;

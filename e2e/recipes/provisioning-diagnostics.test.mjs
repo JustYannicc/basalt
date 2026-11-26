@@ -206,6 +206,8 @@ test("a catalog sweep's failed app is carried as its error class and app kind, n
     // An unlisted cause and an entry that is not a plain name.
     `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "https://catalog.example/apps/x?token=SECRET", cause: "Error: private message SECRET" }))}`,
     `[Api] ${JSON.stringify(record({ app: secret, organization, cause: "SomeNewTag" }))}`,
+    // An app removed while the sweep ran.
+    `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "executor", cause: "AppNotFound" }))}`,
     // Another organization's sweep is not attributed.
     `[Api] ${JSON.stringify({ ...record({ app: secret, entry: "executor", cause: "SqlError" }), annotations: { job: "basalt-catalog-apps:other:1", attempt: 1 } })}`,
     `[Api] {"message":["Provisioning step failed",{"job":"${sweep}","reason":"storage"}],"level":"WARN"}`,
@@ -219,6 +221,7 @@ test("a catalog sweep's failed app is carried as its error class and app kind, n
     { message: "Catalog app update failed", cause: "StorageError", app: "executor" },
     { message: "Catalog app update failed", cause: "other" },
     { message: "Catalog app update failed", cause: "other" },
+    { message: "Catalog app update failed", cause: "AppNotFound", app: "executor" },
     { message: "Provisioning step failed", reason: "storage" },
   ]);
   const published = JSON.stringify(history.logged);
