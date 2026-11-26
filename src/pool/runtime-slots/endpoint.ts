@@ -16,7 +16,7 @@ import { RuntimeModelLifetimes, type RuntimeControlPair } from "./model-lifetime
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { RuntimeRetirementTrace } from "../runtime-retirement-trace.ts";
 import { RuntimeRetirementMonitor, observeRuntimeRetirement } from "./retirement-observation.ts";
-import { RuntimeReadTrace, runtimeReadStep } from "../runtime-read-trace.ts";
+import { RuntimeReadTrace, runtimeReadStep, type RuntimeReadSteps } from "../runtime-read-trace.ts";
 import { refuseRuntime, rememberRuntimeFailure } from "../runtime-route-diagnostic.ts";
 import { RuntimeHealthRefusalLog } from "./health-refusal-log.ts";
 import {
@@ -407,7 +407,7 @@ export class RuntimeEndpoint {
   }
   /** The front layer's advert from this container's latest readiness read (#1642). */
   private resumeAdvert: PoolStatus["resume"];
-  async health(identity: SlotIdentity, signal: AbortSignal, trace?: RuntimeReadTrace) {
+  async health(identity: SlotIdentity, signal: AbortSignal, trace?: RuntimeReadSteps) {
     let record: WitnessRecord | undefined;
     let status: PoolStatus | undefined;
     try {
@@ -432,11 +432,15 @@ export class RuntimeEndpoint {
       throw error;
     }
   }
-  async warm(identity: SlotIdentity, signal: AbortSignal) {
-    const health = await this.health(identity, signal);
-    signal.throwIfAborted();
-    await this.channel.keepAlive();
-    return health;
+  /** Its pass line times the identity read, the readiness read's own steps and the keep-alive. */
+  warm(identity: SlotIdentity, signal: AbortSignal) {
+    const trace = new PoolUpkeepTrace("endpoint");
+    return trace.pass("warm", async () => {
+      const health = await this.health(identity, signal, trace.steps);
+      signal.throwIfAborted();
+      await trace.run("keep_alive", () => this.channel.keepAlive());
+      return health;
+    });
   }
   async witness(target: SlotTarget) {
     this.bound(target);
@@ -707,7 +711,7 @@ export class RuntimeEndpoint {
   drain(identity: SlotIdentity, signal: AbortSignal) {
     const trace = new PoolUpkeepTrace("endpoint");
     const fields = { ordinal: identity.homePeerOrdinal };
-    return trace.run(
+    return trace.pass(
       "drain_queue",
       () =>
         this.serialize(async () => {
@@ -721,7 +725,7 @@ export class RuntimeEndpoint {
             () => this.activity.drain(identity),
             fields,
           );
-          trace.event("drain_recheck", { ...fields, active: state.active, known: state.known });
+          trace.observe({ active: state.active, known: state.known });
           if (state.known || state.active !== 0 || this.role !== "legacy") return state;
           if (
             !(await trace.run(

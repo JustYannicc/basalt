@@ -1,4 +1,4 @@
-import { runtimeReadStep, type RuntimeReadTrace } from "../runtime-read-trace.ts";
+import { runtimeReadStep, type RuntimeReadSteps } from "../runtime-read-trace.ts";
 import { containerAnswer } from "../controller-unsent.ts";
 import { resumeLayerPort } from "../stream-resume.ts";
 import { refuseRuntime, type RuntimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
@@ -37,7 +37,7 @@ export class RuntimeChannel {
       .setInactivityTimeout(poolLifecycle.idleTimeoutMs)
       .catch((error: unknown) => refuseRuntime("endpoint_health", error));
   }
-  async health(configuration: RuntimeConfiguration, signal: AbortSignal, trace?: RuntimeReadTrace) {
+  async health(configuration: RuntimeConfiguration, signal: AbortSignal, trace?: RuntimeReadSteps) {
     if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
     const status = await readRuntimeHealth(
       this.port(8318),
@@ -110,7 +110,7 @@ export class RuntimeChannel {
     configuration: RuntimeConfiguration,
     request: Request,
     port: 8317 | 8327 | 8318 | typeof resumeLayerPort,
-    trace?: RuntimeReadTrace,
+    trace?: RuntimeReadSteps,
   ) {
     let step: RuntimeRouteDiagnostic["runtimeStep"] = "endpoint_request";
     try {

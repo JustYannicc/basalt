@@ -1,4 +1,4 @@
-import { runtimeReadStep, type RuntimeReadTrace } from "./runtime-read-trace.ts";
+import { runtimeReadStep, type RuntimeReadSteps } from "./runtime-read-trace.ts";
 import { PoolRuntimeUnhealthy, type PoolStatus } from "./lifecycle.ts";
 import { readinessDistance } from "./runtime-distance.ts";
 import { readySignals, withReadySignals } from "./runtime-ready-signals.ts";
@@ -22,7 +22,7 @@ export async function readRuntimeHealth(
   managementKey: string,
   signal: AbortSignal,
   now = () => performance.now(),
-  trace?: RuntimeReadTrace,
+  trace?: RuntimeReadSteps,
 ): Promise<PoolStatus> {
   const requestedAt = now();
   const answer = await healthResponse(readiness, managementKey, signal, policyHealthLeaseMs, trace);
@@ -90,7 +90,7 @@ async function healthResponse(
   managementKey: string,
   signal: AbortSignal,
   limitMs: number | undefined,
-  trace?: RuntimeReadTrace,
+  trace?: RuntimeReadSteps,
 ) {
   signal.throwIfAborted();
   const deadline = new AbortController();

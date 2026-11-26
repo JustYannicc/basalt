@@ -878,26 +878,31 @@ export class RuntimeFleet {
   }
   async drain(identity: SlotIdentity) {
     const trace = new PoolUpkeepTrace("fleet");
-    await trace.run(
-      "drain_fence",
-      () => this.dispatches.fence(identity, () => this.deps.state.drain(identity)),
-      { ordinal: identity.homePeerOrdinal },
+    const fields = { ordinal: identity.homePeerOrdinal };
+    return trace.pass(
+      "drain",
+      async () => {
+        await trace.run(
+          "drain_fence",
+          () => this.dispatches.fence(identity, () => this.deps.state.drain(identity)),
+          fields,
+        );
+        const actual = await trace.run(
+          "drain_recheck",
+          () => this.cell(identity).drain(identity),
+          fields,
+        );
+        trace.observe({ active: actual.active, known: actual.known });
+        await this.deps.state.acknowledgeDrain(identity);
+        return actual;
+      },
+      fields,
     );
-    const actual = await trace.run("drain_recheck", () => this.cell(identity).drain(identity), {
-      ordinal: identity.homePeerOrdinal,
-    });
-    trace.event("drain_recheck", {
-      ordinal: identity.homePeerOrdinal,
-      active: actual.active,
-      known: actual.known,
-    });
-    await this.deps.state.acknowledgeDrain(identity);
-    return actual;
   }
   /** One pass. Each row settles on its own, so one that throws never stops the others or growth. */
   async upkeep() {
     const trace = new PoolUpkeepTrace("fleet");
-    return trace.run("upkeep", async () => {
+    return trace.pass("upkeep", async () => {
       try {
         await this.upkeepRows(trace);
       } finally {
@@ -932,14 +937,14 @@ export class RuntimeFleet {
               this.deps.now(),
               performance.now() - began,
             );
-            const fields = {
+            const outcome = await this.failures.missed(identity, read).catch(() => "unknown");
+            trace.missed({
               ordinal: row.target.homePeerOrdinal,
+              quarantined: outcome === "quarantined",
               cause: read.cause,
               ...(read.roundTripMs === undefined ? {} : { roundTripMs: read.roundTripMs }),
               ...(read.leaseLeftMs === undefined ? {} : { leaseLeftMs: read.leaseLeftMs }),
-            };
-            const outcome = await this.failures.missed(identity, read).catch(() => "unknown");
-            trace.event(outcome === "quarantined" ? "quarantined" : "health_miss", fields);
+            });
             return;
           }
           if (row.suspect !== undefined || this.failures.fenced(identity))
@@ -958,10 +963,11 @@ export class RuntimeFleet {
     }
     for (const row of surviving) {
       try {
-        await trace.run(row.phase, () => this.upkeepRow(row, surviving), {
-          ordinal: row.target.homePeerOrdinal,
-          active: row.active,
-        });
+        await trace.row(
+          row.phase,
+          { ordinal: row.target.homePeerOrdinal, active: row.active },
+          () => this.upkeepRow(row, surviving),
+        );
       } catch {
         // The trace logged this row's failure under its ordinal; the next alarm tries it again.
       }

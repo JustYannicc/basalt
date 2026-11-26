@@ -6,6 +6,7 @@ import { NativeStreams } from "./native-streams.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { runtimeFailureHeaders } from "./runtime-route-diagnostic.ts";
 import { PoolDependencyFailure } from "./dependency-failure.ts";
+import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 
 // Home `GET /capabilities` with carry 0284: every connection taken and callers queued behind them.
 const saturated = {
@@ -88,6 +89,41 @@ test("the monitor reads Home once a minute, keeps the last value on failure and 
   await monitor.report(record);
   assert.equal(reads, 4, "the stuck read did not block the next minute's read");
   assert.equal(monitor.observation()?.ageMs, 0);
+});
+
+test("only a due read is timed, so the minute's Home read is one upkeep line and other passes write none", async (context) => {
+  const info = context.mock.method(console, "info", () => {});
+  let now = 1_000_000;
+  const monitor = new HomeDatabasePoolMonitor(
+    async () => saturated,
+    () => now,
+  );
+  const report = () => {
+    const trace = new PoolUpkeepTrace("home");
+    return monitor.report(
+      (homeDatabasePool) => trace.observe({ homeDatabasePool }),
+      (read) => trace.pass("home_database_pool", read),
+    );
+  };
+  await report();
+  assert.equal(info.mock.callCount(), 0, "a read that is not due writes nothing");
+  now += 60_000;
+  await report();
+  assert.deepEqual(
+    info.mock.calls.map(({ arguments: [name, fields] }) => {
+      const { side, phase, outcome, homeDatabasePool } = fields as Record<string, unknown>;
+      return [name, side, phase, outcome, homeDatabasePool];
+    }),
+    [
+      [
+        "POOL_RUNTIME_UPKEEP",
+        "home",
+        "home_database_pool",
+        "ended",
+        { inUse: 6, waitCount: 1_843, waitDurationNs: 912_000_000_000, ageMs: 0 },
+      ],
+    ],
+  );
 });
 
 test("a refused request logs Home's last pool counters without reading Home", async (context) => {

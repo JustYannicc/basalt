@@ -421,6 +421,41 @@ test("every model send reads readiness again, so a readiness refusal right after
   assert.equal(f.calls.model, 0);
 });
 
+test("a warm writes one endpoint line timing its identity read, its readiness read's steps and its keep-alive", async (context) => {
+  const f = await fixture();
+  context.after(f.cleanup);
+  const { identity } = await f.endpoint.start(f.target, AbortSignal.timeout(5_000));
+  const info = context.mock.method(console, "info", () => {});
+  f.hooks.health = () => new Promise<void>((done) => setTimeout(done, 40));
+  f.hooks.keepAlive = () => new Promise<void>((done) => setTimeout(done, 30));
+  await f.endpoint.warm(identity, AbortSignal.timeout(2_000));
+  const lines = info.mock.calls
+    .filter(({ arguments: [name] }) => name === "POOL_RUNTIME_UPKEEP")
+    .map(({ arguments: [, fields] }) => fields as Record<string, unknown>);
+  assert.equal(lines.length, 1, "one line for the warm, none per step");
+  const [line] = lines as [
+    { side: string; phase: string; outcome: string; elapsedMs: number; phases: object },
+  ];
+  assert.deepEqual([line.side, line.phase, line.outcome], ["endpoint", "warm", "ended"]);
+  const phases = line.phases as Record<string, number>;
+  assert.deepEqual(Object.keys(phases).sort(), [
+    "health_body",
+    "health_headers",
+    "health_identity",
+    "identity",
+    "keep_alive",
+  ]);
+  assert.ok(Object.values(phases).every((ms) => Number.isInteger(ms) && ms >= 0));
+  assert.ok(phases.health_headers! >= 35, `the readiness read's wait: ${phases.health_headers}`);
+  assert.ok(phases.keep_alive! >= 25, `the keep-alive: ${phases.keep_alive}`);
+  assert.ok(line.elapsedMs >= phases.health_headers! + phases.keep_alive!);
+  assert.equal(
+    info.mock.calls.some(({ arguments: [name] }) => name === "POOL_RUNTIME_READ"),
+    false,
+    "the readiness read's steps join the warm's line, not lines of their own",
+  );
+});
+
 test("readiness is read after the keep-alive, so a lease spent during it never admits the send", async (context) => {
   const f = await fixture();
   context.after(f.cleanup);

@@ -725,10 +725,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
   }
   private async upkeepAlarm(trace: PoolUpkeepTrace) {
-    await trace.run("alarm", async () => {
-      trace.event("deadlines", await this.alarms.inspect());
+    await trace.pass("alarm", async () => {
+      trace.observe(await this.alarms.inspect());
       const due = await this.alarms.take();
-      trace.event("deadlines", { homeDue: due.home, fleetDue: due.fleet });
+      trace.observe({ homeDue: due.home, fleetDue: due.fleet });
       try {
         if (due.fleet)
           await trace
@@ -740,19 +740,23 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           await this.restoreDeadlines().catch(() => console.error("POOL_ALARM_RESTORE_PENDING"));
           await this.alarms.rearm();
         });
-        trace.event("deadlines", await this.alarms.inspect());
+        const next = await this.alarms.inspect();
+        trace.observe({
+          nextHomeDeadline: next.homeDeadline,
+          nextFleetDeadline: next.fleetDeadline,
+          nextNativeDeadline: next.nativeDeadline,
+        });
       }
     });
   }
   private deferHomeUpkeep() {
     const trace = new PoolUpkeepTrace("home");
     if (this.homeUpkeepTask) {
-      trace.event("home_shared");
       // The native lease lasts 12 s and a held Home pass reaches its renewal only once, so every
       // Home deadline renews beside it; a renewal already running is joined, never started twice.
       this.ctx.waitUntil(
         trace
-          .run("memberships", () => this.memberships.tick())
+          .pass("home_shared", () => trace.run("memberships", () => this.memberships.tick()))
           .catch(() => console.error("POOL_MEMBERSHIP_RENEWAL_PENDING")),
       );
       // The alarm consumed this deadline; retain a wake-up even if the shared task has already scheduled its next pass.
@@ -765,7 +769,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     // A native alarm waits for its handler, while waitUntil keeps Home work alive without blocking the next fleet alarm.
     const work = trace
-      .run("home", () => this.homeUpkeep(trace))
+      .pass("home", () => this.homeUpkeep(trace))
       .catch(async (error: unknown) => {
         console.error("POOL_HOME_UPKEEP_PENDING", JSON.stringify(pendingFields(error)));
         await this.alarms.schedule("home", Date.now() + membershipRefreshMs);
@@ -776,7 +780,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.homeUpkeepTask = work;
     this.ctx.waitUntil(work.catch(() => console.error("POOL_HOME_UPKEEP_REARM_PENDING")));
   }
-  private async homeUpkeep(trace = new PoolUpkeepTrace("home")) {
+  private async homeUpkeep(trace: PoolUpkeepTrace) {
     await this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"));
     await trace
       .run("candidate_probe", () => this.candidateProbe.tick())
@@ -787,9 +791,13 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     await trace
       .run("app_models", () => this.appModels.tick())
       .catch(() => console.error("POOL_APP_MODEL_KEY_CLEANUP_PENDING"));
+    // Its own pass: the read queues behind a saturated Home, so it runs beside this one and can end
+    // after this pass's line.
+    const report = new PoolUpkeepTrace("home");
     this.ctx.waitUntil(
-      this.homeDatabasePool.report((observation) =>
-        trace.event("home_database_pool", { homeDatabasePool: observation }),
+      this.homeDatabasePool.report(
+        (homeDatabasePool) => report.observe({ homeDatabasePool }),
+        (read) => report.pass("home_database_pool", read),
       ),
     );
     await trace.run("memberships", () => this.memberships.tick());
