@@ -12,6 +12,7 @@ import {
   requireCandidateGuard,
   restartExpectArgs,
   runEntry,
+  sameStateDecoder,
 } from "./stage.ts";
 
 const older =
@@ -294,6 +295,36 @@ test("on another pin the candidate's own guard tests run once, and a failing one
   await rm(join(failing.dir, "guard-runs.txt"));
   await requireCandidateGuard(harness.dir, failing.dir, outputs);
   assert.equal(existsSync(join(failing.dir, "guard-runs.txt")), false);
+});
+
+test("the harness's fault read stays the boot proof only while both trees decode State alike", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "state-decoder-"));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const tree = async (name: string, versions: Record<string, string>) => {
+    const at = join(base, name);
+    for (const [pkg, version] of Object.entries(versions)) {
+      const dir = join(at, ".upstream/apps/hosted/cloud/node_modules", pkg);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "package.json"), JSON.stringify({ name: pkg, version }));
+    }
+    return at;
+  };
+  const harness = await tree("harness", { alchemy: "2.0.0-beta.80", effect: "4.0.1" });
+  assert.ok(
+    sameStateDecoder(harness, await tree("same", { alchemy: "2.0.0-beta.80", effect: "4.0.1" })),
+  );
+  assert.ok(
+    !sameStateDecoder(
+      harness,
+      await tree("alchemy", { alchemy: "2.0.0-beta.81", effect: "4.0.1" }),
+    ),
+  );
+  assert.ok(
+    !sameStateDecoder(harness, await tree("effect", { alchemy: "2.0.0-beta.80", effect: "4.0.2" })),
+  );
+  // A tree whose versions cannot be read never counts as the same decoder.
+  assert.ok(!sameStateDecoder(harness, await tree("missing", { alchemy: "2.0.0-beta.80" })));
+  assert.ok(!sameStateDecoder(join(base, "nowhere"), join(base, "nowhere")));
 });
 
 test("a heal record measures the stage-only overlay back to the first unmarked commit", async (t) => {

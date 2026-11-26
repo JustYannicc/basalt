@@ -205,6 +205,25 @@ function upstreamPin(tree: string) {
 const pinMoved = (harness: string, tree: string) =>
   tree !== harness && upstreamPin(tree) !== upstreamPin(harness);
 
+/**
+ * Whether two prepared trees decode State the same: the cloud app resolves the same alchemy and
+ * effect, by installed package version. Unreadable on either side is not the same.
+ */
+export const sameStateDecoder = (harness: string, tree: string) => {
+  const versions = (at: string) =>
+    ["alchemy", "effect"].map((name) => {
+      try {
+        const file = join(at, ".upstream/apps/hosted/cloud/node_modules", name, "package.json");
+        const version = (JSON.parse(readFileSync(file, "utf8")) as { version?: unknown }).version;
+        return typeof version === "string" && version !== "" ? version : undefined;
+      } catch {
+        return undefined;
+      }
+    });
+  const [a, b] = [versions(harness), versions(tree)];
+  return a.every((version, index) => version !== undefined && version === b[index]);
+};
+
 const guardRuns = new Map<string, Promise<void>>();
 
 /**
@@ -706,11 +725,14 @@ async function stageRelease(
     ...(kind === "classplan" ? declaration.cutover : declaration.baseline),
     POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
   };
-  // After a pin move the harness's fault client decodes State with alchemy the candidate no longer
-  // runs on, so the boot after is the candidate entry's own read; called inside the candidate's
-  // build. The origin is the stage's: the acceptance client's default is production.
+  // The harness's fault client decodes State with its own alchemy and effect. While the candidate
+  // resolves the same versions of both, that read stays the proof, even after a pin move: it needs
+  // no acceptance device, which a lane does not have. Only when they differ is the boot after the
+  // candidate entry's own read, inside the candidate's build. Its origin is the stage's: the
+  // acceptance client's default is production.
   const bootAfterOf = async () => {
-    if (!pinMoved(root, candidate)) return bootOf("release-after");
+    if (!pinMoved(root, candidate) || sameStateDecoder(root, candidate))
+      return bootOf("release-after");
     const out = join(outputs, "release-root-boot-after.json");
     try {
       await rm(out, { force: true });
