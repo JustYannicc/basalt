@@ -1,5 +1,4 @@
 import type { Shape } from "./load-verdict.mjs";
-import { isObject } from "./types.ts";
 
 const bodyLimit = 4 * 1024 * 1024;
 
@@ -8,57 +7,78 @@ export interface StreamRead {
   /** The whole body, only when it was read to its end. */
   readonly text?: string;
   readonly firstByteMs?: number;
-  /** The first frame that carries the answer's own text: what the mock's profile times. */
+  /** When the first frame that adds text to the pass rule's answer arrived. */
   readonly firstContentMs?: number;
-  /** The longest wait between two data frames from the first content on. */
+  /**
+   * The longest wait between two frames that add text, and from the last of them to the body's
+   * end: a stall, whatever pings, empty deltas or comments came between.
+   */
   readonly stallMs?: number;
 }
 
-function frameHasContent(shape: Shape, data: string) {
-  let frame: unknown;
+type Frame = Record<string, unknown> | null;
+// What `Array.prototype.join` makes of a value, which is how the pass rule builds its text.
+const joined = (value: unknown) => [value].join("");
+const read = (value: unknown, key: string) =>
+  typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+
+/**
+ * The text one frame adds to the answer the pass rule judges. This is the rule's own reading,
+ * line for line: scripts/emulated-upstream/shapes.mjs keeps lines that start `data: ` (with the
+ * space), skips `[DONE]`, reads an unparseable frame as nothing, and joins these fields. It is
+ * mirrored because that module exports no reading of its own; a rule that reads more than this
+ * leaves frames untimed, which only makes a call look later.
+ */
+export function frameText(shape: Shape, line: string) {
+  if (!line.startsWith("data: ")) return "";
+  const data = line.slice(6);
+  if (data === "[DONE]") return "";
+  let frame: Frame;
   try {
-    frame = JSON.parse(data);
+    frame = JSON.parse(data) as Frame;
   } catch {
-    return false;
+    return "";
   }
-  if (!isObject(frame)) return false;
-  const text = (value: unknown) => typeof value === "string" && value !== "";
+  const type = read(frame, "type");
+  const delta = read(frame, "delta");
   if (shape === "responses")
-    return frame.type === "response.output_text.delta" && text(frame.delta);
+    return type === "response.output_text.delta" ? joined(delta ?? "") : "";
   if (shape === "messages")
-    return (
-      frame.type === "content_block_delta" &&
-      isObject(frame.delta) &&
-      frame.delta.type === "text_delta" &&
-      text(frame.delta.text)
-    );
-  const choice = Array.isArray(frame.choices) ? frame.choices[0] : undefined;
-  return isObject(choice) && isObject(choice.delta) && text(choice.delta.content);
+    return type === "content_block_delta" && read(delta, "type") === "text_delta"
+      ? joined(read(delta, "text"))
+      : "";
+  return joined(read(read(read(read(frame, "choices"), "0"), "delta"), "content") ?? "");
 }
 
 /**
- * Times a stream's frames as their lines complete. A comment line (a keep-alive) is no progress, and
- * neither is a frame without text before the first content: a role frame or `message_start`.
+ * Times a stream by the frames that add text to the judged answer, as their lines complete. Text
+ * that trims to nothing is no content, so a ping, an empty delta or a space neither starts the
+ * answer nor ends a stall.
  */
 export function frameTimer(shape: Shape) {
   let pending = "";
   let firstContentMs: number | undefined;
-  let lastFrameMs: number | undefined;
+  let lastContentMs: number | undefined;
   let stallMs: number | undefined;
+  const line = (text: string, atMs: number) => {
+    if (!frameText(shape, text).trim()) return;
+    if (lastContentMs === undefined) firstContentMs = atMs;
+    else stallMs = Math.max(stallMs ?? 0, atMs - lastContentMs);
+    lastContentMs = atMs;
+  };
   return {
     /** The text that arrived at `atMs` since the send. */
     observe(chunk: string, atMs: number) {
       pending += chunk;
       const lines = pending.split(/\r?\n/u);
       pending = lines.pop() ?? "";
-      const frames = lines.filter((line) => line.startsWith("data:"));
-      if (!frames.length) return;
-      if (firstContentMs === undefined) {
-        const content = frames.some((line) => frameHasContent(shape, line.slice(5).trimStart()));
-        if (!content) return;
-        firstContentMs = atMs;
-      } else stallMs = Math.max(stallMs ?? 0, atMs - lastFrameMs!);
-      lastFrameMs = atMs;
+      for (const text of lines) line(text, atMs);
+    },
+    /** The body ended at `atMs`: its last line counts though it had no line ending, and so does the wait. */
+    end(atMs: number) {
+      line(pending, atMs);
+      pending = "";
+      if (lastContentMs !== undefined) stallMs = Math.max(stallMs ?? 0, atMs - lastContentMs);
     },
     get firstContentMs() {
       return firstContentMs;
@@ -104,12 +124,15 @@ export async function readStream(
       text += chunk;
       if (streamed) timer.observe(chunk, atMs);
     }
-    text += decoder.decode();
   } catch {
     return { end: since() >= timeoutMs ? "timeout" : "cut", ...timings() };
   }
+  const endedMs = since();
+  const tail = decoder.decode();
+  text += tail;
   // An unstreamed answer's content is usable only once all of it has arrived.
-  if (!streamed && firstByteMs !== undefined)
-    return { end: "complete", text, firstByteMs, firstContentMs: since() };
+  if (!streamed) return { end: "complete", text, firstByteMs, firstContentMs: endedMs };
+  timer.observe(tail, endedMs);
+  timer.end(endedMs);
   return { end: "complete", text, ...timings() };
 }

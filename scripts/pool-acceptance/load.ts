@@ -36,6 +36,8 @@ export interface LoadInput {
   readonly killWaitMs?: number;
   /** Each call as soon as it ends, so a run that is stopped from outside keeps what it sent. */
   readonly ended?: (call: EndedCall) => void;
+  /** Aborted from outside (a signal): no call starts after it, and the run cannot pass. */
+  readonly stop?: AbortSignal;
   readonly clock?: Clock;
 }
 
@@ -62,8 +64,13 @@ export const systemClock: Clock = {
 };
 
 // Only the kind of error reaches a record or a public line, never its message.
-const errorKind = (error: unknown) =>
+export const errorKind = (error: unknown) =>
   error instanceof Error ? error.constructor.name || "Error" : "unknown";
+/** The name a stop gives, such as `SIGTERM`; nothing else of its reason. */
+export const stopKind = (signal: AbortSignal) =>
+  typeof signal.reason === "string" && /^[A-Z]{3,16}$/u.test(signal.reason)
+    ? signal.reason
+    : "stopped";
 
 /**
  * Workers send back to back from their ramp step until the duration or the call budget ends. The
@@ -91,6 +98,12 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   let sent = 0;
   let firstFailure: number | undefined;
   let error: string | undefined;
+  const stopped = () => {
+    error ??= stopKind(input.stop!);
+    halt.abort();
+  };
+  if (input.stop?.aborted) stopped();
+  else input.stop?.addEventListener("abort", stopped, { once: true });
   const worker = async (index: number) => {
     const start = Math.min(started + workerStartMs(shape, index), end);
     await clock.sleep(start - clock.now(), halt.signal);
@@ -120,7 +133,9 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
 
   let killAt = input.kill?.();
   const killDeadline = clock.now() + (input.killWaitMs ?? 0);
-  while (input.kill && killAt === undefined && clock.now() < killDeadline) {
+  // A stopped run reports at once: it waits for no marker and sends nothing more.
+  const signalled = () => input.stop?.aborted === true;
+  while (input.kill && killAt === undefined && !signalled() && clock.now() < killDeadline) {
     await clock.sleep(500);
     killAt = input.kill();
   }
@@ -129,7 +144,7 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
     .map((record) => judge(record, kinds.get(record.kind)!, killAt));
   await Promise.all(
     calls
-      .filter((call) => call.inFlight && !call.pass)
+      .filter((call) => call.inFlight && !call.pass && !signalled())
       .map(async (call) => {
         const kind = kinds.get(call.kind)!;
         try {
@@ -143,6 +158,8 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
         }
       }),
   );
+  input.stop?.removeEventListener("abort", stopped);
+  if (signalled()) error ??= stopKind(input.stop!);
   return {
     calls,
     killAt,

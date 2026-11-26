@@ -218,9 +218,17 @@ async function main(): Promise<void> {
     }
     if (process.env.POOL_ACCEPTANCE_MODE === "load") {
       const { runLoadFromEnvironment } = await import("./pool-acceptance/load-entry.ts");
-      const passed = await runLoadFromEnvironment();
+      // A cancelled job's signal stops the run, which still writes its record and fails.
+      const stop = new AbortController();
+      for (const signal of ["SIGINT", "SIGTERM"] as const)
+        process.once(signal, () => stop.abort(signal));
+      const passed = await runLoadFromEnvironment(process.env, undefined, undefined, {
+        stop: stop.signal,
+      });
       console.log(`acceptance status=${passed ? "passed" : "failed"} mode=load`);
       if (!passed) process.exitCode = 1;
+      // Calls that outlived the stop's wait would hold the process open; their record is closed.
+      if (stop.signal.aborted) process.exit(1);
       return;
     }
     await runPoolAcceptance(await configFromEnvironment());

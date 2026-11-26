@@ -119,6 +119,51 @@ export async function stage(answers: readonly Answer[]) {
   return { seen, origin, client: new PoolAcceptanceClient({ origin }), close };
 }
 
+/** A step of a paced answer: the clock moves this far, then this text arrives. */
+export type Step = readonly [advanceMs: number, text: string];
+
+/**
+ * A pool whose 200 arrives in steps on the run's clock. It answers in memory, under the client's
+ * own `fetch` seam, because only a body the reader pulls orders each chunk's read before the next
+ * step moves the clock; a socket may hand two writes over as one read. An empty step only moves
+ * the clock, so a last one holds the body open before it ends.
+ */
+export function pacedPool(
+  clock: { advance(ms: number): void },
+  steps: readonly Step[],
+  withBoot: boolean | string = true,
+) {
+  const seen: { path: string }[] = [];
+  const encoder = new TextEncoder();
+  const client = new PoolAcceptanceClient({
+    origin: "https://pool.invalid",
+    fetch: async (input) => {
+      seen.push({ path: new URL(input.toString()).pathname });
+      let next = 0;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            for (; next < steps.length;) {
+              const [advanceMs, text] = steps[next++]!;
+              clock.advance(advanceMs);
+              if (text) return controller.enqueue(encoder.encode(text));
+            }
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      return new Response(body, { status: 200, headers: streamHeaders(withBoot) });
+    },
+  });
+  return { seen, client };
+}
+
+/** One frame's line, with no line ending: the last line of a body may lack one. */
+export const dataLine = (frame: unknown) =>
+  `data: ${typeof frame === "string" ? frame : JSON.stringify(frame)}`;
+export const frame = (value: unknown) => `${dataLine(value)}\n\n`;
+
 export const chatOnly = (calls: number, extra: Record<string, unknown> = {}) =>
   parseLoadShape(
     JSON.stringify({

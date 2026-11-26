@@ -18,11 +18,14 @@ export const loadClasses: readonly LoadClass[] = [
 ];
 
 /**
- * How long a send waited for its answer: its first content, else the headers of an answer that
- * never brought any (which fails on its own), else the whole wait for no answer at all.
+ * How long a send waited for its answer. A 200 waited for its first content, and for all of it
+ * when no frame was timed as content, so an answer the timer misread can only look later. Any
+ * other answer waited for its headers, and no answer for the whole send.
  */
 export const contentWaitMs = (attempt: Attempt) =>
-  attempt.firstContentMs ?? attempt.headersMs ?? attempt.totalMs;
+  attempt.status === 200
+    ? (attempt.firstContentMs ?? attempt.totalMs)
+    : (attempt.headersMs ?? attempt.totalMs);
 
 /** A send whose first content or a later stall came more than the bar past its profile. */
 export const delayed = (attempt: Attempt, kind: LoadKind) =>
@@ -86,8 +89,8 @@ export interface Restart {
   /** Boots first answering after the kill: a runtime that started. */
   readonly newBoots: number;
   /**
-   * Boots of the sends in flight at the kill (else of every send before it) that no send after the
-   * kill answered from: a runtime that went away.
+   * Boots of the sends in flight at the kill that no send after it answered from: a runtime that
+   * went away. A boot that only stopped getting calls proves nothing, so none in flight is none.
    */
   readonly goneBoots: number;
   /**
@@ -137,7 +140,7 @@ function restartOf(
   let newBoots = 0;
   for (const boot of after) if (!before.has(boot)) newBoots += 1;
   let goneBoots = 0;
-  for (const boot of held.size ? held : before) if (!after.has(boot)) goneBoots += 1;
+  for (const boot of held) if (!after.has(boot)) goneBoots += 1;
   let inFlight = 0;
   let resendPassed = 0;
   for (const call of calls) {

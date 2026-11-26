@@ -5,7 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 import { acceptanceCredential } from "../release/acceptance-device.ts";
 import type { Attempt } from "./load-call.ts";
-import { delayed } from "./load-classes.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
 import {
   chatOnly,
@@ -19,7 +18,6 @@ import {
   testClock,
   type Answer,
 } from "./test/load-fixtures.ts";
-import { frameTimer } from "./load-stream.ts";
 import { runLoad } from "./load.ts";
 
 const redirectTo =
@@ -99,33 +97,4 @@ test("a keep-alive and a role frame at once do not hide content that came 60 s l
   assert.ok(attempt!.firstContentMs! > 60_000);
   assert.deepEqual(run.calls[0]!.classes, ["delayed"]);
   assert.equal(run.verdict.passed, false);
-});
-
-test("content behind early frames, and a stall after it began, are both timed from the content", () => {
-  const [role, content, stop, usage, done] = streams["/v1/chat/completions"]!("OK");
-  const timer = frameTimer("chat");
-  timer.observe(": keep-alive\n\n", 1);
-  timer.observe(role!, 2);
-  assert.equal(timer.firstContentMs, undefined, "neither a comment nor a role frame is content");
-  timer.observe(content!, 60_000);
-  timer.observe(stop!, 60_010);
-  timer.observe(`${usage}${done}`, 300_010);
-  assert.deepEqual([timer.firstContentMs, timer.stallMs], [60_000, 240_000]);
-  const [kind] = chatOnly(1).mix;
-  const attempt = (firstContentMs: number, stallMs?: number): Attempt => ({
-    attempt: 1,
-    startedAt: 0,
-    endedAt: 0,
-    end: "complete",
-    status: 200,
-    headersMs: 1,
-    firstByteMs: 1,
-    firstContentMs,
-    stallMs,
-    totalMs: 300_010,
-    retryable: false,
-  });
-  assert.equal(delayed(attempt(timer.firstContentMs!), kind!), true, "content 60 s late");
-  assert.equal(delayed(attempt(150, timer.stallMs), kind!), true, "a 240 s stall");
-  assert.equal(delayed(attempt(150, 30_000), kind!), false, "within 30 s past the 200 ms profile");
 });

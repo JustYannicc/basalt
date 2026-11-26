@@ -177,12 +177,34 @@ export function kindRotation(mix: readonly LoadKind[]) {
 }
 
 // An ISO time with its zone, so no runner's local zone moves the kill.
-const isoTime = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/u;
+const isoTime =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(?:Z|[+-](\d{2}):(\d{2}))$/u;
+
+/** Every field within its calendar: `Date.parse` rolls 30 February into March and 24:00 into tomorrow. */
+function onCalendar(fields: readonly string[]) {
+  const [year, month, day, hour, minute, second, zoneHour = "0", zoneMinute = "0"] =
+    fields.map(Number);
+  const days = new Date(Date.UTC(year!, month!, 0)).getUTCDate();
+  return (
+    month! >= 1 &&
+    month! <= 12 &&
+    day! >= 1 &&
+    day! <= days &&
+    hour! <= 23 &&
+    minute! <= 59 &&
+    second! <= 59 &&
+    Number(zoneHour) <= 23 &&
+    Number(zoneMinute) <= 59
+  );
+}
 
 /** A kill time given as epoch milliseconds or an ISO time; anything else is no time. */
 export function killTime(value: string | undefined) {
   const text = value?.trim();
   if (!text) return undefined;
-  const at = /^\d{13}$/u.test(text) ? Number(text) : isoTime.test(text) ? Date.parse(text) : NaN;
+  if (/^[1-9]\d{12}$/u.test(text)) return Number(text);
+  const fields = isoTime.exec(text);
+  if (!fields || !onCalendar(fields.slice(1).map((field) => field ?? "0"))) return undefined;
+  const at = Date.parse(text);
   return Number.isFinite(at) ? at : undefined;
 }

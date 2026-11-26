@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ServerResponse } from "node:http";
+import type { CallRecord } from "./load-call.ts";
+import { judge, verdictOf } from "./load-classes.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
+import { parseLoadShape } from "./load-shape.ts";
 import {
   boot,
   deviceEnv,
@@ -123,6 +126,10 @@ test("a kill time that holds only spaces or names no exact time is refused befor
       ["   ", /POOL_LOAD_KILL_AT holds only spaces/u],
       ["1", /epoch milliseconds or an ISO time/u],
       ["2026-11-26 12:00", /epoch milliseconds or an ISO time/u],
+      // Off the calendar: the parser would roll these into 2 March and the next midnight.
+      ["2026-02-30T00:00:00Z", /epoch milliseconds or an ISO time/u],
+      ["2026-11-26T24:00:00Z", /epoch milliseconds or an ISO time/u],
+      ["0000000000000", /epoch milliseconds or an ISO time/u],
     ] as const)
       await assert.rejects(
         runLoadFromEnvironment(
@@ -144,4 +151,51 @@ test("a kill time that holds only spaces or names no exact time is refused befor
   } finally {
     pool.close();
   }
+});
+
+test("a boot that only stopped getting calls is no evidence: it must have been in flight at the kill", () => {
+  const [kind] = parseLoadShape('{"mix":[{"shape":"chat","weight":1}]}').mix;
+  const call = (
+    index: number,
+    startedAt: number,
+    endedAt: number,
+    answeredBy: string,
+  ): CallRecord => ({
+    call: index,
+    worker: 0,
+    kind: "chat-short",
+    traceId: "0".repeat(32),
+    startedAt,
+    endedAt,
+    attempts: [
+      {
+        attempt: 1,
+        startedAt,
+        endedAt,
+        end: "complete",
+        status: 200,
+        boot: answeredBy,
+        firstContentMs: 1,
+        totalMs: endedAt - startedAt,
+        verdict: { pass: true, reason: undefined },
+        retryable: false,
+      },
+    ],
+  });
+  const restart = (calls: readonly CallRecord[], killAt: number) =>
+    verdictOf(
+      calls.map((record) => judge(record, kind!, killAt)),
+      undefined,
+      { armed: true, at: killAt },
+    ).restart;
+  // Nothing in flight at the kill: the boot before it went quiet, which proves no restart.
+  assert.deepEqual(
+    restart([call(1, 1_000, 1_010, boot), call(2, 1_020, 1_030, replacement)], 1_015),
+    { kill: "seen", inFlight: 0, resendPassed: 0, newBoots: 1, goneBoots: 0, passed: false },
+  );
+  // The same boots with the first call in flight at the kill.
+  assert.equal(
+    restart([call(1, 1_000, 1_020, boot), call(2, 1_021, 1_030, replacement)], 1_015)?.passed,
+    true,
+  );
 });
