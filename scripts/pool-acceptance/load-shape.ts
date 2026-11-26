@@ -1,5 +1,5 @@
 import { AcceptanceFailure, isObject, type JsonObject } from "./types.ts";
-import { nonStreamedVerdict, type Shape, type VerdictKind } from "./load-verdict.mjs";
+import { judgesUnstreamed, type Shape, type VerdictKind } from "./load-verdict.mjs";
 
 /** One kind of call in the mix: which protocol, which prompt, and the profile it is judged by. */
 export interface LoadKind extends VerdictKind {
@@ -94,8 +94,8 @@ function parseKind(input: unknown, index: number): LoadKind {
   if (prompt !== "short" && prompt !== "long") return refuse(`${at}.prompt`, "short or long");
   const stream = input.stream ?? true;
   if (typeof stream !== "boolean") return refuse(`${at}.stream`, "true or false");
-  // The seam for unstreamed calls: data turns them on once shapes.mjs judges them.
-  if (!stream && !nonStreamedVerdict)
+  // The seam for unstreamed calls: data turns them on once the emulated shapes judge them.
+  if (!stream && !judgesUnstreamed)
     return refuse(`${at}.stream`, "true until the emulated shapes judge a non-streamed answer");
   const model = input.model ?? defaultModels[shape as Shape];
   if (typeof model !== "string" || !modelName.test(model))

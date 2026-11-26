@@ -14,8 +14,6 @@ export interface Verdict {
 }
 
 export declare const paths: Readonly<Record<Shape, string>>;
-export declare const nonStreamedVerdict:
-  | ((shape: Shape, long: boolean, text: string) => Verdict)
-  | undefined;
+export declare const judgesUnstreamed: boolean;
 export declare function callBody(kind: VerdictKind): Record<string, unknown>;
 export declare function callVerdict(kind: VerdictKind, text: string): Verdict;

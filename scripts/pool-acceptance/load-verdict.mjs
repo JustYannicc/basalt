@@ -5,26 +5,19 @@ import { paths, requestBody, verdict } from "../emulated-upstream/shapes.mjs";
 export { paths };
 
 /**
- * The pass rule for a `stream: false` answer. It belongs in shapes.mjs beside the streamed rule,
- * and is not there yet. Bind it here once it lands, `(shape, long, text) => { pass, reason }`, and a
- * non-streamed kind turns on with load data alone; until then the load shape refuses one.
+ * Whether the shapes build and judge a `stream: false` call, through the `{ stream }` option their
+ * owner is adding beside the streamed rule. Until `requestBody` honours it, the load shape refuses
+ * an unstreamed kind; once it does, one turns on with load data alone.
  */
-export const nonStreamedVerdict = undefined;
+export const judgesUnstreamed = requestBody("chat", false, { stream: false }).stream === false;
 
-/** One kind's body: the shapes' own, under the kind's model, and unstreamed when the kind is. */
+/** One kind's body: the shapes' own, under the kind's model. */
 export function callBody(kind) {
-  const body = requestBody(kind.shape, kind.prompt === "long");
+  const body = requestBody(kind.shape, kind.prompt === "long", { stream: kind.stream });
   body.model = kind.model;
-  if (!kind.stream) {
-    body.stream = false;
-    delete body.stream_options;
-  }
   return body;
 }
 
 export function callVerdict(kind, text) {
-  const long = kind.prompt === "long";
-  if (kind.stream) return verdict(kind.shape, long, text);
-  if (!nonStreamedVerdict) return { pass: false, reason: "no non-streamed verdict" };
-  return nonStreamedVerdict(kind.shape, long, text);
+  return verdict(kind.shape, kind.prompt === "long", text, { stream: kind.stream });
 }

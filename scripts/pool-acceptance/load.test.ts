@@ -12,7 +12,7 @@ import { acceptanceCredential } from "../release/acceptance-device.ts";
 import { PoolAcceptanceClient } from "./client.ts";
 import type { Clock } from "./load-call.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
-import { callBody } from "./load-verdict.mjs";
+import { callBody, judgesUnstreamed } from "./load-verdict.mjs";
 import { defaultMix, kindRotation, parseLoadShape, workerStartMs } from "./load-shape.ts";
 import { runLoad, summaryLines } from "./load.ts";
 
@@ -284,14 +284,7 @@ test("the load mode refuses before any credential or call without a GO or outsid
         },
         /dedicated acceptance-<run> pool/u,
       ],
-      [
-        {
-          ...deviceEnv,
-          POOL_LOAD_GO: go,
-          POOL_LOAD_SHAPE: '{"mix":[{"shape":"chat","weight":1,"stream":false}]}',
-        },
-        /non-streamed/u,
-      ],
+      [{ ...deviceEnv, POOL_LOAD_GO: go, POOL_LOAD_SHAPE: '{"calls":0}' }, /calls/u],
     ] as const)
       await assert.rejects(
         runLoadFromEnvironment(env, pool.client, () => {}),
@@ -386,4 +379,8 @@ test("the shape ramps in steps, rotates its mix by weight and carries each kind'
   assert.equal(callBody(kind!).model, "emulated-slow");
   assert.equal(kind!.ttfbProfileMs, 15_000);
   assert.throws(() => parseLoadShape('{"durationMinutes":121}'), /durationMinutes/u);
+  // An unstreamed kind turns on with data alone, as soon as the emulated shapes judge one.
+  const unstreamed = '{"mix":[{"shape":"chat","weight":1,"stream":false}]}';
+  if (judgesUnstreamed) assert.equal(callBody(parseLoadShape(unstreamed).mix[0]!).stream, false);
+  else assert.throws(() => parseLoadShape(unstreamed), /non-streamed/u);
 });
