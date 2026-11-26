@@ -75,7 +75,7 @@ function evaluate(expression: string, contexts: Record<string, unknown>): unknow
   const js = body
     .replace(/\b(\w+)\.\*\.(\w+)/g, "filter($1, '$2')")
     .replace(
-      /\b(github|vars|needs)((?:\.\w+)+)/g,
+      /\b(github|vars|needs|steps)((?:\.\w+)+)/g,
       (_, root, path: string) => root + path.replaceAll(".", "?."),
     );
   const same = (a: unknown, b: unknown) => String(a).toLowerCase() === String(b).toLowerCase();
@@ -145,11 +145,6 @@ test("only the four light jobs read the light label, and box-watch stays hosted"
   assert.equal(workflow.jobs.check["runs-on"], checkRunsOn);
   for (const id of lightJobs.filter((id) => id !== "select"))
     assert.ok([workflow.jobs[id].needs].flat().includes("select"), id);
-  assert.equal(workflow.jobs.select.outputs.light_label, "${{ steps.jobs.outputs.light_label }}");
-  const step = workflow.jobs.select.steps.find(
-    (candidate: { id?: string }) => candidate.id === "jobs",
-  );
-  assert.equal(step.env.LIGHT_LABEL, "${{ vars.BASALT_CI_LIGHT_LABEL }}");
   // box-watch polls for up to 40 minutes and cancels the Check when the box is down.
   assert.equal(workflow.jobs["box-watch"]["runs-on"], "ubuntu-latest");
   for (const [id, job] of Object.entries(workflow.jobs)) {
@@ -162,42 +157,88 @@ test("only the four light jobs read the light label, and box-watch stays hosted"
   );
 });
 
-test("the real selector outputs the light label only for a Check the light lane takes", () => {
-  for (const [env, expected] of [
-    [{ GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" }, label],
-    [{ GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_RUN_ATTEMPT: "2" }, ""],
-    [{ GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", LIGHT_LABEL: "" }, ""],
-    [
-      {
-        GITHUB_EVENT_NAME: "pull_request",
-        GITHUB_REF: "refs/pull/1/merge",
-        HEAD_REPOSITORY: "fork/repo",
-      },
-      "",
-    ],
-  ] as const) {
+type Step = { id?: string; if?: string; run?: string; env?: Record<string, string> };
+const selectSteps: Step[] = workflow.jobs.select.steps;
+// Whether a select step runs on a Check that reuses a batch Check's result.
+const runsOnReuse = (step: Step) =>
+  step.if === undefined ||
+  evaluate(`\${{ ${step.if} }}`, { steps: { reuse: { outputs: { reused: "true" } } } }) === true;
+
+test("select's light label comes from a token-free step that runs on a reused Check too", () => {
+  // main's push Checks mostly reuse a batch Check, and their aggregate is the job that waits.
+  const output = /^\$\{\{ steps\.([\w-]+)\.outputs\.light_label \}\}$/.exec(
+    workflow.jobs.select.outputs.light_label,
+  );
+  assert.ok(output, workflow.jobs.select.outputs.light_label);
+  const step = selectSteps.find((candidate) => candidate.id === output[1]);
+  assert.ok(step, output[1]);
+  assert.ok(runsOnReuse(step), step.if);
+  // The selection step a reused Check skips must not be where the label comes from.
+  assert.equal(runsOnReuse(selectSteps.find((candidate) => candidate.id === "jobs")!), false);
+  assert.equal(step.run, "node scripts/ci/light-lane.ts");
+  assert.deepEqual(step.env, {
+    LIGHT_LABEL: "${{ vars.BASALT_CI_LIGHT_LABEL }}",
+    HEAD_REPOSITORY: "${{ github.event.pull_request.head.repo.full_name }}",
+  });
+  // Only this step reads the variable; select-jobs.ts no longer decides the label.
+  for (const other of selectSteps.filter((candidate) => candidate !== step))
+    assert.doesNotMatch(JSON.stringify(other), /light_label|BASALT_CI_LIGHT_LABEL/, other.id);
+});
+
+test("the light step writes the label lightLabel returns, and needs no token", () => {
+  for (const env of [
+    { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" },
+    { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_RUN_ATTEMPT: "2" },
+    { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", LIGHT_LABEL: "" },
+    {
+      GITHUB_EVENT_NAME: "pull_request",
+      GITHUB_REF: "refs/pull/1/merge",
+      HEAD_REPOSITORY: "fork/repo",
+    },
+  ]) {
+    const run = {
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_REPOSITORY: repository,
+      HEAD_REPOSITORY: "",
+      LIGHT_LABEL: label,
+      ...env,
+    };
+    const expected = lightLabel({
+      event: run.GITHUB_EVENT_NAME,
+      ref: run.GITHUB_REF,
+      attempt: run.GITHUB_RUN_ATTEMPT,
+      repository: run.GITHUB_REPOSITORY,
+      headRepository: run.HEAD_REPOSITORY,
+      label: run.LIGHT_LABEL,
+    });
     const scratch = mkdtempSync(join(tmpdir(), "basalt-light-lane-"));
     const output = join(scratch, "output");
-    const result = spawnSync(process.execPath, ["scripts/ci/select-jobs.ts", "--all"], {
+    const { GITHUB_TOKEN: _, ...inherited } = process.env;
+    const result = spawnSync(process.execPath, ["scripts/ci/light-lane.ts"], {
       encoding: "utf8",
-      env: {
-        ...process.env,
-        GITHUB_RUN_ATTEMPT: "1",
-        GITHUB_REPOSITORY: repository,
-        HEAD_REPOSITORY: "",
-        LIGHT_LABEL: label,
-        BOX_SLOTS: "",
-        GITHUB_TOKEN: "",
-        GITHUB_OUTPUT: output,
-        GITHUB_STEP_SUMMARY: "",
-        ...env,
-      },
+      env: { ...inherited, ...run, GITHUB_OUTPUT: output },
     });
     assert.equal(result.status, 0, result.stderr);
-    const lines = readFileSync(output, "utf8").split("\n");
+    const text = readFileSync(output, "utf8");
     rmSync(scratch, { recursive: true, force: true });
-    assert.ok(lines.includes("light_label=" + expected), JSON.stringify(env));
+    assert.equal(text, `light_label=${expected}\n`, JSON.stringify(env));
   }
+  // A main push takes the light runners; a fork's pull request never does.
+  assert.equal(
+    lightLabel({ event: "push", ref: "refs/heads/main", attempt: "1", repository, label }),
+    label,
+  );
+  assert.equal(
+    lightLabel({
+      event: "pull_request",
+      ref: "refs/pull/1/merge",
+      attempt: "1",
+      repository,
+      headRepository: "fork/repo",
+      label,
+    }),
+    "",
+  );
 });
 
 test("the rescue runs hosted every 5 minutes, only while the variable is set", () => {

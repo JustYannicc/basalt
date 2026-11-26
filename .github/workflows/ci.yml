@@ -46,8 +46,9 @@ jobs:
       jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
-      # The light runners' label for long-started, cpa-pipeline and check, or empty for hosted.
-      light_label: ${{ steps.jobs.outputs.light_label }}
+      # The light runners' label for long-started, cpa-pipeline and check, or empty for hosted. Its
+      # step runs on every path, so a reused Check's later jobs take the light runners too.
+      light_label: ${{ steps.light.outputs.light_label }}
       box_floor: ${{ steps.jobs.outputs.box_floor }}
       box_plan: ${{ steps.jobs.outputs.box_plan }}
       matrices: ${{ steps.jobs.outputs.matrices }}
@@ -66,6 +67,13 @@ jobs:
         run: node scripts/ci/reuse.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      # No reuse condition: a reused Check's later light jobs take the light runners too.
+      - name: Pick the light runners for this Check's seconds-long jobs
+        id: light
+        env:
+          LIGHT_LABEL: ${{ vars.BASALT_CI_LIGHT_LABEL }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/ci/light-lane.ts
       - uses: ./.github/actions/setup-bun
         if: steps.reuse.outputs.reused != 'true'
         with:
@@ -105,7 +113,6 @@ jobs:
           BOX_SLOTS: ${{ vars.BASALT_CI_BOX_SLOTS }}
           BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
           BOX_HEARTBEAT_LABEL: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL }}
-          LIGHT_LABEL: ${{ vars.BASALT_CI_LIGHT_LABEL }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}

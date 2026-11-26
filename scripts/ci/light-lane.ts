@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { boxSettings, type BoxInput } from "./box-router.ts";
 
 // The light lane: the Check's seconds-long jobs run on the box's always-online light runners, named
@@ -45,3 +47,22 @@ export const laterRunsOn =
  */
 export const checkRunsOn =
   "${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.light_label || 'ubuntu-latest' }}";
+
+// select's own step, on every path including a reused Check's: it needs no token, only the event.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const env = process.env;
+  const label = lightLabel({
+    event: env.GITHUB_EVENT_NAME ?? "",
+    ref: env.GITHUB_REF ?? "",
+    attempt: env.GITHUB_RUN_ATTEMPT,
+    repository: env.GITHUB_REPOSITORY,
+    headRepository: env.HEAD_REPOSITORY,
+    label: env.LIGHT_LABEL,
+  });
+  if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `light_label=${label}\n`);
+  console.log(
+    label
+      ? `Light lane: long-started, cpa-pipeline and check run on ${label}.`
+      : "Light lane: every job runs hosted.",
+  );
+}
