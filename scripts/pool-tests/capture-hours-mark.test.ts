@@ -26,12 +26,13 @@ type Fixture = Parameters<Parameters<typeof seriesFixture>[0]>[0];
 type Storage = ReturnType<typeof memoryStorage>;
 const minute = 60_000;
 
-/** When `pool`'s count of the hour holding `time` was taken, or null when it has none. */
+/** When `pool`'s settled count of the hour holding `time` was taken, or null while it is pending. */
 async function checked(f: Fixture, pool: string, time: string) {
   const hour = new Date(Math.floor(Date.parse(time) / hourMs) * hourMs).toISOString();
   const row = (
     await f.db.query(
-      "SELECT checked_at FROM basalt_model_capture_hours WHERE pool=$1 AND hour=$2",
+      `SELECT checked_at FROM basalt_model_capture_hours
+      WHERE pool=$1 AND hour=$2 AND checked_at >= hour + interval '2 hours'`,
       [pool, hour],
     )
   ).rows[0];
@@ -353,6 +354,58 @@ test("a key Home creates for usage it already holds makes its pool count again, 
     const { counts } = await settle(f, c.storage);
     assert.deepEqual([...new Set(counts.map((block) => block.pool))], [c.poolId]);
     assert.deepEqual([...(await c.coverage(at(6), at(7))).incomplete!], [hourKey(6)]);
+  });
+});
+
+test("keys minted for app requests and probes, with no past usage, count nothing again", async () => {
+  await seriesFixture(async (f) => {
+    const c = await counted(f);
+    // The fill's first pass counted every pool again once; nothing since.
+    const last = (await settle(f, c.storage)).state.lastRemap;
+    // Each app request mints its own key and uses it now, in an hour no count has settled.
+    for (let n = 0; n < 3; n++) {
+      const key = `sha256:${String(n).repeat(64)}`;
+      await f.db.query("INSERT INTO api_key (id,diagnostic_fingerprint,user_id) VALUES ($1,$2,7)", [
+        20 + n,
+        key,
+      ]);
+      await c.usage(new Date().toISOString(), key);
+      const { state, counts } = await settle(f, c.storage);
+      assert.deepEqual(counts, [], `key ${n}`);
+      assert.deepEqual(state.lastRemap, last, `key ${n}: no remap`);
+    }
+  });
+});
+
+test("a key whose usage all came after it was made counts nothing again, though that usage has settled", async () => {
+  await seriesFixture(async (f) => {
+    const c = await counted(f);
+    const last = (await settle(f, c.storage)).state.lastRemap;
+    // Made four hours ago and used an hour later: settled usage, but none older than the key, as
+    // an app key's after a long gap between passes.
+    const key = `sha256:${"9".repeat(64)}`;
+    await f.db.query(
+      "INSERT INTO api_key (id,diagnostic_fingerprint,user_id,created_at) VALUES (30,$1,7,now() - interval '4 hours')",
+      [key],
+    );
+    await c.usage(new Date(Date.now() - 3 * hourMs).toISOString(), key);
+    const { state, counts } = await settle(f, c.storage);
+    assert.deepEqual(counts, []);
+    assert.deepEqual(state.lastRemap, last, "no remap");
+  });
+});
+
+test("a key revoked between passes counts nothing again: Home keeps its usage its owner's", async () => {
+  await seriesFixture(async (f) => {
+    const c = await counted(f);
+    const last = (await settle(f, c.storage)).state.lastRemap;
+    await f.db.query("UPDATE api_key SET deleted_at=now() WHERE id=9");
+    // Two passes: the first compares the digests from before the revoke, the second the first's.
+    for (const pass of [1, 2]) {
+      const { state, counts } = await settle(f, c.storage);
+      assert.deepEqual(counts, [], `pass ${pass}`);
+      assert.deepEqual(state.lastRemap, last, `pass ${pass}: no remap`);
+    }
   });
 });
 

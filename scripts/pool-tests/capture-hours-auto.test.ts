@@ -671,24 +671,24 @@ const mapped = async (f: Fixture) => ({
   mapping: (await remapCaptureHours(f.db, undefined)).mapping,
 });
 
-/** One pool's hours [from, to) made pending, as a history write into them does. */
+/** One pool's hours [from, to) made pending, as a history write's mark leaves them. */
 const makePending = (f: Fixture, pool: string, from: number, to: number) =>
-  f.db.query("DELETE FROM basalt_model_capture_hours WHERE pool=$1 AND hour >= $2 AND hour < $3", [
-    pool,
-    new Date(from).toISOString(),
-    new Date(to).toISOString(),
-  ]);
+  f.db.query(
+    "UPDATE basalt_model_capture_hours SET checked_at='-infinity' WHERE pool=$1 AND hour >= $2 AND hour < $3",
+    [pool, new Date(from).toISOString(), new Date(to).toISOString()],
+  );
 
 /** Every count settled long ago, the oldest hour counted longest ago. */
 const aged = (f: Fixture) =>
   f.db.query("UPDATE basalt_model_capture_hours SET checked_at=hour + interval '3 hours'");
 
 /** A clock that every count moves by `ms`, and a database that records each count's range. */
-function costly(f: Fixture, ms: number) {
+function costly(f: Fixture, ms: number, readMs = 0) {
   const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
   const counts: { pool: string; from: number; to: number }[] = [];
   const db: HistoryDatabase = {
     query: (text, values) => {
+      if (text !== countBlockStatement) clock.at += readMs;
       if (text === countBlockStatement) {
         clock.at += ms;
         counts.push({
@@ -702,6 +702,159 @@ function costly(f: Fixture, ms: number) {
   };
   return { clock, counts, db };
 }
+
+test("a pool Home changes on every pass still finishes counting again, each pass within its session", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    // Thirty days: 120 blocks a pool, about ten a session, so one cycle takes a dozen passes.
+    const lookback = 30 * 24;
+    await c.fill(lookback);
+    const newest = (
+      await f.db.query(
+        "SELECT max(checked_at) AS at FROM basalt_model_capture_hours WHERE pool=$1",
+        [c.otherId],
+      )
+    ).rows[0]!.at as Date;
+    const before = newest.toISOString();
+    const left = async () =>
+      Number(
+        (
+          await f.db.query(
+            `SELECT count(*)::int AS n FROM basalt_model_capture_hours
+            WHERE pool=$1 AND checked_at <= $2 AND checked_at >= hour + interval '2 hours'`,
+            [c.otherId, before],
+          )
+        ).rows[0]!.n,
+      );
+    assert.ok((await left()) > 100, "the other pool's counts, all taken before its first change");
+    const sessionMs = 100,
+      countMs = 10;
+    // Every other statement (plan, remap and recount reads) costs a millisecond of the session too.
+    const { clock, counts, db } = costly(f, countMs, 1);
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, await mapped(f));
+    let passes = 0;
+    for (; (await left()) > 0; passes++) {
+      assert.ok(passes < 20, `one whole cycle within 20 passes, ${await left()} counts left`);
+      // Home moves the other pool's key to another fingerprint and back, one each pass.
+      await f.db.query("UPDATE api_key SET diagnostic_fingerprint=$1 WHERE id=10", [
+        `sha256:${(passes % 2 ? "b" : "e").repeat(64)}`,
+      ]);
+      const started = clock.at;
+      const state = await captureHoursTick(storage, (work) => work(db), {
+        now: () => clock.at,
+        bounds: { lookbackHours: lookback, sessions: 1, sessionMs },
+      });
+      assert.equal(state.lastRemap?.pools, 1, `pass ${passes + 1} saw the change`);
+      assert.ok(
+        clock.at - started <= sessionMs + countMs + 5,
+        `pass ${passes + 1} spent ${clock.at - started} ms of a ${sessionMs} ms session`,
+      );
+      clock.at += 5 * minute;
+    }
+    assert.ok(passes >= 10, `the cycle spanned passes (${passes}), each cut by its session`);
+    assert.ok(
+      counts.every((count) => count.pool === c.otherId),
+      "only the changed pool",
+    );
+  });
+});
+
+test("a pool counted again with an hour past its own limit still finishes: that hour is left pending for the slow path", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    await c.fill();
+    const slowHour = key(Date.parse(at(10)));
+    const clock = { at: Date.parse("2026-02-01T00:00:00Z") };
+    // Any count holding that hour of the other pool runs 5 s, past every limit.
+    const db = timed(f.db, clock, { pool: c.otherId, hour: slowHour, cost: { ms: 5_000 } });
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, await mapped(f));
+    await f.db.query("UPDATE api_key SET diagnostic_fingerprint=$1 WHERE id=10", [
+      `sha256:${"e".repeat(64)}`,
+    ]);
+    let state: CaptureHoursAutoState = {};
+    let passes = 0;
+    for (; passes < 12; passes++) {
+      state = await captureHoursTick(storage, (work) => work(db), {
+        now: () => clock.at,
+        bounds: { lookbackHours },
+      });
+      clock.at += 5 * minute;
+      if (passes > 0 && !state.recount?.[c.otherId]) break;
+    }
+    assert.equal(state.recount?.[c.otherId], undefined, `the cycle finished (${passes} passes)`);
+    const row = (
+      await f.db.query(
+        `SELECT checked_at >= hour + interval '2 hours' AS settled FROM basalt_model_capture_hours
+        WHERE pool=$1 AND hour=$2`,
+        [c.otherId, slowHour],
+      )
+    ).rows[0];
+    assert.equal(row?.settled, false, "the slow hour waits pending, not on its old count");
+    assert.ok(
+      (state.slow ?? []).some((entry) => entry.pool === c.otherId && entry.hour === slowHour),
+      "the pending path's slow wait has it",
+    );
+  });
+});
+
+test("a change seen while a pool is counted again queues one more cycle, which runs once the first is done", async () => {
+  await seriesFixture(async (f) => {
+    const c = await captureFixture(f);
+    await c.native(at(0, minute));
+    await c.native(at(0, minute), true);
+    await c.ready();
+    const lookback = 30 * 24;
+    await c.fill(lookback);
+    const { clock, db } = costly(f, 10);
+    const storage = memoryStorage();
+    await storage.put(captureHoursAutoKey, await mapped(f));
+    const tick = async () => {
+      const state = await captureHoursTick(storage, (work) => work(db), {
+        now: () => clock.at,
+        bounds: { lookbackHours: lookback, sessions: 1, sessionMs: 100 },
+      });
+      clock.at += 5 * minute;
+      return state;
+    };
+    const move = (key: string) =>
+      f.db.query("UPDATE api_key SET diagnostic_fingerprint=$1 WHERE id=10", [
+        `sha256:${key.repeat(64)}`,
+      ]);
+    await move("e");
+    const first = (await tick()).recount?.[c.otherId];
+    assert.ok(first && !first.next, "the first change starts a cycle");
+    await move("b");
+    const queued = (await tick()).recount?.[c.otherId];
+    assert.equal(queued?.before, first.before, "the cycle in progress keeps its boundary");
+    assert.ok(queued?.next && queued.next > first.before, "the second change is queued");
+    let promoted = false;
+    let state = await tick();
+    for (let pass = 0; state.recount?.[c.otherId] && pass < 40; pass++) {
+      if (state.recount[c.otherId]!.before === queued!.next) promoted = true;
+      state = await tick();
+    }
+    assert.ok(promoted, "the queued cycle took over once the first was done");
+    assert.equal(state.recount?.[c.otherId], undefined, "and finished");
+    const left = await f.db.query(
+      `SELECT count(*)::int AS n FROM basalt_model_capture_hours
+      WHERE pool=$1 AND checked_at <= $2 AND checked_at >= hour + interval '2 hours'`,
+      [c.otherId, queued!.next],
+    );
+    assert.equal(
+      Number(left.rows[0]!.n),
+      0,
+      "every count taken before the second change was taken again",
+    );
+  });
+});
 
 test("pending blocks that overflow every session go the pools in turn, newest first, and no settled block is counted again", async () => {
   await seriesFixture(async (f) => {

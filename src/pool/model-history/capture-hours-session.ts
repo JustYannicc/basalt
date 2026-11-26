@@ -1,6 +1,7 @@
 import type { HistoryDatabase } from "./schema.ts";
 import type {
   CaptureHoursAutoBounds,
+  CaptureHoursRecount,
   CaptureHoursAutoState,
   CaptureHoursAutoStop,
   CaptureHoursStuck,
@@ -40,9 +41,22 @@ export interface CaptureSessionContext {
   readonly left: () => number;
   readonly stopped: () => boolean;
   readonly progress: CaptureSessionProgress;
+  /** Whether this session reads Home's mapping: the tick's first does. */
+  readonly remap: boolean;
 }
 
 const hourMs = 3_600_000;
+const instant = (value: unknown) =>
+  typeof value === "string" &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z$/.test(value) &&
+  Number.isFinite(Date.parse(value));
+/** A stored recount whose boundaries are times; anything else is dropped. */
+const validRecount = (entry: unknown): entry is CaptureHoursRecount =>
+  typeof entry === "object" &&
+  entry !== null &&
+  instant((entry as CaptureHoursRecount).before) &&
+  ((entry as CaptureHoursRecount).next === undefined ||
+    instant((entry as CaptureHoursRecount).next));
 const within = (hour: string | undefined, block: CaptureBlock) =>
   hour !== undefined &&
   Date.parse(hour) >= Date.parse(block.from) &&
@@ -109,28 +123,39 @@ export async function captureHoursSession(
   update({ planMs: Math.round((performance.now() - planStarted) * 10) / 10 });
   if (!plan) return "not_applied";
   // The pools Home remapped since the last tick are counted again, as far back as their counts go.
-  // A failed read fails the tick like the plan's: counting on unseen remaps would hide them.
-  const remap = await boundedRead(
-    db,
-    left,
-    () => remapCaptureHours(db, state().mapping),
-    captureHoursPlanLimitMs,
-  );
-  const recounting = Object.entries({
-    ...state().recount,
-    ...Object.fromEntries(remap.remapped.map((pool) => [pool, remap.at])),
-  }).filter(
-    (entry): entry is [string, string] =>
-      typeof entry[1] === "string" && remap.mapping[entry[0]] !== undefined,
-  );
-  update({
-    mapping: remap.mapping,
-    recount: Object.fromEntries(recounting),
-    ...(remap.remapped.length
-      ? { lastRemap: { at: new Date(now()).toISOString(), pools: remap.remapped.length } }
-      : {}),
-  });
-  const { pools, plannedAt } = plan;
+  // Read once a tick, by its first session. A failed read fails the tick like the plan's: counting
+  // on unseen remaps would hide them.
+  if (context.remap) {
+    const remap = await boundedRead(
+      db,
+      left,
+      () => remapCaptureHours(db, state().mapping),
+      captureHoursPlanLimitMs,
+    );
+    // A cycle in progress keeps its boundary, so a pool Home changes on every pass still finishes
+    // it; a newer change only queues one more cycle, from the newest change, once this one is done.
+    const recounting: Record<string, CaptureHoursRecount> = {};
+    for (const [pool, entry] of Object.entries(state().recount ?? {}))
+      if (remap.mapping.pools[pool] !== undefined && validRecount(entry)) recounting[pool] = entry;
+    for (const pool of remap.remapped) {
+      const was = recounting[pool];
+      recounting[pool] = was ? { before: was.before, next: remap.at } : { before: remap.at };
+    }
+    update({
+      mapping: remap.mapping,
+      recount: recounting,
+      ...(remap.remapped.length
+        ? { lastRemap: { at: new Date(now()).toISOString(), pools: remap.remapped.length } }
+        : {}),
+    });
+  }
+  // A pool that became ready since the tick's read is counted from the next tick on: its counts
+  // must not predate the mapping its changes are compared against.
+  const mapped = state().mapping?.pools;
+  const pools = context.remap
+    ? plan.pools
+    : plan.pools.filter((pool) => mapped?.[pool.pool] !== undefined);
+  const { plannedAt } = plan;
   // The tick reached its database and plan, so it is no longer failing as a whole.
   const done = await read(() =>
     countedHours(db, [...(state().stuck ?? []), ...(state().slow ?? [])]),
@@ -410,6 +435,34 @@ export async function captureHoursSession(
       return "rest";
     }
   };
+  /**
+   * A recounted hour whose count ran out its limit leaves the recount pending, as a mark leaves it:
+   * its old count is suspect, the summary reads it row by row, and the pending path's slow waits,
+   * longer retries and giving up take it from here, so the recount's cycle can end.
+   */
+  const leavePending = (pool: string, hour: string) =>
+    boundedRead(
+      db,
+      left,
+      async () => {
+        // Below the statement's own limit, which a nearly spent session makes as short as 50 ms.
+        const limit = Math.max(50, Math.min(captureHoursReadLimitMs, Math.floor(left())));
+        await db.query("SELECT set_config('lock_timeout',$1,true)", [
+          `${Math.max(1, Math.min(100, Math.floor(limit / 2)))}ms`,
+        ]);
+        await db.query(
+          "UPDATE basalt_model_capture_hours SET checked_at='-infinity' WHERE pool=$1 AND hour=$2",
+          [pool, hour],
+        );
+      },
+      captureHoursReadLimitMs,
+      true,
+    ).catch((error: unknown) => {
+      // A mark holding the row is making it pending already; a session out of time leaves the hour
+      // in the cycle for the next one. Neither is the tick's failure.
+      const code = postgresCode(error);
+      if (code !== "55P03" && code !== "57014") throw error;
+    });
   /** The hours the last block counted one by one: a skipped block's pending shrinks by them. */
   let countedInBlock = 0;
   const countBlockOnce = async (
@@ -438,11 +491,14 @@ export async function captureHoursSession(
         return undefined;
       }
       if (result.kind === "budget") return "budget";
+      // A mark holds one of its rows: the block waits pending for a later session.
+      if (result.kind === "busy") return "skip";
       if (result.kind === "lock") {
         progress.stopHour = block.from;
         return "lock";
       }
       if (result.kind === "slow") {
+        if (again) await leavePending(block.pool, block.from);
         slowHour(block, block.from, result.readMs, "count", performance.now() - started);
         return "skip";
       }
@@ -487,6 +543,10 @@ export async function captureHoursSession(
       const started = performance.now();
       const result = await countCaptureHour(db, block.pool, hour, left, bounds.countLimitMs);
       if (result.kind === "budget") return "budget";
+      if (result.kind === "busy") {
+        skipped = true;
+        continue;
+      }
       if (result.kind === "lock") {
         progress.stopHour = hour;
         return "lock";
@@ -494,6 +554,7 @@ export async function captureHoursSession(
       if (result.kind === "slow" || result.kind === "split") {
         // That hour waits; the block's other hours, and the pool's other blocks, go on, unless this
         // was the pool's second slow count this session, which ends its turn.
+        if (again) await leavePending(block.pool, hour);
         slowHour(block, hour, result.readMs, "count", performance.now() - started);
         if (resting.has(block.pool)) return "skip";
         skipped = true;
@@ -607,6 +668,7 @@ export async function captureHoursSession(
       }
       const elapsedMs = Math.round(performance.now() - started);
       if (result.kind === "budget") return undefined;
+      if (result.kind === "busy") continue;
       if (result.kind === "lock") {
         progress.stopHour = hour;
         return "lock";
@@ -681,20 +743,30 @@ export async function captureHoursSession(
    * slow wait keeps its pool for a later session.
    */
   const again = async (): Promise<CaptureHoursAutoStop | undefined> => {
-    for (const [pool, before] of Object.entries(state().recount ?? {})) {
+    for (const pool of Object.keys(state().recount ?? {})) {
       const tried = new Set<string>();
       for (let more = true; more;) {
         if (waiting().has(pool) || resting.has(pool)) break;
         if (stopped()) return "handover";
         if (left() <= 0) return "budget";
-        const listed = await read(() => recountBlocks(db, pool, before, bounds.lookbackHours));
-        if (!listed.length) {
+        const cycle = state().recount?.[pool];
+        if (!validRecount(cycle)) {
           update({
             recount: Object.fromEntries(
               Object.entries(state().recount ?? {}).filter(([name]) => name !== pool),
             ),
           });
           break;
+        }
+        const listed = await read(() =>
+          recountBlocks(db, pool, cycle.before, bounds.lookbackHours),
+        );
+        if (!listed.length) {
+          // This cycle is done: the next starts from the newest change, or the pool leaves.
+          const { [pool]: _done, ...others } = state().recount ?? {};
+          update({ recount: cycle.next ? { ...others, [pool]: { before: cycle.next } } : others });
+          tried.clear();
+          continue;
         }
         const blocks = listed.filter((block) => !tried.has(block.from));
         more = blocks.length > 0;

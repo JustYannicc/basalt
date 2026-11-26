@@ -152,6 +152,8 @@ export async function insertRequests(
   records: readonly ModelRequest[],
   preserveOriginalAttribution = false,
   strictContent = false,
+  /** The caller marked these rows' hours already (markRequestHours, capture-hours-mark.ts). */
+  marked = false,
 ): Promise<number> {
   const existing = await existingRequests(db, records, preserveOriginalAttribution, strictContent);
   const missing = records.filter((row) => !existing.has(row.id));
@@ -162,15 +164,16 @@ export async function insertRequests(
   if (!missing.length) return 0;
   const { selected, types } = historyRecordLayout(appAttribution);
   // The hours this fills with Home's rows are counted again (capture-hours-mark.ts).
+  const marking = captureHours && !marked;
   const result = await db.query(
     `WITH inserted AS (INSERT INTO basalt_model_requests (${selected})
       SELECT ${selected} FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
       ON CONFLICT (id) DO NOTHING RETURNING id, pool, timestamp, source)
-    ${captureHours ? `, ${markWrittenHours("inserted", "$2")}` : ""}
+    ${marking ? `, ${markWrittenHours("inserted", "$2")}` : ""}
     SELECT id FROM inserted`,
     [
       JSON.stringify(missing.map((row) => recordValues(row, appAttribution))),
-      ...(captureHours ? [await homeSource()] : []),
+      ...(marking ? [await homeSource()] : []),
     ],
   );
   // Repeat the ownership check after ON CONFLICT waits for a concurrent import to commit.

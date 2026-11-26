@@ -18,7 +18,7 @@ test("the capture-hour counts' inspect is closed: stored fields only, 16-hex poo
     stalestCheckedAt: "2026-11-20T01:00:00.123Z",
     planMs: 812.04,
     lastRemap: { at: "2026-11-23T09:00:00.000Z", pools: 2, host: "x" },
-    recount: { "0123456789abcdef": "2026-11-23T09:00:00.000000Z" },
+    recount: { "0123456789abcdef": { before: "2026-11-23T09:00:00.000000Z" } },
     split: [{ pool: "0123456789abcdef", from: "2026-08-01T00:00:00Z", to: "x" }],
     slow: [
       {

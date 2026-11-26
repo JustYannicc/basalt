@@ -1,10 +1,10 @@
 import { digest } from "../backend-users.ts";
 import { requireHomePrivacyReady } from "./privacy.ts";
-import { counter, invalidHistory } from "./record.ts";
+import { counter, invalidHistory, type ModelRequest } from "./record.ts";
 import { homeHistorySelect, homeHistorySource, homeRequest } from "./home.ts";
 import type { HistoryDatabase } from "./schema.ts";
-import { historyWriteReadiness } from "./capture-hours-mark.ts";
-import { historyBatchSize, insertRequests } from "./store.ts";
+import { historyWriteReadiness, markRequestHours } from "./capture-hours-mark.ts";
+import { existingRequests, historyBatchSize, insertRequests } from "./store.ts";
 import { pendingPoolHistoryChanges, poolHistoryPendingProjection } from "./change-revisions.ts";
 import { projectPoolHistoryChanges } from "./change-projection.ts";
 import { captureForwardPage } from "./capture-page.ts";
@@ -82,6 +82,9 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     old = backfill;
     complete = state.backfill_complete === true;
     let seen = sweep;
+    // Everything this transaction will insert is read first: its marks go in one ordered statement
+    // before any insert takes the rollup's rows, as a single-statement import takes them.
+    const batches: ModelRequest[][] = [];
     for (let page = 0; page < 2 && !complete; page++) {
       const rows = (
         await db.query(
@@ -90,11 +93,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
           [old, upper, historyBatchSize],
         )
       ).rows;
-      inserted += await insertRequests(
-        db,
-        await Promise.all(rows.map((row) => homeRequest(row, source))),
-        true,
-      );
+      batches.push(await Promise.all(rows.map((row) => homeRequest(row, source))));
       backfilled += rows.length;
       if (rows.length) old = counter(rows.at(-1)!.source_id)!;
       complete = rows.length < historyBatchSize || old === upper;
@@ -109,13 +108,19 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
         [seen, sweepUpper, historyBatchSize],
       )
     ).rows;
+    batches.push(await Promise.all(late.map((row) => homeRequest(row, source))));
+    if (writes.captureHours) {
+      // Only rows history lacks: the sweep reads rows captured long ago on every pass.
+      const missing: ModelRequest[] = [];
+      for (const batch of batches) {
+        const held = await existingRequests(db, batch, true);
+        missing.push(...batch.filter((row) => !held.has(row.id)));
+      }
+      await markRequestHours(db, missing);
+    }
     // A key may have moved since an uncharged row was captured. Keep the original attribution;
     // re-reading Home's current key owner must neither rewrite the row nor stall capture.
-    inserted += await insertRequests(
-      db,
-      await Promise.all(late.map((row) => homeRequest(row, source))),
-      true,
-    );
+    for (const batch of batches) inserted += await insertRequests(db, batch, true, false, true);
     swept = late.length;
     seen = late.length ? counter(late.at(-1)!.source_id)! : seen;
     if (late.length < historyBatchSize || BigInt(seen) >= BigInt(sweepUpper)) {

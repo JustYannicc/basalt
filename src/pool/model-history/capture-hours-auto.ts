@@ -11,8 +11,9 @@ export { captureHoursInspect } from "./capture-hours-inspect.ts";
  * after the usage rollup's tick, with one tick of at most two bounded sessions of its own. Each
  * counts six-hour blocks of the last 400 days, one short transaction a block, the pools in turn
  * by their newest pending block. A settled hour is counted again only when a history write into
- * it, or a key remapped into its pool, has made it pending (capture-hours-mark.ts), never on a
- * timer. Its state is stored apart from the rollup's.
+ * it has made it pending, or when Home changed its pool's users or keys, which counts the pool's
+ * counts again in place (capture-hours-mark.ts), never on a timer. Its state is stored apart from
+ * the rollup's.
  */
 export const captureHoursAutoKey = "capture-hours-auto-v1";
 
@@ -95,6 +96,15 @@ export interface CaptureHoursSlowWait {
   readonly gaveUp?: true;
 }
 
+/**
+ * One remapped pool's recount: every count taken before `before` is counted again; a change seen
+ * while it runs queues one more cycle, from `next`.
+ */
+export interface CaptureHoursRecount {
+  readonly before: string;
+  readonly next?: string;
+}
+
 export interface CaptureHoursAutoState {
   readonly lastTickAt?: string;
   readonly lastStop?: CaptureHoursAutoStop;
@@ -125,8 +135,8 @@ export interface CaptureHoursAutoState {
   }[];
   /** Home's users and keys at the last tick, to find a remap since (capture-hours-mark.ts). */
   readonly mapping?: CaptureHoursMapping;
-  /** Each remapped pool still being counted again, with the time before which its counts are. */
-  readonly recount?: Readonly<Record<string, string>>;
+  /** Each remapped pool still being counted again (capture-hours-session.ts). */
+  readonly recount?: Readonly<Record<string, CaptureHoursRecount>>;
   /** When a remap last found pools to count again, and how many. */
   readonly lastRemap?: { readonly at: string; readonly pools: number };
   /** The pool whose block was counted last: the next session starts with the one after it. */
@@ -238,7 +248,16 @@ export async function captureHoursTick(
     let stop: CaptureHoursAutoStop | undefined;
     try {
       stop = await session((db) =>
-        captureHoursSession({ db, bounds, now, budget, left, stopped, progress }),
+        captureHoursSession({
+          db,
+          bounds,
+          now,
+          budget,
+          left,
+          stopped,
+          progress,
+          remap: index === 0,
+        }),
       );
     } catch (error) {
       console.error("POOL_CAPTURE_HOURS_TICK_FAILED", {
