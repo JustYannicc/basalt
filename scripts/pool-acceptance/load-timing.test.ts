@@ -241,11 +241,11 @@ test("a frame whose text has no string form ends as a failed call that is counte
   }
 });
 
-test("the driver's own loop blocked inside the run is measured, and the run does not pass", async () => {
+// Right as the first call goes out, the driver's own loop stops for `overMs` past the limit.
+async function blockedRun(overMs: number) {
   const clock = testClock();
-  // Right as the first call goes out, the driver's own loop stops for longer than the limit.
   const block = () => {
-    const until = performance.now() + loopLagLimitMs + 200;
+    const until = performance.now() + loopLagLimitMs + overMs;
     while (performance.now() < until);
   };
   const pool = pacedPool(
@@ -268,11 +268,19 @@ test("the driver's own loop blocked inside the run is measured, and the run does
     shape: loadShape,
     clock,
   });
+  return { run, lines: summaryLines(run, loadShape).join("\n") };
+}
+
+test("the driver's own loop blocked inside the run is measured, and the run does not pass", async () => {
+  const { run, lines } = await blockedRun(200);
   assert.equal(run.calls[0]?.pass, true, "the call itself is clean");
   assert.ok((run.verdict.loopLagMaxMs ?? 0) >= loopLagLimitMs, String(run.verdict.loopLagMaxMs));
   assert.equal(run.verdict.passed, false);
-  assert.match(
-    summaryLines(run, loadShape).join("\n"),
-    /loop_lag_max_ms=\d+ limit_ms=3000 timings_not_trusted/u,
-  );
+  assert.match(lines, /loop_lag_max_ms=\d+ limit_ms=3000 timings_not_trusted/u);
+});
+
+test("a block only just past the limit is read whole, never shortened below it", async () => {
+  const { run } = await blockedRun(5);
+  assert.ok((run.verdict.loopLagMaxMs ?? 0) >= loopLagLimitMs, String(run.verdict.loopLagMaxMs));
+  assert.equal(run.verdict.passed, false);
 });

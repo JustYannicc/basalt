@@ -22,9 +22,9 @@ import {
 } from "./load-classes.ts";
 import { kindRotation, workerStartMs, type LoadShape } from "./load-shape.ts";
 
-/** A call as it ended, judged by the bar alone; a kill time can still move it to its own class. */
 const loopResolutionMs = 20;
 
+/** A call as it ended, judged by the bar alone; a kill time can still move it to its own class. */
 export type EndedCall = CallRecord & {
   readonly classes: readonly LoadClass[];
   readonly pass: boolean;
@@ -167,14 +167,14 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
         }
       }),
   );
-  input.stop?.removeEventListener("abort", stopped);
-  if (signalled()) error ??= stopKind(input.stop!);
   // A block just before here shows only at the monitor's next tick, so it gets one before it stops.
   await new Promise((resolve) => setTimeout(resolve, loopResolutionMs * 2));
+  input.stop?.removeEventListener("abort", stopped);
+  if (signalled()) error ??= stopKind(input.stop!);
   loop.disable();
-  // Each sample includes the monitor's own interval; with no sample the lag was not measured.
-  const loopLagMaxMs =
-    loop.count > 0 ? Math.max(0, Math.round(loop.max / 1e6) - loopResolutionMs) : undefined;
+  // The longest gap between two ticks, whole: it is at least as long as any block of the loop, so it
+  // is judged as read. With no sample the lag was not measured.
+  const loopLagMaxMs = loop.count > 0 ? Math.round(loop.max / 1e6) : undefined;
   return {
     calls,
     killAt,
