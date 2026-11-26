@@ -54,8 +54,9 @@ export function checkGitSecrets(input: {
   };
   inspectDiff(["diff", "--cached", "--raw", "--no-abbrev", "--no-renames", "-z"], "staged");
   const head = input.head || "HEAD";
-  if (input.base) {
-    const commits = git(["rev-list", "--reverse", `${input.base}..${head}`])
+  const base = input.base || pushBase(input.root);
+  if (base) {
+    const commits = git(["rev-list", "--reverse", `${base}..${head}`])
       .toString("utf8")
       .trim()
       .split("\n")
@@ -88,17 +89,22 @@ export function checkGitSecrets(input: {
 }
 
 /**
- * The base for a run that was given none, as a local preflight is: where `head` left origin/main,
- * so every commit a push would add is read, one whose file a later commit removed included. With
- * no origin/main there is none, and the check reads the whole tree instead.
+ * The base for a run that was given none, as a local preflight is: origin/main itself, so the run
+ * reads exactly the commits a push would add, one whose file a later commit removed included. A
+ * merge base would read more on a branch with several. With no origin/main there is none, and the
+ * check reads the whole tree instead.
  */
-export function pushBase(root: string, head = "HEAD") {
+function pushBase(root: string) {
   try {
-    const base = execFileSync("git", ["merge-base", head, "refs/remotes/origin/main"], {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    const base = execFileSync(
+      "git",
+      ["rev-parse", "--verify", "-q", "refs/remotes/origin/main^{commit}"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    ).trim();
     return base || undefined;
   } catch {
     return undefined;
