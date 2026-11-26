@@ -205,10 +205,10 @@ index 6f1419cc..ff829d7f 100644
 +	return n, errRead
 +}
 diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
-index 512c4f1e..a61bb6f2 100644
+index 5a1b9c79..4f9ace34 100644
 --- a/internal/runtime/executor/openai_compat_executor.go
 +++ b/internal/runtime/executor/openai_compat_executor.go
-@@ -539,7 +539,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
+@@ -552,7 +552,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
  			if len(dataLines) > 1 {
  				for _, dataLine := range dataLines {
  					if bytes.Equal(bytes.TrimSpace(dataLine), []byte("[DONE]")) {
@@ -217,7 +217,7 @@ index 512c4f1e..a61bb6f2 100644
  						return true
  					}
  				}
-@@ -551,7 +551,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
+@@ -564,7 +564,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
  				return true
  			}
  			if !isDone && !json.Valid(dataPayload) {
@@ -227,7 +227,7 @@ index 512c4f1e..a61bb6f2 100644
  			}
  			if !isDone {
 diff --git a/sdk/api/handlers/claude/code_handlers.go b/sdk/api/handlers/claude/code_handlers.go
-index e836bb73..a78d7c2e 100644
+index 82cb70d0..78f835ce 100644
 --- a/sdk/api/handlers/claude/code_handlers.go
 +++ b/sdk/api/handlers/claude/code_handlers.go
 @@ -30,6 +30,7 @@ import (
@@ -1877,7 +1877,7 @@ index 00000000..60c2f352
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
-index 02e4f3ee..62ed7ff3 100644
+index 255b5acf..10d64dc9 100644
 --- a/sdk/cliproxy/auth/conductor_cooldown.go
 +++ b/sdk/cliproxy/auth/conductor_cooldown.go
 @@ -24,6 +24,7 @@ import (
@@ -1888,7 +1888,7 @@ index 02e4f3ee..62ed7ff3 100644
  )
  
  var quotaCooldownDisabled atomic.Bool
-@@ -3268,6 +3269,8 @@ func resultErrorFromError(err error) *Error {
+@@ -3305,6 +3306,8 @@ func resultErrorFromError(err error) *Error {
  		}
  	}
  	switch {
@@ -1898,7 +1898,7 @@ index 02e4f3ee..62ed7ff3 100644
  		// A credential-scoped failure always stays on the credential quota path;
  		// normalize conflicting model-only or cooldown-skipping codes so MarkResult
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index 3295f4b5..4ab432dc 100644
+index 7e3b53e0..f66124d2 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -28,6 +28,7 @@ import (
@@ -1936,7 +1936,7 @@ index 3295f4b5..4ab432dc 100644
  	if err == nil || !cliproxyexecutor.UpstreamAttempted(ctx) {
  		return err
  	}
-@@ -923,7 +929,7 @@ func keepPreferredCandidateError(current, next error) error {
+@@ -926,7 +932,7 @@ func keepPreferredCandidateError(current, next error) error {
  
  func isRequestTerminatedError(err error) bool {
  	var terminated *cliproxyexecutor.RequestTerminatedError
@@ -1945,7 +1945,7 @@ index 3295f4b5..4ab432dc 100644
  }
  
  // prepareRequestAfterAuth plans the upstream route before passing its format to the optional interceptor.
-@@ -1291,7 +1297,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -1294,7 +1300,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  		execCtx = m.withAntigravityModelState(execCtx, auth)
  		execCtx = contextWithRequestedModelAlias(execCtx, pickOpts, routeModel)
  		execCtx = coreusage.WithSelectionID(execCtx, selectionIDFromOptions(pickOpts))
@@ -1954,7 +1954,7 @@ index 3295f4b5..4ab432dc 100644
  
  		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAliasForRequest(execCtx, auth, routeModel, pickOpts.Headers)
  		if len(models) == 0 {
-@@ -1349,7 +1355,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -1352,7 +1358,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  		var authErr error
  		didRefreshOnUnauthorized := false
  		for _, upstreamModel := range models {
@@ -1963,7 +1963,7 @@ index 3295f4b5..4ab432dc 100644
  			resultModel := m.stateModelForExecution(auth, routeModel, upstreamModel, pooled)
  			execReq := req
  			execReq.Model = upstreamModel
-@@ -1424,7 +1430,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -1427,7 +1433,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  					activeAuth.Store(auth)
  					publishSelectedAuthMetadata(execOpts.Metadata, auth)
  					didRefreshOnUnauthorized = true
@@ -1972,7 +1972,7 @@ index 3295f4b5..4ab432dc 100644
  					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
  					executionSeq = m.nextExecutionSeq()
  					startRetry := time.Now()
-@@ -2207,6 +2213,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -2205,6 +2211,13 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  		}
  		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
  		if errStream != nil {
@@ -1986,7 +1986,7 @@ index 3295f4b5..4ab432dc 100644
  			if isCredentialTerminatedError(errStream) {
  				recordRequestRefusedAuth(ctx, auth.ID)
  				if selection != nil {
-@@ -4072,7 +4085,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
+@@ -4091,7 +4104,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
  		return auth, errCtx
  	}
  	baseCtx = m.WithAuthTransport(baseCtx, auth)
@@ -1995,7 +1995,7 @@ index 3295f4b5..4ab432dc 100644
  	executionSeq := m.nextExecutionSeq()
  
  	baseExecutor := executor
-@@ -4120,7 +4133,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
+@@ -4139,7 +4152,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
  			if okRefresh {
  				auth = refreshed
  				didRefreshOnUnauthorized = true
@@ -2004,7 +2004,7 @@ index 3295f4b5..4ab432dc 100644
  				executionSeq = m.nextExecutionSeq()
  				accessToken = authAccessTokenForRequest(execCtx, auth, opts.Headers)
  				credVersion = auth.CredentialVersion
-@@ -4203,7 +4216,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
+@@ -4222,7 +4235,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
  							auth = refreshed
  							executor = executorForAuth(baseExecutor, auth)
  							didRefreshOnUnauthorized = true
@@ -2013,7 +2013,7 @@ index 3295f4b5..4ab432dc 100644
  							executionSeq = m.nextExecutionSeq()
  							accessToken = authAccessTokenForRequest(execCtx, auth, opts.Headers)
  							credVersion = auth.CredentialVersion
-@@ -4238,7 +4251,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
+@@ -4257,7 +4270,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
  				auth = refreshed
  				executor = executorForAuth(baseExecutor, auth)
  				didRefreshOnUnauthorized = true
@@ -2022,7 +2022,7 @@ index 3295f4b5..4ab432dc 100644
  				executionSeq = m.nextExecutionSeq()
  				accessToken = authAccessTokenForRequest(execCtx, auth, opts.Headers)
  				credVersion = auth.CredentialVersion
-@@ -4301,7 +4314,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
+@@ -4320,7 +4333,7 @@ func (m *Manager) VerifyInference(ctx context.Context, id, model string) (*Auth,
  					auth = refreshed
  					executor = executorForAuth(baseExecutor, auth)
  					didRefreshOnUnauthorized = true
@@ -2032,10 +2032,10 @@ index 3295f4b5..4ab432dc 100644
  					accessToken = authAccessTokenForRequest(execCtx, auth, opts.Headers)
  					credVersion = auth.CredentialVersion
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index 0b414008..42b739d7 100644
+index dcde110d..b6af4c32 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -1934,7 +1934,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
+@@ -2014,7 +2014,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
  		clearSchedulerSelectionID(creditsOpts.Metadata)
  		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
  		creditsCtx = coreusage.WithSelectionID(creditsCtx, "")
@@ -2044,7 +2044,7 @@ index 0b414008..42b739d7 100644
  		preparedAuth, errPrepare := m.prepareRequestAuth(creditsCtx, c.executor, c.auth)
  		if errPrepare != nil {
  			if preparedAuth != nil {
-@@ -1949,7 +1949,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
+@@ -2029,7 +2029,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
  		publishSelectedAuthMetadata(creditsOpts.Metadata, c.auth)
  		didRefreshOnUnauthorized := false
  		for _, upstreamModel := range models {
@@ -2053,7 +2053,7 @@ index 0b414008..42b739d7 100644
  			resultModel := m.stateModelForExecution(c.auth, routeModel, upstreamModel, pooled)
  			execReq := req
  			execReq.Model = upstreamModel
-@@ -2002,7 +2002,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
+@@ -2082,7 +2082,7 @@ func (m *Manager) tryAntigravityCreditsExecuteCandidates(ctx context.Context, re
  					activeAuth.Store(c.auth)
  					publishSelectedAuthMetadata(execOpts.Metadata, c.auth)
  					didRefreshOnUnauthorized = true
@@ -2062,7 +2062,7 @@ index 0b414008..42b739d7 100644
  					executionSeq = m.nextExecutionSeq()
  					resp, errExec = c.executor.Execute(creditsCtx, c.auth, execReq, execOpts)
  					syncActiveAuth()
-@@ -2092,7 +2092,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStreamCandidates(ctx context.Conte
+@@ -2176,7 +2176,7 @@ func (m *Manager) tryAntigravityCreditsExecuteStreamCandidates(ctx context.Conte
  		clearSchedulerSelectionID(creditsOpts.Metadata)
  		creditsCtx = contextWithRequestedModelAlias(creditsCtx, creditsOpts, routeModel)
  		creditsCtx = coreusage.WithSelectionID(creditsCtx, "")
@@ -2072,7 +2072,7 @@ index 0b414008..42b739d7 100644
  		if errPrepare != nil {
  			if preparedAuth != nil {
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index 5ca52c3c..400382c4 100644
+index d1d1536b..64755687 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
 @@ -11,6 +11,7 @@ import (
@@ -2083,8 +2083,8 @@ index 5ca52c3c..400382c4 100644
  )
  
  func (m *Manager) executeHome(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) (cliproxyexecutor.Response, error) {
-@@ -323,6 +324,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
- 		var refusedErr error
+@@ -328,6 +329,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 		restoreModel := restoreExecutionModel && selection.ExecutorPlugin == ""
  		for _, upstreamModel := range models {
  			execCtx = m.newUpstreamAttemptContext(execCtx)
 +			if !countTokens {
@@ -2094,7 +2094,7 @@ index 5ca52c3c..400382c4 100644
  			execReq := req
  			execReq.Model = upstreamModel
 diff --git a/sdk/cliproxy/auth/conductor_request_scoped_errors.go b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
-index 1db29895..c1aeb87a 100644
+index 132fa989..620ec317 100644
 --- a/sdk/cliproxy/auth/conductor_request_scoped_errors.go
 +++ b/sdk/cliproxy/auth/conductor_request_scoped_errors.go
 @@ -10,6 +10,7 @@ import (
@@ -2105,7 +2105,7 @@ index 1db29895..c1aeb87a 100644
  )
  
  type requestScopedErrorConfigContextKey struct{}
-@@ -419,6 +420,9 @@ func MatchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Co
+@@ -432,6 +433,9 @@ func MatchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Co
  }
  
  func matchRequestScopedErrorAction(auth *Auth, err error, cfg *internalconfig.Config) (string, bool) {
@@ -2116,10 +2116,10 @@ index 1db29895..c1aeb87a 100644
  		return "", false
  	}
 diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
-index a3284514..011bb267 100644
+index 2aac8322..71a6c7d5 100644
 --- a/sdk/cliproxy/auth/conductor_selection.go
 +++ b/sdk/cliproxy/auth/conductor_selection.go
-@@ -1880,7 +1880,7 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
+@@ -1881,7 +1881,7 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
  }
  
  func (m *Manager) shouldRetryAfterErrorWithAttempted(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int, attempted map[string]struct{}) (time.Duration, bool) {
@@ -2129,7 +2129,7 @@ index a3284514..011bb267 100644
  	}
  	var homeBusy *HomeConcurrencyBusyError
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index de7959f0..f5a0e0fa 100644
+index 36d6de62..c29781e8 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
 @@ -11,6 +11,7 @@ import (
@@ -2148,7 +2148,7 @@ index de7959f0..f5a0e0fa 100644
  			if chunk.Err != nil && !failed {
  				if ctxErr := ctx.Err(); ctxErr != nil {
  					if retryAfterFromError(chunk.Err) != nil {
-@@ -625,7 +627,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -692,7 +694,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  	var upstreamErr error
  	didRefreshOnUnauthorized := false
  	for idx, execModel := range execModels {
@@ -2157,7 +2157,7 @@ index de7959f0..f5a0e0fa 100644
  		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
  		execReq := req
  		execReq.Model = execModel
-@@ -726,7 +728,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -796,7 +798,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  					auth = refreshed
  					publishSelectedAuthMetadata(execOpts.Metadata, auth)
  					didRefreshOnUnauthorized = true
@@ -2166,7 +2166,7 @@ index de7959f0..f5a0e0fa 100644
  					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
  					executionSeq = m.nextExecutionSeq()
  					accessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
-@@ -771,6 +773,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -842,6 +844,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  			}
  			applyRequestScopedActionToResult(action, okAction, &result)
  			m.recordExecutionResult(execCtx, result, auth, ephemeralResult)
@@ -2178,7 +2178,7 @@ index de7959f0..f5a0e0fa 100644
  			errStream = annotateTrustedRetryAfterByHint(errStream)
  			if okAction && !isRequestStopError(errStream) && !isTOSViolationError(errStream) && !isRequestScopedStop(action, okAction) {
  				errStream = wrapRequestScopedContinueError(errStream)
-@@ -831,7 +838,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -902,7 +909,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  					auth = refreshed
  					publishSelectedAuthMetadata(execOpts.Metadata, auth)
  					didRefreshOnUnauthorized = true
@@ -2187,10 +2187,10 @@ index de7959f0..f5a0e0fa 100644
  					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
  					executionSeq = m.nextExecutionSeq()
  					accessToken = authAccessTokenForRequest(execCtx, auth, execOpts.Headers)
-@@ -883,6 +890,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
- 		}
+@@ -955,6 +962,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  		if bootstrapErr != nil {
  			abandonAttempt(streamResult)
+ 			recordAntigravityAttemptedModelFromAttempt(ctx, execCtx, provider, auth.ID, resultModel, bootstrapErr)
 +			if httptransport.IsOutcomeUnknown(bootstrapErr) {
 +				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(bootstrapErr), Options: execOpts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
 +				result.RetryAfter = retryAfterFromError(bootstrapErr)
@@ -2201,13 +2201,14 @@ index de7959f0..f5a0e0fa 100644
  			if !hasUpstreamExecutionAttempt(bootstrapErr) {
  				if preRefreshBootstrapErr != nil {
  					syncPreferredUpstreamError(&upstreamErr, newStreamBootstrapError(preRefreshBootstrapErr, preRefreshBootstrapHeaders))
-@@ -982,8 +996,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -1054,9 +1068,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  				attemptCleaned = true
  				discardStreamChunks(streamResult.Chunks)
  			}
 -			emptyErr := markUpstreamExecutionAttemptFromContext(attemptCtx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
 +			emptyErr := httptransport.ClassifyIncompleteResponse(attemptCtx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
 +			emptyErr = markUpstreamExecutionAttemptFromContext(attemptCtx, emptyErr)
+ 			recordAntigravityAttemptedModelFromAttempt(ctx, execCtx, provider, auth.ID, resultModel, emptyErr)
  			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
 +			if isRequestTerminatedError(emptyErr) && !httptransport.IsOutcomeUnknown(emptyErr) {
 +				return nil, currentErr
@@ -2215,7 +2216,7 @@ index de7959f0..f5a0e0fa 100644
  			if hasUpstreamExecutionAttempt(emptyErr) {
  				syncPreferredUpstreamError(&upstreamErr, currentErr)
  			} else if preRefreshBootstrapErr != nil {
-@@ -994,6 +1012,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -1067,6 +1085,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  			warnLogUpstreamFailure(execCtx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
  			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts, AccessToken: accessToken, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
  			m.recordExecutionResult(execCtx, result, auth, ephemeralResult)
