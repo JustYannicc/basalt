@@ -103,7 +103,13 @@ export function watchDecision(
   const names = Object.keys(input.planned);
   // A box job not listed yet still waits for its own needs; box-watch waits for it too.
   const missing = names.filter((name) => !listed.has(name));
+  // Queued box jobs: the ones a verdict may name, since box-rerun accepts only jobs no runner
+  // took. One GitHub shows in progress before naming its runner keeps box-watch from finishing,
+  // but a verdict never names it: it may have been taken, and the lost rule catches it if not.
   const stuck = names
+    .map((name) => listed.get(name))
+    .filter((job): job is WatchedJob => !!job && job.onBox && notStarted.has(job.status));
+  const unseated = names
     .map((name) => listed.get(name))
     .filter((job): job is WatchedJob => !!job && job.onBox && waiting(job));
   // A cancel of the whole run cancels every job that hadn't ended, box or not; a lost box job is
@@ -128,7 +134,7 @@ export function watchDecision(
         at: new Date(Math.floor(input.now / 1000) * 1000).toISOString(),
       },
     };
-  if (!missing.length && !stuck.length) return { action: "done" };
+  if (!missing.length && !unseated.length) return { action: "done" };
   // Each job's deadline counts from when it was queued: a busy GitHub queue for the jobs it needs
   // delays it, the floor and the Check alike. A second-wave job held behind this Check's own running
   // box jobs waits by design; a first-wave one should have started at once, so its deadline holds.

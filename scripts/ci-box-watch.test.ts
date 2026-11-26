@@ -228,13 +228,15 @@ test("a box job GitHub cancelled before any runner took it reads as lost, from i
   assert.equal(watchedJob({ ...lost, conclusion: "failure" }, "basalt-box").lost, false);
 });
 
-test("a box job shown in progress before GitHub names its runner still waits", () => {
+test("a box job shown in progress before GitHub names its runner keeps box-watch watching, unnamed", () => {
   // Read from GitHub, an in-progress job with no runner has not started on any runner.
   const unseated = watchedJob(
     { id: 5, name: "job-5", status: "in_progress", runner_name: "", labels: ["basalt-box"] },
     "basalt-box",
   );
-  assert.equal(watch([unseated], 60).action, "cancel");
+  // It keeps box-watch from finishing, but no verdict names it: it may have been taken.
+  assert.deepEqual(watch([unseated], 60), { action: "wait" });
+  assert.equal(watch([unseated], 60, 60).action, "wait");
   const seated = watchedJob(
     {
       id: 5,
