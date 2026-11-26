@@ -205,6 +205,33 @@ test("a whole stage whose rows name another stage's or production's objects is l
   }
 });
 
+test("an unnamed Worker cut to its 54 limit proves only as derived for its own id, instance and stage", async () => {
+  // Alchemy's `createWorkerName` for `Api`, lowercased (computed once with Alchemy).
+  const api = (workerName: string) => row("Cloudflare.Worker", { workerName }, "Api");
+  const ownApi = "basalt-rehearsal-api-test-rehed34q3xdnvov2xk5lvov2xk5l";
+  assert.equal(await ownershipRefusal([...whole, api(ownApi)], stage, own, production), undefined);
+  for (const [why, name] of [
+    ["derived for another stage", "basalt-rehearsal-api-test-rehey4lomo57vov2xk5lvov2xk5l"],
+    ["derived for another instance", "basalt-rehearsal-api-test-rehew7sresduzxg43tonzxg43ton"],
+    // A Worker's name is lowercased; the same cut in its id's case is no name Alchemy gives it.
+    ["the cut in mixed case", "basalt-rehearsal-Api-test-rehed34q3xdnvov2xk5lvov2xk5l"],
+  ] as const)
+    assert.equal(
+      (await ownershipRefusal([...whole, api(name)], stage, own, production))?.line,
+      "a Cloudflare.Worker row names an object that is not this stage's (workerName)",
+      why,
+    );
+  // The same cut on another row's id is refused too: the hash covers the id.
+  assert.ok(
+    await ownershipRefusal(
+      [...whole, row("Cloudflare.Worker", { workerName: ownApi }, "Router")],
+      stage,
+      own,
+      production,
+    ),
+  );
+});
+
 // A database-only stage as its stack records it: the stack's output row, then its database.
 const outputRow = {
   path: `basalt-preview-database/${stage}/output`,

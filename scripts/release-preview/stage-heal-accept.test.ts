@@ -11,8 +11,19 @@ import {
   requireCandidateGuard,
   requireSameStateDecoder,
   sameStateDecoder,
+  stateReadingSections,
   testsRan,
 } from "./stage-candidate.ts";
+import {
+  build,
+  type Decoded,
+  decoderTree,
+  git,
+  markingEntry,
+  preparedTree,
+  section,
+  served,
+} from "./stage-candidate-fixtures.ts";
 
 const older =
   'if [ -n "$within" ]; then expect=(--expect restart --root-boot .local/release/root-boot.json --serving .local/release/serving.json --within "$within"); fi';
@@ -40,46 +51,6 @@ test("restartExpectArgs refuses a workflow with no restart acceptance, or a miss
     /no restart bound/u,
   );
 });
-
-const git = (cwd: string, ...args: string[]) =>
-  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
-    cwd,
-    encoding: "utf8",
-  }).trim();
-const served = (version: string) => `export const servedFrameworkVersion = "${version}";\n`;
-const build = (version: string) =>
-  JSON.stringify({
-    "package.json": JSON.stringify({ name: "apps", version }),
-    "runtime.json": JSON.stringify({ protocol: 1, version }),
-  });
-
-/**
- * A prepared candidate: its own repository, with `.upstream` its own checkout at `upstream.json`
- * and, unless `built` is false, a framework build of `version`.
- */
-async function preparedTree(
-  at: string,
-  name: string,
-  version: string,
-  { built = true }: { built?: boolean } = {},
-) {
-  const dir = join(at, name);
-  const upstream = join(dir, ".upstream");
-  await mkdir(upstream, { recursive: true });
-  git(upstream, "init", "-q");
-  git(upstream, "commit", "-q", "--allow-empty", "-m", `upstream for ${name}`);
-  const commit = git(upstream, "rev-parse", "HEAD");
-  await writeFile(join(dir, "upstream.json"), JSON.stringify({ commit }));
-  await writeFile(join(dir, "framework-release.ts"), served(version));
-  if (built) {
-    await mkdir(join(upstream, ".local/basalt-framework"), { recursive: true });
-    await writeFile(join(upstream, ".local/basalt-framework/framework.json"), build(version));
-  }
-  git(dir, "init", "-q");
-  git(dir, "add", "upstream.json", "framework-release.ts");
-  git(dir, "commit", "-q", "-m", "candidate");
-  return { dir, upstream, commit };
-}
 
 /** The stage-identity keys `stageEnvironment` sets: stage, database, origin, State and secrets. */
 const stageIdentityKeys = [
@@ -248,16 +219,6 @@ test("a candidate whose framework build is a link, or resolves outside its upstr
   );
 });
 
-/** A release entry that only records that it ran. */
-async function markingEntry(dir: string) {
-  await mkdir(join(dir, "scripts/release"), { recursive: true });
-  await writeFile(
-    join(dir, "scripts/release/deploy.ts"),
-    'import { writeFileSync } from "node:fs";\nwriteFileSync(new URL("../../entry-ran", import.meta.url), "ran");\n',
-  );
-  return join(dir, "entry-ran");
-}
-
 test("a fresh candidate with no framework build is refused before its entry runs", async (t) => {
   const at = await mkdtemp(join(tmpdir(), "stage-unbuilt-"));
   t.after(() => rm(at, { recursive: true, force: true }));
@@ -374,25 +335,32 @@ test("testsRan counts only tests that ran, not suites, skips or a file that held
   assert.equal(testsRan("", files), 0);
 });
 
-type Decoded = { version: string; store?: string; patch?: string };
+// A composed alchemy patch: Basalt's other carries around the sections that read State.
+const composed = ({ state = "read", other = "carry" }: { state?: string; other?: string } = {}) =>
+  [
+    section("src/Cloudflare/Workers/WorkerProvider.ts", other),
+    section("src/State/HttpStateApi.ts", state),
+    section("lib/State/HttpStateApi.js", state),
+    section("package.json", other),
+    section("src/Cloudflare/StateStore/Api.ts", state),
+    section("lib/Cloudflare/StateStore/Api.js", state),
+  ].join("");
 
-/** A prepared tree's cloud app resolving alchemy and effect through bun's store, as installed. */
-async function decoderTree(at: string, packages: Record<string, Decoded>) {
-  const upstream = join(at, ".upstream");
-  for (const [name, { version, store = `${name}@${version}`, patch }] of Object.entries(packages)) {
-    const installed = join(upstream, "node_modules/.bun", store, "node_modules", name);
-    await mkdir(installed, { recursive: true });
-    await writeFile(join(installed, "package.json"), JSON.stringify({ name, version }));
-    const linked = join(upstream, "apps/hosted/cloud/node_modules");
-    await mkdir(linked, { recursive: true });
-    await symlink(installed, join(linked, name));
-    if (patch !== undefined) {
-      await mkdir(join(upstream, "patches"), { recursive: true });
-      await writeFile(join(upstream, "patches", `${name}@${version}.patch`), patch);
-    }
-  }
-  return at;
-}
+test("stateReadingSections keeps only State and State store sections, in order, byte for byte", () => {
+  const patch = composed();
+  assert.equal(
+    stateReadingSections(patch),
+    [
+      section("src/State/HttpStateApi.ts", "read"),
+      section("lib/State/HttpStateApi.js", "read"),
+      section("src/Cloudflare/StateStore/Api.ts", "read"),
+      section("lib/Cloudflare/StateStore/Api.js", "read"),
+    ].join(""),
+  );
+  // Text before the first header, and a path that only starts like State, are not State reading.
+  assert.equal(stateReadingSections(`preamble\n${section("src/StateMachine.ts", "x")}`), "");
+  assert.equal(stateReadingSections("--- a\n+++ b\n@@ one\n"), "");
+});
 
 test("the harness's fault read stays the boot proof only while both trees decode State alike", async (t) => {
   const base = await mkdtemp(join(tmpdir(), "state-decoder-"));
@@ -400,7 +368,7 @@ test("the harness's fault read stays the boot proof only while both trees decode
   const alchemy = {
     version: "2.0.0-beta.80",
     store: "alchemy@2.0.0-beta.80+088b6a62490bc67b",
-    patch: "--- a\n+++ b\n@@ one\n",
+    patch: composed(),
   };
   const effect = { version: "4.0.1", patch: "--- a\n+++ b\n@@ effect\n" };
   let count = 0;
@@ -417,12 +385,36 @@ test("the harness's fault read stays the boot proof only while both trees decode
     alchemy: { ...alchemy, store: "alchemy@2.0.0-beta.80+1111111111111111" },
     effect,
   });
-  // Same version and store entry, another patch: the version alone would read the same.
-  await differs("patch bytes", {
-    alchemy: { ...alchemy, patch: "--- a\n+++ b\n@@ two\n" },
+  // Same version and store entry, another State-reading carry: the version alone reads the same.
+  await differs("State sections", {
+    alchemy: { ...alchemy, patch: composed({ state: "read differently" }) },
+    effect,
+  });
+  // One more State section, or one fewer, is another decoder too.
+  await differs("an extra State section", {
+    alchemy: { ...alchemy, patch: composed() + section("src/State/Extra.ts", "x") },
     effect,
   });
   await differs("patch missing on one side", { alchemy: { ...alchemy, patch: undefined }, effect });
+  // The effect patch stays compared whole.
+  await differs("effect patch bytes", {
+    alchemy,
+    effect: { ...effect, patch: "--- a\n+++ b\n@@ other\n" },
+  });
+  // Basalt's other carries may differ: the harness and main carry different sets at one pin.
+  assert.ok(
+    sameStateDecoder(
+      harness,
+      await tree({
+        alchemy: {
+          ...alchemy,
+          patch: composed({ other: "another carry" }) + section("src/Bundle/Bundle.ts", "x"),
+        },
+        effect,
+      }),
+    ),
+    "only other carries differ",
+  );
   // Neither tree patching a package is the same for that package.
   const unpatched = { alchemy: { ...alchemy, patch: undefined }, effect };
   assert.ok(sameStateDecoder(await tree(unpatched), await tree(unpatched)));
@@ -446,18 +438,21 @@ test("a moved pin with another State decoder is refused before any entry runs", 
   const at = await mkdtemp(join(tmpdir(), "stage-decoder-refusal-"));
   t.after(() => rm(at, { recursive: true, force: true }));
   const decoder = {
-    alchemy: { version: "2.0.0-beta.80", patch: "one" },
+    alchemy: { version: "2.0.0-beta.80", patch: composed() },
     effect: { version: "4.0.1" },
   };
   const harness = await preparedTree(at, "harness", "1");
   const moved = await preparedTree(at, "moved", "2");
   await decoderTree(harness.dir, decoder);
-  await decoderTree(moved.dir, { ...decoder, alchemy: { ...decoder.alchemy, patch: "two" } });
+  await decoderTree(moved.dir, {
+    ...decoder,
+    alchemy: { ...decoder.alchemy, patch: composed({ state: "two" }) },
+  });
   assert.throws(
     () => requireSameStateDecoder(harness.dir, moved.dir),
-    /alchemy or effect build differs from the harness's.*nothing is deployed/u,
+    /alchemy or effect build differs from the harness's where it reads State.*nothing is deployed/u,
   );
-  // The same decoder on a moved pin, or any decoder on the harness's own pin, goes on.
+  // The same decoder on a moved pin, or the same tree, goes on.
   const same = await preparedTree(at, "same", "3");
   await decoderTree(same.dir, decoder);
   requireSameStateDecoder(harness.dir, same.dir);
@@ -477,6 +472,45 @@ test("a moved pin with another State decoder is refused before any entry runs", 
     /alchemy or effect build differs from the harness's/u,
   );
   assert.equal(existsSync(ran), false);
+});
+
+test("on the harness's own pin, another composed patch still has its State reading checked", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-decoder-same-pin-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const decoder = {
+    alchemy: { version: "2.0.0-beta.80", patch: composed() },
+    effect: { version: "4.0.1", patch: "--- a\n+++ b\n@@ effect\n" },
+  };
+  const harness = await preparedTree(at, "harness", "1");
+  await decoderTree(harness.dir, decoder);
+  // A candidate at the harness's own pin.
+  const samePin = async (name: string, packages: Record<string, Decoded>) => {
+    const tree = await preparedTree(at, name, "1");
+    await writeFile(join(tree.dir, "upstream.json"), JSON.stringify({ commit: harness.commit }));
+    await decoderTree(tree.dir, packages);
+    return tree.dir;
+  };
+  const refused = /alchemy or effect build differs from the harness's where it reads State/u;
+  // Another State-reading carry at the same pin, same version and store entry, is refused.
+  const otherState = await samePin("other-state", {
+    ...decoder,
+    alchemy: { ...decoder.alchemy, patch: composed({ state: "read differently" }) },
+  });
+  assert.throws(() => requireSameStateDecoder(harness.dir, otherState), refused);
+  // Another effect patch at the same pin is refused.
+  const otherEffect = await samePin("other-effect", {
+    ...decoder,
+    effect: { ...decoder.effect, patch: "--- a\n+++ b\n@@ other\n" },
+  });
+  assert.throws(() => requireSameStateDecoder(harness.dir, otherEffect), refused);
+  // Only Basalt's other carries differ: the composed patch differs, its State reading does not.
+  const otherCarries = await samePin("other-carries", {
+    ...decoder,
+    alchemy: { ...decoder.alchemy, patch: composed({ other: "fourteen carries" }) },
+  });
+  requireSameStateDecoder(harness.dir, otherCarries);
+  // The same composed patches at the same pin: nothing to check, as before.
+  requireSameStateDecoder(harness.dir, await samePin("identical", decoder));
 });
 
 test("a heal record measures the stage-only overlay back to the first unmarked commit", async (t) => {

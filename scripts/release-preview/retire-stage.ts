@@ -124,7 +124,7 @@ const LOCAL_TYPES = /^(?:Alchemy|Command)\./u;
 
 /**
  * The names Alchemy gives an unnamed resource under the rehearsal stack and this stage, from the
- * row's own id and instance: each provider's length limit and case. A name cut to its limit keeps
+ * row's own id and instance: each provider's length limit and case (64, 63, and a Worker's 54). A name cut to its limit keeps
  * only a hash of the stack, stage, id and instance, so only this row's own cut name matches.
  */
 async function derivedNames(id: string, instanceId: string, stage: string) {
@@ -133,18 +133,22 @@ async function derivedNames(id: string, instanceId: string, stage: string) {
   const { Stage } = await import("alchemy/Stage");
   const { InstanceId } = await import("alchemy/InstanceId");
   const { Effect } = await import("effect");
+  const derive = (maxLength: number, lowercase: boolean) =>
+    Effect.runPromise(
+      createPhysicalName({ id, instanceId, maxLength, lowercase }).pipe(
+        Effect.provideService(StackContext, { name: "basalt-rehearsal" } as never),
+        Effect.provideService(Stage, stage),
+        Effect.provideService(InstanceId, instanceId),
+      ),
+    );
   const names: string[] = [];
   for (const maxLength of [64, 63])
     for (const lowercase of [true, false]) {
-      const name = await Effect.runPromise(
-        createPhysicalName({ id, instanceId, maxLength, lowercase }).pipe(
-          Effect.provideService(StackContext, { name: "basalt-rehearsal" } as never),
-          Effect.provideService(Stage, stage),
-          Effect.provideService(InstanceId, instanceId),
-        ),
-      );
+      const name = await derive(maxLength, lowercase);
       names.push(name, name.toLowerCase());
     }
+  // An unnamed Worker (`createWorkerName`): cut to 54, then lowercased whole.
+  names.push((await derive(54, false)).toLowerCase());
   return names;
 }
 

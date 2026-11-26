@@ -127,10 +127,28 @@ export const pinMoved = (harness: string, tree: string) =>
   tree !== harness && upstreamPin(tree) !== upstreamPin(harness);
 
 /**
+ * The parts of a composed alchemy patch that change how State is read: its per-file sections (from
+ * one `diff --git a/… b/…` header to the next) under State and the Cloudflare State store, in order.
+ * The rest of the patch is Basalt's other carries, which a harness and a candidate may differ in.
+ */
+const stateReadingPath = /^(?:src|lib)\/(?:State|Cloudflare\/StateStore)\//u;
+export function stateReadingSections(patch: string) {
+  return patch
+    .split(/^(?=diff --git )/mu)
+    .filter((section) => {
+      const header = /^diff --git a\/(\S+) b\/(\S+)/u.exec(section);
+      return (
+        header !== null && (stateReadingPath.test(header[1]!) || stateReadingPath.test(header[2]!))
+      );
+    })
+    .join("");
+}
+
+/**
  * How a prepared tree's cloud app decodes State, per package: the installed version, the bun store
- * entry it resolves to (`<name>@<version>[+<hash>]`), and the bytes of the upstream patch for that
- * version, or null when there is none. Upstream patches alchemy, so a pin that changes only the
- * patch keeps the version. Undefined when any of it cannot be read.
+ * entry it resolves to (`<name>@<version>[+<hash>]`), and the upstream patch for that version, or
+ * null when there is none: for alchemy only its State-reading sections, for effect all of it.
+ * Undefined when any of it cannot be read.
  */
 function stateDecoder(tree: string) {
   return ["alchemy", "effect"].map((name) => {
@@ -143,10 +161,12 @@ function stateDecoder(tree: string) {
       ].at(-1)?.[1];
       if (!store) return undefined;
       const patch = join(tree, ".upstream/patches", `${name}@${version}.patch`);
+      // latin1 keeps every byte as one character, so the sections compare byte for byte.
+      const bytes = existsSync(patch) ? readFileSync(patch, "latin1") : null;
       return {
         version,
         store,
-        patch: existsSync(patch) ? readFileSync(patch).toString("base64") : null,
+        patch: bytes !== null && name === "alchemy" ? stateReadingSections(bytes) : bytes,
       };
     } catch {
       return undefined;
@@ -156,7 +176,8 @@ function stateDecoder(tree: string) {
 
 /**
  * Whether two prepared trees decode State the same: the cloud app resolves the same alchemy and
- * effect, by version, bun store entry and upstream patch. Unreadable on either side is not the same.
+ * effect, by version and bun store entry, with the same State-reading alchemy patch sections and
+ * the same effect patch. Unreadable on either side is not the same.
  */
 export const sameStateDecoder = (harness: string, tree: string) => {
   const [a, b] = [stateDecoder(harness), stateDecoder(tree)];
@@ -172,14 +193,32 @@ export const sameStateDecoder = (harness: string, tree: string) => {
   });
 };
 
+/** A tree's composed alchemy and effect patches, by file name, whatever version they are for. */
+function composedPatches(tree: string) {
+  const dir = join(tree, ".upstream/patches");
+  try {
+    return readdirSync(dir)
+      .filter((name) => /^(?:alchemy|effect)@[^/]+\.patch$/u.test(name))
+      .sort()
+      .map((name) => `${name}\0${readFileSync(join(dir, name)).toString("base64")}`)
+      .join("\n");
+  } catch {
+    return existsSync(dir) ? undefined : "";
+  }
+}
+
 /**
- * On a moved pin the harness reads the stage's boot and tears it down with its own alchemy and
- * effect, so a candidate that decodes State otherwise is refused before anything deploys.
+ * The harness reads the stage's boot and tears it down with its own alchemy and effect, so a
+ * candidate that decodes State otherwise is refused before anything deploys. It is checked on a
+ * moved pin, and on the same pin whenever the candidate composes another alchemy or effect patch.
  */
 export function requireSameStateDecoder(harness: string, tree: string) {
-  if (pinMoved(harness, tree) && !sameStateDecoder(harness, tree))
+  if (tree === harness) return;
+  const patched = composedPatches(harness);
+  const composedAlike = patched !== undefined && patched === composedPatches(tree);
+  if ((pinMoved(harness, tree) || !composedAlike) && !sameStateDecoder(harness, tree))
     throw new Error(
-      "The candidate's alchemy or effect build differs from the harness's, so the harness could neither read the stage's boot after the release nor tear it down safely; nothing is deployed",
+      "The candidate's alchemy or effect build differs from the harness's where it reads State, so the harness could neither read the stage's boot after the release nor tear it down safely; nothing is deployed",
     );
 }
 
@@ -291,6 +330,9 @@ export function requireCandidateGuard(
         clearTimeout(deadline);
         done({ code: 1, timedOut });
       });
+      // Once the child has exited the deadline has nothing left to time, and a late kill could
+      // reach a process group id the system has handed out again.
+      child.once("exit", () => clearTimeout(deadline));
       child.once("close", (status) => {
         clearTimeout(deadline);
         done({ code: status ?? 1, timedOut });

@@ -52,6 +52,7 @@ import {
   requireCandidateGuard,
   requireSameStateDecoder,
 } from "./stage-candidate.ts";
+import { requireCandidateStack } from "./stage-candidate-stack.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
@@ -136,6 +137,7 @@ export async function runEntry(
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
   // All before the stage env is composed, so a refused candidate never sees a secret.
+  requireCandidateStack(root, tree, stageNames(subject).stage, source);
   const own = candidateTreeEnvironment(root, tree);
   await requireCandidateGuard(root, tree, outputs, source);
   requireSameStateDecoder(root, tree);
@@ -506,6 +508,72 @@ export function releaseCandidate(text: string) {
 }
 
 /**
+ * What a candidate run does outside this process: the harness it is checked against, its spec
+ * files, the candidate's checkout and prepare, and the stage steps after them (probe, fault reads,
+ * the acceptance device, the stage build, the Workers list). Tests replace them to prove the order.
+ */
+export interface CandidateRunServices {
+  readonly harness: string;
+  readonly spec: (name: string) => Promise<string>;
+  readonly checkout: (branch: string, dir: string) => void | Promise<void>;
+  readonly prepare: (dir: string) => void;
+  readonly startProbe: typeof startProbe;
+  readonly faultRead: typeof faultRead;
+  readonly device: (candidate: string, args: readonly string[], env: NodeJS.ProcessEnv) => string;
+  readonly withStageBuild: typeof withStageBuild;
+  readonly workerScripts: typeof workerScripts;
+}
+
+const liveCandidateServices: CandidateRunServices = {
+  harness: root,
+  spec: (name) => readFile(join(root, "scripts/release-preview", name), "utf8"),
+  checkout: (branch, dir) => {
+    execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", dir, "FETCH_HEAD"], { cwd: root });
+  },
+  prepare: (dir) => {
+    execFileSync("npm", ["run", "prepare:upstream"], { cwd: dir, stdio: "ignore" });
+  },
+  startProbe: (...args) => startProbe(...args),
+  faultRead: (...args) => faultRead(...args),
+  device: (candidate, args, env) =>
+    execFileSync(
+      "node",
+      [join(candidate, "scripts/release/rehearsal-acceptance-device.ts"), ...args],
+      {
+        cwd: candidate,
+        env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    ),
+  withStageBuild: (...args) => withStageBuild(...args),
+  workerScripts: (...args) => workerScripts(...args),
+};
+
+/** A fresh detached checkout of `branch` at `dir`; returns its commit. */
+async function checkoutCandidate(branch: string, dir: string, io: CandidateRunServices) {
+  await rm(dir, { recursive: true, force: true });
+  await io.checkout(branch, dir);
+  return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
+}
+
+/**
+ * The candidate's own prepare, then the checks that need it, before anything touches the stage: the
+ * harness must decode State as the candidate does, and the candidate must deploy into the lane.
+ */
+function prepareCandidate(
+  candidate: string,
+  subject: StageSubject,
+  source: NodeJS.ProcessEnv,
+  io: CandidateRunServices,
+) {
+  io.prepare(candidate);
+  requireSameStateDecoder(io.harness, candidate);
+  requireCandidateStack(io.harness, candidate, stageNames(subject).stage, source);
+}
+
+/**
  * One release of a candidate onto the stage, as production releases (lane 5's apply A, apply B and
  * the red run): its own entry, policy and stack, then a fresh plan. Around the apply: the pool
  * Worker versions it created, and the controller's selected boot before and after.
@@ -526,21 +594,13 @@ async function stageRelease(
   const { branch } = named;
   const result: Record<string, unknown> = { branch, policy, kind };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
-  await rm(candidate, { recursive: true, force: true });
-  execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
-  execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
-    cwd: root,
-  });
-  result.candidate = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: candidate,
-    encoding: "utf8",
-  }).trim();
+  const io = liveCandidateServices;
+  result.candidate = await checkoutCandidate(branch, candidate, io);
   if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
     throw new Error(`The candidate has no ${policy} policy`);
-  execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
   // The harness's fault read is the boot proof after the release, even on a moved pin: it needs no
   // acceptance device, which a lane does not have. So the candidate must decode State as it does.
-  requireSameStateDecoder(root, candidate);
+  prepareCandidate(candidate, subject, source, io);
   const bootOf = async (label: string) =>
     faultRead(lane, source, outputs, label, ["--read-only"]).then(
       (state) => (state.selection as { boot?: unknown; epoch?: unknown } | undefined) ?? null,
@@ -705,30 +765,22 @@ async function smokeIds(origin: string, source: NodeJS.ProcessEnv, stage: string
  * re-acceptance; then every Worker's serving version compared by id and a plan read back. The
  * acceptance device is registered in the job by the candidate's own tool, its ids kept in memory.
  */
-async function redRelease(
+export async function redRelease(
   lane: number,
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   outputs: string,
   hooks: ReturnType<typeof nativeHooks>,
+  io: CandidateRunServices = liveCandidateServices,
 ) {
-  const { branch, policy } = releaseCandidate(
-    await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
-  );
+  const { branch, policy } = releaseCandidate(await io.spec("release-candidate.json"));
   const result: Record<string, unknown> = { branch, policy, kind: "red" };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
-  await rm(candidate, { recursive: true, force: true });
-  execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
-  execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
-    cwd: root,
-  });
-  result.candidate = execFileSync("git", ["rev-parse", "HEAD"], {
-    cwd: candidate,
-    encoding: "utf8",
-  }).trim();
+  result.candidate = await checkoutCandidate(branch, candidate, io);
   if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
     throw new Error(`The candidate has no ${policy} policy`);
-  execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+  // Before the red commit, the device and the build: a refusal here leaves the stage untouched.
+  prepareCandidate(candidate, subject, source, io);
   // The red commit: one exported marker in PoolWorker's entry, a real upload with no behaviour.
   const workerPath = join(candidate, "src/pool/worker.ts");
   await writeFile(
@@ -757,10 +809,9 @@ async function redRelease(
   try {
     if (!origin) throw new Error("State records no Router URL for the stage");
     const ids = await smokeIds(origin, source, stage);
-    const out = execFileSync(
-      "node",
+    const out = io.device(
+      candidate,
       [
-        join(candidate, "scripts/release/rehearsal-acceptance-device.ts"),
         "--stage",
         stage,
         "--origin",
@@ -775,14 +826,9 @@ async function redRelease(
         ids.user,
       ],
       {
-        cwd: candidate,
-        env: {
-          PATH: source.PATH,
-          HOME: source.HOME,
-          POOL_APP_SIGNING_KEY: config.deploy.POOL_APP_SIGNING_KEY,
-        },
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
+        PATH: source.PATH,
+        HOME: source.HOME,
+        POOL_APP_SIGNING_KEY: config.deploy.POOL_APP_SIGNING_KEY,
       },
     );
     env.POOL_ACCEPTANCE_DEVICE = out.trim().split("\n").at(-1)!;
@@ -806,7 +852,7 @@ async function redRelease(
       return { exit: exitOf(message), refused: message };
     }
   };
-  await withStageBuild(candidate, subject, source, async () => {
+  await io.withStageBuild(candidate, subject, source, async () => {
     // 1. The plan and the serving record the rollback reads, as release.yml takes them.
     result.plan = await step("plan", { policy });
     const plan = join(candidate, ".local/release/plan.json");
@@ -963,35 +1009,31 @@ async function redRelease(
  * just before the red apply began, from its own deployment history, written as a one-Worker
  * serving record, then the candidate entry's own `rollback --from` it. Read-only around it.
  */
-async function rollbackRetry(
+export async function rollbackRetry(
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   outputs: string,
   hooks: ReturnType<typeof nativeHooks>,
+  io: CandidateRunServices = liveCandidateServices,
 ) {
-  const spec = JSON.parse(
-    await readFile(join(root, "scripts/release-preview/rollback-retry.json"), "utf8"),
-  ) as { fqn?: unknown; servedBefore?: unknown };
+  const spec = JSON.parse(await io.spec("rollback-retry.json")) as {
+    fqn?: unknown;
+    servedBefore?: unknown;
+  };
   const fqn =
     typeof spec.fqn === "string" && /^[A-Z][A-Za-z]{1,40}$/u.test(spec.fqn) ? spec.fqn : "";
   const before = typeof spec.servedBefore === "string" ? Date.parse(spec.servedBefore) : NaN;
   if (!fqn || !Number.isFinite(before))
     throw new Error("rollback-retry.json names no Worker or instant");
-  const { branch, policy } = releaseCandidate(
-    await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
-  );
+  const { branch, policy } = releaseCandidate(await io.spec("release-candidate.json"));
   const result: Record<string, unknown> = { fqn, servedBefore: spec.servedBefore, branch, policy };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
-  await rm(candidate, { recursive: true, force: true });
-  execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
-  execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
-    cwd: root,
-  });
-  execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+  await checkoutCandidate(branch, candidate, io);
+  prepareCandidate(candidate, subject, source, io);
   const { stage, stack } = stageNames(subject);
   const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
   const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
-  const script = stageWorker(await workerScripts(account, headers), stage, fqn, stack);
+  const script = stageWorker(await io.workerScripts(account, headers), stage, fqn, stack);
   const history = async () => {
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts/${encodeURIComponent(script)}/deployments`,
@@ -1033,7 +1075,7 @@ async function rollbackRetry(
   };
   try {
     // The candidate's entry releases only on its own framework build (candidateTreeEnvironment).
-    await withStageBuild(candidate, subject, source, () =>
+    await io.withStageBuild(candidate, subject, source, () =>
       runEntry("rollback", subject, source, env, outputs, {
         policy: null,
         include: null,
@@ -1055,15 +1097,16 @@ async function rollbackRetry(
   return result;
 }
 
-async function healRelease(
+export async function healRelease(
   lane: number,
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   outputs: string,
   hooks: ReturnType<typeof nativeHooks>,
+  io: CandidateRunServices = liveCandidateServices,
 ) {
   const result: Record<string, unknown> = { reproduces: healReproduces };
-  const probe = startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
+  const probe = io.startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
   // Seconds per phase, so the slow ones are named, not guessed.
   const phases: Record<string, number> = {};
   result.phases = phases;
@@ -1073,29 +1116,11 @@ async function healRelease(
     mark = Date.now();
   };
   try {
-    // 1. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
-    const now = await faultRead(lane, source, outputs, "before", ["--read-only"]);
-    await requireRestartBudget(subject, source, now, result);
-    result.confirmed =
-      now.stuck === true && now.policyCleanAndExpired === true
-        ? { reused: true, state: now }
-        : await faultAndConfirm(lane, subject, source, outputs);
-    // Taken after the fault is confirmed, so it is never earlier than the restart's admission.
-    const faultSettledAt = Date.now();
-    lap("fault");
-    // 2. The fix candidate in its own prepared checkout, built as the stage is built.
+    // 1. The fix candidate in its own prepared checkout, built as the stage is built. Prepared
+    // before the fault, so a candidate the harness could not read or tear down is refused while
+    // the stage is still as it was.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
-    await rm(candidate, { recursive: true, force: true });
-    execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", healCandidateBranch], {
-      cwd: root,
-    });
-    execFileSync("git", ["worktree", "add", "-q", "--detach", candidate, "FETCH_HEAD"], {
-      cwd: root,
-    });
-    result.candidate = execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: candidate,
-      encoding: "utf8",
-    }).trim();
+    result.candidate = await checkoutCandidate(healCandidateBranch, candidate, io);
     // What the candidate is made of: its first-parent commits back to the stage's deployed commit.
     result.candidateComposition = execFileSync(
       "git",
@@ -1108,8 +1133,18 @@ async function healRelease(
     result.overlayStatement = healOverlayStatement;
     if (existsSync(join(candidate, "scripts/release-preview/stage-fault.ts")))
       throw new Error("The heal candidate still carries the rehearsal-only fault command");
-    execFileSync("npm", ["run", "prepare:upstream"], { cwd: candidate, stdio: "ignore" });
+    prepareCandidate(candidate, subject, source, io);
     lap("candidatePrepare");
+    // 2. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
+    const now = await io.faultRead(lane, source, outputs, "before", ["--read-only"]);
+    await requireRestartBudget(subject, source, now, result);
+    result.confirmed =
+      now.stuck === true && now.policyCleanAndExpired === true
+        ? { reused: true, state: now }
+        : await faultAndConfirm(lane, subject, source, outputs);
+    // Taken after the fault is confirmed, so it is never earlier than the restart's admission.
+    const faultSettledAt = Date.now();
+    lap("fault");
     const env = { ...declaration.baseline, POOL_ROOT_IMAGE: await rootPin(hooks, subject, source) };
     const timing = (await import(
       pathToFileURL(join(candidate, "src/pool/runtime-slots/forced-restart-timing.ts")).href
@@ -1130,7 +1165,7 @@ async function healRelease(
     // The healing release's policy; a candidate without it measures nothing the GO asks about.
     if (!existsSync(join(candidate, "scripts/release/policies/code-restart.json")))
       throw new Error("The heal candidate has no code-restart policy");
-    await withStageBuild(candidate, subject, source, async () => {
+    await io.withStageBuild(candidate, subject, source, async () => {
       lap("stageBuild");
       // 3. The plan must not touch the root container application. The policy-free plan comes
       // first and is kept whole, so a refusal below still leaves every row the candidate plans.
@@ -1206,7 +1241,7 @@ async function healRelease(
       // release's wait would then take the stuck boot for a new one. The boot it compares with is
       // the selected boot a signed read-only inspect names; the command's own answer stays beside it.
       await rm(rootBootFile, { force: true });
-      await faultRead(
+      await io.faultRead(
         lane,
         { ...source, STAGE_FAULT_BOOT_OUT: rootBootFile },
         outputs,
@@ -1309,9 +1344,9 @@ async function healRelease(
     let bootSeenAt: number | undefined;
     let committedAt: number | undefined;
     while (Date.now() < deadline) {
-      const state = await faultRead(lane, source, outputs, "after", ["--read-only"]).catch(
-        () => undefined,
-      );
+      const state = await io
+        .faultRead(lane, source, outputs, "after", ["--read-only"])
+        .catch(() => undefined);
       const at = Date.now();
       const selection = (state?.selection ?? {}) as { boot?: string | null; epoch?: number | null };
       const witness = (state?.witness ?? {}) as { boot?: string | null };
