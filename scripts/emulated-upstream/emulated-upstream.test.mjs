@@ -471,7 +471,7 @@ test("a progress event shows only with one of the framework's own tags, never a 
   const event = (tag, extra = {}) => JSON.stringify({ _tag: tag, status: "created", ...extra });
   const shown = [...progressTags].map((tag) => event(tag, { fqn: "Gateway" }));
   assert.deepEqual(publicEntryLines(shown.join("\n")), shown);
-  assert.equal(progressTags.size, 18);
+  assert.equal(progressTags.length, 18);
   const dropped = [
     "api.cloudflare.com",
     "basalt-emulated-upstream-gateway.example.workers.dev",
@@ -486,4 +486,27 @@ test("a progress event shows only with one of the framework's own tags, never a 
   // A listed tag is a tag only under `_tag`: any other field keeps the dot-free rule.
   dropped.push(JSON.stringify({ _tag: "plan.phase", fqn: "plan.phase" }));
   assert.deepEqual(publicEntryLines(dropped.join("\n")), []);
+});
+
+test("an event prints as what was checked, so a duplicate key, an escape or padding carries nothing", () => {
+  const hex = "0123456789abcdef0123456789abcdef";
+  const lines = publicEntryLines(
+    [
+      // The parsed object keeps the last `_tag`; the host in the first is never printed.
+      '{"_tag":"api.cloudflare.com","_tag":"plan.phase","phase":"planning"}',
+      // An id written with one escaped character is the id once parsed, and the id check sees it.
+      `{"_tag":"plan.phase","id":"\\u0030${hex.slice(1)}"}`,
+      '{ "_tag" : "plan.phase" ,  "phase" : "planning" }',
+      '{"fqn":"https://host.example/x","fqn":"Gateway","_tag":"apply.resource.status"}',
+    ].join("\n"),
+  );
+  assert.deepEqual(lines, [
+    '{"_tag":"plan.phase","phase":"planning"}',
+    '{"_tag":"plan.phase","phase":"planning"}',
+    '{"fqn":"Gateway","_tag":"apply.resource.status"}',
+  ]);
+  for (const line of lines) assert.doesNotMatch(line, /cloudflare|example|https?:|[0-9a-f]{32}/u);
+  // The list is frozen and the set that decides is private: adding to the list changes nothing.
+  assert.throws(() => progressTags.push("api.cloudflare.com"));
+  assert.deepEqual(publicEntryLines('{"_tag":"api.cloudflare.com"}'), []);
 });
