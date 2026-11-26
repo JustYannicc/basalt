@@ -358,9 +358,11 @@ test("a tap whose click the browser moves onto an item, past the travel limit, c
     true,
   ));
 
-test("a later tap in the open menu that the browser moves onto an item chooses it (phone)", () =>
-  // The opening tap's lift belongs to that tap; a new press inside the menu, here on its padding,
-  // starts a gesture of its own, whose adjusted click chooses the item it lands on.
+test("a new press inside the open menu ends the opening tap, so a moved click then chooses (phone)", () =>
+  // The opening tap's lift belongs to that tap. A press inside the open menu that lands on no item,
+  // here a mouse press on its padding, which no browser adjusts, starts a gesture of its own; a
+  // click moved onto an item after it chooses that item. (A touch that close to an item is pressed
+  // onto the item itself by Chromium, which counts as the item's own press.)
   withPage(
     viewports.phone,
     true,
@@ -368,8 +370,14 @@ test("a later tap in the open menu that the browser moves onto an item chooses i
       await edgeTap(page);
       assert.deepEqual(await settled(page), { menu: 1, details: [] });
       const menu = (await page.locator("[data-slot=dropdown-menu-content]").boundingBox())!;
-      const padding = { x: menu.x + menu.width / 2, y: menu.y + 2 };
-      await fingerTap(page, padding, async () => padding, 0);
+      await page.mouse.move(menu.x + menu.width / 2, menu.y + 2);
+      await page.mouse.down();
+      await page.mouse.up();
+      const events = await read<string[]>(page, "EVENTS");
+      assert.ok(
+        events.includes("pointerdown:other"),
+        `the press missed every item: ${events.join(" ")}`,
+      );
       const item = page.getByRole("menuitem", { name: "Edit details" });
       const centre = (await item.boundingBox())!;
       await item.dispatchEvent("click", {
