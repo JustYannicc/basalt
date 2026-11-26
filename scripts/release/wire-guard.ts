@@ -21,6 +21,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   createdIdentities,
+  stageHostname,
   stageWriteVerdict,
   type StageScope,
   type StageVerdict,
@@ -457,6 +458,66 @@ const authHeaders = (request: Request) => {
   return headers;
 };
 
+/** The request's own API base and account, for a read sent around the guard. */
+const accountBase = (url: URL) => {
+  const at = url.pathname.search(/\/accounts\//u);
+  const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
+  return `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+};
+
+/**
+ * A stage's delete of a Workers custom domain whose id its State never recorded: a fresh read, sent
+ * around the guard with the request's credentials, must answer this id with BOTH a hostname under
+ * the stage's own label AND a service that is a Worker the stage's State owns. Either one alone, a
+ * missing or unreadable domain, or a read that answers another id is refused. The value never
+ * names the hostname, which can be production's.
+ */
+const proveStageDomain = (
+  scope: StageScope,
+  inner: typeof globalThis.fetch,
+  request: Request,
+  url: URL,
+  id: string,
+) =>
+  Effect.gen(function* () {
+    const response = yield* Effect.promise(() =>
+      // Like the application delete check's read: a redirect answers from an address no rule checked.
+      inner(`${accountBase(url)}/workers/domains/${encodeURIComponent(id)}`, {
+        headers: authHeaders(request),
+        redirect: "manual",
+      }).catch(() => undefined),
+    );
+    const body = response?.ok
+      ? ((yield* Effect.promise(() => response.json().catch(() => null))) as {
+          result?: { id?: unknown; hostname?: unknown; service?: unknown };
+        } | null)
+      : null;
+    const domain = body?.result?.id === id ? body.result : undefined;
+    const hostname = typeof domain?.hostname === "string" ? domain.hostname.toLowerCase() : "";
+    const service = typeof domain?.service === "string" ? domain.service : "";
+    const named = stageHostname(scope, hostname);
+    // A Worker the State's own rows record: one this run proved by its tags, or any other name the
+    // State holds, is not enough here.
+    const served = service !== "" && (scope.workers ?? []).includes(service);
+    if (named && served) return;
+    return yield* refuse(
+      {
+        resource: `Worker domain ${id}`,
+        method: request.method,
+        path: template(apiPath(url.pathname)),
+      },
+      "stage",
+      !domain ? "read" : named ? "service" : "hostname",
+      !response
+        ? "unreadable"
+        : !domain
+          ? `HTTP ${response.status}`
+          : named
+            ? "not a Worker the stage's State owns"
+            : "not under the stage's own label",
+    );
+  });
+
 /**
  * A Worker or Workflow name the stage's State does not record: Cloudflare places it. Absent means
  * this run creates it; present, it must carry this stage's Alchemy tags (a Worker) or run on a
@@ -471,9 +532,7 @@ const proveStageName = (
   verdict: Extract<StageVerdict, { kind: "prove" }>,
 ) =>
   Effect.gen(function* () {
-    const at = url.pathname.search(/\/accounts\//u);
-    const account = /^\/accounts\/([^/]+)/u.exec(url.pathname.slice(at))?.[1] ?? "";
-    const base = `${url.origin}${url.pathname.slice(0, at)}/accounts/${account}`;
+    const base = accountBase(url);
     const name = encodeURIComponent(verdict.name);
     const read =
       verdict.family === "Worker"
@@ -512,6 +571,7 @@ const proveStageName = (
 const stageGate = (
   config: WireGuardConfig,
   ownedHere: Set<string>,
+  provenDomains: Set<string>,
   inner: typeof globalThis.fetch,
   request: Request,
   url: URL,
@@ -541,6 +601,13 @@ const stageGate = (
         verdict.field,
         url.pathname,
       );
+    if (verdict.kind === "prove" && verdict.family === "Worker domain") {
+      // Proven once, a retry of the same delete passes; the id opens nothing else.
+      if (!provenDomains.has(verdict.name))
+        yield* proveStageDomain(scope, inner, request, url, verdict.name);
+      provenDomains.add(verdict.name);
+      return undefined;
+    }
     if (verdict.kind === "prove") {
       yield* proveStageName(scope, isOwned, inner, request, url, verdict);
       ownedHere.add(verdict.name);
@@ -637,6 +704,8 @@ export const install = (config: WireGuardConfig = {}) =>
     const held = new Set<string>();
     // What this run created on a disposable stage: its own from here on.
     const ownedHere = new Set<string>();
+    // Workers custom domains a stage proved its own, each for its delete alone.
+    const provenDomains = new Set<string>();
     const refused = Deferred.makeUnsafe<never, WireRefused>();
     const fetch: typeof globalThis.fetch = async (input, init) => {
       const request = new Request(input, init);
@@ -645,7 +714,15 @@ export const install = (config: WireGuardConfig = {}) =>
       journal.push({ method: request.method, host: url.host, path: template(path) });
       const exit = await Effect.runPromiseExit(
         Effect.gen(function* () {
-          const creates = yield* stageGate(config, ownedHere, inner, request, url, path);
+          const creates = yield* stageGate(
+            config,
+            ownedHere,
+            provenDomains,
+            inner,
+            request,
+            url,
+            path,
+          );
           yield* check(config, created, held, inner, request, path);
           return creates;
         }),

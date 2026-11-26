@@ -393,7 +393,7 @@ const {
   updatesWorkerWithoutReadiness,
 } = await import("./plan-summary.ts");
 const { buildSteps, everyReleaseSteps, runReleaseStep } = await import("./release-steps.ts");
-const { ownIdentities } = await import("./stage-writes.ts");
+const { ownIdentities, ownWorkers } = await import("./stage-writes.ts");
 const { provenStageRows, RETIRE_PROVEN } = await import("./retire-proof.ts");
 const { storeCannotBootstrap } = await import("./state-store-guard.ts");
 const { liveMainModuleSha256 } = await import("./live-module.ts");
@@ -476,6 +476,15 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             } as never) as unknown as Fx.Effect<StateService, unknown, never>;
             const stack = yield* stackName();
             const label = stage.replace(/^test-/u, "");
+            // A destroy a retire started stops here, before planning, unless the rows the gate
+            // takes as owned are exactly the ones the retire proved.
+            const rows = yield* provenStageRows(
+              store as never,
+              stack,
+              stage,
+              command === "destroy",
+              process.env[RETIRE_PROVEN],
+            ) as Fx.Effect<unknown[], unknown, never>;
             wire.stage = {
               stack,
               stage,
@@ -486,17 +495,9 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
                 process.env.TEST_STAGE_DATABASE === `basalt-preview-${label}`
                   ? [process.env.TEST_STAGE_DATABASE]
                   : [],
-              // A destroy a retire started stops here, before planning, unless the rows the gate
-              // takes as owned are exactly the ones the retire proved.
-              owned: ownIdentities(
-                yield* provenStageRows(
-                  store as never,
-                  stack,
-                  stage,
-                  command === "destroy",
-                  process.env[RETIRE_PROVEN],
-                ) as Fx.Effect<unknown[], unknown, never>,
-              ),
+              owned: ownIdentities(rows),
+              workers: ownWorkers(rows),
+              accountId: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
             };
           }
           for (const [fqn, classes] of Object.entries(policy?.wire.sqliteClasses ?? {}))

@@ -221,3 +221,36 @@ export const poolWorkerUpload = (
   },
   files: [new File([source], MAIN, { type: "application/javascript+module" })],
 });
+
+/**
+ * Sends what fetch addresses to the Cloudflare API host to a local server instead, beneath fetch:
+ * the guard and the real global fetch run unchanged, and only Node's transport dispatcher (the
+ * undici global that both fetch and `undici.setGlobalDispatcher` read) rewrites the origin. A rule
+ * keyed on the request's host sees `api.cloudflare.com`, and nothing leaves the machine. Returns the
+ * restore.
+ */
+export const routeCloudflareApiTo = (base: string) => {
+  const key = Symbol.for("undici.globalDispatcher.1");
+  const global = globalThis as unknown as Record<symbol, unknown>;
+  const original = global[key] as
+    | {
+        compose: (
+          interceptor: (
+            dispatch: (options: { origin?: string | URL }, handler: unknown) => boolean,
+          ) => (options: { origin?: string | URL }, handler: unknown) => boolean,
+        ) => unknown;
+      }
+    | undefined;
+  if (typeof original?.compose !== "function")
+    throw new Error("Node's fetch has no global dispatcher to route through");
+  global[key] = original.compose(
+    (dispatch) => (options, handler) =>
+      dispatch(
+        options.origin !== undefined && new URL(options.origin).hostname === "api.cloudflare.com"
+          ? { ...options, origin: base }
+          : options,
+        handler,
+      ),
+  );
+  return () => void (global[key] = original);
+};
