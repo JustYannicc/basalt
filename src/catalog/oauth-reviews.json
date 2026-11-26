@@ -1896,6 +1896,16 @@
       }
     },
     {
+      "entry": "gitcafe",
+      "package": "@executor.sh/gitcafe",
+      "methods": {
+        "oauth": {
+          "kind": "deferred",
+          "message": "Signalbox has not verified one-click sign-in for GitCafe yet. You can connect with your own OAuth app."
+        }
+      }
+    },
+    {
       "entry": "github",
       "package": "@executor.sh/github",
       "sourceSha256": "be267534af42ba525dfc62c8d2f0f429f75444aa784cbe0c15091277c0e344e9",
