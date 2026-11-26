@@ -23,10 +23,10 @@ index 8eb0d3ab..ea52359f 100644
  	}
 diff --git a/internal/runtime/executor/basalt_provider_retry_time_test.go b/internal/runtime/executor/basalt_provider_retry_time_test.go
 new file mode 100644
-index 00000000..3040b893
+index 00000000..7d58cc4a
 --- /dev/null
 +++ b/internal/runtime/executor/basalt_provider_retry_time_test.go
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,99 @@
 +package executor
 +
 +import (
@@ -41,6 +41,7 @@ index 00000000..3040b893
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/redisqueue"
 +	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 +	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreusage "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 +)
 +
 +// Home cools a credential only from the usage record the node sends it, which in metadata-only
@@ -82,9 +83,12 @@ index 00000000..3040b893
 +		want := int64((retry + time.Millisecond - 1) / time.Millisecond)
 +		redisqueue.PopOldest(1 << 10)
 +		ctx := context.Background()
++		// The usage pipeline is process-wide and asynchronous: another test's record can still be
++		// on its way when this case starts. Send one ahead so the case has to find its own record.
++		coreusage.PublishRecord(ctx, coreusage.Record{Provider: c.provider, AuthID: "elsewhere", AuthIndex: "elsewhere", Failed: true, Fail: coreusage.Failure{StatusCode: http.StatusTooManyRequests}})
 +		reporter := helps.NewUsageReporter(ctx, c.provider, "limited-model", &cliproxyauth.Auth{ID: "limited-" + c.provider, Index: "limited-" + c.provider, Provider: c.provider})
 +		reporter.PublishFailure(ctx, c.err)
-+		payload := popUsagePayload(t)
++		payload := popUsagePayloadFor(t, "limited-"+c.provider)
 +		var sent struct {
 +			Fail            map[string]any `json:"fail"`
 +			ResponseHeaders map[string]any `json:"response_headers"`
@@ -101,16 +105,25 @@ index 00000000..3040b893
 +	}
 +}
 +
-+func popUsagePayload(t *testing.T) []byte {
++// popUsagePayloadFor returns the first queued usage payload for one credential index, skipping
++// records other tests left in the process-wide pipeline.
++func popUsagePayloadFor(t *testing.T, authIndex string) []byte {
 +	t.Helper()
 +	deadline := time.Now().Add(5 * time.Second)
 +	for time.Now().Before(deadline) {
-+		if items := redisqueue.PopOldest(1); len(items) == 1 {
++		items := redisqueue.PopOldest(1)
++		if len(items) == 0 {
++			time.Sleep(10 * time.Millisecond)
++			continue
++		}
++		var record struct {
++			AuthIndex string `json:"auth_index"`
++		}
++		if json.Unmarshal(items[0], &record) == nil && record.AuthIndex == authIndex {
 +			return items[0]
 +		}
-+		time.Sleep(10 * time.Millisecond)
 +	}
-+	t.Fatal("no usage payload reached the queue")
++	t.Fatalf("no usage payload for %s reached the queue", authIndex)
 +	return nil
 +}
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go

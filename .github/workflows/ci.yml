@@ -30,7 +30,9 @@ jobs:
       contents: read
       actions: write
       checks: read
-    runs-on: ubuntu-latest
+    # The light runners on the first attempts box routing takes (scripts/ci/light-lane.ts). It
+    # can't read its own output, so it repeats that rule over the variable; hosted otherwise.
+    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}
       evidence: ${{ steps.reuse.outputs.evidence }}
@@ -44,6 +46,9 @@ jobs:
       jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
+      # The light runners' label for long-started, cpa-pipeline and check, or empty for hosted. Its
+      # step runs on every path, so a reused Check's later jobs take the light runners too.
+      light_label: ${{ steps.light.outputs.light_label }}
       box_floor: ${{ steps.jobs.outputs.box_floor }}
       box_plan: ${{ steps.jobs.outputs.box_plan }}
       matrices: ${{ steps.jobs.outputs.matrices }}
@@ -62,6 +67,13 @@ jobs:
         run: node scripts/ci/reuse.ts
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      # No reuse condition: a reused Check's later light jobs take the light runners too.
+      - name: Pick the light runners for this Check's seconds-long jobs
+        id: light
+        env:
+          LIGHT_LABEL: ${{ vars.BASALT_CI_LIGHT_LABEL }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: node scripts/ci/light-lane.ts
       - uses: ./.github/actions/setup-bun
         if: steps.reuse.outputs.reused != 'true'
         with:
@@ -84,14 +96,17 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
-      - name: Select the full suite, the jobs this change reaches, or the fast lane
+      - name: Select the full suite or the fast lane
         if: steps.reuse.outputs.reused != 'true'
         id: jobs
         env:
@@ -104,16 +119,14 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          # This repository's pull requests run the jobs their changes reach. A batch branch's push
-          # already runs the full suite on the same head, and forks keep the fast lane.
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
           HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           node scripts/ci/cancel-superseded.ts
+          # A pull request runs the fast lane unless it is labelled for the full suite: every one
+          # merges through a batch, whose push runs the full Check (2026-11-26: per-PR heavy jobs
+          # held about a third of the 40 hosted job slots while batches waited).
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
-          elif [ "$AFFECTED_LANE" = true ]; then
-            node scripts/ci/select-jobs.ts
           else
             node scripts/ci/select-jobs.ts --fast
           fi
@@ -180,13 +193,14 @@ jobs:
     needs: select
     if: needs.select.outputs.reused != 'true'
     permissions: {}
-    runs-on: ubuntu-latest
+    # A re-run reuses attempt 1's outputs, so it runs hosted.
+    runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
     timeout-minutes: 2
     steps:
       - run: "true"
   cpa-pipeline:
     needs: select
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -1951,6 +1965,16 @@ jobs:
           name: dashboard-batch-profile
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
+      - name: Collect bounded E2E evidence
+        if: failure()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dashboard-batch-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
   aws-connectors:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')
@@ -2323,6 +2347,10 @@ jobs:
   fast:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets a re-run read whether select ran again in its attempt.
+    permissions:
+      actions: read
+      contents: read
     env:
       # Bytecode inside the pool context changes its reviewed publication identity.
       PYTHONDONTWRITEBYTECODE: "1"
@@ -2342,9 +2370,30 @@ jobs:
       - uses: ./.github/actions/desktop-release-assets
         with:
           warm: "true"
+      # A re-run that carries select over compares with the commit select recorded; main may have
+      # moved the merge-base since (scripts/ci/rerun-selection.ts). Only then is there a record to
+      # download, so other re-runs show no missing-artifact error.
+      - name: Check whether select carries over into this re-run
+        id: carried
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-selection
+          path: ${{ runner.temp }}/ci-selection
+      - name: Take select's comparison commit
+        id: rerun
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
         env:
+          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
@@ -2352,7 +2401,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
@@ -2373,7 +2425,6 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
         run: node scripts/ci/lane.ts
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
@@ -2438,8 +2489,10 @@ jobs:
         run: |
           bun run --cwd .upstream patches:check
           bun run --cwd .upstream auth:security
-      # Specs whose plans name only this job run here: in the full suite, or when the lane's
-      # change reaches one of these configs. All four take about 20 seconds together.
+      # Specs whose plans name only this job run here, in the full suite: the fast lane, which
+      # pull requests run, reaches no config, so a change to one is proven in its batch's full
+      # Check. The affected lane, which no event requests, runs those its change reaches. All four
+      # take about 20 seconds together.
       - name: Verify Cloud startup diagnostics and app listeners
         if: steps.lane.outputs.full_suite == 'true' || steps.lane.outputs.fast_configs != '[]'
         working-directory: .upstream
@@ -2505,6 +2558,10 @@ jobs:
   fast-units:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # actions: read lets a re-run read whether select ran again in its attempt.
+    permissions:
+      actions: read
+      contents: read
     env:
       PYTHONDONTWRITEBYTECODE: "1"
     # One output per leg: a matrix job's legs merge outputs by name (unitLegs in scripts/ci/gate.ts).
@@ -2525,9 +2582,27 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - name: Check whether select carries over into this re-run
+        id: carried
+        if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-selection
+          path: ${{ runner.temp }}/ci-selection
+      - name: Take select's comparison commit
+        id: rerun
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
         env:
+          RECORDED_BASE: ${{ steps.rerun.outputs.base_sha }}
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
           BASE_REF: ${{ github.base_ref || 'main' }}
           BATCH_PUSH: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/batch/') }}
@@ -2535,7 +2610,10 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           base="$BASE_SHA"
-          if [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "${RECORDED_BASE:-}" ]; then
+            # A re-run whose select carried over compares with the commit select recorded.
+            base="$RECORDED_BASE"
+          elif [ "$PULL_REQUEST" = true ] || [ "$BATCH_PUSH" = true ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
             target="${BASE_REF:-main}"
             git fetch --no-tags origin "+refs/heads/$target:refs/remotes/origin/$target"
             base="$(git merge-base "$HEAD_SHA" "refs/remotes/origin/$target")"
@@ -2549,7 +2627,6 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
         run: node scripts/ci/lane.ts
       - name: Run focused owned unit tests
         timeout-minutes: 15
@@ -2889,7 +2966,9 @@ jobs:
     outputs:
       reused_run_id: ${{ steps.gate.outputs.reused_run_id }}
       reused_head_sha: ${{ steps.gate.outputs.reused_head_sha }}
-    runs-on: ubuntu-latest
+    # always() starts it after a cancel too; with a need cancelled it runs hosted, so a run a down
+    # box held still ends and can be re-run.
+    runs-on: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.light_label || 'ubuntu-latest' }}
     # actions: read lets a re-run attempt find the flake-rerun.yml run that started it.
     permissions:
       actions: read
