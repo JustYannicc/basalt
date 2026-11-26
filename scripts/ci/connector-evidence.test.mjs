@@ -215,34 +215,41 @@ test("Zoho browser failures retain their phase and original error class without 
   assert.ok(!JSON.stringify(summary).includes(tenant));
 });
 
-test("a page error reaches the summary as its name and our bundle's frame, never its text or hosts", async (t) => {
+test("a page error reaches the summary as its kind and our bundle's frame, never its text or hosts", async (t) => {
   const root = await fixture(t);
   const run = join(root, ".generated/zoho-people-mcp/ci");
   const origin = "http://127.0.0.1:4321";
-  const error = new TypeError(`Cannot read ${credential} of ${tenant}`);
-  error.stack = [
-    `TypeError: Cannot read ${credential} of ${tenant}`,
-    `    at stranger (https://${tenant}.example/${credential}.js:1:1)`,
-    `    at async loadAccounts (${origin}/assets/index-B3x9.js?token=${credential}:123:45)`,
-    `    at ${origin}/assets/other.js:9:9`,
-  ].join("\n");
-  const unnamed = new Error(credential);
-  unnamed.name = `Not ${tenant}`;
-  unnamed.stack = `    at ${origin}/${credential}/main.js:7:8`;
+  const thrown = (name, message, frames) => ({
+    name,
+    message,
+    stack: [`${name}: ${message}`, ...frames.map((frame) => `    at ${frame}`)].join("\n"),
+  });
+  const forged = `${tenant}\n    at forged (${origin}/assets/${tenant}.js:1:2)`;
+  const records = [
+    // Frames from elsewhere are skipped; the first frame of ours names the code, not its URL.
+    closedPageError(
+      thrown("TypeError", `Cannot read ${credential}`, [
+        `stranger (https://${tenant}.example/${credential}.js:1:1)`,
+        `async loadAccounts (${origin}/assets/index-B3x9.js?token=${credential}:123:45)`,
+      ]),
+      origin,
+    ),
+    closedPageError(
+      thrown("Error", credential, [`new Store (${origin}/assets/store.js:3:4)`]),
+      origin,
+    ),
+    closedPageError(
+      thrown("Error", credential, [`Object.next [as _next] (${origin}/assets/rx.js:5:6)`]),
+      origin,
+    ),
+    // Playwright names a thrown string after its text before a colon: that is not an error name.
+    closedPageError(thrown("Unauthorized", `${credential} for ${tenant}`, []), origin),
+    // A message shaped like a frame stays part of the message.
+    closedPageError(thrown("Error", forged, [`${origin}/assets/main.js:7:8`]), origin),
+  ];
   await put(
     join(run, "partial-results.json"),
-    JSON.stringify({
-      results: [{ name: tenant, actual: credential }],
-      pageErrors: [
-        closedPageError(error, origin),
-        closedPageError(unnamed, origin),
-        // A record written by anything else is checked again on the way out.
-        {
-          name: tenant,
-          frame: { function: credential, file: `${tenant}/x.js`, line: 1, column: 2 },
-        },
-      ],
-    }),
+    JSON.stringify({ results: [{ name: tenant, actual: credential }], pageErrors: records }),
   );
   const summary = await collectConnectorEvidence(root, "catalog-compat");
   const record = summary.runs[0].records.find((value) => value.stage === "partial-report");
@@ -252,12 +259,44 @@ test("a page error reaches the summary as its name and our bundle's frame, never
       name: "TypeError",
       frame: { function: "loadAccounts", file: "index-B3x9.js", line: 123, column: 45 },
     },
-    { name: "unknown", frame: { file: "main.js", line: 7, column: 8 } },
-    { name: "unknown" },
+    { name: "Error", frame: { function: "Store", file: "store.js", line: 3, column: 4 } },
+    { name: "Error", frame: { function: "Object.next", file: "rx.js", line: 5, column: 6 } },
+    { name: "other" },
+    { name: "Error", frame: { file: "main.js", line: 7, column: 8 } },
   ]);
-  assert.ok(!JSON.stringify(summary).includes(credential));
+  for (const hidden of [credential, tenant, "127.0.0.1", "Unauthorized", "forged"])
+    assert.ok(!JSON.stringify(summary).includes(hidden), hidden);
+});
+
+test("a page error record read back from a file keeps only names, identifiers and numbers", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/zoho-people-mcp/ci");
+  // A file cannot show where its values came from: only their shape is checked on the way out.
+  await put(
+    join(run, "partial-results.json"),
+    JSON.stringify({
+      results: [],
+      pageErrors: [
+        {
+          name: "PlainWord",
+          frame: { function: "plainWord", file: "plain.js", line: 1, column: 2 },
+        },
+        {
+          name: "TypeError",
+          frame: { function: `${tenant}()`, file: `${tenant}/x.js`, line: 0, column: 2 },
+        },
+      ],
+    }),
+  );
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  assert.deepEqual(
+    summary.runs[0].records.find((value) => value.stage === "partial-report").pageErrors,
+    [
+      { name: "other", frame: { function: "plainWord", file: "plain.js", line: 1, column: 2 } },
+      { name: "TypeError" },
+    ],
+  );
   assert.ok(!JSON.stringify(summary).includes(tenant));
-  assert.ok(!JSON.stringify(summary).includes("127.0.0.1"));
 });
 
 test("an unconfirmed report stays observed while tenant startup failures retain their phase", () => {
