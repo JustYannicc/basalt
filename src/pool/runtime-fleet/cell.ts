@@ -183,7 +183,7 @@ export class FleetHandoffCell implements FleetCell {
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
     await trace.run("provider_observe", () =>
-      this.deps.provider.observe(this.deps.application, identity.instanceId),
+      this.deps.provider.observe("retire", this.deps.application, identity.instanceId),
     );
     await begin();
     const signal = AbortSignal.timeout(2_000);
@@ -229,7 +229,7 @@ export class FleetHandoffCell implements FleetCell {
     ) {
       const drain = await this.drain(identity);
       if (!drain.known || drain.active !== 0) return false;
-      await this.deps.provider.observe(this.deps.application, identity.instanceId);
+      await this.deps.provider.observe("retire", this.deps.application, identity.instanceId);
       // Only the child's zero-activity draining state proves the earlier retire never reached its intent.
       // Endpoint serialization and its retiring latch prevent concurrent recoveries from destroying twice.
       await this.deps.driver.retire(identity, identity, AbortSignal.timeout(2_000));

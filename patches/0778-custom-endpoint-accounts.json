@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-custom-endpoint-accounts",
+  "file": "0778-custom-endpoint-accounts.patch",
+  "content_sha256": "6a530cef00fce8600ee57aa7fb67d496c38e24bc877dec66077b040f61aed226",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
