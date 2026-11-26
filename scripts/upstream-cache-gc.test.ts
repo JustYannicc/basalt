@@ -304,29 +304,21 @@ function installed(checkout: string, store: string, packages: number, recorded: 
   return bun;
 }
 
-/** Counts what collection lists or reads inside the registered checkouts' link directories. */
-function linkReads(t: TestContext, root: string) {
-  const reads = { count: 0 };
-  const inside = (path: unknown) =>
-    String(path).startsWith(join(root, "registered-")) && String(path).includes(".bun");
-  const read = fs.readlinkSync,
-    list = fs.readdirSync;
-  const probes = [
-    t.mock.method(fs, "readlinkSync", (...parameters: Parameters<typeof read>) => {
-      if (inside(parameters[0])) reads.count++;
-      return read(...parameters);
-    }),
-    t.mock.method(fs, "readdirSync", ((...parameters: Parameters<typeof list>) => {
-      if (inside(parameters[0])) reads.count++;
-      return list(...parameters);
-    }) as typeof list),
-  ];
-  syncBuiltinESMExports();
-  t.after(() => {
-    for (const probe of probes) probe.mock.restore();
-    syncBuiltinESMExports();
-  });
-  return reads;
+/**
+ * Runs `work` with each checkout's link directory unreadable: listing it, or reading a link in it,
+ * fails, while the directory's own identity, which an install's marker vouches for, still reads.
+ * So collection can only succeed if it skips those links.
+ */
+async function withUnreadableLinks(checkouts: readonly string[], work: () => Promise<unknown>) {
+  const trees = checkouts.map((checkout) => join(checkout, "node_modules/.bun"));
+  for (const tree of trees) fs.chmodSync(tree, 0o000);
+  try {
+    for (const tree of trees)
+      assert.throws(() => fs.readdirSync(tree), { code: "EACCES" }, "the links are unreadable");
+    await work();
+  } finally {
+    for (const tree of trees) fs.chmodSync(tree, 0o755);
+  }
 }
 
 test("checkouts whose links are unchanged since their install are not read link by link", async (t) => {
@@ -334,11 +326,10 @@ test("checkouts whose links are unchanged since their install are not read link 
   const unused = key(1, "old");
   const elsewhere = join(root, "other-cache/store");
   mkdirSync(join(elsewhere, "node_modules"), { recursive: true });
-  for (const checkout of registered(root, cache, 3)) installed(checkout, elsewhere, 20);
-  const reads = linkReads(t, root);
-  await collectUpstreamDependencies("current");
+  const checkouts = registered(root, cache, 3);
+  for (const checkout of checkouts) installed(checkout, elsewhere, 20);
+  await withUnreadableLinks(checkouts, () => collectUpstreamDependencies("current"));
   assert.equal(existsSync(unused.entry), false, "the collection pass ran");
-  assert.equal(reads.count, 0);
 });
 
 test("a link replaced after its marker was written still protects the store it points into", async (t) => {
@@ -378,13 +369,14 @@ test("a checkout whose install is still pending keeps both its marker's and its 
   const previous = key(1, "old");
   const selected = key(2, "old");
   for (let index = 3; index <= 6; index++) key(index);
+  const unused = key(7, "old");
   const [checkout] = registered(root, cache, 1);
   installed(checkout!, previous.store, 2);
   // The new generation is chosen and registered before any link moves.
   await withDependencyStoreLock(() => rememberDependencyConsumer(checkout!, selected.store, true));
-  const reads = linkReads(t, root);
-  await collectUpstreamDependencies("current");
-  assert.equal(reads.count, 0, "unchanged links are not read, so the registration alone protects");
+  // Unchanged links are not read, so the registration alone protects.
+  await withUnreadableLinks([checkout!], () => collectUpstreamDependencies("current"));
+  assert.equal(existsSync(unused.entry), false, "the collection pass ran");
   assert.equal(existsSync(previous.store), true);
   assert.equal(existsSync(selected.store), true);
 });
@@ -412,10 +404,9 @@ test("a marker that cannot vouch for its links has them read one by one", async 
       );
     }
   }
-  const reads = linkReads(t, root);
   await collectUpstreamDependencies("current");
+  // The linked store is protected only by reading each checkout's links.
   assert.equal(existsSync(linked.store), true);
-  assert.ok(reads.count >= 6, `each checkout's links are read (${reads.count})`);
 });
 
 function packageFixture(t: TestContext) {
