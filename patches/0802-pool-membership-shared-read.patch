@@ -74,7 +74,7 @@ diff --git a/e2e/tests/pool-membership-shared-read.spec.ts b/e2e/tests/pool-memb
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-membership-shared-read.spec.ts
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,269 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -106,13 +106,15 @@ new file mode 100644
 +
 +/**
 + * An exclusive or shared advisory lock on a text key. The wire log carries no parameters, so these
-+ * also match the catalog, pool-default, install and default-policy locks; a pool view takes none of
-+ * those, so on its trace they are the organization access lock.
++ * also match other text-keyed locks (catalog, pool defaults, installs, default policies, the app
++ * registry); counted only on the membership read's own traces, they are its organization lock.
 + */
 +const exclusiveLock = /^\s*select pg_advisory_xact_lock\(hashtextextended/i;
 +const sharedLock = /^\s*select pg_advisory_xact_lock_shared\(hashtextextended/i;
 +/** The membership read's first row lock: its presence proves the read itself ran. */
 +const membershipRows = /from hosted_app_account_links l[\s\S]*for share of a/i;
++/** The membership read's registration check, which the shared and the exclusive read both run. */
++const registrations = /select current_database\(\) as database,\s*current_schema\(\) as schema/i;
 +/** Below the pool's membership read timeout (10 s), which a view would otherwise wait out. */
 +const viewCap = 6_000;
 +
@@ -193,9 +195,20 @@ new file mode 100644
 +            yield* wire.begin(0);
 +            const status = yield* view(`00-${trace}-${trace.slice(0, 16)}-01`);
 +            yield* wire.end(trace);
-+            // The pool reads membership in a request of its own, under a trace of its own, so the
-+            // view's statements are every statement inside its window, not those of its trace.
-+            const statements = wire.global();
++            // The pool reads membership in a request of its own, under a trace of its own: count
++            // the view's trace and every trace in its window that ran a membership read, so other
++            // sessions' locks in the same run never count.
++            const window = wire.global();
++            const traces = new Set<string>([trace]);
++            for (const item of window)
++              if (
++                item.trace !== undefined &&
++                (membershipRows.test(item.query) || registrations.test(item.query))
++              )
++                traces.add(item.trace);
++            const statements = window.filter(
++              (item) => item.trace !== undefined && traces.has(item.trace),
++            );
 +            return {
 +              status,
 +              exclusive: statements.filter((item) => exclusiveLock.test(item.query)).length,
@@ -289,15 +302,17 @@ new file mode 100644
 +                  and l.objid::bigint = key.k & 4294967295`,
 +              params: [`executor-access:${organization}`, granted],
 +            });
-+          // One session holds this organization's lock shared and waits on another lock: the parked read.
++          // The parked membership read: one session holds this organization's lock shared and
++          // waits on a lock at its accounts row-lock statement.
 +          const parked = locks.run({
-+            sql: `select count(*)::int as n from pg_locks l,
++            sql: `select count(*)::int as n from pg_locks l
++              join pg_stat_activity a on a.pid = l.pid,
 +              (select hashtextextended($1, 0) as k) key
 +              where l.locktype = 'advisory' and l.granted and l.mode = 'ShareLock'
 +                and l.objsubid = 1
 +                and l.classid::bigint = (key.k >> 32) & 4294967295
 +                and l.objid::bigint = key.k & 4294967295
-+                and exists (select 1 from pg_locks w where w.pid = l.pid and not w.granted)`,
++                and a.wait_event_type = 'Lock' and a.query ~* 'for share of a'`,
 +            params: [`executor-access:${organization}`],
 +          });
 +          const finished = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -313,6 +328,8 @@ new file mode 100644
 +          yield* rows.release;
 +          const [answered, readAt] = yield* Fiber.join(inFlight);
 +          const [demoted, demotedAt] = yield* Fiber.join(demotion);
++          // Evidence only: the read releases its lock before the view's answer travels back, so the
++          // two finish times are not strictly ordered.
 +          yield* evidence.json("writer-waits-for-membership-read.json", {
 +            blocked,
 +            inFlight: answered,
