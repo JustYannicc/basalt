@@ -10,6 +10,7 @@ import {
   closed,
   ProviderCredentialRefused,
   refused,
+  siblingState,
   UndocumentedInstanceState,
   type ObservationRead,
 } from "./refusal.ts";
@@ -68,8 +69,9 @@ const documentedStates = new Set([
  */
 const stopped = (state: string) => state === "inactive";
 /**
- * Only an absence proof still refuses while another instance may start or stop. Absence frees a
- * place in the ledger, so it stays conservative: an instance no row counts holds every release.
+ * An absence proof still refuses while another instance may start or stop, and so does a cell's
+ * retire read, which begins that release. Absence frees a place in the ledger, so it stays
+ * conservative: an instance no row counts holds every release.
  */
 const unsettled = (state: string) => state !== "running" && !stopped(state);
 /** Given only by a caller whose driver independently reported this exact boot stopped. */
@@ -207,11 +209,20 @@ export class RuntimeProviderReader {
       let instances: string[] | undefined;
       if (instanceId !== undefined) {
         const listed = await this.instances(base, expected, signal, instanceId);
-        // Only the named instance's state is judged. The ledger counts every other instance until
-        // its absence is proven and only a ready row takes a call, so another's start or stop
-        // guards nothing here.
+        // Only the named instance's state is judged. The ledger counts every instance this
+        // controller started until its absence is proven, and only a ready row takes a call, so
+        // another's start or stop guards nothing here.
         if (!listed.some((value) => value.id === instanceId && value.state === "running"))
           throw refused({ reason: "instance_not_running" });
+        // Except before a cell's retirement begins: its release waits for every sibling to settle
+        // (see `unsettled`), and that wait inside the retiring bound would quarantine a cell whose
+        // own stop ended. Waiting here keeps the row draining instead, unbounded and harmless.
+        const sibling =
+          read === "retire"
+            ? listed.find((value) => value.id !== instanceId && unsettled(value.state))
+            : undefined;
+        if (sibling)
+          throw refused({ reason: "sibling_unsettled", state: siblingState(sibling.state) });
         instances = listed.filter((value) => !stopped(value.state)).map((value) => value.id);
         const after = await application();
         if (canonicalProviderValue(before) !== canonicalProviderValue(after))
@@ -324,8 +335,8 @@ export class RuntimeProviderReader {
     }
   }
   /**
-   * With `named`, an attested read judges that instance's state alone; without it, an absence read
-   * judges every listed one.
+   * With `named`, only that instance's undocumented state refuses here, and the caller judges any
+   * other state; without it, an absence read refuses on any listed one.
    */
   private async instances(
     base: string,

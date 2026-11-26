@@ -347,15 +347,22 @@ test("an instance in any other state still counts as present, and only a running
   );
 });
 
-test("a sibling in any state but running or inactive still refuses absence, never a named observation", async () => {
+test("a sibling in any state but running or inactive still refuses absence and a cell's retirement, never another named observation", async () => {
   const f = await fixture({ absent: true, siblingState: "provisioning" });
   const stopped = { driverStopped: true } as const;
   assert.equal(
     await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
     false,
   );
-  // A cell's activation and retirement, and the root's recovery and retirement, read alike.
-  for (const read of ["attested", "retire", "recovery", "root_retire"] as const) {
+  const retiring = await fixture({ siblingState: "provisioning" });
+  assert.deepEqual(
+    await refusal(
+      retiring.reader.observe("retire", retiring.expected, retiring.manifest.target.instanceId),
+    ),
+    refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
+  );
+  // A cell's activation, and the root's recovery and retirement, read alike.
+  for (const read of ["attested", "recovery", "root_retire"] as const) {
     const present = await fixture({ siblingState: "provisioning" });
     const proof = await present.reader.observe(
       read,
@@ -627,16 +634,16 @@ const inState = (shape: ReturnType<typeof running>, state: string) => ({
   status: { ...shape.status, state },
 });
 
-test("an attested start beside a sibling still stopping or starting proves the named instance, and absence still waits", async (context) => {
+test("an attested start beside a sibling still stopping or starting proves the named instance, while a cell's retirement and absence still wait", async (context) => {
   const lines = context.mock.method(console, "info", () => {});
-  for (const state of [
-    "stopping",
-    "provisioning",
-    "failed",
-    "unhealthy",
-    "unknown",
-    "hibernating",
-  ]) {
+  for (const [state, closed] of [
+    ["stopping", "stopping"],
+    ["provisioning", "provisioning"],
+    ["failed", "failed"],
+    ["unhealthy", "unhealthy"],
+    ["unknown", "unknown"],
+    ["hibernating", "other"],
+  ] as const) {
     const f = await fixture({
       listing: (target, image, app) => [
         running(target, image, app),
@@ -647,6 +654,12 @@ test("an attested start beside a sibling still stopping or starting proves the n
     assert.equal(
       "instanceId" in proof ? proof.instanceId : undefined,
       f.manifest.target.instanceId,
+      state,
+    );
+    // The retire read that begins a release refuses with the sibling's closed state.
+    assert.deepEqual(
+      await refusal(f.reader.observe("retire", f.expected, f.manifest.target.instanceId)),
+      refused("retire", { reason: "sibling_unsettled", state: closed }),
       state,
     );
     // The same listing still proves no absence of a gone target: a sibling may yet start or stop.

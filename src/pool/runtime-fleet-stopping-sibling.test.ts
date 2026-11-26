@@ -15,15 +15,16 @@ import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
 import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
 
-type Listed = "running" | "stopping" | "inactive";
+type Listed = "provisioning" | "running" | "stopping" | "inactive";
 
 /**
  * Up to four cells of one application under the real controller and ledger. Each cell reads the
  * provider as `FleetHandoffCell` does, through the real reader: its activation is the attested
  * observation of its named instance, its retirement the named observation before the stop, and its
  * end the absence proof after the driver reports it stopped. The listing is the test's, built from
- * recorded shapes: a started instance runs, a retired or crashed one is stopping until the test
- * ends its stop, and then it is listed inactive, as production lists a destroyed instance.
+ * recorded shapes: a started instance runs (a slow one is provisioning until the test boots it), a
+ * retired or crashed one is stopping until the test ends its stop, and then it is listed inactive,
+ * as production lists a destroyed instance.
  */
 async function stoppingFleet(context: TestContext) {
   context.mock.method(console, "info", () => {});
@@ -68,21 +69,27 @@ async function stoppingFleet(context: TestContext) {
     () => now,
   );
   const slots = new Map<string, SlotIdentity>();
-  const idle = new Set<string>();
+  const idle = new Set<string>(),
+    slow = new Set<string>();
   // The driver reports the container stopped only once its instance is listed inactive.
   const gone = async (identity: SlotIdentity) =>
     listed.get(identity.instanceId) === "inactive" &&
     reader.absent(application, identity.instanceId, undefined, { driverStopped: true });
+  const attest = async (target: SlotTarget) => {
+    await reader.observe("attested", application, target.instanceId);
+    const identity = { ...target, bootId: `boot-${target.slotId}` };
+    slots.set(target.slotId, identity);
+    return identity;
+  };
   const cell = (target: SlotTarget): FleetCell => ({
     start: async () => {
       // The compute start reaches the provider before activation reads it.
-      list(target.instanceId, "running");
-      await reader.observe("attested", application, target.instanceId);
-      const identity = { ...target, bootId: `boot-${target.slotId}` };
-      slots.set(target.slotId, identity);
-      return identity;
+      list(target.instanceId, slow.has(target.slotId) ? "provisioning" : "running");
+      return attest(target);
     },
-    observe: async () => slots.get(target.slotId),
+    // A start already sent is activated again by upkeep, never sent twice.
+    observe: async () =>
+      slots.get(target.slotId) ?? (listed.has(target.instanceId) ? attest(target) : undefined),
     selected: async () => slots.get(target.slotId),
     healthy: async () => {
       if (listed.get(target.instanceId) !== "running") throw new Error("synthetic ended runtime");
@@ -158,6 +165,11 @@ async function stoppingFleet(context: TestContext) {
       demand = value;
     },
     letIdle: (slot: string) => idle.add(slot),
+    /** `slot`'s start is listed provisioning, its activation refused, until `boot`. */
+    slowStart: (slot: string) => slow.add(slot),
+    boot: (slot: string) => list(instanceOf(slot), "running"),
+    ends: async () =>
+      Object.fromEntries((await state.recentEnds()).map((end) => [end.slotId, end.left])),
     /** The container ends on its own; the provider lists it stopping until `endStop`. */
     crash: (slot: string) => list(instanceOf(slot), "stopping"),
     endStop: (slot: string) => list(instanceOf(slot), "inactive"),
@@ -240,4 +252,70 @@ test("a call never reaches a cell that is draining, retiring or crashed, only a 
   await f.until("slot-c", "quarantined");
   assert.deepEqual(await callable(f.state), ["slot-b", "slot-d"]);
   for (const slot of ["slot-b", "slot-d"]) assert.equal(f.listed(slot), "running");
+});
+
+/** `passes` upkeep passes, each checking that `slot` holds `wanted` and that no row is quarantined. */
+async function holds(
+  f: Awaited<ReturnType<typeof stoppingFleet>>,
+  slot: string,
+  wanted: string,
+  passes: number,
+) {
+  for (let index = 0; index < passes; index++) {
+    await f.pass();
+    assert.equal(await f.phase(slot), wanted, `${slot} at pass ${index}`);
+    const held = (await f.state.inspect()).filter((row) => row.phase === "quarantined");
+    assert.deepEqual(
+      held.map((row) => row.target.slotId),
+      [],
+      `quarantined at pass ${index}`,
+    );
+  }
+}
+
+test("a retirement that begins while another cell stops waits draining, so neither stop ends in quarantine", async (context) => {
+  const f = await stoppingFleet(context);
+  f.demand(4);
+  await f.pass();
+  f.letIdle("slot-a");
+  f.demand(3);
+  await f.until("slot-a", "retiring");
+  // B idles out while A still stops: its retirement waits in draining, which has no time bound,
+  // rather than in retiring, whose bound A's stop would outlast.
+  f.letIdle("slot-b");
+  f.demand(2);
+  await holds(f, "slot-b", "draining", 30);
+  assert.equal(f.listed("slot-b"), "running");
+  assert.equal(await f.phase("slot-a"), "retiring");
+  f.endStop("slot-a");
+  await f.pass();
+  assert.equal(await f.phase("slot-a"), undefined);
+  await f.until("slot-b", "retiring");
+  f.endStop("slot-b");
+  await f.pass();
+  assert.equal(await f.phase("slot-b"), undefined);
+  assert.deepEqual(await f.ends(), { "slot-a": "retired", "slot-b": "retired" });
+  assert.equal(f.peak(), 4);
+});
+
+test("a retirement that begins while another cell still starts waits draining until it runs", async (context) => {
+  const f = await stoppingFleet(context);
+  f.demand(3);
+  await f.pass();
+  // D's start is slow; A idles out while it boots.
+  f.slowStart("slot-d");
+  f.demand(4);
+  await f.pass();
+  assert.equal(f.listed("slot-d"), "provisioning");
+  f.letIdle("slot-a");
+  await holds(f, "slot-a", "draining", 40);
+  assert.equal(f.listed("slot-a"), "running");
+  f.boot("slot-d");
+  await f.until("slot-d", "ready");
+  await f.until("slot-a", "retiring");
+  f.endStop("slot-a");
+  await f.pass();
+  assert.equal(await f.phase("slot-a"), undefined);
+  assert.deepEqual(await f.ends(), { "slot-a": "retired" });
+  assert.equal(f.peak(), 4);
 });

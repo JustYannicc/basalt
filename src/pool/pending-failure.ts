@@ -29,11 +29,12 @@ interface ProviderFields {
   reason?: ObservationRefusal["reason"];
   status?: number;
   field?: Extract<ObservationRefusal, { field: unknown }>["field"];
+  state?: Extract<ObservationRefusal, { state: unknown }>["state"];
 }
 /**
  * A provider refusal's own closed fields, which its class alone doesn't say: its code, the read it
- * refused, and why, with the status or pin behind that. Spread after a derived reason, its reason
- * replaces one that for a provider refusal only ever says transport.
+ * refused, and why, with the status, pin or sibling state behind that. Spread after a derived
+ * reason, its reason replaces one that for a provider refusal only ever says transport.
  */
 export function providerFields(error: unknown): ProviderFields {
   if (!(error instanceof ProviderObservationRefused)) return {};
@@ -44,6 +45,7 @@ export function providerFields(error: unknown): ProviderFields {
     reason: refusal.reason,
     ...("status" in refusal ? { status: refusal.status } : {}),
     ...("field" in refusal ? { field: refusal.field } : {}),
+    ...("state" in refusal ? { state: refusal.state } : {}),
   };
 }
 
