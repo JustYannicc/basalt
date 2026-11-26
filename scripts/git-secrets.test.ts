@@ -231,6 +231,7 @@ test("files under .github and dot-files anywhere pass; a dot-directory inside .g
   const f = fixture();
   try {
     const refused = [
+      ".github/.cache/state.json",
       ".github/workflows/.tool/state.json",
       ".githubx/settings.json",
       "docs/.github/workflows/nested.yml",
