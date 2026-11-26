@@ -7,39 +7,43 @@ import {
   TokenBudget,
   type Heartbeat,
 } from "./box-router.ts";
-import { lightSuffix, usableLightLabel } from "./light-lane.ts";
+import { lightSuffix, selectLightLabel } from "./light-lane.ts";
 import { isCheckJob } from "./retry-history.ts";
 import { say, supersededPullRequest, type GitHub } from "./workflow-run.ts";
 
 // light-rescue.yml, every 5 minutes. A Check job queued for the light runners can't move to hosted
 // runners, so while the box's heartbeat shows it down, each first attempt of this repository's own
-// Check whose light job has waited 3 minutes is cancelled. A cancelled first attempt whose light job
-// waited that long and never got a runner is re-run once it ends, its failed and cancelled jobs:
-// that is attempt 2, which runs every job hosted. The re-run looks at the state, not at who
-// cancelled, so a run an earlier rescue cancelled but could not re-run is found again, and so is a
-// held Check a person cancelled, which is re-run as the rescue would have. It looks while the box is
-// down, and while it is up only after a rescue that did not finish. A run with a job that failed for
-// real, or that a newer Check of its pull request supersedes, stays cancelled. A box that is up, or
-// holding with no CI budget, keeps its light jobs. GitHub answering badly never counts as down.
+// Check whose light job has waited 3 minutes is cancelled, and once it ends its failed and cancelled
+// jobs are re-run: attempt 2, which runs every job hosted. A run with a job that failed for real, or
+// that a newer Check of its pull request supersedes, stays cancelled. Before each cancel the rescue
+// names every run it has taken on in a notice on its own job. A rescue that did not finish leaves
+// those notices behind; the next one takes those runs on again and names them again, so a run is
+// never left cancelled for want of a rescue that looks. A box that is up, or holding with no CI
+// budget, keeps its light jobs. GitHub answering badly never counts as down.
 
+/** How a rescue's notice naming the runs it took on begins; a JSON list of run ids follows. */
+export const takenMarker = "light rescue took runs ";
 /** How long a light job may wait queued before a down box counts as holding it. */
 export const queuedMinutes = 3;
-/** How long after its cancel a cancelled Check is still looked at for its re-run. */
-export const cancelledHours = 2;
 /** How often, and for how long, a cancelled run is read for its end before it is re-run. */
 export const pollMs = 5_000;
 export const pollLimitMs = 60_000;
+/** How many unfinished rescues back a rescue reads, so a few in a row that stopped early lose no run. */
+export const unfinishedRescues = 5;
 /**
  * The most REST calls one rescue spends. Every Check shares the workflow token's hourly limit; an
- * up box costs 4 (the last rescue and the heartbeat), a down one 3 more plus one or two per active
- * or recently cancelled first attempt, and each rescued run at most `finishCalls`.
+ * up box costs 4 (the earlier rescues and the heartbeat), plus 2 for each unfinished rescue before
+ * this one; a down one 2 more plus one or two per active first attempt; each run cancelled at most
+ * `finishCalls`, and each run an earlier rescue took on at most `carriedCalls`.
  */
 export const maxCalls = 100;
 /**
- * A rescued run's calls: its cancel, every poll, its jobs (a Check's fill two pages), its pull
+ * A run's calls once taken on: its cancel, every poll, its jobs (a Check's fill two pages), its pull
  * request's newer-Check read and its re-run.
  */
 export const finishCalls = 1 + (pollLimitMs / pollMs + 1) + 2 + 1 + 1;
+/** The same for a run an earlier rescue took on, which ended already: one read, no cancel or polls. */
+export const carriedCalls = 1 + 2 + 1 + 1;
 const minute = 60_000;
 const checkPath = ".github/workflows/ci.yml";
 
@@ -68,7 +72,7 @@ const record = (value: unknown): Json =>
 function client(env: RescueEnv, fetcher: Fetch, clock: Clock) {
   let calls = 0;
   let remaining = Number.POSITIVE_INFINITY;
-  let unanswered = false;
+  let failures = 0;
   const headers = {
     accept: "application/vnd.github+json",
     authorization: "Bearer " + env.token,
@@ -89,12 +93,12 @@ function client(env: RescueEnv, fetcher: Fetch, clock: Clock) {
       );
     calls++;
     const response = await fetcher(url, init).catch((error: Error) => {
-      unanswered = true;
+      failures++;
       throw error;
     });
     const left = Number(response.headers.get("x-ratelimit-remaining") ?? Number.NaN);
     if (Number.isFinite(left)) remaining = Math.min(remaining, left);
-    if (!response.ok) unanswered = true;
+    if (!response.ok) failures++;
     return response;
   };
   const call = async (path: string, method = "GET", finishing = false) => {
@@ -117,15 +121,17 @@ function client(env: RescueEnv, fetcher: Fetch, clock: Clock) {
       await clock.wait(2_000 * attempt);
     }
   };
-  const json = async (path: string, finishing = false) =>
-    record(await (await call(path, "GET", finishing)).json());
+  const body = async (path: string, finishing = false): Promise<unknown> =>
+    (await call(path, "GET", finishing)).json();
+  const json = async (path: string, finishing = false) => record(await body(path, finishing));
   return {
     send,
     call,
+    body,
     json,
     calls: () => calls,
-    /** Whether any read so far failed or answered other than 2xx. */
-    unanswered: () => unanswered,
+    /** How many reads so far failed or answered other than 2xx. */
+    failures: () => failures,
   };
 }
 type Client = ReturnType<typeof client>;
@@ -137,6 +143,8 @@ async function boxState(
   now: () => number,
   line: (text: string) => void,
 ): Promise<{ down: string } | { up: string } | undefined> {
+  // Only the heartbeat's own reads decide whether it could be read.
+  const failures = api.failures();
   let heartbeat: Heartbeat | undefined;
   try {
     heartbeat = await githubObserver(
@@ -152,7 +160,7 @@ async function boxState(
       now,
     ).heartbeat();
   } catch (error) {
-    if (error instanceof TokenBudget || api.unanswered()) {
+    if (error instanceof TokenBudget || api.failures() > failures) {
       line(
         `the box's heartbeat could not be read (${(error as Error).message}); nothing is cancelled.`,
       );
@@ -168,34 +176,49 @@ async function boxState(
   return { up: typeof state === "string" ? state : `a CI budget of ${state.budget}` };
 }
 
-/** Whether the rescue before this one ended in anything but success; unreadable counts as yes. */
-async function lastRescueFailed(api: Client) {
-  try {
-    const { workflow_runs: runs } = await api.json(
-      "/actions/workflows/light-rescue.yml/runs?status=completed&per_page=1",
-    );
-    if (!Array.isArray(runs)) return true;
-    const last = record(runs[0]);
-    return (
-      last.conclusion !== undefined && !["success", "skipped"].includes(String(last.conclusion))
-    );
-  } catch {
-    return true;
+/**
+ * The runs the rescues since the last one that finished took on, from their notices. A rescue
+ * names a run before it cancels it, so a run one never got to finish is among them even when that
+ * rescue was stopped mid-way.
+ */
+async function earlierTaken(api: Client) {
+  const { workflow_runs: runs } = await api.json(
+    `/actions/workflows/light-rescue.yml/runs?status=completed&per_page=${unfinishedRescues}`,
+  );
+  if (!Array.isArray(runs)) throw new Error("GitHub listed no rescue runs");
+  const taken = new Set<number>();
+  for (const run of runs.map(record)) {
+    if (["success", "skipped"].includes(String(run.conclusion))) break;
+    const { jobs } = await api.json(`/actions/runs/${Number(run.id)}/jobs?per_page=10`);
+    if (!Array.isArray(jobs)) throw new Error("GitHub listed no rescue jobs");
+    for (const job of jobs.map(record)) {
+      const id = /\/check-runs\/(\d+)$/.exec(String(job.check_run_url))?.[1];
+      if (id === undefined) continue;
+      const notes = await api.body(`/check-runs/${id}/annotations?per_page=50`);
+      if (!Array.isArray(notes)) throw new Error("GitHub listed no annotations");
+      for (const note of notes.map(record)) {
+        const message = String(note.message);
+        if (!message.startsWith(takenMarker)) continue;
+        const ids: unknown = JSON.parse(message.slice(takenMarker.length));
+        if (!Array.isArray(ids)) throw new Error("a rescue's notice is not a list");
+        for (const value of ids) if (Number.isSafeInteger(value) && value > 0) taken.add(value);
+      }
+    }
   }
+  return taken;
 }
 
 /** This repository's own first-attempt Checks among the runs listed with `status`. */
-async function firstAttempts(env: RescueEnv, api: Client, status: string, pages: number) {
+async function firstAttempts(env: RescueEnv, api: Client, status: string) {
   const listed: Json[] = [];
-  for (let page = 1; page <= pages; page++) {
+  for (let page = 1; ; page++) {
     const { workflow_runs: runs } = await api.json(
       `/actions/workflows/ci.yml/runs?status=${status}&per_page=100&page=${page}`,
     );
     if (!Array.isArray(runs)) throw new Error("GitHub listed no Check runs");
     listed.push(...runs.map(record));
     if (runs.length < 100) break;
-    if (page === pages && pages > 1)
-      throw new Error(`more than ${pages * 100} ${status} Check runs`);
+    if (page === 10) throw new Error(`more than 1,000 ${status} Check runs`);
   }
   return listed.filter(
     (run) =>
@@ -230,95 +253,96 @@ const labelled = (job: Json, label: string) =>
   !!label &&
   Array.isArray(job.labels) &&
   job.labels.some((value) => String(value).toLowerCase() === label);
-const waited = (job: Json, until: number) =>
-  until - Date.parse(String(job.created_at)) >= queuedMinutes * minute;
 
-/** Rescues the Checks a down box holds; false when a held run was left cancelled or uncancelled. */
+/** Rescues the Checks a down box holds; false when a run it took on is left unfinished. */
 export async function rescue(
   env: RescueEnv,
   fetcher: Fetch = fetch,
   clock: Clock = realClock,
   print: (line: string) => void = say,
+  notice: (text: string) => void = (text) => console.log("::notice::" + text),
 ) {
   const line = (text: string) => print("Light rescue: " + text);
-  const label = usableLightLabel(env.lightLabel).toLowerCase();
+  const label = selectLightLabel(env.lightLabel).toLowerCase();
   if (!label) {
     line(
-      `nothing to do: BASALT_CI_LIGHT_LABEL is empty or no plain label ending in ${lightSuffix}, so every job runs hosted.`,
+      `nothing to do: BASALT_CI_LIGHT_LABEL is empty or names no label ending in ${lightSuffix}, so every job runs hosted.`,
     );
     return true;
   }
   const api = client(env, fetcher, clock);
-  const lastFailed = await lastRescueFailed(api);
-  // Whatever this rescue can't read, it fails when the last one did, so the run that one may have
-  // left cancelled is looked for again.
-  const unread = () => !lastFailed;
-  const box = await boxState(env, api, clock.now, line);
-  if (box === undefined) return unread();
-  if ("up" in box && !lastFailed) {
-    line(`the box is up (${box.up}); its light runners take their own jobs.`);
-    return true;
-  }
-  const at = clock.now();
-  const boxLabel = env.boxLabel.toLowerCase();
-  const held: { run: Json; job: Json }[] = [];
-  const stranded: { run: Json; jobs: Json[] }[] = [];
-  let checks = 0;
+  let finished = true;
+  // Every run this rescue has taken on, named again before each cancel: GitHub keeps ten notices a
+  // step, and each one names them all.
+  const taken = new Set<number>();
+  const name = () => notice(takenMarker + JSON.stringify([...taken]));
+  const carried = new Set<number>();
   try {
-    if ("down" in box) {
-      const active = [
-        ...(await firstAttempts(env, api, "in_progress", 10)),
-        ...(await firstAttempts(env, api, "queued", 10)),
-      ];
-      checks = new Set(active.map((run) => Number(run.id))).size;
-      for (const run of new Map(active.map((run) => [Number(run.id), run])).values()) {
-        const job = (await firstAttemptJobs(api, Number(run.id))).find(
+    for (const id of await earlierTaken(api)) carried.add(id);
+  } catch (error) {
+    // Their runs stay named in their notices, and this rescue fails, so the next one reads them.
+    line(`the earlier rescues could not be read (${(error as Error).message}).`);
+    finished = false;
+  }
+  if (carried.size) {
+    for (const id of carried) taken.add(id);
+    name();
+    line(`takes on again the runs earlier rescues left: ${[...carried].join(", ")}.`);
+  }
+
+  const box = await boxState(env, api, clock.now, line);
+  const held: { run: Json; job: Json }[] = [];
+  if (box && "up" in box) line(`the box is up (${box.up}); its light runners take their own jobs.`);
+  else if (box) {
+    const at = clock.now();
+    let checks = 0;
+    try {
+      const active = new Map<number, Json>();
+      for (const status of ["in_progress", "queued"])
+        for (const run of await firstAttempts(env, api, status)) active.set(Number(run.id), run);
+      checks = active.size;
+      for (const [id, run] of active) {
+        const job = (await firstAttemptJobs(api, id)).find(
           (candidate) =>
-            candidate.status === "queued" && labelled(candidate, label) && waited(candidate, at),
+            candidate.status === "queued" &&
+            labelled(candidate, label) &&
+            at - Date.parse(String(candidate.created_at)) >= queuedMinutes * minute,
         );
         if (job) held.push({ run, job });
       }
+    } catch (error) {
+      line(`the Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
+      held.length = 0;
     }
-    for (const run of await firstAttempts(env, api, "cancelled", 1)) {
-      if (at - Date.parse(String(run.updated_at)) > cancelledHours * 60 * minute) continue;
-      const jobs = await firstAttemptJobs(api, Number(run.id));
-      // A light job cancelled after the rescue's wait, before any runner took it.
-      if (
-        jobs.some(
-          (job) =>
-            job.conclusion === "cancelled" &&
-            !job.runner_name &&
-            labelled(job, label) &&
-            waited(job, Date.parse(String(job.completed_at))),
-        )
-      )
-        stranded.push({ run, jobs });
-    }
-  } catch (error) {
-    line(`the Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
-    return unread();
+    line(
+      `the box is down (${box.down}); ${held.length} of ${checks} first-attempt Checks have a light job queued ${queuedMinutes} minutes or more.`,
+    );
   }
-  line(
-    "down" in box
-      ? `the box is down (${box.down}); ${held.length} of ${checks} first-attempt Checks have a light job queued ${queuedMinutes} minutes or more, and ${stranded.length} cancelled ones wait for their re-run.`
-      : `the box is up (${box.up}), but the last rescue did not finish; ${stranded.length} cancelled first-attempt Checks wait for their re-run.`,
-  );
 
-  let finished = true;
-  const pending = new Map<number, { run: Json; jobs?: Json[] }>();
-  // A held run left uncancelled waits for the next rescue while the box is down, or for the light
-  // runners once it is up; a cancelled one left behind needs the next rescue to look again.
-  const room = (id: number, cancelled: boolean) => {
-    if (api.calls() + finishCalls * (pending.size + 1) <= maxCalls) return true;
-    line(`left run ${id} for the next rescue: finishing it would pass ${maxCalls} API calls.`);
-    if (cancelled) finished = false;
-    return false;
+  // Earlier rescues' runs come first: each was cancelled already, or never will be.
+  const pending = new Map<number, { cancelled: boolean }>();
+  let reserved = 0;
+  const room = (id: number, calls: number) => {
+    if (api.calls() + reserved + calls > maxCalls) {
+      line(`left run ${id} for the next rescue: finishing it would pass ${maxCalls} API calls.`);
+      return false;
+    }
+    reserved += calls;
+    return true;
   };
-  for (const { run, jobs } of stranded)
-    if (room(Number(run.id), true)) pending.set(Number(run.id), { run, jobs });
+  // A run an earlier rescue named but never cancelled, still held, is cancelled below, which
+  // replaces its entry here.
+  for (const id of carried) {
+    if (room(id, carriedCalls)) pending.set(id, { cancelled: false });
+    // Still named in this rescue's notice, which the next one reads.
+    else finished = false;
+  }
   for (const { run, job } of held) {
     const id = Number(run.id);
-    if (!room(id, false)) continue;
+    // A held run left uncancelled waits for the next rescue, or for the light runners.
+    if (!room(id, finishCalls)) continue;
+    taken.add(id);
+    name();
     // A plain cancel still starts the aggregate, which runs on always(): one already queued for
     // the light runners would wait there, and a run that never ends can't be re-run.
     try {
@@ -332,18 +356,24 @@ export async function rescue(
       finished = false;
       continue;
     }
-    const minutes = Math.floor((at - Date.parse(String(job.created_at))) / minute);
+    const minutes = Math.floor((clock.now() - Date.parse(String(job.created_at))) / minute);
     line(
       `cancelled run ${id}: its ${String(job.name)} job waited ${minutes} minutes for the light runners.`,
     );
-    pending.set(id, { run });
+    pending.set(id, { cancelled: true });
   }
 
   const github: GitHub = {
     call: (path, init) => api.call(path, init?.method, true),
     json: async <T>(path: string) => (await api.json(path, true)) as T,
   };
-  const rerun = async (id: number, run: Json, ended: Json, known?: Json[]) => {
+  const boxLabel = env.boxLabel.toLowerCase();
+  const rerun = async (id: number, ended: Json) => {
+    if (
+      String(ended.path).split("@")[0] !== checkPath ||
+      record(ended.head_repository).full_name !== env.repository
+    )
+      return `left run ${id}: it is not this repository's Check.`;
     if (Number(ended.run_attempt) !== 1) return `left run ${id}: something else re-ran it already.`;
     if (ended.conclusion === "success")
       return `left run ${id}: it passed before the cancel landed.`;
@@ -351,36 +381,52 @@ export async function rescue(
       github,
       { id, attempt: 1, conclusion: String(ended.conclusion) },
       {
-        RUN_EVENT: String(run.event),
-        HEAD_BRANCH: String(run.head_branch),
+        RUN_EVENT: String(ended.event),
+        HEAD_BRANCH: String(ended.head_branch),
         GITHUB_REPOSITORY: env.repository,
       },
     );
     if (newer)
       return `left run ${id} cancelled: a newer Check runs for its pull request, and a re-run would cancel it.`;
-    // The aggregate fails on any cancel, and while the box is down a box or light job that failed
-    // lost its runner, not its test. Any other failure is a person's to classify.
-    const lost = (job: Json) => "down" in box && (labelled(job, label) || labelled(job, boxLabel));
-    const failed = (known ?? (await firstAttemptJobs(api, id, true)))
-      .filter((job) => job.conclusion === "failure" && !isCheckJob(String(job.name)) && !lost(job))
+    // Every run a rescue takes on was cancelled while the box was down, so a box or light job that
+    // failed lost its runner, not its test; the aggregate fails on any cancel. Any other failure is
+    // a person's to classify.
+    const failed = (await firstAttemptJobs(api, id, true))
+      .filter(
+        (job) =>
+          job.conclusion === "failure" &&
+          !isCheckJob(String(job.name)) &&
+          !labelled(job, label) &&
+          !labelled(job, boxLabel),
+      )
       .map((job) => String(job.name));
     if (failed.length)
       return `left run ${id} cancelled for a person to classify: ${failed.join(", ")} failed for real.`;
     await api.call(`/actions/runs/${id}/rerun-failed-jobs`, "POST", true);
     return `re-ran run ${id}'s failed and cancelled jobs; attempt 2 runs them hosted.`;
   };
-  // Each run is re-run as soon as it reports its end.
+  // Each run is re-run as soon as it reports its end. A run an earlier rescue named that has not
+  // ended was never cancelled, and runs on: it is read once.
   const deadline = clock.now() + pollLimitMs;
   while (pending.size) {
-    for (const [id, { run, jobs }] of pending) {
+    for (const [id, { cancelled }] of pending) {
       const ended = await api.json(`/actions/runs/${id}`, true).catch(() => undefined);
-      if (ended?.status !== "completed") continue;
+      if (ended?.status !== "completed") {
+        if (cancelled) continue;
+        pending.delete(id);
+        if (ended) line(`left run ${id}: an earlier rescue named it but never cancelled it.`);
+        else {
+          line(`could not read run ${id}; the next rescue takes it on again.`);
+          finished = false;
+        }
+        continue;
+      }
       pending.delete(id);
       try {
-        line(await rerun(id, run, ended, jobs));
+        line(await rerun(id, ended));
       } catch (error) {
         line(
-          `could not re-run run ${id} (${(error as Error).message}); the next rescue looks for it again.`,
+          `could not re-run run ${id} (${(error as Error).message}); the next rescue takes it on again.`,
         );
         finished = false;
       }
@@ -390,7 +436,7 @@ export async function rescue(
   }
   for (const id of pending.keys()) {
     line(
-      `run ${id} did not end within ${pollLimitMs / 1000} s of its cancel; the next rescue looks for it again.`,
+      `run ${id} did not end within ${pollLimitMs / 1000} s of its cancel; the next rescue takes it on again.`,
     );
     finished = false;
   }

@@ -20,6 +20,15 @@ export function usableLightLabel(value: string | undefined) {
   return /^[\w.-]+$/.test(label) && label.toLowerCase().endsWith(lightSuffix) ? label : "";
 }
 
+/**
+ * The label select's runs-on takes from the variable, by the part of the rule an expression can
+ * check; wider than usableLightLabel, so the rescue watches every label select may wait on.
+ */
+export function selectLightLabel(value: string | undefined) {
+  const label = value ?? "";
+  return label.toLowerCase().endsWith(lightSuffix) && !/[ ,]/.test(label) ? label : "";
+}
+
 /** The jobs the light lane runs. box-watch is not one: it cancels the Check when the box is down. */
 export const lightJobs = ["select", "long-started", "cpa-pipeline", "check"];
 

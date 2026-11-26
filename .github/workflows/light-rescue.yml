@@ -2,10 +2,10 @@ name: Light rescue
 
 # A Check job queued for the box's light runners can't move to hosted runners. While the box's
 # heartbeat shows it down, this cancels each first attempt of this repository's own Check whose
-# light job has waited 3 minutes, and re-runs the failed and cancelled jobs of each cancelled first
-# attempt whose light job waited that long without a runner, unless a job failed for real; the
-# re-run is attempt 2, which runs every job hosted (scripts/ci/light-rescue.ts). It runs hosted,
-# as the box may be down.
+# light job has waited 3 minutes and re-runs its failed and cancelled jobs, unless a job failed for
+# real; the re-run is attempt 2, which runs every job hosted (scripts/ci/light-rescue.ts). Each
+# rescue names the runs it took on in a notice on its job, and one that did not finish leaves them
+# to the next. It runs hosted, as the box may be down.
 on:
   schedule:
     - cron: "*/5 * * * *"
@@ -13,8 +13,8 @@ on:
 
 permissions: {}
 
-# A rescue stopped between a cancel and its re-run leaves that run for the next one to find, so a
-# second one waits rather than cancelling the first.
+# A rescue stopped between a cancel and its re-run leaves that run to the next one, so a second one
+# waits rather than cancelling the first.
 concurrency:
   group: light-rescue
   cancel-in-progress: false
@@ -25,8 +25,10 @@ jobs:
     if: vars.BASALT_CI_LIGHT_LABEL != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # checks: read for earlier rescues' notices naming the runs they took on.
     permissions:
       actions: write
+      checks: read
       contents: read
     steps:
       - uses: actions/checkout@v4
