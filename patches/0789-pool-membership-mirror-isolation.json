@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-membership-mirror-isolation",
+  "file": "0789-pool-membership-mirror-isolation.patch",
+  "content_sha256": "6134b7f4f6fd6bfcc3ead35fad7ae9c246f042a1f8942f48dfce7aff217d2892",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

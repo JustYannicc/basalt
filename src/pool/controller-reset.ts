@@ -74,6 +74,8 @@ export interface ControllerHop {
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   now?: () => number;
   holdBudgetBytes?: number;
+  /** The caller's own ID for this request, so its log lines and its event share one. */
+  requestId?: string;
   /** Verifies the router's name for a call, so the entry's isolate line carries that id. */
   signing?: { key: string; previous?: string };
   /** The entry's own admission of a call, run again before its resume; false refuses it. */
@@ -171,7 +173,7 @@ export async function fetchController(request: Request, hop: ControllerHop): Pro
     request = new Request(request, { headers });
   }
   const model = replayableCall(request);
-  const requestId = crypto.randomUUID();
+  const requestId = hop.requestId ?? crypto.randomUUID();
   const copy = holdBody(
     model && request.body ? request.clone().body : null,
     {
@@ -247,10 +249,24 @@ async function awaitHandover(
   copy: HeldBody,
   response: Response,
   begun: number,
+  requestId: string,
 ): Promise<Response> {
-  if (!resendable(response) || (!model && !safeRead(request))) return withoutUnsentMark(response);
+  if (!resendable(response)) return withoutUnsentMark(response);
   const now = hop.now ?? Date.now;
   const cause = handingOver(response) ? "handover" : "unsent";
+  // Without a held body or a safe read there is nothing to send again; the line still records it.
+  if (!model && !safeRead(request)) {
+    console.info("POOL_CODE_HANDOVER_WAITED", {
+      cause,
+      requestId,
+      endpoint: endpointOf(request),
+      sends: 0,
+      waitedMs: now() - begun,
+      outcome: "refused",
+      reason: "not_resendable",
+    });
+    return withoutUnsentMark(response);
+  }
   let sends = 0;
   // The first unsent answer names the attempt for every later re-send, a handover refusal between.
   let attempt: string | undefined;
@@ -292,6 +308,8 @@ async function awaitHandover(
   }
   console.info("POOL_CODE_HANDOVER_WAITED", {
     cause,
+    requestId,
+    endpoint: endpointOf(request),
     sends,
     waitedMs: now() - begun,
     outcome: resendable(response) ? "refused" : "answered",
@@ -388,7 +406,7 @@ async function forwardHeld(
     }
     report(hop, request, requestId, "replayed", error, undefined, response.ok);
   }
-  response = await awaitHandover(request, hop, model, copy, response, begun);
+  response = await awaitHandover(request, hop, model, copy, response, begun, requestId);
   copy.release();
   const controllerRequestId = response.headers.get("X-Request-Id");
   // Signed before the entry's own splice strips what it is made of: if this entry goes down with

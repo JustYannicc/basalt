@@ -588,6 +588,14 @@ test("pool carries bind the exact source, patch bytes and manual retirement proo
         assert.equal(patch.file, "0771-node-limit-failover-usage-pair-test.patch");
         assert.match(patch.retirement.requires, /changes only a test/);
         assert.match(patch.retirement.requires, /under the call's one request_id/);
+      } else if (patch.identity === "cliproxy-node-nonstream-unknown-outcome") {
+        assert.equal(name, "node");
+        assert.equal(patch.file, "0790-node-nonstream-unknown-outcome.patch");
+        assert.match(patch.retirement.requires, /whatever scope the failure behind it has/);
+        assert.match(
+          patch.retirement.requires,
+          /non-streamed credential-scoped unknown-outcome regression/,
+        );
       } else if (patch.identity === "cliproxy-node-tunnel-initial-list-test") {
         assert.equal(name, "node");
         assert.equal(patch.file, "0768-node-tunnel-initial-list-test.patch");

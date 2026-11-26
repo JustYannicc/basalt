@@ -1,5 +1,5 @@
-import { eventId, sendEnvelope } from "./sentry-envelope.ts";
-import type { SentryEnv } from "./sentry-target.ts";
+import { deliverEnvelope, eventId, type Delivery } from "./sentry-envelope.ts";
+import { sentryEnvelopeTarget, type SentryEnv } from "./sentry-target.ts";
 import type { PoolReliabilitySlo, UnknownOutcomes } from "../../apps/pool/reliability-contract.ts";
 import { probeRuntimeContext, type ProbeRuntimeIdentity } from "./pool-probe-identity.ts";
 
@@ -51,7 +51,7 @@ const historyStuck = new Set(["usage_rollup_stuck", "capture_hours_stuck"]);
  */
 export async function startPoolMonitor(env: SentryEnv, schedule: string) {
   const receipt = { id: eventId(), started: performance.now() };
-  const accepted = await sendEnvelope(env, {
+  const opening = await deliverEnvelope(env, {
     id: receipt.id,
     type: "check_in",
     payload: {
@@ -68,23 +68,37 @@ export async function startPoolMonitor(env: SentryEnv, schedule: string) {
       },
     },
   });
-  return { ...receipt, accepted };
+  return { ...receipt, accepted: opening.delivered, opening };
 }
 
-export async function capturePoolMonitor(
-  env: SentryEnv,
-  receipt: Awaited<ReturnType<typeof startPoolMonitor>>,
-  input: {
-    ok: boolean;
-    failures: readonly { guard: string; reason: string; backendStatus?: number; pool?: string }[];
-    reliability?: PoolReliabilitySlo;
-    release?: string;
-    runtime?: ProbeRuntimeIdentity;
-    /** Which failures start an episode; without it every failure is reported, as each minute was. */
-    report?: { readonly availability: boolean; readonly reliability: readonly string[] };
-  },
-): Promise<{ delivered: boolean; eventsDelivered: boolean }> {
-  const failures = input.failures.slice(0, 8).map((failure) => ({
+/**
+ * One part of a monitor run Sentry did not accept: the HTTP status it answered, or that no alert
+ * service is configured; neither means a network failure or timeout with no answer.
+ */
+type Answer = { readonly http?: number; readonly unconfigured?: true };
+export type Undelivered =
+  | ({ readonly part: "check_in"; readonly status: "in_progress" | "ok" | "error" } & Answer)
+  | ({ readonly part: "event"; readonly errorCode: string } & Answer);
+
+const answered = (entry: Answer) =>
+  entry.http ?? (entry.unconfigured ? "unconfigured" : "no_answer");
+
+/** The parts Sentry refused in words a log search can count: part, what it carried, Sentry's status. */
+export function describeUndelivered(undelivered: readonly Undelivered[]) {
+  return undelivered
+    .map((entry) =>
+      entry.part === "check_in"
+        ? `check_in:${entry.status}:${answered(entry)}`
+        : `event:${entry.errorCode}:${answered(entry)}`,
+    )
+    .join(" ");
+}
+
+/** Failures in closed words: guards, reasons, a backend status and a stuck pool's history id. */
+export function closedFailures(
+  failures: readonly { guard: string; reason: string; backendStatus?: number; pool?: string }[],
+) {
+  return failures.map((failure) => ({
     guard: guards.has(failure.guard) ? failure.guard : "runtime",
     reason: reasons.has(failure.reason) ? failure.reason : "unknown",
     ...(typeof failure.backendStatus === "number" &&
@@ -100,11 +114,32 @@ export async function capturePoolMonitor(
       ? { pool: failure.pool }
       : {}),
   }));
+}
+
+export async function capturePoolMonitor(
+  env: SentryEnv,
+  receipt: Awaited<ReturnType<typeof startPoolMonitor>>,
+  input: {
+    ok: boolean;
+    failures: readonly { guard: string; reason: string; backendStatus?: number; pool?: string }[];
+    reliability?: PoolReliabilitySlo;
+    release?: string;
+    runtime?: ProbeRuntimeIdentity;
+    /** Which failures start an episode; without it every failure is reported, as each minute was. */
+    report?: { readonly availability: boolean; readonly reliability: readonly string[] };
+  },
+): Promise<{
+  delivered: boolean;
+  eventsDelivered: boolean;
+  undelivered: readonly Undelivered[];
+}> {
+  // Sentry takes the first eight; the probe's own verdict line keeps them all.
+  const failures = closedFailures(input.failures.slice(0, 8));
   // Request history measures a separate objective; missing history is not a pool outage.
   const availability = failures.filter((failure) => failure.guard !== "request_reliability");
   const reliability = failures.filter((failure) => failure.guard === "request_reliability");
   const ok = input.ok && availability.length === 0;
-  const check = sendEnvelope(env, {
+  const check = deliverEnvelope(env, {
     id: receipt.id,
     type: "check_in",
     payload: {
@@ -143,16 +178,54 @@ export async function capturePoolMonitor(
       reason: context?.reason ?? "collection_unavailable",
     });
   }
-  const [checked, ...sent] = await Promise.all([check, ...events]);
+  const [checked, sent] = await Promise.all([check, Promise.all(events)]);
   // Whether the error events got through apart from the check-ins: an episode's start is recorded
   // as reported on that alone.
-  const eventsDelivered = sent.every(Boolean);
-  return { delivered: receipt.accepted && checked && eventsDelivered, eventsDelivered };
+  const eventsDelivered = sent.every((event) => event.delivery.delivered);
+  const configured = sentryEnvelopeTarget(env) !== undefined;
+  const refused = (delivery: Delivery): Answer =>
+    delivery.status !== undefined
+      ? { http: delivery.status }
+      : configured
+        ? {}
+        : { unconfigured: true };
+  const undelivered: Undelivered[] = [
+    ...(receipt.accepted
+      ? []
+      : [
+          {
+            part: "check_in" as const,
+            status: "in_progress" as const,
+            ...refused(receipt.opening),
+          },
+        ]),
+    ...(checked.delivered
+      ? []
+      : [
+          {
+            part: "check_in" as const,
+            status: ok ? ("ok" as const) : ("error" as const),
+            ...refused(checked),
+          },
+        ]),
+    ...sent
+      .filter((event) => !event.delivery.delivered)
+      .map((event) => ({
+        part: "event" as const,
+        errorCode: event.errorCode,
+        ...refused(event.delivery),
+      })),
+  ];
+  return {
+    delivered: receipt.accepted && checked.delivered && eventsDelivered,
+    eventsDelivered,
+    undelivered,
+  };
 
   function report(errorCode: string, diagnostics: typeof failures) {
     const id = eventId();
     const runtime = probeRuntimeContext(input.runtime);
-    return sendEnvelope(env, {
+    return deliverEnvelope(env, {
       id,
       type: "event",
       payload: {
@@ -183,7 +256,7 @@ export async function capturePoolMonitor(
               : {}),
         },
       },
-    });
+    }).then((delivery) => ({ errorCode, delivery }));
   }
 }
 
