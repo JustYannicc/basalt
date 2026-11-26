@@ -33,6 +33,7 @@ import {
 } from "./ci/box-router.ts";
 import { conditionalJobs, fastJobs, gateErrors } from "./ci/gate.ts";
 import { declaredMatrices } from "./ci/shards.ts";
+import { lightJobs } from "./ci/light-lane.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const read = (path: string) => readFileSync(new URL("../" + path, import.meta.url), "utf8");
@@ -866,7 +867,8 @@ test("declared shard jobs and benched named jobs use the router expression; ever
   for (const [id, job] of Object.entries<{ "runs-on": string; strategy?: { matrix?: unknown } }>(
     workflow.jobs,
   )) {
-    if (declaredJobs.includes(id) || id in namedJobs) continue;
+    // The light lane's jobs have their own runs-on (ci-light-lane.test.ts).
+    if (declaredJobs.includes(id) || id in namedJobs || lightJobs.includes(id)) continue;
     assert.equal(
       job["runs-on"],
       id === "client-desktop" ? "${{ matrix.os }}" : "ubuntu-latest",
@@ -944,8 +946,9 @@ test("select reads only the routing inputs it needs, and the aggregate holds eve
   assert.equal(select.outputs.hosted_jobs, undefined);
   assert.equal(select.steps[0].uses, "actions/checkout@v4");
   assert.deepEqual(select.steps[0].with, { "fetch-depth": 0, "persist-credentials": false });
+  // select can't read its own output, so its light-lane runs-on reads the variable.
   for (const [id, job] of Object.entries<{ "runs-on": string }>(workflow.jobs))
-    assert.doesNotMatch(job["runs-on"], /vars\./, id);
+    if (id !== "select") assert.doesNotMatch(job["runs-on"], /vars\./, id);
   const step = select.steps.find((candidate: { id?: string }) => candidate.id === "jobs");
   assert.equal(step.env.BOX_SLOTS, "${{ vars.BASALT_CI_BOX_SLOTS }}");
   assert.equal(step.env.BOX_LABEL, "${{ vars.BASALT_CI_BOX_LABEL }}");

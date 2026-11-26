@@ -1,0 +1,42 @@
+name: Light rescue
+
+# A Check job queued for the box's light runners can't move to hosted runners. While the box's
+# heartbeat shows it down, this cancels each first attempt of this repository's own Check whose
+# light job has waited 3 minutes and re-runs its failed and cancelled jobs; the re-run is attempt 2,
+# which runs every job hosted (scripts/ci/light-rescue.ts). It runs hosted, as the box may be down.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# A rescue stopped between a cancel and its re-run would leave that run cancelled, so a second one
+# waits rather than cancelling the first.
+concurrency:
+  group: light-rescue
+  cancel-in-progress: false
+
+jobs:
+  rescue:
+    # Nothing runs on the light runners while the variable is empty.
+    if: vars.BASALT_CI_LIGHT_LABEL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Re-run the Checks whose light jobs a down box holds
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LIGHT_LABEL: ${{ vars.BASALT_CI_LIGHT_LABEL }}
+          BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
+          BOX_HEARTBEAT_LABEL: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL }}
+        run: node scripts/ci/light-rescue.ts

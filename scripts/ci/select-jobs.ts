@@ -5,6 +5,7 @@ import { fastConfigs, readDeclarations } from "./declarations.ts";
 import { githubObserver, placementMarker, routeBox } from "./box-router.ts";
 import { fastJobs } from "./gate.ts";
 import { selectLane } from "./lane.ts";
+import { lightLabel } from "./light-lane.ts";
 import { planDeclaredShards, readDeclaredDurations } from "./shards.ts";
 
 const root = process.cwd();
@@ -49,6 +50,16 @@ const box = await routeBox(
     heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
   }),
 );
+// The seconds-long jobs after select run on the light runners only on the attempts box routing
+// takes; select itself reads the variable in its runs-on.
+const light = lightLabel({
+  event: env.GITHUB_EVENT_NAME ?? "",
+  ref: env.GITHUB_REF ?? "",
+  attempt: env.GITHUB_RUN_ATTEMPT,
+  repository: env.GITHUB_REPOSITORY,
+  headRepository: env.HEAD_REPOSITORY,
+  label: env.LIGHT_LABEL,
+});
 const routed = {
   ...selection,
   lane,
@@ -79,6 +90,10 @@ if (process.env.GITHUB_OUTPUT)
       // The label routing validated; runs-on reads it here, never the variable at job time.
       "box_label=" +
       box.label +
+      "\n" +
+      // The light runners' label, or empty: long-started, cpa-pipeline and check read it.
+      "light_label=" +
+      light +
       "\n" +
       // box-watch's bound for jobs the box holds back: a waiting box job never outlasts it.
       "box_floor=" +

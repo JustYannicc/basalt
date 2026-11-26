@@ -30,7 +30,9 @@ jobs:
       contents: read
       actions: write
       checks: read
-    runs-on: ubuntu-latest
+    # The light runners on the first attempts box routing takes (scripts/ci/light-lane.ts). It
+    # can't read its own output, so it repeats that rule over the variable; hosted otherwise.
+    runs-on: ${{ github.run_attempt == 1 && vars.BASALT_CI_LIGHT_LABEL != '' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}
       evidence: ${{ steps.reuse.outputs.evidence }}
@@ -44,6 +46,8 @@ jobs:
       jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.jobs }}
       box_jobs: ${{ steps.reuse.outputs.reused == 'true' && '[]' || steps.jobs.outputs.box_jobs }}
       box_label: ${{ steps.jobs.outputs.box_label }}
+      # The light runners' label for long-started, cpa-pipeline and check, or empty for hosted.
+      light_label: ${{ steps.jobs.outputs.light_label }}
       box_floor: ${{ steps.jobs.outputs.box_floor }}
       box_plan: ${{ steps.jobs.outputs.box_plan }}
       matrices: ${{ steps.jobs.outputs.matrices }}
@@ -101,6 +105,7 @@ jobs:
           BOX_SLOTS: ${{ vars.BASALT_CI_BOX_SLOTS }}
           BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
           BOX_HEARTBEAT_LABEL: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL }}
+          LIGHT_LABEL: ${{ vars.BASALT_CI_LIGHT_LABEL }}
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
@@ -180,13 +185,14 @@ jobs:
     needs: select
     if: needs.select.outputs.reused != 'true'
     permissions: {}
-    runs-on: ubuntu-latest
+    # A re-run reuses attempt 1's outputs, so it runs hosted.
+    runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
     timeout-minutes: 2
     steps:
       - run: "true"
   cpa-pipeline:
     needs: select
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.run_attempt == 1 && needs.select.outputs.light_label || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2889,7 +2895,9 @@ jobs:
     outputs:
       reused_run_id: ${{ steps.gate.outputs.reused_run_id }}
       reused_head_sha: ${{ steps.gate.outputs.reused_head_sha }}
-    runs-on: ubuntu-latest
+    # always() starts it after a cancel too; with a need cancelled it runs hosted, so a run a down
+    # box held still ends and can be re-run.
+    runs-on: ${{ github.run_attempt == 1 && !contains(needs.*.result, 'cancelled') && needs.select.outputs.light_label || 'ubuntu-latest' }}
     # actions: read lets a re-run attempt find the flake-rerun.yml run that started it.
     permissions:
       actions: read
