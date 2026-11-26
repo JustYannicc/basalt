@@ -187,25 +187,29 @@ test("a tree holding a file under a dot-directory fails when staged, and with no
   }
 });
 
-test("files under .github and dot-files anywhere pass, while a .github below the root does not", () => {
+test("files under .github and dot-files anywhere pass; a dot-directory inside .github, a look-alike or a .github below the root does not", () => {
   const f = fixture();
   try {
+    const refused = [
+      ".github/workflows/.tool/state.json",
+      ".githubx/settings.json",
+      "docs/.github/workflows/nested.yml",
+    ];
     for (const file of [
       ".github/workflows/fixture.yml",
+      ".github/dependabot.yml",
       ".gitignore",
       "src/.oxfmtrc.json",
-      "docs/notes.v2.md",
-      "docs/.github/workflows/nested.yml",
+      "docs/v2.1/notes.md",
+      ...refused,
     ])
       f.write(file, "fixture\n");
     const added = f.commit();
-    assert.deepEqual(checkGitSecrets({ ...f, environment: {} }), [
-      {
-        file: "docs/.github/workflows/nested.yml",
-        source: `commit ${added.slice(0, 12)}`,
-        reason: dotReason,
-      },
-    ]);
+    const findings = checkGitSecrets({ ...f, environment: {} });
+    assert.deepEqual(
+      findings.toSorted((left, right) => (left.file < right.file ? -1 : 1)),
+      refused.map((file) => ({ file, source: `commit ${added.slice(0, 12)}`, reason: dotReason })),
+    );
   } finally {
     f.close();
   }
