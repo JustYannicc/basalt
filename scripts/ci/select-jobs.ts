@@ -52,6 +52,8 @@ const box = await routeBox(
 const routed = {
   ...selection,
   lane,
+  // The start jobs of a re-run that carries select over compare with this (rerun-selection.ts).
+  base: env.BASE_SHA ?? "",
   matrices,
   fastConfigs: configs,
   boxJobs: box.jobs,
