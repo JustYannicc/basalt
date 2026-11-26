@@ -233,3 +233,61 @@ test("a catalog sweep's failed app is carried as its error class and app kind, n
   ])
     assert.ok(!published.includes(sentinel), sentinel);
 });
+
+test("a sweep line is attributed only by its own record's annotations", () => {
+  const ours = "basalt-catalog-apps:98f09e9e:eb6d947c-13b1-459e-9adb-7186b2add466";
+  const victim = "basalt-catalog-apps:98f09e9e:0d5c1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b";
+  const record = (job, fields) => ({
+    message: ["Catalog app update failed; the job will retry", fields],
+    level: "WARN",
+    annotations: { job, attempt: 2 },
+  });
+  const printed = (worker, value) =>
+    inspect(value, { depth: 6, breakLength: 80 })
+      .split("\n")
+      .map((line) => `[${worker}] ${line}`);
+  const ownLines = printed(
+    "Api",
+    record(ours, { app: "app_1", organization: "org_1", entry: "executor", cause: "BuildBusy" }),
+  );
+  const other = printed(
+    "Pool",
+    record(victim, { app: "app_2", organization: "org_2", entry: "other", cause: "SqlError" }),
+  );
+  const forged = `[Api] ${JSON.stringify(record(ours, { entry: `x job='${victim}'`, cause: "SqlError" }))}`;
+  const log = [
+    // Another Worker's whole record, and then its closing brace alone, inside ours.
+    ...ownLines.slice(0, 3),
+    ...other,
+    "[Pool] }",
+    ...ownLines.slice(3),
+    // A job named inside the message's fields does not move the line to that job.
+    forged,
+    // A line with no block of its own is not read into the record before it.
+    `[Api] {"message":["Provisioning attempt failed",{"job":"${victim}"}],"level":"WARN","annotations":{"job":"${victim}"}}`,
+    "2026-11-26T14:08:25Z [Api]   'Catalog app update failed; the job will retry',",
+    // Unprefixed lines: a closed record of the other job, then a stray message line after it,
+    // and one more than 40 lines below a record's start.
+    ...inspect(record(victim, { entry: "other", cause: "SqlError" }), { breakLength: 40 }).split(
+      "\n",
+    ),
+    "  'Catalog app update failed; the job will retry',",
+    "{",
+    ...Array.from({ length: 41 }, () => "  filler: 1,"),
+    `  annotations: { job: '${victim}' },`,
+    "  'Catalog app update failed; the job will retry',",
+  ].join("\n");
+  const [mine, theirs] = provisioningHistory(
+    [job(ours, "running", 2), job(victim, "running", 1)],
+    log,
+  );
+  assert.deepEqual(mine.logged, [
+    { message: "Catalog app update failed", cause: "BuildBusy", app: "executor" },
+    { message: "Catalog app update failed", cause: "SqlError" },
+  ]);
+  assert.deepEqual(theirs.logged, [
+    { message: "Catalog app update failed", cause: "SqlError", app: "other" },
+    { message: "Provisioning attempt failed" },
+    { message: "Catalog app update failed", cause: "SqlError", app: "other" },
+  ]);
+});
