@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { inspect } from "node:util";
 import { Effect } from "effect";
 import {
   bringRetriesForward,
@@ -175,4 +176,60 @@ test("each job carries the reason of every attempt the hosted log recorded", () 
   );
   assert.equal(history[0].attempts, 1);
   assert.equal(history[0].updated_at, "2026-11-22T20:47:02.192Z");
+});
+
+test("a catalog sweep's failed app is carried as its error class and app kind, nothing else", () => {
+  const sweep = "basalt-catalog-apps:98f09e9e:eb6d947c-13b1-459e-9adb-7186b2add466";
+  const secret = "app_5ec2e7aa-0000-4000-8000-00000000c0de";
+  const organization = "OrgSentinelPrivate0000000000000000";
+  // The hosted logger's record: the message and its fields, then the attempt's annotations.
+  const record = (fields) => ({
+    message: ["Catalog app update failed; the job will retry", fields],
+    level: "WARN",
+    timestamp: "2026-11-26T14:08:25.909Z",
+    cause: "",
+    annotations: { job: sweep, attempt: 6 },
+    spans: {},
+    fiberId: "#12",
+  });
+  const printed = (value) =>
+    inspect(value, { depth: 6, breakLength: 80 })
+      .split("\n")
+      .map((line) => `[Api] ${line}`);
+  const log = [
+    // As Node prints a long record: over many lines, with the job well after the message.
+    ...printed(
+      record({ app: secret, organization, entry: "executor", cause: "VersionBuildFailed" }),
+    ),
+    // One JSON line.
+    `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "executor", cause: "StorageError" }))}`,
+    // An unlisted cause and an entry that is not a plain name.
+    `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "https://catalog.example/apps/x?token=SECRET", cause: "Error: private message SECRET" }))}`,
+    `[Api] ${JSON.stringify(record({ app: secret, organization, cause: "SomeNewTag" }))}`,
+    // Another organization's sweep is not attributed.
+    `[Api] ${JSON.stringify({ ...record({ app: secret, entry: "executor", cause: "SqlError" }), annotations: { job: "basalt-catalog-apps:other:1", attempt: 1 } })}`,
+    `[Api] {"message":["Provisioning step failed",{"job":"${sweep}","reason":"storage"}],"level":"WARN"}`,
+  ].join("\n");
+  assert.ok(
+    printed(record({ app: secret, organization, entry: "executor", cause: "x" })).length > 8,
+  );
+  const [history] = provisioningHistory([job(sweep, "running", 6)], log);
+  assert.deepEqual(history.logged, [
+    { message: "Catalog app update failed", cause: "VersionBuildFailed", app: "executor" },
+    { message: "Catalog app update failed", cause: "StorageError", app: "executor" },
+    { message: "Catalog app update failed", cause: "other" },
+    { message: "Catalog app update failed", cause: "other" },
+    { message: "Provisioning step failed", reason: "storage" },
+  ]);
+  const published = JSON.stringify(history.logged);
+  for (const sentinel of [
+    secret,
+    organization,
+    "SECRET",
+    "private",
+    "catalog.example",
+    "SomeNewTag",
+    "retry",
+  ])
+    assert.ok(!published.includes(sentinel), sentinel);
 });

@@ -115,6 +115,51 @@ const recordAt = (lines, index) => {
   return record.join("\n");
 };
 
+// A catalog sweep reports every app that failed as one "storage" step failure; the app's own line
+// names the error. Its record names the job only in the attempt's annotations, after the message.
+const sweepMessage = "Catalog app update failed";
+// The errors the sweep's own steps raise. Any other value is published as `other`, so the
+// evidence never carries more than an error class, whatever the line holds.
+const sweepCauses = new Set([
+  "AppNotFound",
+  "BuildUnanswered",
+  "CatalogImportFailed",
+  "CatalogUpdateUnavailable",
+  "CompilerNotReady",
+  "SchemaError",
+  "SqlError",
+  "StorageError",
+  "VersionBuildFailed",
+]);
+// A catalog entry's name, such as `executor`: never an app id, an organization or a URL.
+const appKind = /^[a-z][a-z0-9-]{0,63}$/;
+
+/** The whole printed block a message line sits in, from its `{` to its `}`, or the line alone. */
+const blockAt = (lines, index) => {
+  if (field(lines[index], "job") !== undefined) return lines[index];
+  let start = index;
+  // Only the record's own braces are unindented; a nested object's sit inside it.
+  const edge = (at, brace) => lines[at].replace(workerName, "").trimEnd() === brace;
+  while (start > 0 && index - start < 40 && !edge(start, "{")) start--;
+  const record = [];
+  for (let at = start; at < lines.length && at - start < 60; at++) {
+    record.push(lines[at]);
+    if (at > index && edge(at, "}")) break;
+  }
+  return record.join("\n");
+};
+
+/** A sweep's per-app failure, reduced to the error class from a closed list and the app's kind. */
+const sweepFailure = (record) => {
+  const cause = field(record, "cause");
+  const entry = field(record, "entry");
+  return {
+    message: sweepMessage,
+    cause: cause !== undefined && sweepCauses.has(cause) ? cause : "other",
+    ...(entry !== undefined && appKind.test(entry) ? { app: entry } : {}),
+  };
+};
+
 /**
  * Each job with the attempts the hosted log recorded for it: the line's message and, where it has
  * one, its reason. A record may be printed over several lines, so its fields are read from the
@@ -124,6 +169,12 @@ export const provisioningHistory = (jobs, log) => {
   const lines = log.split("\n");
   const logged = new Map(jobs.map((job) => [job.id, []]));
   lines.forEach((line, index) => {
+    if (line.includes(sweepMessage)) {
+      const record = blockAt(lines, index);
+      const job = field(record, "job");
+      if (job !== undefined && logged.has(job)) logged.get(job).push(sweepFailure(record));
+      return;
+    }
     const message = attemptMessages.find((name) => line.includes(name));
     if (message === undefined) return;
     const record = recordAt(lines, index);
