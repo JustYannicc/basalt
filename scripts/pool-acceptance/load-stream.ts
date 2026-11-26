@@ -18,8 +18,9 @@ export interface StreamRead {
 
 type Frame = Record<string, unknown> | null;
 // What `Array.prototype.join` makes of a value, which is how the pass rule builds its text. A value
-// with no string form throws there too, so the pass rule fails the call; here it adds no text,
-// which never makes a call look early.
+// this join cannot turn into text (one with no string form, or one nested too deep for its stack)
+// adds no text here. The pass rule still decides whether the content is right, and a call whose
+// content was never timed is judged by its whole wait, so this never makes a call look early.
 const joined = (value: unknown) => {
   try {
     return [value].join("");

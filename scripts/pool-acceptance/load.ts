@@ -23,6 +23,8 @@ import {
 import { kindRotation, workerStartMs, type LoadShape } from "./load-shape.ts";
 
 /** A call as it ended, judged by the bar alone; a kill time can still move it to its own class. */
+const loopResolutionMs = 20;
+
 export type EndedCall = CallRecord & {
   readonly classes: readonly LoadClass[];
   readonly pass: boolean;
@@ -92,12 +94,13 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   };
   const kinds = new Map(shape.mix.map((kind) => [kind.name, kind]));
   const next = kindRotation(shape.mix);
+  // The driver's own loop, measured for the whole run: lag here delays the clock reads every
+  // timing depends on. The monitor records nothing until its first tick, so the run starts after one.
+  const loop = monitorEventLoopDelay({ resolution: loopResolutionMs });
+  loop.enable();
+  await new Promise((resolve) => setTimeout(resolve, loopResolutionMs * 2));
   const started = clock.now();
   const end = started + shape.durationMs;
-  // The driver's own loop, measured for the whole run: lag here delays the clock reads every
-  // timing depends on.
-  const loop = monitorEventLoopDelay({ resolution: 20 });
-  loop.enable();
   // Aborted by the first non-pass, a worker's error or the budget's last call: no worker starts another.
   const halt = new AbortController();
   const records: CallRecord[] = [];
@@ -166,8 +169,12 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   );
   input.stop?.removeEventListener("abort", stopped);
   if (signalled()) error ??= stopKind(input.stop!);
+  // A block just before here shows only at the monitor's next tick, so it gets one before it stops.
+  await new Promise((resolve) => setTimeout(resolve, loopResolutionMs * 2));
   loop.disable();
-  const loopLagMaxMs = Math.round(loop.max / 1e6);
+  // Each sample includes the monitor's own interval; with no sample the lag was not measured.
+  const loopLagMaxMs =
+    loop.count > 0 ? Math.max(0, Math.round(loop.max / 1e6) - loopResolutionMs) : undefined;
   return {
     calls,
     killAt,

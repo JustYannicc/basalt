@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { acceptanceCredential } from "../release/acceptance-device.ts";
 import type { Attempt } from "./load-call.ts";
-import { contentWaitMs, delayed } from "./load-classes.ts";
+import { contentWaitMs, delayed, loopLagLimitMs } from "./load-classes.ts";
 import { parseLoadShape } from "./load-shape.ts";
 import { frameTimer } from "./load-stream.ts";
 import type { Shape } from "./load-verdict.mjs";
@@ -239,4 +239,40 @@ test("a frame whose text has no string form ends as a failed call that is counte
     assert.equal(run.verdict.error, undefined);
     assert.match(lines[0]!, /^load status=failed calls=1 passes=0/u);
   }
+});
+
+test("the driver's own loop blocked inside the run is measured, and the run does not pass", async () => {
+  const clock = testClock();
+  // Right as the first call goes out, the driver's own loop stops for longer than the limit.
+  const block = () => {
+    const until = performance.now() + loopLagLimitMs + 200;
+    while (performance.now() < until);
+  };
+  const pool = pacedPool(
+    clock,
+    [[0, frame(chat.role) + frame(chat.content("OK")) + chatTail]],
+    true,
+    block,
+  );
+  const loadShape = parseLoadShape(
+    JSON.stringify({
+      concurrency: 1,
+      durationMinutes: 1,
+      calls: 1,
+      mix: [{ shape: "chat", weight: 1 }],
+    }),
+  );
+  const run = await runLoad({
+    client: pool.client,
+    credential: acceptanceCredential(deviceEnv),
+    shape: loadShape,
+    clock,
+  });
+  assert.equal(run.calls[0]?.pass, true, "the call itself is clean");
+  assert.ok((run.verdict.loopLagMaxMs ?? 0) >= loopLagLimitMs, String(run.verdict.loopLagMaxMs));
+  assert.equal(run.verdict.passed, false);
+  assert.match(
+    summaryLines(run, loadShape).join("\n"),
+    /loop_lag_max_ms=\d+ limit_ms=3000 timings_not_trusted/u,
+  );
 });

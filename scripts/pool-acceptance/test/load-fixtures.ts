@@ -132,6 +132,7 @@ export function pacedPool(
   clock: { advance(ms: number): void },
   steps: readonly Step[],
   withBoot: boolean | string = true,
+  beforeAnswer: () => void = () => {},
 ) {
   const seen: { path: string }[] = [];
   const encoder = new TextEncoder();
@@ -139,6 +140,7 @@ export function pacedPool(
     origin: "https://pool.invalid",
     fetch: async (input) => {
       seen.push({ path: new URL(input.toString()).pathname });
+      beforeAnswer();
       let next = 0;
       const body = new ReadableStream<Uint8Array>(
         {
