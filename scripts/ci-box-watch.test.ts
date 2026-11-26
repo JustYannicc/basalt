@@ -135,6 +135,62 @@ test("a second-wave job behind this Check's own running box jobs is never cut of
   assert.deepEqual(stalled.verdict.stuck, [3]);
 });
 
+test("a box job GitHub cancelled with no runner, while the run goes on, gets the run cancelled for box-rerun", () => {
+  // Handed to a runner in the seconds it went offline, it waited for that runner until GitHub
+  // cancelled it, about 13 minutes on: even a second-wave job behind this Check's own running ones.
+  const lost = job({ id: 2, status: "completed", lost: true, cancelled: true });
+  const jobs = [
+    job({ id: 1, status: "in_progress" }),
+    lost,
+    job({ id: 3, onBox: false, status: "in_progress" }),
+  ];
+  const planned = { "job-1": first, "job-2": { minutes: 4, wave: 2 } as Planned };
+  const decision = watch(jobs, 3, 0, planned);
+  assert.ok(decision.action === "cancel");
+  assert.deepEqual(decision.verdict.stuck, [2]);
+  assert.deepEqual(decision.verdict.cutOff, [1, 3]);
+  // box-rerun takes that verdict: its stuck job never got a runner.
+  assert.deepEqual(
+    rerunDecision(
+      { id: 7, attempt: 1, conclusion: "cancelled" },
+      JSON.stringify(decision.verdict),
+      [
+        {
+          id: 1,
+          name: "job-1",
+          conclusion: "cancelled",
+          labels: ["basalt-box"],
+          runnerName: "b-3",
+        },
+        { id: 2, name: "job-2", conclusion: "cancelled", labels: ["basalt-box"], runnerName: "" },
+        {
+          id: 3,
+          name: "job-3",
+          conclusion: "cancelled",
+          labels: ["ubuntu-latest"],
+          runnerName: "h",
+        },
+      ],
+      "basalt-box",
+    ),
+    { action: "rerun", stuck: [2] },
+  );
+  // A cancel of the whole run cancels hosted jobs too: that one was a person's, and box-watch,
+  // cancelled with it, leaves it.
+  const all = [
+    job({ id: 1, status: "completed", cancelled: true }),
+    lost,
+    job({ id: 3, onBox: false, status: "completed", cancelled: true }),
+  ];
+  assert.notEqual(watch(all, 3, 0, planned).action, "cancel");
+  // A box job that ran and was then cancelled is not lost.
+  const ran = [
+    job({ id: 1, status: "in_progress" }),
+    job({ id: 2, status: "completed", cancelled: true }),
+  ];
+  assert.notEqual(watch(ran, 3, 0, planned).action, "cancel");
+});
+
 test("each job's deadline counts from when GitHub queued it, not from select", () => {
   // The jobs a box job needs took ten minutes to get a hosted runner: its clock starts then.
   const queued = start + 10 * minute;
