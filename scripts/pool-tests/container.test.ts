@@ -38,6 +38,40 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 60_000): 
   throw new Error("The pool did not satisfy its readiness contract within the test budget");
 }
 
+/**
+ * Both of the container's output streams: `docker logs` replays them apart, and the supervisor
+ * writes its readiness records to its error output.
+ */
+function containerOutput(containerId: string): string {
+  const result = spawnSync("docker", ["logs", containerId], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(result.status, 0, result.stderr);
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+/** The usual readiness budget, plus the first ready's 30 s hold. */
+const firstReadyBudgetMs = 90_000;
+
+/** One closed POOL_READINESS_SETTLED line per boot: how long the first ready waited, and why. */
+async function assertSettledOnce(containerId: string, boots: number): Promise<void> {
+  const prefix = "POOL_READINESS_SETTLED ";
+  const deadline = Date.now() + 5_000;
+  let lines: string[] = [];
+  while (Date.now() < deadline) {
+    lines = containerOutput(containerId)
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith(prefix));
+    if (lines.length >= boots) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(lines.length, boots, lines.join("\n"));
+  for (const line of lines) {
+    const record = JSON.parse(line.slice(prefix.length)) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(record).sort(), ["ended", "held_ms"]);
+    assert.ok(Number.isInteger(record.held_ms) && (record.held_ms as number) >= 0);
+    assert.ok(["on_time", "bound", "deadline"].includes(String(record.ended)));
+  }
+}
+
 async function waitForStartupPhaseLogs(containerId: string): Promise<string> {
   const deadline = Date.now() + 5_000;
   while (Date.now() < deadline) {
@@ -210,6 +244,7 @@ test(
         "Content-Type": "application/json",
         "X-Management-Key": "fixture-management-key",
       };
+      // A boot's first ready waits up to 30 s for the supervisor to be scheduled on time.
       async function ready() {
         return until(async () => {
           const response = await fetch(`${readiness}/ready`, {
@@ -226,8 +261,10 @@ test(
             refresh_in_flight?: number;
             lapses?: number;
             flips?: number;
+            stalls?: number;
             last_lapse?: Record<string, unknown>;
             last_flip?: Record<string, unknown>;
+            last_stall?: Record<string, unknown>;
           };
           // The resume layer starts with the runtime and is advertised once its own probe passes.
           if (status.resume !== "v1") return;
@@ -236,19 +273,31 @@ test(
             refresh_in_flight: refreshInFlight,
             lapses,
             flips,
+            stalls,
             last_lapse: lastLapse,
             last_flip: lastFlip,
+            last_stall: lastStall,
             ...stable
           } = status;
           if (refreshInFlight !== undefined)
             assert.ok(Number.isInteger(refreshInFlight) && refreshInFlight >= 0);
-          // The readiness records are closed: two counters and the last of each.
-          for (const count of [lapses, flips])
+          // The readiness records are closed: a counter and the last of each. A loaded machine can
+          // stall the supervisor, so a stall may be there.
+          for (const count of [lapses, flips, stalls])
             if (count !== undefined) assert.ok(Number.isInteger(count) && count >= 1);
           if (lastLapse !== undefined)
             assert.deepEqual(Object.keys(lastLapse).sort(), ["at", "ms", "step"]);
           if (lastFlip !== undefined)
             assert.deepEqual(Object.keys(lastFlip).sort(), ["at", "prior_ms", "reason", "to"]);
+          if (lastStall !== undefined)
+            assert.deepEqual(Object.keys(lastStall).sort(), [
+              "at",
+              "cpu_ms",
+              "cpus",
+              "late_ms",
+              "steal_ms",
+              "throttled_ms",
+            ]);
           // Home measures its distance over its own database pool before the node starts.
           assert.deepEqual(Object.keys(stable).sort(), [
             "boot_id",
@@ -260,11 +309,12 @@ test(
           assert.equal(status.db_rtt_state, "measured");
           assert.ok(Number.isInteger(status.db_rtt_ms) && status.db_rtt_ms! >= 1);
           return status;
-        });
+        }, firstReadyBudgetMs);
       }
       const initial = await ready();
       const startupLogs = await waitForStartupPhaseLogs(containerId);
       assertStartupPhaseLogs(startupLogs);
+      await assertSettledOnce(containerId, 1);
       assert.equal((await fetch(`${node}/v1/models`)).status, 401);
       assert.equal((await fetch(`${home}/v8/management/config`)).status, 401);
       assert.equal((await fetch(`${readiness}/ready`)).status, 401);
@@ -383,6 +433,8 @@ test(
       readiness = origin(8318);
       const restarted = await ready();
       assert.notEqual(restarted.boot_id, initial.boot_id);
+      // Each boot settles its own first ready, once.
+      await assertSettledOnce(containerId, 2);
       await until(catalog);
       // The boot patch must preserve the existing client key and provider credentials.
       assert.ok((await turn("fixture-conversation-after-restart")).length > 0);
