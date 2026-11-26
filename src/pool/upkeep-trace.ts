@@ -195,3 +195,9 @@ export class PoolUpkeepTrace<S extends Side> {
     run: (phase, work) => this.timed(phase, work, {}, () => {}),
   };
 }
+
+/**
+ * What the fleet's upkeep writes to: its own `upkeep` pass, or, inside an alarm, that alarm's
+ * `upkeep` phase. Its phases run on either side, so neither side may name one as a pass.
+ */
+export type FleetUpkeepTrace = Pick<PoolUpkeepTrace<"fleet" | "alarm">, "run" | "row" | "missed">;

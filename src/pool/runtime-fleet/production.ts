@@ -511,9 +511,10 @@ export class PoolRuntimeFleet {
       .sort((left, right) => left.active - right.active || left.lastUsedAt - right.lastUsedAt)[0];
     if (candidate?.identity) await (await this.fleet())?.drain(candidate.identity);
   }
-  async upkeep() {
+  /** The alarm's fleet phase; given the alarm's trace, the fleet's upkeep is a phase on its line. */
+  async upkeep(alarm?: PoolUpkeepTrace<"alarm">) {
     try {
-      // A pass of its own: supervision outlives this pass, and its line comes when it ends.
+      // A pass of its own: supervision outlives the alarm, and its line comes when it ends.
       const supervision = new PoolUpkeepTrace("fleet");
       this.deps.ctx.waitUntil(
         supervision
@@ -527,7 +528,7 @@ export class PoolRuntimeFleet {
       await this.primaryHeadroom();
       const fleet = await this.fleet();
       if (!this.enabled) await this.replacement.cancel();
-      await fleet?.upkeep();
+      await fleet?.upkeep(alarm);
       if (this.enabled) await this.replacement.upkeep();
     } finally {
       await this.schedule();

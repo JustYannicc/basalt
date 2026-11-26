@@ -1,3 +1,4 @@
+import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worker.ts";
 import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
@@ -34,6 +35,8 @@ interface Line {
   outcome: string;
   elapsedMs: number;
   phases?: Record<string, number>;
+  rows?: Array<{ ordinal?: number; phase: string; outcome: string }>;
+  misses?: Array<{ ordinal?: number; quarantined: boolean; cause: string }>;
   [field: string]: unknown;
 }
 
@@ -167,4 +170,77 @@ test("once its report interval has passed, the controller's Home database pool r
     waitDurationNs: 7_000,
     ageMs: 0,
   });
+});
+
+/**
+ * The upkeep lines of one fleet alarm over a configured fleet with one ready cell, whose readiness
+ * read refuses once so the fleet's upkeep records a health miss.
+ */
+async function fleetAlarm(context: TestContext) {
+  const lines: Line[] = [];
+  context.mock.method(console, "info", (name: unknown, fields?: Line) => {
+    if (name === "POOL_RUNTIME_UPKEEP") lines.push(fields!);
+  });
+  for (const method of ["log", "warn", "error"] as const)
+    context.mock.method(console, method, () => {});
+  const f = await fleetWorkerFixture();
+  context.after(f.cleanup);
+  await f.bootstrap();
+  await f.send("fleet-configure", {
+    operationId: "upkeep-trace",
+    configuration: { ...f.configuration, targetActive: 100 },
+  });
+  const response = await f.model();
+  assert.equal(response.status, 200);
+  await response.body?.cancel();
+  await f.settle();
+  const [row] = await f.resourcesWhen((rows) => rows.some((value) => value.phase === "ready"));
+  // Settle the membership pass first, so the alarm measured is the fleet's own.
+  await f.upkeep();
+  await f.settle();
+  f.instances.get(row!.target.instanceId)!.fixture.hooks.health = async () =>
+    new Response(null, { status: 503 });
+  lines.length = 0;
+  await f.upkeep();
+  await f.settle();
+  return { lines, ordinal: row!.target.homePeerOrdinal };
+}
+
+test("inside an alarm, the fleet's upkeep is a phase on the alarm's line, with its rows and health misses", async (context) => {
+  const { lines, ordinal } = await fleetAlarm(context);
+  const passes = lines.filter((line) => line.side === "alarm" && line.phase === "alarm");
+  assert.equal(passes.length, 1);
+  const [pass] = passes;
+  assert.equal(pass!.outcome, "ended");
+  for (const phase of ["fleet", "upkeep", "snapshot", "ready", "rearm"])
+    assert.ok(Number.isInteger(pass!.phases?.[phase]), `the alarm line times ${phase}`);
+  assert.ok(
+    pass!.phases!.upkeep! <= pass!.phases!.fleet!,
+    "the upkeep runs inside the fleet phase",
+  );
+  assert.deepEqual(
+    pass!.rows?.map((entry) => [entry.ordinal, entry.phase, entry.outcome]),
+    [[ordinal, "ready", "ended"]],
+  );
+  assert.deepEqual(
+    pass!.misses?.map((miss) => [miss.ordinal, miss.quarantined]),
+    [[ordinal, false]],
+  );
+});
+
+test("an alarm writes no fleet upkeep line of its own", async (context) => {
+  const { lines } = await fleetAlarm(context);
+  assert.ok(
+    lines.some((line) => line.side === "alarm" && line.rows),
+    "precondition: rows were kept",
+  );
+  assert.deepEqual(
+    lines.filter((line) => line.side === "fleet" && line.phase === "upkeep"),
+    [],
+  );
+  assert.deepEqual(
+    lines.filter((line) => line.side !== "alarm" && (line.rows || line.misses)),
+    [],
+    "no other line carries the fleet's rows or misses",
+  );
 });

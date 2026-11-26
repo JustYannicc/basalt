@@ -29,6 +29,8 @@ interface Episode {
   attempts: number;
   latest: Refusal;
   still: boolean;
+  /** Every try so far was refused for an announced image rollout. */
+  rollout: boolean;
 }
 
 /**
@@ -67,15 +69,18 @@ export class GrowthRefusals {
       attempts: 0,
       latest: refusal,
       still: false,
+      rollout: true,
     };
     this.episodes.set(slot, episode);
     episode.attempts++;
     episode.latest = refusal;
+    episode.rollout &&= refusal.reason === "rollout_active";
     if (episode.still || now - episode.since < stillRefusedMs) return;
     episode.still = true;
-    // A start held by an announced image rollout is the designed state, and warn lines count as
-    // findings, so it logs at info. Any other reason held this long holds scale-out, and warns.
-    (episode.latest.reason === "rollout_active" ? console.info : console.warn)(
+    // A start held only by an announced image rollout is the designed state, and warn lines count
+    // as findings, so it logs at info. One try refused for any other reason makes the episode
+    // warn: a start held this long holds scale-out, and a mixed episode must not go quiet.
+    (episode.rollout ? console.info : console.warn)(
       "POOL_FLEET_GROWTH_STILL_REFUSED",
       this.summary(episode),
     );

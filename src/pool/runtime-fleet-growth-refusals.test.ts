@@ -4,7 +4,7 @@ import { fleetCellFixture } from "../../scripts/pool-tests/runtime-fleet-cell-fi
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
 import { RuntimeFleetState, type FleetRow } from "./runtime-fleet/state.ts";
-import { stillRefusedMs } from "./runtime-fleet/growth-refusals.ts";
+import { GrowthRefusals, stillRefusedMs } from "./runtime-fleet/growth-refusals.ts";
 import { startingBoundMs, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
 import { ProviderObservationRefused } from "./runtime-provider/read.ts";
 import { SlotRefused, type SlotTarget } from "./runtime-slots/contract.ts";
@@ -436,4 +436,24 @@ test("a start still booting when the isolate is replaced reports its failed trie
   assert.deepEqual(g.info("POOL_FLEET_GROWTH_RECOVERED"), [
     { refusedMs: stillRefusedMs + 4 * upkeepCadenceMs, attempts: stillAfter + 4, ...failed },
   ]);
+});
+
+test("an episode refused once for anything but a rollout still warns at 30 s, even when its latest try was a rollout", (context) => {
+  const lines = captured(context);
+  let now = 1_000_000;
+  const refusals = new GrowthRefusals(() => now);
+  const refusal = (reason: "rollout_active" | "read_status") => {
+    const error = new ProviderObservationRefused(
+      reason === "read_status" ? { reason, status: 429 } : { reason },
+    );
+    error.read = "launch";
+    return error;
+  };
+  refusals.startRefused("slot-1", refusal("rollout_active"));
+  now += stillRefusedMs / 2;
+  refusals.startRefused("slot-1", refusal("read_status"));
+  now += stillRefusedMs / 2;
+  refusals.startRefused("slot-1", refusal("rollout_active"));
+  assert.deepEqual(lines.info("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
+  assert.deepEqual(lines.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), [rollout(stillRefusedMs, 3)]);
 });

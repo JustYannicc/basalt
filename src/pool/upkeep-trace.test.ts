@@ -204,7 +204,7 @@ test("rows sharing a phase add up under it, each with its own entry, and health 
   ]);
 });
 
-test("a fleet pass writes one line naming each row it kept and how long that row took", async (context) => {
+test("called with no alarm's trace, the fleet's upkeep writes a fleet pass line of its own naming each row it kept and how long that row took", async (context) => {
   const { lines } = capture(context);
   const f = quietFleet();
   const first = await f.add();

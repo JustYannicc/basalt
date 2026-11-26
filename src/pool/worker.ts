@@ -732,7 +732,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       try {
         if (due.fleet)
           await trace
-            .run("fleet", () => this.fleet.upkeep())
+            .run("fleet", () => this.fleet.upkeep(trace))
             .catch(() => console.error("POOL_RUNTIME_FLEET_UPKEEP_PENDING"));
         if (due.home) this.deferHomeUpkeep();
       } finally {

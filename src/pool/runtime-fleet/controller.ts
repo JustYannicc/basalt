@@ -37,7 +37,7 @@ import {
   streamResumeHeader,
   streamResumeVersion,
 } from "../stream-resume.ts";
-import { PoolUpkeepTrace } from "../upkeep-trace.ts";
+import { type FleetUpkeepTrace, PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
 import { boundedLog } from "../bounded-log.ts";
 import { failureIgnored, failureRead, readSuspect, unprovenMs } from "./failure-record.ts";
@@ -899,18 +899,24 @@ export class RuntimeFleet {
       fields,
     );
   }
-  /** One pass. Each row settles on its own, so one that throws never stops the others or growth. */
-  async upkeep() {
+  /**
+   * One pass. Each row settles on its own, so one that throws never stops the others or growth.
+   * Inside an alarm it is that alarm's `upkeep` phase, so its rows and misses ride the alarm's line;
+   * called on its own, it writes a fleet pass line of its own.
+   */
+  async upkeep(alarm?: PoolUpkeepTrace<"alarm">) {
+    if (alarm) return alarm.run("upkeep", () => this.upkeepPass(alarm));
     const trace = new PoolUpkeepTrace("fleet");
-    return trace.pass("upkeep", async () => {
-      try {
-        await this.upkeepRows(trace);
-      } finally {
-        this.grow();
-      }
-    });
+    return trace.pass("upkeep", () => this.upkeepPass(trace));
   }
-  private async upkeepRows(trace: PoolUpkeepTrace<"fleet">) {
+  private async upkeepPass(trace: FleetUpkeepTrace) {
+    try {
+      await this.upkeepRows(trace);
+    } finally {
+      this.grow();
+    }
+  }
+  private async upkeepRows(trace: FleetUpkeepTrace) {
     // The root's read runs beside the cells' reads; a failed one means "not proven serving".
     const primary = this.deps.primaryDistance
       ? this.deps.primaryDistance().then(
