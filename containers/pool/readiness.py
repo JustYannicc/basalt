@@ -123,6 +123,11 @@ class Readiness:
         self._stalls = 0
         self._stall_line_ns: int | None = None
         self._stall_line_longest_ms = 0
+        # The policy monitor's waits in a row that came back on time, None until a monitor times
+        # them. The supervisor's first ready waits on it (policy_monitor.FirstReady).
+        self._waits_on_time: int | None = None
+        # When the policy monitor's wait in progress is due; a wait overdue is a stall not yet seen.
+        self._wait_due_ns: int | None = None
         self._state_ready = False
         self._state_since_ns = monotonic_ns()
         self._pending_lines: list[str] = []
@@ -237,6 +242,8 @@ class Readiness:
         with self._lock:
             at_ns = self._monotonic_ns()
             self._stalls += 1
+            self._waits_on_time = 0
+            self._wait_due_ns = None
             self._last_stall = {**record, "at": self._wall_iso(at_ns)}
             if (
                 self._stall_line_ns is None
@@ -250,6 +257,53 @@ class Readiness:
                     STALL_LINE
                     + json.dumps({**record, "stalls": self._stalls}, separators=(",", ":"))
                 )
+
+    def note_waits_timed(self) -> None:
+        """A policy monitor times its waits from now on, so the first ready can wait on them."""
+        with self._lock:
+            if self._waits_on_time is None:
+                self._waits_on_time = 0
+
+    def note_wait_started(self, seconds: float) -> None:
+        with self._lock:
+            self._wait_due_ns = self._monotonic_ns() + int(seconds * 1_000_000_000)
+
+    def note_wait_on_time(self) -> None:
+        with self._lock:
+            self._waits_on_time = (self._waits_on_time or 0) + 1
+            self._wait_due_ns = None
+
+    def note_unsteady_probe(self) -> None:
+        """A probe past its budget, or one that renewed no lease: the on-time run starts again."""
+        with self._lock:
+            if self._waits_on_time is not None:
+                self._waits_on_time = 0
+
+    def waits_on_time(self) -> int | None:
+        """The policy monitor's waits in a row that came back on time; None while none are timed."""
+        with self._lock:
+            return self._waits_on_time
+
+    @_emits
+    def set_ready_if_steady(
+        self, *, audit_revision: int | None = None, waits: int, overdue_ns: int
+    ) -> bool:
+        """Passes the services audit only while the policy monitor's last `waits` waits came back
+        on time and the wait in progress is not overdue by `overdue_ns`. One lock decides both, so
+        a stall recorded meanwhile can't slip through. Says whether the monitor was steady."""
+        with self._lock:
+            count = self._waits_on_time
+            overdue = (
+                self._wait_due_ns is not None
+                and self._monotonic_ns() - self._wait_due_ns >= overdue_ns
+            )
+            steady = count is None or (count >= waits and not overdue)
+            self._expire_policy_lease()
+            self._services_ready = steady and (
+                audit_revision is None or audit_revision == self._service_audit_revision
+            )
+            self._observe_state()
+            return steady
 
     @_emits
     def set_ready(self, value: bool, *, audit_revision: int | None = None) -> None:
