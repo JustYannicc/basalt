@@ -3,6 +3,18 @@ import { execFileSync } from "node:child_process";
 const secretName = /(?:^|_)(?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIALS?)(?:_|$)/i;
 const measurementPath = /(?:^|\/)cloud\/(?:scripts|\.local)\/basalt-worker-sizes\.ts$/;
 const carriedPath = /^diff --git a\/(\S+) b\/(\S+)$/gm;
+/**
+ * The only dot-directories the repository tracks, each at the root. Any other one, a dot-directory
+ * inside these included, holds a tool's local state, and once pushed to a public repository it
+ * stays in history, so a file under it is refused here.
+ */
+const trackedDotDirectories = [".github/"];
+const dotDirectory = /(?:^|\/)\.[^/]+\//;
+const untrackedDotPath = (file: string) =>
+  dotDirectory.test(file) &&
+  !trackedDotDirectories.some(
+    (tracked) => file.startsWith(tracked) && !dotDirectory.test(file.slice(tracked.length)),
+  );
 
 interface Finding {
   readonly file: string;
@@ -30,6 +42,8 @@ export function checkGitSecrets(input: {
     if (/^0+$/.test(oid)) return;
     if (measurementPath.test(file))
       findings.push({ file, source, reason: "generated Worker measurement file" });
+    if (untrackedDotPath(file))
+      findings.push({ file, source, reason: "file under a dot-directory other than .github" });
     let reasons = inspected.get(oid);
     if (reasons === undefined) {
       const content = git(["cat-file", "blob", oid]);

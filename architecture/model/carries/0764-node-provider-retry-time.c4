@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "In metadata-only mode the node's usage record carries no provider body and no headers, so Home would never see a provider's retry time. The node puts the retry time it parsed from the provider's 429 on the record as one closed number, fail.retry_after_ms: whole milliseconds rounded up, capped at the 60-day horizon Home trusts, absent when the provider gave none. The retry time sits beside the metadata-only failure status on the queued record."
+      constraint "In metadata-only mode the node's usage record carries no provider body and no headers, so Home would never see a provider's retry time. The node puts the retry time it parsed from the provider's 429 on the record as one closed number, fail.retry_after_ms: whole milliseconds rounded up, capped at the 60-day horizon Home trusts, absent when the provider gave none. The retry time sits beside the metadata-only failure status on the queued record. Usage records cross one asynchronous queue for the whole node and each carries its own retry time, so a record is matched by its credential, never by its place in the queue."
     }
   }
 }
