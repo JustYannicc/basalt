@@ -1,14 +1,23 @@
 import { relative, resolve } from "node:path";
 
-/** The stacks the entry deploys or destroys, relative to the repository root. */
-export const stackConfigs: ReadonlyArray<string> = [
-  "alchemy.run.ts",
-  "scripts/preview/stack/alchemy.database.ts",
-  "scripts/preview/stack/alchemy.cleanup.ts",
-  "scripts/preview/stack/alchemy.rehearsal-fixture.ts",
+/**
+ * The stacks the entry deploys or destroys, relative to the repository root, each with the stages
+ * it may run on. The entry refuses any other stage before it loads an environment or reads
+ * anything: a stack's own stage check runs only once the stack is evaluated, after both.
+ */
+export const stackStages: ReadonlyArray<readonly [config: string, stages: RegExp]> = [
+  ["alchemy.run.ts", /^(?:production|test-[a-z0-9-]+)$/u],
+  ["scripts/preview/stack/alchemy.database.ts", /^test-pr-[1-9][0-9]*$/u],
+  ["scripts/preview/stack/alchemy.cleanup.ts", /^test-pr-[1-9][0-9]*$/u],
+  ["scripts/preview/stack/alchemy.rehearsal-fixture.ts", /^test-rehearsal-[1-9]$/u],
   // The load proof's emulated model upstream, stage test-emulated-upstream, with runner-local state.
-  "scripts/emulated-upstream/stack.ts",
+  ["scripts/emulated-upstream/stack.ts", /^test-emulated-upstream$/u],
 ];
+export const stackConfigs: ReadonlyArray<string> = stackStages.map(([config]) => config);
+
+/** Whether a known stack may run on a stage; the scale stack keeps its own `scale-<n>` rule. */
+export const stackRunsOn = (config: string, stage: string) =>
+  stackStages.some(([known, stages]) => known === config && stages.test(stage));
 
 /**
  * The stack a `--config` names: one of the known stacks, relative to the working directory (the
