@@ -94,13 +94,16 @@ export function proveZohoMcpUi({
       const video = page.video();
       const errors = [];
       const setup = [];
-      page.on("pageerror", (error) => {
-        errors.push(error.message);
-        // The public summary names which of our code threw, never what it said.
+      page.on("pageerror", (error) => errors.push(error.message));
+      // The public summary names which of our code threw, never what it said: the browser's
+      // structured report gives the frames as fields, apart from the message.
+      const exceptions = await context.newCDPSession(page);
+      exceptions.on("Runtime.exceptionThrown", ({ exceptionDetails }) => {
         diagnostics.pageErrors ??= [];
         if (diagnostics.pageErrors.length < 5)
-          diagnostics.pageErrors.push(closedPageError(error, target.metadata.origin));
+          diagnostics.pageErrors.push(closedPageError(exceptionDetails, target.metadata.origin));
       });
+      await exceptions.send("Runtime.enable");
       page.on("request", (request) => {
         if (new URL(request.url()).pathname.endsWith("/oauth/mcp/setup")) setup.push(true);
       });

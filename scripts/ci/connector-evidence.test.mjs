@@ -219,33 +219,43 @@ test("a page error reaches the summary as its kind and our bundle's frame, never
   const root = await fixture(t);
   const run = join(root, ".generated/zoho-people-mcp/ci");
   const origin = "http://127.0.0.1:4321";
-  const thrown = (name, message, frames) => ({
-    name,
-    message,
-    stack: [`${name}: ${message}`, ...frames.map((frame) => `    at ${frame}`)].join("\n"),
+  // The shape of CDP's Runtime.exceptionThrown details, as Chromium reports them.
+  const thrown = (className, callFrames) => ({
+    exception: {
+      ...(className ? { className, type: "object" } : { type: "string" }),
+      description: `${className ?? "Uncaught"}: ${credential}\n    at forged (${origin}/assets/${tenant}.js:1:2)`,
+    },
+    text: `Uncaught ${credential}`,
+    stackTrace: { callFrames },
   });
-  const forged = `${tenant}\n    at forged (${origin}/assets/${tenant}.js:1:2)`;
+  const call = (functionName, url, lineNumber, columnNumber) => ({
+    functionName,
+    url,
+    lineNumber,
+    columnNumber,
+  });
   const records = [
-    // Frames from elsewhere are skipped; the first frame of ours names the code, not its URL.
+    // Frames from elsewhere and code without a URL are skipped; ours names the code, not its URL.
     closedPageError(
-      thrown("TypeError", `Cannot read ${credential}`, [
-        `stranger (https://${tenant}.example/${credential}.js:1:1)`,
-        `async loadAccounts (${origin}/assets/index-B3x9.js?token=${credential}:123:45)`,
+      thrown("TypeError", [
+        call("stranger", `https://${tenant}.example/${credential}.js`, 0, 0),
+        call("inner", "", 0, 25),
+        call("loadAccounts", `${origin}/assets/index-B3x9.js?token=${credential}`, 122, 44),
       ]),
       origin,
     ),
     closedPageError(
-      thrown("Error", credential, [`new Store (${origin}/assets/store.js:3:4)`]),
+      thrown("TypeError", [call("Store", `${origin}/assets/store.js`, 2, 3)]),
       origin,
     ),
+    // A thrown string or an error class we don't list has no name worth keeping.
+    closedPageError(thrown(undefined, [call("", `${origin}/assets/main.js`, 6, 7)]), origin),
+    closedPageError(thrown(`Leak${tenant.replaceAll("-", "")}`, []), origin),
+    // A function name that is not a plain identifier is dropped, the frame kept.
     closedPageError(
-      thrown("Error", credential, [`Object.next [as _next] (${origin}/assets/rx.js:5:6)`]),
+      thrown("Error", [call(`${tenant}.example`, `${origin}/assets/rx.js`, 4, 5)]),
       origin,
     ),
-    // Playwright names a thrown string after its text before a colon: that is not an error name.
-    closedPageError(thrown("Unauthorized", `${credential} for ${tenant}`, []), origin),
-    // A message shaped like a frame stays part of the message.
-    closedPageError(thrown("Error", forged, [`${origin}/assets/main.js:7:8`]), origin),
   ];
   await put(
     join(run, "partial-results.json"),
@@ -259,12 +269,12 @@ test("a page error reaches the summary as its kind and our bundle's frame, never
       name: "TypeError",
       frame: { function: "loadAccounts", file: "index-B3x9.js", line: 123, column: 45 },
     },
-    { name: "Error", frame: { function: "Store", file: "store.js", line: 3, column: 4 } },
-    { name: "Error", frame: { function: "Object.next", file: "rx.js", line: 5, column: 6 } },
+    { name: "TypeError", frame: { function: "Store", file: "store.js", line: 3, column: 4 } },
+    { name: "other", frame: { file: "main.js", line: 7, column: 8 } },
     { name: "other" },
-    { name: "Error", frame: { file: "main.js", line: 7, column: 8 } },
+    { name: "Error", frame: { file: "rx.js", line: 5, column: 6 } },
   ]);
-  for (const hidden of [credential, tenant, "127.0.0.1", "Unauthorized", "forged"])
+  for (const hidden of [credential, tenant, "127.0.0.1", "forged", "example"])
     assert.ok(!JSON.stringify(summary).includes(hidden), hidden);
 });
 
