@@ -32,7 +32,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hos
  import { policyDatabase } from "./resource-policy.ts";
  import { openEnvelope } from "./pool-token.ts";
  import {
-@@ -183,6 +186,21 @@ const membershipRows = <E, R>(
+@@ -183,6 +186,28 @@ const membershipRows = <E, R>(
      };
    });
  
@@ -43,7 +43,14 @@ diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hos
 + * writes, refuses the shared read, and the read runs again under the exclusive lock.
 + */
 +const sharedNativePoolMembership = (organization: string, pool: AppId, executor: Executor) =>
-+  withOrganizationReadLock(organization, sharedPoolMembership(organization, pool, executor)).pipe(
++  withOrganizationReadLock(
++    organization,
++    membershipRows(organization, pool, executor, readRegisteredNativePool(organization, pool)),
++  ).pipe(
++    // As in nativePoolMembership: the tracked transaction is the outer one; the SDK refuses one
++    // opened inside a raw SQL transaction.
++    executor[StorageHost].transaction,
++    // Outside the tracked transaction, so the shared one has ended before the exclusive read.
 +    Effect.catch((error) =>
 +      Schema.is(PoolMembershipReconcileRequired)(error)
 +        ? nativePoolMembership(organization, pool, executor)
@@ -54,7 +61,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hos
  export const poolMembershipReadPath = "/api/internal/pool-membership";
  const Read = Schema.Struct({
    pool: AppId,
-@@ -207,7 +225,7 @@ export const readNativePoolMembership = Effect.gen(function* () {
+@@ -207,7 +232,7 @@ export const readNativePoolMembership = Effect.gen(function* () {
      return HttpServerResponse.empty({ status: 401 });
    const sql = yield* policyDatabase;
    const executor = yield* Effect.flatten(HostedExecutor);
@@ -67,7 +74,7 @@ diff --git a/e2e/tests/pool-membership-shared-read.spec.ts b/e2e/tests/pool-memb
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-membership-shared-read.spec.ts
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,253 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -97,9 +104,15 @@ new file mode 100644
 +const Viewer = Schema.Struct({ userId: Schema.String });
 +class Waiting extends Schema.TaggedError<Waiting>()("Waiting", {}) {}
 +
-+/** The organization access lock taken exclusively, as against its shared form. */
++/**
++ * An exclusive or shared advisory lock on a text key. The wire log carries no parameters, so these
++ * also match the catalog, pool-default, install and default-policy locks; a pool view takes none of
++ * those, so on its trace they are the organization access lock.
++ */
 +const exclusiveLock = /^\s*select pg_advisory_xact_lock\(hashtextextended/i;
 +const sharedLock = /^\s*select pg_advisory_xact_lock_shared\(hashtextextended/i;
++/** The membership read's first row lock: its presence proves the read itself ran. */
++const membershipRows = /from hosted_app_account_links l[\s\S]*for share of a/i;
 +/** Below the pool's membership read timeout (10 s), which a view would otherwise wait out. */
 +const viewCap = 6_000;
 +
@@ -185,6 +198,7 @@ new file mode 100644
 +              status,
 +              exclusive: statements.filter((item) => exclusiveLock.test(item.query)).length,
 +              shared: statements.filter((item) => sharedLock.test(item.query)).length,
++              membership: statements.filter((item) => membershipRows.test(item.query)).length,
 +            };
 +          });
 +          const locks = yield* cloudLocks;
@@ -198,18 +212,23 @@ new file mode 100644
 +            .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Registration)));
 +
 +          // 1. A legacy registration is handed off under the exclusive lock, as before: that is a
-+          //    write. A native registration's read takes no exclusive lock at all.
++          //    write. A native registration's read takes no exclusive lock at all. The only
++          //    historical state: an existing registration predating the membership marker.
++          yield* locks.run({
++            sql: `update organization set metadata=(select jsonb_set(metadata::jsonb, '{basaltPools}', jsonb_object_agg(entry.key, case when entry.value->>'app'=$2 then entry.value-'membership' else entry.value end))::text from jsonb_each(metadata::jsonb->'basaltPools') entry) where id=$1`,
++            params: [organization, pool.id],
++          });
 +          const before = yield* registration;
-+          expect(before).toHaveLength(1);
++          expect(before).toEqual([{ membership: null }]);
 +          const first = yield* counted;
 +          expect(first.status).toBe(200);
-+          if (before[0]!.membership !== "executor-links-v1")
-+            expect(first.exclusive, "a legacy registration's handoff").toBeGreaterThan(0);
-+          expect((yield* registration)[0]!.membership).toBe("executor-links-v1");
++          expect(first.exclusive, "a legacy registration's handoff").toBeGreaterThan(0);
++          expect(yield* registration).toEqual([{ membership: "executor-links-v1" }]);
 +          const native = yield* counted;
 +          yield* evidence.json("membership-locks.json", { before, first, native });
 +          expect(native).toMatchObject({ status: 200, exclusive: 0 });
 +          expect(native.shared).toBeGreaterThan(0);
++          expect(native.membership, "the membership read ran").toBeGreaterThan(0);
 +
 +          // 2. A usage read in flight holds the shared lock through its pool's answer. The pool view
 +          //    must not wait for it.
@@ -271,25 +290,36 @@ new file mode 100644
 +                  and l.objid::bigint = key.k & 4294967295`,
 +              params: [`executor-access:${organization}`, granted],
 +            });
-+          const inFlight = yield* Effect.forkChild(view());
-+          // The parked read holds the shared lock while it waits on the account row.
-+          yield* waitFor(
-+            accessLock(true),
-+            (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0,
-+          );
-+          const demotion = yield* Effect.forkChild(role("member"));
++          // One session holds this organization's lock shared and waits on a row: the parked read.
++          const parked = locks.run({
++            sql: `select count(*)::int as n from pg_locks l,
++              (select hashtextextended($1, 0) as k) key
++              where l.locktype = 'advisory' and l.granted and l.mode = 'ShareLock'
++                and l.objsubid = 1
++                and l.classid::bigint = (key.k >> 32) & 4294967295
++                and l.objid::bigint = key.k & 4294967295
++                and exists (select 1 from pg_locks w where w.pid = l.pid and not w.granted)`,
++            params: [`executor-access:${organization}`],
++          });
++          const finished = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
++            Effect.zip(effect, Clock.currentTimeMillis);
++          const inFlight = yield* Effect.forkChild(finished(view()));
++          yield* waitFor(parked, (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0);
++          const demotion = yield* Effect.forkChild(finished(role("member")));
 +          const blocked = yield* waitFor(
 +            accessLock(false),
 +            (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0,
 +          );
 +          expect(demotion.pollUnsafe()).toBeUndefined();
 +          yield* rows.release;
-+          const answered = yield* Fiber.join(inFlight);
-+          const demoted = yield* Fiber.join(demotion);
++          const [answered, readAt] = yield* Fiber.join(inFlight);
++          const [demoted, demotedAt] = yield* Fiber.join(demotion);
 +          yield* evidence.json("writer-waits-for-membership-read.json", {
 +            blocked,
 +            inFlight: answered,
 +            demotion: demoted.status,
++            readAt,
++            demotedAt,
 +          });
 +          expect(answered).toBe(200);
 +          expect(demoted.status).toBe(200);
