@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { callerHeader } from "../../apps/pool/contract.ts";
 import { quotaSamplingFixture } from "./quota-sampling.test-helpers.ts";
-import { seedCatalog } from "./allowances/data.ts";
+import { seedFixture } from "./allowances/test/seed-fixture.ts";
 import { signPoolToken } from "./token.ts";
 
 test("the alarm retains a five-hour allowance crowded out of Home's list summary", async () => {
@@ -27,7 +27,7 @@ test("the alarm retains a five-hour allowance crowded out of Home's list summary
   const value = await f.capacity(Math.floor((at - 7 * 86_400_000) / 3_600_000) * 3_600_000, at);
   assert.deepEqual(await response.json(), {
     ...value,
-    allowanceCatalog: { entries: seedCatalog.entries },
+    allowanceCatalog: { entries: seedFixture.entries },
   });
   assert.deepEqual(
     value.points.map((point) => point.windowSeconds).sort((a, b) => a - b),
@@ -136,7 +136,7 @@ test("the capacity RPC includes a measured Grok week and excludes its product br
   const value = await f.capacity(Math.floor((at - 7 * 86400000) / 3600000) * 3600000, at);
   assert.deepEqual(await response.json(), {
     ...value,
-    allowanceCatalog: { entries: seedCatalog.entries },
+    allowanceCatalog: { entries: seedFixture.entries },
   });
   assert.equal(value.points.length, 1);
   const point = value.points[0]!;

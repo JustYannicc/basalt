@@ -74,7 +74,8 @@ async function listen(
 export interface HarnessOptions {
   /** Boot the pool API stamps on each streamed turn, by call index. */
   boot?: (index: number, fleetEnabled: boolean) => string;
-  turnStatus?: number;
+  /** A cell's turns fail with this status; a function decides per turn, so a test can break a cell later. */
+  turnStatus?: number | (() => number | undefined);
   /** Simulates the controller starting a ready cell once the fleet is enabled. */
   startCell?: boolean;
   /** What the Worker's POOL_PROVIDER_OBSERVATION_TOKEN Secrets Store binding returns; null is empty. */
@@ -99,6 +100,14 @@ export interface HarnessOptions {
   bindingsLag?: () => boolean;
   /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
   handoffFailure?: (action: string) => Error | Response | undefined;
+  /** As production's upkeep does, a disabled fleet's rows drain and retire (at once, here). */
+  drainOnDisable?: boolean;
+  /** While true, a colour's application read-back carries a rollout Cloudflare still runs. */
+  rolling?: (applicationId: string) => boolean;
+  /** The models the pool lists; one by default. */
+  models?: readonly string[];
+  /** A turn on this model is refused as the pool's node relays Home's quota refusal, with this code. */
+  quota?: (model: string) => "usage_credit_policy_denied" | "model_cooldown" | undefined;
 }
 
 /** The acceptance device's own Home key, as the device usage read reports it. */
@@ -175,6 +184,8 @@ export async function harness(options: HarnessOptions = {}) {
             account_id: accountId,
             name: `pool-runtime-${colour.id}`,
             ...(colour === root ? { version: 57, instances: 1, max_instances: 1 } : {}),
+            // The one field a rollout adds (src/pool/runtime-provider/application.ts).
+            ...(options.rolling?.(colour.id) ? { active_rollout_id: "rollout" } : {}),
             configuration: {
               ...structuredClone(resolvedApplication.configuration),
               image: `registry.example/${accountId}/pool@${colour.image}`,
@@ -187,18 +198,20 @@ export async function harness(options: HarnessOptions = {}) {
 
   const storage = new SlotMemory();
   const state = new RuntimeFleetState(storage, 4);
-  const bindings = (["blue", "green"] as const).map((color) => ({
-    color,
-    applicationId: colours[color].id,
-    imageInput: colours[color].input,
-  }));
+  // Read live, so a test that rebuilds the colours (a release's new images) moves them as a deploy does.
+  const bindings = () =>
+    (["blue", "green"] as const).map((color) => ({
+      color,
+      applicationId: colours[color].id,
+      imageInput: colours[color].input,
+    }));
   // As in production, the configuration and fleet-inspect read the controller's one set of bindings.
   const currentBindings = () =>
     options.bindingsLag?.()
-      ? bindings.map((binding) =>
+      ? bindings().map((binding) =>
           binding.color === "blue" ? { ...binding, imageInput: "0".repeat(64) } : binding,
         )
-      : bindings;
+      : bindings();
   // The controller observes providers exactly as in production; only the host is local.
   const provider = new RuntimeProviderReader("observation-token", (input, init) =>
     fetch(input.replace("https://api.cloudflare.com", cloudflare.origin), init),
@@ -226,10 +239,19 @@ export async function harness(options: HarnessOptions = {}) {
   };
   storage.afterCommit = (draft) => {
     const record = draft.get("runtime-fleet-v1:configuration") as { enabled?: boolean } | undefined;
-    if (options.startCell !== false && record?.enabled && !draft.has("runtime-fleet-v1:resources"))
+    if (options.drainOnDisable && record?.enabled === false)
+      storage.values.delete("runtime-fleet-v1:resources");
+    if (
+      options.startCell !== false &&
+      record?.enabled &&
+      !draft.has("runtime-fleet-v1:resources")
+    ) {
+      // A cell starts on the image its colour runs now.
+      const started = { ...cell, imageDigest: colours.blue.image, imageInput: colours.blue.input };
       storage.values.set("runtime-fleet-v1:resources", [
-        { target: cell, identity: cell, phase: "ready", active: 0, lastUsedAt: 0 },
+        { target: started, identity: started, phase: "ready", active: 0, lastUsedAt: 0 },
       ]);
+    }
   };
   const actions: string[] = [];
   const crashes: { kind?: string; identity: SlotIdentity }[] = [];
@@ -265,8 +287,11 @@ export async function harness(options: HarnessOptions = {}) {
             lastUsedAt: 0,
           },
         ]);
+      const permission = await configuration.inspect(operationId);
       return {
-        permission: await configuration.inspect(operationId),
+        permission,
+        // As production's fleet inspect reports it (src/pool/runtime-fleet/production.ts).
+        ...configuration.standing(operationId ? await configuration.inspect() : permission),
         resources: await state.inspect(),
         bindings: currentBindings(),
         recentEnds: await state.recentEnds(),
@@ -431,7 +456,7 @@ export async function harness(options: HarnessOptions = {}) {
   const sessionOrder = new Map<string, number>();
   /** Every read of the pool's owner routes, with the authorization it carried. */
   const poolReads: { path: string; session: string | null; authorization: string | null }[] = [];
-  const pool = await listen(async (request) => {
+  const pool = await listen(async (request, body) => {
     const url = new URL(request.url!, "http://local");
     const path = url.pathname;
     if (path.startsWith("/pool/v1/") && path !== nativeUsagePath)
@@ -450,7 +475,11 @@ export async function harness(options: HarnessOptions = {}) {
     const boot = (index: number) =>
       options.boot?.(index, isEnabled) ?? (isEnabled ? "cell-boot" : "primary-boot");
     const headers = { "X-Signalbox-Pool-Boot": "primary-boot" };
-    if (path === "/v1/models") return Response.json({ data: [{ id: "model-a" }] }, { headers });
+    if (path === "/v1/models")
+      return Response.json(
+        { data: (options.models ?? ["model-a"]).map((id) => ({ id })) },
+        { headers },
+      );
     if (path === nativeUsagePath) {
       const ids = url.searchParams.getAll("session");
       usageReads.push({
@@ -489,8 +518,25 @@ export async function harness(options: HarnessOptions = {}) {
           },
           { status: 429 },
         );
-      if (options.turnStatus && isEnabled)
-        return new Response(null, { status: options.turnStatus });
+      const quota = options.quota?.((JSON.parse(body) as { model: string }).model);
+      // Home's code as the message's prefix under the generic 429, as smoke-models.ts reads it.
+      if (quota)
+        return Response.json(
+          {
+            error:
+              quota === "model_cooldown"
+                ? { type: "rate_limit_error", code: quota, message: "model cooling down" }
+                : {
+                    type: "rate_limit_error",
+                    code: "rate_limit_exceeded",
+                    message: `${quota}: no account has funding for this model`,
+                  },
+          },
+          { status: 429, headers },
+        );
+      const failing =
+        typeof options.turnStatus === "function" ? options.turnStatus() : options.turnStatus;
+      if (failing && isEnabled) return new Response(null, { status: failing });
       return new Response(
         `data: ${JSON.stringify({ choices: [{ delta: { content: "OK" } }] })}\n\ndata: [DONE]\n\n`,
         { headers: { "Content-Type": "text/event-stream", "X-Signalbox-Pool-Boot": boot(index) } },

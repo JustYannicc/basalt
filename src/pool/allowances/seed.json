@@ -1,47 +1,154 @@
 {
-  "attribution": "Includes adapted PlanYield open dataset, https://planyield.dev/data/, CC BY 4.0. Vendor evidence checked 2026-11-13. Seeds expire; they are not a permanent entitlement table.",
+  "attribution": "Includes adapted PlanYield open dataset, https://planyield.dev/data/, CC BY 4.0. Vendor evidence checked 2026-11-25. Seeds expire; they are not a permanent entitlement table.",
   "entries": [
     {
-      "vendor": "openai",
-      "plan": "plus",
+      "vendor": "anthropic",
+      "plan": "max_5x",
       "windowSeconds": 18000,
-      "full": 1,
+      "full": 5,
       "unit": {
-        "id": "chatgpt-plus-equivalent",
-        "label": "Plus-eq"
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
       },
       "kind": "vendor",
-      "verification": "reference",
+      "verification": "verified",
       "sources": [
-        "https://learn.chatgpt.com/docs/pricing"
+        "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
       ],
-      "checkedAt": 1793750400000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1794960000000,
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Session and weekly allowance stated by the vendor",
+      "expiresAt": 1796837971486,
       "revision": "2026-10-30",
-      "sourceId": "dataset",
-      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+      "sourceId": "claude-max"
     },
     {
-      "vendor": "openai",
-      "plan": "plus",
+      "vendor": "anthropic",
+      "plan": "max_5x",
       "windowSeconds": 604800,
-      "full": 1,
+      "full": 5,
       "unit": {
-        "id": "chatgpt-plus-equivalent",
-        "label": "Plus-eq"
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
       },
       "kind": "vendor",
-      "verification": "reference",
+      "verification": "verified",
       "sources": [
-        "https://learn.chatgpt.com/docs/pricing"
+        "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
       ],
-      "checkedAt": 1793750400000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1794960000000,
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Session and weekly allowance stated by the vendor",
+      "expiresAt": 1796837971486,
+      "revision": "2026-11-09",
+      "sourceId": "claude-max"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_20x",
+      "windowSeconds": 18000,
+      "full": 20,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "policy",
+      "verification": "policy",
+      "sources": [
+        "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Pool policy: Max 20x counts as twenty Pro-eq; the vendor names it the plan that became Ultra",
+      "expiresAt": 1796837971486,
       "revision": "2026-10-30",
-      "sourceId": "dataset",
-      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+      "sourceId": "claude-ultra"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_20x",
+      "windowSeconds": 604800,
+      "full": 20,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "policy",
+      "verification": "policy",
+      "sources": [
+        "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Pool policy: Max 20x counts as twenty Pro-eq; the vendor names it the plan that became Ultra",
+      "expiresAt": 1796837971486,
+      "revision": "2026-11-09-max20x-20",
+      "sourceId": "claude-ultra"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "ultra",
+      "windowSeconds": 604800,
+      "full": 10,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Weekly; verified Ultra accounts have no five-hour cap",
+      "expiresAt": 1796837971486,
+      "revision": "2026-11-09",
+      "sourceId": "claude-ultra"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_5x",
+      "windowSeconds": 18000,
+      "full": 5,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "dataset",
+      "verification": "verified",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://claude.com/pricing"
+      ],
+      "checkedAt": 1795392000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; published; “5x Pro per 5h session and per week”",
+      "expiresAt": 1796601600000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "max_5x",
+      "windowSeconds": 604800,
+      "full": 5,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "dataset",
+      "verification": "verified",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://claude.com/pricing"
+      ],
+      "checkedAt": 1795392000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; published; “5x Pro per 5h session and per week”",
+      "expiresAt": 1796601600000,
+      "revision": "2026-11-09",
+      "sourceId": "dataset"
     },
     {
       "vendor": "anthropic",
@@ -52,17 +159,18 @@
         "id": "claude-pro-equivalent",
         "label": "Pro-eq"
       },
-      "kind": "vendor",
+      "kind": "dataset",
       "verification": "reference",
       "sources": [
+        "https://planyield.dev/data/calculator.json",
         "https://claude.com/pricing"
       ],
-      "checkedAt": 1794268800000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1795478400000,
+      "checkedAt": 1795392000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; baseline; “5x Pro per 5h session and per week” (Claude Max row)",
+      "expiresAt": 1796601600000,
       "revision": "2026-10-30",
-      "sourceId": "dataset",
-      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
+      "sourceId": "dataset"
     },
     {
       "vendor": "anthropic",
@@ -73,16 +181,264 @@
         "id": "claude-pro-equivalent",
         "label": "Pro-eq"
       },
-      "kind": "vendor",
+      "kind": "dataset",
       "verification": "reference",
       "sources": [
+        "https://planyield.dev/data/calculator.json",
         "https://claude.com/pricing"
       ],
-      "checkedAt": 1794268800000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1795478400000,
+      "checkedAt": 1795392000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; baseline; “5x Pro per 5h session and per week” (Claude Max row)",
+      "expiresAt": 1796601600000,
       "revision": "2026-10-30",
-      "sourceId": "dataset",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "ultra",
+      "windowSeconds": 18000,
+      "full": null,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "dataset",
+      "verification": "verified",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://claude.com/pricing"
+      ],
+      "checkedAt": 1795392000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; published; “10x Pro per week”",
+      "unlimited": true,
+      "expiresAt": 1796601600000,
+      "revision": "allowance-v1:2f226aeecbe6aa048e0ccc30f0bfb88e95053b142d9d842b3a49a4e30a569755",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "anthropic",
+      "plan": "ultra",
+      "windowSeconds": 604800,
+      "full": 10,
+      "unit": {
+        "id": "claude-pro-equivalent",
+        "label": "Pro-eq"
+      },
+      "kind": "dataset",
+      "verification": "verified",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://claude.com/pricing"
+      ],
+      "checkedAt": 1795392000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; published; “10x Pro per week”",
+      "expiresAt": 1796601600000,
+      "revision": "2026-11-09",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "plus",
+      "windowSeconds": 18000,
+      "full": 1,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reference",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; baseline; “Pro 500 50x Plus” (ChatGPT Pro row)",
+      "expiresAt": 1796169600000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "plus",
+      "windowSeconds": 604800,
+      "full": 1,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reference",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; baseline; “Pro 500 50x Plus” (ChatGPT Pro row)",
+      "expiresAt": 1796169600000,
+      "revision": "2026-10-30",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "pro",
+      "windowSeconds": 18000,
+      "full": null,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reported",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; reported; “Pro 200 20x Plus”",
+      "unlimited": true,
+      "expiresAt": 1796169600000,
+      "revision": "allowance-v1:84242e816f76d7dec668967f4ca988af74b322512c1d8fc2e091a8c97db3bdb4",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "pro",
+      "windowSeconds": 604800,
+      "full": 20,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reported",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; reported; “Pro 200 20x Plus”",
+      "expiresAt": 1796169600000,
+      "revision": "allowance-v1:a1663dee95dfd331dea1f32534342c4f4bd990f4ec716ba8ffdf87854004bfd8",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "prolite",
+      "windowSeconds": 18000,
+      "full": null,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reported",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; reported; “Pro 100 10x Plus”",
+      "unlimited": true,
+      "expiresAt": 1796169600000,
+      "revision": "allowance-v1:0888a2a695236be0f9b7851313ed4167f07c158e791c59f87942c086aba717d1",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "prolite",
+      "windowSeconds": 604800,
+      "full": 10,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reported",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; reported; “Pro 100 10x Plus”",
+      "expiresAt": 1796169600000,
+      "revision": "allowance-v1:1e156b49356bbf6632396826c6d46f29017825d91a27d10ef0b1870be68dafb2",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "promax",
+      "windowSeconds": 18000,
+      "full": null,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reported",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; reported; “Pro 500 50x Plus”",
+      "unlimited": true,
+      "expiresAt": 1796169600000,
+      "revision": "allowance-v1:218c5f974ec1b01ef6c19673ccbb05293c160d6d3c0da94bcd06beb92e32e190",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "promax",
+      "windowSeconds": 604800,
+      "full": 50,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "dataset",
+      "verification": "reported",
+      "sources": [
+        "https://planyield.dev/data/calculator.json",
+        "https://openai.com/index/introducing-gpt-6-2-astra-sol/"
+      ],
+      "checkedAt": 1794960000000,
+      "fetchedAt": 1795628371486,
+      "detail": "PlanYield CC BY 4.0; reported; “Pro 500 50x Plus”",
+      "expiresAt": 1796169600000,
+      "revision": "allowance-v1:427840d08e90d14d454dd1df937a66c55706d2d203811d97ab384ee52ca9959a",
+      "sourceId": "dataset"
+    },
+    {
+      "vendor": "openai",
+      "plan": "pro",
+      "windowSeconds": 604800,
+      "full": 20,
+      "unit": {
+        "id": "chatgpt-plus-equivalent",
+        "label": "Plus-eq"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers",
+        "https://github.com/openai/codex/blob/69231e119bfca0b14453515e97d99688ce1c47c9/codex-rs/tui/src/subscription.rs",
+        "https://x.com/thsottiaux/status/2119296267545419987"
+      ],
+      "checkedAt": 1794182400000,
+      "fetchedAt": 1794528000000,
+      "expiresAt": 1795392000000,
+      "revision": "seed-pro-weekly",
+      "sourceId": "openai",
       "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
     },
     {
@@ -110,29 +466,6 @@
     },
     {
       "vendor": "openai",
-      "plan": "pro",
-      "windowSeconds": 604800,
-      "full": 20,
-      "unit": {
-        "id": "chatgpt-plus-equivalent",
-        "label": "Plus-eq"
-      },
-      "kind": "vendor",
-      "verification": "verified",
-      "sources": [
-        "https://help.openai.com/en/articles/9793128-about-chatgpt-pro-tiers",
-        "https://github.com/openai/codex/blob/69231e119bfca0b14453515e97d99688ce1c47c9/codex-rs/tui/src/subscription.rs",
-        "https://x.com/thsottiaux/status/2119296267545419987"
-      ],
-      "checkedAt": 1794182400000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1795392000000,
-      "revision": "seed-pro-weekly",
-      "sourceId": "openai",
-      "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
-    },
-    {
-      "vendor": "openai",
       "plan": "promax",
       "windowSeconds": 604800,
       "full": 50,
@@ -153,69 +486,6 @@
       "revision": "seed-promax-weekly",
       "sourceId": "openai",
       "detail": "Dated vendor evidence; refreshed sources and account measurements take precedence"
-    },
-    {
-      "vendor": "anthropic",
-      "plan": "max_5x",
-      "windowSeconds": 18000,
-      "full": 5,
-      "unit": {
-        "id": "claude-pro-equivalent",
-        "label": "Pro-eq"
-      },
-      "kind": "vendor",
-      "verification": "verified",
-      "sources": [
-        "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
-      ],
-      "checkedAt": 1794528000000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1795737600000,
-      "revision": "2026-10-30",
-      "sourceId": "claude-max",
-      "detail": "Vendor documentation checked on the seed date"
-    },
-    {
-      "vendor": "anthropic",
-      "plan": "max_5x",
-      "windowSeconds": 604800,
-      "full": 5,
-      "unit": {
-        "id": "claude-pro-equivalent",
-        "label": "Pro-eq"
-      },
-      "kind": "vendor",
-      "verification": "verified",
-      "sources": [
-        "https://support.claude.com/en/articles/11049741-what-is-the-max-plan"
-      ],
-      "checkedAt": 1794528000000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1795737600000,
-      "revision": "2026-11-09",
-      "sourceId": "claude-max",
-      "detail": "Vendor documentation checked on the seed date"
-    },
-    {
-      "vendor": "anthropic",
-      "plan": "ultra",
-      "windowSeconds": 604800,
-      "full": 10,
-      "unit": {
-        "id": "claude-pro-equivalent",
-        "label": "Pro-eq"
-      },
-      "kind": "vendor",
-      "verification": "verified",
-      "sources": [
-        "https://support.claude.com/en/articles/17728952-what-is-the-ultra-plan"
-      ],
-      "checkedAt": 1794528000000,
-      "fetchedAt": 1794528000000,
-      "expiresAt": 1795737600000,
-      "revision": "2026-11-09",
-      "sourceId": "claude-ultra",
-      "detail": "Vendor documentation checked on the seed date"
     },
     {
       "vendor": "anthropic",
@@ -258,6 +528,90 @@
       "revision": "2026-11-09-max20x-20",
       "sourceId": "pool-policy",
       "detail": "Explicit retained pool policy, not verified vendor allowance"
+    },
+    {
+      "vendor": "xai",
+      "plan": "x_subscription_plus",
+      "windowSeconds": 604800,
+      "full": 1,
+      "unit": {
+        "id": "x-subscription-plus-equivalent",
+        "label": "X Plus account"
+      },
+      "kind": "vendor",
+      "verification": "reference",
+      "sources": [
+        "https://docs.x.ai/x-subscription/pricing.md"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Unified X Subscription only; legacy Grok plans are separate",
+      "expiresAt": 1796837971486,
+      "revision": "allowance-v1:f33f48ce15b839620759344b44017eb8f5c668fdc6a8f83db2e4c36380cce116",
+      "sourceId": "x-subscription"
+    },
+    {
+      "vendor": "xai",
+      "plan": "x_subscription_premium",
+      "windowSeconds": 604800,
+      "full": 4,
+      "unit": {
+        "id": "x-subscription-plus-equivalent",
+        "label": "X Plus account"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://docs.x.ai/x-subscription/pricing.md"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Unified X Subscription only; legacy Grok plans are separate",
+      "expiresAt": 1796837971486,
+      "revision": "allowance-v1:48b7b41b810c6ec2727b6b010b9d253a3341452f3cb8777b39949a42d7867fe1",
+      "sourceId": "x-subscription"
+    },
+    {
+      "vendor": "xai",
+      "plan": "x_subscription_super",
+      "windowSeconds": 604800,
+      "full": 15,
+      "unit": {
+        "id": "x-subscription-plus-equivalent",
+        "label": "X Plus account"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://docs.x.ai/x-subscription/pricing.md"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Unified X Subscription only; legacy Grok plans are separate",
+      "expiresAt": 1796837971486,
+      "revision": "allowance-v1:814592d11155df4c10fed98c6b8ccfa30e485dd0cf4ec48dd1631e639920c3b6",
+      "sourceId": "x-subscription"
+    },
+    {
+      "vendor": "xai",
+      "plan": "x_subscription_ultra",
+      "windowSeconds": 604800,
+      "full": 50,
+      "unit": {
+        "id": "x-subscription-plus-equivalent",
+        "label": "X Plus account"
+      },
+      "kind": "vendor",
+      "verification": "verified",
+      "sources": [
+        "https://docs.x.ai/x-subscription/pricing.md"
+      ],
+      "checkedAt": 1795628371486,
+      "fetchedAt": 1795628371486,
+      "detail": "Unified X Subscription only; legacy Grok plans are separate",
+      "expiresAt": 1796837971486,
+      "revision": "allowance-v1:653573bd00fe96683900a0ed91595e8663b5fc1742a2b627d6eabb60d821ebda",
+      "sourceId": "x-subscription"
     }
   ]
 }

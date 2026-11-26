@@ -92,6 +92,8 @@ export class TunnelOperation {
   /** `request` is the session's upgrade, so its bearer is the one `access` checked. */
   async run(request: Request, env: TunnelEnvironment, access?: TunnelAccess) {
     try {
+      // The session's own credential and encoding are set after the frame's headers, so no frame
+      // key can replace them.
       const headers = new Headers(this.open.headers);
       headers.set("authorization", request.headers.get("authorization")!);
       headers.set("accept-encoding", "identity");
@@ -152,6 +154,7 @@ export class TunnelOperation {
         this.send({ v: 1, type: "credit", id: this.open.id, bytes: tunnelLimits.windowBytes });
         return;
       }
+      // Only the fixed names: installed clients refuse a response frame with any other key.
       const allowed = new Set(tunnelResponseHeaderNames);
       const output: Record<string, string> = {};
       response.headers.forEach((value, key) => {

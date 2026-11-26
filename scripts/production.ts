@@ -6,6 +6,9 @@
  *
  *   bun scripts/production.ts plan   [--fleet-classes]   prints each row's name, type, action and why
  *   bun scripts/production.ts deploy [--fleet-classes]   plans, applies, smokes; re-points on failure
+ *
+ * After a passing smoke a deploy that changed the cells' image re-commits the fleet's permission
+ * for them (scripts/release/fleet-recommit.ts), and any other deploy reads that it is in force.
  */
 import { randomUUID } from "node:crypto";
 import { appendFile } from "node:fs/promises";
@@ -182,21 +185,6 @@ export const databaseSteps = (rows: readonly { fqn: string; action: string }[]) 
     .filter(({ fqn, action }) => ["Migrations", "PoolDatabase"].includes(fqn) && action !== "noop")
     .map(({ fqn }) => fqn);
 
-/** One streamed turn through the public pool. Says why it failed by error class and status only. */
-export async function smoke(send: () => Promise<unknown>) {
-  try {
-    await send();
-    return { passed: true } as const;
-  } catch (error) {
-    const status = (error as { status?: unknown } | undefined)?.status;
-    const name = error instanceof Error ? error.name : "failure";
-    return {
-      passed: false,
-      why: typeof status === "number" ? `${name}, HTTP ${status}` : name,
-    } as const;
-  }
-}
-
 // A rollback Cloudflare refuses over a changed secret is forced only for these: the telemetry
 // secret carries the upstream pin, and AppCompiler's apps version the served framework version
 // (until #1726 binds it plainly). Forced, the earlier version gets back the value it ran with.
@@ -205,6 +193,11 @@ const forceSecrets = new Set(["EXECUTOR_TELEMETRY", "EXECUTOR_APPS_VERSION"]);
 // Set right before the first production write. A run that stops before it says so (`unchanged`), and
 // production.yml records every other deploy: one that dies mid-apply never writes that line.
 let began = false;
+
+/** A step output for production.yml; nothing outside Actions. */
+const output = async (line: string) => {
+  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `${line}\n`);
+};
 
 const say = async (line: string) => {
   console.log(line);
@@ -243,6 +236,22 @@ async function main() {
   // A missing or malformed acceptance device stops here, before anything changes.
   const { acceptanceCredential } = await import("./release/acceptance-device.ts");
   const credential = mode === "deploy" ? acceptanceCredential(process.env) : undefined;
+  const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
+  const { servedBeforeApply, smokeAfterApply, smokeModels } =
+    await import("./release/smoke-models.ts");
+  const turn = (name: string) =>
+    new PoolAcceptanceClient().sendTurn(credential!, name, {
+      id: randomUUID(),
+      expectedRecords: 1,
+    });
+  // Before anything changes, a model the pool serves now (deploy only; a plan sends no turn).
+  let served = model;
+  if (mode === "deploy") {
+    const before = await servedBeforeApply(smokeModels(model), turn);
+    if ("stop" in before) throw new Refused(before.stop);
+    served = before.model;
+    await say(before.line);
+  }
   // Alchemy captures the working directory on its first load and resolves the stack's commands
   // from it; they are declared relative to the cloud app.
   process.chdir(resolve(root, ".upstream/apps/hosted/cloud"));
@@ -258,6 +267,8 @@ async function main() {
   const { progressTracker } = await import("./release/public-report.ts");
   const { failureLine } = await import("./release/failure-line.ts");
   const { changedRows } = await import("./release/plan-summary.ts");
+  const { fleetRebindRows, rebindPlanLine, recommitFleet, recommitLine, releaseGo } =
+    await import("./release/fleet-recommit.ts");
   // Alchemy's own progress events: the resource that reported a failure, by name and type.
   const tracker = progressTracker();
   const progress = (event: unknown) => Effect.sync(() => tracker.track(event));
@@ -317,7 +328,7 @@ async function main() {
   assignEnvironment(process.env, fleetEnvironment(declared));
 
   // Second session plans and applies: the snapshot holds this session's providers.
-  const { serving, applied, creating } = await run(
+  const { serving, applied, creating, rebind } = await run(
     Effect.gen(function* () {
       const snapshot = (yield* Alchemist.Stack.plan({
         target,
@@ -371,6 +382,10 @@ async function main() {
           `A rollback serves ${unclear.join(", ")} and the version the last release deployed cannot be told; nothing applied`,
         );
       yield* print(`Re-points forward: ${forward.map(({ fqn }) => fqn).join(", ") || "none"}`);
+      // A new cell image leaves the fleet's permission naming the cells before; the deploy
+      // re-commits it after its smoke. The rows are in the digest; this line says what they cause.
+      const rebind = fleetRebindRows(snapshot.native as never, "PoolWorker");
+      if (rebind.length) yield* print(rebindPlanLine(rebind));
       // The stack read the setting this run set, or this run stops before it applies anything.
       const fleet = created.filter((name) => fleetClasses.some((cls) => name.endsWith(`: ${cls}`)));
       if (
@@ -389,7 +404,7 @@ async function main() {
       };
       yield* print(`Plan digest: ${planDigest(reading)}`);
       const serving: { fqn: string; script: string; version: string }[] = [];
-      if (mode === "plan") return { serving, applied: false, creating: created.length > 0 };
+      if (mode === "plan") return { serving, applied: false, creating: created.length > 0, rebind };
       // Nothing has been written yet: the backup, the re-points and the apply all come after this.
       const difference = planDifference(approval.approved!, reading);
       if (difference) return yield* refuse(difference);
@@ -444,21 +459,54 @@ async function main() {
           `::error::The apply failed at ${failed.join(", ") || "no resource it reported"}: ${failureLine(Cause.squash(exit.cause))}`,
         );
       }
-      return { serving, applied: exit._tag === "Success", creating: created.length > 0 };
+      return { serving, applied: exit._tag === "Success", creating: created.length > 0, rebind };
     }),
   );
   if (mode === "plan") return;
-  const { PoolAcceptanceClient } = await import("./pool-acceptance/client.ts");
   const result = applied
-    ? await smoke(() =>
-        new PoolAcceptanceClient().sendTurn(credential!, model, {
-          id: randomUUID(),
-          expectedRecords: 1,
-        }),
-      )
+    ? await smokeAfterApply(served, turn)
     : ({ passed: false, why: "the apply failed" } as const);
-  if (result.passed)
-    return void (await say(`Deployed ${candidate}; the smoke turn on ${model} served.`));
+  if (result.passed) {
+    await say(`Deployed ${candidate}; the smoke turn on ${served} served.`);
+    // Applied and proven: production.yml records the deploy a success whatever the fleet step
+    // says, and a deploy that dies in that step still gets its scale-out line from the next step.
+    await output("released=true");
+    // The release is live and stays so: a fleet that could not be re-committed is fixed forward.
+    const go = releaseGo(
+      candidate,
+      new Date(),
+      process.env.GITHUB_RUN_ID ?? "local",
+      process.env.GITHUB_RUN_ATTEMPT ?? "1",
+    );
+    const run = {
+      go,
+      ref: process.env.GITHUB_REF ?? "",
+      event: process.env.GITHUB_EVENT_NAME ?? "",
+    };
+    const outcome = await (async () => {
+      try {
+        const { dependenciesFromEnvironment } = await import("./pool-fleet/environment.ts");
+        const deps = await dependenciesFromEnvironment(process.env);
+        // The model the smoke just served goes first, as the smoke chose it.
+        const acceptance =
+          "client" in deps.acceptance ? { ...deps.acceptance, model: served } : deps.acceptance;
+        return await recommitFleet(rebind, run, { ...deps, acceptance });
+      } catch (error) {
+        // Before the lane started: nothing was sent.
+        return {
+          status: "failed",
+          cause: failureLine(error),
+          notStarted: true,
+          rows: rebind.length,
+        } as const;
+      }
+    })();
+    const { ok, line, warn } = recommitLine(outcome);
+    await say(ok ? (warn ? `::warning::${line}` : line) : `::error::${line}`);
+    await output("fleet_line=written");
+    if (!ok) process.exit(1);
+    return;
+  }
   if (creating) {
     await say(
       `::error::Failed (${result.why}). New Durable Object classes cannot be rolled back: fix forward.`,
@@ -475,7 +523,7 @@ async function main() {
   await say(
     `::error::Failed (${result.why}); re-pointed ${serving.length - failed.length} of ${serving.length} Workers` +
       ` to their versions from before the apply${failed.length ? `; not re-pointed: ${failed.join(", ")}` : ""}.` +
-      " State still records this release, so the next deploy is a new commit, not this one again.",
+      " State still records this release: a plan-only run of this commit again shows them re-pointed forward, and a deploy with that run's digest does it.",
   );
   process.exit(1);
 }

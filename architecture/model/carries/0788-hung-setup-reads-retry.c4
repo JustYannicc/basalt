@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Billing catalog seeding and the emulator fixture's OpenID discovery read abandon and repeat a request that hangs for 6 seconds, like emulator setup's instance, keyed-credential and reset calls: the seed is an upsert keyed by ID and discovery is a read, so a late copy converges. Four attempts and their backoff stay inside the unchanged 30-second budget. This replaces carry 0685's rule that billing catalog seeding never retries a timeout. Requests a scenario makes still fail on their first error."
+    }
+  }
+}

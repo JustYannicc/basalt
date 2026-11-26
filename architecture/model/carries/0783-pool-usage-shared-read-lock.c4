@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The pool usage summary, series and last-success reads hold only the shared organization advisory lock, replacing carry 0544's exclusive rule for them. They keep it from their policy read through the pool's signed answer. Their membership read is pure: it takes no exclusive lock and never writes. So concurrent reads never wait for one another, while policy writers, role changes and membership handoffs, which take the exclusive lock, still wait for every read in flight. A legacy registration, whose handoff writes, makes the pure read refuse; the read then ends its shared transaction and runs again under the exclusive lock, so none of these reads upgrades the lock."
+    }
+  }
+}

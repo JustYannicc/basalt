@@ -1,3 +1,4 @@
+import { failedOn, placedOn } from "../runtime-placement.worker.ts";
 import {
   refuseRuntime,
   rememberRuntimeFailure,
@@ -38,6 +39,7 @@ import {
 } from "../stream-resume.ts";
 import { PoolUpkeepTrace } from "../upkeep-trace.ts";
 import { FleetFailures } from "./failures.ts";
+import { boundedLog } from "../bounded-log.ts";
 import { failureIgnored, failureRead, readSuspect, unprovenMs } from "./failure-record.ts";
 import { RootFallback, rootFallbackCounts, rootFallbackRefused } from "./root-fallback.ts";
 import { slotKey } from "../runtime-slots/activity.ts";
@@ -90,6 +92,14 @@ export interface CellCount {
   known: boolean;
   stillMs?: number;
 }
+/** The endpoint refused a start for identity, at its admission or its request boundary. */
+const deploymentRefused = (error: unknown) => {
+  const diagnostic = runtimeRouteDiagnostic(error);
+  return (
+    diagnostic?.runtimeReason === "slot_identity" &&
+    (diagnostic.runtimeStep === "endpoint_route" || diagnostic.runtimeStep === "endpoint_admission")
+  );
+};
 /**
  * How long a fenced ready cell can still become ready: the fence decides at the fleet alarm's
  * first read from `unprovenMs` after its first read that was not good, which upkeep starts within
@@ -349,11 +359,44 @@ export class RuntimeFleet {
       cell = this.cell(target);
       await this.admit(cell, await cell.start(target));
     } catch (error) {
-      if (cell && (await this.refusedUnsent(cell, target, error)))
-        await this.startRefused(target, error, began);
-      else await this.deps.state.uncertain(target);
+      if (cell && (await this.refusedUnsent(cell, target, error))) {
+        if (deploymentRefused(error)) await this.deferStart(cell, target, error, began);
+        else await this.startRefused(target, error, began);
+      } else await this.deps.state.uncertain(target);
       throw error;
     }
+  }
+  /**
+   * A fresh slot's start the endpoint refused for identity before its first-start intent was
+   * written. For a fresh slot that refusal is about the endpoint's own deployment or the signed
+   * start itself (its application binding, controller code, runtime configuration, signing key or
+   * the start's freshness), never about the slot, so another fresh slot fares no better until both
+   * run one release, as while this controller still runs an upload a rollback re-pointed away from:
+   * the release never told it, and objects created since run the re-pointed one. The slot leaves as
+   * never started once its cell proves nothing ran, its recent end saying why, with no quarantine,
+   * and growth waits at least until the next pass instead of drawing again at once. A cell that
+   * can't prove it keeps today's quarantine.
+   */
+  private async deferStart(cell: FleetCell, target: SlotTarget, error: unknown, began: number) {
+    const read = failureRead(
+      error,
+      "endpoint_admission",
+      this.deps.now(),
+      performance.now() - began,
+    );
+    this.nextGrowthCheck = this.deps.now() + upkeepCadenceMs;
+    if (!((await cell.abandon?.(target).catch(() => false)) ?? false))
+      return this.startRefused(target, error, began);
+    const failure = { path: "start" as const, rule: "deployment" as const, reads: [read] };
+    if (!(await this.deps.state.retireUnstarted(target, failure))) return;
+    this.cells.delete(target.slotId);
+    // Its place is free again, so a fleet that was full may grow at the next pass.
+    this.atCapacity = false;
+    boundedLog(
+      "POOL_FLEET_START_DEFERRED",
+      { slot: target.slotId, ordinal: target.homePeerOrdinal ?? null, ...read },
+      console.warn,
+    );
   }
   /**
    * The endpoint answered this start with a refusal before its first-start intent was written, so
@@ -706,6 +749,7 @@ export class RuntimeFleet {
       }
       return rootFallbackRefused(request);
     }
+    let sent = false;
     let step: "primary_forward" | "fleet_identity" | "fleet_forward" =
       reservation.kind === "primary" ? "primary_forward" : "fleet_identity";
     try {
@@ -728,13 +772,18 @@ export class RuntimeFleet {
       if (!sameIdentity(await cell.selected(), reservation.identity))
         throw new FleetRefused("uncertain");
       step = "fleet_forward";
-      const response = stampResumeTarget(
-        await cell.forward(request, 8317, pool, () => {
-          this.failures.assertAvailable(reservation.identity);
-          beforeDispatch();
-          dispatched();
-        }),
-        { kind: "runtime", identity: reservation.identity },
+      const response = placedOn(
+        stampResumeTarget(
+          await cell.forward(request, 8317, pool, () => {
+            this.failures.assertAvailable(reservation.identity);
+            beforeDispatch();
+            dispatched();
+            sent = true;
+          }),
+          { kind: "runtime", identity: reservation.identity },
+        ),
+        reservation.identity,
+        "cell",
       );
       // A marked answer runs through the front layer, and a cut mid-body can't tell a layer exit
       // from a node failure: it never counts against the runtime, which readiness and the layer's
@@ -754,6 +803,8 @@ export class RuntimeFleet {
       });
     } catch (error) {
       rememberRuntimeFailure(step, error);
+      // Only a cell that was sent the call took it; a refusal before that names no runtime.
+      if (reservation.kind === "runtime" && sent) failedOn(error, reservation.identity, "cell");
       // A failed front layer leaves the runtime serving: no primary failure, no recovery.
       const layer = runtimeFailureDiagnostic(error, step).runtimeStep === "resume_layer";
       if (reservation.kind === "primary" && !layer) {
@@ -958,8 +1009,10 @@ export class RuntimeFleet {
         observed = await cell.observe(row.target, enabled);
       } catch (error) {
         // The observation retries an unsent start, which can be refused just as growth's was.
-        if (!row.identity && (await this.refusedUnsent(cell, row.target, error)))
-          await this.startRefused(row.target, error, began);
+        if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
+          if (deploymentRefused(error)) await this.deferStart(cell, row.target, error, began);
+          else await this.startRefused(row.target, error, began);
+        }
         throw error;
       }
       if (observed) await this.admit(cell, observed);

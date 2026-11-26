@@ -7,9 +7,10 @@ test("a healing release's two bounds follow every part they are made of", () => 
   // Recomputed from the parts, so a part that grows while a bound stays put fails here.
   const heldStreamsHeal =
     timing.recoveryPassMs +
-    Math.max(timing.unservingBoundMs, timing.leakedStreamsMs) +
+    Math.max(timing.unservingBoundMs, timing.leakedStreamsMs, timing.aliveRefusingMs) +
     timing.recoveryWarmMs +
-    2 * timing.readinessReadMs +
+    timing.readinessReadMs +
+    timing.servingReadMs +
     timing.forcedStopGraceMs +
     2 * timing.exitConfirmationMs +
     timing.providerReadAllowanceMs +
@@ -23,7 +24,7 @@ test("a healing release's two bounds follow every part they are made of", () => 
   assert.equal(readinessWaitMs, readiness);
   assert.equal(readinessCommandSeconds * 1_000, readiness + 5_000);
   // The numbers the release notes state.
-  assert.deepEqual([acceptance, readiness, readinessCommandSeconds], [703_000, 1_033_000, 1_038]);
+  assert.deepEqual([acceptance, readiness, readinessCommandSeconds], [711_500, 1_041_500, 1_046.5]);
 });
 
 test("a restart is given up to a person only after its slowest healthy path to ready", () => {
@@ -36,5 +37,5 @@ test("a restart is given up to a person only after its slowest healthy path to r
     timing.recoveryWarmMs +
     timing.destroyAndMembershipMs;
   assert.ok(timing.forcedRestartBudgetMs >= fromStopPass);
-  assert.equal(timing.forcedRestartBudgetMs, 399_000);
+  assert.equal(timing.forcedRestartBudgetMs, 407_500);
 });

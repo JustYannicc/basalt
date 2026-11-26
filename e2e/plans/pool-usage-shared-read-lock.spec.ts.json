@@ -1,0 +1,48 @@
+{
+  "scenarios": {
+    "poolUsageSharedReadLock": {
+      "fixtures": "actors",
+      "appOrigin": true,
+      "deferOnboarding": true,
+      "title": "Pool usage reads under the shared organization lock answer beside a read in flight, and a role change still waits for it",
+      "targets": {
+        "cloud": {
+          "status": "scheduled",
+          "runtime": "managed"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "Uses the managed Cloud Postgres lock fixture and a synthetic external pool backend."
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local does not host organization pools."
+        }
+      }
+    }
+  },
+  "runs": {
+    "poolUsageSharedReadLock": ["declared:cloud"]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/server/src/implementation/organization-access-lock.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-backend.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-membership-reconcile.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-series-accounts.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-usage-summary.ts",
+    ".upstream/apps/hosted/server/src/implementation/pool-summary-app-ui.ts",
+    ".upstream/apps/hosted/server/src/implementation/resource-policy.ts",
+    ".upstream/apps/hosted/cloud/src/implementation/organization-access-request.ts",
+    ".upstream/e2e/support/cloud-locks.ts",
+    ".upstream/e2e/support/pool-history-database.ts",
+    ".upstream/e2e/support/legacy-pool-handoff-setup.ts",
+    "src/pool/model-history/series-http.ts",
+    "src/pool/model-history/last-success.ts",
+    ".upstream/e2e/support/legacy-pool-home.ts",
+    ".upstream/e2e/support/pool-worker-runtime.ts",
+    "scripts/pool-tests/history-schema-fixture.ts"
+  ],
+  "fixture": "pool-setup"
+}
