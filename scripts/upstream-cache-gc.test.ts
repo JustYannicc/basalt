@@ -259,6 +259,134 @@ test("failed open-handle observation skips collection rather than guessing", asy
   assert.equal(readdirSync(join(old.entry, "generations")).length, 1);
 });
 
+/** Worktrees registered with a repository under the fixture cache, as prepared checkouts are. */
+function registered(root: string, cache: string, count: number) {
+  const repository = join(root, "source");
+  mkdirSync(repository);
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: repository, stdio: "pipe" });
+  git("init", "-q");
+  git("config", "user.name", "Fixture");
+  git("config", "user.email", "fixture@example.test");
+  writeFileSync(join(repository, "source"), "fixture");
+  git("add", ".");
+  git("commit", "-qm", "fixture");
+  const bare = join(cache, "repositories/fixture.git");
+  mkdirSync(join(cache, "repositories"), { recursive: true });
+  git("clone", "--bare", repository, bare);
+  return Array.from({ length: count }, (_, index) => {
+    const checkout = join(root, `registered-${index}`);
+    git("--git-dir", bare, "worktree", "add", "--detach", checkout);
+    return checkout;
+  });
+}
+
+/** The `.bun` directory's identity, as an install records it in its marker. */
+const links = (bun: string) => {
+  const stat = fs.lstatSync(bun, { bigint: true });
+  return { dev: String(stat.dev), ino: String(stat.ino), mtimeNs: String(stat.mtimeNs) };
+};
+
+/** Links a checkout's packages into `store` and writes its marker afterwards, as an install does. */
+function installed(checkout: string, store: string, packages: number, recorded: unknown = true) {
+  const bun = join(checkout, "node_modules/.bun");
+  mkdirSync(bun, { recursive: true });
+  for (let index = 0; index < packages; index++)
+    symlinkSync(join(store, "node_modules"), join(bun, `package-${index}`));
+  writeFileSync(
+    join(checkout, ".basalt-dependencies.json"),
+    JSON.stringify({
+      store,
+      ...(recorded === false ? {} : { links: recorded === true ? links(bun) : recorded }),
+    }),
+  );
+  return bun;
+}
+
+/** Counts the package links collection reads one by one under `root`. */
+function linkReads(t: TestContext, root: string) {
+  const read = fs.readlinkSync;
+  const reads = { count: 0 };
+  const probe = t.mock.method(fs, "readlinkSync", (...parameters: Parameters<typeof read>) => {
+    if (String(parameters[0]).startsWith(join(root, "registered-"))) reads.count++;
+    return read(...parameters);
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    probe.mock.restore();
+    syncBuiltinESMExports();
+  });
+  return reads;
+}
+
+test("checkouts whose links are unchanged since their install are not read link by link", async (t) => {
+  const { root, cache, key } = fixture(t);
+  key(1);
+  const elsewhere = join(root, "other-cache/store");
+  mkdirSync(join(elsewhere, "node_modules"), { recursive: true });
+  for (const checkout of registered(root, cache, 3)) installed(checkout, elsewhere, 20);
+  const reads = linkReads(t, root);
+  await collectUpstreamDependencies("current");
+  assert.equal(reads.count, 0);
+});
+
+test("a link replaced after its marker was written still protects the store it points into", async (t) => {
+  const { root, cache, key } = fixture(t);
+  const held = key(1, "old");
+  const linked = key(2, "old");
+  for (let index = 3; index <= 6; index++) key(index);
+  const [checkout] = registered(root, cache, 1);
+  const bun = installed(checkout!, held.store, 2);
+  // A legacy installer swaps one link into another generation and has not rewritten the marker.
+  symlinkSync(join(linked.store, "node_modules"), join(bun, "replacement"));
+  fs.renameSync(join(bun, "replacement"), join(bun, "package-1"));
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(held.store), true);
+  assert.equal(existsSync(linked.store), true, "the replaced link is read, not trusted");
+});
+
+test("a checkout whose install is still pending keeps both its marker's and its new store", async (t) => {
+  const { root, cache, key } = fixture(t);
+  const previous = key(1, "old");
+  const selected = key(2, "old");
+  for (let index = 3; index <= 6; index++) key(index);
+  const [checkout] = registered(root, cache, 1);
+  installed(checkout!, previous.store, 2);
+  // The new generation is chosen and registered before any link moves.
+  await withDependencyStoreLock(() => rememberDependencyConsumer(checkout!, selected.store, true));
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(previous.store), true);
+  assert.equal(existsSync(selected.store), true);
+});
+
+test("a marker that cannot vouch for its links has them read one by one", async (t) => {
+  const { root, cache, key } = fixture(t);
+  const held = key(1, "old");
+  const linked = key(2, "old");
+  for (let index = 3; index <= 6; index++) key(index);
+  const [coarse, unknown, none] = registered(root, cache, 3);
+  for (const [checkout, recorded] of [
+    [coarse!, true],
+    [unknown!, "unchecked"],
+    [none!, false],
+  ] as const) {
+    const bun = installed(checkout, held.store, 1, recorded);
+    symlinkSync(join(linked.store, "node_modules"), join(bun, "package-0-linked"));
+    if (checkout === coarse) {
+      // A whole-second mtime may hide a later change on a coarse clock.
+      fs.utimesSync(bun, 1_700_000_000, 1_700_000_000);
+      const marker = JSON.parse(readFileSync(join(checkout, ".basalt-dependencies.json"), "utf8"));
+      writeFileSync(
+        join(checkout, ".basalt-dependencies.json"),
+        JSON.stringify({ ...marker, links: links(bun) }),
+      );
+    }
+  }
+  const reads = linkReads(t, root);
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(linked.store), true);
+  assert.ok(reads.count >= 6, `each checkout's links are read (${reads.count})`);
+});
+
 function packageFixture(t: TestContext) {
   const fixtureState = fixture(t);
   const root = join(fixtureState.root, "consumer");
@@ -292,6 +420,8 @@ test("a cache hit keeps its consumer until that consumer releases it", async (t)
   const first = await installUpstreamDependencies(consumer, "current");
   const hit = await installUpstreamDependencies(consumer, "current");
   assert.equal(hit.store, first.store, "the published generation is reused");
+  const marker = JSON.parse(readFileSync(join(consumer, ".basalt-dependencies.json"), "utf8"));
+  assert.deepEqual(marker.links, links(join(consumer, "node_modules/.bun")));
   assert.equal(existsSync(first.store), true);
   rmSync(consumer, { recursive: true });
   await collectUpstreamDependencies("current");

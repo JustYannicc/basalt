@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { digest, upstreamCache, withCacheLock } from "./upstream-cache.ts";
+import { linkFingerprint } from "./upstream-cache-gc.ts";
 import { dependencyIdentity } from "./upstream-inputs.ts";
 import { omitReleaseLifecycles } from "./ci/dependency-lifecycles.ts";
 import {
@@ -234,7 +235,13 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
           removePrivateTree(destination);
           renameSync(temporary, destination);
         }
-        atomicStoreJson(join(root, ".basalt-dependencies.json"), { key, store });
+        // The marker vouches for these exact links, so collection can skip reading them one by one.
+        const links = linkFingerprint(join(root, "node_modules/.bun"));
+        atomicStoreJson(join(root, ".basalt-dependencies.json"), {
+          key,
+          store,
+          ...(links && { links }),
+        });
         rememberDependencyConsumer(root, store, false);
         collectDependencyStore(pin);
         return selected;
