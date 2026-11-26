@@ -1,9 +1,9 @@
 diff --git a/e2e/tests/dashboard-code-highlighting.spec.ts b/e2e/tests/dashboard-code-highlighting.spec.ts
 new file mode 100644
-index 000000000..9c5492cec
+index 000000000..9cd173c25
 --- /dev/null
 +++ b/e2e/tests/dashboard-code-highlighting.spec.ts
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,192 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import type { Page } from "playwright";
@@ -16,8 +16,27 @@ index 000000000..9c5492cec
 +import { scenarios } from "../test-plan.ts";
 +import { appsManifest } from "../support/apps-release.ts";
 +
-+/** React reports a server/browser markup difference with one of these messages or codes. */
-+const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
++/**
++ * Record every element a script creates. The parser builds the server's markup without them, so a
++ * code block created by script means React replaced the server's markup: what it does after a
++ * hydration mismatch, which Cloud reports to Sentry rather than to the console.
++ */
++const recordScriptedElements = () => {
++  const scripted = new WeakSet<Element>();
++  for (const method of ["createElement", "createElementNS"] as const) {
++    const create = Document.prototype[method];
++    Object.defineProperty(Document.prototype, method, {
++      configurable: true,
++      writable: true,
++      value(this: Document, ...args: unknown[]) {
++        const element: Element = Reflect.apply(create, this, args);
++        scripted.add(element);
++        return element;
++      },
++    });
++  }
++  Object.defineProperty(window, "__executorScriptedElements", { value: scripted });
++};
 +/** Text without quotes or angle brackets, so the server's escaping leaves it unchanged. */
 +const snippet = "const count: number = 42;\nexport default count;";
 +/** A highlighted token carries Shiki's inline colors; the class names only mention the variable. */
@@ -31,13 +50,19 @@ index 000000000..9c5492cec
 +      if (value === null) throw new Error("The skill reader's code block is not laid out");
 +      return value;
 +    });
++const keepsServerMarkup = (page: Page) =>
++  reader(page).evaluate(
++    (pre) =>
++      !(window as unknown as { __executorScriptedElements: WeakSet<Element> })
++        .__executorScriptedElements.has(pre),
++  );
 +
 +/**
 + * The dashboard's server build never highlights code (carry 0804 swaps the engine out of the
 + * dashboard Worker). A reader of a shared app gets its skill with the page, so the server sends
-+ * the code block as plain text, the browser hydrates that markup unchanged and then colors it.
-+ * The browser's engine chunk is held until the plain block is measured, so the colors are the
-+ * only change the test can see, and nothing in the block may move when they arrive.
++ * the code block as plain text, the browser hydrates that markup without replacing it and then
++ * colors it. The browser's engine chunk is held until the plain block is measured, so the colors
++ * are the only change the test can see, and nothing in the block may move when they arrive.
 + */
 +layer(HostedLive, { excludeTestServices: true })("Dashboard code highlighting", (it) => {
 +  for (const [scenario, viewport] of [
@@ -88,17 +113,9 @@ index 000000000..9c5492cec
 +
 +          yield* browser.login(actors.member);
 +          yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
-+          const failures: string[] = [];
-+          yield* browser.use("Watch hydration", (page) => {
-+            page.on("console", (message) => {
-+              if (message.type() === "error" && hydrationFailure.test(message.text()))
-+                failures.push(message.text());
-+            });
-+            page.on("pageerror", (error) => {
-+              if (hydrationFailure.test(String(error))) failures.push(String(error));
-+            });
-+            return Promise.resolve();
-+          });
++          yield* browser.use("Record the elements scripts create", (page) =>
++            page.addInitScript(recordScriptedElements),
++          );
 +          let release = () => {};
 +          const released = new Promise<void>((resolve) => {
 +            release = resolve;
@@ -131,6 +148,9 @@ index 000000000..9c5492cec
 +            reader(page).locator("code").waitFor({ state: "visible" }),
 +          );
 +          expect(
++            yield* browser.use("Hydration kept the server's code block", keepsServerMarkup),
++          ).toBe(true);
++          expect(
 +            yield* browser.use("Read the plain code block", (page) =>
 +              reader(page).locator("code").textContent(),
 +            ),
@@ -146,12 +166,16 @@ index 000000000..9c5492cec
 +          yield* Effect.sync(release);
 +          yield* browser.use("The code block takes distinct syntax colors", (page) =>
 +            expect
-+              .poll(() =>
-+                reader(page)
-+                  .locator("code span[style]")
-+                  .evaluateAll(
-+                    (tokens) => new Set(tokens.map((token) => getComputedStyle(token).color)).size,
-+                  ),
++              .poll(
++                () =>
++                  reader(page)
++                    .locator("code span[style]")
++                    .evaluateAll(
++                      (tokens) =>
++                        new Set(tokens.map((token) => getComputedStyle(token).color)).size,
++                    ),
++                // The engine is about 730 KB to fetch and start once released.
++                { timeout: 30_000 },
 +              )
 +              .toBeGreaterThan(1),
 +          );
@@ -164,7 +188,9 @@ index 000000000..9c5492cec
 +          const after = yield* browser.use("Measure the highlighted code block", box);
 +          for (const side of ["x", "y", "width", "height"] as const)
 +            expect(Math.abs(after[side] - before[side])).toBeLessThanOrEqual(0.5);
-+          expect(failures).toEqual([]);
++          expect(
++            yield* browser.use("Coloring kept the server's code block", keepsServerMarkup),
++          ).toBe(true);
 +          yield* browser.checkpoint(`${viewport.width} highlighted code block`);
 +        }),
 +      ),

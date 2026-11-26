@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "A shared app's skill reader must receive its fenced code from the Cloud dashboard's server render as plain text, hydrate that markup without a React hydration error and only then color it, at desktop and phone width. The browser's highlight engine is held until the plain block is measured, and its box must not move by more than half a pixel when the colors arrive; the server-rendered HTML must carry no Shiki colors."
+      constraint "A shared app's skill reader must receive its fenced code from the Cloud dashboard's server render as plain text, hydrate that markup without React replacing the code block and only then color it, at desktop and phone width. The browser's highlight engine is held until the plain block is measured, and its box must not move by more than half a pixel when the colors arrive; the server-rendered HTML must carry no Shiki colors."
     }
   }
 }
