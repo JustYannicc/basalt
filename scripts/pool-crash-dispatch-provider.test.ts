@@ -208,11 +208,11 @@ test("(a) every outcome publishes one closed line and nothing else from the read
     ["reads", async () => ({ result: observation() })],
     [
       "provider_observation_refused",
-      answering(() => refusal(new ProviderObservationRefused("provider_observation_refused"))),
+      answering(() => refusal(new ProviderObservationRefused({ reason: "rollout_active" }))),
     ],
     [
       "provider_fetch_failed",
-      answering(() => refusal(new ProviderObservationRefused("provider_fetch_failed"))),
+      answering(() => refusal(new ProviderObservationRefused({ reason: "fetch_failed" }))),
     ],
     // The handoff refuses other controller code, or a command it cannot decode, as identity.
     ["controller_identity", answering(() => refusal(new SlotRefused("identity")))],
@@ -759,7 +759,7 @@ test("(g) a read lost on the way is sent again, signed anew on a fresh bridge, t
     [
       "the provider's header",
       () =>
-        runtimeErrorResponse(new ProviderObservationRefused("provider_fetch_failed"), "handoff"),
+        runtimeErrorResponse(new ProviderObservationRefused({ reason: "fetch_failed" }), "handoff"),
     ],
     // Any 409 is a refusal form, an answer, even one without the handoff's body.
     ["a bare 409", () => new Response(null, { status: 409 })],
