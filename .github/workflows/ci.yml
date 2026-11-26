@@ -2435,8 +2435,8 @@ jobs:
         run: |
           bun run --cwd .upstream patches:check
           bun run --cwd .upstream auth:security
-      # Specs whose plans name only this job run here, in every Check: all four take about 20
-      # seconds inside a job that runs anyway, so a pull request's change to one fails on the pull
+      # Specs whose plans name only this job run here, in every Check: all four take about half a
+      # minute inside a job that runs anyway, so a pull request's change to one fails on the pull
       # request rather than in its batch.
       - name: Verify Cloud startup diagnostics and app listeners
         working-directory: .upstream

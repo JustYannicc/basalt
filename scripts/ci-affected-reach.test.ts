@@ -76,7 +76,7 @@ test("the Home peer sources the pool Worker bundles select its build", () => {
     includes([path], ["pool-runtime", "production-build"]);
 });
 
-test("a change that reaches a fast-declared spec runs its config in the lane", () => {
+test("a change that reaches a fast-declared spec names its config, and the fast job runs every config", () => {
   // These specs' plans name only the fast job, whose step runs their configs.
   const declarations = readDeclarations(root);
   const configs = (path: string) => fastConfigs(select(carry(path)).declaredFiles, declarations);

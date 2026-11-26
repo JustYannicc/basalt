@@ -40,8 +40,8 @@ const resolvers: Record<string, string> = {
   comparison: "the local runner compares with --base",
   lane: "the local runner runs the fast lane",
 };
-// The fast lane runs the steps for every lane; it selects no e2e config, so it skips what the
-// full and affected lanes add.
+// The fast lane runs the steps for every lane, and skips what only the full lane (or an
+// affected lane that reaches a config) adds.
 const everyLane = "steps.lane.outputs.full_suite != 'true'";
 const otherLanes = new Map([
   [fullOnly, "full lane only"],
