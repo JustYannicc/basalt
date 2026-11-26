@@ -38,6 +38,16 @@ async function until<T>(probe: () => Promise<T | undefined>, timeout = 60_000): 
   throw new Error("The pool did not satisfy its readiness contract within the test budget");
 }
 
+/**
+ * Both of the container's output streams: `docker logs` replays them apart, and the supervisor
+ * writes its readiness records to its error output.
+ */
+function containerOutput(containerId: string): string {
+  const result = spawnSync("docker", ["logs", containerId], { encoding: "utf8", timeout: 60_000 });
+  assert.equal(result.status, 0, result.stderr);
+  return `${result.stdout}\n${result.stderr}`;
+}
+
 /** The usual readiness budget, plus the first ready's 30 s hold. */
 const firstReadyBudgetMs = 90_000;
 
@@ -47,7 +57,7 @@ async function assertSettledOnce(containerId: string, boots: number): Promise<vo
   const deadline = Date.now() + 5_000;
   let lines: string[] = [];
   while (Date.now() < deadline) {
-    lines = docker(["logs", containerId])
+    lines = containerOutput(containerId)
       .split(/\r?\n/)
       .filter((line) => line.startsWith(prefix));
     if (lines.length >= boots) break;
