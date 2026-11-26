@@ -35,6 +35,13 @@ PROBE_STEPS = ("home_plugins", "plugin_probe", "probe_log")
 LAPSE_STEPS = PROBE_STEPS + ("node_audit", "no_probe")
 LAPSE_LINE = "POOL_READINESS_LAPSE "
 FLIP_LINE = "POOL_READINESS_FLIP "
+STALL_LINE = "POOL_SUPERVISOR_STALL "
+# Every stall is counted and kept on /ready. Its line comes at most every 10 s, except for a stall
+# that may be the one behind a lapse: one at least as late as the slack the 1.5 s lease leaves a
+# 0.5 s renewal, or one longer than any since the last line. The first kind spans over 1.5 s of
+# wall time and the second must outgrow the line before it, so the lines stay bounded.
+STALL_LINE_GAP_NS = 10_000_000_000
+STALL_LINE_ALWAYS_MS = 1_000
 
 
 def _emits(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -112,6 +119,10 @@ class Readiness:
         self._last_flip: dict[str, object] | None = None
         self._lapses = 0
         self._flips = 0
+        self._last_stall: dict[str, object] | None = None
+        self._stalls = 0
+        self._stall_line_ns: int | None = None
+        self._stall_line_longest_ms = 0
         self._state_ready = False
         self._state_since_ns = monotonic_ns()
         self._pending_lines: list[str] = []
@@ -202,6 +213,43 @@ class Readiness:
             if not healthy and self._node_audit_ok:
                 self._note_lapse("node_audit", ms, self._monotonic_ns())
             self._node_audit_ok = bool(healthy)
+
+    @_emits
+    def note_stall(
+        self,
+        *,
+        late_ms: int,
+        cpu_ms: int,
+        steal_ms: int | None,
+        throttled_ms: int | None,
+        cpus: int | None,
+    ) -> None:
+        """A wait of the policy monitor that returned late, with what the scheduler did meanwhile.
+        Steal and throttling are CPU time summed over the machine's `cpus`, late is wall time."""
+        late = max(0, int(late_ms))
+        record = {
+            "late_ms": late,
+            "cpu_ms": max(0, int(cpu_ms)),
+            "steal_ms": steal_ms,
+            "throttled_ms": throttled_ms,
+            "cpus": cpus,
+        }
+        with self._lock:
+            at_ns = self._monotonic_ns()
+            self._stalls += 1
+            self._last_stall = {**record, "at": self._wall_iso(at_ns)}
+            if (
+                self._stall_line_ns is None
+                or at_ns - self._stall_line_ns >= STALL_LINE_GAP_NS
+                or late >= STALL_LINE_ALWAYS_MS
+                or late > self._stall_line_longest_ms
+            ):
+                self._stall_line_ns = at_ns
+                self._stall_line_longest_ms = late
+                self._pending_lines.append(
+                    STALL_LINE
+                    + json.dumps({**record, "stalls": self._stalls}, separators=(",", ":"))
+                )
 
     @_emits
     def set_ready(self, value: bool, *, audit_revision: int | None = None) -> None:
@@ -440,6 +488,9 @@ class Readiness:
             if self._flips:
                 payload["flips"] = self._flips
                 payload["last_flip"] = dict(self._last_flip or {})
+            if self._stalls:
+                payload["stalls"] = self._stalls
+                payload["last_stall"] = dict(self._last_stall or {})
             return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:

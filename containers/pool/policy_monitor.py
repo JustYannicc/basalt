@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from .pool_contract import HOME_URL, native_policy_request, request_json
@@ -95,14 +98,115 @@ def _probe_home_policy(
     return "healthy", probe["instance"]
 
 
+PROC_STAT = "/proc/stat"
+CGROUP_CPU_STATS = ("/sys/fs/cgroup/cpu.stat", "/sys/fs/cgroup/cpu/cpu.stat")
+# A wait this late is no scheduling jitter, and well inside the second of slack the 1.5 s lease
+# leaves a 0.5 s renewal, so every stall that can lapse the lease is recorded.
+STALL_LATE_MS = 250
+
+
+def _ticks_per_second() -> int:
+    try:
+        return int(os.sysconf("SC_CLK_TCK")) or 100
+    except (AttributeError, OSError, ValueError):
+        return 100
+
+
+def host_steal(path: str = PROC_STAT) -> tuple[int, int] | None:
+    """The time the host took this machine's CPUs from it, summed over them as the kernel counts
+    it, and how many CPUs there are, so a reader can set it against wall time; None unread."""
+    try:
+        with open(path, encoding="ascii") as stat:
+            fields = stat.readline().split()
+            # The per-CPU lines follow the total; the rest of the file is never read.
+            cpus = 0
+            for line in stat:
+                if not line.startswith("cpu"):
+                    break
+                cpus += 1
+        if not fields or fields[0] != "cpu" or not cpus:
+            return None
+        return int(fields[8]) * 1000 // _ticks_per_second(), cpus
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def throttled_ms(paths: tuple[str, ...] = CGROUP_CPU_STATS) -> int | None:
+    """Time the container's CPU quota held it back, summed over its CPUs as the cgroup counts it:
+    cgroup v2's microseconds, v1's nanoseconds."""
+    for path in paths:
+        try:
+            with open(path, encoding="ascii") as stat:
+                values = dict(line.split(None, 1) for line in stat if len(line.split()) == 2)
+        except (OSError, ValueError):
+            continue
+        try:
+            if "throttled_usec" in values:
+                return int(values["throttled_usec"]) // 1_000
+            if "throttled_time" in values:
+                return int(values["throttled_time"]) // 1_000_000
+        except ValueError:
+            return None
+    return None
+
+
+@dataclass(frozen=True)
+class Scheduling:
+    at_ns: int
+    cpu_ns: int
+    steal_ms: int | None
+    cpus: int | None
+    throttled_ms: int | None
+
+
+def _grew(after: int | None, before: int | None) -> int | None:
+    return None if after is None or before is None else max(0, after - before)
+
+
 class PolicyHealthMonitor:
     def __init__(
         self,
         readiness: Readiness,
         management_key: str,
+        *,
+        monotonic_ns: Callable[[], int] = time.monotonic_ns,
+        process_time_ns: Callable[[], int] = time.process_time_ns,
+        proc_stat: str = PROC_STAT,
+        cpu_stats: tuple[str, ...] = CGROUP_CPU_STATS,
     ) -> None:
         self.readiness = readiness
         self.management_key = management_key
+        # Bound here, so a caller that swaps this module's `time` to drive the loop leaves them be.
+        self._monotonic_ns = monotonic_ns
+        self._process_time_ns = process_time_ns
+        self._proc_stat = proc_stat
+        self._cpu_stats = cpu_stats
+
+    def _scheduling(self) -> Scheduling:
+        steal, cpus = host_steal(self._proc_stat) or (None, None)
+        return Scheduling(
+            self._monotonic_ns(),
+            self._process_time_ns(),
+            steal,
+            cpus,
+            throttled_ms(self._cpu_stats),
+        )
+
+    def wait(self, stop: threading.Event, seconds: float) -> None:
+        """The wait between probes. One that returns late is a stall that starved every probe."""
+        before = self._scheduling()
+        stop.wait(seconds)
+        after = self._scheduling()
+        late_ms = (after.at_ns - before.at_ns) // 1_000_000 - int(seconds * 1000)
+        if late_ms < STALL_LATE_MS:
+            return
+        self.readiness.note_stall(
+            late_ms=late_ms,
+            cpu_ms=(after.cpu_ns - before.cpu_ns) // 1_000_000,
+            steal_ms=_grew(after.steal_ms, before.steal_ms),
+            throttled_ms=_grew(after.throttled_ms, before.throttled_ms),
+            cpus=after.cpus,
+        )
 
     def check_once(self) -> ProbeState:
         generation = self.readiness.policy_observation_generation()
@@ -121,4 +225,4 @@ class PolicyHealthMonitor:
             started = time.monotonic()
             self.check_once()
             remaining = max(0.0, POLICY_REFRESH_SECONDS - (time.monotonic() - started))
-            stop.wait(remaining)
+            self.wait(stop, remaining)

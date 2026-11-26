@@ -1,7 +1,7 @@
 model {
   extend basalt.poolRuntime {
     metadata {
-      constraint "/ready carries the runtime's last policy-lease or node-audit lapse (the step that was slow and its duration) and its last readiness flip (the state it moved to, a closed reason and how long the state before lasted), with two counters since the supervisor started. Each record is closed vocabulary and integers, holds only the last of each, and appears once there has been one, so older readers and images agree. One line per lapse and per flip also goes to the container's error output."
+      constraint "/ready carries the runtime's last policy-lease or node-audit lapse (the step that was slow and its duration) and its last readiness flip (the state it moved to, a closed reason and how long the state before lasted), with two counters since the supervisor started. Each record is closed vocabulary and integers, holds only the last of each, and appears once there has been one, so older readers and images agree. One line per lapse and per flip also goes to the container's error output. It also carries the supervisor's last stall: a policy-monitor wait that returned at least 250 ms late, with how late in wall time, the supervisor's own CPU during it, the host's steal and the cgroup quota's throttling over it as CPU time summed over the machine's CPUs, and that CPU count, null where the container cannot read them, and a stall counter. Its line comes at most every 10 seconds, except that a stall of 1 s or more, which can lapse the lease, or one longer than any since the last line always gets one. The Worker decodes all three records into closed shapes, so a refusal line carries them."
     }
   }
 }
