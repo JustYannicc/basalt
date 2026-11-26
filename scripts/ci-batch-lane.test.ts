@@ -66,13 +66,8 @@ const fullSuite = (github: object) => {
   assert.equal(typeof full, "boolean");
   return full;
 };
-// The lane select's step runs: the full suite, else this repository's affected lane, else fast.
-const laneOf = (github: object) =>
-  fullSuite(github)
-    ? "full"
-    : evaluate(selection.env.AFFECTED_LANE, { github }) === true
-      ? "affected"
-      : "fast";
+// The lane select's step runs: the full suite, else fast.
+const laneOf = (github: object) => (fullSuite(github) ? "full" : "fast");
 const checkName = (github: object) =>
   evaluate(workflow.jobs.check.name, {
     needs: {
@@ -130,14 +125,18 @@ test("each event selects its lane, concurrency group, selection command and aggr
         PATH: scratch + ":" + process.env.PATH,
         LOG: log,
         FULL_SUITE: String(fullSuite(github)),
-        AFFECTED_LANE: String(laneOf(github) === "affected"),
       },
     });
     return readFileSync(log, "utf8").trim().split("\n");
   };
   const cases = [
-    ["same-repository pull request", pullRequest("synchronize", [], "feature/proof"), "affected"],
+    ["same-repository pull request", pullRequest("synchronize", [], "feature/proof"), "fast"],
     ["labelled ci:full", pullRequest("labeled", ["ci:full"], "feature/proof"), "full"],
+    [
+      "labelled release-update",
+      pullRequest("labeled", ["release-update"], "feature/proof"),
+      "full",
+    ],
     ["fork pull request", pullRequest("synchronize", [], "feature/proof", true), "fast"],
     ["push to main", push("main"), "full"],
     ["push to a batch branch", push("batch/proof"), "full"],
@@ -149,15 +148,11 @@ test("each event selects its lane, concurrency group, selection command and aggr
         commands(github),
         [
           "scripts/ci/cancel-superseded.ts",
-          "scripts/ci/select-jobs.ts" + { full: " --all", affected: "", fast: " --fast" }[expected],
+          "scripts/ci/select-jobs.ts" + { full: " --all", fast: " --fast" }[expected],
         ],
         name,
       );
-      assert.equal(
-        checkName(github),
-        { full: "check", affected: "check (affected)", fast: "check (fast-only)" }[expected],
-        name,
-      );
+      assert.equal(checkName(github), { full: "check", fast: "check (fast-only)" }[expected], name);
       // Pushes keep a group per run; a pull request's full runs never share the lane runs' group.
       assert.equal(
         concurrencyGroup(github),
@@ -193,22 +188,34 @@ test("every pull request event lands in the concurrency group of its own lane", 
   for (const name of checkNames) assert.ok(workflow.jobs.check.name.includes(`'${name}'`), name);
 });
 
+test("a pull request runs the fast lane unless labelled for the full suite, from here or a fork", () => {
+  // Every pull request merges through a batch, whose push runs the full Check; ci:full is how one
+  // that merges alone gets its full Check, and release-update keeps its full run.
+  for (const action of workflow.on.pull_request.types)
+    for (const labels of labelSets)
+      for (const fork of [false, true]) {
+        const github = pullRequest(action, labels, "feature/proof", fork);
+        const name = `${action} [${labels}] fork=${fork}`;
+        assert.equal(laneOf(github), labels.length > 0 ? "full" : "fast", name);
+        assert.equal(checkName(github), labels.length > 0 ? "check" : "check (fast-only)", name);
+      }
+  // No step asks for the affected lane, and select never runs its selection.
+  const steps = [
+    selection,
+    ...["fast", "fast-units"].map((job) =>
+      workflow.jobs[job].steps.find((step: { id?: string }) => step.id === "lane"),
+    ),
+  ];
+  for (const step of steps) assert.equal(step.env.AFFECTED_LANE, undefined);
+  assert.doesNotMatch(selection.run, /select-jobs\.ts\s*$/m);
+});
+
 test("the jobs that start with the Check request the lane select's step chooses, for every event", () => {
   const steps = ["fast", "fast-units"].map((job) =>
     workflow.jobs[job].steps.find((step: { id?: string }) => step.id === "lane"),
   );
-  // As select's shell does, the affected condition is read only when the full one is false.
-  const requested = (step: { env: Record<string, string> }, github: object) => {
-    const full = String(evaluate(step.env.FULL_SUITE!, { github }));
-    return requestedLane(
-      full === "true"
-        ? { FULL_SUITE: full }
-        : {
-            FULL_SUITE: full,
-            AFFECTED_LANE: String(evaluate(step.env.AFFECTED_LANE!, { github })),
-          },
-    );
-  };
+  const requested = (step: { env: Record<string, string> }, github: object) =>
+    requestedLane({ FULL_SUITE: String(evaluate(step.env.FULL_SUITE!, { github })) });
   const events: object[] = [push("main"), push("batch/proof")];
   for (const action of workflow.on.pull_request.types)
     for (const labels of labelSets)

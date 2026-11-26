@@ -5,8 +5,9 @@ import { boxIsUp, githubObserver, waveSlowdown } from "./box-router.ts";
 
 // box-watch, in a Check's first attempt that routed jobs to the box: once every box job select
 // named has started, it is done. A job queued for the box can't move to GitHub's runners, so if the
-// box is down, or holds a job past the latest start that still ends by the Check's floor, it writes
-// a verdict and the run is cancelled; box-rerun.yml then re-runs the stuck jobs on GitHub's runners.
+// box is down, or holds a job past its latest start (one that still ends by the Check's floor, or for
+// a job waiting out a saturated hosted queue, that queue's wait), it writes a verdict and the run is
+// cancelled; box-rerun.yml then re-runs the stuck jobs on GitHub's runners.
 // So does a box job GitHub ended as cancelled before any runner took it while the rest of the run
 // goes on: a job handed to a runner in the seconds it went offline waits for it, and GitHub
 // cancels it after about 13 minutes. It fails open: when GitHub can't be read it never cancels.
@@ -47,7 +48,11 @@ export type Verdict = {
   cutOff: number[];
   at: string;
 };
-export type Planned = { minutes: number; wave: 1 | 2 };
+/**
+ * A box job's plan from select. `by`: it waits on the box because the hosted queue was saturated,
+ * and must start within the minutes a hosted runner was then taking to start a job.
+ */
+export type Planned = { minutes: number; wave: 1 | 2; by?: number };
 export type WatchInput = {
   jobs: readonly WatchedJob[];
   /** The box jobs select named, by job name, with their planned hosted minutes and wave. */
@@ -65,12 +70,13 @@ export type WatchInput = {
 };
 
 /**
- * The minute after select by which a box job must have started: as long as it still ends by the
- * floor at the keep rule's pace, plus the margin. Past it the job fails the pass rule anyway, so
- * running it on GitHub's runners is the faster way to end the Check.
+ * The minute after it was queued by which a box job must have started: as long as it still ends by
+ * the floor at the keep rule's pace, plus the margin. Past it the job fails the pass rule anyway, so
+ * running it on GitHub's runners is the faster way to end the Check. A job that waits on the box
+ * for a saturated hosted queue must start no later than a hosted runner would have, plus the margin.
  */
-export const latestStart = ({ minutes }: Planned, floorMinutes: number) =>
-  Math.max(0, floorMinutes - minutes * waveSlowdown) + holdingMinutes;
+export const latestStart = ({ minutes, by }: Planned, floorMinutes: number) =>
+  Math.max(0, floorMinutes - minutes * waveSlowdown, by ?? 0) + holdingMinutes;
 
 /** The job name GitHub shows for a box_jobs id: a declared shard's own, a leg as `job (leg)`. */
 export const jobName = (id: string) => {
@@ -141,6 +147,8 @@ export function watchDecision(
   const working = input.jobs.some((job) => job.onBox && job.status === "in_progress");
   const late = stuck.filter((job) => {
     const planned = input.planned[job.name]!;
+    // Behind this Check's own running box jobs a second wave waits by design, a saturated queue's
+    // too: cancelling the run then would restart every job it is running.
     if (working && planned.wave === 2) return false;
     const queued = job.createdAt ?? input.selectedAt;
     const waited = (input.now - queued) / minute;
@@ -297,7 +305,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           ? `the box has shown no healthy heartbeat for ${downMinutes} minutes, even after box-watch dispatched one`
           : lastLost
             ? "GitHub cancelled one that no runner ever took, as it does with a job handed to a runner that went offline"
-            : "the box still held one past the latest start that ends by the Check's floor";
+            : "the box still held one past its latest start";
       say(
         `box-watch: ${verdict.stuck.length} box jobs never started, because ${why}; cancelling this run so box-rerun.yml runs them on GitHub's runners.`,
       );

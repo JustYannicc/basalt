@@ -165,7 +165,7 @@ test("recognized refusal classes keep closed reasons and defects never echo arbi
     ],
     [new FleetRefused("capacity"), "runtime_endpoint_route_fleet_capacity"],
     [new ProtectionRefusal("boot_changed"), "runtime_endpoint_route_protection_boot_changed"],
-    [new ProviderObservationRefused("provider_fetch_failed"), "provider_fetch_failed"],
+    [new ProviderObservationRefused({ reason: "fetch_failed" }), "provider_fetch_failed"],
   ] as const) {
     failure = error;
     const response = await f.command("inspect");

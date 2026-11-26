@@ -197,3 +197,15 @@ test("default normalization still refuses changed IDs, keys, endpoints, proxies 
     assert.equal((await invoke(f.home, first, "upsert", f.config)).status, 503);
   }
 });
+
+test("a claude key at a custom address must name its models, or Home would serve real Claude names", async () => {
+  const f = homeExportFixture("claude");
+  const gateway = { "base-url": "https://gateway.example.test" };
+  for (const group of [gateway, { ...gateway, models: [] }]) {
+    assert.equal((await invoke(f.home, first, "upsert", { ...f.config, group })).status, 503);
+  }
+  assert.equal(f.writes(), 0);
+  const named = { ...gateway, models: [{ name: "emulated-model", alias: "emulated-model" }] };
+  assert.equal((await invoke(f.home, first, "upsert", { ...f.config, group: named })).status, 200);
+  assert.equal(f.writes(), 1);
+});

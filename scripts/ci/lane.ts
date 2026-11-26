@@ -5,9 +5,12 @@ import { heavyJobs } from "./areas.ts";
 import { fastConfigs } from "./declarations.ts";
 import { laneBase, type Lane } from "./gate.ts";
 
-/** The lane an event asks for, in select's order: the full suite, else this repository's affected lane, else fast. */
-export const requestedLane = (env: { FULL_SUITE?: string; AFFECTED_LANE?: string }): Lane =>
-  env.FULL_SUITE === "true" ? "full" : env.AFFECTED_LANE === "true" ? "affected" : "fast";
+/**
+ * The lane an event asks for, as select's step does: the full suite, else fast. No event asks for
+ * the affected lane since 2026-11-26; selectLane still runs it for one that does.
+ */
+export const requestedLane = (env: { FULL_SUITE?: string }): Lane =>
+  env.FULL_SUITE === "true" ? "full" : "fast";
 
 /**
  * The lane a Check runs and the heavy jobs it selects; changed inputs that can't be resolved run

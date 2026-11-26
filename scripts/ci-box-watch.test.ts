@@ -250,6 +250,24 @@ test("a box job shown in progress before GitHub names its runner keeps box-watch
   assert.deepEqual(watch([seated], 60), { action: "done" });
 });
 
+test("a job waiting for a saturated hosted queue waits behind this Check's box jobs, then by that queue's wait", () => {
+  // Planned because hosted jobs were waiting 17 minutes for a runner.
+  const planned = { "job-1": first, "job-2": { minutes: 6, wave: 2, by: 17 } as Planned };
+  assert.equal(latestStart(planned["job-2"], 20), 17 + holdingMinutes);
+  // Behind this Check's own running box job it waits, however long: cancelling the run then would
+  // restart every job it runs.
+  const behind = [job({ id: 1, status: "in_progress" }), job({ id: 2 })];
+  assert.deepEqual(watch(behind, 60, 0, planned), { action: "wait" });
+  // Once none of them runs, it must start within that wait plus the margin, or the run is cancelled
+  // and box-rerun re-runs it hosted.
+  const alone = [job({ id: 1, status: "completed" }), job({ id: 2 })];
+  assert.deepEqual(watch(alone, 21.9, 0, planned), { action: "wait" });
+  const late = watch(alone, 22, 0, planned);
+  assert.ok(late.action === "cancel");
+  assert.equal(late.verdict.reason, "held-past-deadline");
+  assert.deepEqual(late.verdict.stuck, [2]);
+});
+
 test("each job's deadline counts from when GitHub queued it, not from select", () => {
   // The jobs a box job needs took ten minutes to get a hosted runner: its clock starts then.
   const queued = start + 10 * minute;
@@ -297,7 +315,8 @@ const decide = (text: string | undefined, list = jobs, at = run) =>
   rerunDecision(at, text, list, "basalt-box");
 
 test("box-rerun acts only on box-watch's own verdict for that very run's first attempt", () => {
-  // A Check a person cancelled, or a superseded run force-cancelled: no verdict, nothing happens.
+  // A Check a person cancelled, or a superseded run force-cancelled: no verdict and no light job
+  // held, nothing happens.
   assert.equal(decide(undefined).action, "none");
   for (const text of [
     "",
@@ -424,7 +443,7 @@ test("box-rerun runs the default branch's file after a cancelled Check, with not
       "github.event.workflow_run.run_attempt == 1 && " +
       "github.event.workflow_run.head_repository.full_name == github.repository",
   );
-  assert.deepEqual(job.permissions, { actions: "write", contents: "read" });
+  assert.deepEqual(job.permissions, { actions: "write", checks: "read", contents: "read" });
   const download = job.steps.find((step: { uses?: string }) =>
     step.uses?.startsWith("actions/download-artifact"),
   );
