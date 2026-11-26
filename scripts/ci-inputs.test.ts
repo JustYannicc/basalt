@@ -44,6 +44,31 @@ test("supported unified carries retain added, changed and deleted source targets
     assert.throws(() => carryTargets(patch), /Unsupported carry target/);
 });
 
+test("carry targets are the same with TMPDIR inside a git work tree", () => {
+  // git apply run there reports only the paths under its own directory, prefixed with it: a gate
+  // tree's TMPDIR once read 2,106 carried targets for 2,070 and lost oauth-scopes.ts.
+  const patch = readFileSync(
+    new URL("../patches/0123-oauth-granted-scopes.patch", import.meta.url),
+    "utf8",
+  );
+  const expected = carryTargets(patch);
+  assert.ok(expected.includes(".upstream/packages/sdk/src/contracts/oauth-scopes.ts"));
+  const repository = mkdtempSync(join(tmpdir(), "basalt-carry-repository-"));
+  const previous = process.env.TMPDIR;
+  try {
+    execFileSync("git", ["init", "-q", repository]);
+    const inside = join(repository, "tmp");
+    mkdirSync(inside);
+    process.env.TMPDIR = inside;
+    assert.equal(tmpdir(), inside);
+    assert.deepEqual(carryTargets(patch), expected);
+  } finally {
+    if (previous === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = previous;
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
+
 test("declaration inputs match committed root source, pinned source or frozen carry targets", () => {
   const root = mkdtempSync(join(tmpdir(), "basalt-frozen-inputs-"));
   const write = (file: string, value: string | object) => {

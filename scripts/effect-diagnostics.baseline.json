@@ -1,8 +1,8 @@
 {
   "anyUnknownInErrorContext": {
     "scripts/pool-fleet/crash-cell.ts": 10,
-    "scripts/pool-fleet/dispatch.ts": 23,
-    "scripts/pool-fleet/operations.ts": 13,
+    "scripts/pool-fleet/dispatch.ts": 21,
+    "scripts/pool-fleet/operations.ts": 11,
     "scripts/pool-tests/gemini.test.ts": 3,
     "scripts/production.ts": 5,
     "scripts/release/deploy.ts": 32,

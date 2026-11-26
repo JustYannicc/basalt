@@ -45,6 +45,9 @@ jobs:
     outputs:
       release: ${{ steps.release.outcome }}
       unchanged: ${{ steps.release.outputs.unchanged }}
+      # Set once the apply succeeded and the smoke passed: the release is live, whatever the fleet
+      # step after it says.
+      released: ${{ steps.release.outputs.released }}
     env:
       BASALT_RELEASE_CANDIDATE: ${{ inputs.candidate }}
       BASALT_APPROVED_PLAN: ${{ inputs.approved_plan }}
@@ -135,9 +138,22 @@ jobs:
           # assertion for, per model call, with POOL_APP_SIGNING_KEY, or mid-rotation with
           # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
           POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
+      # A deploy that died in its fleet step (a cancel, a timeout) printed no line about scale-out,
+      # though its drain may have disabled the fleet. One read says where it stands.
+      - name: Say where scale-out stands after a deploy that ended in its fleet step
+        if: >-
+          always() && inputs.mode == 'deploy' && steps.release.outputs.released == 'true' &&
+          steps.release.outputs.fleet_line != 'written'
+        timeout-minutes: 10
+        run: bun scripts/release/fleet-recommit.ts standing
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          POOL_DEPLOYMENT_KEY: ${{ secrets.POOL_DEPLOYMENT_KEY }}
 
   # The Deployments page shows each production deploy under `production`, with the commit it
-  # deployed: success when the deploy job succeeded, failure when it did not. The record is the one
+  # deployed: success when the deploy job succeeded, or applied and passed its smoke (a fleet step
+  # that failed after it does not unmake a live release), failure when it did not. The record is the one
   # `release.yml` writes and its live check reads (a deployment of the candidate, not of the run's
   # commit), so the two paths agree on what production runs. A plan-only run, and a deploy that
   # stopped before it changed anything, write none; one that died on the way (a lost runner, a
@@ -159,9 +175,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE: ${{ inputs.candidate }}
           RESULT: ${{ needs.production.result }}
+          RELEASED: ${{ needs.production.outputs.released }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          state=$([ "$RESULT" = success ] && echo success || echo failure)
+          # Applied with a passing smoke is live, so a success, even when the fleet step after it
+          # failed: that step's red line stays the deploy job's own error.
+          state=$({ [ "$RESULT" = success ] || [ "$RELEASED" = true ]; } && echo success || echo failure)
           payload=$(jq -cn --arg run "$GITHUB_RUN_ID" '{path: "production", run: $run}')
           missing() {
             echo "::error::The deploy ended $RESULT (its own job above is the truth about it), but its deployment record is missing: production's live check and the Deployments page do not show it. Re-run this record job alone (its own re-run, not \"Re-run failed jobs\", which would deploy again); it writes the record from this run's deploy result."
