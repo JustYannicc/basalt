@@ -85,10 +85,12 @@ function Fixture() {
 }
 window.CHOSEN = [];
 window.EVENTS = [];
+window.POINTS = [];
 for (const type of ["pointerdown", "pointerup", "click"])
   document.addEventListener(type, (event) => {
     const target = event.target instanceof Element ? event.target : null;
     window.EVENTS.push(type + ":" + (target?.closest("[role=menuitem]") ? "menuitem" : target?.closest("[data-slot=dropdown-menu-trigger]") ? "trigger" : "other"));
+    window.POINTS.push(type + "@" + event.clientX.toFixed(1) + "," + event.clientY.toFixed(1));
   }, true);
 createRoot(document.getElementById("root")).render(<RegistryProvider><Fixture /></RegistryProvider>);`;
 
@@ -138,7 +140,7 @@ const withPage = (
     ).pipe(Effect.provide(NodeServices.layer)),
   );
 
-const read = <A>(page: Page, name: "CHOSEN" | "EVENTS") =>
+const read = <A>(page: Page, name: "CHOSEN" | "EVENTS" | "POINTS") =>
   page.evaluate((key) => (window as unknown as Record<string, A>)[key], name);
 
 /** What the person sees once the menu's own animation has run: whether it is open, which Details. */
@@ -171,7 +173,46 @@ const releasedOverItem = async (page: Page, release: "pointerup" | "click") => {
   assert.equal(events[0], "pointerdown:trigger", events.join(" "));
   assert.ok(
     events.includes(`${release}:menuitem`),
-    `the release reached an item: ${events.join(" ")}`,
+    `the release reached an item: ${events.join(" ")} (${(await read<string[]>(page, "POINTS")).join(" ")})`,
+  );
+};
+
+type Point = { readonly x: number; readonly y: number };
+/**
+ * A finger pressing at `start` and lifting where `lift` says, through Chromium's own touch input.
+ * The menu's opening animation is held at its first frame for the gesture, so what lies under the
+ * finger, and so where the tap's click lands, is the same on every platform and runner; without the
+ * hold, whether the click reached an item depended on the browser's touch adjustment and timing.
+ */
+const fingerTap = async (page: Page, start: Point, lift: () => Promise<Point>, radius = 1) => {
+  const cdp = await page.context().newCDPSession(page);
+  const touch = (point: Point) => ({ ...point, radiusX: radius, radiusY: radius });
+  await cdp.send("Animation.enable");
+  await cdp.send("Animation.setPlaybackRate", { playbackRate: 0 });
+  try {
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [touch(start)] });
+    const end = await lift();
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [touch(end)] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    return end;
+  } finally {
+    await cdp.send("Animation.setPlaybackRate", { playbackRate: 1 });
+    await cdp.detach();
+  }
+};
+
+/** A tap on the trigger's lowest pixel whose finger lifts 2 px inside the first item, which slid there. */
+const edgeTap = async (page: Page) => {
+  const box = (await page.getByRole("button", { name: "Manage Team" }).boundingBox())!;
+  const start = { x: box.x + box.width / 2, y: box.y + box.height - 0.1 };
+  const end = await fingerTap(page, start, async () => {
+    const item = (await page.getByRole("menuitem").first().boundingBox())!;
+    return { x: start.x, y: item.y + 2 };
+  });
+  // Still the same press by the travel rule: the finger barely moved.
+  assert.ok(
+    Math.hypot(end.x - start.x, end.y - start.y) < 10,
+    `travel to ${end.y} from ${start.y}`,
   );
 };
 
@@ -255,7 +296,7 @@ test("a tap opens the menu without choosing anything, and a tap on an item choos
     async (page) => {
       const trigger = page.getByRole("button", { name: "Manage Team" });
       const box = (await trigger.boundingBox())!;
-      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height - 0.1);
+      await edgeTap(page);
       await releasedOverItem(page, "click");
       assert.deepEqual(await settled(page), { menu: 1, details: [] });
       await page.keyboard.press("Escape");
@@ -277,9 +318,40 @@ test("a tap on the bottom edge does not follow a link that is the menu's first i
     viewports.phone,
     false,
     async (page) => {
-      const box = (await page.getByRole("button", { name: "Manage Team" }).boundingBox())!;
-      await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height - 0.1);
+      await edgeTap(page);
       await releasedOverItem(page, "click");
+      assert.deepEqual(await settled(page), { menu: 1, details: [] });
+      assert.deepEqual(await read<string[]>(page, "CHOSEN"), []);
+    },
+    true,
+  ));
+
+test("a tap whose click the browser moves onto an item, past the travel limit, chooses nothing (phone)", () =>
+  // Touch adjustment hands a tap's click to a nearby item at a point of its own choosing, which can
+  // lie past the travel limit while the finger barely moved (12 px from the press, measured in
+  // Chromium on macOS). Whether a platform adjusts is its own; so the finger presses and lifts in
+  // place with no touch area, and the click arrives at the item's centre the way an adjusted one does.
+  withPage(
+    viewports.phone,
+    true,
+    async (page) => {
+      const box = (await page.getByRole("button", { name: "Manage Team" }).boundingBox())!;
+      const start = { x: box.x + box.width / 2, y: box.y + box.height - 0.1 };
+      await fingerTap(page, start, async () => start, 0);
+      const item = page.getByRole("menuitem").first();
+      const centre = (await item.boundingBox())!;
+      const at = { x: centre.x + centre.width / 2, y: centre.y + centre.height / 2 };
+      assert.ok(
+        Math.hypot(at.x - start.x, at.y - start.y) > 10,
+        `the click lands ${at.y - start.y} px away`,
+      );
+      await item.dispatchEvent("click", {
+        detail: 1,
+        clientX: at.x,
+        clientY: at.y,
+        bubbles: true,
+        cancelable: true,
+      });
       assert.deepEqual(await settled(page), { menu: 1, details: [] });
       assert.deepEqual(await read<string[]>(page, "CHOSEN"), []);
     },

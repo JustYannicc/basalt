@@ -1,14 +1,23 @@
 diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packages/ui/src/implementation/components/dropdown-menu.tsx
 --- a/packages/ui/src/implementation/components/dropdown-menu.tsx
 +++ b/packages/ui/src/implementation/components/dropdown-menu.tsx
-@@ -6,9 +6,41 @@
+@@ -6,9 +6,54 @@
  import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
  import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
  
-+/** Where the pointer pressed to open this menu; its items read it when a pointer is released. */
++interface Point {
++  readonly x: number;
++  readonly y: number;
++}
++/**
++ * Where the pointer pressed to open this menu, and where that same pointer lifted when the button
++ * received its release (a touch's release goes to the element it pressed). Its items read both.
++ */
 +interface OpeningPressRecord {
-+  readonly record: (x: number, y: number) => void;
-+  readonly at: () => { readonly x: number; readonly y: number } | null;
++  readonly record: (pointer: number, x: number, y: number) => void;
++  readonly release: (pointer: number, x: number, y: number) => void;
++  readonly at: () => Point | null;
++  readonly released: () => Point | null;
 +}
 +const OpeningPress = React.createContext<OpeningPressRecord | null>(null);
 +
@@ -19,13 +28,17 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +  onOpenChange,
 +  ...props
 +}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-+  const press = React.useRef<{ x: number; y: number } | null>(null);
++  const press = React.useRef<{ pointer: number; at: Point; released: Point | null } | null>(null);
 +  const opening = React.useMemo<OpeningPressRecord>(
 +    () => ({
-+      record: (x, y) => {
-+        press.current = { x, y };
++      record: (pointer, x, y) => {
++        press.current = { pointer, at: { x, y }, released: null };
 +      },
-+      at: () => press.current,
++      release: (pointer, x, y) => {
++        if (press.current?.pointer === pointer) press.current.released = { x, y };
++      },
++      at: () => press.current?.at ?? null,
++      released: () => press.current?.released ?? null,
 +    }),
 +    [],
 +  );
@@ -45,11 +58,12 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
  }
  
  /** Dropdown Menu Portal primitive; accepts native props and composes caller styles. */
-@@ -20,9 +52,21 @@
+@@ -20,9 +65,27 @@
  
  /** Dropdown Menu Trigger primitive; accepts native props and composes caller styles. */
  function DropdownMenuTrigger({
 +  onPointerDown,
++  onPointerUp,
    ...props
  }: React.ComponentProps<typeof DropdownMenuPrimitive.Trigger>) {
 -  return <DropdownMenuPrimitive.Trigger data-slot="dropdown-menu-trigger" {...props} />;
@@ -59,8 +73,13 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +      data-slot="dropdown-menu-trigger"
 +      onPointerDown={(event) => {
 +        // The presses Radix opens a menu on.
-+        if (event.button === 0 && !event.ctrlKey) opening?.record(event.clientX, event.clientY);
++        if (event.button === 0 && !event.ctrlKey)
++          opening?.record(event.pointerId, event.clientX, event.clientY);
 +        onPointerDown?.(event);
++      }}
++      onPointerUp={(event) => {
++        opening?.release(event.pointerId, event.clientX, event.clientY);
++        onPointerUp?.(event);
 +      }}
 +      {...props}
 +    />
@@ -68,7 +87,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
  }
  
  /** Dropdown Menu Content primitive; accepts native props and composes caller styles. */
-@@ -51,6 +95,49 @@
+@@ -51,6 +114,54 @@
    return <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
  }
  
@@ -82,6 +101,10 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 + * or through the click a touch sends to what lies under it. So a pointer's release or click chooses
 + * an item only if the item itself was pressed or the pointer left the opening press, as Radix's
 + * Select does. Keyboard clicks carry no click count, and a menu no pointer opened records no press.
++ *
++ * A tap's click is measured from where the finger lifted, not from the click's own point: touch
++ * adjustment moves a tap's click onto a nearby item, so its coordinates can sit past the travel
++ * limit while the finger barely moved.
 + */
 +function useReleaseAfterTravel<E extends Element>({
 +  onPointerDown,
@@ -90,12 +113,12 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +}: Pick<React.DOMAttributes<E>, "onPointerDown" | "onPointerUp" | "onClickCapture">) {
 +  const opening = React.useContext(OpeningPress);
 +  const pressedHere = React.useRef(false);
-+  const atOpeningPress = (event: React.MouseEvent<E>) => {
++  const atOpeningPress = (point: Point) => {
 +    const start = opening?.at();
 +    return (
 +      !pressedHere.current &&
 +      start != null &&
-+      Math.hypot(event.clientX - start.x, event.clientY - start.y) <= releaseTravel
++      Math.hypot(point.x - start.x, point.y - start.y) <= releaseTravel
 +    );
 +  };
 +  return {
@@ -105,12 +128,13 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +    },
 +    onPointerUp: (event: React.PointerEvent<E>) => {
 +      onPointerUp?.(event);
-+      if (atOpeningPress(event)) event.preventDefault();
++      if (atOpeningPress({ x: event.clientX, y: event.clientY })) event.preventDefault();
 +    },
 +    // Captured, so an item rendered as a link sees the refusal before its own click handler.
 +    onClickCapture: (event: React.MouseEvent<E>) => {
 +      onClickCapture?.(event);
-+      if (event.detail !== 0 && atOpeningPress(event)) event.preventDefault();
++      const lifted = opening?.released() ?? { x: event.clientX, y: event.clientY };
++      if (event.detail !== 0 && atOpeningPress(lifted)) event.preventDefault();
 +    },
 +  };
 +}
@@ -118,7 +142,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
  /** Dropdown Menu Item primitive; accepts native props and composes caller styles. */
  function DropdownMenuItem({
    className,
-@@ -71,6 +158,7 @@
+@@ -71,6 +182,7 @@
          className,
        )}
        {...props}
@@ -126,7 +150,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
      />
    );
  }
-@@ -89,6 +177,7 @@
+@@ -89,6 +201,7 @@
          className,
        )}
        {...props}
@@ -134,7 +158,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
      >
        <span
          data-slot="dropdown-menu-item-indicator"
-@@ -124,6 +213,7 @@
+@@ -124,6 +237,7 @@
          className,
        )}
        {...props}
