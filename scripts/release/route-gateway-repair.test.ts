@@ -2,12 +2,11 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { test, type TestContext } from "node:test";
 import type * as Plan from "alchemy/Plan";
-import { Cause, Effect, Exit, Redacted } from "effect";
-import { FetchHttpClient } from "effect/http";
+import { Cause, Effect, Exit } from "effect";
 import { checkPlan, decodePlanPolicy, PlanRefused } from "./plan-check.ts";
 import {
   applyRepair,
-  listApplications,
+  type Observation,
   readRepair,
   RepairRefused,
   repairDigest,
@@ -16,7 +15,7 @@ import {
 import { decodeReleasePolicy } from "./policy.ts";
 import { routeGatewayClassFor, routeGatewayRecorded } from "./route-gateway-class.ts";
 import { asDeclared, declareTo, seeded, type Outcome, type Rows } from "./test/declare-run.ts";
-import { cloudflare, makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
+import { makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
 
 // Every way the declare can stop after Alchemy committed the application's placeholder row.
 const stops: Outcome[] = ["upload-refused", "create-refused", "commit-lost"];
@@ -100,30 +99,28 @@ const actions = (plan: Plan.Plan) =>
   );
 
 /**
- * The repair's State is the rows themselves; its account is a fake Cloudflare API serving the
- * applications, read through the provider's own SDK call.
+ * The repair's State is the rows themselves. Its account read is the provider's own read of the
+ * row (`observeRow`) against the fake account, run with the fixture's providers.
  */
-const repairOn = async (
-  context: TestContext,
-  rows: Rows,
-  applications: Map<string, FakeApplication>,
-) => {
-  const account = await cloudflare(context, false, { applications, acceptCreates: false });
+const repairOn = (context: TestContext, rows: Rows, applications: Map<string, FakeApplication>) => {
   const store: RepairStore<never> = {
     get: (fqn) => Effect.sync(() => rows[fqn]),
     set: (fqn, value) => Effect.sync(() => void (rows[fqn] = value as Rows[string])),
     delete: (fqn) => Effect.sync(() => void delete rows[fqn]),
   };
-  return {
-    fqn: "RouteGateway",
-    worker: "PoolWorker",
-    store,
-    list: (accountId: string) =>
-      listApplications(
-        Redacted.make("synthetic-token"),
-        account.base,
-      )(accountId).pipe(Effect.provide(FetchHttpClient.layer)),
-  };
+  const observe = (fqn: string) =>
+    Effect.promise(async () => {
+      const read: { fqn: string; result?: Observation | undefined } = { fqn };
+      await makePlan(context, {
+        rows,
+        declared: { poolDatabase: {} },
+        commandRuns: [],
+        applications,
+        observe: read,
+      });
+      return read.result;
+    });
+  return { fqn: "RouteGateway", worker: "PoolWorker", store, observe };
 };
 
 for (const stop of stops)
@@ -163,12 +160,10 @@ for (const stop of ["upload-refused", "create-refused"] as const)
     const applications = new Map<string, FakeApplication>();
     const fresh = await makePlan(context, { rows: await seeded(context), ...asDeclared });
     const { rows } = await declareTo(context, stop, applications);
-    const { plan } = await Effect.runPromise(
-      readRepair(await repairOn(context, rows, applications)),
-    );
+    const { plan } = await Effect.runPromise(readRepair(repairOn(context, rows, applications)));
     assert.equal(plan.action, "forget");
     await Effect.runPromise(
-      applyRepair({ ...(await repairOn(context, rows, applications)), digest: repairDigest(plan) }),
+      applyRepair({ ...repairOn(context, rows, applications), digest: repairDigest(plan) }),
     );
     assert.equal(rows.RouteGateway, undefined);
     // The declare's own plan and verdict are then a fresh declare's.
@@ -186,39 +181,43 @@ test("a declare whose create landed but whose commit was lost is repaired by ado
   const { rows } = await declareTo(context, "commit-lost", applications);
   const [live] = [...applications.values()];
   assert.ok(live, "the create reached the account");
-  const { plan } = await Effect.runPromise(readRepair(await repairOn(context, rows, applications)));
+  const { plan } = await Effect.runPromise(readRepair(repairOn(context, rows, applications)));
   assert.deepEqual(plan.action === "adopt" ? [plan.application, plan.namespace] : plan.action, [
     live.id,
     "namespace-route-gateway",
   ]);
   await Effect.runPromise(
-    applyRepair({ ...(await repairOn(context, rows, applications)), digest: repairDigest(plan) }),
+    applyRepair({ ...repairOn(context, rows, applications), digest: repairDigest(plan) }),
   );
-  // The next release reads the row as the live application: never a create beside it, a replace or
-  // a delete of it, under any policy.
+  // The next release reads the row as the live application, exactly as it reads a declare that
+  // finished: every policy plans the gateway's row and judges the plan the same way. Neither ever
+  // creates an application beside it, nor replaces or deletes it.
+  const done = new Map<string, FakeApplication>();
+  const finished = await declareTo(context, "finished", done);
   for (const name of await policies()) {
-    const exit = await planAs(context, rows, name, applications);
-    assert.ok(Exit.isSuccess(exit), `${name} plans the adopted row`);
-    const row = action(exit.value.plan, "RouteGateway");
+    const adopted = await planAs(context, rows, name, applications);
+    const reference = await planAs(context, finished.rows, name, done);
+    assert.ok(Exit.isSuccess(adopted) && Exit.isSuccess(reference), `${name} plans both`);
+    const row = action(adopted.value.plan, "RouteGateway");
+    assert.equal(row, action(reference.value.plan, "RouteGateway"), name);
     assert.ok(row === "noop" || row === "update" || row === "absent", `${name}: ${row}`);
-    const route = (await verdict(exit.value.plan, name)).filter(
-      (v) =>
-        v.startsWith("container-placeholder-not-created") ||
-        v.startsWith("protected-resource-destroyed RouteGateway"),
+    assert.deepEqual(
+      await verdict(adopted.value.plan, name),
+      await verdict(reference.value.plan, name),
+      name,
     );
-    assert.deepEqual(route, [], name);
   }
 });
 
 test("the repair touches nothing but a placeholder it can account for", async (context) => {
   const refused = async (rows: Rows, applications: Map<string, FakeApplication>) => {
-    const exit = await Effect.runPromiseExit(
-      readRepair(await repairOn(context, rows, applications)),
-    );
+    const before = structuredClone(rows);
+    const exit = await Effect.runPromiseExit(readRepair(repairOn(context, rows, applications)));
     assert.ok(Exit.isFailure(exit), "the repair planned");
     const error = Cause.squash(exit.cause);
     assert.ok(error instanceof RepairRefused, String(error));
-    return error.reason;
+    assert.deepEqual(rows, before, "a refused repair changed nothing");
+    return error.why;
   };
   // A finished declare records the live application: nothing to repair.
   const done = new Map<string, FakeApplication>();
@@ -228,31 +227,48 @@ test("the repair touches nothing but a placeholder it can account for", async (c
   const applications = new Map<string, FakeApplication>();
   const { rows } = await declareTo(context, "commit-lost", applications);
   const [live] = [...applications.values()];
-  // Two applications under the name: which is the row's cannot be told.
-  const twice = new Map(applications).set("second", { ...live!, id: "second" });
-  assert.match(await refused(rows, twice), /2 applications/u);
+  const withRow = (change: object) =>
+    ({ ...rows, RouteGateway: { ...rows.RouteGateway!, ...change } }) as Rows;
   // One attached to another namespace than the Worker records is not the row's.
   const elsewhere = new Map([[live!.id, { ...live!, namespaceId: "other" }]]);
   assert.match(await refused(rows, elsewhere), /another namespace/u);
-  // A row written in local mode, or with a generated name, is not one the repair can account for.
-  const local = { ...rows, RouteGateway: { ...rows.RouteGateway!, providerMode: "local" } } as Rows;
-  assert.match(await refused(local, applications), /local mode/u);
-  const generated = {
+  // A Worker that records no namespace for the class cannot say whose the application is.
+  const pool = rows.PoolWorker as unknown as { attr: { durableObjectNamespaces: object } };
+  const unhosted = {
     ...rows,
-    RouteGateway: {
-      ...rows.RouteGateway!,
-      props: { ...(rows.RouteGateway!.props as object), name: undefined },
-    },
+    PoolWorker: { ...rows.PoolWorker!, attr: { ...pool.attr, durableObjectNamespaces: {} } },
   } as Rows;
+  assert.match(await refused(unhosted, applications), /records no namespace/u);
+  // An interrupted replace keeps the live generation under `old`, and a create, update or delete
+  // in flight is Alchemy's deploy's to finish: forgetting any of them would orphan what it records.
+  const generation = { ...rows.RouteGateway!, attr: { applicationId: live!.id } };
+  for (const change of [
+    { status: "replacing", old: generation },
+    { status: "creating" },
+    { status: "updating", old: generation },
+    { status: "deleting" },
+  ])
+    assert.match(
+      await refused(withRow(change), new Map()),
+      /not a finished first create/u,
+      change.status,
+    );
+  assert.match(await refused(withRow({ old: generation }), new Map()), /older generation/u);
+  // A row written in local mode, or with a generated name, is not one the repair can account for.
+  assert.match(await refused(withRow({ providerMode: "local" }), applications), /local mode/u);
+  const generated = withRow({
+    props: { ...(rows.RouteGateway!.props as object), name: undefined },
+  });
   assert.match(await refused(generated, applications), /explicitly named/u);
 
   // An approved repair is applied only while it is still the repair the reviewer saw.
-  const { plan } = await Effect.runPromise(readRepair(await repairOn(context, rows, applications)));
+  const { plan } = await Effect.runPromise(readRepair(repairOn(context, rows, applications)));
+  const before = structuredClone(rows);
   const stale = await Effect.runPromiseExit(
-    applyRepair({ ...(await repairOn(context, rows, new Map())), digest: repairDigest(plan) }),
+    applyRepair({ ...repairOn(context, rows, new Map()), digest: repairDigest(plan) }),
   );
   assert.ok(Exit.isFailure(stale) && Cause.squash(stale.cause) instanceof RepairRefused);
-  assert.ok(rows.RouteGateway, "a refused repair changed nothing");
+  assert.deepEqual(rows, before, "a refused repair changed nothing");
 });
 
 test("a declared gateway does not block the fleet's class change, and only the allowance admits its attachment", async (context) => {

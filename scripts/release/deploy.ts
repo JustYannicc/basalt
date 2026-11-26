@@ -655,6 +655,11 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
 
 const target = { entrypoint: scaleStack ? config : resolve(root, config), stage };
 let loadedStackName: string | undefined;
+/** The stack's entry module could not be imported to read its name; the release stops. */
+class StackImportFailed extends Data.TaggedError("StackImportFailed")<{
+  readonly cause: unknown;
+}> {}
+
 /**
  * The stack's own name, as its module declares it, loaded by Alchemy's own stack loader (the one
  * `Stack.plan` uses): production deploys `basalt`, a rehearsal stage deploys under its own stack
@@ -671,7 +676,7 @@ const stackName = () =>
     >;
     loadedStackName = stack.stackName;
     return stack.stackName;
-  });
+  }).pipe(Effect.mapError((cause) => new StackImportFailed({ cause })));
 /** A Worker's live script name, from its State row (names carry the stage, policies name FQNs). */
 const scriptName = (fqn: string) =>
   Effect.gen(function* () {
@@ -702,7 +707,6 @@ interface RecordedRow {
   };
   old?: RecordedRow;
 }
-/** One resource's State row in this stage, if it exists yet. */
 /** The stage's State store and this stack's key in it. */
 const stageState = Effect.gen(function* () {
   const state = yield* Alchemist.State.store({
@@ -711,6 +715,7 @@ const stageState = Effect.gen(function* () {
   } as never) as unknown as Fx.Effect<StateService, unknown, never>;
   return { state, at: { stack: yield* stackName(), stage } };
 }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: "(State store)", cause })));
+/** One resource's State row in this stage, if it exists yet. */
 const recordedRow = (fqn: string) =>
   stageState.pipe(
     Effect.flatMap(({ state, at }) => state.get({ ...at, fqn })),
@@ -944,7 +949,17 @@ try {
               state.set({ ...at, fqn: row, value: value as never }),
             delete: (row: string) => state.delete({ ...at, fqn: row }),
           },
-          list: repair.listApplications(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? "")),
+          // What `alchemy drift` observes of the row, read-only: its own provider reads it, and
+          // the container provider reads a placeholder by its application's explicit name.
+          observe: (row: string) =>
+            Effect.gen(function* () {
+              const recorded = yield* state.get({ ...at, fqn: row });
+              if (!recorded) return undefined;
+              const session = yield* Session.open(target as never);
+              return yield* repair
+                .observeRow(row, recorded as never)
+                .pipe(Effect.provide(session.context));
+            }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: row, cause }))),
         };
         if (!digest) return (yield* repair.readRepair(input)).plan;
         return yield* repair.applyRepair({ ...input, digest });

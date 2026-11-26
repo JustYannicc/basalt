@@ -33,6 +33,7 @@ import { FetchHttpClient } from "effect/http";
 import { poolObservationTokenProps } from "../../../src/pool/fleet-observation.ts";
 import { poolDatabaseReadiness } from "../../../src/pool/database.ts";
 import { poolWorkerAcceptance } from "../../../src/pool/database-budget.ts";
+import { observeRow, type Observation } from "../placeholder-repair.ts";
 import { databasePoolBudget } from "../../../.upstream/apps/hosted/cloud/src/infrastructure/database-pool-budget.ts";
 
 export const accountId = "0".repeat(32);
@@ -972,6 +973,8 @@ export interface PlanInput {
    * answers for. Pass the same map to later plans so they see what an earlier apply created.
    */
   applications?: Map<string, FakeApplication>;
+  /** Filled, before the plan, with what Alchemy's drift read observes of this row. */
+  observe?: { fqn: string; result?: Observation | undefined };
   /** The fake API creates the container applications it is asked to; by default it refuses them. */
   acceptContainerCreates?: boolean;
   /** A State write that fails as the store would, after Cloudflare already did what it records. */
@@ -1040,6 +1043,11 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
             );
             if (input.applyExits) input.applyExits.push(yield* Effect.exit(applied));
             else yield* applied;
+          }
+          // What `alchemy drift` observes of one row, read through the row's own provider.
+          if (input.observe) {
+            const row = input.rows?.[input.observe.fqn] as ResourceState | undefined;
+            input.observe.result = row ? yield* observeRow(input.observe.fqn, row) : undefined;
           }
           if (input.destroy) return yield* Plan.destroy({ name: scope.stack, stage: scope.stage });
           return yield* Plan.make(compiled, input.include ? { include: input.include } : {});
