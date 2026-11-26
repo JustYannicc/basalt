@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deployEnvironment, requiredSecrets } from "./environment.ts";
 import { run } from "./process.ts";
@@ -41,7 +42,10 @@ writeFileSync(
   { mode: 0o600 },
 );
 run("bun", ["packages/sdk/scripts/check-storage-versions.ts"], upstream);
-run("bun", [".local/basalt-worker-sizes.ts"], cloud, {
+// `--base <directory>` compares each Worker with a base commit's upload records in the summary.
+const base = process.argv.indexOf("--base");
+const comparison = base === -1 ? [] : ["--base", resolve(process.argv[base + 1] ?? "")];
+run("bun", [".local/basalt-worker-sizes.ts", ...comparison], cloud, {
   ...process.env,
   BASALT_RELEASE_ATTEMPT: credentials.BASALT_RELEASE_ATTEMPT,
 });

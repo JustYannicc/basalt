@@ -121,6 +121,15 @@ export function fastPlan(document: unknown, context: FastContext) {
           });
           continue;
         }
+        // Locally no base records are restored, so the floor check reports the growth as unknown.
+        if (step.uses === "./.github/actions/worker-upload-base") {
+          if (typeof step.name !== "string") throw new Error("Fast cache steps need a name");
+          skipped.push({
+            name: step.name,
+            reason: "the Worker size cache requires GitHub Actions",
+          });
+          continue;
+        }
         if (!object(step.with)) throw new Error("Fast tool setup needs explicit versions");
         let version: string | undefined;
         if (step.uses === "./.github/actions/setup-node" || step.uses === "actions/setup-node@v4") {
