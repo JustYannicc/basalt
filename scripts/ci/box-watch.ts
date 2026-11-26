@@ -73,6 +73,23 @@ export const jobName = (id: string) => {
   return leg === undefined ? job! : `${job} (${leg})`;
 };
 
+/** A job as box-watch reads it from GitHub's job list. */
+export function watchedJob(job: Record<string, unknown>, label: string): WatchedJob {
+  const cancelled = job.status === "completed" && job.conclusion === "cancelled";
+  return {
+    id: Number(job.id),
+    name: String(job.name),
+    status: String(job.status),
+    onBox:
+      Array.isArray(job.labels) &&
+      job.labels.some((value) => String(value).toLowerCase() === label),
+    createdAt: Date.parse(String(job.created_at ?? "")) || undefined,
+    // GitHub reports a job no runner took as runner "" (id 0); a cancelled job that ran has one.
+    lost: cancelled && !job.runner_name,
+    cancelled,
+  };
+}
+
 export function watchDecision(
   input: WatchInput,
 ): { action: "done" } | { action: "wait" } | { action: "cancel"; verdict: Verdict } {
@@ -96,7 +113,9 @@ export function watchDecision(
         run: input.run,
         attempt: input.attempt,
         reason: "held-past-deadline",
-        stuck: [...lost, ...stuck].map((job) => job.id),
+        // Only the lost jobs: box-rerun re-runs every cancelled job anyway, and a queued one the
+        // listing shows here may have started since, which would void the verdict.
+        stuck: lost.map((job) => job.id),
         cutOff: input.jobs
           .filter((job) => job.status === "in_progress" && job.name !== input.self)
           .map((job) => job.id),
@@ -198,17 +217,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const selectedAt = Date.parse(
         String(jobs.find((job) => job.name === "select")?.completed_at ?? ""),
       );
-      const watched = jobs.map((job) => ({
-        id: Number(job.id),
-        name: String(job.name),
-        status: String(job.status),
-        onBox:
-          Array.isArray(job.labels) &&
-          job.labels.some((value) => String(value).toLowerCase() === label),
-        createdAt: Date.parse(String(job.created_at ?? "")) || undefined,
-        lost: job.status === "completed" && job.conclusion === "cancelled" && !job.runner_name,
-        cancelled: job.status === "completed" && job.conclusion === "cancelled",
-      }));
+      const watched = jobs.map((job) => watchedJob(job, label));
       const stuck = watched.some(
         (job) => job.name in planned && job.onBox && notStarted.has(job.status),
       );

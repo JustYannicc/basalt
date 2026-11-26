@@ -10,6 +10,7 @@ import {
   jobName,
   latestStart,
   watchDecision,
+  watchedJob,
   type Planned,
   type WatchedJob,
 } from "./ci/box-watch.ts";
@@ -145,7 +146,9 @@ test("a box job GitHub cancelled with no runner, while the run goes on, gets the
     job({ id: 3, onBox: false, status: "in_progress" }),
   ];
   const planned = { "job-1": first, "job-2": { minutes: 4, wave: 2 } as Planned };
-  const decision = watch(jobs, 3, 0, planned);
+  // A box job of this Check still queued is left out of the verdict: it may have started since.
+  const queued = job({ id: 4 });
+  const decision = watch([...jobs, queued], 3, 0, { ...planned, "job-4": first });
   assert.ok(decision.action === "cancel");
   assert.deepEqual(decision.verdict.stuck, [2]);
   assert.deepEqual(decision.verdict.cutOff, [1, 3]);
@@ -189,6 +192,39 @@ test("a box job GitHub cancelled with no runner, while the run goes on, gets the
     job({ id: 2, status: "completed", cancelled: true }),
   ];
   assert.notEqual(watch(ran, 3, 0, planned).action, "cancel");
+});
+
+test("a box job GitHub cancelled before any runner took it reads as lost, from its live shape", () => {
+  // Run 44984450320's declared-cloud-11 (22 Nov): handed to a runner as it went offline, cancelled
+  // by GitHub 13 minutes later, never started.
+  const lost = {
+    id: 137092036033,
+    name: "declared-cloud-11",
+    status: "completed",
+    conclusion: "cancelled",
+    runner_id: 0,
+    runner_name: "",
+    labels: ["basalt-box"],
+    created_at: "2026-11-22T04:19:08Z",
+    started_at: "2026-11-22T04:19:08Z",
+    completed_at: "2026-11-22T04:32:04Z",
+  };
+  assert.deepEqual(watchedJob(lost, "basalt-box"), {
+    id: 137092036033,
+    name: "declared-cloud-11",
+    status: "completed",
+    onBox: true,
+    createdAt: Date.parse("2026-11-22T04:19:08Z"),
+    lost: true,
+    cancelled: true,
+  });
+  // One that ran and was cancelled has a runner, and isn't lost.
+  assert.equal(
+    watchedJob({ ...lost, runner_id: 3, runner_name: "basalt-box-3" }, "basalt-box").lost,
+    false,
+  );
+  // Nor is one that ended any other way.
+  assert.equal(watchedJob({ ...lost, conclusion: "failure" }, "basalt-box").lost, false);
 });
 
 test("each job's deadline counts from when GitHub queued it, not from select", () => {
