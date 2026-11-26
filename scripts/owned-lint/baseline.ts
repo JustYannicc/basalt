@@ -11,12 +11,15 @@ export const NATIVE_ALLOWLIST = new Set([
 const ALLOWLIST_RULES = new Set([
   "basalt/no-direct-cloudflare-api",
   "basalt/no-strict-provider-decode",
+  "landmines-testing/no-flake-masking",
   "landmines-testing/no-test-doubles",
 ]);
-// Rules whose entries may cover only some files. landmines reports every kind of double with one
-// message, so the files are the limit: the wire guard's tests replace the global fetch because
-// the guard under test wraps it.
+// Rules whose entries may cover only some files. landmines reports every kind of double, and
+// every raised timeout, with one message, so the files are the limit: the wire guard's tests
+// replace the global fetch because the guard under test wraps it, and the bulk CLI's ACK test
+// holds an upload past 30 s because that real hold is its proof.
 const ALLOWLIST_SCOPE: Record<string, RegExp> = {
+  "landmines-testing/no-flake-masking": /^scripts\/import-cpamp-bulk\.test\.ts$/u,
   "landmines-testing/no-test-doubles": /^scripts\/release\/wire-guard[\w-]*\.test\.ts$/u,
 };
 const inScope = (rule: string, file: string) => ALLOWLIST_SCOPE[rule]?.test(file) ?? true;
