@@ -148,3 +148,65 @@ test("unstaged and ignored local output are outside staged and new-commit conten
     f.close();
   }
 });
+
+const dotReason = "file under a dot-directory other than .github";
+
+test("a file under a dot-directory other than .github fails in a new commit, even once a later one removes it", () => {
+  const f = fixture();
+  try {
+    f.write("src/pool/.tool-cache/state.json", "{}\n");
+    const added = f.commit();
+    f.git("rm", "-q", "src/pool/.tool-cache/state.json");
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ ...f, environment: {} }), [
+      {
+        file: "src/pool/.tool-cache/state.json",
+        source: `commit ${added.slice(0, 12)}`,
+        reason: dotReason,
+      },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+test("a tree holding a file under a dot-directory fails when staged, and with no base at all", () => {
+  const f = fixture();
+  try {
+    f.write(".tool/settings.json", "{}\n");
+    f.git("add", ".tool/settings.json");
+    assert.deepEqual(checkGitSecrets({ ...f, environment: {} }), [
+      { file: ".tool/settings.json", source: "staged", reason: dotReason },
+    ]);
+    f.commit();
+    assert.deepEqual(checkGitSecrets({ root: f.root, environment: {} }), [
+      { file: ".tool/settings.json", source: "HEAD", reason: dotReason },
+    ]);
+  } finally {
+    f.close();
+  }
+});
+
+test("files under .github and dot-files anywhere pass, while a .github below the root does not", () => {
+  const f = fixture();
+  try {
+    for (const file of [
+      ".github/workflows/fixture.yml",
+      ".gitignore",
+      "src/.oxfmtrc.json",
+      "docs/notes.v2.md",
+      "docs/.github/workflows/nested.yml",
+    ])
+      f.write(file, "fixture\n");
+    const added = f.commit();
+    assert.deepEqual(checkGitSecrets({ ...f, environment: {} }), [
+      {
+        file: "docs/.github/workflows/nested.yml",
+        source: `commit ${added.slice(0, 12)}`,
+        reason: dotReason,
+      },
+    ]);
+  } finally {
+    f.close();
+  }
+});
