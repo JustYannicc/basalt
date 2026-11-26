@@ -9,9 +9,11 @@ import {
   rootChange,
   removals,
   fleetEnvironment,
+  routeGatewayEnvironment,
   workersToRepoint,
 } from "./production.ts";
 import { errorLine } from "./release/failure-line.ts";
+import { assignEnvironment } from "./release/process-env.ts";
 import { errorKind } from "./release/public-report.ts";
 import { makePlan, productionRows } from "./release/test/plan-fixture.ts";
 
@@ -28,6 +30,20 @@ test("the class switch only turns the fleet's classes on, and each state has one
     POOL_FLEET_BUILD: "true",
     POOL_FLEET_CLASSES: undefined,
   });
+});
+
+test("the route gateway's class stays declared once PoolWorker hosts it, and is unset before", () => {
+  assert.deepEqual(routeGatewayEnvironment([]), { ROUTE_GATEWAY_CLASS: undefined });
+  assert.deepEqual(routeGatewayEnvironment(["PoolLedger", "PoolRuntimeBlue"]), {
+    ROUTE_GATEWAY_CLASS: undefined,
+  });
+  assert.deepEqual(routeGatewayEnvironment(["PoolLedger", "RouteGateway"]), {
+    ROUTE_GATEWAY_CLASS: "declared",
+  });
+  // Unset means removed: an ambient value cannot declare the class through an ordinary deploy.
+  const env: Record<string, string | undefined> = { ROUTE_GATEWAY_CLASS: "declared" };
+  assignEnvironment(env, routeGatewayEnvironment([]));
+  assert.equal("ROUTE_GATEWAY_CLASS" in env, false);
 });
 
 test("a failed smoke re-points every Worker the apply uploads, and nothing else", () => {

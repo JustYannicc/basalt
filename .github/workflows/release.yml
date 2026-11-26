@@ -22,8 +22,9 @@ on:
         description: Plan policy in scripts/release/policies (release, or a cutover step)
         required: true
         type: choice
-        # code: any code-only release (every changed Worker, rollbackable); cutover-*: the two cutover steps.
-        options: [release, code, code-restart, cutover-code, cutover-classes]
+        # code: any code-only release (every changed Worker, rollbackable); cutover-*: the two cutover steps;
+        # route-gateway-class: declares the route gateway's class (a class change, like cutover-classes).
+        options: [release, code, code-restart, cutover-code, cutover-classes, route-gateway-class]
         default: code
       plan_digest:
         description: For apply, the digest printed by the reviewed plan run
@@ -168,6 +169,15 @@ jobs:
           ref: ${{ env.BASALT_RELEASE_CANDIDATE }}
           fetch-depth: 0
           persist-credentials: false
+      # The class-change steps below follow what the policy checks, not its name: every policy
+      # whose check is a class change stops the same way and is never rolled back.
+      - name: Read the policy's check mode
+        run: |
+          mode="$(jq -er '.check.mode | strings | select(. != "")' "$POLICY")" || {
+            echo "::error::Could not read check.mode from $POLICY: the policy file is missing or names no mode."
+            exit 1
+          }
+          echo "POLICY_MODE=$mode" >> "$GITHUB_ENV"
       - name: Respect the release hold
         env:
           GO: ${{ inputs.go }}
@@ -492,7 +502,7 @@ jobs:
       # A failed acceptance puts the previous PoolWorker back by itself; nobody has to be watching.
       - name: Roll back a failed release
         env: *release-secrets
-        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))
+        if: always() && env.MODE == 'apply' && env.POLICY_MODE != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))
         run: |
           bun scripts/release/deploy.ts rollback --stage production --from .local/release/serving.json
           # The release is red either way; this says whether the version rolled back to still serves.
@@ -540,7 +550,7 @@ jobs:
           esac
           exit 1
       - name: Stop on a failed class change
-        if: always() && env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
+        if: always() && env.MODE == 'apply' && env.POLICY_MODE == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')
         # The acceptance record keeps counts, never messages (they can name hosts), so the cause comes
         # from the accept step's outputs and the record's counts; that step's log has the rest.
         env:
@@ -563,7 +573,10 @@ jobs:
           else
             cause="$(jq -r 'if (.failed // 0) > 0 then "\(.failed) of \(.requests) model requests failed" elif .passed == false then "the boot the root had before the apply did not serve after it: the root restarted" else empty end' "$record" 2>/dev/null || true)"
           fi
-          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; the fleet is not configured, so the pool still serves on the root alone. Cause: ${cause:-the accept step names it}"
+          # Only the fleet's own class change leaves a known state behind: its fleet is configured later.
+          if [ "$POLICY_NAME" = "cutover-classes" ]; then state="the fleet is not configured, so the pool still serves on the root alone"
+          else state="nothing was undone, so whatever the apply reached stays live; read the pool before any GO"; fi
+          echo "::error::The class change failed or its acceptance failed. It cannot be rolled back; $state. Cause: ${cause:-the accept step names it}"
           exit 1
       - name: Count accounts and history after
         env: *release-secrets
@@ -575,7 +588,7 @@ jobs:
       # was tested, so the release stays live: the counts above still run, then the run stops red
       # and a person looks. Rolling back would undo a release nobody saw fail.
       - name: Stop on an acceptance that could not test
-        if: always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'
+        if: always() && env.MODE == 'apply' && env.POLICY_MODE != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'
         run: |
           echo "::error::ACCEPTANCE COULD NOT TEST: nothing was tested and nothing was rolled back; the release's acceptance device hit its user's cap: check the cap, then run again."
           exit 1

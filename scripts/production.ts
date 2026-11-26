@@ -31,6 +31,17 @@ export const fleetEnvironment = (declared: boolean): Record<string, string | und
     ? { POOL_FLEET_BUILD: "true", POOL_FLEET_CLASSES: undefined }
     : { POOL_FLEET_BUILD: undefined, POOL_FLEET_CLASSES: "absent" };
 
+/**
+ * The route gateway's class is declared only by its own release policy. Once PoolWorker hosts it,
+ * every deploy keeps it declared, or the plan would drop the class and refuse; until then the
+ * stack's own default applies.
+ */
+export const routeGatewayEnvironment = (
+  hosted: readonly string[],
+): Record<string, string | undefined> => ({
+  ROUTE_GATEWAY_CLASS: hosted.includes("RouteGateway") ? "declared" : undefined,
+});
+
 type Wire = { type?: unknown; className?: unknown; scriptName?: unknown };
 type Binding = { sid?: string; action?: string; data?: unknown };
 type State = {
@@ -326,6 +337,7 @@ async function main() {
   );
   const declared = classesDeclared(values["fleet-classes"] === true, hosted);
   assignEnvironment(process.env, fleetEnvironment(declared));
+  assignEnvironment(process.env, routeGatewayEnvironment(hosted));
 
   // Second session plans and applies: the snapshot holds this session's providers.
   const { serving, applied, creating, rebind } = await run(
