@@ -1,5 +1,5 @@
 {
-  "description": "Declare the route gateway's Durable Object class and create its container application, re-uploading the live PoolWorker code byte for byte. It cannot be undone: once declared, undeclaring would delete every connected route's stored identity, and the plan check refuses it. Ordinary releases afterwards keep the class without saying so, because the release entry declares it whenever the stage's State records its application (scripts/release/route-gateway-class.ts). The fleet classes stay as the code release keeps them. As in the fleet's class change, the root's row may also plan as an update whose only other difference is its attachment: a class new to the pool Worker has no namespace yet, so the planner cannot know the root's attachment until the Worker applies. It is admitted only when the namespace it resolves to is already recorded, equal on both rows, and the pool Worker still hosts the class. A stage gets the class only this way too: the release entry sets the switch from the stage's record or this policy, whatever the job's environment holds.",
+  "description": "Declare the route gateway's Durable Object class and create its container application, re-uploading the live PoolWorker code byte for byte. It cannot be undone: once declared, undeclaring would delete every connected route's stored identity, and the plan check refuses it. Ordinary releases afterwards keep the class without saying so, because the release entry declares it whenever PoolWorker's State row records the class's namespace (scripts/release/route-gateway-class.ts). The fleet classes stay as the code release keeps them. As in the fleet's class change, the root's row may also plan as an update whose only other difference is its attachment: a class new to the pool Worker has no namespace yet, so the planner cannot know the root's attachment until the Worker applies. It is admitted only when the namespace it resolves to is already recorded, equal on both rows, and the pool Worker still hosts the class. A stage gets the class only this way too: the release entry sets the switch from the stage's record or this policy, whatever the job's environment holds.",
   "check": {
     "mode": "cutover-classes",
     "protected": {
@@ -12,7 +12,8 @@
         "PublicSiteWaitlist",
         "PoolObservationSecrets",
         "PoolProviderObservationToken",
-        "ArtifactsCredentials"
+        "ArtifactsCredentials",
+        "RouteGateway"
       ],
       "types": [
         "Cloudflare.Hyperdrive",

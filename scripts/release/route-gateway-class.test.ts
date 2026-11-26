@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { decodeReleasePolicy } from "./policy.ts";
 import {
@@ -14,6 +14,10 @@ const read = async (name: string) =>
   );
 // Every policy a release runs under but the route gateway's own class change.
 const ordinary = ["release", "code", "code-restart", "cutover-code", "cutover-classes"];
+const every = async () =>
+  (await readdir(new URL("./policies/", import.meta.url)))
+    .filter((file) => file.endsWith(".json"))
+    .map((file) => file.slice(0, -".json".length));
 
 test("before the class is declared, no ordinary release declares it", async () => {
   // Nothing is recorded until the declare release creates the class's application, so whichever
@@ -89,6 +93,13 @@ test("only PoolWorker hosting the class counts as declared, not the application'
   assert.equal(routeGatewayRecorded(["PoolLedger", "RouteGateway"]), true);
   assert.equal(routeGatewayRecorded(["PoolLedger"]), false);
   assert.equal(routeGatewayRecorded([]), false);
+});
+
+test("every policy refuses to delete or replace the route gateway's application", async () => {
+  // The plan check refuses a protected resource's delete, replace or orphaning whatever `removals`
+  // says, and never its create or update: inert until the declare, binding from then on.
+  for (const name of await every())
+    assert.ok((await read(name)).check.protected.fqns.includes(routeGatewayFqn), name);
 });
 
 test("the entry sets the class switch before the planning session copies the environment", async () => {
