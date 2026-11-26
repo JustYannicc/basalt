@@ -644,3 +644,24 @@ diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases
      },
    },
  ];
+diff --git a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+--- a/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
++++ b/packages/sdk/src/implementation/basalt-canonical-framework-releases.ts
+@@ -255,6 +255,17 @@
+       sha256: "8524e622ce748e3262fc910a75ad3d842220d6cdee7e3e8eeff8bc841b890b88",
+     },
+   },
++  {
++    version: "0.0.1-beta.104-basalt.16",
++    sha256: "b18bc80686b552eb8dc952a265971b29c6ff1a913d7ff8f6737fb0102ddd321b",
++    protocol: 44,
++    browserSha256: "0a43e1b7630b54fae81191ec2db99f0671a2691d30488f62d1d43460e8e36e99",
++    source: {
++      origin: "basalt",
++      revision: "source-bound-rebuild:4194658b97c07447e21fefaf562715247a3aabdc:linux-gate-box",
++      sha256: "75390787607266ffa6ab8c9dcf08495dc994c291dd0ca90d7af7f29fc396e1bf",
++    },
++  },
+ ];
+ export const canonicalFrameworkReleases = Object.freeze(
+   canonical.map((release) =>
