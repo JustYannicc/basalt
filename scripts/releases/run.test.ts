@@ -150,6 +150,10 @@ test("a failed run names its cause without the token", () => {
     "push to https://x-access-token:***@github.com failed",
   );
   assert.equal(
+    publicRunFailure(new Error(`token ${token} refused`), `${token}\n`),
+    "token *** refused",
+  );
+  assert.equal(
     publicRunFailure(
       new Error("Release branch contains a change outside its updater allowlist"),
       token,

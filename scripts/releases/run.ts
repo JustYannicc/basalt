@@ -126,7 +126,11 @@ function runCommand(repositoryRoot: string, step: string, command: string, args:
  */
 export function publicRunFailure(error: unknown, token: string | undefined): string {
   const message = error instanceof Error ? error.message : String(error);
-  return token ? message.replaceAll(token, "***") : message;
+  // A secret pasted with a trailing newline reaches the process with it, and messages hold it bare.
+  return [token, token?.trim()].reduce(
+    (text, value) => (value ? text.replaceAll(value, "***") : text),
+    message,
+  );
 }
 
 function sourceFromArgs(args: string[]): UpdateSource {
