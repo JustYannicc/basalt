@@ -136,7 +136,7 @@ const nativePool = (
           "create table executor_apps (id text primary key, owner text, name text, active_deployment text)",
           "create table executor_deployments (id text primary key, requirements jsonb)",
           "create table hosted_account_access (account_id text primary key, organization_id text, kind text, personal_user_id text, creator_id text)",
-          "create table hosted_app_account_links (app text, requirement text, subject text, account text, created_at timestamptz)",
+          "create table hosted_app_account_links (app text, requirement text, subject text, account text, linked_by text not null, created_at timestamptz)",
           "create table executor_accounts (id text primary key, owner text, provider text, method text, credential_generation integer, encrypted_credentials bytea default decode('01','hex'))",
         ])
           yield* sql.unsafe(statement);
@@ -225,7 +225,7 @@ const nativePool = (
             yield* sql`insert into executor_accounts values
                 (${account}, ${owner}, 'prv_home', 'apiKey', 1)`;
             yield* sql`insert into hosted_app_account_links values
-                (${pool}, 'home', null, ${account}, now())`;
+                (${pool}, 'home', null, ${account}, 'owner', now())`;
           }).pipe(Effect.orDie);
         for (const account of accounts) yield* link(account);
         const real = yield* Clock.Clock;
