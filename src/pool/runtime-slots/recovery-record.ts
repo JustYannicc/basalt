@@ -17,6 +17,7 @@ const Refusal = Schema.Struct({
   read: Schema.optional(Schema.NullOr(Schema.String)),
   status: Schema.optional(Schema.Number),
   field: Schema.optional(Schema.String),
+  // Only an older Worker's sibling refusal wrote a state; its record still reads with it.
   state: Schema.optional(Schema.String),
 });
 /**
@@ -56,16 +57,7 @@ export class RecoveryRecords {
     return record!.rounds;
   }
   async refused(round: number, at: number, error: unknown) {
-    const {
-      reason,
-      step,
-      class: errorClass,
-      provider,
-      read,
-      status,
-      field,
-      state,
-    } = pendingFields(error);
+    const { reason, step, class: errorClass, provider, read, status, field } = pendingFields(error);
     await this.change((record) =>
       record && record.readyAt === null
         ? {
@@ -81,7 +73,6 @@ export class RecoveryRecords {
                 ...(provider ? { provider, read } : {}),
                 ...(status === undefined ? {} : { status }),
                 ...(field ? { field } : {}),
-                ...(state ? { state } : {}),
               },
             ].slice(-refusalsKept),
           }

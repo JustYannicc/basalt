@@ -7,6 +7,10 @@ import { decodeProviderApplication } from "./runtime-provider/application.ts";
 import { providerDigest } from "./runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "./runtime-provider/settings.ts";
 import { RuntimeProviderReader, ProviderObservationRefused } from "./runtime-provider/read.ts";
+import {
+  destroyedInstance as destroyed,
+  runningInstance as running,
+} from "../../scripts/pool-fleet/test/cloudflare-shapes.ts";
 
 async function fixture(
   options: {
@@ -187,24 +191,6 @@ test("retirement releases no resource guard until the exact provider instance is
   }
 });
 
-// The two instance shapes production returned on 22 Nov 2026, ids, times and places replaced:
-// a destroyed instance still listed under state=active, and a running one.
-const destroyed = (id: string, image: string, application: string) => ({
-  id,
-  application_id: application,
-  status: { state: "inactive", updated_at: "2026-11-22T14:47:13Z" },
-  image,
-});
-const running = (id: string, image: string, application: string) => ({
-  id,
-  application_id: application,
-  started_at: "2026-11-22T12:22:43.448999936Z",
-  status: { state: "running", updated_at: "2026-11-22T12:22:43.448999936Z", exit_code: 0 },
-  location: { name: "synthetic01", region: "WEUR" },
-  image,
-  name: "synthetic-instance",
-});
-
 test("the production listing, one destroyed instance beside none running, is absent once the driver reported it stopped", async () => {
   const f = await fixture({ listing: (target, image, app) => [destroyed(target, image, app)] });
   const stopped = { driverStopped: true } as const;
@@ -361,18 +347,34 @@ test("an instance in any other state still counts as present, and only a running
   );
 });
 
-test("a sibling in any state but running or inactive still refuses observation and absence, as before", async () => {
+test("a sibling in any state but running or inactive still refuses absence and a cell's retirement, never another named observation", async () => {
   const f = await fixture({ absent: true, siblingState: "provisioning" });
   const stopped = { driverStopped: true } as const;
   assert.equal(
     await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
     false,
   );
-  const present = await fixture({ siblingState: "provisioning" });
-  await assert.rejects(
-    present.reader.observe("attested", present.expected, present.manifest.target.instanceId),
-    /^Error: Pool provider observation refused$/,
+  const retiring = await fixture({ siblingState: "provisioning" });
+  assert.deepEqual(
+    await refusal(
+      retiring.reader.observe("retire", retiring.expected, retiring.manifest.target.instanceId),
+    ),
+    refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
   );
+  // A cell's activation, and the root's recovery and retirement, read alike.
+  for (const read of ["attested", "recovery", "root_retire"] as const) {
+    const present = await fixture({ siblingState: "provisioning" });
+    const proof = await present.reader.observe(
+      read,
+      present.expected,
+      present.manifest.target.instanceId,
+    );
+    assert.equal(
+      "instanceId" in proof ? proof.instanceId : undefined,
+      present.manifest.target.instanceId,
+      read,
+    );
+  }
 });
 
 test("an application counts as empty only with no listed instance at all, a stopped one included", async () => {
@@ -632,10 +634,13 @@ const inState = (shape: ReturnType<typeof running>, state: string) => ({
   status: { ...shape.status, state },
 });
 
-test("a sibling still stopping or starting beside the running target refuses with its closed state", async () => {
+test("an attested start beside a sibling still stopping or starting proves the named instance, while a cell's retirement and absence still wait", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
   for (const [state, closed] of [
     ["stopping", "stopping"],
     ["provisioning", "provisioning"],
+    ["failed", "failed"],
+    ["unhealthy", "unhealthy"],
     ["unknown", "unknown"],
     ["hibernating", "other"],
   ] as const) {
@@ -645,10 +650,87 @@ test("a sibling still stopping or starting beside the running target refuses wit
         inState(running("sibling", image, app), state),
       ],
     });
+    const proof = await f.reader.observe("attested", f.expected, f.manifest.target.instanceId);
+    assert.equal(
+      "instanceId" in proof ? proof.instanceId : undefined,
+      f.manifest.target.instanceId,
+      state,
+    );
+    // The retire read that begins a release refuses with the sibling's closed state.
+    assert.deepEqual(
+      await refusal(f.reader.observe("retire", f.expected, f.manifest.target.instanceId)),
+      refused("retire", { reason: "sibling_unsettled", state: closed }),
+      state,
+    );
+    // The same listing still proves no absence of a gone target: a sibling may yet start or stop.
+    const gone = await fixture({
+      listing: (_target, image, app) => [inState(running("sibling", image, app), state)],
+    });
+    assert.equal(
+      await gone.reader.absent(gone.expected, gone.manifest.target.instanceId),
+      false,
+      state,
+    );
+  }
+  assert.deepEqual(
+    lines.mock.calls.map((call) => call.arguments),
+    [
+      ...Array.from({ length: 5 }, () => ["POOL_PROVIDER_ABSENCE", { reason: "instances" }]),
+      ["POOL_PROVIDER_ABSENCE", { reason: "unknown_state" }],
+    ],
+  );
+});
+
+// What the attested proof still judges, each beside a sibling that is stopping: the named instance.
+test("beside a stopping sibling, the proof still refuses a named instance not running, on another image, or an application that changed", async () => {
+  const stopping = (image: string, app: string) =>
+    inState(running("sibling", image, app), "stopping");
+  const cases = [
+    // Not running: still starting, stopping, destroyed, in an undocumented state, or not listed.
+    ...["provisioning", "stopping", "inactive", "hibernating"].map(
+      (state) =>
+        [
+          (target: string, image: string, app: string) => [
+            inState(running(target, image, app), state),
+            stopping(image, app),
+          ],
+          {},
+          { reason: "instance_not_running" },
+        ] as const,
+    ),
+    [
+      (_target: string, image: string, app: string) => [
+        running("other", image, app),
+        stopping(image, app),
+      ],
+      {},
+      { reason: "instance_not_running" },
+    ],
+    // Running, but not the admitted image.
+    [
+      (target: string, image: string, app: string) => [
+        running(target, image.replace(/@sha256:.*/u, `@sha256:${"f".repeat(64)}`), app),
+        stopping(image, app),
+      ],
+      {},
+      { reason: "mismatch", field: "image" },
+    ],
+    // Running the admitted image, while the application was recreated between the two reads.
+    [
+      (target: string, image: string, app: string) => [
+        running(target, image, app),
+        stopping(image, app),
+      ],
+      { recreated: true },
+      { reason: "changed_between_reads" },
+    ],
+  ] as const;
+  for (const [index, [listing, options, why]] of cases.entries()) {
+    const f = await fixture({ listing, ...options });
     assert.deepEqual(
       await refusal(f.reader.observe("attested", f.expected, f.manifest.target.instanceId)),
-      refused("attested", { reason: "sibling_unsettled", state: closed }),
-      state,
+      refused("attested", why),
+      `case ${index}`,
     );
   }
 });
