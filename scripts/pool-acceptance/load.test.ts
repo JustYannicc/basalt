@@ -6,8 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { JudgedCall } from "./load-classes.ts";
-import { verdictOf } from "./load-classes.ts";
+import { loopLagLimitMs, verdictOf } from "./load-classes.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
+import { summaryLines } from "./load.ts";
 import {
   boot,
   device,
@@ -282,4 +283,41 @@ test("a dispatch from a ref other than main goes red, and every other job runs o
   assert.deepEqual(Object.keys(jobs).sort(), ["acceptance", "load"]);
   for (const job of Object.values(jobs))
     assert.match(job.if ?? "", /^github\.ref == 'refs\/heads\/main' && /u);
+});
+
+test("a run passes only with its own loop lag measured and under the limit, and prints it", () => {
+  const call: JudgedCall = {
+    call: 1,
+    worker: 0,
+    kind: "chat-short",
+    traceId: "0".repeat(32),
+    startedAt: 1,
+    endedAt: 2,
+    attempts: [],
+    classes: [],
+    pass: true,
+  };
+  const unarmed = { armed: false, at: undefined };
+  const shape = parseLoadShape(
+    JSON.stringify({ concurrency: 1, durationMinutes: 1, mix: [{ shape: "chat", weight: 1 }] }),
+  );
+  const lines = (lag: number | undefined) =>
+    summaryLines(
+      {
+        // The summary reads a passing call's sends; this one only carries the verdict's lag.
+        calls: [],
+        killAt: undefined,
+        verdict: verdictOf([call], undefined, unarmed, undefined, lag),
+      },
+      shape,
+    ).find((line) => line.startsWith("load loop_lag"));
+  assert.equal(verdictOf([call], undefined, unarmed, undefined, 12).passed, true);
+  assert.equal(lines(12), `load loop_lag_max_ms=12 limit_ms=${loopLagLimitMs}`);
+  assert.equal(verdictOf([call], undefined, unarmed, undefined, loopLagLimitMs).passed, false);
+  assert.equal(
+    lines(loopLagLimitMs),
+    `load loop_lag_max_ms=${loopLagLimitMs} limit_ms=${loopLagLimitMs} timings_not_trusted`,
+  );
+  assert.equal(verdictOf([call], undefined, unarmed).passed, false);
+  assert.match(lines(undefined)!, /loop_lag_max_ms=unmeasured .* timings_not_trusted$/u);
 });

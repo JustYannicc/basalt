@@ -17,8 +17,16 @@ export interface StreamRead {
 }
 
 type Frame = Record<string, unknown> | null;
-// What `Array.prototype.join` makes of a value, which is how the pass rule builds its text.
-const joined = (value: unknown) => [value].join("");
+// What `Array.prototype.join` makes of a value, which is how the pass rule builds its text. A value
+// with no string form throws there too, so the pass rule fails the call; here it adds no text,
+// which never makes a call look early.
+const joined = (value: unknown) => {
+  try {
+    return [value].join("");
+  } catch {
+    return "";
+  }
+};
 const read = (value: unknown, key: string) =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 

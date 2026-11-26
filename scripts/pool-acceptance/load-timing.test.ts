@@ -219,3 +219,24 @@ test("the timer counts only frames that add text, and the end of the body", () =
   timer.end(240_200);
   assert.deepEqual([timer.firstContentMs, timer.stallMs], [150, 240_000]);
 });
+
+test("a frame whose text has no string form ends as a failed call that is counted", async () => {
+  // `{"toString":"OK"}` has no string form: the pass rule throws on it, and the timer adds nothing.
+  const bad = { toString: "OK" };
+  for (const steps of [
+    // Mid-stream, with its line ending.
+    [[0, frame(chat.role) + frame(chat.content(bad)) + chatTail]],
+    // As the last line, without one.
+    [[0, frame(chat.role) + chatTail + dataLine(chat.content(bad))]],
+  ] as const) {
+    const { call, run, lines } = await paced("chat", steps as unknown as readonly Step[]);
+    assert.equal(run.calls.length, 1);
+    assert.equal(call.pass, false);
+    assert.ok(call.classes.includes("failed"), call.classes.join(","));
+    assert.equal(call.attempts[0]!.end, "complete");
+    assert.equal(run.verdict.counts.failed, 1);
+    assert.equal(run.verdict.passed, false);
+    assert.equal(run.verdict.error, undefined);
+    assert.match(lines[0]!, /^load status=failed calls=1 passes=0/u);
+  }
+});

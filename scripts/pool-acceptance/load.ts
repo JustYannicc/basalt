@@ -1,3 +1,4 @@
+import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { ModelCredential, PoolAcceptanceClient } from "./client.ts";
 import {
   sendAttempt,
@@ -13,6 +14,7 @@ import {
   delayed,
   judge,
   loadClasses,
+  loopLagLimitMs,
   verdictOf,
   type JudgedCall,
   type LoadClass,
@@ -92,6 +94,10 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   const next = kindRotation(shape.mix);
   const started = clock.now();
   const end = started + shape.durationMs;
+  // The driver's own loop, measured for the whole run: lag here delays the clock reads every
+  // timing depends on.
+  const loop = monitorEventLoopDelay({ resolution: 20 });
+  loop.enable();
   // Aborted by the first non-pass, a worker's error or the budget's last call: no worker starts another.
   const halt = new AbortController();
   const records: CallRecord[] = [];
@@ -160,10 +166,18 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   );
   input.stop?.removeEventListener("abort", stopped);
   if (signalled()) error ??= stopKind(input.stop!);
+  loop.disable();
+  const loopLagMaxMs = Math.round(loop.max / 1e6);
   return {
     calls,
     killAt,
-    verdict: verdictOf(calls, firstFailure, { armed: input.kill !== undefined, at: killAt }, error),
+    verdict: verdictOf(
+      calls,
+      firstFailure,
+      { armed: input.kill !== undefined, at: killAt },
+      error,
+      loopLagMaxMs,
+    ),
   };
 }
 
@@ -180,6 +194,10 @@ export function summaryLines(run: LoadRun, shape: LoadShape): string[] {
     `load classes ${loadClasses.map((name) => `${name}=${verdict.counts[name]}`).join(" ")}`,
   ];
   if (verdict.error) lines.push(`load error=${verdict.error}`);
+  const lag = verdict.loopLagMaxMs;
+  lines.push(
+    `load loop_lag_max_ms=${lag ?? "unmeasured"} limit_ms=${loopLagLimitMs}${lag === undefined || lag >= loopLagLimitMs ? " timings_not_trusted" : ""}`,
+  );
   const failure = run.calls.find((call) => call.call === verdict.firstFailure);
   if (failure) {
     const last = failure.attempts.at(-1)!;
