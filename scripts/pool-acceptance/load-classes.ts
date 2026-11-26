@@ -113,15 +113,15 @@ export interface LoadVerdict {
   readonly restart: Restart | undefined;
   /** The kind of error that ended the run early, when one did. */
   readonly error: string | undefined;
-  /** The driver's own worst event-loop lag; undefined when it was not measured. */
-  readonly loopLagMaxMs: number | undefined;
+  /** The longest an answer could have waited on the driver's own loop; undefined when unmeasured. */
+  readonly ioLagMaxMs: number | undefined;
 }
 
 /**
- * The driver's own loop lag can hide up to that much of a stall or a late answer, so above a tenth
- * of the bar's 30 s allowance its timings are not trusted and the run does not pass.
+ * A wait on the driver's own loop can hide up to that much of a stall or a late answer, so above a
+ * tenth of the bar's 30 s allowance its timings are not trusted and the run does not pass.
  */
-export const loopLagLimitMs = 3_000;
+export const ioLagLimitMs = 3_000;
 
 // Loops, not spreads: a long run holds more calls than a call's arguments may.
 function restartOf(
@@ -170,7 +170,7 @@ export function verdictOf(
   firstFailure: number | undefined,
   kill: { armed: boolean; at: number | undefined },
   error?: string,
-  loopLagMaxMs?: number,
+  ioLagMaxMs?: number,
 ): LoadVerdict {
   const counts = Object.fromEntries(loadClasses.map((name) => [name, 0])) as Record<
     LoadClass,
@@ -193,8 +193,8 @@ export function verdictOf(
       calls.length > 0 &&
       passes === calls.length &&
       (restart?.passed ?? true) &&
-      loopLagMaxMs !== undefined &&
-      loopLagMaxMs < loopLagLimitMs,
+      ioLagMaxMs !== undefined &&
+      ioLagMaxMs < ioLagLimitMs,
     calls: calls.length,
     passes,
     attempts,
@@ -203,6 +203,6 @@ export function verdictOf(
     boots: [...served.values()].sort((a, b) => b - a),
     restart,
     error,
-    loopLagMaxMs,
+    ioLagMaxMs,
   };
 }

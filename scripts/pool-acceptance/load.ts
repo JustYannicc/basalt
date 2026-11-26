@@ -1,4 +1,3 @@
-import { monitorEventLoopDelay } from "node:perf_hooks";
 import type { ModelCredential, PoolAcceptanceClient } from "./client.ts";
 import {
   sendAttempt,
@@ -14,7 +13,7 @@ import {
   delayed,
   judge,
   loadClasses,
-  loopLagLimitMs,
+  ioLagLimitMs,
   verdictOf,
   type JudgedCall,
   type LoadClass,
@@ -22,7 +21,7 @@ import {
 } from "./load-classes.ts";
 import { kindRotation, workerStartMs, type LoadShape } from "./load-shape.ts";
 
-const loopResolutionMs = 20;
+import { startIoProbe } from "./load-io-probe.ts";
 
 /** A call as it ended, judged by the bar alone; a kill time can still move it to its own class. */
 export type EndedCall = CallRecord & {
@@ -94,11 +93,9 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
   };
   const kinds = new Map(shape.mix.map((kind) => [kind.name, kind]));
   const next = kindRotation(shape.mix);
-  // The driver's own loop, measured for the whole run: lag here delays the clock reads every
-  // timing depends on. The monitor records nothing until its first tick, so the run starts after one.
-  const loop = monitorEventLoopDelay({ resolution: loopResolutionMs });
-  loop.enable();
-  await new Promise((resolve) => setTimeout(resolve, loopResolutionMs * 2));
+  // How long an answer could have waited on the driver's own loop, measured for the whole run: a
+  // wait there delays every clock read a timing depends on. The run starts once the probe answers.
+  const probe = await startIoProbe();
   const started = clock.now();
   const end = started + shape.durationMs;
   // Aborted by the first non-pass, a worker's error or the budget's last call: no worker starts another.
@@ -167,14 +164,9 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
         }
       }),
   );
-  // A block just before here shows only at the monitor's next tick, so it gets one before it stops.
-  await new Promise((resolve) => setTimeout(resolve, loopResolutionMs * 2));
+  const ioLagMaxMs = await probe.stop();
   input.stop?.removeEventListener("abort", stopped);
   if (signalled()) error ??= stopKind(input.stop!);
-  loop.disable();
-  // The longest gap between two ticks, whole: it is at least as long as any block of the loop, so it
-  // is judged as read. With no sample the lag was not measured.
-  const loopLagMaxMs = loop.count > 0 ? Math.round(loop.max / 1e6) : undefined;
   return {
     calls,
     killAt,
@@ -183,7 +175,7 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
       firstFailure,
       { armed: input.kill !== undefined, at: killAt },
       error,
-      loopLagMaxMs,
+      ioLagMaxMs,
     ),
   };
 }
@@ -201,9 +193,9 @@ export function summaryLines(run: LoadRun, shape: LoadShape): string[] {
     `load classes ${loadClasses.map((name) => `${name}=${verdict.counts[name]}`).join(" ")}`,
   ];
   if (verdict.error) lines.push(`load error=${verdict.error}`);
-  const lag = verdict.loopLagMaxMs;
+  const lag = verdict.ioLagMaxMs;
   lines.push(
-    `load loop_lag_max_ms=${lag ?? "unmeasured"} limit_ms=${loopLagLimitMs}${lag === undefined || lag >= loopLagLimitMs ? " timings_not_trusted" : ""}`,
+    `load io_lag_max_ms=${lag ?? "unmeasured"} limit_ms=${ioLagLimitMs}${lag === undefined || lag >= ioLagLimitMs ? " timings_not_trusted" : ""}`,
   );
   const failure = run.calls.find((call) => call.call === verdict.firstFailure);
   if (failure) {

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { acceptanceCredential } from "../release/acceptance-device.ts";
 import type { Attempt } from "./load-call.ts";
-import { contentWaitMs, delayed, loopLagLimitMs } from "./load-classes.ts";
+import { contentWaitMs, delayed, ioLagLimitMs } from "./load-classes.ts";
 import { parseLoadShape } from "./load-shape.ts";
 import { frameTimer } from "./load-stream.ts";
 import type { Shape } from "./load-verdict.mjs";
@@ -245,7 +245,7 @@ test("a frame whose text has no string form ends as a failed call that is counte
 async function blockedRun(overMs: number) {
   const clock = testClock();
   const block = () => {
-    const until = performance.now() + loopLagLimitMs + overMs;
+    const until = performance.now() + ioLagLimitMs + overMs;
     while (performance.now() < until);
   };
   const pool = pacedPool(
@@ -274,13 +274,13 @@ async function blockedRun(overMs: number) {
 test("the driver's own loop blocked inside the run is measured, and the run does not pass", async () => {
   const { run, lines } = await blockedRun(200);
   assert.equal(run.calls[0]?.pass, true, "the call itself is clean");
-  assert.ok((run.verdict.loopLagMaxMs ?? 0) >= loopLagLimitMs, String(run.verdict.loopLagMaxMs));
+  assert.ok((run.verdict.ioLagMaxMs ?? 0) >= ioLagLimitMs, String(run.verdict.ioLagMaxMs));
   assert.equal(run.verdict.passed, false);
-  assert.match(lines, /loop_lag_max_ms=\d+ limit_ms=3000 timings_not_trusted/u);
+  assert.match(lines, /io_lag_max_ms=\d+ limit_ms=3000 timings_not_trusted/u);
 });
 
 test("a block only just past the limit is read whole, never shortened below it", async () => {
   const { run } = await blockedRun(5);
-  assert.ok((run.verdict.loopLagMaxMs ?? 0) >= loopLagLimitMs, String(run.verdict.loopLagMaxMs));
+  assert.ok((run.verdict.ioLagMaxMs ?? 0) >= ioLagLimitMs, String(run.verdict.ioLagMaxMs));
   assert.equal(run.verdict.passed, false);
 });

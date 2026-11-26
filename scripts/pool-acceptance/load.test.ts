@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { JudgedCall } from "./load-classes.ts";
-import { loopLagLimitMs, verdictOf } from "./load-classes.ts";
+import { ioLagLimitMs, verdictOf } from "./load-classes.ts";
 import { runLoadFromEnvironment } from "./load-entry.ts";
 import { summaryLines } from "./load.ts";
 import {
@@ -310,14 +310,14 @@ test("a run passes only with its own loop lag measured and under the limit, and 
         verdict: verdictOf([call], undefined, unarmed, undefined, lag),
       },
       shape,
-    ).find((line) => line.startsWith("load loop_lag"));
+    ).find((line) => line.startsWith("load io_lag"));
   assert.equal(verdictOf([call], undefined, unarmed, undefined, 12).passed, true);
-  assert.equal(lines(12), `load loop_lag_max_ms=12 limit_ms=${loopLagLimitMs}`);
-  assert.equal(verdictOf([call], undefined, unarmed, undefined, loopLagLimitMs).passed, false);
+  assert.equal(lines(12), `load io_lag_max_ms=12 limit_ms=${ioLagLimitMs}`);
+  assert.equal(verdictOf([call], undefined, unarmed, undefined, ioLagLimitMs).passed, false);
   assert.equal(
-    lines(loopLagLimitMs),
-    `load loop_lag_max_ms=${loopLagLimitMs} limit_ms=${loopLagLimitMs} timings_not_trusted`,
+    lines(ioLagLimitMs),
+    `load io_lag_max_ms=${ioLagLimitMs} limit_ms=${ioLagLimitMs} timings_not_trusted`,
   );
   assert.equal(verdictOf([call], undefined, unarmed).passed, false);
-  assert.match(lines(undefined)!, /loop_lag_max_ms=unmeasured .* timings_not_trusted$/u);
+  assert.match(lines(undefined)!, /io_lag_max_ms=unmeasured .* timings_not_trusted$/u);
 });
