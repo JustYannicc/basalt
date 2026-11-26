@@ -45,16 +45,18 @@ export async function profileCheck({ base, key, call, model }) {
       const slow = { rateLimitRate: 0, latencyMs: SLOW_MS };
       await set("slow", { method: "PUT", body: JSON.stringify(slow) });
       calls.push(
+        // While b is set slow, a and unprefixed calls must not carry its latency. They run before
+        // b's own call, so b's latency can't overlap their measured time on any clock.
         ...(await Promise.all([
           model("messages", { kind: "via a", via: "/a", ...unslowed }),
           model("messages", { kind: "unprefixed beside b's latency", ...unslowed }),
-          model("messages", {
-            kind: "via b, slow",
-            via: "/b",
-            atLeastMs: SLOW_MS,
-            early: "answered before profile b's latency",
-          }),
         ])),
+        await model("messages", {
+          kind: "via b, slow",
+          via: "/b",
+          atLeastMs: SLOW_MS,
+          early: "answered before profile b's latency",
+        }),
       );
       await set("limited", {
         method: "PUT",
