@@ -26,6 +26,12 @@ export const ReleasePolicy = Schema.Struct({
     expectLiveModule: Schema.optional(Schema.Array(Schema.String)),
     /** FQNs admitted as code-only changes: their uploads keep the serving version's bindings. */
     fixedBindings: Schema.optional(Schema.Array(Schema.String)),
+    /**
+     * FQNs of container applications no request of the run may change, as the root is held: the
+     * guard refuses every write to the application their State rows record, by id and by name. A
+     * row not recorded yet holds nothing.
+     */
+    heldApplications: Schema.optional(Schema.Array(Schema.String)),
   }),
   /**
    * A release that declares the root will restart, because its own code restarts a runtime that

@@ -21,14 +21,14 @@ import { retain } from "alchemy/RemovalPolicy";
 import { renamedFrom } from "alchemy/Rename";
 import { Stack, evalStack } from "alchemy/Stack";
 import { InMemoryService } from "alchemy/State/InMemoryState";
-import { State } from "alchemy/State/State";
+import { State, StateStoreError } from "alchemy/State/State";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { apiTokenCredentials, Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Context, Effect, Layer, Redacted } from "effect";
+import { Context, Effect, type Exit, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { poolObservationTokenProps } from "../../../src/pool/fleet-observation.ts";
 import { poolDatabaseReadiness } from "../../../src/pool/database.ts";
@@ -39,6 +39,7 @@ export const accountId = "0".repeat(32);
 export const applicationId = "11111111-1111-4111-8111-111111111111";
 export const buildContext = fileURLToPath(new URL("./plan-context/", import.meta.url));
 export const pinnedImage = `registry.cloudflare.com/${accountId}/pool-root@sha256:${"e".repeat(64)}`;
+const routeGatewayImage = `registry.cloudflare.com/${accountId}/route-gateway@sha256:${"d".repeat(64)}`;
 const entry = fileURLToPath(new URL("./plan-worker.ts", import.meta.url));
 const scope = { stack: "basalt", stage: "production" };
 
@@ -58,6 +59,11 @@ export interface Declaration {
   newClass?: boolean | { transferredFrom: string };
   /** Binds the two fleet classes (PoolRuntimeBlue, PoolRuntimeGreen), as the cutover declares them. */
   fleetClasses?: boolean;
+  /**
+   * Binds the route gateway's container on PoolWorker, as `src/route/deployment.ts` declares it;
+   * an object changes its instance type.
+   */
+  routeGateway?: boolean | { instanceType: string };
   /** Declares the retained Secrets Store; when false its seeded row has no declaration. */
   observationStore?: boolean;
   /** Declares the release command; when false its seeded row has no declaration. */
@@ -227,7 +233,15 @@ const poolWorkerSettings = {
   ],
 };
 
-async function cloudflare(context: TestContext, shadow: boolean) {
+/** A container application as the API answers for it (`result`). */
+export type ContainerApplicationBody = Record<string, unknown> & { id: string; name: string };
+
+/** The fake Cloudflare API the plans talk to; a test may serve the same applications to its own reads. */
+export async function cloudflare(
+  context: TestContext,
+  shadow: boolean,
+  containers: { applications: Map<string, ContainerApplicationBody>; acceptCreates: boolean },
+) {
   const settingsByScript = shadow
     ? { ...recordedSettings, "basalt-production-poolworker": poolWorkerSettings }
     : recordedSettings;
@@ -243,15 +257,42 @@ async function cloudflare(context: TestContext, shadow: boolean) {
       response.end(JSON.stringify(applicationBody(pinnedImage)));
       return;
     }
-    // The list as recorded (result_info is an empty object), here for an account where no
-    // application carries the declared name: what a provider sees for a row State lost.
-    if (
-      request.method === "GET" &&
-      request.url === `/accounts/${accountId}/containers/applications`
-    ) {
+    // The list as recorded (result_info is an empty object). The root is not in it: what a
+    // provider sees for a row State lost. Applications a test created or seeded are.
+    const list = `/accounts/${accountId}/containers/applications`;
+    if (request.method === "GET" && request.url === list) {
+      const result = [...containers.applications.values()];
       response.end(
-        JSON.stringify({ success: true, result: [], messages: [], errors: [], result_info: {} }),
+        JSON.stringify({ success: true, result, messages: [], errors: [], result_info: {} }),
       );
+      return;
+    }
+    const held = request.url?.startsWith(`${list}/`)
+      ? containers.applications.get(request.url.slice(list.length + 1))
+      : undefined;
+    if (request.method === "GET" && held) {
+      response.end(JSON.stringify({ success: true, result: held, messages: [], errors: [] }));
+      return;
+    }
+    if (request.method === "POST" && request.url === list && containers.acceptCreates) {
+      void (async () => {
+        const chunks: Buffer[] = [];
+        for await (const chunk of request) chunks.push(chunk as Buffer);
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+        const id = `application-${String(body.name)}-${containers.applications.size + 1}`;
+        const created: ContainerApplicationBody = {
+          ...applicationBody(pinnedImage).result,
+          ...body,
+          id,
+          name: String(body.name),
+          account_id: accountId,
+          version: 1,
+          created_at: "2026-11-27T00:00:00Z",
+          updated_at: "2026-11-27T00:00:00Z",
+        };
+        containers.applications.set(id, created);
+        response.end(JSON.stringify({ success: true, result: created, messages: [], errors: [] }));
+      })();
       return;
     }
     const settings = new RegExp(`^/accounts/${accountId}/workers/scripts/([a-z-]+)/settings$`, "u")
@@ -483,6 +524,22 @@ const program = (declared: Declaration) =>
       compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
       env: {
         PoolContainer: image,
+        ...(declared.routeGateway
+          ? {
+              RouteGateway: Cloudflare.Container("RouteGateway", {
+                name: "basalt-production-route-gateway",
+                image: routeGatewayImage,
+                className: "RouteGateway",
+                instanceType:
+                  typeof declared.routeGateway === "object"
+                    ? declared.routeGateway.instanceType
+                    : "lite",
+                maxInstances: 20,
+                schedulingPolicy: "default",
+                observability: { logs: { enabled: true } },
+              } as never),
+            }
+          : {}),
         ...(ledger ? { PoolLedger: Cloudflare.DurableObject("PoolLedger", ledger) } : {}),
         ...(declared.fleetClasses
           ? {
@@ -903,14 +960,43 @@ export interface PlanInput {
    * it the fixture's commands are Alchemy's own, which would run their processes.
    */
   commandRuns?: string[];
+  /**
+   * Records the settle apply's exit here instead of failing the plan, so a test can plan from what
+   * an apply that stopped partway left in State.
+   */
+  applyExits?: Exit.Exit<unknown, unknown>[];
+  /**
+   * Container applications the account holds besides the root, by id: what the fake API lists and
+   * answers for. Pass the same map to later plans so they see what an earlier apply created.
+   */
+  applications?: Map<string, ContainerApplicationBody>;
+  /** The fake API creates the container applications it is asked to; by default it refuses them. */
+  acceptContainerCreates?: boolean;
+  /** A State write that fails as the store would, after Cloudflare already did what it records. */
+  failCommit?: (fqn: string, value: unknown) => boolean;
 }
 
 /** Plans the declared stack against the given State with Alchemy's real planner and providers. */
 export async function makePlan(context: TestContext, input: PlanInput = {}) {
-  const api = await cloudflare(context, input.shadow === true);
-  const memory = await Effect.runPromise(InMemoryService());
+  const api = await cloudflare(context, input.shadow === true, {
+    applications: input.applications ?? new Map(),
+    acceptCreates: input.acceptContainerCreates === true,
+  });
+  const inMemory = await Effect.runPromise(InMemoryService());
   for (const [fqn, value] of Object.entries(input.rows ?? {}))
-    await Effect.runPromise(memory.set({ ...scope, fqn, value }));
+    await Effect.runPromise(inMemory.set({ ...scope, fqn, value }));
+  const failCommit = input.failCommit;
+  const memory: typeof inMemory = failCommit
+    ? {
+        ...inMemory,
+        set: (request) =>
+          failCommit(request.fqn, request.value)
+            ? Effect.fail(
+                new StateStoreError({ message: `the State write of ${request.fqn} failed` }),
+              )
+            : inMemory.set(request),
+      }
+    : inMemory;
   const stack = Stack(
     scope.stack,
     {
@@ -939,7 +1025,7 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
                   ) as typeof selected.resources,
                 }
               : selected;
-            yield* Apply.apply(settling).pipe(
+            const applied = Apply.apply(settling).pipe(
               Effect.provideService(WorkerUploadHook, {
                 // By default the upload is prepared and never sent: the attributes are the provider's own.
                 capture:
@@ -950,6 +1036,8 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
                       : Effect.fail(new Error(`${upload.fqn} has no recorded row to settle`))),
               }),
             );
+            if (input.applyExits) input.applyExits.push(yield* Effect.exit(applied));
+            else yield* applied;
           }
           if (input.destroy) return yield* Plan.destroy({ name: scope.stack, stage: scope.stage });
           return yield* Plan.make(compiled, input.include ? { include: input.include } : {});

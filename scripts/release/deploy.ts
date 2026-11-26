@@ -13,6 +13,8 @@
  *   bun scripts/release/deploy.ts backup   --stage production --name <backup name>
  *   bun scripts/release/deploy.ts snapshot --stage <s> --out <file>
  *   bun scripts/release/deploy.ts compare  --before <file> --after <file>
+ *   bun scripts/release/deploy.ts repair   --stage <s> --fqn <container fqn> [--plan-digest <sha256>]
+ *     (a placeholder row a stopped apply left: plans the repair read-only, or applies the reviewed one)
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -542,7 +544,8 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           // Reads of production send nothing but reads; the guard refuses anything else.
           readOnly:
             stage === "production" &&
-            ["plan", "preflight", "snapshot", "serving"].includes(command),
+            (["plan", "preflight", "snapshot", "serving"].includes(command) ||
+              (command === "repair" && !values["plan-digest"])),
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
@@ -623,6 +626,12 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             } else if (stage === "production" && policy?.check)
               return yield* Effect.die(new Error("No root application recorded on production"));
           }
+          for (const fqn of policy?.wire.heldApplications ?? []) {
+            const held = yield* recordedApplication(fqn);
+            if (!held) continue;
+            wire.rootApplications.push(held.id);
+            if (held.name) wire.rootApplicationNames.push(held.name);
+          }
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
             effect.pipe(Effect.provideService(Alchemist.Progress, reporter)) as Fx.Effect<
@@ -694,14 +703,20 @@ interface RecordedRow {
   old?: RecordedRow;
 }
 /** One resource's State row in this stage, if it exists yet. */
+/** The stage's State store and this stack's key in it. */
+const stageState = Effect.gen(function* () {
+  const state = yield* Alchemist.State.store({
+    backend: "configured",
+    ...target,
+  } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+  return { state, at: { stack: yield* stackName(), stage } };
+});
 const recordedRow = (fqn: string) =>
-  Effect.gen(function* () {
-    const state = yield* Alchemist.State.store({
-      backend: "configured",
-      ...target,
-    } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-    return (yield* state.get({ stack: yield* stackName(), stage, fqn })) as RecordedRow | undefined;
-  }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn, cause })));
+  stageState.pipe(
+    Effect.flatMap(({ state, at }) => state.get({ ...at, fqn })),
+    Effect.map((row) => row as RecordedRow | undefined),
+    Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
+  );
 
 /** The container application a State row records, if the row exists yet. */
 const recordedApplication = (fqn: string) =>
@@ -909,6 +924,38 @@ try {
       values["verify-only"]
         ? `Checked stage ${stage}: none of its container applications or tagged registry images remain. ${TEARDOWN_NOT_CHECKED}`
         : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.manifests} registry manifests in ${result.repositories.length} repositories deleted; none tagged remain. ${TEARDOWN_NOT_CHECKED}`,
+    );
+  } else if (command === "repair") {
+    // A container row a stopped apply left holding a local placeholder (placeholder-repair.ts):
+    // without a digest the run only plans the repair; with one it applies exactly that repair.
+    const repair = await import("./placeholder-repair.ts");
+    const fqn = values.fqn ?? "";
+    if (!fqn) throw new Error("A repair names the container's row with --fqn");
+    const digest = values["plan-digest"];
+    const plan = await run(
+      Effect.gen(function* () {
+        const { state, at } = yield* stageState.pipe(
+          Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
+        );
+        const input = {
+          fqn,
+          worker: policy?.check?.poolWorker ?? "PoolWorker",
+          store: {
+            get: (row: string) => state.get({ ...at, fqn: row }),
+            set: (row: string, value: unknown) =>
+              state.set({ ...at, fqn: row, value: value as never }),
+            delete: (row: string) => state.delete({ ...at, fqn: row }),
+          },
+          list: repair.listApplications(Redacted.make(process.env.CLOUDFLARE_API_TOKEN ?? "")),
+        };
+        if (!digest) return (yield* repair.readRepair(input)).plan;
+        return yield* repair.applyRepair({ ...input, digest });
+      }),
+    );
+    // Names and the account stay in the private record; the summary says what and what next.
+    await keepPrivate("repair", safeJson(plan, 2));
+    await summary(
+      `${digest ? "Repaired" : "Planned the repair of"} ${fqn}: ${plan.action === "forget" ? "forget the placeholder row (no application exists under its name)" : "adopt the live application under its name"}; digest \`${repair.repairDigest(plan)}\`. Next: ${repair.nextRelease(plan)}.`,
     );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");

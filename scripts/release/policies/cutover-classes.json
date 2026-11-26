@@ -31,6 +31,7 @@
     },
     "poolWorker": "PoolWorker",
     "artifactsCredentials": "ArtifactsCredentials",
+    "attachmentOnly": ["RouteGateway"],
     "allow": [
       {
         "fqn": "PoolWorker",
@@ -55,6 +56,7 @@
     "PoolBackendBudgetRuntimeReady"
   ],
   "wire": {
+    "heldApplications": ["RouteGateway"],
     "sqliteClasses": {
       "PoolWorker": [
         "PoolRuntimeBlue",
