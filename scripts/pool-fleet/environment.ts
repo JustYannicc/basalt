@@ -20,6 +20,7 @@ export const dispatchInput = (env: NodeJS.ProcessEnv): DispatchInput => ({
   active: env.POOL_FLEET_ACTIVE || undefined,
   key: env.POOL_FLEET_KEY || undefined,
   targetActive: env.POOL_FLEET_TARGET_ACTIVE || undefined,
+  pool: env.POOL_FLEET_POOL || undefined,
   ref: env.GITHUB_REF ?? "",
   event: env.GITHUB_EVENT_NAME ?? "",
 });
@@ -41,6 +42,7 @@ export async function acceptanceFromEnvironment(
     const device = {
       client: new PoolAcceptanceClient(),
       credential: acceptanceCredential(env),
+      pool,
       model: env.POOL_ACCEPTANCE_MODEL?.trim() || undefined,
     };
     // Never minted for a pool that is not acceptance-named (pool-acceptance/types.ts).

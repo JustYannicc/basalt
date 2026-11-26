@@ -7,8 +7,11 @@ import {
   shortHash,
   type ControllerAccess,
 } from "./controller.ts";
-import { refuse } from "./errors.ts";
+import { refuse, workerAnswer } from "./errors.ts";
 import { selectedPrimary } from "./operations.ts";
+
+/** A real pool's id, as the app host mints them; the crash names the test's own. */
+export const testPoolPattern = /^app_[A-Za-z0-9_-]{1,124}$/u;
 
 const call = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
@@ -22,6 +25,8 @@ export interface CrashInput {
   controller: ControllerAccess;
   go: string;
   operator: string;
+  /** The test's own pool, which `request` calls run in: the only pool whose calls the kill may cut. */
+  pool: string;
   /** One request through the public pool API; the loop numbers them so callers can vary the kind. */
   request: (index: number) => Promise<unknown>;
   sleep: (ms: number) => Promise<void>;
@@ -32,7 +37,10 @@ export interface CrashInput {
 
 /**
  * The production restart proof (R3): hard-kill one ready cell that is not the primary while a
- * request loop runs. The cell refuses in-process when its Home is the elected master.
+ * request loop runs. The controller refuses while another pool's call, or one whose pool it can't
+ * name, is in flight on the cell, and the cell refuses in-process when its Home is the elected
+ * master. The fleet inspect doesn't say whose calls a cell holds, so the target is the first ready
+ * cell and the controller's refusal is what keeps other pools' calls whole.
  */
 export const crashReadyCell = (input: CrashInput) =>
   Effect.gen(function* () {
@@ -87,7 +95,17 @@ export const crashReadyCell = (input: CrashInput) =>
     });
     const proof = Effect.gen(function* () {
       yield* call(() => input.sleep(3_000));
-      yield* call(() => crashCell(access, target, nonce, input.operator));
+      yield* call(() => crashCell(access, target, nonce, input.operator, input.pool)).pipe(
+        Effect.mapError((error) =>
+          workerAnswer(error) === "other_pool_in_flight"
+            ? refuse(
+                "other-pool-in-flight",
+                "The controller refused the kill: a call from a pool other than the test's own, or one whose pool it can't name, is in flight on the cell. Nothing was killed.",
+                "Rerun under the same GO when only the test's calls run on the cells; POOL_CRASH_REFUSED in the PoolWorker logs counts the calls that refused it.",
+              )
+            : error,
+        ),
+      );
       const killedAt = now();
       let detectedMs: number | undefined;
       while (true) {

@@ -125,6 +125,9 @@ export class FleetHandoffCell implements FleetCell {
   abortPool(pool: string) {
     this.deps.handoff.abortPool(pool);
   }
+  inFlight(identity: SlotIdentity) {
+    return this.deps.handoff.inFlight(identity);
+  }
   drain(identity: SlotIdentity) {
     return this.deps.driver.drain(identity, AbortSignal.timeout(2_000));
   }

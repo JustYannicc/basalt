@@ -276,12 +276,16 @@ export async function sendFleetOperation(
   });
 }
 
-/** Hard-kills one ready fleet cell. The cell itself refuses when its Home is the elected master. */
+/**
+ * Hard-kills one ready fleet cell. The controller refuses while a call from a pool other than
+ * `pool`, the test's own, is in flight on it; the cell itself refuses when its Home is the master.
+ */
 export async function crashCell(
   access: ControllerAccess,
   identity: SlotIdentity,
   nonce: string,
   operator: string,
+  pool: string,
 ) {
   const at = signedNow(access);
   const command = currentCrashCommand(
@@ -292,6 +296,7 @@ export async function crashCell(
       identity,
       nonce,
       operator,
+      onlyPool: pool,
       at,
       expiresAt: at + 25_000,
     },

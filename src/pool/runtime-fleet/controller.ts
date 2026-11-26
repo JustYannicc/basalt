@@ -124,6 +124,11 @@ export interface FleetCell {
   ): Promise<Response>;
   install(policy: NativeMembershipPolicy): Promise<void>;
   abortPool(pool: string): void;
+  /**
+   * The pool of each call this controller holds in flight on the cell, "" where it has none, from
+   * the moment its forward begins until its body closes. Without it the set can't be read.
+   */
+  inFlight?(identity: SlotIdentity): readonly string[];
   drain(identity: SlotIdentity): Promise<{ active: number; known: boolean }>;
   /** The cell's own stream count, read without draining it; without it a ready count stays as is. */
   activity?(identity: SlotIdentity): Promise<CellCount>;
@@ -894,6 +899,17 @@ export class RuntimeFleet {
   }
   abortPool(pool: string) {
     for (const { cell } of this.cells.values()) cell.abortPool(pool);
+  }
+  /**
+   * The pools of the calls in flight on one cell, or undefined when they can't be read. A cell with
+   * no object here was sent nothing through this isolate; a caller compares the ledger's count for
+   * what this read can't see.
+   */
+  inFlight(identity: SlotIdentity) {
+    const retained = this.cells.get(identity.slotId);
+    if (!retained) return [];
+    if (!sameTarget(retained.target, identity)) return undefined;
+    return retained.cell.inFlight?.(identity);
   }
   async drain(identity: SlotIdentity) {
     const trace = new PoolUpkeepTrace("fleet");

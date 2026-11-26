@@ -89,7 +89,12 @@ export interface HarnessOptions {
   bindingsLag?: () => boolean;
   /** A handoff command the bridge fails: a thrown error, or an answer the Worker never made. */
   handoffFailure?: (action: string) => Error | Response | undefined;
+  /** The controller's own refusal of a crash it received, answered through the real handler. */
+  crashRefusal?: () => Error | undefined;
 }
+
+/** The pool the acceptance device's calls run in, as a real pool's id is shaped. */
+export const testPool = "app_11111111-1111-4111-8111-111111111111";
 
 export async function harness(options: HarnessOptions = {}) {
   const cloudflareReads: string[] = [];
@@ -206,7 +211,7 @@ export async function harness(options: HarnessOptions = {}) {
       ]);
   };
   const actions: string[] = [];
-  const crashes: { kind?: string; identity: SlotIdentity }[] = [];
+  const crashes: { kind?: string; onlyPool?: string; identity: SlotIdentity }[] = [];
   const retires: { operationId: string; go: string; key: string }[] = [];
   const checks: string[] = [];
   // What the cell's 8317 read returns to the next fleet-retire.
@@ -248,6 +253,8 @@ export async function harness(options: HarnessOptions = {}) {
     },
     crash: async (command) => {
       crashes.push(command);
+      const refused = options.crashRefusal?.();
+      if (refused) throw refused;
       await storage.put(crashNonceKey(command.nonce), { command, status: "returned" });
       storage.values.set("runtime-fleet-v1:resources", [
         { target: cell, identity: cell, phase: "warming", active: 0, lastUsedAt: 0 },
@@ -451,6 +458,7 @@ export async function harness(options: HarnessOptions = {}) {
     acceptance: {
       client: new PoolAcceptanceClient({ origin: pool.origin, delay: async () => {} }),
       credential: async (method, path) => ({ [nativeModelHeader]: `assertion ${method} ${path}` }),
+      pool: testPool,
       ...(options.deviceOnly ? {} : { access: { token: "pool-token", owner: "acceptance" } }),
     },
     sleep: async () => {},

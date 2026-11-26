@@ -169,6 +169,7 @@ test("a crash cell under the next code passes the permission and reaches its own
       at,
       expiresAt: at + 20_000,
       kind: "cell",
+      onlyPool: "pool-a",
     }),
     /draining/,
   );

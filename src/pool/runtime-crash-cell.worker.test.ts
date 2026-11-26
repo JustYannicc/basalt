@@ -73,6 +73,8 @@ async function ready(
   const at = Date.now();
   const command = {
     kind: "cell" as const,
+    // The fixture's calls run in its one pool, so the kill may cut them.
+    onlyPool: f.claims.pool,
     identity: row.identity,
     nonce: crypto.randomUUID(),
     operator: "fixture-operator",
@@ -84,7 +86,14 @@ async function ready(
 
 async function crash(
   f: Fleet,
-  command: { kind?: "cell"; identity: SlotIdentity; nonce: string; operator: string; at: number },
+  command: {
+    kind?: "cell";
+    onlyPool?: string;
+    identity: SlotIdentity;
+    nonce: string;
+    operator: string;
+    at: number;
+  },
 ) {
   return f.worker.runtimeHandoff(
     new Request("http://operations/runtime-handoff", {
@@ -284,9 +293,9 @@ test(
   },
 );
 
-/** The same packet without `kind`, naming the selected primary: the shape every primary kill has. */
+/** The same packet without `kind` or a pool, naming the selected primary: every primary kill's shape. */
 function primaryOf(f: Fleet, command: Awaited<ReturnType<typeof ready>>["command"]) {
-  const { kind: _kind, ...primary } = { ...command, identity: f.old.identity() };
+  const { kind: _kind, onlyPool: _pool, ...primary } = { ...command, identity: f.old.identity() };
   return primary;
 }
 

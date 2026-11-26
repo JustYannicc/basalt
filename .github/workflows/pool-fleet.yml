@@ -31,6 +31,11 @@ on:
         required: false
         default: ""
         type: string
+      pool:
+        description: crash-cell only, the test's own pool id (app_...), which must be the acceptance device's; the kill is refused while another pool's call runs on the cell
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -95,6 +100,7 @@ jobs:
           POOL_FLEET_ACTIVE: ${{ inputs.active != 'default' && inputs.active || '' }}
           POOL_FLEET_KEY: ${{ inputs.key }}
           POOL_FLEET_TARGET_ACTIVE: ${{ inputs.target-active }}
+          POOL_FLEET_POOL: ${{ inputs.pool }}
           POOL_FLEET_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-fleet
       - uses: actions/upload-artifact@v4
         if: always()

@@ -7,8 +7,9 @@ import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
 import { refuse } from "./errors.ts";
+import { CrashPoolRefused } from "../../src/pool/runtime-crash-contract.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
-import { accountId, colours, harness } from "./test/harness.ts";
+import { accountId, colours, harness, testPool } from "./test/harness.ts";
 import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
 import { captureHoursInspect } from "../../src/pool/model-history/capture-hours-auto.ts";
 
@@ -180,7 +181,7 @@ test("crash-cell refuses when no ready cell other than the primary exists, and s
     );
     assert.equal((await lane.configuration.inspect())?.enabled, true);
     const result = await runPoolFleet(
-      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
+      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash", pool: testPool }),
       lane.deps(),
     );
     assert.equal(result.ok, false);
@@ -196,12 +197,14 @@ test("crash-cell kills one ready non-primary cell, sees it restart, and keeps re
   const lane = await harness();
   try {
     assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
-    const crash = dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" });
+    const crash = dispatch("crash-cell", { go: "coordinator-2026-11-18-crash", pool: testPool });
     const sentAfter = Date.now();
     const result = await runPoolFleet(crash, lane.deps());
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(lane.crashes.length, 1);
     assert.equal(lane.crashes[0]!.kind, "cell");
+    assert.equal(lane.crashes[0]!.onlyPool, testPool, "the signed packet names the test's pool");
+    assert.ok(!JSON.stringify(result).includes(testPool), "the pool never reaches the output");
     assert.equal(lane.crashes[0]!.identity.bootId, "cell-boot");
     // The result names the cell it killed and when, by ids alone.
     const killed = lane.crashes[0]!.identity;
@@ -240,6 +243,64 @@ test("crash-cell kills one ready non-primary cell, sees it restart, and keeps re
   }
 });
 
+test("crash-cell takes only a real pool's id, and only the acceptance device's, before sending anything", async () => {
+  const lane = await harness();
+  try {
+    const crash = (pool?: string) =>
+      runPoolFleet(
+        dispatch("crash-cell", {
+          go: "coordinator-2026-11-18-crash",
+          ...(pool === undefined ? {} : { pool }),
+        }),
+        lane.deps(),
+      );
+    for (const bad of [undefined, "", "app_", "pool-a", "app_x y", `app_${"a".repeat(125)}`]) {
+      const result = await crash(bad);
+      assert.equal(result.ok, false, String(bad));
+      assert.match(String("cause" in result && result.cause), /^test-pool-invalid: /u);
+    }
+    // A pool on any other mode is refused too, so it never reads as having applied.
+    const other = await runPoolFleet(dispatch("inspect", { pool: testPool }), lane.deps());
+    assert.match(String("cause" in other && other.cause), /^test-pool-invalid: /u);
+    const foreign = "app_22222222-2222-4222-8222-222222222222";
+    const mismatch = await crash(foreign);
+    assert.match(String("cause" in mismatch && mismatch.cause), /^test-pool-mismatch: /u);
+    assert.ok(!JSON.stringify(mismatch).includes(foreign), "the value is never echoed");
+    assert.deepEqual(lane.actions, ["inspect"], "only the mismatch's probe was read");
+    assert.deepEqual(lane.modelCalls, []);
+    assert.deepEqual(lane.crashes, []);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("crash-cell reports the controller's other-pool refusal by name, kills nothing, and a rerun under the same GO may send again", async () => {
+  let refusing = true;
+  const lane = await harness({
+    crashRefusal: () => (refusing ? new CrashPoolRefused(1, 0) : undefined),
+  });
+  try {
+    assert.equal((await runPoolFleet(dispatch("configure-and-accept"), lane.deps())).ok, true);
+    const crash = dispatch("crash-cell", { go: "coordinator-2026-11-18-crash", pool: testPool });
+    const refused = await runPoolFleet(crash, lane.deps());
+    assert.equal(refused.ok, false);
+    assert.match(
+      String("cause" in refused && refused.cause),
+      /^other-pool-in-flight: The controller refused the kill: .* Nothing was killed\. Fix: Rerun under the same GO/u,
+    );
+    assert.match(stepSummary(refused), /Cause: other-pool-in-flight: /u);
+    assert.equal(lane.crashes.length, 1, "the controller received the one packet it refused");
+    // The refusal consumed no nonce, so the same GO sends once more and is proven.
+    refusing = false;
+    const again = await runPoolFleet(crash, lane.deps());
+    assert.equal(again.ok, true, JSON.stringify(again));
+    assert.match(JSON.stringify("result" in again && again.result), /"status":"proven"/u);
+    assert.equal(lane.crashes.length, 2);
+  } finally {
+    await lane.close();
+  }
+});
+
 test("bookmark reads the controller storage's current bookmark under a GO and records when", async () => {
   const lane = await harness();
   try {
@@ -269,7 +330,10 @@ test("without an acceptance device the lane refuses the modes that send model ca
     );
     const deps = { ...lane.deps(), acceptance: refused };
     for (const mode of ["configure-and-accept", "accept", "crash-cell"]) {
-      const result = await runPoolFleet(dispatch(mode), deps);
+      const result = await runPoolFleet(
+        dispatch(mode, mode === "crash-cell" ? { pool: testPool } : {}),
+        deps,
+      );
       assert.equal(result.ok, false, mode);
       assert.match(
         String("cause" in result && result.cause),
@@ -311,7 +375,7 @@ test("with a device outside a dedicated acceptance pool, the fleet is proven by 
 
     // crash-cell needs only the device's credential.
     const crash = await runPoolFleet(
-      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash" }),
+      dispatch("crash-cell", { go: "coordinator-2026-11-18-crash", pool: testPool }),
       lane.deps(),
     );
     assert.equal(crash.ok, true, JSON.stringify(crash));

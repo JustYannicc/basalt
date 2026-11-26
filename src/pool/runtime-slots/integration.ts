@@ -20,6 +20,7 @@ import { RuntimeEndpoint, type EndpointEnvironment, type EndpointOptions } from 
 import {
   SlotRefused,
   awaitsProof,
+  executionKey,
   type ControllerCode,
   type SlotIdentity,
   type SlotTarget,
@@ -494,6 +495,10 @@ export class RuntimeHandoff {
   }
   abortPool(pool: string) {
     this.streams.abortPool(pool);
+  }
+  /** The pool of each call in flight through this handoff to `identity`, "" where it has none. */
+  inFlight(identity: SlotIdentity) {
+    return this.streams.pools(executionKey(identity));
   }
   /** Probe traffic shares selection and transport but never repairs or starts a runtime. */
   async probeNative(

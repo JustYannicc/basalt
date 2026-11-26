@@ -1,4 +1,5 @@
 import { ContainerEnded, SlotRefused } from "./runtime-slots/contract.ts";
+import { CrashPoolRefused } from "./runtime-crash-contract.ts";
 import { FleetRefused } from "./runtime-fleet/state.ts";
 import { PoolRuntimeUnhealthy, PoolStartupDeadline } from "./lifecycle.ts";
 import { ProtectionRefusal } from "./runtime-protection.ts";
@@ -47,6 +48,8 @@ const reasons = [
   "protection_lease_expired",
   "protection_lease_too_short",
   "protection_boot_changed",
+  // A cell kill refused while another pool's call, or one whose pool is unknown, runs on the cell.
+  "other_pool_in_flight",
   "unhealthy",
   "timeout",
   "aborted",
@@ -105,6 +108,7 @@ function cause(error: unknown): (typeof causes)[number] | undefined {
   return object(error) ? observedCauses.get(error) : undefined;
 }
 function reason(error: unknown): RuntimeRouteDiagnostic["runtimeReason"] {
+  if (error instanceof CrashPoolRefused) return "other_pool_in_flight";
   if (error instanceof SlotRefused) return `slot_${error.reason}`;
   if (error instanceof FleetRefused) return `fleet_${error.reason}`;
   if (error instanceof ProtectionRefusal) return `protection_${error.reason}`;
