@@ -358,6 +358,32 @@ test("a tap whose click the browser moves onto an item, past the travel limit, c
     true,
   ));
 
+test("a later tap in the open menu that the browser moves onto an item chooses it (phone)", () =>
+  // The opening tap's lift belongs to that tap; a new press inside the menu, here on its padding,
+  // starts a gesture of its own, whose adjusted click chooses the item it lands on.
+  withPage(
+    viewports.phone,
+    true,
+    async (page) => {
+      await edgeTap(page);
+      assert.deepEqual(await settled(page), { menu: 1, details: [] });
+      const menu = (await page.locator("[data-slot=dropdown-menu-content]").boundingBox())!;
+      const padding = { x: menu.x + menu.width / 2, y: menu.y + 2 };
+      await fingerTap(page, padding, async () => padding, 0);
+      const item = page.getByRole("menuitem", { name: "Edit details" });
+      const centre = (await item.boundingBox())!;
+      await item.dispatchEvent("click", {
+        detail: 1,
+        clientX: centre.x + centre.width / 2,
+        clientY: centre.y + centre.height / 2,
+        bubbles: true,
+        cancelable: true,
+      });
+      assert.deepEqual(await read<string[]>(page, "CHOSEN"), ["Team: Edit details"]);
+    },
+    true,
+  ));
+
 test("the keyboard still opens the menu and chooses an item", () =>
   withPage(viewports.desktop, true, async (page) => {
     await page.getByRole("button", { name: "Manage Team" }).focus();

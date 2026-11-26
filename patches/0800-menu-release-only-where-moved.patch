@@ -1,7 +1,7 @@
 diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packages/ui/src/implementation/components/dropdown-menu.tsx
 --- a/packages/ui/src/implementation/components/dropdown-menu.tsx
 +++ b/packages/ui/src/implementation/components/dropdown-menu.tsx
-@@ -6,9 +6,54 @@
+@@ -6,9 +6,68 @@
  import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
  import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
  
@@ -14,8 +14,10 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 + * received its release (a touch's release goes to the element it pressed). Its items read both.
 + */
 +interface OpeningPressRecord {
-+  readonly record: (pointer: number, x: number, y: number) => void;
++  readonly record: (pointer: number, touch: boolean, x: number, y: number) => void;
 +  readonly release: (pointer: number, x: number, y: number) => void;
++  /** The opening gesture is over: a new press started inside the open menu. */
++  readonly end: () => void;
 +  readonly at: () => Point | null;
 +  readonly released: () => Point | null;
 +}
@@ -28,17 +30,29 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +  onOpenChange,
 +  ...props
 +}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-+  const press = React.useRef<{ pointer: number; at: Point; released: Point | null } | null>(null);
++  const press = React.useRef<{
++    pointer: number;
++    touch: boolean;
++    at: Point;
++    released: Point | null;
++  } | null>(null);
 +  const opening = React.useMemo<OpeningPressRecord>(
 +    () => ({
-+      record: (pointer, x, y) => {
-+        press.current = { pointer, at: { x, y }, released: null };
++      record: (pointer, touch, x, y) => {
++        press.current = { pointer, touch, at: { x, y }, released: null };
 +      },
 +      release: (pointer, x, y) => {
 +        if (press.current?.pointer === pointer) press.current.released = { x, y };
 +      },
++      end: () => {
++        press.current = null;
++      },
 +      at: () => press.current?.at ?? null,
-+      released: () => press.current?.released ?? null,
++      // A touch whose release the button never received is measured from where it pressed.
++      released: () =>
++        press.current === null
++          ? null
++          : (press.current.released ?? (press.current.touch ? press.current.at : null)),
 +    }),
 +    [],
 +  );
@@ -58,7 +72,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
  }
  
  /** Dropdown Menu Portal primitive; accepts native props and composes caller styles. */
-@@ -20,9 +65,27 @@
+@@ -20,22 +79,52 @@
  
  /** Dropdown Menu Trigger primitive; accepts native props and composes caller styles. */
  function DropdownMenuTrigger({
@@ -74,7 +88,12 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +      onPointerDown={(event) => {
 +        // The presses Radix opens a menu on.
 +        if (event.button === 0 && !event.ctrlKey)
-+          opening?.record(event.pointerId, event.clientX, event.clientY);
++          opening?.record(
++            event.pointerId,
++            event.pointerType === "touch",
++            event.clientX,
++            event.clientY,
++          );
 +        onPointerDown?.(event);
 +      }}
 +      onPointerUp={(event) => {
@@ -87,10 +106,32 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
  }
  
  /** Dropdown Menu Content primitive; accepts native props and composes caller styles. */
-@@ -51,6 +114,54 @@
+ function DropdownMenuContent({
+   className,
+   sideOffset = 4,
++  onPointerDownCapture,
+   ...props
+ }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
++  const opening = React.useContext(OpeningPress);
+   return (
+     <DropdownMenuPrimitive.Portal>
+       <DropdownMenuPrimitive.Content
+         data-slot="dropdown-menu-content"
+         sideOffset={sideOffset}
++        onPointerDownCapture={(event) => {
++          // A new press inside the open menu starts its own gesture; the opening one is over.
++          opening?.end();
++          onPointerDownCapture?.(event);
++        }}
+         className={cn(
+           "z-50 max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+           className,
+@@ -49,6 +138,54 @@
+ /** Dropdown Menu Group primitive; accepts native props and composes caller styles. */
+ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Group>) {
    return <DropdownMenuPrimitive.Group data-slot="dropdown-menu-group" {...props} />;
- }
- 
++}
++
 +/** How far the pointer must travel from the press that opened a menu before a release counts. */
 +const releaseTravel = 10;
 +
@@ -137,12 +178,10 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
 +      if (event.detail !== 0 && atOpeningPress(lifted)) event.preventDefault();
 +    },
 +  };
-+}
-+
+ }
+ 
  /** Dropdown Menu Item primitive; accepts native props and composes caller styles. */
- function DropdownMenuItem({
-   className,
-@@ -71,6 +182,7 @@
+@@ -71,6 +208,7 @@
          className,
        )}
        {...props}
@@ -150,7 +189,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
      />
    );
  }
-@@ -89,6 +201,7 @@
+@@ -89,6 +227,7 @@
          className,
        )}
        {...props}
@@ -158,7 +197,7 @@ diff --git a/packages/ui/src/implementation/components/dropdown-menu.tsx b/packa
      >
        <span
          data-slot="dropdown-menu-item-indicator"
-@@ -124,6 +237,7 @@
+@@ -124,6 +263,7 @@
          className,
        )}
        {...props}
