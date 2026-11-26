@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-menu-release-only-where-moved",
+  "file": "0800-menu-release-only-where-moved.patch",
+  "content_sha256": "2097fbd85f7227ef90ba9a8e5c7fe8423aa95db1dcac7ee205d0ec3c3198ce02",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

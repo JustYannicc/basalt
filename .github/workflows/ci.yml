@@ -681,6 +681,8 @@ jobs:
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs scripts/pool-ui-tests/history-backend.test.mjs
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
+      - name: Verify a row menu's opening click chooses none of its items
+        run: node --test scripts/pool-ui-tests/account-row-menu.test.ts
       - name: Verify app query phase diagnostics
         working-directory: .upstream
         run: >-
