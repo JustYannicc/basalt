@@ -63,6 +63,13 @@ export const availableProviderCapabilities: readonly ProviderCapability[] = [
     backend: "vertex",
     connection: "credential-mirror",
   },
+  ...(["anthropic", "openai"] as const).map((method) => ({
+    lab: "custom" as const,
+    method,
+    protocol: "chat" as const,
+    quota: "none" as const,
+    connection: "config-mirror" as const,
+  })),
   ...(["apiToken", "accountToken"] as const).map((method) => ({
     lab: "cloudflare" as const,
     method,

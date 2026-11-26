@@ -45,12 +45,17 @@ const installedView = (view: Effect.Success<ReturnType<typeof oldMethods>>, shap
 for (const shape of ["mixed", "literal"] as const) {
   for (const manage of [true, false]) {
     for (const restricted of [false, true]) {
-      test(`${shape} 15-requirement pool methods preserve policy with installed-app routing (manage=${manage}, restricted=${restricted})`, async () => {
+      test(`${shape} pool methods preserve policy with installed-app routing (manage=${manage}, restricted=${restricted})`, async () => {
         await Effect.runPromise(
           fixture(
             ({ app }) =>
               Effect.gen(function* () {
-                assert.equal(Object.keys(app.requirements.accounts).length, 15);
+                // The literal app is the real pool app: its token plus one collection per provider,
+                // so a new provider grows it. The mixed app is the fixture's fixed hand-picked set.
+                assert.equal(
+                  Object.keys(app.requirements.accounts).length,
+                  shape === "literal" ? Object.keys(poolProviders).length + 1 : 15,
+                );
                 if (shape === "literal") {
                   const { pool, ...families } = app.requirements.accounts;
                   assert.deepEqual(Object.keys(families), Object.keys(poolProviders));
