@@ -121,6 +121,13 @@ const recoverySummary = (value: unknown) =>
         step: refusal.step === undefined ? null : word(refusal.step),
         class: word(refusal.class),
         provider: refusal.provider === undefined ? null : word(refusal.provider),
+        read: typeof refusal.read === "string" ? word(refusal.read) : null,
+        status:
+          refusal.status !== undefined && Number.isSafeInteger(refusal.status)
+            ? refusal.status
+            : null,
+        field: refusal.field === undefined ? null : word(refusal.field),
+        state: refusal.state === undefined ? null : word(refusal.state),
       })),
     })),
   );

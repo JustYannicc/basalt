@@ -6,7 +6,6 @@ import {
   runtimeFailureDiagnostic,
   runtimeRouteDiagnostic,
 } from "../runtime-route-diagnostic.ts";
-import { errorClass, providerFields } from "../pending-failure.ts";
 import type { RuntimeEnd } from "../runtime-slots/container-end.ts";
 import type { NativeStreamLease } from "../native-streams.ts";
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
@@ -31,6 +30,7 @@ import {
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
+import { GrowthRefusals } from "./growth-refusals.ts";
 import {
   resumeGone,
   stampResumeTarget,
@@ -203,23 +203,6 @@ function markedCut(identity: SlotIdentity, error: unknown, signal: AbortSignal) 
   );
 }
 
-/**
- * Why growth was refused, as closed values only, never message text: the runtime's step, reason
- * and cause when the error carries them, a local refusal's own reason, and the error's class.
- */
-function growthRefusal(error: unknown) {
-  const diagnostic = runtimeRouteDiagnostic(error);
-  return {
-    step: diagnostic?.runtimeStep ?? null,
-    reason:
-      diagnostic?.runtimeReason ??
-      (error instanceof SlotRefused || error instanceof FleetRefused ? error.reason : null),
-    cause: runtimeFailureCause(error) ?? null,
-    error: error instanceof FleetRefused ? "FleetRefused" : errorClass(error),
-    ...providerFields(error),
-  };
-}
-
 /** The concurrency target triggers growth; it never becomes another fixed inference cap. */
 export class RuntimeFleet {
   private deps: Dependencies;
@@ -234,7 +217,7 @@ export class RuntimeFleet {
   private primaryFailure = 0;
   private nextGrowthCheck = 0;
   private growthAlarm?: number;
-  private growthRefusal?: string;
+  private refusals: GrowthRefusals;
   private cells = new Map<string, { target: SlotTarget; cell: FleetCell }>();
   private dispatches = new FleetDispatches();
   // In memory: a replaced isolate only reports a held row again, or counts an unproven drain afresh.
@@ -265,6 +248,7 @@ export class RuntimeFleet {
       () => deps.now(),
     );
     this.rootFallback = new RootFallback(() => deps.now());
+    this.refusals = new GrowthRefusals(() => deps.now());
   }
   refreshPolicy() {
     this.atCapacity = false;
@@ -300,17 +284,8 @@ export class RuntimeFleet {
       });
       this.deps.defer(
         this.growing.then(
-          () => {
-            this.growthRefusal = undefined;
-          },
-          (error: unknown) => {
-            // Growth retries on every request and alarm, so a refusal logs once until any of its
-            // fields changes.
-            const refusal = growthRefusal(error);
-            const key = JSON.stringify(refusal);
-            if (key !== this.growthRefusal) console.warn("POOL_FLEET_GROWTH_REFUSED", refusal);
-            this.growthRefusal = key;
-          },
+          () => this.refusals.passed(),
+          (error: unknown) => this.refusals.refused(error),
         ),
       );
     }
@@ -336,7 +311,7 @@ export class RuntimeFleet {
       if (replacements) await this.deps.state.reserveReplacement(target);
       else await this.deps.state.reserve(target);
       await this.start(target);
-      this.growthRefusal = undefined;
+      this.refusals.passed();
     }
   }
   /** Growth starts cells up to this count, and a far draw is kept while ready cells are fewer. */
@@ -441,6 +416,7 @@ export class RuntimeFleet {
       (row.identity && !sameIdentity(row.identity, identity))
     )
       return;
+    this.refusals.started();
     const database = await cell
       .healthy?.(identity)
       .then((value) => value ?? undefined)
@@ -998,7 +974,10 @@ export class RuntimeFleet {
         return;
       }
       if (pastBound(row, now)) return this.exceed(row, "start_unproven");
-      return this.start(row.target);
+      return this.start(row.target).catch((error: unknown) => {
+        this.refusals.retried(error);
+        throw error;
+      });
     }
     if (row.phase === "warming" || row.phase === "uncertain") {
       // Past its bound a start is no longer observed: it holds its place until abandon() proves it.
@@ -1009,6 +988,7 @@ export class RuntimeFleet {
         observed = await cell.observe(row.target, enabled);
       } catch (error) {
         // The observation retries an unsent start, which can be refused just as growth's was.
+        if (!row.identity) this.refusals.retried(error);
         if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
           if (deploymentRefused(error)) await this.deferStart(cell, row.target, error, began);
           else await this.startRefused(row.target, error, began);
