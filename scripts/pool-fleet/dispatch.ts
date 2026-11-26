@@ -4,7 +4,7 @@ import { Effect, Option, Result, Schema } from "effect";
 import type { PoolAccess } from "../pool-acceptance/types.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
-import { rootServes, runFleetAcceptance } from "./accept.ts";
+import { quotaRefused, rootServes, runFleetAcceptance } from "./accept.ts";
 import { poolWorkerName, type CloudflareAccess } from "./cloudflare.ts";
 import {
   inspectController,
@@ -48,7 +48,8 @@ export const modes = [
   "retire-check",
 ] as const;
 type Mode = (typeof modes)[number];
-const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
+/** A coordinator GO; the release re-commits the fleet only under one (`scripts/release/fleet-recommit.ts`). */
+export const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
 
 export interface DispatchInput {
   mode: string;
@@ -58,6 +59,8 @@ export interface DispatchInput {
   key?: string;
   /** configure-and-accept only: the growth target to configure, 1 to 100,000. */
   targetActive?: string;
+  /** configure-and-accept from a release only: a fleet that is off stays off, and nothing is sent. */
+  enabledOnly?: boolean;
   ref: string;
   event: string;
 }
@@ -121,6 +124,13 @@ const recoverySummary = (value: unknown) =>
         step: refusal.step === undefined ? null : word(refusal.step),
         class: word(refusal.class),
         provider: refusal.provider === undefined ? null : word(refusal.provider),
+        read: typeof refusal.read === "string" ? word(refusal.read) : null,
+        status:
+          refusal.status !== undefined && Number.isSafeInteger(refusal.status)
+            ? refusal.status
+            : null,
+        field: refusal.field === undefined ? null : word(refusal.field),
+        state: refusal.state === undefined ? null : word(refusal.state),
       })),
     })),
   );
@@ -131,8 +141,10 @@ const readySummary = (value: unknown) => {
     ? {
         lastLapse: ready.lastLapse ?? null,
         lastFlip: ready.lastFlip ?? null,
+        lastStall: ready.lastStall ?? null,
         lapses: ready.lapses ?? null,
         flips: ready.flips ?? null,
+        stalls: ready.stalls ?? null,
       }
     : null;
 };
@@ -450,9 +462,11 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           sending: () => {
             touched = true;
           },
+          ...(input.enabledOnly ? { enabledOnly: true } : {}),
         });
-        touched = true;
         evidence.configure = configured;
+        if (configured.status === "fleet-disabled" || configured.status === "fleet-absent") return;
+        touched = true;
         evidence.ready = yield* waitForReadyCell({
           controller: access,
           demand: () => acceptance.client.modelCatalog(acceptance.credential),
@@ -468,6 +482,20 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     if (!touched) {
       deps.log(`configure_and_accept status=failed before any send; the fleet is as it was`);
       return yield* Effect.fail({ cause, rollback: { skipped: "nothing-sent" }, evidence });
+    }
+    // Every acceptance model refused for funding: Home's decision from the pool's accounts, which a
+    // cell answers as the root would, so the permission stays in force, unproven, and the run fails
+    // loudly. A `model_cooldown` refusal can be the cell's own node and disables, as a cell that
+    // fails to serve does (accept.ts).
+    if (attempt.failure instanceof FleetLaneRefused && attempt.failure.reason === quotaRefused) {
+      deps.log(
+        `configure_and_accept status=unproven; every acceptance model was refused for funding`,
+      );
+      return yield* Effect.fail({
+        cause,
+        rollback: { skipped: "quota-refused: the permission stays in force, unproven" },
+        evidence,
+      });
     }
     deps.log(`configure_and_accept status=failed; disabling the fleet`);
     const rollback = yield* Effect.result(

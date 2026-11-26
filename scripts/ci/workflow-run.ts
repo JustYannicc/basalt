@@ -10,6 +10,8 @@ export type RunJob = {
   labels?: readonly string[];
   runnerName?: string | null;
   startedAt?: string | null;
+  createdAt?: string | null;
+  completedAt?: string | null;
 };
 
 /** A GitHub call, tried three times: a 5xx or a dropped connection is common and passes. */
@@ -79,6 +81,8 @@ export async function attemptJobs(api: GitHub, run: Run) {
         labels: Array.isArray(job.labels) ? job.labels.map(String) : [],
         runnerName: (job.runner_name as string | null) ?? null,
         startedAt: (job.started_at as string | null) ?? null,
+        createdAt: (job.created_at as string | null) ?? null,
+        completedAt: (job.completed_at as string | null) ?? null,
       });
     if (batch.length < 50) break;
   }

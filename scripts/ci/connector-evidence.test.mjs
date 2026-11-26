@@ -10,6 +10,7 @@ import { collectConnectorEvidence } from "./collect-connector-evidence.mjs";
 import { connectorDiagnostic } from "./connector-diagnostics.mjs";
 import { describeGuidanceFailure } from "../connectors-tests/guidance-failure.ts";
 import { catalogBuildFailure } from "../catalog-compat/build-failure.mjs";
+import { closedPageError } from "../connectors-tests/page-error.mjs";
 
 const credential = "private-credential-sentinel";
 const tenant = "private-tenant-sentinel";
@@ -211,6 +212,100 @@ test("Zoho browser failures retain their phase and original error class without 
     },
   );
   assert.ok(!JSON.stringify(summary).includes(credential));
+  assert.ok(!JSON.stringify(summary).includes(tenant));
+});
+
+test("a page error reaches the summary as its kind and our bundle's frame, never its text or hosts", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/zoho-people-mcp/ci");
+  const origin = "http://127.0.0.1:4321";
+  // The shape of CDP's Runtime.exceptionThrown details, as Chromium reports them.
+  const thrown = (className, callFrames) => ({
+    exception: {
+      ...(className ? { className, type: "object" } : { type: "string" }),
+      description: `${className ?? "Uncaught"}: ${credential}\n    at forged (${origin}/assets/${tenant}.js:1:2)`,
+    },
+    text: `Uncaught ${credential}`,
+    stackTrace: { callFrames },
+  });
+  const call = (functionName, url, lineNumber, columnNumber) => ({
+    functionName,
+    url,
+    lineNumber,
+    columnNumber,
+  });
+  const records = [
+    // Frames from elsewhere and code without a URL are skipped; ours names the code, not its URL.
+    closedPageError(
+      thrown("TypeError", [
+        call("stranger", `https://${tenant}.example/${credential}.js`, 0, 0),
+        call("inner", "", 0, 25),
+        call("loadAccounts", `${origin}/assets/index-B3x9.js?token=${credential}`, 122, 44),
+      ]),
+      origin,
+    ),
+    closedPageError(
+      thrown("TypeError", [call("Store", `${origin}/assets/store.js`, 2, 3)]),
+      origin,
+    ),
+    // A thrown string or an error class we don't list has no name worth keeping.
+    closedPageError(thrown(undefined, [call("", `${origin}/assets/main.js`, 6, 7)]), origin),
+    closedPageError(thrown(`Leak${tenant.replaceAll("-", "")}`, []), origin),
+    // A function name that is not a plain identifier is dropped, the frame kept.
+    closedPageError(
+      thrown("Error", [call(`${tenant}.example`, `${origin}/assets/rx.js`, 4, 5)]),
+      origin,
+    ),
+  ];
+  await put(
+    join(run, "partial-results.json"),
+    JSON.stringify({ results: [{ name: tenant, actual: credential }], pageErrors: records }),
+  );
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  const record = summary.runs[0].records.find((value) => value.stage === "partial-report");
+  assert.equal(record.checks, 1);
+  assert.deepEqual(record.pageErrors, [
+    {
+      name: "TypeError",
+      frame: { function: "loadAccounts", file: "index-B3x9.js", line: 123, column: 45 },
+    },
+    { name: "TypeError", frame: { function: "Store", file: "store.js", line: 3, column: 4 } },
+    { name: "other", frame: { file: "main.js", line: 7, column: 8 } },
+    { name: "other" },
+    { name: "Error", frame: { file: "rx.js", line: 5, column: 6 } },
+  ]);
+  for (const hidden of [credential, tenant, "127.0.0.1", "forged", "example"])
+    assert.ok(!JSON.stringify(summary).includes(hidden), hidden);
+});
+
+test("a page error record read back from a file keeps only names, identifiers and numbers", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/zoho-people-mcp/ci");
+  // A file cannot show where its values came from: only their shape is checked on the way out.
+  await put(
+    join(run, "partial-results.json"),
+    JSON.stringify({
+      results: [],
+      pageErrors: [
+        {
+          name: "PlainWord",
+          frame: { function: "plainWord", file: "plain.js", line: 1, column: 2 },
+        },
+        {
+          name: "TypeError",
+          frame: { function: `${tenant}()`, file: `${tenant}/x.js`, line: 0, column: 2 },
+        },
+      ],
+    }),
+  );
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  assert.deepEqual(
+    summary.runs[0].records.find((value) => value.stage === "partial-report").pageErrors,
+    [
+      { name: "other", frame: { function: "plainWord", file: "plain.js", line: 1, column: 2 } },
+      { name: "TypeError" },
+    ],
+  );
   assert.ok(!JSON.stringify(summary).includes(tenant));
 });
 

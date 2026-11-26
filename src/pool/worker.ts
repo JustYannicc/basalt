@@ -125,6 +125,7 @@ import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { admitModelCall, forwardPoolRequest } from "./forward.worker.ts";
 import { poolArrival, stampPoolReceive, type PoolArrival } from "./pool-arrival.ts";
+import { unknownPlacement, unplaced } from "./runtime-placement.worker.ts";
 import { startPoolRequestEvent } from "../telemetry/pool-request.ts";
 import { pageTemplate } from "../telemetry/privacy.ts";
 import { endpointMetadata } from "./model-history/record.ts";
@@ -1330,21 +1331,22 @@ async function callController(
         traceparent: request.headers.get("traceparent"),
         defer,
       }));
+      const outcome = request.signal.aborted
+        ? "client_closed"
+        : controllerInstanceEnded(cut)
+          ? "controller_reset"
+          : flag("remote")
+            ? "controller_failed"
+            : "controller_unavailable";
       event?.set({
+        // An object that never ran the call placed it nowhere; one that ran it and then failed or
+        // ended may have sent it to a runtime, and its own event went with it.
+        ...(outcome === "controller_unavailable" ? unplaced : unknownPlacement),
         cause:
           error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
         overloaded: flag("overloaded"),
       });
-      event?.end({
-        outcome: request.signal.aborted
-          ? "client_closed"
-          : controllerInstanceEnded(cut)
-            ? "controller_reset"
-            : flag("remote")
-              ? "controller_failed"
-              : "controller_unavailable",
-        status: response?.status,
-      });
+      event?.end({ outcome, status: response?.status });
     } catch {
       console.error("POOL_REQUEST_EVENT_UNAVAILABLE");
     }

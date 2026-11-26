@@ -35,6 +35,13 @@ PROBE_STEPS = ("home_plugins", "plugin_probe", "probe_log")
 LAPSE_STEPS = PROBE_STEPS + ("node_audit", "no_probe")
 LAPSE_LINE = "POOL_READINESS_LAPSE "
 FLIP_LINE = "POOL_READINESS_FLIP "
+STALL_LINE = "POOL_SUPERVISOR_STALL "
+# Every stall is counted and kept on /ready. Its line comes at most every 10 s, except for a stall
+# that may be the one behind a lapse: one at least as late as the slack the 1.5 s lease leaves a
+# 0.5 s renewal, or one longer than any since the last line. The first kind spans over 1.5 s of
+# wall time and the second must outgrow the line before it, so the lines stay bounded.
+STALL_LINE_GAP_NS = 10_000_000_000
+STALL_LINE_ALWAYS_MS = 1_000
 
 
 def _emits(method: Callable[..., Any]) -> Callable[..., Any]:
@@ -112,6 +119,15 @@ class Readiness:
         self._last_flip: dict[str, object] | None = None
         self._lapses = 0
         self._flips = 0
+        self._last_stall: dict[str, object] | None = None
+        self._stalls = 0
+        self._stall_line_ns: int | None = None
+        self._stall_line_longest_ms = 0
+        # The policy monitor's waits in a row that came back on time, None until a monitor times
+        # them. The supervisor's first ready waits on it (policy_monitor.FirstReady).
+        self._waits_on_time: int | None = None
+        # When the policy monitor's wait in progress is due; a wait overdue is a stall not yet seen.
+        self._wait_due_ns: int | None = None
         self._state_ready = False
         self._state_since_ns = monotonic_ns()
         self._pending_lines: list[str] = []
@@ -202,6 +218,92 @@ class Readiness:
             if not healthy and self._node_audit_ok:
                 self._note_lapse("node_audit", ms, self._monotonic_ns())
             self._node_audit_ok = bool(healthy)
+
+    @_emits
+    def note_stall(
+        self,
+        *,
+        late_ms: int,
+        cpu_ms: int,
+        steal_ms: int | None,
+        throttled_ms: int | None,
+        cpus: int | None,
+    ) -> None:
+        """A wait of the policy monitor that returned late, with what the scheduler did meanwhile.
+        Steal and throttling are CPU time summed over the machine's `cpus`, late is wall time."""
+        late = max(0, int(late_ms))
+        record = {
+            "late_ms": late,
+            "cpu_ms": max(0, int(cpu_ms)),
+            "steal_ms": steal_ms,
+            "throttled_ms": throttled_ms,
+            "cpus": cpus,
+        }
+        with self._lock:
+            at_ns = self._monotonic_ns()
+            self._stalls += 1
+            self._waits_on_time = 0
+            self._wait_due_ns = None
+            self._last_stall = {**record, "at": self._wall_iso(at_ns)}
+            if (
+                self._stall_line_ns is None
+                or at_ns - self._stall_line_ns >= STALL_LINE_GAP_NS
+                or late >= STALL_LINE_ALWAYS_MS
+                or late > self._stall_line_longest_ms
+            ):
+                self._stall_line_ns = at_ns
+                self._stall_line_longest_ms = late
+                self._pending_lines.append(
+                    STALL_LINE
+                    + json.dumps({**record, "stalls": self._stalls}, separators=(",", ":"))
+                )
+
+    def note_waits_timed(self) -> None:
+        """A policy monitor times its waits from now on, so the first ready can wait on them."""
+        with self._lock:
+            if self._waits_on_time is None:
+                self._waits_on_time = 0
+
+    def note_wait_started(self, seconds: float) -> None:
+        with self._lock:
+            self._wait_due_ns = self._monotonic_ns() + int(seconds * 1_000_000_000)
+
+    def note_wait_on_time(self) -> None:
+        with self._lock:
+            self._waits_on_time = (self._waits_on_time or 0) + 1
+            self._wait_due_ns = None
+
+    def note_unsteady_probe(self) -> None:
+        """A probe past its budget, or one that renewed no lease: the on-time run starts again."""
+        with self._lock:
+            if self._waits_on_time is not None:
+                self._waits_on_time = 0
+
+    def waits_on_time(self) -> int | None:
+        """The policy monitor's waits in a row that came back on time; None while none are timed."""
+        with self._lock:
+            return self._waits_on_time
+
+    @_emits
+    def set_ready_if_steady(
+        self, *, audit_revision: int | None = None, waits: int, overdue_ns: int
+    ) -> bool:
+        """Passes the services audit only while the policy monitor's last `waits` waits came back
+        on time and the wait in progress is not overdue by `overdue_ns`. One lock decides both, so
+        a stall recorded meanwhile can't slip through. Says whether the monitor was steady."""
+        with self._lock:
+            count = self._waits_on_time
+            overdue = (
+                self._wait_due_ns is not None
+                and self._monotonic_ns() - self._wait_due_ns >= overdue_ns
+            )
+            steady = count is None or (count >= waits and not overdue)
+            self._expire_policy_lease()
+            self._services_ready = steady and (
+                audit_revision is None or audit_revision == self._service_audit_revision
+            )
+            self._observe_state()
+            return steady
 
     @_emits
     def set_ready(self, value: bool, *, audit_revision: int | None = None) -> None:
@@ -440,6 +542,9 @@ class Readiness:
             if self._flips:
                 payload["flips"] = self._flips
                 payload["last_flip"] = dict(self._last_flip or {})
+            if self._stalls:
+                payload["stalls"] = self._stalls
+                payload["last_stall"] = dict(self._last_stall or {})
             return ready, payload, lease_ms
 
     def authorized(self, header: str) -> bool:
