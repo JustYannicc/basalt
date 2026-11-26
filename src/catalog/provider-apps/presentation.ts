@@ -1,5 +1,5 @@
 import icons from "./provider-icons.json" with { type: "json" };
-import { anthropicIcons, openaiIcons } from "./logos.ts";
+import { anthropicIcons, customEndpointIcons, openaiIcons } from "./logos.ts";
 
 export const providerAppNames = {
   openai: "OpenAI",
@@ -14,8 +14,15 @@ export const providerAppNames = {
   jev: "Jev",
   cloudflare: "Cloudflare Workers AI",
   openrouter: "OpenRouter",
+  custom: "Custom endpoint",
 };
 export type ProviderAppLab = keyof typeof providerAppNames;
 
 export const providerAppIcons = (lab: ProviderAppLab) =>
-  lab === "openai" ? openaiIcons : lab === "anthropic" ? anthropicIcons : icons[lab];
+  lab === "openai"
+    ? openaiIcons
+    : lab === "anthropic"
+      ? anthropicIcons
+      : lab === "custom"
+        ? customEndpointIcons
+        : icons[lab];

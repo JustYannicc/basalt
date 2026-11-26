@@ -35,7 +35,8 @@ export async function fleetCellFixture(
     },
   };
   let failApplication = false,
-    failRuntime = false;
+    failRuntime = false,
+    rollout = false;
   let credential: string | null = "synthetic-provider-token";
   let ran = false;
   const provider = new RuntimeProviderReader({ get: async () => credential }, async (input) => {
@@ -58,7 +59,10 @@ export async function fleetCellFixture(
               },
             ]
           : []
-        : providerFixture.raw,
+        : // As while Cloudflare rolls out a changed image: the same application with a rollout id.
+          rollout
+          ? { ...providerFixture.raw, active_rollout_id: "synthetic-rollout" }
+          : providerFixture.raw,
       result_info: { next_page_token: "" },
     });
   });
@@ -141,6 +145,9 @@ export async function fleetCellFixture(
     },
     failRuntime: (value: boolean) => {
       failRuntime = value;
+    },
+    rollout: (value: boolean) => {
+      rollout = value;
     },
     cleanup: async () => {
       await Promise.all(background);

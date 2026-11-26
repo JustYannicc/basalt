@@ -6,6 +6,8 @@ export const stackConfigs: ReadonlyArray<string> = [
   "scripts/preview/stack/alchemy.database.ts",
   "scripts/preview/stack/alchemy.cleanup.ts",
   "scripts/preview/stack/alchemy.rehearsal-fixture.ts",
+  // The load proof's emulated model upstream, stage test-emulated-upstream, with runner-local state.
+  "scripts/emulated-upstream/stack.ts",
 ];
 
 /**
