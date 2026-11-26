@@ -209,6 +209,7 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
       const selected = generation;
       return await withDependencyStoreLock(() => {
         const { store, trees } = selected;
+        let links: ReturnType<typeof linkFingerprint>;
         for (const tree of trees) {
           const source = join(store, tree),
             destination = join(root, tree);
@@ -231,12 +232,14 @@ async function prepareDependencyGeneration(root: string, pin: string, cacheHitOn
             }
           }
           writablePrivateDirectories(temporary);
+          // Taken before the rename, which keeps the directory's inode and mtime: links anyone swaps
+          // in afterwards, even mid-install, no longer match what the marker vouches for.
+          if (tree === "node_modules") links = linkFingerprint(join(temporary, ".bun"));
           // Dependencies contain relative workspace links; the copied link layout keeps source worktree-local.
           removePrivateTree(destination);
           renameSync(temporary, destination);
         }
         // The marker vouches for these exact links, so collection can skip reading them one by one.
-        const links = linkFingerprint(join(root, "node_modules/.bun"));
         atomicStoreJson(join(root, ".basalt-dependencies.json"), {
           key,
           store,

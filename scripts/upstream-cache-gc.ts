@@ -28,9 +28,10 @@ const directories = (path: string) =>
     : [];
 
 /**
- * The identity of a checkout's `.bun` link directory: replacing any link changes its mtime, and
- * replacing the tree changes its inode. A whole-second mtime may come from a coarse clock, where a
- * later change could keep it, so it proves nothing.
+ * The identity of a checkout's `.bun` link directory. Installers replace the whole tree, which
+ * changes its inode; replacing one link changes its mtime, except within one tick of a coarse
+ * clock (on some Linux file systems, a few milliseconds). A whole-second mtime may come from a
+ * clock that coarse, so it proves nothing.
  */
 export function linkFingerprint(bun: string) {
   const stat = lstatSync(bun, { bigint: true, throwIfNoEntry: false });

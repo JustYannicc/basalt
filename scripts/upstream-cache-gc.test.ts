@@ -292,6 +292,8 @@ function installed(checkout: string, store: string, packages: number, recorded: 
   mkdirSync(bun, { recursive: true });
   for (let index = 0; index < packages; index++)
     symlinkSync(join(store, "node_modules"), join(bun, `package-${index}`));
+  // An earlier time than any later change can get, on any clock, and not a whole second.
+  fs.utimesSync(bun, 1_700_000_000.25, 1_700_000_000.25);
   writeFileSync(
     join(checkout, ".basalt-dependencies.json"),
     JSON.stringify({
@@ -302,17 +304,26 @@ function installed(checkout: string, store: string, packages: number, recorded: 
   return bun;
 }
 
-/** Counts the package links collection reads one by one under `root`. */
+/** Counts what collection lists or reads inside the registered checkouts' link directories. */
 function linkReads(t: TestContext, root: string) {
-  const read = fs.readlinkSync;
   const reads = { count: 0 };
-  const probe = t.mock.method(fs, "readlinkSync", (...parameters: Parameters<typeof read>) => {
-    if (String(parameters[0]).startsWith(join(root, "registered-"))) reads.count++;
-    return read(...parameters);
-  });
+  const inside = (path: unknown) =>
+    String(path).startsWith(join(root, "registered-")) && String(path).includes(".bun");
+  const read = fs.readlinkSync,
+    list = fs.readdirSync;
+  const probes = [
+    t.mock.method(fs, "readlinkSync", (...parameters: Parameters<typeof read>) => {
+      if (inside(parameters[0])) reads.count++;
+      return read(...parameters);
+    }),
+    t.mock.method(fs, "readdirSync", ((...parameters: Parameters<typeof list>) => {
+      if (inside(parameters[0])) reads.count++;
+      return list(...parameters);
+    }) as typeof list),
+  ];
   syncBuiltinESMExports();
   t.after(() => {
-    probe.mock.restore();
+    for (const probe of probes) probe.mock.restore();
     syncBuiltinESMExports();
   });
   return reads;
@@ -320,12 +331,13 @@ function linkReads(t: TestContext, root: string) {
 
 test("checkouts whose links are unchanged since their install are not read link by link", async (t) => {
   const { root, cache, key } = fixture(t);
-  key(1);
+  const unused = key(1, "old");
   const elsewhere = join(root, "other-cache/store");
   mkdirSync(join(elsewhere, "node_modules"), { recursive: true });
   for (const checkout of registered(root, cache, 3)) installed(checkout, elsewhere, 20);
   const reads = linkReads(t, root);
   await collectUpstreamDependencies("current");
+  assert.equal(existsSync(unused.entry), false, "the collection pass ran");
   assert.equal(reads.count, 0);
 });
 
@@ -344,6 +356,23 @@ test("a link replaced after its marker was written still protects the store it p
   assert.equal(existsSync(linked.store), true, "the replaced link is read, not trusted");
 });
 
+test("a link tree swapped whole after its marker was written still protects its new store", async (t) => {
+  const { root, cache, key } = fixture(t);
+  const held = key(1, "old");
+  const linked = key(2, "old");
+  for (let index = 3; index <= 6; index++) key(index);
+  const [checkout] = registered(root, cache, 1);
+  const bun = installed(checkout!, held.store, 2);
+  // A legacy installer renames a new link tree into place and dies before writing its marker.
+  const replacement = join(checkout!, "node_modules/.bun-replacement");
+  mkdirSync(replacement);
+  symlinkSync(join(linked.store, "node_modules"), join(replacement, "package-0"));
+  rmSync(bun, { recursive: true });
+  fs.renameSync(replacement, bun);
+  await collectUpstreamDependencies("current");
+  assert.equal(existsSync(linked.store), true, "the new tree is read, not trusted");
+});
+
 test("a checkout whose install is still pending keeps both its marker's and its new store", async (t) => {
   const { root, cache, key } = fixture(t);
   const previous = key(1, "old");
@@ -353,7 +382,9 @@ test("a checkout whose install is still pending keeps both its marker's and its 
   installed(checkout!, previous.store, 2);
   // The new generation is chosen and registered before any link moves.
   await withDependencyStoreLock(() => rememberDependencyConsumer(checkout!, selected.store, true));
+  const reads = linkReads(t, root);
   await collectUpstreamDependencies("current");
+  assert.equal(reads.count, 0, "unchanged links are not read, so the registration alone protects");
   assert.equal(existsSync(previous.store), true);
   assert.equal(existsSync(selected.store), true);
 });
