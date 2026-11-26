@@ -475,7 +475,7 @@
         {
           "identity": "cliproxy-node-provider-retry-time",
           "file": "0764-node-provider-retry-time.patch",
-          "sha256": "ae3318a23cf1c8a1f96ed2d6e9830dd64a7c62442b529cba523296619a1cbdca",
+          "sha256": "1a73d05ef90c580e5159cdf16c99c6f2e3b4a6364ad05fb804c78b0bc4087cc7",
           "retirement": {
             "mode": "manual",
             "requires": "Carry 0764 puts the provider's own retry time on the node's usage record. It assumes carry 0646's metadata-only failure keeps only the status, so it adds one closed number beside it. Retire when the pinned node sends Home a 429's provider retry time as whole milliseconds rounded up, capped at 60 days and absent when there is none, without any provider body or header, and passes the Claude, Codex and Antigravity on-the-wire regression."
