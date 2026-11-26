@@ -14,6 +14,10 @@ const Refusal = Schema.Struct({
   step: Schema.optional(Schema.String),
   class: Schema.String,
   provider: Schema.optional(Schema.String),
+  read: Schema.optional(Schema.NullOr(Schema.String)),
+  status: Schema.optional(Schema.Number),
+  field: Schema.optional(Schema.String),
+  state: Schema.optional(Schema.String),
 });
 /**
  * The selected root's last recovery, in closed values only: the boot it restarts, when it was
@@ -52,7 +56,16 @@ export class RecoveryRecords {
     return record!.rounds;
   }
   async refused(round: number, at: number, error: unknown) {
-    const { reason, step, class: errorClass, provider } = pendingFields(error);
+    const {
+      reason,
+      step,
+      class: errorClass,
+      provider,
+      read,
+      status,
+      field,
+      state,
+    } = pendingFields(error);
     await this.change((record) =>
       record && record.readyAt === null
         ? {
@@ -65,7 +78,10 @@ export class RecoveryRecords {
                 reason,
                 ...(step ? { step } : {}),
                 class: errorClass,
-                ...(provider ? { provider } : {}),
+                ...(provider ? { provider, read } : {}),
+                ...(status === undefined ? {} : { status }),
+                ...(field ? { field } : {}),
+                ...(state ? { state } : {}),
               },
             ].slice(-refusalsKept),
           }

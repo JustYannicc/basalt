@@ -1,0 +1,109 @@
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+--- a/apps/hosted/server/src/implementation/pool-account-registry.ts
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
+@@ -20,6 +20,7 @@ import {
+ } from "./pool-account-acquisition-contract.ts";
+ import { signEnvelope } from "./pool-token.ts";
+ import { homeAccountRemoval } from "./account-key-mirror.ts";
++import { mirrorFamily } from "./pool-provider-mirror.ts";
+ import type { providerLoginFile } from "./provider-login-file.ts";
+ import type { makeAccountImports } from "@executor-js/sdk/account-imports";
+ import type { poolAccountConnections } from "./pool-account-acquisition.ts";
+@@ -37,15 +38,6 @@ const health = Schema.Struct({
+ });
+ const healthResponse = Schema.Struct({ result: health });
+ 
+-const nativeProviderFamilies: Readonly<Record<string, string>> = {
+-  openai: "codex",
+-  anthropic: "claude",
+-  gemini: "gemini",
+-  vertex: "vertex",
+-  xai: "xai",
+-  meta: "meta",
+-};
+-
+ /** Registration is host-owned; an app can request a canonical method, never a driver or URL. */
+ export const poolAccountRegistry = (
+   key: Option.Option<Redacted.Redacted<string>>,
+@@ -91,7 +83,7 @@ export const poolAccountRegistry = (
+         );
+       };
+       const oauth = capability.connection === "home-oauth";
+-      const family = nativeProviderFamilies[capability.lab] ?? "openai-compatibility";
++      const family = mirrorFamily(capability);
+       const remove = homeAccountRemoval({
+         origin,
+         signingKey: secret,
+diff --git a/apps/hosted/server/src/implementation/pool-provider-mirror.ts b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
+--- a/apps/hosted/server/src/implementation/pool-provider-mirror.ts
++++ b/apps/hosted/server/src/implementation/pool-provider-mirror.ts
+@@ -2,15 +2,22 @@ import type { AccountAcquisitionMirrorContext, JsonObject } from "@executor-js/s
+ import { Effect, Redacted, Schema } from "effect";
+ import type { ProviderCapability } from "./pool-provider-capabilities.ts";
+ import { homeAccountKeyMirror } from "./account-key-mirror.ts";
++import {
++  customEndpointAddress,
++  customEndpointModels,
++  customEndpointRefusals,
++} from "./pool-provider-definitions.ts";
+ 
+ class ProviderMirrorUnavailable extends Schema.TaggedError<ProviderMirrorUnavailable>()(
+   "ProviderMirrorUnavailable",
+-  { reason: Schema.Literals(["configuration", "multipleAccounts"]) },
++  { reason: Schema.Literals(["configuration", "multipleAccounts", "address", "models"]) },
+ ) {
+   override get message() {
+     return this.reason === "multipleAccounts"
+       ? "Choose an account API token when a user token can access multiple Cloudflare accounts"
+-      : "Provider account configuration unavailable";
++      : this.reason === "address" || this.reason === "models"
++        ? customEndpointRefusals[this.reason]
++        : "Provider account configuration unavailable";
+   }
+ }
+ const missing = (): never => {
+@@ -165,6 +172,27 @@ async function cloudflare(
+   return missing();
+ }
+ 
++const refuse = (reason: "address" | "models"): never => {
++  throw new ProviderMirrorUnavailable({ reason });
++};
++/** An Anthropic gateway takes the address as Anthropic's own; an OpenAI one serves under /v1. */
++function gateway(context: AccountAcquisitionMirrorContext, method: string): JsonObject {
++  // The connect form's check applies the same rules; this refuses an account saved despite it.
++  const address = customEndpointAddress(field(context, "baseUrl")) ?? refuse("address");
++  const models = customEndpointModels(field(context, "models")) ?? refuse("models");
++  return {
++    "base-url": method === "anthropic" ? address : `${address}/v1`,
++    models: models.map((name) => ({ name, alias: name })),
++  };
++}
++
++/** The Home config family an API-key account is written to and removed from. */
++export function mirrorFamily(capability: Pick<ProviderCapability, "lab" | "method">): string {
++  if (capability.lab === "custom")
++    return capability.method === "anthropic" ? "claude" : "openai-compatibility";
++  return nativeFamilies[capability.lab] ?? "openai-compatibility";
++}
++
+ export function providerMirror(
+   capability: ProviderCapability,
+   options: {
+@@ -172,7 +200,7 @@ export function providerMirror(
+     readonly signingKey: Redacted.Redacted<string>;
+   },
+ ) {
+-  const family = nativeFamilies[capability.lab] ?? "openai-compatibility";
++  const family = mirrorFamily(capability);
+   const serviceAccount = capability.lab === "vertex" && capability.method === "serviceAccount";
+   return homeAccountKeyMirror({
+     ...options,
+@@ -196,6 +224,7 @@ export function providerMirror(
+       if (capability.lab === "openai") group = { "base-url": "https://api.openai.com/v1" };
+       if (capability.lab === "cloudflare")
+         group = await cloudflare(context, capability.method, token);
++      if (capability.lab === "custom") group = gateway(context, capability.method);
+       if (capability.lab === "kimi" || capability.lab === "openrouter") {
+         const endpoint =
+           capability.lab === "kimi" ? "https://api.moonshot.ai/v1" : "https://openrouter.ai/api/v1";

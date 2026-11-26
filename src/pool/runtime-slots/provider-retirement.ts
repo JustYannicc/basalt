@@ -12,7 +12,7 @@ export function primaryRetirementProvider(reader: RuntimeProviderReader): Retire
     if (!observation.provider) throw new SlotRefused("uncertain");
     const target = { ...observation.identity, ...observation.provider };
     if (phase === "present") {
-      await reader.observe(target, observation.identity.instanceId);
+      await reader.observe("root_retire", target, observation.identity.instanceId);
       return;
     }
     const stopped = observation.retired && !observation.running ? driverStopped : undefined;
