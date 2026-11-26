@@ -2,7 +2,7 @@ import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.
 import { AcceptanceFailure, type PoolAccess } from "../pool-acceptance/types.ts";
 import { refuse } from "./errors.ts";
 import { shortHash, type ControllerView, type FleetView } from "./controller.ts";
-import { OwnTraffic, turnBudgets } from "./own-traffic.ts";
+import { OwnTraffic, turnBudgetSpent, turnBudgets } from "./own-traffic.ts";
 import { quotaRefusal, smokeModels, turnFailure } from "../release/smoke-models.ts";
 
 /*
@@ -108,26 +108,39 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   input.log(`models status=200 count=${catalog.ids.length}`);
   const tried: string[] = [];
   let cooled = false;
+  // The model the turn budget ran out on, when refused models had spent it first.
+  let spentOn: string | undefined;
   for (const model of smokeModels(first).filter((id) => catalog.ids.includes(id)))
     try {
       const accepted = await acceptOn(input, model, accounts, traffic);
       return tried.length ? { ...accepted, quotaRefused: tried } : accepted;
     } catch (error) {
       const quota = quotaRefusal(error);
+      // The budget bounds what a run sends, however many models it tries. Spent by turns the pool
+      // refused for quota, the run ends as that refusal, never as a failed acceptance, which would
+      // stop a release for the wrong reason.
+      if (!quota && tried.length && turnBudgetSpent(error)) {
+        spentOn = model;
+        break;
+      }
       if (!quota) throw error;
       if (quota === "model_cooldown") cooled = true;
       tried.push(`${model}: ${turnFailure(error)}`);
       input.log(`model=${model} refused for quota; trying the next acceptance model`);
     }
+  // Every model refused, or the budget spent by those refused before another could prove a cell.
+  const refused = spentOn
+    ? `The run's turn budget ran out on ${spentOn} after the pool refused ${tried.join("; ")} for quota`
+    : `Every acceptance model the pool lists was refused for ${cooled ? "quota" : "funding"} (${tried.join("; ")})`;
   throw cooled
     ? refuse(
         cooldownRefused,
-        `Every acceptance model the pool lists was refused for quota, at least one as model_cooldown (${tried.join("; ")}). A node cools a model after its provider refuses every credential, so the cell may be what fails.`,
+        `${refused}, at least one as model_cooldown. A node cools a model after its provider refuses every credential, so the cell may be what fails.`,
         "Read the cell's log for the provider refusals; once a model has quota on the root, run the fleet lane's configure-and-accept with a new GO.",
       )
     : refuse(
         quotaRefused,
-        `Every acceptance model the pool lists was refused for funding (${tried.join("; ")}), so no turn proved a cell serves.`,
+        `${refused}, so no turn proved a cell serves.`,
         "Wait for the acceptance pool's funding, then run the fleet lane's accept mode. The permission stays as configured.",
       );
 }

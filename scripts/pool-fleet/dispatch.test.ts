@@ -6,7 +6,7 @@ import { decodeProviderApplication } from "../../src/pool/runtime-provider/appli
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runPoolFleet, stepSummary, type DispatchInput } from "./dispatch.ts";
-import { refuse } from "./errors.ts";
+import { FleetLaneRefused, refuse } from "./errors.ts";
 import { resolvedApplication } from "./test/cloudflare-shapes.ts";
 import { accountId, colours, harness, ownRow, type HarnessOptions } from "./test/harness.ts";
 import { usageRollupInspect } from "../../src/pool/model-history/usage-rollup-auto.ts";
@@ -163,6 +163,41 @@ test("no request served by a fleet cell fails the acceptance and disables the fl
     assert.equal(result.ok, false);
     assert.match(String("cause" in result && result.cause), /cell-served-proof-missing/u);
     assert.equal((await lane.configuration.inspect())?.enabled, false);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a turn budget spent by turns refused for quota ends as the quota refusal, not a failed acceptance", async () => {
+  // The first acceptance model is refused for funding (six turns); the next one's cell serves only
+  // from the nineteenth turn on, so the run's one budget runs out before that model can prove it.
+  const lane = await harness({
+    models: ["claude-opus-5-5", "gpt-6.1-sol"],
+    quota: (model) => (model === "claude-opus-5-5" ? "usage_credit_policy_denied" : undefined),
+    boot: (index, enabled) => (enabled && index >= 18 ? "cell-boot" : "primary-boot"),
+  });
+  try {
+    const deps = lane.deps();
+    if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...deps,
+      acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+    });
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /acceptance-quota-refused/u);
+    assert.match(
+      cause,
+      /turn budget ran out on gpt-6\.1-sol after the pool refused claude-opus-5-5/u,
+    );
+    assert.doesNotMatch(cause, /turn-budget|cell-served-proof-missing/u);
+    // A quota refusal leaves the permission in force, unproven, as main's quota branch does.
+    assert.equal((await lane.configuration.inspect())?.enabled, true);
+    // The budget held: nothing past it was sent.
+    assert.equal(
+      lane.modelCalls.filter(({ call }) => call === "POST /v1/chat/completions").length,
+      19,
+    );
   } finally {
     await lane.close();
   }

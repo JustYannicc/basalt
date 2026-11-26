@@ -23,6 +23,10 @@ export const capReached = () =>
     "Wait for the cap to reset or raise it for the acceptance device's user, then rerun.",
   );
 
+/** The run already sent every turn its mode may send. */
+export const turnBudgetSpent = (error: unknown) =>
+  error instanceof FleetLaneRefused && error.reason === "turn-budget";
+
 export const isCapReached = (error: unknown) =>
   error instanceof FleetLaneRefused && error.reason === "could-not-test-cap";
 
@@ -100,6 +104,8 @@ export class OwnTraffic {
   private readonly turns: number;
   /** Set by the first cap-coded 429; from then on this run sends no turn. */
   capped = false;
+  /** Turns begun, counted before each is sent, so turns started together can't pass the budget. */
+  private started = 0;
   constructor(client: TrafficClient, credential: ModelAuth, turns: number) {
     this.client = client;
     this.credential = credential;
@@ -110,7 +116,7 @@ export class OwnTraffic {
     return this.sessions.filter(({ served }) => served).map(({ id }) => id);
   }
   get turnsLeft() {
-    return this.capped ? 0 : Math.max(0, this.turns - this.sessions.length);
+    return this.capped ? 0 : Math.max(0, this.turns - this.started);
   }
   async catalog() {
     const catalog = await this.client.modelCatalog(this.credential);
@@ -119,12 +125,13 @@ export class OwnTraffic {
   }
   async turn(model: string) {
     if (this.capped) throw capReached();
-    if (this.sessions.length >= this.turns)
+    if (this.started >= this.turns)
       throw refuse(
         "turn-budget",
         `This run already sent its ${this.turns} turns, the most its mode may send.`,
         "Each turn spends a real account; change the mode's budget in turnBudgets only on purpose.",
       );
+    this.started++;
     const id = crypto.randomUUID().toLowerCase();
     try {
       const result = await this.client.sendTurn(this.credential, model, { id, expectedRecords: 1 });
