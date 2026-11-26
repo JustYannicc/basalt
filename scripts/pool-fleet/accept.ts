@@ -149,9 +149,7 @@ async function acceptOn(
   let served: { round: number; cell: number; primary: number; other: number } | undefined;
   for (let round = 1; round <= (input.rounds ?? 3) && !served; round++) {
     // Ready cells take every turn; the root serves only while no cell is ready.
-    const results = await settledBurst(
-      Array.from({ length: burst }, () => traffic.turn(model)),
-    );
+    const results = await settledBurst(Array.from({ length: burst }, () => traffic.turn(model)));
     const { primary, cells } = await observe();
     const count = { round, cell: 0, primary: 0, other: 0 };
     for (const result of results)
