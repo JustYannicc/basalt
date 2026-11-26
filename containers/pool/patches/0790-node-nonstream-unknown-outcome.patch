@@ -1,0 +1,129 @@
+diff --git a/sdk/cliproxy/auth/basalt_unknown_outcome_nonstream_test.go b/sdk/cliproxy/auth/basalt_unknown_outcome_nonstream_test.go
+new file mode 100644
+index 0000000..ee825a3
+--- /dev/null
++++ b/sdk/cliproxy/auth/basalt_unknown_outcome_nonstream_test.go
+@@ -0,0 +1,71 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"reflect"
++	"testing"
++	"time"
++
++	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
++)
++
++// A non-streamed generation whose outcome is unknown ends on its credential,
++// even when the failure behind it is credential scoped. A definitive refusal
++// before it still fails over; the caller then gets the unknown outcome itself,
++// its attempt is recorded once with its credential scope, and no later
++// credential receives the request.
++func TestSubmissionGuardEndsANonStreamedUnknownOutcomeOnItsCredential(t *testing.T) {
++	for _, homeMode := range []bool{false, true} {
++		t.Run(map[bool]string{false: "local credentials", true: "home dispatch"}[homeMode], func(t *testing.T) {
++			unknown := &httptransport.OutcomeUnknownError{Cause: credentialScopedAfterAcceptance{}}
++			executor := &afterAuthTestExecutor{
++				id: "home-retry-contract",
++				failByAuth: map[string]error{
++					"home-retry-a": credentialTerminalResponseError{error: retryContractRateLimitError{retryAfter: time.Minute}},
++					"home-retry-b": unknown,
++				},
++				markAttempt: map[string]bool{"home-retry-a": true, "home-retry-b": true},
++			}
++			hook := &recordingResultHook{}
++			manager := NewManager(nil, &FillFirstSelector{}, hook)
++			manager.SetConfig(&internalconfig.Config{Home: internalconfig.HomeConfig{Enabled: homeMode}})
++			manager.SetRetryConfig(1, 0, 3)
++			manager.RegisterExecutor(executor)
++			const model = "submission-guard-nonstream-model"
++			credentials := []string{"home-retry-a", "home-retry-b", "home-retry-c"}
++			if homeMode {
++				manager.PublishHomeDispatch(&retryContractHomeDispatcher{authIDs: credentials}, executionregistry.New(), 1)
++			} else {
++				for _, id := range credentials {
++					registry.GetGlobalRegistry().RegisterClient(id, executor.Identifier(), []*registry.ModelInfo{{ID: model}})
++					t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++					if _, errRegister := manager.Register(context.Background(), &Auth{ID: id, Provider: executor.Identifier(), Status: StatusActive}); errRegister != nil {
++						t.Fatal(errRegister)
++					}
++				}
++			}
++			_, err := manager.Execute(context.Background(), []string{executor.Identifier()}, cliproxyexecutor.Request{Model: model}, cliproxyexecutor.Options{})
++			var got *httptransport.OutcomeUnknownError
++			if !errors.As(err, &got) || got != unknown {
++				t.Errorf("caller got %v, want the unknown outcome itself", err)
++			}
++			if calls := executor.Calls(); !reflect.DeepEqual(calls, []string{"home-retry-a", "home-retry-b"}) {
++				t.Errorf("credential executions = %v, want the refusing credential, then the unknown outcome's, and no other", calls)
++			}
++			var recorded []Result
++			for _, result := range hook.Results() {
++				if result.AuthID == "home-retry-b" && !result.Success {
++					recorded = append(recorded, result)
++				}
++			}
++			if len(recorded) != 1 || !recorded[0].CredentialScope {
++				t.Errorf("unknown outcome recorded as %+v, want one failed result with its credential scope", recorded)
++			}
++		})
++	}
++}
+diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
+index 28e8d08..370e5fd 100644
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -398,6 +398,10 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
+ 			continuitySession.priorAttemptSeen = true
+ 			return resp, nil
+ 		}
++		// An unknown outcome never starts another round, whatever scope its cause has.
++		if httptransport.IsOutcomeUnknown(errExec) {
++			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
++		}
+ 		if isTerminalRequestStopError(errExec) {
+ 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
+ 		}
+@@ -1463,6 +1467,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 				}
+ 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
+ 				applyRequestScopedActionToResult(action, okAction, &result)
++				outcomeErr := errExec
+ 				if okAction && !isRequestStopError(errExec) && !isRequestScopedStop(action, okAction) {
+ 					errExec = wrapRequestScopedContinueError(errExec)
+ 				}
+@@ -1472,6 +1477,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 					m.MarkResult(execCtx, result)
+ 					errExec = annotateTrustedRetryAfterByHint(errExec)
+ 				}
++				// The request may have run: no other credential gets it, whatever scope its cause has.
++				if httptransport.IsOutcomeUnknown(outcomeErr) {
++					return cliproxyexecutor.Response{}, outcomeErr
++				}
+ 				if hasUpstreamExecutionAttempt(errExec) {
+ 					syncPreferredUpstreamError(&upstreamErr, errExec)
+ 				} else if preRefreshExecErr != nil {
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+index 9da8b56..cdb3544 100644
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -464,6 +464,13 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			}
+ 			m.reportHomeResult(execCtx, result, preparedAuth)
+ 			roundTiming.Observe(errExecute)
++			// The request may have run: no other credential gets it, whatever scope its cause has.
++			// Token counts stay replayable.
++			if !countTokens && httptransport.IsOutcomeUnknown(errExecute) {
++				releaseAttempt()
++				selection.End("outcome_unknown")
++				return cliproxyexecutor.Response{}, errExecute
++			}
+ 			if isRequestStopError(errExecute) {
+ 				errExecute = annotateTrustedRetryAfterByHint(errExecute)
+ 				syncPreferredUpstreamError(&upstreamErr, errExecute)

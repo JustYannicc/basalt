@@ -1,0 +1,354 @@
+diff --git a/e2e/query-hold.config.ts b/e2e/query-hold.config.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/query-hold.config.ts
+@@ -0,0 +1,6 @@
++import { defineConfig } from "vitest/config";
++
++/** The query hold against a real browser page and a local server, without a product target. */
++export default defineConfig({
++  test: { include: ["e2e/tests/query-hold.spec.ts"], testTimeout: 60_000 },
++});
+diff --git a/e2e/support/query-hold-fixture.ts b/e2e/support/query-hold-fixture.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/support/query-hold-fixture.ts
+@@ -0,0 +1,112 @@
++/** A real browser page and a local server for proving the query hold without a product target. */
++import { Effect, Layer } from "effect";
++import { createServer } from "node:http";
++import type { AddressInfo } from "node:net";
++import { chromium, type Page } from "playwright";
++import { Browser } from "./browser.ts";
++import { driver } from "./platform.ts";
++import { whenHeldReadsAnswer } from "./query-transition.ts";
++
++/** Answers every POST after 20 ms, `/held/error` with 503, and never answers `/held/never`. */
++export const holdFixtureServer = Effect.acquireRelease(
++  Effect.callback<{ readonly origin: string; readonly close: () => void }>((resume) => {
++    const http = createServer((request, response) => {
++      if (request.url === "/") {
++        response.writeHead(200, { "content-type": "text/html" }).end("<p>page</p>");
++        return;
++      }
++      if (request.url === "/held/never") return;
++      setTimeout(() => {
++        response
++          .writeHead(request.url === "/held/error" ? 503 : 200, {
++            "content-type": "application/json",
++          })
++          .end("{}");
++      }, 20);
++    });
++    const close = () => {
++      http.closeAllConnections();
++      http.close();
++    };
++    http.listen(0, "127.0.0.1", () =>
++      resume(
++        Effect.succeed({
++          origin: `http://127.0.0.1:${(http.address() as AddressInfo).port}`,
++          close,
++        }),
++      ),
++    );
++    return Effect.sync(close);
++  }),
++  ({ close }) => Effect.sync(close),
++);
++
++/** One page of a fresh browser, open at `origin`. */
++export const holdFixturePage = (origin: string) =>
++  Effect.acquireRelease(
++    driver("Launch the hold's browser", () => chromium.launch()),
++    (browser) => driver("Close the hold's browser", () => browser.close()).pipe(Effect.orDie),
++  ).pipe(
++    Effect.flatMap((browser) => driver("Open the hold's page", () => browser.newPage())),
++    Effect.tap((page) => driver("Load the hold's page", () => page.goto(origin))),
++  );
++
++/** The hold drives this page directly; the scenario browser's capture is not part of this. */
++export const browserOn = (page: Page) =>
++  Layer.succeed(Browser, {
++    use: (label, action) => driver(label, () => action(page)),
++    login: () => Effect.void,
++    checkpoint: () => Effect.void,
++    omitNetworkTrace: Effect.void,
++  });
++
++const send = (page: Page, paths: readonly string[]) =>
++  page.evaluate((list) => {
++    const state = window as unknown as { done?: Record<string, number> };
++    state.done ??= {};
++    for (const path of list)
++      void fetch(path, { method: "POST" }).then((response) => {
++        state.done![path] = response.status;
++      });
++  }, paths);
++
++/** Send POSTs from the page without waiting for them; the page records each answer's status. */
++export const sendFrom = (page: Page, paths: readonly string[]) =>
++  driver("Send reads from the page", () => send(page, paths));
++
++/**
++ * The same, without waiting for the page to start them: they leave while whatever runs next does,
++ * as a page's own reads do when a hold is released.
++ */
++export const sendFromNow = (page: Page, paths: readonly string[]) =>
++  Effect.sync(() => {
++    void send(page, paths).catch(() => undefined);
++  });
++
++/** The paths still without an answer once every one answered, or after five seconds. */
++export const unanswered = (page: Page, paths: readonly string[]) =>
++  driver("Wait for the reads' answers", () =>
++    page
++      .waitForFunction(
++        (list) => {
++          const done = (window as unknown as { done?: Record<string, number> }).done ?? {};
++          return list.every((path) => path in done);
++        },
++        paths,
++        { timeout: 5_000 },
++      )
++      .then(
++        () => [],
++        () =>
++          page.evaluate((list) => {
++            const done = (window as unknown as { done?: Record<string, number> }).done ?? {};
++            return list.filter((path) => !(path in done));
++          }, paths),
++      ),
++  );
++
++/** What a step would report for a held read when the page never shows its answer. */
++export const heldReadReport = (page: Page, hold: Parameters<typeof whenHeldReadsAnswer>[0]) =>
++  driver("Report the held read", () =>
++    whenHeldReadsAnswer(hold, page.locator("#never-shown").waitFor({ timeout: 2_000 })),
++  );
+diff --git a/e2e/support/query-transition.ts b/e2e/support/query-transition.ts
+--- a/e2e/support/query-transition.ts
++++ b/e2e/support/query-transition.ts
+@@ -1,10 +1,28 @@
+ import { Deferred, Effect } from "effect";
+-import type { Route } from "playwright";
++import type { Page, Route } from "playwright";
+ import { Browser } from "./browser.ts";
+ import { installClock } from "./browser-clock.ts";
+ import { driver } from "./platform.ts";
++import { keepsInterception } from "./read-batches.ts";
+ 
+ /**
++ * Keep the page's request interception on after this hold goes. While a page has any route, the
++ * driver pauses every request of that page in the browser, matched or not, and continues it from
++ * here. Removing the page's last route turns that interception off, and a request paused at that
++ * moment is never continued: it never reaches the server and never gets an answer. Released held
++ * reads and unrelated reads the page sends at release time hit this (seen in CI: a released pool
++ * read and the tool calls' read stayed unanswered). `unrouteAll({ behavior: "wait" })` only waits
++ * for running handlers and then still turns interception off, so it does not help. Each hold adds
++ * a route that never matches and never removes it, so removing a hold never removes the last
++ * route, even after a scenario's own `unrouteAll` took an earlier one away.
++ */
++const keepIntercepting = (page: Page) => page.route(keepsInterception, (route) => route.fallback());
++
++/** A held read as a step names it: method and route, without the ids in its path. */
++const heldLabel = (method: string, url: string) =>
++  `${method} ${new URL(url).pathname.replace(/\/(organizations|apps|accounts)\/[^/]+/g, "/$1/:id")}`;
++
++/**
+  * Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests.
+  * `fail` drops the connection. A direct read sees a lost connection; a routed batched read gets a
+  * synthetic failed status so other held reads cannot postpone that failure. Connection-failure
+@@ -24,6 +42,14 @@
+     const requested = yield* Deferred.make<string>();
+     const release = yield* Deferred.make<void>();
+     const active = new Set<Promise<void>>();
++    // How each held read ended once released, so a step can say why its answer never showed.
++    const ends: Array<{ readonly label: string; outcome?: string }> = [];
++    let settleFailed: (held: string) => void = () => undefined;
++    const failed = new Promise<string>((resolve) => {
++      settleFailed = resolve;
++    });
++    const describe = () =>
++      ends.map(({ label, outcome }) => `${label}: ${outcome ?? "no answer"}`).join("; ");
+     let claimed = false;
+     const match = (url: URL) =>
+       (paths instanceof RegExp ? paths.test(url.pathname) : paths.includes(url.pathname)) &&
+@@ -42,8 +68,28 @@
+             return;
+           }
+           claimed = true;
++          const end: { readonly label: string; outcome?: string } = {
++            label: heldLabel(route.request().method(), route.request().url()),
++          };
++          ends.push(end);
+           yield* Deferred.succeed(requested, new URL(route.request().url()).pathname);
+           yield* Deferred.await(release);
++          void route
++            .request()
++            .response()
++            .then(
++              (response) => {
++                const status = response?.status();
++                end.outcome =
++                  status === undefined
++                    ? `failed (${route.request().failure()?.errorText ?? "no response"})`
++                    : `answered ${status}`;
++                if (status === undefined || status < 200 || status >= 300) settleFailed(describe());
++              },
++              () => {
++                end.outcome = "failed (the page closed)";
++              },
++            );
+           yield* driver("Release the held query", () =>
+             outcome === "fail"
+               ? route.abort("failed")
+@@ -69,13 +115,38 @@
+         );
+       }).pipe(Effect.orDie),
+     );
+-    yield* browser.use("Hold the next matching query", (page) => page.route(match, intercept));
++    yield* browser.use("Hold the next matching query", (page) =>
++      keepIntercepting(page).then(() => page.route(match, intercept)),
++    );
+     return {
+       requested: Deferred.await(requested).pipe(Effect.timeout("30 seconds")),
+       release: Deferred.succeed(release, undefined),
++      /** Each held read and how it ended: `answered <status>`, `failed (...)` or `no answer`. */
++      describe,
++      /** Settles with `describe()` once a released held read ends without a 2xx answer. */
++      failed,
+     };
+   });
+ 
++/**
++ * Read what the page shows once its held reads have answered. When a held read answered with an
++ * error, or the wait ends while one never answered, the result names that read and how it ended
++ * instead, so a server's error answer and a read that never came back fail differently.
++ */
++export const whenHeldReadsAnswer = <A>(
++  hold: { readonly describe: () => string; readonly failed: Promise<string> },
++  shown: Promise<A>,
++) =>
++  Promise.race([
++    hold.failed.then((held): { readonly held: string } => ({ held })),
++    shown.then(
++      (value): { readonly value: A } => ({ value }),
++      (error: unknown): { readonly held: string } => ({
++        held: `${hold.describe()} (${error instanceof Error ? error.name : "wait failed"})`,
++      }),
++    ),
++  ]);
++
+ /** Deliver the browser visibility event consumed by mounted focus-refresh queries. */
+ export const refreshVisiblePage = Effect.flatMap(Browser, (browser) =>
+   browser.use("Return to the visible page", (page) =>
+diff --git a/e2e/support/read-batches.ts b/e2e/support/read-batches.ts
+--- a/e2e/support/read-batches.ts
++++ b/e2e/support/read-batches.ts
+@@ -206,6 +206,13 @@
+ 
+ const binding = "__executorRoutedReads";
+ 
++/**
++ * A route matcher that never matches. The query hold keeps one on its page so that removing its own
++ * route never turns the page's request interception off. No read matches it, so it splits no
++ * batch and is not counted as an active test route.
++ */
++export const keepsInterception = () => false;
++
+ /** Split every batch pages of `context` send so that reads test routes match leave it. */
+ export const splitRoutedReads = (context: BrowserContext, base: string) => {
+   const active = new Map<Matcher, number>();
+@@ -214,11 +221,14 @@
+     const route = target.route.bind(target);
+     const unroute = target.unroute.bind(target);
+     target.route = (url, ...rest) =>
+-      route(url, ...rest).then(() => {
+-        active.set(url, (active.get(url) ?? 0) + 1);
+-      });
++      url === keepsInterception
++        ? route(url, ...rest)
++        : route(url, ...rest).then(() => {
++            active.set(url, (active.get(url) ?? 0) + 1);
++          });
+     target.unroute = (url, ...rest) =>
+       unroute(url, ...rest).then(() => {
++        if (url === keepsInterception) return;
+         const count = (active.get(url) ?? 1) - 1;
+         if (count > 0) active.set(url, count);
+         else active.delete(url);
+diff --git a/e2e/tests/query-hold.spec.ts b/e2e/tests/query-hold.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/query-hold.spec.ts
+@@ -0,0 +1,69 @@
++/** The query hold against a real browser page and a local server, without a product target. */
++import { expect, layer } from "@effect/vitest";
++import * as NodeServices from "@effect/platform-node/NodeServices";
++import { Effect } from "effect";
++import {
++  browserOn,
++  heldReadReport,
++  holdFixturePage,
++  holdFixtureServer,
++  sendFrom,
++  sendFromNow,
++  unanswered,
++} from "../support/query-hold-fixture.ts";
++import { holdQuery } from "../support/query-transition.ts";
++
++layer(NodeServices.layer, { excludeTestServices: true })("Query hold", (it) => {
++  it.effect("removing a hold leaves no request unanswered, held or sent while it is removed", () =>
++    Effect.gen(function* () {
++      const { origin } = yield* holdFixtureServer;
++      const page = yield* holdFixturePage(origin);
++      // Each round holds three reads, releases them while an unrelated read is sent, and
++      // removes the hold. Before the hold kept the page intercepting, 300 rounds always met a
++      // read that never got an answer, at round 55 to 100 in eight runs.
++      for (let round = 0; round < 300; round++) {
++        const held = [1, 2, 3].map((n) => `/held/${round}-${n}`);
++        const other = `/other/${round}`;
++        yield* Effect.scoped(
++          Effect.gen(function* () {
++            yield* holdQuery(/^\/held\//, "continue", { method: "POST", allRequests: true });
++            yield* sendFrom(page, held);
++            // Finalizers run last-added first: this starts the unrelated read just before the
++            // hold's own finalizer releases and removes the hold, so it is in flight meanwhile.
++            yield* Effect.addFinalizer(() => sendFromNow(page, [other]));
++          }),
++        ).pipe(Effect.provide(browserOn(page)));
++        expect(
++          yield* unanswered(page, [...held, other]),
++          `round ${round}: requests that never answered`,
++        ).toEqual([]);
++      }
++    }).pipe(Effect.scoped),
++  );
++
++  it.effect("a held read's error answer and a read that never answers are named apart", () =>
++    Effect.gen(function* () {
++      const { origin } = yield* holdFixtureServer;
++      const page = yield* holdFixturePage(origin);
++      const report = (path: string) =>
++        Effect.scoped(
++          Effect.gen(function* () {
++            const hold = yield* holdQuery([path], "continue", {
++              method: "POST",
++              allRequests: true,
++            });
++            yield* sendFrom(page, [path]);
++            yield* hold.requested;
++            return hold;
++          }),
++        ).pipe(
++          Effect.provide(browserOn(page)),
++          Effect.flatMap((hold) => heldReadReport(page, hold)),
++        );
++      expect(yield* report("/held/error")).toEqual({ held: "POST /held/error: answered 503" });
++      expect(yield* report("/held/never")).toEqual({
++        held: "POST /held/never: no answer (TimeoutError)",
++      });
++    }).pipe(Effect.scoped),
++  );
++});
