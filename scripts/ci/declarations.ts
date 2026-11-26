@@ -35,7 +35,12 @@ const choice = <T extends string>(value: unknown, choices: readonly T[]): T => {
 const json = (path: string): unknown => JSON.parse(readFileSync(path, "utf8"));
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export function readDeclarations(root = repository) {
+/**
+ * `inputs: false` skips matching each declared input against the frozen repository inputs, which
+ * lists every carry through git. Only readers that never use `inputs` may skip it; the
+ * declarations' own checks always match them.
+ */
+export function readDeclarations(root = repository, { inputs: checkInputs = true } = {}) {
   let matchesInput: ReturnType<typeof frozenInputMatcher> | undefined;
   const manualTargets = Object.fromEntries(
     Object.entries(
@@ -144,7 +149,7 @@ export function readDeclarations(root = repository) {
         const inputs = source.inputs === undefined ? [] : strings(source.inputs);
         if (inputs.some((path) => !isRelativeInput(path)))
           throw new Error(file + ": input escapes the repository");
-        for (const input of inputs) {
+        for (const input of checkInputs ? inputs : []) {
           matchesInput ??= frozenInputMatcher(root);
           if (!matchesInput(input))
             throw new Error(file + ": input matches no frozen source or carried target: " + input);
@@ -201,8 +206,12 @@ export function readDeclarations(root = repository) {
   return { groups, files, manualTargets };
 }
 
-export function patternForGroup(group: string, file?: string, root = repository) {
-  const declarations = readDeclarations(root);
+export function patternForGroup(
+  group: string,
+  file?: string,
+  root = repository,
+  declarations = readDeclarations(root),
+) {
   if (!declarations.groups[group]) throw new Error("Unknown e2e group: " + group);
   const titles = Object.entries(declarations.files).flatMap(([name, entry]) =>
     file !== undefined && file !== name

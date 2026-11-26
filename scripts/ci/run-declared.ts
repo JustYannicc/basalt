@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runBounded, type Bounds } from "./bounded-process.ts";
+import { runBounded, type BoundedExit, type Bounds } from "./bounded-process.ts";
 import { collectNewE2eEvidence, runNames } from "./collect-e2e-evidence.mjs";
 import {
   annotation,
@@ -46,7 +46,14 @@ export type Options = Omit<Bounds, "log"> & {
   ownsDocker?: boolean;
 };
 
-export type Attempt = { attempt: number; outcome: Outcome; seconds: number; code: number | null };
+export type Attempt = {
+  attempt: number;
+  outcome: Outcome;
+  seconds: number;
+  code: number | null;
+  /** Why processes this attempt started may still be running. */
+  leftover?: string;
+};
 /** Outcome and exit code are the last attempt's; `seconds` sums every attempt. */
 export type DeclaredResult = DeclaredRun & {
   outcome: Outcome;
@@ -58,9 +65,11 @@ export type DeclaredResult = DeclaredRun & {
 
 /**
  * Only a plain failure gets one more attempt. A file that hangs stays a failure rather than
- * spending another deadline, and a cancelled shard has no time left for one.
+ * spending another deadline, and a cancelled shard has no time left for one. A file that may have
+ * left processes running would start its retry beside them, so it is not retried either.
  */
-const retryable = (attempt: Attempt) => attempt.attempt === 1 && attempt.outcome === "failed";
+const retryable = (attempt: Attempt) =>
+  attempt.attempt === 1 && attempt.outcome === "failed" && attempt.leftover === undefined;
 
 /** Resolve every pair before anything runs, so a bad row fails without a partial shard. */
 export function resolveRuns(runs: readonly DeclaredRun[], root: string) {
@@ -121,7 +130,7 @@ async function runAttempt(
       ? [join(options.root, "scripts/ci/with-published-frameworks.ts"), "--", "bun"]
       : [];
   const started = Date.now();
-  const exit = options.signal?.aborted
+  const exit: BoundedExit = options.signal?.aborted
     ? { code: null, stopped: "cancelled" as const }
     : await runBounded(
         wrapper.length > 0 ? "node" : "bun",
@@ -140,10 +149,14 @@ async function runAttempt(
       );
   const result: Attempt = {
     attempt,
-    outcome: exit.stopped ?? (exit.code === 0 ? "passed" : "failed"),
+    // Processes it may have left running could break the next file, so such a run never passes.
+    outcome: exit.stopped ?? (exit.code === 0 && !exit.leftover ? "passed" : "failed"),
     seconds: Math.round((Date.now() - started) / 1000),
     code: exit.code,
+    ...(exit.leftover && { leftover: exit.leftover }),
   };
+  if (exit.leftover)
+    log(`::error::${runKey(run)} may have left processes running: ${exit.leftover}`);
   try {
     await collectNewE2eEvidence(roots, before, join(destination, attemptDirectory(attempt)));
   } catch (error) {
