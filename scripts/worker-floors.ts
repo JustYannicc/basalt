@@ -11,32 +11,35 @@ type Finding = {
 };
 
 /**
- * Bytes each Worker keeps free under its upload budget (upstream's `uploadBudgets`). The budget
- * stops a deploy; the fail level stops a pull request first, so the room under it is left for what
- * no single pull request is checked against: a batch of changes that each pass alone, an upstream
- * sync, or a fix that has to ship. The warn level names the growth while the change still passes.
+ * Shares of its upload budget (upstream's `uploadBudgets`) each Worker keeps free. The budget
+ * stops a deploy; the fail level stops every Check first, pull requests and batches alike, so the
+ * band between the two is never spent by accident: a change that has to use it lowers the floor
+ * here, where review sees it. The warn level names the growth while the change still passes.
  * Others warn below 5% left, where upstream's report flags a Worker low, and fail below 3%.
  */
 export const uploadFloors: Readonly<Record<string, Floor>> = {
   // The dashboard grows with every page. A tenth stays free; the band above it holds several
-  // pages' growth, so the trend shows for a while before a pull request fails.
-  dashboard: { warn: 585_000, fail: 390_000 },
-  "app-pages": { warn: 100_000, fail: 75_000 },
+  // pages' growth, so the trend shows for a while before a change fails.
+  dashboard: { warn: 0.15, fail: 0.1 },
+  "app-pages": { warn: 0.04, fail: 0.03 },
 };
-const defaultShares = { warn: 0.05, fail: 0.03 };
+const defaultShares: Floor = { warn: 0.05, fail: 0.03 };
 
-export const floorOf = (upload: Upload): Floor =>
-  uploadFloors[upload.worker] ?? {
-    warn: Math.ceil(upload.budget * defaultShares.warn),
-    fail: Math.ceil(upload.budget * defaultShares.fail),
+/** A Worker's warn and fail levels in bytes left; rounding absorbs the shares' float error. */
+export const floorOf = (upload: Upload): Floor => {
+  const shares = uploadFloors[upload.worker] ?? defaultShares;
+  return {
+    warn: Math.round(upload.budget * shares.warn),
+    fail: Math.round(upload.budget * shares.fail),
   };
+};
 
 const bytes = (value: number) => value.toLocaleString("en-US");
 
 /**
  * A Worker below its warn level warns, and below its fail level fails, when the change added bytes
  * to it or the base's sizes are unknown. A change that did not grow a Worker already below its
- * fail level only warns, so one oversized base does not fail every unrelated pull request.
+ * fail level only warns, so one oversized base does not fail every unrelated change.
  */
 export function checkFloors(
   head: Iterable<Upload>,

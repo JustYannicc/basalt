@@ -9,10 +9,16 @@ const upload = (worker: string, bytes: number, budget: number) => ({ worker, byt
 const base = (...uploads: ReturnType<typeof upload>[]) =>
   new Map(uploads.map((entry) => [entry.worker, entry]));
 
-test("each Worker has a warn level above its fail level", () => {
-  assert.deepEqual(uploadFloors.dashboard, { warn: 585_000, fail: 390_000 });
-  assert.deepEqual(uploadFloors["app-pages"], { warn: 100_000, fail: 75_000 });
+test("each Worker's levels are its shares of its own budget, warn above fail", () => {
+  assert.deepEqual(floorOf(upload("dashboard", 0, 3_900_000)), { warn: 585_000, fail: 390_000 });
+  assert.deepEqual(floorOf(upload("app-pages", 0, 2_500_000)), { warn: 100_000, fail: 75_000 });
   assert.deepEqual(floorOf(upload("app-data", 0, 700_000)), { warn: 35_000, fail: 21_000 });
+  // A budget an upstream sync changes moves the levels with it.
+  assert.deepEqual(floorOf(upload("dashboard", 0, 4_500_000)), { warn: 675_000, fail: 450_000 });
+  for (const worker of [...Object.keys(uploadFloors), "any-other"]) {
+    const floor = floorOf(upload(worker, 0, 1_000_000));
+    assert.ok(floor.warn > floor.fail && floor.fail > 0, worker);
+  }
 });
 
 test("a Worker below its fail level fails with the bytes the change added", () => {

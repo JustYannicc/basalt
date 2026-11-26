@@ -43,7 +43,8 @@ test("every Check's fast job builds the Workers and fails one left under its flo
   const save = index(
     (step) => step.uses === "./.github/actions/worker-upload-base" && step.with?.mode === "save",
   );
-  assert.ok(generated < restore && restore < build && build < floors && floors < save);
+  // main keeps its sizes even when its own floor check fails, so later changes have a base.
+  assert.ok(generated < restore && restore < build && build < save && save < floors);
   // Every lane runs them: a pull request's fast lane is the only Check it gets before its batch.
   for (const step of [restore, build, floors, save]) assert.equal(steps[step]!.if, undefined);
   assert.equal(steps[restore]!.with!.base, "${{ steps.comparison.outputs.base_sha }}");
