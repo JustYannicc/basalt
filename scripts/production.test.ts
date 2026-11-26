@@ -33,17 +33,17 @@ test("the class switch only turns the fleet's classes on, and each state has one
 });
 
 test("the route gateway's class stays declared once PoolWorker hosts it, and is unset before", () => {
-  assert.deepEqual(routeGatewayEnvironment([]), { ROUTE_GATEWAY_CLASS: undefined });
+  assert.deepEqual(routeGatewayEnvironment([]), { ROUTE_GATEWAY_CLASS: "absent" });
   assert.deepEqual(routeGatewayEnvironment(["PoolLedger", "PoolRuntimeBlue"]), {
-    ROUTE_GATEWAY_CLASS: undefined,
+    ROUTE_GATEWAY_CLASS: "absent",
   });
   assert.deepEqual(routeGatewayEnvironment(["PoolLedger", "RouteGateway"]), {
     ROUTE_GATEWAY_CLASS: "declared",
   });
-  // Unset means removed: an ambient value cannot declare the class through an ordinary deploy.
+  // An ambient value cannot declare the class through an ordinary deploy, whatever the stack's default.
   const env: Record<string, string | undefined> = { ROUTE_GATEWAY_CLASS: "declared" };
   assignEnvironment(env, routeGatewayEnvironment([]));
-  assert.equal("ROUTE_GATEWAY_CLASS" in env, false);
+  assert.equal(env.ROUTE_GATEWAY_CLASS, "absent");
 });
 
 test("a failed smoke re-points every Worker the apply uploads, and nothing else", () => {

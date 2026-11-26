@@ -173,8 +173,9 @@ jobs:
       # whose check is a class change stops the same way and is never rolled back.
       - name: Read the policy's check mode
         run: |
-          mode="$(jq -er '.check.mode | strings | select(. != "")' "$POLICY")" || {
-            echo "::error::Could not read check.mode from $POLICY: the policy file is missing or names no mode."
+          # Only a plain mode word reaches GITHUB_ENV: a newline in it would set another variable.
+          mode="$(jq -er '.check.mode | strings | select(test("\\A[a-z-]+\\z"))' "$POLICY")" || {
+            echo "::error::Could not read check.mode from $POLICY: jq is missing, the policy file is missing, or it names no plain mode."
             exit 1
           }
           echo "POLICY_MODE=$mode" >> "$GITHUB_ENV"

@@ -33,13 +33,13 @@ export const fleetEnvironment = (declared: boolean): Record<string, string | und
 
 /**
  * The route gateway's class is declared only by its own release policy. Once PoolWorker hosts it,
- * every deploy keeps it declared, or the plan would drop the class and refuse; until then the
- * stack's own default applies.
+ * every deploy keeps it declared, or the plan would drop the class and refuse; until then it is
+ * absent, whatever the stack's own default is, as the fleet's classes are.
  */
 export const routeGatewayEnvironment = (
   hosted: readonly string[],
 ): Record<string, string | undefined> => ({
-  ROUTE_GATEWAY_CLASS: hosted.includes("RouteGateway") ? "declared" : undefined,
+  ROUTE_GATEWAY_CLASS: hosted.includes("RouteGateway") ? "declared" : "absent",
 });
 
 type Wire = { type?: unknown; className?: unknown; scriptName?: unknown };
