@@ -28,7 +28,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { stackConfig } from "./stack-config.ts";
+import { stackConfig, stackRunsOn } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
@@ -71,6 +71,9 @@ resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
 const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
+// Before the stage checks below, the environment and any read: a stack runs only on its own stages.
+if (command !== "compare" && !scaleStack && !stackRunsOn(config, stage))
+  throw new Error(`The stack ${config} does not run on stage ${stage || "(none)"}`);
 
 if (command !== "compare") {
   if (stage === "production") {
