@@ -5,7 +5,13 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { rerunDecision, type RerunJob, type Run } from "./ci/box-rerun.ts";
+import {
+  cancelledBy,
+  heldCanceller,
+  rerunDecision,
+  type RerunJob,
+  type Run,
+} from "./ci/box-rerun.ts";
 import { boxSettings, heartbeatMarker, heartbeatPath } from "./ci/box-router.ts";
 import {
   checkRunsOn,
@@ -547,24 +553,35 @@ const rerunJob = (
   completedAt: ago(1),
 });
 const cancelledRun: Run = { id: 7, attempt: 1, conclusion: "cancelled" };
-const decideLight = (jobs: RerunJob[], superseded = false, boxUp: boolean | undefined = false) =>
-  rerunDecision(cancelledRun, undefined, jobs, "basalt-box", superseded, boxUp);
+const rescuer = "github-actions[bot]";
+const decideLight = (
+  jobs: RerunJob[],
+  superseded = false,
+  canceller: string | undefined = rescuer,
+) => rerunDecision(cancelledRun, undefined, jobs, "basalt-box", superseded, canceller);
 
-test("box-rerun re-runs a Check whose light job waited for a runner while the box was not up", () => {
+test("box-rerun re-runs a Check whose light job waited for a runner, unless a person cancelled it", () => {
   const stranded = rerunJob(1, "select", [label], "cancelled", queuedMinutes);
   const hosted = rerunJob(2, "fast", ["ubuntu-latest"], "cancelled", 10, "GitHub Actions 1");
   assert.deepEqual(decideLight([stranded, hosted]), { action: "rerun", stuck: [1] });
-  // A heartbeat that can't be read counts as not up: a rescued run is never left cancelled.
+  // A cancel whose author can't be read is re-run: a rescued run is never left cancelled.
   assert.equal(decideLight([stranded], false, undefined).action, "rerun");
   // GitHub reports a never-run job's runner as "", not null.
   assert.deepEqual(decideLight([{ ...stranded, runnerName: "" }]), { action: "rerun", stuck: [1] });
   // Any label with the light suffix counts, whatever the variable says now.
   assert.equal(decideLight([{ ...stranded, labels: ["Other-Light"] }]).action, "rerun");
-  // A light runner that took it only after the wait, in the seconds before the cancel landed.
+  // A light runner that took it only after the wait, in the seconds before the cancel landed; the
+  // rescue's listing lags, so from a minute before the wait.
+  for (const waited of [queuedMinutes, queuedMinutes - 1])
+    assert.equal(
+      decideLight([rerunJob(1, "select", [label], "cancelled", waited, "basalt-box-16")]).action,
+      "rerun",
+      String(waited),
+    );
   assert.equal(
-    decideLight([rerunJob(1, "select", [label], "cancelled", queuedMinutes, "basalt-box-16")])
+    decideLight([rerunJob(1, "select", [label], "cancelled", queuedMinutes - 1.1, "box-16")])
       .action,
-    "rerun",
+    "none",
   );
   // Not long enough, taken in time, not cancelled, or no light job: not the rescue's state.
   for (const job of [
@@ -574,10 +591,10 @@ test("box-rerun re-runs a Check whose light job waited for a runner while the bo
     rerunJob(1, "fast", ["ubuntu-latest"], "cancelled", 10),
   ])
     assert.equal(decideLight([job, hosted]).action, "none", JSON.stringify(job));
-  // With the box up, the light runners were only busy, and a person's cancel stands.
-  assert.deepEqual(decideLight([stranded], false, true), {
+  // A person's cancel stands, whatever the box shows: the cancel's own record decides.
+  assert.deepEqual(decideLight([stranded], false, "a-person"), {
     action: "none",
-    why: "the box is up, so its light runners were only busy and the cancel was a person's",
+    why: "@a-person cancelled it, not the light rescue, and that cancel stands",
   });
   // Only a cancelled first attempt.
   for (const run of [
@@ -608,10 +625,49 @@ test("box-rerun re-runs a Check whose light job waited for a runner while the bo
   });
 });
 
+test("box-rerun reads who cancelled a held run from its job's annotations", async () => {
+  const note = (message: string) => ({ annotation_level: "failure", message });
+  assert.equal(
+    cancelledBy([note("The run was canceled forcefully by @github-actions[bot].")]),
+    rescuer,
+  );
+  assert.equal(cancelledBy([note("The run was canceled by @a-person.")]), "a-person");
+  for (const notes of [
+    [note("Canceling since a higher priority waiting request for 'x' exists")],
+    [note("The operation was canceled.")],
+    [],
+    { message: "not a list" },
+  ])
+    assert.equal(cancelledBy(notes), undefined, JSON.stringify(notes));
+  // Only a run with a light job held is read, from that job's own check run; an error is unknown.
+  const held = [rerunJob(41, "select", [label], "cancelled", 5)];
+  const reads: string[] = [];
+  const answering = (body: unknown) => ({
+    call: async () => new Response("{}"),
+    json: async <T>(path: string) => {
+      reads.push(path);
+      if (body instanceof Error) throw body;
+      return body as T;
+    },
+  });
+  assert.equal(
+    await heldCanceller(answering([note("The run was canceled by @a-person.")]), held),
+    "a-person",
+  );
+  assert.deepEqual(reads, ["/check-runs/41/annotations?per_page=50"]);
+  assert.equal(await heldCanceller(answering(new Error("502")), held), undefined);
+  reads.length = 0;
+  assert.equal(
+    await heldCanceller(answering([]), [rerunJob(42, "fast", ["x"], "cancelled", 5)]),
+    undefined,
+  );
+  assert.deepEqual(reads, []);
+});
+
 test("box-rerun reads a rescued run's jobs as GitHub lists them", async () => {
   // A job cancelled while queued, as GitHub returns it: no runner, started at its creation.
   const page = {
-    total_count: 2,
+    total_count: 3,
     jobs: [
       {
         id: 31,
@@ -622,6 +678,18 @@ test("box-rerun reads a rescued run's jobs as GitHub lists them", async () => {
         runner_name: "",
         created_at: ago(9),
         started_at: ago(9),
+        completed_at: ago(1),
+      },
+      // One a light runner took as the cancel landed: its start, not its end, measures the wait.
+      {
+        id: 33,
+        name: "check",
+        conclusion: "cancelled",
+        labels: [label],
+        runner_id: 16,
+        runner_name: "basalt-box-16",
+        created_at: ago(9),
+        started_at: ago(2),
         completed_at: ago(1),
       },
       {
@@ -645,9 +713,9 @@ test("box-rerun reads a rescued run's jobs as GitHub lists them", async () => {
     },
   };
   const jobs = await attemptJobs(github, cancelledRun);
-  assert.deepEqual(rerunDecision(cancelledRun, undefined, jobs, "basalt-box", false, false), {
+  assert.deepEqual(rerunDecision(cancelledRun, undefined, jobs, "basalt-box", false, rescuer), {
     action: "rerun",
-    stuck: [31],
+    stuck: [31, 33],
   });
 });
 

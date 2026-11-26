@@ -310,7 +310,7 @@ test("box-rerun runs the default branch's file after a cancelled Check, with not
       "github.event.workflow_run.run_attempt == 1 && " +
       "github.event.workflow_run.head_repository.full_name == github.repository",
   );
-  assert.deepEqual(job.permissions, { actions: "write", contents: "read" });
+  assert.deepEqual(job.permissions, { actions: "write", checks: "read", contents: "read" });
   const download = job.steps.find((step: { uses?: string }) =>
     step.uses?.startsWith("actions/download-artifact"),
   );
