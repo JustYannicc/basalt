@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway.poolMembership {
+    metadata {
+      constraint "The pool Worker's organization check keeps its answer: 204 for an existing organization without a tombstone, 403 otherwise, 503 on failure. For an existing organization it also evaluates the native membership read's registration rule: the organization's pool records name the pool and the organization owns that app. Where the rule would refuse, the tools Worker logs one warning, Pool organization would be refused, with only the pool id, the organization id and a closed shape: deleted-pool, cleared-association, foreign-owner, no-record, other-organization or invalid-metadata. A failure of the rule or of the shape read is swallowed and never changes the answer; a failed rule read is reported only when the organization's metadata cannot be read as the rule reads it. Enforcing the rule is a separate later change."
+    }
+  }
+}

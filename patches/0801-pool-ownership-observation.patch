@@ -1,0 +1,121 @@
+diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+--- a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
++++ b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
+@@ -24,6 +24,10 @@ const poolRegistrations = (organization: string, pool: AppId) =>
+     return yield* Schema.decodeUnknownEffect(Schema.Array(Registration))(rows);
+   });
+ 
++/** The organization owns the pool by the registration rule, whatever kind of record names it. */
++export const organizationOwnsPool = (organization: string, pool: AppId) =>
++  Effect.map(poolRegistrations(organization, pool), (registrations) => registrations.length > 0);
++
+ const handoff = (pool: AppId) =>
+   Effect.gen(function* () {
+     const lifecycle = yield* AccessLifecycle;
+diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
+--- a/apps/hosted/server/src/implementation/pool-organization.ts
++++ b/apps/hosted/server/src/implementation/pool-organization.ts
+@@ -1,10 +1,12 @@
+ import { AppId } from "@executor-js/sdk/core";
+-import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
++import { Clock, Config, Effect, Exit, Option, Redacted, Schema } from "effect";
+ import { HttpServerRequest, HttpServerResponse } from "effect/http";
+-import { OrganizationId } from "../contracts/organization.ts";
++import { SqlClient } from "effect/sql";
++import { OrganizationId, organizationOwner } from "../contracts/organization.ts";
+ import { OrganizationTombstones } from "../contracts/organization-removal.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
++import { organizationOwnsPool } from "./pool-membership-reconcile.ts";
+ 
+ export const poolOrganizationReadPath = "/api/internal/pool-organization";
+ const Read = Schema.Struct({
+@@ -14,6 +16,80 @@ const Read = Schema.Struct({
+   expiresAt: Schema.Finite,
+ });
+ 
++type Refusal =
++  | "deleted-pool"
++  | "cleared-association"
++  | "foreign-owner"
++  | "no-record"
++  | "other-organization"
++  | "invalid-metadata";
++const Facts = Schema.Array(
++  Schema.Struct({ metadata: Schema.NullOr(Schema.String), owner: Schema.NullOr(Schema.String) }),
++);
++const Metadata = Schema.fromJsonString(Schema.Unknown);
++const isRecord = (value: unknown): value is Record<string, unknown> =>
++  typeof value === "object" && value !== null && !Array.isArray(value);
++
++/** The pools an organization records, read as the ownership rule reads them; undefined where it fails. */
++const recordedPools = (metadata: string | null) => {
++  if (metadata === null) return {};
++  const parsed = Schema.decodeUnknownOption(Metadata)(metadata);
++  if (Option.isNone(parsed)) return undefined;
++  if (!isRecord(parsed.value) || parsed.value.basaltPools === undefined) return {};
++  return isRecord(parsed.value.basaltPools) ? parsed.value.basaltPools : undefined;
++};
++
++/** Why the ownership rule would refuse an existing organization; undefined when nothing says why. */
++const refusal = (
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  pool: AppId,
++  ruleFailed: boolean,
++) =>
++  Effect.gen(function* () {
++    const [facts] = yield* sql`select o.metadata,
++        (select app.owner from executor_apps app where app.id = ${pool}) as owner
++      from organization o where o.id = ${organization}`.pipe(
++      Effect.flatMap(Schema.decodeUnknownEffect(Facts)),
++    );
++    if (facts === undefined) return undefined;
++    const pools = recordedPools(facts.metadata);
++    if (pools === undefined) return "invalid-metadata" satisfies Refusal;
++    // A transient failure of the rule's read says nothing about ownership.
++    if (ruleFailed) return undefined;
++    const recorded = Object.values(pools).some((record) => isRecord(record) && record.app === pool);
++    const ours = facts.owner === organizationOwner(organization);
++    const shape: Refusal | undefined = recorded
++      ? facts.owner === null
++        ? "deleted-pool"
++        : ours
++          ? undefined
++          : "foreign-owner"
++      : facts.owner === null
++        ? "cleared-association"
++        : ours
++          ? "no-record"
++          : "other-organization";
++    return shape;
++  });
++
++/**
++ * The ownership rule answers nothing yet: it only reports, once per read, an existing organization it
++ * would refuse, so live pools prove the rule before it decides. Nothing it does can change the answer.
++ */
++const observeOwnership = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
++  Effect.gen(function* () {
++    const owns = yield* Effect.exit(
++      organizationOwnsPool(organization, pool).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      ),
++    );
++    if (Exit.isSuccess(owns) && owns.value) return;
++    const shape = yield* refusal(sql, organization, pool, Exit.isFailure(owns));
++    if (shape !== undefined)
++      yield* Effect.logWarning("Pool organization would be refused", { pool, organization, shape });
++  }).pipe(Effect.catchCause(() => Effect.void));
++
+ /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
+ export const readPoolOrganization = Effect.gen(function* () {
+   const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
+@@ -32,6 +108,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+   if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
+   const sql = yield* policyDatabase;
+   const rows = yield* sql`select id from organization where id = ${value.organization}`;
++  if (rows.length === 1) yield* observeOwnership(sql, value.organization, value.pool);
+   return HttpServerResponse.empty({
+     status: rows.length === 1 ? 204 : 403,
+     headers: { "cache-control": "no-store" },
