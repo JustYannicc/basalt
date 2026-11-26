@@ -35,6 +35,33 @@ export function retirePlan(stages: readonly NumberedStageRows[]) {
   return { lines, candidates };
 }
 
+/** The row that refused a stage and what it names. Private output only: it can name any value. */
+export type RefusalDetail = {
+  readonly path: string;
+  readonly type: string | null;
+  readonly key: string | null;
+  readonly value: string | null;
+};
+/** Why a stage is left: `line` names a kind and a key only, so it can go public; `detail` cannot. */
+export type Refusal = { readonly line: string; readonly detail: RefusalDetail };
+
+const refusal = (
+  line: string,
+  path: string,
+  type: string,
+  key: string | null = null,
+  value: unknown = null,
+): Refusal => ({
+  line,
+  detail: { path, type: type || null, key, value: typeof value === "string" ? value : null },
+});
+
+/**
+ * A stack's own output row (`<stack>/<stage>/output`): the values the stack exports, kept apart
+ * from its resources. A destroy sends no provider request for it, and its read never lists it.
+ */
+export const isStackOutput = (path: string) => /^[^/]+\/[^/]+\/output$/u.test(path);
+
 /**
  * Proves from the rows that no Postgres database this stage's destroy deletes is production's: the
  * row's recorded name is the one this stage derives, it is not production's, and neither its name
@@ -44,18 +71,29 @@ export function databaseRefusal(
   rows: readonly PreviewStateEntry[],
   stageDatabase: string,
   production: readonly { readonly id?: string; readonly name?: string }[],
-): string | undefined {
-  for (const { value } of rows) {
+): Refusal | undefined {
+  for (const { path, value } of rows) {
+    if (isStackOutput(path)) continue;
     const row = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-    if (row.resourceType !== "Planetscale.PostgresDatabase") continue;
+    const type = row.resourceType;
+    if (type !== "Planetscale.PostgresDatabase") continue;
     const attr =
       row.attr && typeof row.attr === "object" ? (row.attr as Record<string, unknown>) : {};
     const name = typeof attr.name === "string" ? attr.name : undefined;
     const id = typeof attr.id === "string" ? attr.id : undefined;
     if (!name || name !== stageDatabase || name === deployment.databaseName)
-      return "a Postgres database row does not name this stage's own database";
-    if (production.some((database) => database.name === name || (id && database.id === id)))
-      return "a Postgres database row records one of production's databases";
+      return refusal(
+        "a Postgres database row does not name this stage's own database",
+        path,
+        type,
+        "name",
+        name,
+      );
+    const line = "a Postgres database row records one of production's databases";
+    if (production.some((database) => database.name === name))
+      return refusal(line, path, type, "name", name);
+    if (id && production.some((database) => database.id === id))
+      return refusal(line, path, type, "id", id);
   }
   return undefined;
 }
@@ -127,54 +165,144 @@ export async function ownershipRefusal(
   stage: string,
   stageDatabase: string,
   production: ReadonlySet<string>,
-): Promise<string | undefined> {
+): Promise<Refusal | undefined> {
   const slug = stage.slice("test-".length);
   const token = new RegExp(`(?:^|-)${stage}(?:-|$)`, "u");
   const anyStage = /(?:^|-)test-rehearsal-[0-9]+(?:-|$)/u;
   const ownHost = (host: string) =>
     host === slug || host.startsWith(`${slug}.`) || host.includes(`.${slug}.`);
-  for (const { value } of rows) {
-    if (!record(value)) continue;
+  for (const { path, value } of rows) {
+    // The stack's exported outputs: no resource, nothing a destroy deletes, so nothing to prove.
+    if (isStackOutput(path) || !record(value)) continue;
     const type = String(value.resourceType ?? "");
     if (SHARED_TYPES.test(type) || LOCAL_TYPES.test(type)) continue;
+    const kind = type ? `a ${type} row` : "a row with no type";
+    const refuse = (line: string, key?: string, named?: unknown) =>
+      refusal(line, path, type, key ?? null, named);
     const attr = record(value.attr) ? value.attr : {};
     if (type.startsWith("Planetscale.")) {
-      const database = typeof attr.database === "string" ? attr.database : attr.name;
-      if (database !== stageDatabase)
-        return `a ${type} row lives outside this stage's own database`;
+      const key = typeof attr.database === "string" ? "database" : "name";
+      if (attr[key] !== stageDatabase)
+        return refuse(`${kind} lives outside this stage's own database`, key, attr[key]);
       continue;
     }
-    if (!type.startsWith("Cloudflare.")) return `a ${type} row is of a kind this path cannot prove`;
+    if (!type.startsWith("Cloudflare."))
+      return refuse(`${kind} is of a kind this path cannot prove`);
     const strings = Object.entries(attr).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "",
     );
-    if (strings.some(([key, named]) => (isIdKey(key) || isNameKey(key)) && production.has(named)))
-      return `a ${type} row records an id or name production's State records`;
+    const recorded = strings.find(
+      ([key, named]) => (isIdKey(key) || isNameKey(key)) && production.has(named),
+    );
+    if (recorded)
+      return refuse(`${kind} records an id or name production's State records`, ...recorded);
     let derived: string[] | undefined;
     for (const [key, named] of strings) {
       if (!isNameKey(key)) continue;
+      const foreign = refuse(
+        `${kind} names an object that is not this stage's (${key})`,
+        key,
+        named,
+      );
       if (anyStage.test(named)) {
-        if (!token.test(named))
-          return `a ${type} row names an object that is not this stage's (${key})`;
+        if (!token.test(named)) return foreign;
         continue;
       }
       if (ownHost(named)) continue;
       const id = typeof value.logicalId === "string" ? value.logicalId : "";
       const instanceId = typeof value.instanceId === "string" ? value.instanceId : "";
       derived ??= id && instanceId ? await derivedNames(id, instanceId, stage) : [];
-      if (!derived.includes(named))
-        return `a ${type} row names an object that is not this stage's (${key})`;
+      if (!derived.includes(named)) return foreign;
     }
     if (Array.isArray(attr.routes))
       for (const route of attr.routes) {
-        const host =
-          record(route) && typeof route.pattern === "string"
-            ? route.pattern.split("/")[0]!.replace(/^\*\.?/u, "")
-            : "";
+        const pattern = record(route) && typeof route.pattern === "string" ? route.pattern : "";
+        const host = pattern.split("/")[0]!.replace(/^\*\.?/u, "");
         const id = record(route) && typeof route.id === "string" ? route.id : "";
-        if (!ownHost(host) || (id && production.has(id)))
-          return `a ${type} row routes traffic that is not this stage's (routes)`;
+        const line = `${kind} routes traffic that is not this stage's (routes)`;
+        if (!ownHost(host)) return refuse(line, "routes", pattern);
+        if (id && production.has(id)) return refuse(line, "routes", id);
       }
   }
   return undefined;
+}
+
+/** Runs one phase and records its elapsed milliseconds under `name`, failed or not. */
+export async function timed<A>(
+  phases: Record<string, number>,
+  name: string,
+  work: () => Promise<A>,
+): Promise<A> {
+  const at = performance.now();
+  try {
+    return await work();
+  } finally {
+    phases[name] = Math.round(performance.now() - at);
+  }
+}
+
+type ProductionRecords = {
+  readonly databases: readonly { readonly id?: string; readonly name?: string }[];
+  readonly identities: ReadonlySet<string>;
+};
+type StageStacks = Readonly<Record<string, readonly PreviewStateEntry[]>>;
+
+/** One refused stage, by ordinal and name, with the row that refused it. Private output only. */
+export type RetireRefusal = { ordinal: number; stage: string; line: string } & RefusalDetail;
+
+/**
+ * The retire's proof over numbered stages, by ordinal: each stage's own stacks are read, then
+ * proven against production's records, read once. Without `take` it only reads and proves, for
+ * every stage, and deletes nothing; with it, the first stage that proves is handed to `take` and
+ * the run stops there. Public lines name the ordinal and the refusal's kind; every refusal's
+ * detail comes back for private output.
+ */
+export async function proveStages(
+  stages: readonly {
+    readonly ordinal: number;
+    readonly stage: string;
+    readonly unreadable?: unknown;
+  }[],
+  io: {
+    target(stage: string): { stage: string; database: string; read(): Promise<StageStacks> };
+    production(): Promise<ProductionRecords>;
+    /** Each refusal is pushed here as it is found, so a later failure keeps those before it. */
+    refusals: RetireRefusal[];
+    phases: Record<string, number>;
+    log(line: string): void;
+    take?(stage: string, stacks: StageStacks): Promise<void>;
+  },
+) {
+  let production: ProductionRecords | undefined;
+  for (const { ordinal, stage, unreadable } of stages) {
+    if (unreadable) {
+      io.log(`  stage ${ordinal} left: its State could not be read`);
+      continue;
+    }
+    const target = io.target(stage);
+    const stacks = await timed(io.phases, `stage ${ordinal} read`, () => target.read());
+    production ??= await timed(io.phases, "production records", () => io.production());
+    const known = production;
+    const refused = await timed(io.phases, `stage ${ordinal} proof`, async () => {
+      const rows = Object.values(stacks).flat();
+      return (
+        databaseRefusal(rows, target.database, known.databases) ??
+        (await ownershipRefusal(rows, target.stage, target.database, known.identities))
+      );
+    });
+    if (refused) {
+      io.refusals.push({ ordinal, stage, line: refused.line, ...refused.detail });
+      // A stage the proof refuses is left as it is, and the next one is tried.
+      io.log(`  stage ${ordinal} left: ${refused.line}${io.take ? "; nothing of it deleted" : ""}`);
+      continue;
+    }
+    if (!io.take) {
+      io.log(`  stage ${ordinal}: retirable`);
+      continue;
+    }
+    io.log(`Retiring stage ${ordinal}.`);
+    await io.take(stage, stacks);
+    return { taken: ordinal };
+  }
+  return { taken: undefined };
 }

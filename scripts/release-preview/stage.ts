@@ -38,7 +38,13 @@ import {
   readNumberedRehearsalStages,
   readProductionRecords,
 } from "../preview/inventory.ts";
-import { databaseRefusal, ownershipRefusal, retirePlan, retireSubject } from "./retire-stage.ts";
+import {
+  proveStages,
+  retirePlan,
+  retireSubject,
+  timed,
+  type RetireRefusal,
+} from "./retire-stage.ts";
 import { summarize, type Sample } from "./stage-probe.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
@@ -1973,6 +1979,8 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     // First in every heal record: what the verdict rests on, and what it does not.
     ...(mode === "heal" ? { verdictBasis: healVerdictBasis } : {}),
   };
+  // Kept only in the private `stage-<mode>.json`, never in the public record.
+  const privateOnly: Record<string, unknown> = {};
   // Each job re-plans the stage's manifest unless the workflow already did; identity derives from the state key.
   if (!existsSync(manifestPath(root, subject))) await planStage(root, subject, source);
   const run = async () => {
@@ -2259,10 +2267,11 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       // ordinal, and for a whole stage what the provider says bills while it stands. Which stage
       // each ordinal is, and every recorded id, go to private output only.
       const config = stageEnvironment(subject, source);
-      const stages = await readNumberedRehearsalStages(config.stage, {
-        environment: config.deploy,
-        lanes: true,
-      });
+      const phases: Record<string, number> = {};
+      privateOnly.phasesMs = phases;
+      const stages = await timed(phases, "listing", () =>
+        readNumberedRehearsalStages(config.stage, { environment: config.deploy, lanes: true }),
+      );
       await writeFile(
         join(outputs, "rehearsal-stages.json"),
         `${JSON.stringify(stages, null, 2)}\n`,
@@ -2276,58 +2285,68 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       console.log(`Rehearsal stages State still lists: ${stages.length}.`);
       for (const line of lines) console.log(line);
       result.stages = lines;
+      // The retire's own proof for every four-digit stage, by the ordinal retire gives it. Only
+      // reads: no plan, no destroy, no State write.
+      console.log("What a retire would take, by its own proof:");
+      const proof: string[] = [];
+      const refusals: RetireRefusal[] = [];
+      await proveStages(
+        stages
+          .filter(({ stage }) => !/^test-rehearsal-[1-9]$/u.test(stage))
+          .map(({ stage, unreadable }, index) => ({ ordinal: index + 1, stage, unreadable })),
+        {
+          ...retireReads(config, source),
+          refusals,
+          phases,
+          log: (line) => {
+            console.log(line);
+            proof.push(line);
+          },
+        },
+      );
+      result.retireProof = proof;
+      await writeRefusals(outputs, refusals);
     } else if (mode === "retire") {
       // One four-digit stage per run, through the lane's own destroy and absence check. The stage
       // is named by its ordinal only; which stage that is stays in private output.
       const config = stageEnvironment(subject, source);
-      const stages = await readNumberedRehearsalStages(config.stage, {
-        environment: config.deploy,
-      });
+      const phases: Record<string, number> = {};
+      privateOnly.phasesMs = phases;
+      const stages = await timed(phases, "listing", () =>
+        readNumberedRehearsalStages(config.stage, { environment: config.deploy }),
+      );
       const { lines, candidates } = retirePlan(stages);
       console.log(`Four-digit rehearsal stages State still lists: ${stages.length}.`);
       for (const line of lines) console.log(line);
       result.numberedStages = stages.length;
       result.retired = null;
-      let production: Awaited<ReturnType<typeof readProductionRecords>> | undefined;
-      for (const { ordinal, stage } of candidates) {
-        const target = retireSubject(stage);
-        const targetConfig = stageEnvironment(target, source);
-        const stacks = await alchemyPreviewStateReader({ environment: targetConfig.deploy }).read(
-          targetConfig.stage,
-        );
-        production ??= await readProductionRecords(config.stage, { environment: config.deploy });
-        const rows = Object.values(stacks).flat();
-        const refusal =
-          databaseRefusal(rows, targetConfig.databaseName, production.databases) ??
-          (await ownershipRefusal(
-            rows,
-            targetConfig.stage,
-            targetConfig.databaseName,
-            production.identities,
-          ));
-        // A stage the proof refuses is left as it is, and the next one is tried.
-        if (refusal) {
-          console.log(`  stage ${ordinal} left: ${refusal}; nothing of it deleted`);
-          continue;
-        }
-        console.log(`Retiring stage ${ordinal}.`);
-        await planStage(root, target, source);
-        // The destroy reads the stage's rows again in its own process; it refuses unless they are
-        // the rows proven here. Only this destroy carries the proof.
-        const { provenDigests, RETIRE_PROVEN } = await import("../release/retire-proof.ts");
-        process.env[RETIRE_PROVEN] = JSON.stringify(provenDigests(stacks, targetConfig.stage));
-        try {
-          await destroyStage(root, target, source);
-        } finally {
-          delete process.env[RETIRE_PROVEN];
-        }
-        await verifyStageAbsent(root, target, source);
-        result.retired = ordinal;
+      const refusals: RetireRefusal[] = [];
+      const { taken } = await proveStages(candidates, {
+        ...retireReads(config, source),
+        refusals,
+        phases,
+        log: (line) => console.log(line),
+        take: async (stage, stacks) => {
+          const target = retireSubject(stage);
+          await timed(phases, "plan", () => planStage(root, target, source));
+          // The destroy reads the stage's rows again in its own process; it refuses unless they
+          // are the rows proven here. Only this destroy carries the proof.
+          const { provenDigests, RETIRE_PROVEN } = await import("../release/retire-proof.ts");
+          process.env[RETIRE_PROVEN] = JSON.stringify(
+            provenDigests(stacks, stageEnvironment(target, source).stage),
+          );
+          try {
+            await timed(phases, "destroy", () => destroyStage(root, target, source));
+          } finally {
+            delete process.env[RETIRE_PROVEN];
+          }
+          await timed(phases, "absence check", () => verifyStageAbsent(root, target, source));
+        },
+      }).finally(() => writeRefusals(outputs, refusals));
+      if (taken !== undefined) {
+        result.retired = taken;
         result.absent = true;
-        break;
-      }
-      if (result.retired === null)
-        console.log("No four-digit stage this mode can retire; nothing deleted.");
+      } else console.log("No four-digit stage this mode can retire; nothing deleted.");
     } else if (mode === "classplan") {
       Object.assign(result, await stageRelease(lane, subject, source, outputs, hooks, "classplan"));
     } else if (mode === "heal") {
@@ -2400,9 +2419,11 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
     throw error;
   } finally {
     result.seconds = Math.round((Date.now() - started) / 1000);
-    await writeFile(join(outputs, `stage-${mode}.json`), `${JSON.stringify(result, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    await writeFile(
+      join(outputs, `stage-${mode}.json`),
+      `${JSON.stringify({ ...result, ...privateOnly }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
     if (source.GITHUB_STEP_SUMMARY)
       await appendFile(
         source.GITHUB_STEP_SUMMARY,
@@ -2410,6 +2431,28 @@ export async function runStageMode(mode: StageMode, lane: number, source = proce
       );
   }
   return result;
+}
+
+/** How a retire's proof reads a numbered stage and production's records: State reads only. */
+function retireReads(config: ReturnType<typeof stageEnvironment>, source: NodeJS.ProcessEnv) {
+  return {
+    target(stage: string) {
+      const target = stageEnvironment(retireSubject(stage), source);
+      return {
+        stage: target.stage,
+        database: target.databaseName,
+        read: () => alchemyPreviewStateReader({ environment: target.deploy }).read(target.stage),
+      };
+    },
+    production: () => readProductionRecords(config.stage, { environment: config.deploy }),
+  };
+}
+
+/** Every refusal's row, path and named value: private output only, never the public record. */
+async function writeRefusals(outputs: string, refusals: readonly RetireRefusal[]) {
+  await writeFile(join(outputs, "retire-refusals.json"), `${JSON.stringify(refusals, null, 2)}\n`, {
+    mode: 0o600,
+  });
 }
 
 /**

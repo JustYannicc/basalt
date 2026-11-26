@@ -1,6 +1,18 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { databaseRefusal, ownershipRefusal, retirePlan, retireSubject } from "./retire-stage.ts";
+import {
+  alchemyPreviewStateReader,
+  readProductionRecords,
+  type StateCommand,
+} from "../preview/inventory.ts";
+import {
+  databaseRefusal,
+  ownershipRefusal,
+  proveStages,
+  retirePlan,
+  retireSubject,
+  type RetireRefusal,
+} from "./retire-stage.ts";
 
 const database = (name: string, id = `id-${name}`) => ({
   path: `basalt-preview-database/test-rehearsal-1234/PreviewDatabaseParent`,
@@ -184,8 +196,170 @@ test("a whole stage whose rows name another stage's or production's objects is l
     ],
   ] as const) {
     const refusal = await ownershipRefusal([...whole, bad], stage, own, production);
-    assert.equal(refusal, reason, why);
-    // The reason names a kind and a key, never a value.
-    assert.doesNotMatch(refusal ?? "", /5678|basalt-api|prod-|example/u, why);
+    assert.equal(refusal?.line, reason, why);
+    // The reason names a kind and a key, never a value; the row that refused is in the detail.
+    assert.doesNotMatch(refusal?.line ?? "", /5678|basalt-api|prod-|example/u, why);
+    assert.equal(refusal?.detail.path, bad.path, why);
   }
+});
+
+// A database-only stage as its stack records it: the stack's output row, then its database.
+const outputRow = {
+  path: `basalt-preview-database/${stage}/output`,
+  value: { databaseName: own, branch: "main", origin: "https://db.example.invalid" },
+};
+const databaseOnly = [outputRow, database(own)];
+
+test("a database-only stage proves, its stack's output row included", async () => {
+  const productionDatabases = [{ id: "prod-id", name: "basalt" }];
+  assert.equal(databaseRefusal(databaseOnly, own, productionDatabases), undefined);
+  assert.equal(await ownershipRefusal(databaseOnly, stage, own, production), undefined);
+});
+
+test("an output row is skipped whatever it holds, but a row with no type is still refused", async () => {
+  // An output that reads like a foreign Postgres database or production's Worker proves nothing
+  // either way: a destroy sends no request for it.
+  for (const value of [
+    { resourceType: "Planetscale.PostgresDatabase", attr: { id: "prod-id", name: "basalt" } },
+    {
+      resourceType: "Cloudflare.Worker",
+      attr: { workerName: "basalt-api-production-abcdefghijklmnop" },
+    },
+    { resourceType: "Axiom.Dataset", attr: {} },
+  ]) {
+    const rows = [...whole, { path: `basalt-rehearsal/${stage}/output`, value }];
+    assert.equal(databaseRefusal(rows, own, [{ id: "prod-id", name: "basalt" }]), undefined);
+    assert.equal(await ownershipRefusal(rows, stage, own, production), undefined);
+  }
+  const untyped = { path: `basalt-rehearsal/${stage}/Stray`, value: { attr: { name: "x" } } };
+  const refusal = await ownershipRefusal([...whole, untyped], stage, own, production);
+  assert.equal(refusal?.line, "a row with no type is of a kind this path cannot prove");
+  assert.doesNotMatch(refusal?.line ?? "", / {2}/u);
+  assert.deepEqual(refusal?.detail, { path: untyped.path, type: null, key: null, value: null });
+});
+
+test("a refusal's private detail names the row, its type, key and value; its line none of them", async () => {
+  const foreign = "basalt-rehearsal-api-test-rehearsal-5678-abcdefghijklmnop";
+  const bad = row("Cloudflare.Worker", { workerName: foreign }, "Api");
+  const refusal = await ownershipRefusal([...whole, bad], stage, own, production);
+  assert.deepEqual(refusal?.detail, {
+    path: bad.path,
+    type: "Cloudflare.Worker",
+    key: "workerName",
+    value: foreign,
+  });
+  assert.ok(!refusal?.line.includes(foreign));
+  assert.doesNotMatch(refusal?.line ?? "", /5678|Api\b/u);
+  const other = database("basalt-preview-rehearsal-5678");
+  const refused = databaseRefusal([other], own, []);
+  assert.deepEqual(refused?.detail, {
+    path: other.path,
+    type: "Planetscale.PostgresDatabase",
+    key: "name",
+    value: "basalt-preview-rehearsal-5678",
+  });
+  assert.ok(!refused?.line.includes("5678"));
+});
+
+test("leftovers' proof pass reads and proves every stage, and plans, deletes and writes nothing", async () => {
+  const lane = "test-rehearsal-1";
+  const verbs: string[] = [];
+  // Two four-digit stages: one database-only with its output row, one recording another stage's
+  // Worker. Production's State records its own database.
+  const stored: Record<string, Record<string, unknown>> = {
+    "basalt-preview-database/test-rehearsal-1234": {
+      [outputRow.path]: outputRow.value,
+      [database(own).path]: database(own).value,
+    },
+    "basalt-rehearsal/test-rehearsal-5678": {
+      "basalt-rehearsal/test-rehearsal-5678/Api": {
+        resourceType: "Cloudflare.Worker",
+        logicalId: "Api",
+        instanceId: instance,
+        attr: { workerName: "basalt-rehearsal-api-test-rehearsal-1234-abcdefghijklmnop" },
+      },
+    },
+    "basalt/production": {
+      "basalt/production/Database": {
+        resourceType: "Planetscale.PostgresDatabase",
+        attr: { id: "prod-id", name: "basalt" },
+      },
+    },
+  };
+  const command: StateCommand = (args) => {
+    const verb = args[args.indexOf("state") + 1]!;
+    const at = args[args.indexOf("state") + 2]!;
+    verbs.push(verb);
+    if (verb === "list" && at === "--config")
+      return { status: 0, stdout: "basalt/\nbasalt-rehearsal/\nbasalt-preview-database/\n" };
+    const [stack, stageName] = at.split("/");
+    if (verb === "list" && !stageName)
+      return {
+        status: 0,
+        stdout: Object.keys(stored)
+          .filter((key) => key.startsWith(`${stack}/`))
+          .map((key) => `${key}/`)
+          .join("\n"),
+      };
+    const rows = stored[at] ?? {};
+    if (verb === "list") return { status: 0, stdout: Object.keys(rows).join("\n") };
+    // The State CLI prints one row's record bare, and several as a map by path.
+    const values = Object.values(rows);
+    if (verb === "read")
+      return { status: 0, stdout: JSON.stringify(values.length === 1 ? values[0] : rows) };
+    throw new Error(`unexpected ${args.join(" ")}`);
+  };
+  const reads = (name: string) => ({
+    stage: name,
+    database: `basalt-preview-${name.slice("test-".length)}`,
+    read: () => alchemyPreviewStateReader({ command, environment: {} }).read(name),
+  });
+  const lines: string[] = [];
+  const refusals: RetireRefusal[] = [];
+  const phases: Record<string, number> = {};
+  let productionReads = 0;
+  const { taken } = await proveStages(
+    [
+      { ordinal: 1, stage: "test-rehearsal-1234" },
+      { ordinal: 2, stage: "test-rehearsal-5678" },
+      { ordinal: 3, stage: "test-rehearsal-9012", unreadable: "private" },
+    ],
+    {
+      target: reads,
+      production: () => {
+        productionReads += 1;
+        return readProductionRecords(lane, { command, environment: {} });
+      },
+      refusals,
+      phases,
+      log: (line) => lines.push(line),
+    },
+  );
+  assert.equal(taken, undefined);
+  assert.deepEqual(lines, [
+    "  stage 1: retirable",
+    "  stage 2 left: a Cloudflare.Worker row names an object that is not this stage's (workerName)",
+    "  stage 3 left: its State could not be read",
+  ]);
+  assert.equal(productionReads, 1);
+  assert.deepEqual(
+    refusals.map(({ ordinal, stage: name, key, value }) => ({ ordinal, name, key, value })),
+    [
+      {
+        ordinal: 2,
+        name: "test-rehearsal-5678",
+        key: "workerName",
+        value: "basalt-rehearsal-api-test-rehearsal-1234-abcdefghijklmnop",
+      },
+    ],
+  );
+  assert.deepEqual(Object.keys(phases).sort(), [
+    "production records",
+    "stage 1 proof",
+    "stage 1 read",
+    "stage 2 proof",
+    "stage 2 read",
+  ]);
+  // Only lists and reads reached the store; nothing was planned or destroyed.
+  assert.ok(verbs.length > 0 && verbs.every((verb) => verb === "list" || verb === "read"));
 });
