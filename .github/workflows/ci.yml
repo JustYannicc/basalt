@@ -2350,20 +2350,25 @@ jobs:
         with:
           warm: "true"
       # A re-run that carries select over compares with the commit select recorded; main may have
-      # moved the merge-base since (scripts/ci/rerun-selection.ts).
-      - name: Download the selection select recorded
+      # moved the merge-base since (scripts/ci/rerun-selection.ts). Only then is there a record to
+      # download, so other re-runs show no missing-artifact error.
+      - name: Check whether select carries over into this re-run
+        id: carried
         if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ci-selection
           path: ${{ runner.temp }}/ci-selection
-      - name: Take select's comparison commit when select carries over
+      - name: Take select's comparison commit
         id: rerun
-        if: github.run_attempt > 1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/ci/rerun-selection.ts
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
         env:
@@ -2555,19 +2560,23 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
-      - name: Download the selection select recorded
+      - name: Check whether select carries over into this re-run
+        id: carried
         if: github.run_attempt > 1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/rerun-selection.ts
+      - name: Download the selection select recorded
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
           name: ci-selection
           path: ${{ runner.temp }}/ci-selection
-      - name: Take select's comparison commit when select carries over
+      - name: Take select's comparison commit
         id: rerun
-        if: github.run_attempt > 1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/ci/rerun-selection.ts
+        if: github.run_attempt > 1 && steps.carried.outputs.carried == 'true'
+        run: node scripts/ci/rerun-selection.ts base
       - name: Resolve the comparison commit
         id: comparison
         env:

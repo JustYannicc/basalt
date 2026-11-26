@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { rerunOnly } from "./ci/fast-plan.ts";
+import { onlyOnRerun, rerunOnly } from "./ci/fast-plan.ts";
 import { laneBase, startJobErrors } from "./ci/gate.ts";
-import { recordedSelectionPath, rerunBase } from "./ci/rerun-selection.ts";
+import { recordedBase, recordedSelectionPath, selectCarried } from "./ci/rerun-selection.ts";
 
 const { parse } = createRequire(new URL("./architecture/package.json", import.meta.url))("yaml");
 const workflow = parse(
@@ -95,7 +95,7 @@ test("a re-run leg compares with select's recorded commit unless select runs aga
     mkdirSync(dirname(recordedSelectionPath(temp)), { recursive: true });
     copyFileSync(join(root, ".generated/ci/selection.json"), recordedSelectionPath(temp));
   };
-  const rerun = { id: "7", attempt: 2, temp, event: "push", ref: "refs/heads/batch/one" };
+  const rerun = { id: "7", attempt: 2 };
   const fullRerun = { ...rerun, attempt: 3 };
   let head = "";
   try {
@@ -138,7 +138,9 @@ test("a re-run leg compares with select's recorded commit unless select runs aga
       job("select", 2, "10:30:30", "09:05:02"),
       job("fast-units (2)", 2, "10:30:30", "10:31:00"),
     ]);
-    const { base, note } = await rerunBase(rerun, failedJobs);
+    const carried = await selectCarried(rerun, failedJobs);
+    assert.equal(carried.carried, true, carried.note);
+    const { base, note } = recordedBase(temp, false);
     assert.equal(base, x, note);
     assert.equal(resolve("fast-units", base), x);
     const leg = lane(x);
@@ -151,14 +153,20 @@ test("a re-run leg compares with select's recorded commit unless select runs aga
       `fast-units leg 2: resolved ${JSON.stringify(afresh)}, select ${JSON.stringify(selected)}`,
     ]);
 
-    // 5. Without select's record a carried select fails closed rather than resolve afresh.
+    // 5. Without select's record the leg resolves afresh and warns; the aggregate still fails it
+    // once main moved, as step 4 shows, and passes it while main hasn't.
     writeFileSync(recordedSelectionPath(temp), JSON.stringify({ lane: "full" }));
-    await assert.rejects(rerunBase(rerun, failedJobs), /records no comparison commit/);
+    const unrecorded = recordedBase(temp, false);
+    assert.equal(unrecorded.base, "");
+    assert.match(unrecorded.note, /^::warning::.*records no comparison commit.*Re-run all jobs/);
     rmSync(recordedSelectionPath(temp));
-    await assert.rejects(rerunBase(rerun, failedJobs), /has no ci-selection artifact/);
-    // A reused Check records nothing, and a main push's comparison never moves.
-    const main = { ...rerun, ref: "refs/heads/main" };
-    assert.equal((await rerunBase(main, failedJobs)).base, "");
+    const absent = recordedBase(temp, false);
+    assert.equal(absent.base, "");
+    assert.match(absent.note, /^::warning::.*has no ci-selection artifact/);
+    // A reused Check records nothing, and a main push's comparison never moves: no warning.
+    const main = recordedBase(temp, true);
+    assert.equal(main.base, "");
+    assert.doesNotMatch(main.note, /::warning::/);
 
     // 6. "Re-run all jobs", attempt 3: select runs again (started after it was created, here on
     // the listing's second page) and resolves Y afresh; so do fast and both legs.
@@ -166,36 +174,41 @@ test("a re-run leg compares with select's recorded commit unless select runs aga
       ...Array.from({ length: 50 }, (_, index) => job(`job ${index}`, 3, "10:50:29", null)),
       job("select", 3, "10:50:29", "10:51:13"),
     ];
-    const again = await rerunBase(fullRerun, listing(3, fullJobs));
-    assert.equal(again.base, "", again.note);
+    const again = await selectCarried(fullRerun, listing(3, fullJobs));
+    assert.equal(again.carried, false, again.note);
     assert.match(again.note, /^select runs again in attempt 3/);
     assert.equal(resolve("select"), y);
     record(y);
-    const fresh = [resolve("fast"), resolve("fast-units", again.base), resolve("fast-units")].map(
-      lane,
-    );
+    const fresh = [resolve("fast"), resolve("fast-units"), resolve("fast-units")].map(lane);
     assert.deepEqual(
       fresh,
       [y, y, y].map((base) => laneBase("full", base)),
     );
     assert.deepEqual(startJobErrors("full", y, fresh[0], legs(fresh[1]!, fresh[2]!)), []);
-    // A select that starts the second GitHub created it ran in this attempt too.
-    const prompt = listing(3, [job("select", 3, "10:50:29", "10:50:29")]);
-    assert.equal((await rerunBase(fullRerun, prompt)).base, "");
+    // A select still queued, or started the second GitHub created it, runs in this attempt: GitHub
+    // reports a queued job's creation as its start.
+    const queued = listing(3, [job("select", 3, "10:50:29", "10:50:29")]);
+    assert.equal((await selectCarried(fullRerun, queued)).carried, false);
 
     // Whatever can't tell the two apart keeps today's afresh resolution, and says so: an
-    // unreadable listing, one without select, or a select that hasn't started yet.
-    const failed = await rerunBase(rerun, async () => {
+    // unreadable listing, one without select, or a select listed without a start.
+    const failed = await selectCarried(rerun, async () => {
       throw new Error("GitHub returned 502");
     });
-    assert.equal(failed.base, "");
+    assert.equal(failed.carried, false);
     assert.match(failed.note, /^::warning::.*502/);
-    const missing = await rerunBase(rerun, listing(2, [job("fast", 2, "10:30:30", "10:31:00")]));
-    assert.equal(missing.base, "");
+    const missing = await selectCarried(
+      rerun,
+      listing(2, [job("fast", 2, "10:30:30", "10:31:00")]),
+    );
+    assert.equal(missing.carried, false);
     assert.match(missing.note, /^::warning::.*no select job/);
-    const queued = await rerunBase(fullRerun, listing(3, [job("select", 3, "10:50:29", null)]));
-    assert.equal(queued.base, "");
-    assert.match(queued.note, /^::warning::Attempt 3 lists select without a start/);
+    const unstarted = await selectCarried(
+      fullRerun,
+      listing(3, [job("select", 3, "10:50:29", null)]),
+    );
+    assert.equal(unstarted.carried, false);
+    assert.match(unstarted.note, /^::warning::Attempt 3 lists select without a start/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -203,31 +216,44 @@ test("a re-run leg compares with select's recorded commit unless select runs aga
 
 test("only a re-run attempt reads select's record, in both start jobs", () => {
   const download = (step: { uses?: string }) => step.uses?.startsWith("actions/download-artifact@");
+  const carriedOnly = `${rerunOnly} && steps.carried.outputs.carried == 'true'`;
   for (const job of ["fast", "fast-units"]) {
     const { steps, permissions } = workflow.jobs[job];
     const at = (id: string) => steps.findIndex((step: { id?: string }) => step.id === id);
-    const reruns = steps.filter((step: { if?: string }) => step.if === rerunOnly);
+    const reruns = steps.filter((step: { if?: string }) => onlyOnRerun(step.if));
     assert.deepEqual(
       reruns.map((step: { uses?: string; run?: string }) => step.uses ?? step.run),
-      ["actions/download-artifact@v4", "node scripts/ci/rerun-selection.ts"],
+      [
+        "node scripts/ci/rerun-selection.ts",
+        "actions/download-artifact@v4",
+        "node scripts/ci/rerun-selection.ts base",
+      ],
       job,
     );
-    // Every download and every attempt-dependent step is one of these two.
-    assert.deepEqual(steps.filter(download), reruns.slice(0, 1), job);
+    // Every download and every attempt-dependent step is one of these three.
+    assert.deepEqual(steps.filter(download), reruns.slice(1, 2), job);
     assert.deepEqual(
       steps.filter((step: object) => JSON.stringify(step).includes("run_attempt")),
       reruns,
       job,
     );
-    const [fetch, decide] = reruns;
+    const [decide, fetch, take] = reruns;
+    assert.equal(decide.id, "carried", job);
+    assert.equal(decide.if, rerunOnly, job);
+    assert.deepEqual(decide.env, { GITHUB_TOKEN: "${{ github.token }}" }, job);
+    // Only a carried select left a record to download, so no other re-run reports one missing.
+    assert.equal(fetch.if, carriedOnly, job);
+    assert.equal(take.if, carriedOnly, job);
     assert.deepEqual(fetch.with, { name: "ci-selection", path: "${{ runner.temp }}/ci-selection" });
     assert.equal(dirname(recordedSelectionPath("${{ runner.temp }}")), fetch.with.path);
     // A missing record is rerun-selection's to judge, so the download never fails the job.
     assert.equal(fetch["continue-on-error"], true, job);
-    assert.equal(decide.id, "rerun", job);
-    assert.deepEqual(decide.env, { GITHUB_TOKEN: "${{ github.token }}" }, job);
+    assert.equal(take.id, "rerun", job);
+    assert.equal(take.env, undefined, job);
     assert.ok(
-      steps.indexOf(decide) > steps.indexOf(fetch) && at("comparison") > steps.indexOf(decide),
+      steps.indexOf(decide) < steps.indexOf(fetch) &&
+        steps.indexOf(fetch) < steps.indexOf(take) &&
+        at("comparison") > steps.indexOf(take),
       job,
     );
     assert.equal(comparison(job).env.RECORDED_BASE, "${{ steps.rerun.outputs.base_sha }}", job);
@@ -236,7 +262,7 @@ test("only a re-run attempt reads select's record, in both start jobs", () => {
   // select resolves afresh in its every attempt and records what it resolved.
   const select = workflow.jobs.select.steps;
   assert.equal(
-    select.some((step: { if?: string }) => step.if === rerunOnly),
+    select.some((step: { if?: string }) => onlyOnRerun(step.if)),
     false,
   );
   const upload = select.find(
