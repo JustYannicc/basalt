@@ -98,6 +98,28 @@ export const resolvedApplication = {
 
 export const envelope = (result: unknown) => ({ success: true, result, messages: [], errors: [] });
 
+// The two container instance shapes production listed on 2026-11-22 under
+// GET .../containers/applications/{id}/instances-v2?state=active, ids, times and places replaced.
+
+/** A destroyed instance, still listed under state=active. */
+export const destroyedInstance = (id: string, image: string, application: string) => ({
+  id,
+  application_id: application,
+  status: { state: "inactive", updated_at: "2026-11-22T14:47:13Z" },
+  image,
+});
+
+/** A running instance. */
+export const runningInstance = (id: string, image: string, application: string) => ({
+  id,
+  application_id: application,
+  started_at: "2026-11-22T12:22:43.448999936Z",
+  status: { state: "running", updated_at: "2026-11-22T12:22:43.448999936Z", exit_code: 0 },
+  location: { name: "synthetic01", region: "WEUR" },
+  image,
+  name: "synthetic-instance",
+});
+
 // Workers custom domains, recorded on 2026-11-25 (structure only: key names, JSON types and the
 // envelope's null-versus-[] kept; every value is made up in the recorded form).
 

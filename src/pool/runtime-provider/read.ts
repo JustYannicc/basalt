@@ -10,7 +10,6 @@ import {
   closed,
   ProviderCredentialRefused,
   refused,
-  siblingState,
   UndocumentedInstanceState,
   type ObservationRead,
 } from "./refusal.ts";
@@ -68,7 +67,10 @@ const documentedStates = new Set([
  * refuses; an admit over that record is not refused, and no current path reaches it.
  */
 const stopped = (state: string) => state === "inactive";
-/** Any other instance that may still run refuses the whole read, as any answer but running did. */
+/**
+ * Only an absence proof still refuses while another instance may start or stop. Absence frees a
+ * place in the ledger, so it stays conservative: an instance no row counts holds every release.
+ */
 const unsettled = (state: string) => state !== "running" && !stopped(state);
 /** Given only by a caller whose driver independently reported this exact boot stopped. */
 export interface DriverStopped {
@@ -205,12 +207,11 @@ export class RuntimeProviderReader {
       let instances: string[] | undefined;
       if (instanceId !== undefined) {
         const listed = await this.instances(base, expected, signal, instanceId);
-        // The named instance must run; an inactive sibling holds no compute, any other refuses.
+        // Only the named instance's state is judged. The ledger counts every other instance until
+        // its absence is proven and only a ready row takes a call, so another's start or stop
+        // guards nothing here.
         if (!listed.some((value) => value.id === instanceId && value.state === "running"))
           throw refused({ reason: "instance_not_running" });
-        const sibling = listed.find((value) => value.id !== instanceId && unsettled(value.state));
-        if (sibling)
-          throw refused({ reason: "sibling_unsettled", state: siblingState(sibling.state) });
         instances = listed.filter((value) => !stopped(value.state)).map((value) => value.id);
         const after = await application();
         if (canonicalProviderValue(before) !== canonicalProviderValue(after))
@@ -322,7 +323,10 @@ export class RuntimeProviderReader {
       return error instanceof UndocumentedInstanceState ? "unknown_state" : stage;
     }
   }
-  /** A refusal for an undocumented state names the instance's role, never the instance. */
+  /**
+   * With `named`, an attested read judges that instance's state alone; without it, an absence read
+   * judges every listed one.
+   */
   private async instances(
     base: string,
     expected: RuntimeProviderTarget,
@@ -338,15 +342,11 @@ export class RuntimeProviderReader {
       const reply = await this.read(`${base}/instances-v2?${query}`, signal);
       for (const value of Schema.decodeUnknownSync(Schema.Array(Instance))(reply.result)) {
         const state = value.status.state;
-        if (!documentedStates.has(state))
-          throw new UndocumentedInstanceState(
-            value.id === named
-              ? { reason: "instance_not_running" }
-              : { reason: "sibling_unsettled", state: "other" },
-          );
+        if (!documentedStates.has(state) && (named === undefined || value.id === named))
+          throw new UndocumentedInstanceState({ reason: "instance_not_running" });
         if (value.application_id !== expected.applicationId)
           throw refused({ reason: "mismatch", field: "application" });
-        // A running instance must run the admitted image; the callers judge every other state.
+        // A running instance must run the admitted image; the caller judges any other state.
         if (state === "running" && !value.image.endsWith(`@${expected.imageDigest}`))
           throw refused({ reason: "mismatch", field: "image" });
         // One instance listed twice is no listing this read can trust.

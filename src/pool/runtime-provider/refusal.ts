@@ -7,20 +7,9 @@ export type ObservationRead =
   | "root_retire"
   | "recovery"
   | "provider_observe";
-const siblingStates = [
-  "provisioning",
-  "failed",
-  "stopping",
-  "stopped",
-  "unhealthy",
-  "unknown",
-] as const;
-type SiblingState = (typeof siblingStates)[number] | "other";
-export const siblingState = (state: string): SiblingState =>
-  siblingStates.find((value) => value === state) ?? "other";
 /**
  * Why an observation was refused, as closed values only: never message text, never an id. An HTTP
- * answer keeps its status, a pin its field, an unsettled sibling its state.
+ * answer keeps its status, a pin its field.
  */
 export type ObservationRefusal =
   | { reason: "read_status"; status: number }
@@ -28,7 +17,6 @@ export type ObservationRefusal =
       reason: "mismatch";
       field: "account" | "application" | "version" | "namespace" | "image" | "settings";
     }
-  | { reason: "sibling_unsettled"; state: SiblingState }
   | {
       reason:
         | "credential_unavailable"
