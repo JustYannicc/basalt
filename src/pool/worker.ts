@@ -14,6 +14,7 @@ import {
   captureHoursStuckPools,
   captureHoursTick,
 } from "./model-history/capture-hours-auto.ts";
+import { logHistoryGap } from "./model-history/capture-gap.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
@@ -880,6 +881,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         : {}),
       rollup: () => usageRollupTick(this.ctx.storage, session, { stopped }),
       hours: () => captureHoursTick(this.ctx.storage, session, { stopped }),
+      gap: () => session(logHistoryGap),
       stopped,
     };
   }
