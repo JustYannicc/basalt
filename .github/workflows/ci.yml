@@ -91,7 +91,7 @@ jobs:
           fi
           base="$(git rev-parse --verify "$base^{commit}")"
           echo "base_sha=$base" >> "$GITHUB_OUTPUT"
-      - name: Select the full suite, the jobs this change reaches, or the fast lane
+      - name: Select the full suite or the fast lane
         if: steps.reuse.outputs.reused != 'true'
         id: jobs
         env:
@@ -104,16 +104,14 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GITHUB_TOKEN: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          # This repository's pull requests run the jobs their changes reach. A batch branch's push
-          # already runs the full suite on the same head, and forks keep the fast lane.
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
           HEAD_BRANCH: ${{ github.head_ref }}
         run: |
           node scripts/ci/cancel-superseded.ts
+          # A pull request runs the fast lane unless it is labelled for the full suite: every one
+          # merges through a batch, whose push runs the full Check (2026-11-26: per-PR heavy jobs
+          # held about a third of the 40 hosted job slots while batches waited).
           if [ "$FULL_SUITE" = true ]; then
             node scripts/ci/select-jobs.ts --all
-          elif [ "$AFFECTED_LANE" = true ]; then
-            node scripts/ci/select-jobs.ts
           else
             node scripts/ci/select-jobs.ts --fast
           fi
@@ -2373,7 +2371,6 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
         run: node scripts/ci/lane.ts
       - name: Verify every adopted test declares its plan and CI job
         run: bun scripts/ci/check-plans.ts
@@ -2549,7 +2546,6 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           FULL_SUITE: ${{ github.event_name != 'pull_request' || (startsWith(github.head_ref, 'batch/') && github.event.pull_request.head.repo.full_name != github.repository) || (!startsWith(github.head_ref, 'batch/') && (contains(github.event.pull_request.labels.*.name, 'ci:full') || contains(github.event.pull_request.labels.*.name, 'release-update'))) }}
-          AFFECTED_LANE: ${{ github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.head_ref, 'batch/') }}
         run: node scripts/ci/lane.ts
       - name: Run focused owned unit tests
         timeout-minutes: 15
