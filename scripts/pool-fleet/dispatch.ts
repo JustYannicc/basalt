@@ -420,7 +420,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
         // Past the turn budget, or once the user's cap answers, it reads the catalog instead:
         // the cap is the user's, so its turn is no failed request.
         request: (index) =>
-          index % 5 === 0 && traffic.turnsLeft > 0
+          index % 5 === 0 && traffic.turnsLeft(model) > 0
             ? traffic.turn(model).catch((error: unknown) => {
                 if (isCapReached(error)) return traffic.catalog();
                 throw error;

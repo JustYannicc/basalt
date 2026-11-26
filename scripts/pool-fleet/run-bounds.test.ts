@@ -29,9 +29,23 @@ test("each mode's turns are capped: the turn past the budget is refused and neve
   const { client, sent } = pool();
   const traffic = new OwnTraffic(client, credential, 3);
   for (let turn = 0; turn < 3; turn++) await traffic.turn("model-a");
-  assert.equal(traffic.turnsLeft, 0);
+  assert.equal(traffic.turnsLeft("model-a"), 0);
   await assert.rejects(traffic.turn("model-a"), (error) => reason(error) === "turn-budget");
   assert.equal(sent.length, 3);
+});
+
+test("turns started together can't pass the budget, and each model has its own", async () => {
+  const { client, sent } = pool();
+  const traffic = new OwnTraffic(client, credential, 3);
+  const burst = await Promise.allSettled(Array.from({ length: 5 }, () => traffic.turn("model-a")));
+  assert.deepEqual(
+    burst.map((result) => (result.status === "fulfilled" ? "sent" : reason(result.reason))),
+    ["sent", "sent", "sent", "turn-budget", "turn-budget"],
+  );
+  assert.equal(sent.length, 3);
+  assert.equal(traffic.turnsLeft("model-b"), 3);
+  await traffic.turn("model-b");
+  assert.equal(sent.length, 4);
 });
 
 test("the first cap-coded 429 ends the run as could not test and no turn follows it", async () => {
@@ -40,7 +54,7 @@ test("the first cap-coded 429 ends the run as could not test and no turn follows
   await traffic.turn("model-a");
   await assert.rejects(traffic.turn("model-a"), (error) => reason(error) === "could-not-test-cap");
   assert.equal(traffic.capped, true);
-  assert.equal(traffic.turnsLeft, 0);
+  assert.equal(traffic.turnsLeft("model-a"), 0);
   await assert.rejects(traffic.turn("model-a"), (error) => reason(error) === "could-not-test-cap");
   assert.equal(sent.length, 2, "nothing is sent after the cap");
 });

@@ -102,7 +102,8 @@ async function settledBurst<A>(turns: readonly Promise<A>[]) {
  * A model the pool refuses for quota moves to the next; any other failure is the answer. Usage
  * isolation is proven by the lane's own requests on the device's existing pool: each of its turns
  * is read back with the same device assertion, and only a dedicated acceptance pool's owner token
- * adds the pool-wide check on top. One turn budget covers every model the run tries.
+ * adds the pool-wide check on top. Each model the run tries has the whole turn budget, as on main:
+ * a turn refused for quota ran nowhere, so the served turns bound what a run spends.
  */
 export async function runFleetAcceptance(input: AcceptanceInput) {
   const traffic = new OwnTraffic(input.client, input.credential, turnBudgets.accept);
@@ -119,41 +120,32 @@ export async function runFleetAcceptance(input: AcceptanceInput) {
   };
   const tried: string[] = [];
   let cooled = false;
-  // The model the turn budget ran out on, when refused models had spent it first.
-  let spentOn: string | undefined;
   for (const model of smokeModels(first).filter((id) => catalog.ids.includes(id)))
     try {
       const accepted = await acceptOn(input, model, accounts, traffic, known, observe);
       return tried.length ? { ...accepted, quotaRefused: tried } : accepted;
     } catch (error) {
       const quota = quotaRefusal(error);
-      // The budget bounds what a run sends, however many models it tries. Spent by turns the pool
-      // refused for quota, the run ends as that refusal, never as a failed acceptance, which would
-      // stop a release for the wrong reason.
-      if (!quota && tried.length && turnBudgetSpent(error)) {
-        spentOn = model;
-        break;
-      }
       if (!quota) throw error;
-      // A refused model's served turns are vouched for by a read now, not only by later ones.
-      await observe();
+      // A refused model's served turns are vouched for by a read now, not only by later ones. Main
+      // makes no read here, so losing it must not turn a quota refusal into a failed acceptance:
+      // a later model's own reads still judge the run.
+      await observe().catch(() =>
+        input.log(`model=${model} fleet read after the refusal failed; later reads still vouch`),
+      );
       if (quota === "model_cooldown") cooled = true;
       tried.push(`${model}: ${turnFailure(error)}`);
       input.log(`model=${model} refused for quota; trying the next acceptance model`);
     }
-  // Every model refused, or the budget spent by those refused before another could prove a cell.
-  const refused = spentOn
-    ? `The run's turn budget ran out on ${spentOn} after the pool refused other models for quota (${tried.join("; ")})`
-    : `Every acceptance model the pool lists was refused for ${cooled ? "quota" : "funding"} (${tried.join("; ")})`;
   throw cooled
     ? refuse(
         cooldownRefused,
-        `${refused}, at least one as model_cooldown. A node cools a model after its provider refuses every credential, so the cell may be what fails.`,
+        `Every acceptance model the pool lists was refused for quota, at least one as model_cooldown (${tried.join("; ")}). A node cools a model after its provider refuses every credential, so the cell may be what fails.`,
         "Read the cell's log for the provider refusals; once a model has quota on the root, run the fleet lane's configure-and-accept with a new GO.",
       )
     : refuse(
         quotaRefused,
-        `${refused}, so no turn proved a cell serves.`,
+        `Every acceptance model the pool lists was refused for funding (${tried.join("; ")}), so no turn proved a cell serves.`,
         "Wait for the acceptance pool's funding, then run the fleet lane's accept mode. The permission stays as configured.",
       );
 }

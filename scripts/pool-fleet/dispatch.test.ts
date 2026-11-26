@@ -168,13 +168,69 @@ test("no request served by a fleet cell fails the acceptance and disables the fl
   }
 });
 
-test("a turn budget spent by turns refused for quota ends as the quota refusal, not a failed acceptance", async () => {
-  // The first acceptance model is refused for funding (six turns); the next one's cell serves only
-  // from the nineteenth turn on, so the run's one budget runs out before that model can prove it.
+/** The first acceptance model refused for funding; the second one's cells serve from `cellFrom` on. */
+async function afterRefusal(cellFrom: number | undefined) {
   const lane = await harness({
     models: ["claude-opus-5-5", "gpt-6.1-sol"],
     quota: (model) => (model === "claude-opus-5-5" ? "usage_credit_policy_denied" : undefined),
-    boot: (index, enabled) => (enabled && index >= 18 ? "cell-boot" : "primary-boot"),
+    boot: (index, enabled) =>
+      enabled && cellFrom !== undefined && index >= cellFrom ? "cell-boot" : "primary-boot",
+  });
+  const deps = lane.deps();
+  if (deps.acceptance instanceof FleetLaneRefused) assert.fail(deps.acceptance.message);
+  const result = await runPoolFleet(dispatch("configure-and-accept"), {
+    ...deps,
+    acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
+  });
+  return { lane, result };
+}
+
+test("after a model refused for quota, the next has all three bursts, and a cell serving in its third passes", async () => {
+  // Turns 0-5 are the refused model's; the next model's bursts are turns 6-11, 12-17 and 18-23.
+  const { lane, result } = await afterRefusal(18);
+  try {
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const acceptance = ("result" in result && result.result) as {
+      acceptance?: { model?: string; quotaRefused?: string[]; servedByCell?: { round: number } };
+    };
+    assert.equal(acceptance.acceptance?.model, "gpt-6.1-sol");
+    assert.equal(acceptance.acceptance?.servedByCell?.round, 3);
+    assert.deepEqual(acceptance.acceptance?.quotaRefused, [
+      "claude-opus-5-5: usage_credit_policy_denied, HTTP 429",
+    ]);
+    assert.equal((await lane.configuration.inspect())?.enabled, true);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("after a model refused for quota, a next model whose cells never serve ends cell-served-proof-missing and disables the fleet", async () => {
+  const { lane, result } = await afterRefusal(undefined);
+  try {
+    assert.equal(result.ok, false);
+    const cause = String("cause" in result && result.cause);
+    assert.match(cause, /cell-served-proof-missing/u);
+    assert.doesNotMatch(cause, /acceptance-quota-refused|turn-budget/u);
+    assert.equal((await lane.configuration.inspect())?.enabled, false);
+  } finally {
+    await lane.close();
+  }
+});
+
+test("a fleet read lost after a funding refusal still ends as the quota refusal and keeps the permission", async () => {
+  let refused = false;
+  const lane = await harness({
+    models: ["claude-opus-5-5", "gpt-6.1-sol"],
+    quota: (model) => {
+      if (model === "claude-opus-5-5") refused = true;
+      return "usage_credit_policy_denied";
+    },
+    handoffFailure: (action) => {
+      if (action !== "inspect" || !refused) return undefined;
+      refused = false;
+      return new Error("synthetic lost read");
+    },
+    boot: () => "primary-boot",
   });
   try {
     const deps = lane.deps();
@@ -184,29 +240,16 @@ test("a turn budget spent by turns refused for quota ends as the quota refusal, 
       acceptance: { ...deps.acceptance, model: "claude-opus-5-5" },
     });
     assert.equal(result.ok, false);
-    const cause = String("cause" in result && result.cause);
-    assert.match(cause, /acceptance-quota-refused/u);
-    assert.match(
-      cause,
-      /turn budget ran out on gpt-6\.1-sol after the pool refused other models for quota \(claude-opus-5-5/u,
-    );
-    assert.doesNotMatch(cause, /turn-budget|cell-served-proof-missing/u);
-    // A quota refusal leaves the permission in force, unproven, as main's quota branch does.
+    assert.match(String("cause" in result && result.cause), /acceptance-quota-refused/u);
     assert.equal((await lane.configuration.inspect())?.enabled, true);
-    // The budget held: nothing past it was sent.
-    assert.equal(
-      lane.modelCalls.filter(({ call }) => call === "POST /v1/chat/completions").length,
-      19,
-    );
   } finally {
     await lane.close();
   }
 });
 
-test("a cooldown in the burst the budget cuts short still ends as cooldown-refused and disables the fleet", async () => {
-  // The first model is refused for funding; the next one's cells never serve, and the one turn of
-  // its third burst the budget still allows is cooled down. A cooldown may be the cell's own node,
-  // so it must not hide behind the budget refusals of that burst's other turns.
+test("a cooldown in a later burst of the next model ends as cooldown-refused and disables the fleet", async () => {
+  // The first model is refused for funding; the next one's cells never serve, and the first turn
+  // of its third burst is cooled down. A cooldown may be the cell's own node, so the fleet goes off.
   let laterTurns = 0;
   const lane = await harness({
     models: ["claude-opus-5-5", "gpt-6.1-sol"],
