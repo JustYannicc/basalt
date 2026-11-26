@@ -53,24 +53,38 @@ export function comparisonBase(base: string, head: string, headRef: string, cwd 
   const git = (args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
   const tip = git(["rev-parse", head]);
   let below: string | null = null;
-  for (const sha of git([
+  for (const line of git([
     "for-each-ref",
-    "--format=%(objectname)",
+    "--format=%(refname) %(objectname)",
     "refs/remotes/origin/batch/",
   ]).split("\n")) {
-    if (!sha || sha === tip || !isAncestor(sha, tip, cwd) || isAncestor(sha, base, cwd)) continue;
+    const [ref, sha] = line.split(" ");
+    if (!sha || ref === `refs/remotes/origin/${headRef}` || sha === tip) continue;
+    if (!isAncestor(sha, tip, cwd) || isAncestor(sha, base, cwd)) continue;
     if (!below || isAncestor(below, sha, cwd)) below = sha;
   }
   return below ?? base;
+}
+
+// The batch's own files: changed since the batch below, and not brought in by merging main.
+export function batchFiles(main: string, base: string, head: string, cwd = "."): string[] {
+  const sinceMain = new Set(changedFiles(main, head, cwd));
+  return base === main
+    ? [...sinceMain]
+    : changedFiles(base, head, cwd).filter((file) => sinceMain.has(file));
 }
 
 if (import.meta.main) {
   const [main = "origin/main", head = "HEAD"] = process.argv.slice(2);
   const base = comparisonBase(main, head, process.env.HEAD_REF ?? "");
   if (base !== main) console.log(`Judged from the batch below, ${base.slice(0, 12)}.`);
-  // Both sides' lists, so a change that narrows release-path.json is still judged by the old one.
-  const paths = unionOfPaths(releasePathsAt(".", base), releasePathsAt(".", head));
-  const result = shipAlone(changedFiles(base, head), paths.length ? paths : releasePaths);
+  // Every side's list, so a change that narrows release-path.json is still judged by the old one.
+  const paths = unionOfPaths(
+    releasePathsAt(".", main),
+    releasePathsAt(".", base),
+    releasePathsAt(".", head),
+  );
+  const result = shipAlone(batchFiles(main, base, head), paths.length ? paths : releasePaths);
   if (result.pass) {
     console.log(
       result.releasePath.length
