@@ -19,6 +19,9 @@ export const holdingMinutes = 5;
 export const watchMinutes = 40;
 const minute = 60_000;
 const notStarted = new Set(["queued", "waiting", "pending", "requested"]);
+/** A job no runner has taken: queued, or shown in progress before GitHub names its runner. */
+const waiting = (job: WatchedJob) =>
+  notStarted.has(job.status) || (job.status === "in_progress" && job.ran === false);
 
 export type WatchedJob = {
   id: number;
@@ -31,6 +34,8 @@ export type WatchedJob = {
   lost?: boolean;
   /** It ended as cancelled, with or without a runner. */
   cancelled?: boolean;
+  /** GitHub names the runner that took it; read only when listed, so a fixture may leave it out. */
+  ran?: boolean;
 };
 export type Verdict = {
   run: number;
@@ -87,6 +92,7 @@ export function watchedJob(job: Record<string, unknown>, label: string): Watched
     // GitHub reports a job no runner took as runner "" (id 0); a cancelled job that ran has one.
     lost: cancelled && !job.runner_name,
     cancelled,
+    ran: !!job.runner_name,
   };
 }
 
@@ -99,7 +105,7 @@ export function watchDecision(
   const missing = names.filter((name) => !listed.has(name));
   const stuck = names
     .map((name) => listed.get(name))
-    .filter((job): job is WatchedJob => !!job && job.onBox && notStarted.has(job.status));
+    .filter((job): job is WatchedJob => !!job && job.onBox && waiting(job));
   // A cancel of the whole run cancels every job that hadn't ended, box or not; a lost box job is
   // one GitHub cancelled alone, while no other job was cancelled with it.
   const lost = names
@@ -218,9 +224,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         String(jobs.find((job) => job.name === "select")?.completed_at ?? ""),
       );
       const watched = jobs.map((job) => watchedJob(job, label));
-      const stuck = watched.some(
-        (job) => job.name in planned && job.onBox && notStarted.has(job.status),
-      );
+      const stuck = watched.some((job) => job.name in planned && job.onBox && waiting(job));
       // The box's health is read only while one of its jobs waits. A stale heartbeat may only mean
       // no Check started lately, so box-watch dispatches its own and counts the box down only when
       // that probe brings back no healthy heartbeat; one it can't read is unknown, never down.

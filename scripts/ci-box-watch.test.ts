@@ -217,6 +217,7 @@ test("a box job GitHub cancelled before any runner took it reads as lost, from i
     createdAt: Date.parse("2026-11-22T04:19:08Z"),
     lost: true,
     cancelled: true,
+    ran: false,
   });
   // One that ran and was cancelled has a runner, and isn't lost.
   assert.equal(
@@ -225,6 +226,26 @@ test("a box job GitHub cancelled before any runner took it reads as lost, from i
   );
   // Nor is one that ended any other way.
   assert.equal(watchedJob({ ...lost, conclusion: "failure" }, "basalt-box").lost, false);
+});
+
+test("a box job shown in progress before GitHub names its runner still waits", () => {
+  // Read from GitHub, an in-progress job with no runner has not started on any runner.
+  const unseated = watchedJob(
+    { id: 5, name: "job-5", status: "in_progress", runner_name: "", labels: ["basalt-box"] },
+    "basalt-box",
+  );
+  assert.equal(watch([unseated], 60).action, "cancel");
+  const seated = watchedJob(
+    {
+      id: 5,
+      name: "job-5",
+      status: "in_progress",
+      runner_name: "basalt-box-3",
+      labels: ["basalt-box"],
+    },
+    "basalt-box",
+  );
+  assert.deepEqual(watch([seated], 60), { action: "done" });
 });
 
 test("each job's deadline counts from when GitHub queued it, not from select", () => {
