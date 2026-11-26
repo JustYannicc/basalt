@@ -33,10 +33,9 @@ export const listApplications =
       Effect.provideService(
         Credentials,
         Effect.succeed(
-          apiTokenCredentials({
-            apiToken: Redacted.value(token),
-            ...(apiBaseUrl ? { apiBaseUrl } : {}),
-          }),
+          apiBaseUrl
+            ? apiTokenCredentials({ apiToken: Redacted.value(token), apiBaseUrl })
+            : apiTokenCredentials({ apiToken: Redacted.value(token) }),
         ),
       ),
       Effect.timeout("60 seconds"),

@@ -710,7 +710,7 @@ const stageState = Effect.gen(function* () {
     ...target,
   } as never) as unknown as Fx.Effect<StateService, unknown, never>;
   return { state, at: { stack: yield* stackName(), stage } };
-});
+}).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: "(State store)", cause })));
 const recordedRow = (fqn: string) =>
   stageState.pipe(
     Effect.flatMap(({ state, at }) => state.get({ ...at, fqn })),
@@ -934,9 +934,7 @@ try {
     const digest = values["plan-digest"];
     const plan = await run(
       Effect.gen(function* () {
-        const { state, at } = yield* stageState.pipe(
-          Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
-        );
+        const { state, at } = yield* stageState;
         const input = {
           fqn,
           worker: policy?.check?.poolWorker ?? "PoolWorker",

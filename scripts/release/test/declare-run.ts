@@ -8,12 +8,7 @@ import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Data, Effect, Exit } from "effect";
-import {
-  makePlan,
-  productionRows,
-  type ContainerApplicationBody,
-  type PlanInput,
-} from "./plan-fixture.ts";
+import { makePlan, productionRows, type FakeApplication, type PlanInput } from "./plan-fixture.ts";
 
 export type Rows = Record<string, ResourceState>;
 
@@ -65,7 +60,7 @@ export type Outcome =
 export async function declareTo(
   context: TestContext,
   outcome: Outcome,
-  applications: Map<string, ContainerApplicationBody>,
+  applications: Map<string, FakeApplication>,
   rows?: Rows,
 ) {
   const exits: Exit.Exit<unknown, unknown>[] = [];

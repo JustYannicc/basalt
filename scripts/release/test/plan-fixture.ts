@@ -118,15 +118,31 @@ export interface Declaration {
   observationToken?: boolean;
 }
 
-/** The recorded production body of the root application read, with synthetic identifiers. */
-const applicationBody = (image: string) => ({
+/** An application the fake account holds besides the root: its identity, as a test names it. */
+export interface FakeApplication {
+  readonly id: string;
+  readonly name: string;
+  readonly namespaceId: string;
+}
+/** The route gateway's application, as the fake API creates it. */
+export const routeGatewayApplication: FakeApplication = {
+  id: "22222222-2222-4222-8222-222222222222",
+  name: "basalt-production-route-gateway",
+  namespaceId: "namespace-route-gateway",
+};
+
+/**
+ * The recorded production body of the root application read, with synthetic identifiers; another
+ * application is served in the same recorded shape under its own identity.
+ */
+const applicationBody = (image: string, as?: FakeApplication) => ({
   success: true,
   result: {
-    id: applicationId,
+    id: as?.id ?? applicationId,
     created_at: "2026-10-01T00:00:00Z",
     updated_at: "2026-11-01T00:00:00Z",
     account_id: accountId,
-    name: "basalt-production-poolcontainer",
+    name: as?.name ?? "basalt-production-poolcontainer",
     version: 57,
     scheduling_policy: "default",
     instances: 1,
@@ -145,7 +161,7 @@ const applicationBody = (image: string) => ({
       observability: { logs: { enabled: true } },
     },
     constraints: { regions: ["EEUR", "WEUR"], jurisdiction: "eu" },
-    durable_objects: { namespace_id: "namespace-pool-container" },
+    durable_objects: { namespace_id: as?.namespaceId ?? "namespace-pool-container" },
     health: {
       errors: [],
       instances: {
@@ -233,14 +249,11 @@ const poolWorkerSettings = {
   ],
 };
 
-/** A container application as the API answers for it (`result`). */
-export type ContainerApplicationBody = Record<string, unknown> & { id: string; name: string };
-
 /** The fake Cloudflare API the plans talk to; a test may serve the same applications to its own reads. */
 export async function cloudflare(
   context: TestContext,
   shadow: boolean,
-  containers: { applications: Map<string, ContainerApplicationBody>; acceptCreates: boolean },
+  containers: { applications: Map<string, FakeApplication>; acceptCreates: boolean },
 ) {
   const settingsByScript = shadow
     ? { ...recordedSettings, "basalt-production-poolworker": poolWorkerSettings }
@@ -250,49 +263,38 @@ export async function cloudflare(
     requests.push(`${request.method} ${request.url}`);
     response.setHeader("content-type", "application/json");
     const application = `/accounts/${accountId}/containers/applications/${applicationId}`;
+    const list = `/accounts/${accountId}/containers/applications`;
+    const held = request.url?.startsWith(`${list}/`)
+      ? containers.applications.get(request.url.slice(list.length + 1))
+      : undefined;
     if (
-      (request.method === "GET" || (shadow && request.method === "PATCH")) &&
-      request.url === application
+      ((request.method === "GET" || (shadow && request.method === "PATCH")) &&
+        request.url === application) ||
+      (request.method === "GET" && held)
     ) {
-      response.end(JSON.stringify(applicationBody(pinnedImage)));
+      response.end(JSON.stringify(applicationBody(pinnedImage, held)));
       return;
     }
     // The list as recorded (result_info is an empty object). The root is not in it: what a
     // provider sees for a row State lost. Applications a test created or seeded are.
-    const list = `/accounts/${accountId}/containers/applications`;
     if (request.method === "GET" && request.url === list) {
-      const result = [...containers.applications.values()];
       response.end(
-        JSON.stringify({ success: true, result, messages: [], errors: [], result_info: {} }),
+        JSON.stringify({
+          success: true,
+          result: [...containers.applications.values()].map(
+            (held) => applicationBody(pinnedImage, held).result,
+          ),
+          messages: [],
+          errors: [],
+          result_info: {},
+        }),
       );
       return;
     }
-    const held = request.url?.startsWith(`${list}/`)
-      ? containers.applications.get(request.url.slice(list.length + 1))
-      : undefined;
-    if (request.method === "GET" && held) {
-      response.end(JSON.stringify({ success: true, result: held, messages: [], errors: [] }));
-      return;
-    }
+    // Only the route gateway is ever created here; the account then holds it as recorded.
     if (request.method === "POST" && request.url === list && containers.acceptCreates) {
-      void (async () => {
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) chunks.push(chunk as Buffer);
-        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
-        const id = `application-${String(body.name)}-${containers.applications.size + 1}`;
-        const created: ContainerApplicationBody = {
-          ...applicationBody(pinnedImage).result,
-          ...body,
-          id,
-          name: String(body.name),
-          account_id: accountId,
-          version: 1,
-          created_at: "2026-11-27T00:00:00Z",
-          updated_at: "2026-11-27T00:00:00Z",
-        };
-        containers.applications.set(id, created);
-        response.end(JSON.stringify({ success: true, result: created, messages: [], errors: [] }));
-      })();
+      containers.applications.set(routeGatewayApplication.id, routeGatewayApplication);
+      response.end(JSON.stringify(applicationBody(pinnedImage, routeGatewayApplication)));
       return;
     }
     const settings = new RegExp(`^/accounts/${accountId}/workers/scripts/([a-z-]+)/settings$`, "u")
@@ -969,7 +971,7 @@ export interface PlanInput {
    * Container applications the account holds besides the root, by id: what the fake API lists and
    * answers for. Pass the same map to later plans so they see what an earlier apply created.
    */
-  applications?: Map<string, ContainerApplicationBody>;
+  applications?: Map<string, FakeApplication>;
   /** The fake API creates the container applications it is asked to; by default it refuses them. */
   acceptContainerCreates?: boolean;
   /** A State write that fails as the store would, after Cloudflare already did what it records. */

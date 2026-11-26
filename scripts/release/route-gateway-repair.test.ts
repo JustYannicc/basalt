@@ -16,12 +16,7 @@ import {
 import { decodeReleasePolicy } from "./policy.ts";
 import { routeGatewayClassFor, routeGatewayRecorded } from "./route-gateway-class.ts";
 import { asDeclared, declareTo, seeded, type Outcome, type Rows } from "./test/declare-run.ts";
-import {
-  cloudflare,
-  makePlan,
-  pinnedImage,
-  type ContainerApplicationBody,
-} from "./test/plan-fixture.ts";
+import { cloudflare, makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
 
 // Every way the declare can stop after Alchemy committed the application's placeholder row.
 const stops: Outcome[] = ["upload-refused", "create-refused", "commit-lost"];
@@ -56,7 +51,7 @@ const planAs = async (
   context: TestContext,
   rows: Rows,
   name: string,
-  applications: Map<string, ContainerApplicationBody>,
+  applications: Map<string, FakeApplication>,
 ) => {
   const { include, env } = await policyFile(name);
   const pool = rows.PoolWorker as unknown as {
@@ -111,7 +106,7 @@ const actions = (plan: Plan.Plan) =>
 const repairOn = async (
   context: TestContext,
   rows: Rows,
-  applications: Map<string, ContainerApplicationBody>,
+  applications: Map<string, FakeApplication>,
 ) => {
   const account = await cloudflare(context, false, { applications, acceptCreates: false });
   const store: RepairStore<never> = {
@@ -133,7 +128,7 @@ const repairOn = async (
 
 for (const stop of stops)
   test(`no release plans past the placeholder a declare that stopped at ${stop} left`, async (context) => {
-    const applications = new Map<string, ContainerApplicationBody>();
+    const applications = new Map<string, FakeApplication>();
     const { rows } = await declareTo(context, stop, applications);
     const touched: string[] = [];
     for (const name of await policies()) {
@@ -165,7 +160,7 @@ for (const stop of stops)
 
 for (const stop of ["upload-refused", "create-refused"] as const)
   test(`a declare stopped at ${stop} is repaired by forgetting the placeholder, then declared again`, async (context) => {
-    const applications = new Map<string, ContainerApplicationBody>();
+    const applications = new Map<string, FakeApplication>();
     const fresh = await makePlan(context, { rows: await seeded(context), ...asDeclared });
     const { rows } = await declareTo(context, stop, applications);
     const { plan } = await Effect.runPromise(
@@ -187,7 +182,7 @@ for (const stop of ["upload-refused", "create-refused"] as const)
   });
 
 test("a declare whose create landed but whose commit was lost is repaired by adopting the live application", async (context) => {
-  const applications = new Map<string, ContainerApplicationBody>();
+  const applications = new Map<string, FakeApplication>();
   const { rows } = await declareTo(context, "commit-lost", applications);
   const [live] = [...applications.values()];
   assert.ok(live, "the create reached the account");
@@ -216,7 +211,7 @@ test("a declare whose create landed but whose commit was lost is repaired by ado
 });
 
 test("the repair touches nothing but a placeholder it can account for", async (context) => {
-  const refused = async (rows: Rows, applications: Map<string, ContainerApplicationBody>) => {
+  const refused = async (rows: Rows, applications: Map<string, FakeApplication>) => {
     const exit = await Effect.runPromiseExit(
       readRepair(await repairOn(context, rows, applications)),
     );
@@ -226,18 +221,18 @@ test("the repair touches nothing but a placeholder it can account for", async (c
     return error.reason;
   };
   // A finished declare records the live application: nothing to repair.
-  const done = new Map<string, ContainerApplicationBody>();
+  const done = new Map<string, FakeApplication>();
   const finished = await declareTo(context, "finished", done);
   assert.match(await refused(finished.rows, done), /live application/u);
 
-  const applications = new Map<string, ContainerApplicationBody>();
+  const applications = new Map<string, FakeApplication>();
   const { rows } = await declareTo(context, "commit-lost", applications);
   const [live] = [...applications.values()];
   // Two applications under the name: which is the row's cannot be told.
   const twice = new Map(applications).set("second", { ...live!, id: "second" });
   assert.match(await refused(rows, twice), /2 applications/u);
   // One attached to another namespace than the Worker records is not the row's.
-  const elsewhere = new Map([[live!.id, { ...live!, durable_objects: { namespace_id: "other" } }]]);
+  const elsewhere = new Map([[live!.id, { ...live!, namespaceId: "other" }]]);
   assert.match(await refused(rows, elsewhere), /another namespace/u);
   // A row written in local mode, or with a generated name, is not one the repair can account for.
   const local = { ...rows, RouteGateway: { ...rows.RouteGateway!, providerMode: "local" } } as Rows;
@@ -261,7 +256,7 @@ test("the repair touches nothing but a placeholder it can account for", async (c
 });
 
 test("a declared gateway does not block the fleet's class change, and only the allowance admits its attachment", async (context) => {
-  const applications = new Map<string, ContainerApplicationBody>();
+  const applications = new Map<string, FakeApplication>();
   const { rows } = await declareTo(context, "finished", applications);
   const exit = await planAs(context, rows, "cutover-classes", applications);
   assert.ok(Exit.isSuccess(exit), String(Exit.isFailure(exit) && Cause.squash(exit.cause)));
@@ -293,7 +288,7 @@ test("a declared gateway does not block the fleet's class change, and only the a
 });
 
 test("the fleet's class change still refuses a real change to the declared gateway", async (context) => {
-  const applications = new Map<string, ContainerApplicationBody>();
+  const applications = new Map<string, FakeApplication>();
   const { rows } = await declareTo(context, "finished", applications);
   const { include } = await policyFile("cutover-classes");
   const { plan } = await makePlan(context, {
