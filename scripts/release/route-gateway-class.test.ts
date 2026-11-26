@@ -82,12 +82,13 @@ test("no other policy may create the route gateway's class", async () => {
       assert.ok(!classes.includes("RouteGateway"), name);
 });
 
-test("PoolWorker hosting the class counts as declared, even before its application is recorded", () => {
-  // Alchemy uploads PoolWorker with the class before it creates the application: a declare that
-  // stopped between the two still has the class, and ordinary releases must keep it.
-  assert.equal(routeGatewayRecorded(["PoolLedger", "RouteGateway"], false), true);
-  assert.equal(routeGatewayRecorded([], true), true);
-  assert.equal(routeGatewayRecorded(["PoolLedger"], false), false);
+test("only PoolWorker hosting the class counts as declared, not the application's row", () => {
+  // Alchemy records the application's row when it publishes the image, uploads PoolWorker with
+  // the class next, and creates the application last. A declare that stopped after the upload
+  // has the class, and ordinary releases must keep it; one that stopped before has none.
+  assert.equal(routeGatewayRecorded(["PoolLedger", "RouteGateway"]), true);
+  assert.equal(routeGatewayRecorded(["PoolLedger"]), false);
+  assert.equal(routeGatewayRecorded([]), false);
 });
 
 test("the entry sets the class switch before the planning session copies the environment", async () => {

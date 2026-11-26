@@ -478,8 +478,7 @@ const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
 const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
-const { routeGatewayClassFor, routeGatewayFqn, routeGatewayRecorded } =
-  await import("./route-gateway-class.ts");
+const { routeGatewayClassFor, routeGatewayRecorded } = await import("./route-gateway-class.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
 
@@ -748,13 +747,12 @@ try {
     // (route-gateway-class.ts), and the entry sets it whatever the job's environment held.
     const poolWorker = policy?.check?.poolWorker ?? "PoolWorker";
     const recorded = await run(
-      Effect.all([recordedRow(poolWorker), recordedApplication(routeGatewayFqn)]).pipe(
-        Effect.map(([pool, application]) =>
+      recordedRow(poolWorker).pipe(
+        Effect.map((pool) =>
           routeGatewayRecorded(
             [pool, pool?.old].flatMap((row) =>
               Object.keys(row?.attr?.durableObjectNamespaces ?? {}),
             ),
-            application !== undefined,
           ),
         ),
       ),
