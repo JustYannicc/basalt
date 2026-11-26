@@ -111,13 +111,16 @@ function fixture(run: (root: string) => Promise<void> | void) {
   return Promise.resolve(run(root)).finally(() => rmSync(root, { recursive: true, force: true }));
 }
 
+// A killed process stays a zombie until its parent, often init, reaps it, and signal 0 still
+// reaches a zombie. The shard waits for the process to die, not for that reap.
 const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+  const listed = spawnSync("ps", ["-o", "stat=", "-p", String(pid)], { encoding: "utf8" });
+  const state = listed.stdout?.trim() ?? "";
+  // A missing pid is exit 1 with no output; a ps that failed must never read as "gone".
+  if (listed.status === 1 && state === "" && !listed.stderr) return false;
+  if (listed.status !== 0)
+    throw new Error(`ps failed for ${pid}: ${listed.stderr || listed.error}`);
+  return !state.startsWith("Z");
 };
 const pair = (key: string) => ({
   group: "declared:self-host",
