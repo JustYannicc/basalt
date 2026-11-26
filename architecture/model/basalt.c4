@@ -301,7 +301,7 @@ model {
 
   modelProviders = adapter "Model providers" {
     #external
-    metadata { hosts "dynamic|chatgpt.com|api.anthropic.com|mcp.cloudflare.com"; sdks "upstream" }
+    metadata { hosts "dynamic|chatgpt.com|api.anthropic.com|mcp.cloudflare.com|docs.anthropic.com|platform.openai.com"; sdks "upstream" }
   }
 
   priceCatalog = external "API price catalog" {
@@ -342,6 +342,7 @@ model {
   basalt.workflowRecipes -[tool]-> outsideServices "probe the configured public availability URL"
   basalt.workflowRecipes -[sync]-> repositoryApi "link to terminal release evidence"
   basalt.catalog -[sync]-> basalt.brandConfig "read connector copy brand"
+  basalt.catalog -[sync]-> modelProviders "link custom endpoint guidance to the public API references"
   basalt.site -[sync]-> basalt.brandConfig "read site copy, operator and links"
   basalt.site -[sync]-> basalt.clientAssets "serve brand logo and fonts"
   basalt.site -[sync]-> basalt.siteWaitlist "store waiting-list sign-ups"

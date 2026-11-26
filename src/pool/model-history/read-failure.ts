@@ -17,6 +17,8 @@ export type HistoryReadStep =
   | "begin"
   | "targets"
   | "coverage"
+  /** A rolled summary's coverage, daily and hourly figures, read in one statement. */
+  | "figures"
   | "daily"
   | "capture"
   | "hourly"

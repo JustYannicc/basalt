@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A custom endpoint account names its own gateway address, model names and key. One set of rules in the shared provider definitions decides the address and the names, and two places apply it: the provider's own account check, which the connect form runs on the entered fields before saving and which shows the refusal reason without any network call, and the pool mirror, which refuses an account saved despite that check before anything is written to Home. The address is https only and refused when it carries credentials, a query or a fragment, names a loopback, private, link-local, reserved, documentation or single-label host or a local-only suffix, or is an IPv6 literal; one trailing /v1 is dropped. A public name resolving to a private address is decided by the runtime's egress, not here. Its models are exactly the names given, never a vendor's built-in list, so a mirrored Messages-shaped key at a custom address always carries a non-empty model list. One function chooses the Home config family an API-key account is written to and removed from, so a removal reaches the family the write used."
+    }
+  }
+}

@@ -1,5 +1,9 @@
 {
   "basalt/no-direct-cloudflare-api": {
+    "scripts/stage-cloudflare/request.mjs": {
+      "count": 1,
+      "reason": "The one Cloudflare API caller for isolated test stages: inventory and prefix-scoped teardown that Alchemy's deploy-time state cannot see after the runner is gone."
+    },
     "src/pool/runtime-provider/read.ts": {
       "count": 2,
       "reason": "The live pool reads its own container applications at run time; Alchemy acts at deploy time only."
@@ -113,6 +117,12 @@
     "src/route/acquisitions.ts": {
       "count": 1,
       "reason": "Decodes the claims of route acquisitions Basalt's own tools service signs."
+    }
+  },
+  "landmines-testing/no-flake-masking": {
+    "scripts/import-cpamp-bulk.test.ts": {
+      "count": 1,
+      "reason": "The real hold of more than 30 s is the proof for carry 0655; a shorter hold would prove a constant."
     }
   },
   "landmines-testing/no-test-doubles": {
