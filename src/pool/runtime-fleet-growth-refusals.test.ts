@@ -105,7 +105,7 @@ const rollout = (refusedMs: number, attempts: number) => ({
 /** Passes until one stays refused this long, as upkeep retries every cadence. */
 const stillAfter = stillRefusedMs / upkeepCadenceMs;
 
-test("a rollout refusal logs at info with its read and reason, warns once still refused past 30 s, and recovers once", async (context) => {
+test("a rollout refusal logs at info with its read and reason, as does its still line past 30 s, and recovers once", async (context) => {
   const g = await growing(context);
   g.f.rollout(true);
   let [row] = await g.pass();
@@ -114,14 +114,16 @@ test("a rollout refusal logs at info with its read and reason, warns once still 
   assert.deepEqual(g.warn("POOL_FLEET_GROWTH_REFUSED"), []);
   // Each pass retries the unsent start; none is still refused before the episode lasted 30 s.
   for (let index = 0; index < stillAfter - 1; index++) await g.pass();
+  assert.deepEqual(g.info("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
   assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
   await g.pass();
-  // An expected rollout that holds scale-out 30 s warns all the same.
+  // A start held by an announced rollout is the designed state: its still line is info, not warn.
   const still = rollout(stillRefusedMs, stillAfter + 1);
-  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), [still]);
-  assert.deepEqual(g.info("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
+  assert.deepEqual(g.info("POOL_FLEET_GROWTH_STILL_REFUSED"), [still]);
+  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
   for (let index = 0; index < 3; index++) await g.pass();
-  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), [still], "logged again");
+  assert.deepEqual(g.info("POOL_FLEET_GROWTH_STILL_REFUSED"), [still], "logged again");
+  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
   assert.deepEqual(g.info("POOL_FLEET_GROWTH_RECOVERED"), []);
   g.f.rollout(false);
   [row] = await g.pass();
@@ -187,7 +189,7 @@ test("after the isolate restarts, a still-refused retry opens a fresh episode an
   // The first episode was this isolate's memory; the retries count from the new isolate's first.
   for (let index = 0; index < 30; index++) [row] = await g.pass();
   assert.equal(row?.phase, "uncertain");
-  assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), [
+  assert.deepEqual(g.info("POOL_FLEET_GROWTH_STILL_REFUSED"), [
     rollout(stillRefusedMs, stillAfter + 1),
   ]);
   g.f.rollout(false);
@@ -292,13 +294,14 @@ const phases = (rows: readonly FleetRow[]) => rows.map((row) => [row.target.slot
 
 test("a new slot refused long after an earlier slot's episode gets its own still line", async (context) => {
   const g = await standIns(context, 1);
-  // Still refused at 30 s, it warns once.
+  // Still refused at 30 s by anything but a rollout, here a rate limit, it warns once.
   let rows = await g.pass();
   for (let index = 0; index < stillAfter; index++) rows = await g.pass();
   assert.deepEqual(phases(rows), [["slot-1", "uncertain"]]);
   assert.deepEqual(g.warn("POOL_FLEET_GROWTH_STILL_REFUSED"), [
     limited(stillRefusedMs, stillAfter + 1),
   ]);
+  assert.deepEqual(g.info("POOL_FLEET_GROWTH_STILL_REFUSED"), []);
   // Demand ends; past its start bound the start is given up, then reclaimed, with no line.
   g.demand(0);
   const left = new Set<string>();

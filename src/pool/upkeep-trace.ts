@@ -6,20 +6,26 @@ import {
 import type { HomeDatabasePoolObservation } from "./home-database-pool.ts";
 import type { RuntimeReadPhase, RuntimeReadSteps } from "./runtime-read-trace.ts";
 
-type Side = "alarm" | "home" | "fleet" | "endpoint";
+/**
+ * Each side's passes. No pass is also a phase on its own side, so a line that names one of its
+ * side's passes and is not `pending` is that pass's line, never a phase's.
+ */
+interface Passes {
+  alarm: "alarm";
+  home: "home" | "home_shared" | "home_database_pool";
+  fleet: "upkeep" | "drain" | "supervise";
+  endpoint: "warm" | "drain_queue";
+}
+type Side = keyof Passes;
 type Phase =
-  | "alarm"
+  | Passes[Side]
   | "fleet"
   | "rearm"
-  | "home"
-  | "home_shared"
   | "candidate_probe"
   | "primary_retirement"
   | "app_models"
   | "memberships"
-  | "home_database_pool"
   | "computers"
-  | "warm"
   | "first_request"
   | "control"
   | "prices"
@@ -27,8 +33,6 @@ type Phase =
   | "usage"
   | "accounts"
   | "model_history"
-  | "upkeep"
-  | "supervise"
   | "snapshot"
   | "reserved"
   | "warming"
@@ -38,16 +42,16 @@ type Phase =
   | "draining"
   | "retiring"
   | "retired"
-  | "drain"
   | "drain_recheck"
   | "drain_fence"
-  | "drain_queue"
   | "drain_health"
   | "drain_activity"
   | "legacy_drain_proof"
   | "keep_alive"
   // A readiness read's own steps, when it runs inside a pass.
   | RuntimeReadPhase;
+type Inner<S extends Side> = Exclude<Phase, Passes[S]>;
+type Outcome = "ended" | "error";
 interface Fields {
   ordinal?: number;
   active?: number;
@@ -66,6 +70,7 @@ interface Row {
   ordinal?: number;
   active?: number;
   phase: Phase;
+  outcome: Outcome;
   elapsedMs: number;
 }
 interface Miss {
@@ -83,19 +88,20 @@ const reasonOf = (error: unknown) =>
   runtimeFailureDiagnostic(error, "endpoint_route").runtimeReason;
 
 /**
- * One line per pass, written when it settles, with every phase's time, so a missing alarm reads
- * apart from a held dependency without logging identities. A phase still running at 1 s and one
- * that throws also get their own line at once. Phases must settle inside their pass: one that ends
- * after the line is not in it.
+ * One line per pass, written when it settles, with every phase's time and which phases threw, so
+ * each line answers on its own: a missing alarm reads apart from a held dependency without logging
+ * identities or joining lines. A phase still running at 1 s and one that throws also get their own
+ * line at once. Phases must settle inside their pass: one that ends after the line is not in it.
  */
-export class PoolUpkeepTrace {
+export class PoolUpkeepTrace<S extends Side> {
   private invocation = ++sequence;
-  private side: Side;
+  private side: S;
   private phases: Partial<Record<Phase, number>> = {};
+  private failed = new Set<Phase>();
   private rows: Row[] = [];
   private misses: Miss[] = [];
   private observed: Fields = {};
-  constructor(side: Side) {
+  constructor(side: S) {
     this.side = side;
   }
   private emit(
@@ -117,7 +123,7 @@ export class PoolUpkeepTrace {
     });
   }
   /** The pass, itself a phase: its line is written in `finally`, so a pass that throws still logs. */
-  async pass<T>(phase: Phase, work: () => Promise<T>, fields: Fields = {}) {
+  async pass<T>(phase: Passes[S], work: () => Promise<T>, fields: Fields = {}) {
     const began = performance.now();
     const pending = setTimeout(() => this.emit(phase, "pending", began, fields), 1_000);
     let failed: { reason: Reason } | undefined;
@@ -136,6 +142,7 @@ export class PoolUpkeepTrace {
         outcome: failed ? "error" : "ended",
         elapsedMs: elapsed(began),
         phases: { ...this.phases },
+        ...(this.failed.size > 0 ? { failed: [...this.failed] } : {}),
         ...(this.rows.length > 0 ? { rows: [...this.rows] } : {}),
         ...(this.misses.length > 0 ? { misses: [...this.misses] } : {}),
         ...fields,
@@ -145,33 +152,36 @@ export class PoolUpkeepTrace {
     }
   }
   /** A phase that runs more than once in a pass, as rows sharing one do, adds up. */
-  run<T>(phase: Phase, work: () => Promise<T>, fields: Fields = {}) {
+  run<T>(phase: Inner<S>, work: () => Promise<T>, fields: Fields = {}) {
     return this.timed(phase, work, fields, () => {});
   }
   /** One fleet row's upkeep: its time adds to its phase's, and its entry says which row it was. */
-  row<T>(phase: Phase, fields: { ordinal?: number; active?: number }, work: () => Promise<T>) {
-    return this.timed(phase, work, fields, (elapsedMs) =>
-      this.rows.push({ ...fields, phase, elapsedMs }),
+  row<T>(phase: Inner<S>, fields: { ordinal?: number; active?: number }, work: () => Promise<T>) {
+    return this.timed(phase, work, fields, (outcome, elapsedMs) =>
+      this.rows.push({ ...fields, phase, outcome, elapsedMs }),
     );
   }
   private async timed<T>(
     phase: Phase,
     work: () => Promise<T>,
     fields: Fields,
-    record: (elapsedMs: number) => void,
+    record: (outcome: Outcome, elapsedMs: number) => void,
   ) {
     const began = performance.now();
     const pending = setTimeout(() => this.emit(phase, "pending", began, fields), 1_000);
+    let outcome: Outcome = "ended";
     try {
       return await work();
     } catch (error) {
+      outcome = "error";
+      this.failed.add(phase);
       this.emit(phase, "error", began, fields, reasonOf(error));
       throw error;
     } finally {
       clearTimeout(pending);
       const ms = elapsed(began);
       this.phases[phase] = (this.phases[phase] ?? 0) + ms;
-      record(ms);
+      record(outcome, ms);
     }
   }
   observe(fields: Fields) {
@@ -181,5 +191,7 @@ export class PoolUpkeepTrace {
     this.misses.push(miss);
   }
   /** A readiness read's own steps, timed as this pass's phases instead of their own lines. */
-  readonly steps: RuntimeReadSteps = { run: (phase, work) => this.run(phase, work) };
+  readonly steps: RuntimeReadSteps = {
+    run: (phase, work) => this.timed(phase, work, {}, () => {}),
+  };
 }

@@ -4,6 +4,7 @@ import { quietFleet } from "../../scripts/pool-tests/runtime-fleet-quiet-fixture
 import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
 import { PoolRuntimeFleet } from "./runtime-fleet/production.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
+import { SlotRefused } from "./runtime-slots/contract.ts";
 import { RuntimeHandoff } from "./runtime-slots/integration.ts";
 import { PoolUpkeepTrace } from "./upkeep-trace.ts";
 
@@ -14,7 +15,14 @@ interface Line {
   outcome: string;
   elapsedMs: number;
   phases?: Record<string, number>;
-  rows?: Array<{ ordinal?: number; active?: number; phase: string; elapsedMs: number }>;
+  failed?: string[];
+  rows?: Array<{
+    ordinal?: number;
+    active?: number;
+    phase: string;
+    outcome: string;
+    elapsedMs: number;
+  }>;
   misses?: Array<Record<string, unknown>>;
   [field: string]: unknown;
 }
@@ -89,6 +97,23 @@ test("a phase still running at 1 s writes its pending line at once, and the pass
   assert.equal(line!.invocation, pending[0]!.invocation);
 });
 
+test("a pass that ends under 1 s writes no pending line after its own", async (context) => {
+  const { clock, lines } = capture(context);
+  context.mock.timers.enable({ apis: ["setTimeout"] });
+  const trace = new PoolUpkeepTrace("alarm");
+  await trace.pass("alarm", async () => {
+    await trace.run("fleet", async () => {
+      clock.now += 400;
+    });
+  });
+  clock.now = 2_000;
+  context.mock.timers.tick(2_000);
+  assert.deepEqual(
+    lines().map((line) => [line.phase, line.outcome]),
+    [["alarm", "ended"]],
+  );
+});
+
 test("a phase that throws writes its error line at once, and a pass that throws still writes its line", async (context) => {
   const { clock, lines } = capture(context);
   const trace = new PoolUpkeepTrace("fleet");
@@ -115,8 +140,32 @@ test("a phase that throws writes its error line at once, and a pass that throws 
   assert.equal(written[0]!.elapsedMs, 2);
   assert.equal(written[0]!.phases, undefined);
   assert.deepEqual(written[1]!.phases, { snapshot: 3, ready: 2 });
+  assert.deepEqual(written[1]!.failed, ["ready"], "the pass line names the phase that threw");
   assert.equal(written[0]!.invocation, written[1]!.invocation);
   assert.equal(typeof written[1]!.reason, "string");
+});
+
+test("a phase whose throw the pass catches keeps its reason on its error line, and the pass line names it", async (context) => {
+  const { lines } = capture(context);
+  const trace = new PoolUpkeepTrace("home");
+  await trace.pass("home", async () => {
+    await trace
+      .run("candidate_probe", async () => {
+        throw new SlotRefused("unhealthy");
+      })
+      .catch(() => {});
+    await trace.run("memberships", async () => {});
+  });
+  const [error, line, ...rest] = lines();
+  assert.deepEqual(rest, []);
+  assert.deepEqual(
+    [error!.phase, error!.outcome, error!.reason],
+    ["candidate_probe", "error", "slot_unhealthy"],
+  );
+  assert.equal(line!.outcome, "ended");
+  assert.equal(line!.reason, undefined);
+  assert.deepEqual(line!.failed, ["candidate_probe"]);
+  assert.deepEqual(line!.phases, { candidate_probe: 0, memberships: 0 });
 });
 
 test("rows sharing a phase add up under it, each with its own entry, and health misses ride the same line", async (context) => {
@@ -132,15 +181,24 @@ test("rows sharing a phase add up under it, each with its own entry, and health 
         clock.now += spent;
       });
     await trace.row("ready", { ordinal: 3, active: 2 }, async () => {});
+    await trace
+      .row("ready", { ordinal: 4, active: 1 }, async () => {
+        clock.now += 1;
+        throw new Error("synthetic row failure");
+      })
+      .catch(() => {});
   });
-  const [line, ...rest] = lines();
+  const [error, line, ...rest] = lines();
   assert.deepEqual(rest, []);
-  assert.deepEqual(line!.phases, { draining: 12, ready: 0 });
+  assert.deepEqual([error!.phase, error!.outcome, error!.ordinal], ["ready", "error", 4]);
+  assert.deepEqual(line!.phases, { draining: 12, ready: 1 });
   assert.deepEqual(line!.rows, [
-    { ordinal: 1, active: 0, phase: "draining", elapsedMs: 5 },
-    { ordinal: 2, active: 0, phase: "draining", elapsedMs: 7 },
-    { ordinal: 3, active: 2, phase: "ready", elapsedMs: 0 },
+    { ordinal: 1, active: 0, phase: "draining", outcome: "ended", elapsedMs: 5 },
+    { ordinal: 2, active: 0, phase: "draining", outcome: "ended", elapsedMs: 7 },
+    { ordinal: 3, active: 2, phase: "ready", outcome: "ended", elapsedMs: 0 },
+    { ordinal: 4, active: 1, phase: "ready", outcome: "error", elapsedMs: 1 },
   ]);
+  assert.deepEqual(line!.failed, ["ready"]);
   assert.deepEqual(line!.misses, [
     { ordinal: 3, quarantined: false, cause: "timeout", roundTripMs: 1_500 },
   ]);
@@ -160,12 +218,13 @@ test("a fleet pass writes one line naming each row it kept and how long that row
   assert.equal(typeof line!.phases?.snapshot, "number");
   assert.equal(typeof line!.phases?.ready, "number");
   assert.deepEqual(
-    line!.rows?.map(({ ordinal, active, phase }) => [ordinal, active, phase]),
+    line!.rows?.map(({ ordinal, active, phase, outcome }) => [ordinal, active, phase, outcome]),
     [
-      [first.homePeerOrdinal, 0, "ready"],
-      [second.homePeerOrdinal, 0, "ready"],
+      [first.homePeerOrdinal, 0, "ready", "ended"],
+      [second.homePeerOrdinal, 0, "ready", "ended"],
     ],
   );
+  assert.equal(line!.failed, undefined, "no phase threw");
   assert.ok(line!.rows!.every((row) => typeof row.elapsedMs === "number"));
 });
 

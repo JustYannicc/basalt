@@ -724,7 +724,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.alarmInFlight = false;
     }
   }
-  private async upkeepAlarm(trace: PoolUpkeepTrace) {
+  private async upkeepAlarm(trace: PoolUpkeepTrace<"alarm">) {
     await trace.pass("alarm", async () => {
       trace.observe(await this.alarms.inspect());
       const due = await this.alarms.take();
@@ -780,7 +780,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.homeUpkeepTask = work;
     this.ctx.waitUntil(work.catch(() => console.error("POOL_HOME_UPKEEP_REARM_PENDING")));
   }
-  private async homeUpkeep(trace: PoolUpkeepTrace) {
+  private async homeUpkeep(trace: PoolUpkeepTrace<"home">) {
     await this.changes.deliver().catch(() => console.error("POOL_CHANGES_PENDING"));
     await trace
       .run("candidate_probe", () => this.candidateProbe.tick())

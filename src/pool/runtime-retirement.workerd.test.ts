@@ -101,7 +101,6 @@ test(
             // One line per pass: its phases' times in `phases`, a fleet pass's rows in `rows`.
             const upkeep = result.upkeepEvents as Array<{
               at: number;
-              invocation: number;
               side: string;
               phase: string;
               outcome: string;
@@ -110,7 +109,7 @@ test(
               known?: boolean;
               fleetDeadline?: number | null;
               phases?: Record<string, number>;
-              rows?: Array<{ ordinal?: number; phase: string; elapsedMs: number }>;
+              rows?: Array<{ ordinal?: number; phase: string; outcome: string; elapsedMs: number }>;
             }>;
             assert.ok(upkeep.every((event) => Number.isSafeInteger(event.at) && event.at > 0));
             assert.ok(
@@ -140,21 +139,17 @@ test(
               ),
             );
             for (const ordinal of [1, 2]) {
-              // A row's upkeep that threw has its own error line under its pass's invocation.
+              // Each row's entry says how its upkeep ended, so the pass line answers on its own.
               assert.ok(
                 upkeep.some(
                   (event) =>
                     event.side === "fleet" &&
                     event.phase === "upkeep" &&
                     event.rows?.some(
-                      (row) => row.phase === "draining" && row.ordinal === ordinal,
-                    ) &&
-                    !upkeep.some(
-                      (line) =>
-                        line.invocation === event.invocation &&
-                        line.phase === "draining" &&
-                        line.ordinal === ordinal &&
-                        line.outcome === "error",
+                      (row) =>
+                        row.phase === "draining" &&
+                        row.ordinal === ordinal &&
+                        row.outcome === "ended",
                     ),
                 ),
               );

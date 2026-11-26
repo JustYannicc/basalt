@@ -910,7 +910,7 @@ export class RuntimeFleet {
       }
     });
   }
-  private async upkeepRows(trace: PoolUpkeepTrace) {
+  private async upkeepRows(trace: PoolUpkeepTrace<"fleet">) {
     // The root's read runs beside the cells' reads; a failed one means "not proven serving".
     const primary = this.deps.primaryDistance
       ? this.deps.primaryDistance().then(
