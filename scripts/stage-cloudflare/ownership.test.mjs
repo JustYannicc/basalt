@@ -122,3 +122,12 @@ test("the registered prefixes and the release words cannot be changed at run tim
     /^Error: Refused stage prefix: a stage prefix is one of STAGE_PREFIXES/u,
   );
 });
+
+test("every registered stage prefix passes on its own, so none overlaps another", () => {
+  for (const prefix of STAGE_PREFIXES) assert.equal(prefixRefusal(prefix), undefined, prefix);
+  // A registered prefix continued by another at a word boundary would be refused.
+  for (const prefix of STAGE_PREFIXES)
+    for (const other of STAGE_PREFIXES)
+      if (other !== prefix)
+        assert.ok(!other.startsWith(`${prefix}-`), `${other} continues ${prefix}`);
+});

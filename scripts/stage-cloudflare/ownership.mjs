@@ -106,6 +106,12 @@ export function prefixRefusal(prefix) {
     return `a stage prefix may not start like the release stack's ${words[0]} names`;
   if (!STAGE_PREFIXES.includes(prefix))
     return "a stage prefix is one of STAGE_PREFIXES, so no stage owns another's names";
+  // A prefix that another registered one continues at a word boundary would own that stage's names.
+  const overlapping = STAGE_PREFIXES.find(
+    (other) =>
+      other !== prefix && (other.startsWith(`${prefix}-`) || prefix.startsWith(`${other}-`)),
+  );
+  if (overlapping) return `a stage prefix may not overlap the registered stage ${overlapping}`;
   return undefined;
 }
 
