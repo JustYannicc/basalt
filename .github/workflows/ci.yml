@@ -120,8 +120,6 @@ jobs:
           else
             node scripts/ci/select-jobs.ts --fast
           fi
-      # A run's artifact names span its attempts: a select that runs again replaces its record, which
-      # later attempts that carry this select over compare with (scripts/ci/rerun-selection.ts).
       - uses: actions/upload-artifact@v4
         if: steps.reuse.outputs.reused != 'true'
         with:
@@ -129,7 +127,6 @@ jobs:
           path: .generated/ci/selection.json
           include-hidden-files: true
           if-no-files-found: error
-          overwrite: true
   # Watches the jobs this Check queued for the box. A job queued for the box can't move to GitHub's
   # runners, so if the box takes none of them in time (no healthy heartbeat for 5 minutes after
   # box-watch's own probe, or a first-wave job held past its latest start; a second-wave one only
@@ -2329,7 +2326,7 @@ jobs:
   fast:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # actions: read lets a re-run list which jobs run again in its attempt.
+    # actions: read lets a re-run read whether select ran again in its attempt.
     permissions:
       actions: read
       contents: read
@@ -2534,7 +2531,7 @@ jobs:
   fast-units:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # actions: read lets a re-run list which jobs run again in its attempt.
+    # actions: read lets a re-run read whether select ran again in its attempt.
     permissions:
       actions: read
       contents: read

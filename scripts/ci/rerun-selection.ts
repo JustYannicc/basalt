@@ -16,41 +16,49 @@ export const recordedSelectionPath = (temp: string) => join(temp, "ci-selection"
 
 type Rerun = { id: string; attempt: number; temp: string; event: string; ref: string };
 
+/** select's entry in attempt `attempt`'s job list, read fifty a page. */
+async function listedSelect(run: Rerun, get: (path: string) => Promise<unknown>) {
+  for (let page = 1; page <= pages; page++) {
+    const jobs = record(
+      await get(
+        `/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=${perPage}&page=${page}`,
+      ),
+    ).jobs;
+    if (!Array.isArray(jobs)) throw new Error("the listing has no jobs");
+    const select = jobs.map(record).find((job) => job.name === "select");
+    if (select) return select;
+    if (jobs.length < perPage) break;
+  }
+  throw new Error("the listing has no select job");
+}
+
 /**
  * The comparison commit a start job of re-run attempt `attempt` takes, or "" to resolve it afresh.
  * "Re-run all jobs" runs select again, and select resolves afresh, so this job must too. "Re-run
  * failed jobs" carries select and its outputs over, so this job takes the commit select recorded.
- * A job reports the attempt it ran in, so a carried select is listed with an earlier attempt or
- * not at all. A listing GitHub can't give leaves today's afresh resolution.
+ * Every attempt lists select with its own attempt number and a new job id, but a carried select
+ * keeps the start and end times of the attempt it ran in: it started before it was created. A
+ * listing GitHub can't give, or a select that hasn't started, leaves today's afresh resolution.
  */
 export async function rerunBase(run: Rerun, get: (path: string) => Promise<unknown>) {
   const afresh = (note: string) => ({ base: "", note });
-  let listed = false;
+  let select: Record<string, unknown>;
   try {
-    for (let page = 1; page <= pages; page++) {
-      const jobs = record(
-        await get(
-          `/actions/runs/${run.id}/attempts/${run.attempt}/jobs?per_page=${perPage}&page=${page}`,
-        ),
-      ).jobs;
-      if (!Array.isArray(jobs)) throw new Error("the listing has no jobs");
-      const current = jobs.map(record).filter((job) => job.run_attempt === run.attempt);
-      listed ||= current.length > 0;
-      if (current.some((job) => job.name === "select"))
-        return afresh(`select runs again in attempt ${run.attempt}, so this job resolves afresh.`);
-      if (jobs.length < perPage) break;
-    }
+    select = await listedSelect(run, get);
   } catch (error) {
     const why = error instanceof Error ? error.message : String(error);
     return afresh(
       `::warning::Attempt ${run.attempt}'s jobs are unreadable (${why}); resolving afresh.`,
     );
   }
-  // This job runs in this attempt, so a listing without it lists some other attempt.
-  if (!listed)
+  const created = Date.parse(String(select.created_at ?? ""));
+  const started = Date.parse(String(select.started_at ?? ""));
+  if (Number.isNaN(created) || Number.isNaN(started))
     return afresh(
-      `::warning::GitHub listed none of attempt ${run.attempt}'s jobs; resolving afresh.`,
+      `::warning::Attempt ${run.attempt} lists select without a start; resolving afresh.`,
     );
+  if (started >= created)
+    return afresh(`select runs again in attempt ${run.attempt}, so this job resolves afresh.`);
   const path = recordedSelectionPath(run.temp);
   let recorded: Record<string, unknown> | undefined;
   try {
