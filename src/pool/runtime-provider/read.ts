@@ -68,15 +68,35 @@ const documentedStates = new Set([
  * refuses; an admit over that record is not refused, and no current path reaches it.
  */
 const stopped = (state: string) => state === "inactive";
-/**
- * An absence proof still refuses while another instance may start or stop, and so does a cell's
- * retire read, which begins that release. Absence frees a place in the ledger, so it stays
- * conservative: an instance no row counts holds every release.
- */
 const unsettled = (state: string) => state !== "running" && !stopped(state);
-/** Given only by a caller whose driver independently reported this exact boot stopped. */
-export interface DriverStopped {
-  readonly driverStopped: true;
+interface Listed {
+  readonly id: string;
+  readonly state: string;
+}
+/**
+ * Another instance that may still start or stop and that nothing in `counted` counts. Absence frees
+ * a place in the ledger, so such an instance holds every release, as does the retire read that
+ * begins one. A counted instance keeps its own place until its own absence is proven, so its start
+ * or stop can't take the provider past the ledger. One in a state the reference doesn't document
+ * holds whether counted or not: the absence proof can't read it, so the retire read waits too.
+ */
+const holding = (listed: readonly Listed[], instanceId: string, counted: ReadonlySet<string>) =>
+  listed.find(
+    (value) =>
+      value.id !== instanceId &&
+      (!documentedStates.has(value.state) || (unsettled(value.state) && !counted.has(value.id))),
+  );
+const nothingCounted: ReadonlySet<string> = new Set();
+/** What a caller vouches for beyond the provider's listing; each fact has one owner. */
+export interface Vouched {
+  /** Given only by a caller whose driver independently reported this exact boot stopped. */
+  readonly driverStopped?: true;
+  /**
+   * Given only by a fleet cell: the instances its ledger counts, read at the time of the proof. A
+   * row added after that read is uncounted, so the proof stays conservative; one released since is
+   * already absent. Without it, every unsettled instance holds the release.
+   */
+  readonly counted?: ReadonlySet<string>;
 }
 /** Why an absence proof failed, as one closed value. */
 type AbsenceRefusal =
@@ -185,11 +205,33 @@ export class RuntimeProviderReader {
       throw closed(error, signal.aborted ? { reason: "slow" } : { reason: "decode_failed" });
     }
   }
-  async observe(
-    read: ObservationRead,
+  observe(
+    read: Exclude<ObservationRead, "retire">,
     expected: RuntimeProviderTarget,
     instanceId?: string,
     signal = AbortSignal.timeout(15_000),
+  ) {
+    return this.observation(read, expected, instanceId, signal);
+  }
+  /**
+   * The named read that begins a fleet cell's release. It also refuses while an instance `counted`
+   * doesn't count may start or stop, as the release's absence proof does, so that wait holds the
+   * row draining rather than inside its retiring bound.
+   */
+  async retiring(
+    expected: RuntimeProviderTarget,
+    instanceId: string,
+    counted: ReadonlySet<string>,
+    signal = AbortSignal.timeout(15_000),
+  ) {
+    await this.observation("retire", expected, instanceId, signal, counted);
+  }
+  private async observation(
+    read: ObservationRead,
+    expected: RuntimeProviderTarget,
+    instanceId: string | undefined,
+    signal: AbortSignal,
+    counted?: ReadonlySet<string>,
   ) {
     try {
       if (
@@ -214,13 +256,10 @@ export class RuntimeProviderReader {
         // another's start or stop guards nothing here.
         if (!listed.some((value) => value.id === instanceId && value.state === "running"))
           throw refused({ reason: "instance_not_running" });
-        // Except before a cell's retirement begins: its release waits for every sibling to settle
-        // (see `unsettled`), and that wait inside the retiring bound would quarantine a cell whose
+        // Except an uncounted one before a cell's retirement begins: it would hold the release
+        // (see `holding`), and that wait inside the retiring bound would quarantine a cell whose
         // own stop ended. Waiting here keeps the row draining instead, unbounded and harmless.
-        const sibling =
-          read === "retire"
-            ? listed.find((value) => value.id !== instanceId && unsettled(value.state))
-            : undefined;
+        const sibling = counted ? holding(listed, instanceId, counted) : undefined;
         if (sibling)
           throw refused({ reason: "sibling_unsettled", state: siblingState(sibling.state) });
         instances = listed.filter((value) => !stopped(value.state)).map((value) => value.id);
@@ -281,10 +320,10 @@ export class RuntimeProviderReader {
     expected: RuntimeProviderTarget,
     instanceId: string,
     signal = AbortSignal.timeout(15_000),
-    driver?: DriverStopped,
+    vouched: Vouched = {},
   ) {
     if (!instanceId) return false;
-    return this.absence(expected, signal, instanceId, driver?.driverStopped === true);
+    return this.absence(expected, signal, instanceId, vouched);
   }
   empty(expected: RuntimeProviderTarget, signal = AbortSignal.timeout(15_000)) {
     return this.absence(expected, signal);
@@ -293,9 +332,9 @@ export class RuntimeProviderReader {
     expected: RuntimeProviderTarget,
     signal: AbortSignal,
     instanceId?: string,
-    driverStopped = false,
+    vouched: Vouched = {},
   ) {
-    const refusal = await this.absenceRefusal(expected, signal, instanceId, driverStopped);
+    const refusal = await this.absenceRefusal(expected, signal, instanceId, vouched);
     // Retirement polls this every fleet tick; the reason is closed and names no runtime.
     if (refusal) console.info("POOL_PROVIDER_ABSENCE", { reason: refusal });
     return refusal === undefined;
@@ -304,7 +343,7 @@ export class RuntimeProviderReader {
     expected: RuntimeProviderTarget,
     signal: AbortSignal,
     instanceId: string | undefined,
-    driverStopped: boolean,
+    vouched: Vouched,
   ): Promise<AbsenceRefusal | undefined> {
     let stage: AbsenceRefusal = "invalid";
     try {
@@ -325,10 +364,9 @@ export class RuntimeProviderReader {
       if (this.now() - at > 30_000) return "slow";
       // An empty application has no listed instance at all, a stopped one included.
       if (instanceId === undefined) return listed.length > 0 ? "listed" : undefined;
-      if (listed.some((value) => value.id !== instanceId && unsettled(value.state)))
-        return "instances";
+      if (holding(listed, instanceId, vouched.counted ?? nothingCounted)) return "instances";
       const target = listed.find((value) => value.id === instanceId);
-      if (!target || (driverStopped && stopped(target.state))) return undefined;
+      if (!target || (vouched.driverStopped === true && stopped(target.state))) return undefined;
       return target.state === "stopped" || target.state === "failed" ? target.state : "listed";
     } catch (error) {
       return error instanceof UndocumentedInstanceState ? "unknown_state" : stage;

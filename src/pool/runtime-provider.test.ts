@@ -347,7 +347,7 @@ test("an instance in any other state still counts as present, and only a running
   );
 });
 
-test("a sibling in any state but running or inactive still refuses absence and a cell's retirement, never another named observation", async () => {
+test("a sibling no ledger counts, in any state but running or inactive, refuses absence and a cell's retire read, never another named observation", async () => {
   const f = await fixture({ absent: true, siblingState: "provisioning" });
   const stopped = { driverStopped: true } as const;
   assert.equal(
@@ -357,7 +357,7 @@ test("a sibling in any state but running or inactive still refuses absence and a
   const retiring = await fixture({ siblingState: "provisioning" });
   assert.deepEqual(
     await refusal(
-      retiring.reader.observe("retire", retiring.expected, retiring.manifest.target.instanceId),
+      retiring.reader.retiring(retiring.expected, retiring.manifest.target.instanceId, new Set()),
     ),
     refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
   );
@@ -634,7 +634,7 @@ const inState = (shape: ReturnType<typeof running>, state: string) => ({
   status: { ...shape.status, state },
 });
 
-test("an attested start beside a sibling still stopping or starting proves the named instance, while a cell's retirement and absence still wait", async (context) => {
+test("an attested start beside a sibling still stopping or starting proves the named instance, while a cell's retirement and absence wait on one no ledger counts", async (context) => {
   const lines = context.mock.method(console, "info", () => {});
   for (const [state, closed] of [
     ["stopping", "stopping"],
@@ -658,7 +658,7 @@ test("an attested start beside a sibling still stopping or starting proves the n
     );
     // The retire read that begins a release refuses with the sibling's closed state.
     assert.deepEqual(
-      await refusal(f.reader.observe("retire", f.expected, f.manifest.target.instanceId)),
+      await refusal(f.reader.retiring(f.expected, f.manifest.target.instanceId, new Set())),
       refused("retire", { reason: "sibling_unsettled", state: closed }),
       state,
     );
@@ -678,6 +678,102 @@ test("an attested start beside a sibling still stopping or starting proves the n
       ...Array.from({ length: 5 }, () => ["POOL_PROVIDER_ABSENCE", { reason: "instances" }]),
       ["POOL_PROVIDER_ABSENCE", { reason: "unknown_state" }],
     ],
+  );
+});
+
+test("a sibling the ledger counts holds neither a fleet cell's absence nor its retire read, whatever it is doing", async () => {
+  const stopped = { driverStopped: true } as const;
+  for (const state of ["provisioning", "stopping", "stopped", "failed", "unhealthy", "unknown"]) {
+    const sibling = (image: string, app: string) => inState(running("sibling", image, app), state);
+    const gone = await fixture({
+      listing: (target, image, app) => [destroyed(target, image, app), sibling(image, app)],
+    });
+    const target = gone.manifest.target.instanceId;
+    // The ledger counts the cell's own row too; that never stands in for the cell's own absence.
+    const counted = new Set([target, "sibling"]);
+    assert.equal(
+      await gone.reader.absent(gone.expected, target, undefined, { ...stopped, counted }),
+      true,
+      state,
+    );
+    assert.equal(
+      await gone.reader.absent(gone.expected, target, undefined, {
+        ...stopped,
+        counted: new Set([target]),
+      }),
+      false,
+      `${state}, uncounted`,
+    );
+    const present = await fixture({
+      listing: (target, image, app) => [running(target, image, app), sibling(image, app)],
+    });
+    await present.reader.retiring(present.expected, target, counted);
+    assert.deepEqual(
+      await refusal(present.reader.retiring(present.expected, target, new Set([target]))),
+      refused("retire", { reason: "sibling_unsettled", state }),
+      `${state}, uncounted`,
+    );
+  }
+});
+
+test("beside a counted sibling, an uncounted unsettled one still holds, and the cell's own instance is still judged", async () => {
+  const stopped = { driverStopped: true } as const;
+  const counted = new Set(["counted"]);
+  const listing =
+    (state: string, uncounted?: string) => (target: string, image: string, app: string) => [
+      inState(running(target, image, app), state),
+      inState(running("counted", image, app), "stopping"),
+      ...(uncounted ? [inState(running("stray", image, app), uncounted)] : []),
+    ];
+  const absent = async (state: string, uncounted?: string) => {
+    const f = await fixture({ listing: listing(state, uncounted) });
+    const id = f.manifest.target.instanceId;
+    return f.reader.absent(f.expected, id, undefined, {
+      ...stopped,
+      counted: new Set([...counted, id]),
+    });
+  };
+  assert.equal(await absent("inactive"), true);
+  assert.equal(await absent("inactive", "provisioning"), false, "an uncounted start holds");
+  assert.equal(await absent("inactive", "stopping"), false, "an uncounted stop holds");
+  assert.equal(await absent("inactive", "running"), true, "a running one settled");
+  assert.equal(await absent("inactive", "inactive"), true, "a destroyed one settled");
+  // Counting the cell's own instance never makes it absent: it must still be gone.
+  assert.equal(await absent("running"), false);
+  assert.equal(await absent("stopping"), false);
+  const f = await fixture({ listing: listing("running", "provisioning") });
+  const id = f.manifest.target.instanceId;
+  assert.deepEqual(
+    await refusal(f.reader.retiring(f.expected, id, new Set([...counted, id]))),
+    refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
+  );
+  // A state the reader can't read refuses the absence even for a counted instance, so the retire
+  // read that would begin that release refuses too, and the row waits draining.
+  const unread = await fixture({
+    listing: (target, image, app) => [
+      destroyed(target, image, app),
+      inState(running("counted", image, app), "hibernating"),
+    ],
+  });
+  assert.equal(
+    await unread.reader.absent(unread.expected, unread.manifest.target.instanceId, undefined, {
+      ...stopped,
+      counted,
+    }),
+    false,
+  );
+  const unreadRunning = await fixture({
+    listing: (target, image, app) => [
+      running(target, image, app),
+      inState(running("counted", image, app), "hibernating"),
+    ],
+  });
+  const own = unreadRunning.manifest.target.instanceId;
+  assert.deepEqual(
+    await refusal(
+      unreadRunning.reader.retiring(unreadRunning.expected, own, new Set([...counted, own])),
+    ),
+    refused("retire", { reason: "sibling_unsettled", state: "other" }),
   );
 });
 
@@ -749,7 +845,7 @@ test("each attested refusal of the instance listing carries its own closed reaso
   ] as const) {
     const f = await fixture(options);
     assert.deepEqual(
-      await refusal(f.reader.observe("retire", f.expected, f.manifest.target.instanceId)),
+      await refusal(f.reader.retiring(f.expected, f.manifest.target.instanceId, new Set())),
       refused("retire", why),
       JSON.stringify(options),
     );

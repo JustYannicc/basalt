@@ -12,19 +12,20 @@ import { decodeProviderApplication } from "./runtime-provider/application.ts";
 import { RuntimeProviderReader } from "./runtime-provider/read.ts";
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
 import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
-import { upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
+import { retiringBoundMs, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
 import type { SlotIdentity, SlotTarget } from "./runtime-slots/contract.ts";
+import { slotSelectionKey } from "./runtime-slots/storage.ts";
 
 type Listed = "provisioning" | "running" | "stopping" | "inactive";
 
 /**
  * Up to four cells of one application under the real controller and ledger. Each cell reads the
  * provider as `FleetHandoffCell` does, through the real reader: its activation is the attested
- * observation of its named instance, its retirement the named observation before the stop, and its
- * end the absence proof after the driver reports it stopped. The listing is the test's, built from
- * recorded shapes: a started instance runs (a slow one is provisioning until the test boots it), a
- * retired or crashed one is stopping until the test ends its stop, and then it is listed inactive,
- * as production lists a destroyed instance.
+ * observation of its named instance, its retirement the retire read before the stop, and its end
+ * the absence proof after the driver reports it stopped, both with the instances the ledger counts
+ * at that moment. The listing is the test's, built from recorded shapes: a started instance runs (a
+ * slow one is provisioning until the test boots it), a retired or crashed one is stopping until the
+ * test ends its stop, and then it is listed inactive, as production lists a destroyed instance.
  */
 async function stoppingFleet(context: TestContext) {
   context.mock.method(console, "info", () => {});
@@ -74,7 +75,10 @@ async function stoppingFleet(context: TestContext) {
   // The driver reports the container stopped only once its instance is listed inactive.
   const gone = async (identity: SlotIdentity) =>
     listed.get(identity.instanceId) === "inactive" &&
-    reader.absent(application, identity.instanceId, undefined, { driverStopped: true });
+    reader.absent(application, identity.instanceId, undefined, {
+      driverStopped: true,
+      counted: await state.counted(),
+    });
   const attest = async (target: SlotTarget) => {
     await reader.observe("attested", application, target.instanceId);
     const identity = { ...target, bootId: `boot-${target.slotId}` };
@@ -99,7 +103,7 @@ async function stoppingFleet(context: TestContext) {
     abortPool: () => {},
     drain: async () => ({ active: 0, known: true }),
     retire: async (identity, begin) => {
-      await reader.observe("retire", application, identity.instanceId);
+      await reader.retiring(application, identity.instanceId, await state.counted());
       await begin();
       list(identity.instanceId, "stopping");
       // The stop outlasts this call; a later pass's retirement read picks it up.
@@ -108,7 +112,8 @@ async function stoppingFleet(context: TestContext) {
     retired: gone,
     failed: gone,
   });
-  const state = new RuntimeFleetState(new SlotMemory(), 4, () => now);
+  const storage = new SlotMemory();
+  const state = new RuntimeFleetState(storage, 4, () => now);
   const pending: Promise<unknown>[] = [];
   const fleet = new RuntimeFleet({
     state,
@@ -143,8 +148,9 @@ async function stoppingFleet(context: TestContext) {
     // Only a cell the test lets go idles out; the rest stay ready.
     keepReady: async (identity) => !idle.has(identity.slotId),
   });
-  const phase = async (slot: string) =>
-    (await state.inspect()).find((row) => row.target.slotId === slot)?.phase;
+  const row = async (slot: string) =>
+    (await state.inspect()).find((value) => value.target.slotId === slot);
+  const phase = async (slot: string) => (await row(slot))?.phase;
   const instanceOf = (slot: string) => `instance-${slot}`;
   /** One upkeep pass, its growth included; the ledger never counts fewer than the provider holds. */
   const pass = async () => {
@@ -157,8 +163,10 @@ async function stoppingFleet(context: TestContext) {
   };
   return {
     state,
+    row,
     phase,
     pass,
+    at: () => now,
     peak: () => peak,
     listed: (slot: string) => listed.get(instanceOf(slot)),
     demand: (value: number) => {
@@ -173,6 +181,32 @@ async function stoppingFleet(context: TestContext) {
     /** The container ends on its own; the provider lists it stopping until `endStop`. */
     crash: (slot: string) => list(instanceOf(slot), "stopping"),
     endStop: (slot: string) => list(instanceOf(slot), "inactive"),
+    /** An instance of the application that no row counts, listed in `state`. */
+    stray: (value: Listed) => list("instance-stray", value),
+    /**
+     * The root stages a candidate boot in this application, which the ledger counts as a physical
+     * primary target; its instance is listed provisioning, as a slow start is.
+     */
+    rootCandidate: async () => {
+      const root = {
+        format: "pool-runtime-slot-v1" as const,
+        controllerId: "root",
+        applicationId: proof.raw.id,
+        applicationVersion: "1",
+        imageDigest: proof.manifest.target.imageDigest,
+        imageInput: proof.manifest.target.imageInput,
+      };
+      await storage.put(slotSelectionKey, {
+        epoch: 1,
+        // The root's own boot runs in its own container and holds no fleet place.
+        active: { target: { ...root, slotId: "root", instanceId: "root" }, fenced: false },
+        candidate: {
+          target: { ...root, slotId: "root-candidate", instanceId: "instance-root-candidate" },
+          fenced: false,
+        },
+      });
+      list("instance-root-candidate", "provisioning");
+    },
     /** Passes until `slot` reaches `wanted`, at most ten. */
     until: async (slot: string, wanted: string) => {
       for (let index = 0; index < 10 && (await phase(slot)) !== wanted; index++) await pass();
@@ -215,22 +249,23 @@ test("a start beside a stopping sibling proceeds, and retire, start and crash ne
   await f.until("slot-c", "quarantined");
   await f.pass();
   assert.equal(await f.phase("slot-e"), undefined);
-  // A's stop ends, but its absence waits while C may still be running.
+  // A's stop ends while C still stops. C's row keeps C's place, so A's frees and E fills it.
   f.endStop("slot-a");
   await f.pass();
-  assert.equal(await f.phase("slot-a"), "retiring");
-  assert.equal(await f.phase("slot-e"), undefined);
-  // Once C's stop ends too, both places free and growth fills them beside the inactive two.
+  assert.equal(await f.phase("slot-a"), undefined);
+  assert.equal(await f.phase("slot-c"), "quarantined");
+  assert.equal(await f.phase("slot-e"), "ready");
+  assert.equal(await f.state.physicalCount(), 4);
+  // Once C's stop ends too, its place frees and growth fills it beside the inactive two.
   f.endStop("slot-c");
   await f.pass();
-  // Both rows left the ledger.
-  assert.equal(await f.phase("slot-a"), undefined);
   assert.equal(await f.phase("slot-c"), undefined);
   for (const slot of ["slot-b", "slot-d", "slot-e", "slot-f"])
     assert.equal(await f.phase(slot), "ready", slot);
   assert.equal(await f.state.physicalCount(), 4);
   // The provider held exactly four running or stopping instances at its fullest, never five.
   assert.equal(f.peak(), 4);
+  assert.deepEqual(await f.ends(), { "slot-a": "retired", "slot-c": "quarantined" });
 });
 
 test("a call never reaches a cell that is draining, retiring or crashed, only a ready one that runs", async (context) => {
@@ -258,7 +293,7 @@ test("a call never reaches a cell that is draining, retiring or crashed, only a 
 async function holds(
   f: Awaited<ReturnType<typeof stoppingFleet>>,
   slot: string,
-  wanted: string,
+  wanted: string | undefined,
   passes: number,
 ) {
   for (let index = 0; index < passes; index++) {
@@ -273,32 +308,38 @@ async function holds(
   }
 }
 
-test("a retirement that begins while another cell stops waits draining, so neither stop ends in quarantine", async (context) => {
+/** When `slot` entered its phase. */
+async function entered(f: Awaited<ReturnType<typeof stoppingFleet>>, slot: string) {
+  const at = (await f.row(slot))?.phaseAt;
+  assert.ok(at !== undefined, slot);
+  return at;
+}
+
+test("a retirement that begins while another cell stops proceeds, and neither stop ends in quarantine", async (context) => {
   const f = await stoppingFleet(context);
   f.demand(4);
   await f.pass();
   f.letIdle("slot-a");
   f.demand(3);
   await f.until("slot-a", "retiring");
-  // B idles out while A still stops: its retirement waits in draining, which has no time bound,
-  // rather than in retiring, whose bound A's stop would outlast.
+  // B idles out while A still stops. A's row keeps A's place, so B's retirement begins at once.
   f.letIdle("slot-b");
   f.demand(2);
-  await holds(f, "slot-b", "draining", 30);
-  assert.equal(f.listed("slot-b"), "running");
-  assert.equal(await f.phase("slot-a"), "retiring");
+  await f.until("slot-b", "retiring");
+  assert.equal(f.listed("slot-a"), "stopping");
+  assert.equal(f.listed("slot-b"), "stopping");
+  // B's stop ends first, and its place frees while A still stops.
+  f.endStop("slot-b");
+  await holds(f, "slot-a", "retiring", 1);
+  assert.equal(await f.phase("slot-b"), undefined);
   f.endStop("slot-a");
   await f.pass();
   assert.equal(await f.phase("slot-a"), undefined);
-  await f.until("slot-b", "retiring");
-  f.endStop("slot-b");
-  await f.pass();
-  assert.equal(await f.phase("slot-b"), undefined);
   assert.deepEqual(await f.ends(), { "slot-a": "retired", "slot-b": "retired" });
   assert.equal(f.peak(), 4);
 });
 
-test("a retirement that begins while another cell still starts waits draining until it runs", async (context) => {
+test("a retirement that begins while another cell still starts proceeds, and ends while that start provisions", async (context) => {
   const f = await stoppingFleet(context);
   f.demand(3);
   await f.pass();
@@ -308,14 +349,141 @@ test("a retirement that begins while another cell still starts waits draining un
   await f.pass();
   assert.equal(f.listed("slot-d"), "provisioning");
   f.letIdle("slot-a");
-  await holds(f, "slot-a", "draining", 40);
-  assert.equal(f.listed("slot-a"), "running");
-  f.boot("slot-d");
-  await f.until("slot-d", "ready");
   await f.until("slot-a", "retiring");
   f.endStop("slot-a");
-  await f.pass();
-  assert.equal(await f.phase("slot-a"), undefined);
+  await holds(f, "slot-a", undefined, 1);
+  assert.equal(f.listed("slot-d"), "provisioning");
+  f.boot("slot-d");
+  await f.until("slot-d", "ready");
   assert.deepEqual(await f.ends(), { "slot-a": "retired" });
   assert.equal(f.peak(), 4);
+});
+
+test("a retirement ends retired when a sibling starts after it began and still provisions past its bound", async (context) => {
+  const f = await stoppingFleet(context);
+  f.demand(3);
+  await f.pass();
+  f.letIdle("slot-a");
+  await f.until("slot-a", "retiring");
+  const began = await entered(f, "slot-a");
+  // Only now does demand start D, and its start is slow.
+  f.slowStart("slot-d");
+  f.demand(4);
+  await f.pass();
+  assert.equal(f.listed("slot-d"), "provisioning");
+  // A's own stop takes half its bound, then ends while D still provisions.
+  while (f.at() < began + retiringBoundMs / 2) await holds(f, "slot-a", "retiring", 1);
+  f.endStop("slot-a");
+  await holds(f, "slot-a", undefined, 1);
+  // D provisions on past A's bound, and nothing is quarantined.
+  while (f.at() <= began + retiringBoundMs) await holds(f, "slot-a", undefined, 1);
+  assert.equal(f.listed("slot-d"), "provisioning");
+  f.boot("slot-d");
+  await f.until("slot-d", "ready");
+  assert.deepEqual(await f.ends(), { "slot-a": "retired" });
+});
+
+for (const how of ["retirement", "crash"] as const)
+  test(`a retirement ends retired when a sibling begins stopping after it, by ${how}, and stops on past its bound`, async (context) => {
+    const f = await stoppingFleet(context);
+    f.demand(3);
+    await f.pass();
+    f.letIdle("slot-a");
+    f.demand(2);
+    await f.until("slot-a", "retiring");
+    const began = await entered(f, "slot-a");
+    await holds(f, "slot-a", "retiring", 3);
+    // Only now does B begin to stop.
+    if (how === "crash") {
+      f.crash("slot-b");
+      await f.until("slot-b", "quarantined");
+    } else {
+      f.letIdle("slot-b");
+      f.demand(1);
+      await f.until("slot-b", "retiring");
+    }
+    assert.equal(f.listed("slot-b"), "stopping");
+    // B's own row holds the only quarantine, and only after a crash.
+    const quarantined = async () =>
+      (await f.state.inspect())
+        .filter((row) => row.phase === "quarantined")
+        .map((row) => row.target.slotId);
+    const expected = how === "crash" ? ["slot-b"] : [];
+    // A's own stop ends while B's is still under way, and A's place frees.
+    f.endStop("slot-a");
+    await f.pass();
+    assert.equal(await f.phase("slot-a"), undefined);
+    // B stops on past A's bound.
+    while (f.at() <= began + retiringBoundMs) {
+      await f.pass();
+      assert.equal(f.listed("slot-b"), "stopping");
+      assert.deepEqual(await quarantined(), expected);
+    }
+    f.endStop("slot-b");
+    await f.pass();
+    assert.equal(await f.phase("slot-b"), undefined);
+    assert.deepEqual(await f.ends(), {
+      "slot-a": "retired",
+      "slot-b": how === "crash" ? "quarantined" : "retired",
+    });
+  });
+
+test("an unsettled instance no row counts still holds every release: the retiring cell is quarantined at its bound, and the next retirement waits draining", async (context) => {
+  const f = await stoppingFleet(context);
+  f.demand(3);
+  await f.pass();
+  f.letIdle("slot-a");
+  f.demand(2);
+  await f.until("slot-a", "retiring");
+  const began = await entered(f, "slot-a");
+  // A's own stop ends just as an instance no row counts begins to start.
+  f.endStop("slot-a");
+  f.stray("provisioning");
+  // B idles out meanwhile: its retirement waits draining, which has no bound.
+  f.letIdle("slot-b");
+  f.demand(1);
+  while (f.at() + upkeepCadenceMs < began + retiringBoundMs) {
+    await f.pass();
+    assert.equal(await f.phase("slot-a"), "retiring");
+  }
+  // At its bound A is quarantined and keeps its place.
+  await f.pass();
+  const held = await f.row("slot-a");
+  assert.equal(held?.phase, "quarantined");
+  assert.equal(held?.reason, "absence_unproven");
+  assert.equal(await f.state.physicalCount(), 3);
+  // It stays held while that instance may still start, and B still waits.
+  for (let index = 0; index < 5; index++) {
+    await f.pass();
+    assert.equal(await f.phase("slot-a"), "quarantined");
+    assert.equal(await f.phase("slot-b"), "draining");
+  }
+  assert.equal(f.listed("slot-b"), "running");
+  // Once it settles, A's place frees and B's retirement begins.
+  f.stray("inactive");
+  await f.pass();
+  assert.equal(await f.phase("slot-a"), undefined);
+  await f.until("slot-b", "retiring");
+  f.endStop("slot-b");
+  await f.pass();
+  assert.equal(await f.phase("slot-b"), undefined);
+  assert.deepEqual(await f.ends(), { "slot-a": "quarantined", "slot-b": "retired" });
+});
+
+test("a boot the root stages in the application holds no cell's release, as the ledger counts its place", async (context) => {
+  const f = await stoppingFleet(context);
+  f.demand(3);
+  await f.pass();
+  f.letIdle("slot-a");
+  f.demand(2);
+  await f.until("slot-a", "retiring");
+  const began = await entered(f, "slot-a");
+  // After A's retirement began, the root stages a candidate boot that is slow to start.
+  await f.rootCandidate();
+  assert.equal(await f.state.physicalCount(), 4);
+  f.endStop("slot-a");
+  await holds(f, "slot-a", undefined, 1);
+  assert.equal(await f.state.physicalCount(), 3);
+  while (f.at() <= began + retiringBoundMs) await holds(f, "slot-a", undefined, 1);
+  assert.deepEqual(await f.ends(), { "slot-a": "retired" });
 });
