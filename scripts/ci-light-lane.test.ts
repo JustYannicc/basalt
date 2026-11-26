@@ -172,7 +172,7 @@ test("select's light label comes from a token-free step that runs on a reused Ch
   assert.ok(output, workflow.jobs.select.outputs.light_label);
   const step = selectSteps.find((candidate) => candidate.id === output[1]);
   assert.ok(step, output[1]);
-  assert.ok(runsOnReuse(step), step.if);
+  assert.ok(runsOnReuse(step), String(step.if));
   // The selection step a reused Check skips must not be where the label comes from.
   assert.equal(runsOnReuse(selectSteps.find((candidate) => candidate.id === "jobs")!), false);
   assert.equal(step.run, "node scripts/ci/light-lane.ts");
@@ -182,7 +182,11 @@ test("select's light label comes from a token-free step that runs on a reused Ch
   });
   // Only this step reads the variable; select-jobs.ts no longer decides the label.
   for (const other of selectSteps.filter((candidate) => candidate !== step))
-    assert.doesNotMatch(JSON.stringify(other), /light_label|BASALT_CI_LIGHT_LABEL/, other.id);
+    assert.doesNotMatch(
+      JSON.stringify(other),
+      /light_label|BASALT_CI_LIGHT_LABEL/,
+      String(other.id),
+    );
 });
 
 test("the light step writes the label lightLabel returns, and needs no token", () => {
