@@ -1,7 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, matchesGlob, posix } from "node:path";
+import { dirname, join, matchesGlob, posix } from "node:path";
 
 /** A carry, or an e2e test correction preparation applies by name: both patch the upstream. */
 export const carryPatch = /^(?:patches\/\d{4}-[^/]+|e2e\/[^/]+)\.patch$/;
@@ -28,6 +28,9 @@ export function carryTargets(patch: string) {
     writeFileSync(file, patch);
     const parsed = spawnSync("git", ["apply", "--numstat", "-z", "--allow-empty", file], {
       cwd: scratch,
+      // Run inside a git work tree (a TMPDIR there), git apply reports only the paths under its own
+      // directory, prefixed with it: the ceiling keeps it from finding any repository above.
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: dirname(scratch) },
       stdio: ["ignore", "pipe", "pipe"],
       encoding: "utf8",
       maxBuffer: 32 * 1024 * 1024,

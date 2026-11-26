@@ -1,0 +1,7 @@
+model {
+  extend basalt.poolRuntime {
+    metadata {
+      constraint "A non-streamed generation whose outcome is unknown ends on its credential in the local credential loop and in Home dispatch, even when the failure behind it is credential scoped: the caller gets the unknown outcome, no other credential, model or retry round receives the request, and the attempt's result is recorded once with its credential scope."
+    }
+  }
+}

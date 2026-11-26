@@ -1,4 +1,12 @@
 import {
+  failurePlacement,
+  runtimePlacement,
+  runtimePlacementHeader,
+  unplaced,
+  withoutPlacement,
+  type RuntimePlacement,
+} from "./runtime-placement.worker.ts";
+import {
   refuseRuntime,
   runtimeRouteDiagnostic,
   runtimeResponseCause,
@@ -60,6 +68,9 @@ import {
 import { captureRefusalModel } from "./refusal-model.ts";
 import { endpointRequestId } from "./runtime-fleet/endpoint-trace.ts";
 import type { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
+import type { PoolArrival } from "./pool-arrival.ts";
+import { startPoolRequestEvent, type PoolRequestOutcome } from "../telemetry/pool-request.ts";
+import { pageTemplate } from "../telemetry/privacy.ts";
 
 interface Dependencies {
   terminal?: TerminalRecorder;
@@ -67,6 +78,8 @@ interface Dependencies {
   env: Parameters<typeof gatewayUnavailable>[0] & {
     POOL_APP_SIGNING_KEY: string;
     POOL_APP_SIGNING_KEY_PREVIOUS?: string;
+    /** The image input of this object's own container, named when it serves a call. */
+    POOL_IMAGE_HASH?: string;
   };
   computers: Pick<Computers, "nativeModel" | "observeUsage">;
   memberships: NativeMemberships;
@@ -90,6 +103,8 @@ interface Dependencies {
   /** Whether the container still runs; a stopped one's failure is never the front layer's. */
   running?(): boolean;
   defer(work: Promise<unknown>): void;
+  /** When the Durable Object received the request, and what the Worker measured before it. */
+  arrival?: PoolArrival;
 }
 
 type AdmissionDependencies = Pick<
@@ -201,6 +216,32 @@ export async function forwardPoolRequest(
   let modelLease: ReturnType<NativeStreams["acquire"]> | undefined;
   let assertionExpiresAt: number | undefined;
   const started = performance.now();
+  // The prewarm is the Worker's own cron, not a caller's request.
+  const event =
+    pathname === "/__warm"
+      ? undefined
+      : startPoolRequestEvent(deps.env, () => ({
+          requestId,
+          method: request.method,
+          route: endpoint.endpoint ?? pageTemplate(pathname),
+          kind: socketCall ? "socket" : modelCall ? "model" : "other",
+          port,
+          inFlight: deps.streams.active,
+          receivedAt: deps.arrival?.receive?.receivedAt,
+          calledAt: deps.arrival?.receive?.calledAt,
+          firstCalledAt: deps.arrival?.receive?.firstCalledAt,
+          arrivedAt: deps.arrival?.at,
+          started: deps.arrival?.started,
+          traceparent: request.headers.get("traceparent"),
+          defer: (work) => deps.defer(work),
+        }));
+  // Until a runtime takes the call the event says so; each later placement replaces the last.
+  const place = (placement: RuntimePlacement) => event?.set(placement);
+  place(unplaced);
+  const settle = (response: Response, outcome: PoolRequestOutcome) => {
+    event?.end({ outcome, status: response.status });
+    return response;
+  };
   const resolveIdentity = async () => {
     if (identity) return identity;
     const known = native ?? deps.appModel;
@@ -237,6 +278,8 @@ export async function forwardPoolRequest(
       },
     );
     ({ request, native, identity, modelLease, assertionExpiresAt } = admitted);
+    event?.pool(identity?.pool ?? native?.pool ?? deps.appModel?.pool);
+    event?.admitted();
     guard = "runtime_readiness";
     const warm = () => deps.lifecycle.then((lifecycle) => lifecycle.warm());
     if (pathname === "/__warm") {
@@ -250,6 +293,7 @@ export async function forwardPoolRequest(
       refusalModel?.discard();
       guard = "upstream_dispatch";
       dispatched = true;
+      event?.dispatched();
       if (modelCall && !terminal) terminal = observe(requestId);
     };
     const legacy = async (forwarded: Request, prepared: () => void = () => {}) => {
@@ -265,15 +309,23 @@ export async function forwardPoolRequest(
       const dispatch = () => {
         prepared();
         beforeDispatch();
+        place({
+          runtime: "root",
+          slot: "legacy",
+          imageInput: deps.env.POOL_IMAGE_HASH ?? "unknown",
+          boot: status.boot_id,
+        });
       };
       // The front layer keeps this call's answer only while this container advertises the layer.
       const routed = resumeRoute(forwarded, port, status);
       const sent = routed === "gone" ? forwarded : routed.request;
       const target = routed === "gone" ? port : routed.port;
-      const send = (request: Request) =>
-        target === resumeLayerPort
-          ? toLayer(request, deps.fetch, deps.running)
-          : deps.fetch(request, target);
+      const send = async (request: Request) =>
+        withoutPlacement(
+          await (target === resumeLayerPort
+            ? toLayer(request, deps.fetch, deps.running)
+            : deps.fetch(request, target)),
+        );
       if (port === 8317 && (native !== undefined || modelLease !== undefined))
         return modelLifetimeFetch(sent, send, dispatch);
       dispatch();
@@ -299,8 +351,12 @@ export async function forwardPoolRequest(
       ? await deps.route(outbound, port, identity?.pool, legacy, beforeDispatch, identity)
       : await legacy(outbound);
     guard = "upstream_response";
+    const placed = runtimePlacement(upstream.headers);
+    if (placed) place(placed);
     const runtimeRefusal = runtimeResponseDiagnostic(upstream);
     const runtimeCause = runtimeResponseCause(upstream);
+    // Routing builds a refusal itself when a runtime never answered: that is not a first byte.
+    if (!runtimeRefusal) event?.firstByte();
     const runtimeRequestId = endpointRequestId(upstream) ?? requestId;
     if (runtimeRefusal)
       console.error("POOL_RUNTIME_ROUTE_FAILURE", {
@@ -315,7 +371,14 @@ export async function forwardPoolRequest(
         ...(runtimeCause ? { runtimeCause } : {}),
         homeDatabasePool: databasePool(),
       });
-    logDispatchTiming(upstream.headers.get(dispatchTimingHeader));
+    event?.home(logDispatchTiming(upstream.headers.get(dispatchTimingHeader)));
+    // A runtime's refusal answers under the runtime's own request ID.
+    if (runtimeRefusal)
+      event?.set({
+        ...runtimeRefusal,
+        runtimeRefused: true,
+        ...(runtimeRequestId === requestId ? {} : { responseRequestId: runtimeRequestId }),
+      });
     let response = await rewriteCapResponse(upstream, pathname);
     if (modelCall && request.method === "POST" && response.ok)
       deps.defer(
@@ -330,9 +393,13 @@ export async function forwardPoolRequest(
         })().catch(() => console.error("POOL_FIRST_REQUEST_OBSERVATION_PENDING")),
       );
     if (response.status === 101) {
-      if (response.headers.has(dispatchTimingHeader)) {
+      if (
+        response.headers.has(dispatchTimingHeader) ||
+        response.headers.has(runtimePlacementHeader)
+      ) {
         const headers = new Headers(response.headers);
         headers.delete(dispatchTimingHeader);
+        headers.delete(runtimePlacementHeader);
         response = inheritModelLifetime(
           response,
           new Response(null, { status: 101, headers, webSocket: response.webSocket }),
@@ -357,7 +424,11 @@ export async function forwardPoolRequest(
             )
           : response;
       const forwarded = native === undefined ? relayed : nativeResponse(relayed, native);
-      return modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease);
+      // A held socket's lifetime is the conversation's, not a wait this event explains.
+      return settle(
+        modelLease === undefined ? forwarded : nativeResponse(forwarded, modelLease),
+        "upgraded",
+      );
     }
     // A call its runtime refused before the send ran nowhere: no outcome now, since the entry's
     // re-send finishes this request under the same id.
@@ -376,6 +447,7 @@ export async function forwardPoolRequest(
       headers.set(streamResumePoolHeader, admittedPool);
     headers.delete(dispatchTimingHeader);
     stripRuntimeFailureHeaders(headers);
+    headers.delete(runtimePlacementHeader);
     // An unsent answer names this call's own id, the one its terminal start was written under,
     // so the entry's re-send can finish that same row.
     if (modelCall) headers.set(controllerIsolateHeader, isolate().id);
@@ -394,10 +466,14 @@ export async function forwardPoolRequest(
     // A caller the router named that left before this answer may be sent again under the same id,
     // when only the entry went down; that send's own outcome finishes the row.
     if (terminal && routed && request.signal.aborted) terminal = undefined;
-    const observed = terminal
+    const finishTerminal = terminal;
+    const observed = finishTerminal
       ? terminalResponse(
           forwarded,
-          terminal,
+          (outcome, status, bytes) => {
+            finishTerminal(outcome, status, bytes);
+            event?.end({ outcome, status, bytes });
+          },
           request.signal,
           pathname,
           // A status poll delivers job state, including failure; it does not execute the job again.
@@ -405,10 +481,22 @@ export async function forwardPoolRequest(
         )
       : forwarded;
     const delivered = native === undefined ? observed : nativeResponse(observed, native);
+    // Without a terminal observer nothing reads the body here, so the event ends at the headers.
+    if (!finishTerminal)
+      event?.end({
+        outcome: sentNowhere(response)
+          ? "unsent"
+          : runtimeRefusal
+            ? "runtime_refused"
+            : "responded",
+        status: response.status,
+      });
     return modelLease === undefined ? delivered : nativeResponse(delivered, modelLease);
   } catch (error) {
     native?.release();
     modelLease?.release();
+    const failedOn = failurePlacement(error);
+    if (failedOn) place(failedOn);
     const diagnostic: GatewayFailureDiagnostic = {
       ...runtimeRouteDiagnostic(error),
       guard,
@@ -429,6 +517,14 @@ export async function forwardPoolRequest(
                     : "unknown",
       homeDatabasePool: databasePool(),
     };
+    event?.set({
+      guard: diagnostic.guard,
+      cause: diagnostic.cause,
+      refusalReason: diagnostic.refusalReason,
+      runtimeStep: diagnostic.runtimeStep,
+      runtimeReason: diagnostic.runtimeReason,
+      responseRequestId: diagnostic.runtimeEndpointRequestId,
+    });
     // The runtime's endpoint refused before its container send: nothing ran, so the entry may send
     // the call it holds once more instead of reporting an unknown outcome.
     if (
@@ -437,45 +533,49 @@ export async function forwardPoolRequest(
       !request.signal.aborted &&
       reachedNoContainer(error)
     )
-      return unsentAnswer(request, requestId, diagnostic);
+      return settle(unsentAnswer(request, requestId, diagnostic), "unsent");
     if (dispatched && isPublicModelPath(pathname)) {
       if (!(routed && request.signal.aborted))
         terminal?.("unavailable", request.signal.aborted ? 499 : 502, 0);
-      return gatewayOutcomeUnknown(
-        deps.env,
-        request,
-        (work) => deps.defer(work),
-        diagnostic,
-        requestId,
+      return settle(
+        gatewayOutcomeUnknown(deps.env, request, (work) => deps.defer(work), diagnostic, requestId),
+        "outcome_unknown",
       );
     }
     if (error instanceof ModelMembershipUnavailable) identity = error.identity;
-    if (error instanceof ControlFailure) return failureResponse(error);
+    event?.pool(identity?.pool);
+    if (error instanceof ControlFailure) return settle(failureResponse(error), "refused");
     // A re-send of a call never sent that is refused again before its own send ran nowhere either.
     // It stays the one request its first attempt started: no refusal record beside that start, even
     // when its client has left, and the entry keeps sending inside its window.
     if (resent && isPublicModelPath(pathname))
-      return unsentAnswer(request, requestId, diagnostic, true);
+      return settle(unsentAnswer(request, requestId, diagnostic, true), "unsent");
     if (error instanceof PoolRuntimeUnhealthy || isPublicModelPath(pathname))
-      return gatewayUnavailable(
-        deps.env,
-        request,
-        identity,
-        started,
-        (work) => deps.defer(work),
-        diagnostic,
-        requestId,
-        refusalModel?.read(),
+      return settle(
+        gatewayUnavailable(
+          deps.env,
+          request,
+          identity,
+          started,
+          (work) => deps.defer(work),
+          diagnostic,
+          requestId,
+          refusalModel?.read(),
+        ),
+        "refused",
       );
     // Startup and port errors are fixed runtime messages without request data or credentials.
     console.error(
       "Pool backend unavailable",
       error instanceof Error ? error.message.slice(0, 300) : "unknown error",
     );
-    return new Response(null, {
-      status: 503,
-      headers: { "Retry-After": "5", "Cache-Control": "no-store" },
-    });
+    return settle(
+      new Response(null, {
+        status: 503,
+        headers: { "Retry-After": "5", "Cache-Control": "no-store" },
+      }),
+      "refused",
+    );
   } finally {
     refusalModel?.discard();
   }

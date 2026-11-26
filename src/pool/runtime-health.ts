@@ -14,16 +14,39 @@ export const refusalBodyBytes = 16 * 1024;
 /** How long a refusal waits for its body's signals: a refusal still arrives when it did without them. */
 export const refusalBodyMs = 250;
 
+type Readiness = { fetch(input: string, init: RequestInit): Promise<Response> };
+
 /** Start the remaining lease at request dispatch, so transport delay cannot extend it. */
 export async function readRuntimeHealth(
-  readiness: { fetch(input: string, init: RequestInit): Promise<Response> },
+  readiness: Readiness,
   managementKey: string,
   signal: AbortSignal,
   now = () => performance.now(),
   trace?: RuntimeReadTrace,
 ): Promise<PoolStatus> {
   const requestedAt = now();
-  const { response, status } = await healthResponse(readiness, managementKey, signal, trace);
+  const answer = await healthResponse(readiness, managementKey, signal, policyHealthLeaseMs, trace);
+  return poolStatus(answer, requestedAt);
+}
+
+/**
+ * The same read with no lease window, bounded only by `signal`: whether the container answers
+ * ready, however late. A 200 says its services and policy lease were live when it answered, but a
+ * lease that ran out on the way back admits no call, so this is never authority to send one.
+ */
+export async function readRuntimeLiveness(
+  readiness: Readiness,
+  managementKey: string,
+  signal: AbortSignal,
+): Promise<PoolStatus> {
+  const requestedAt = performance.now();
+  return poolStatus(await healthResponse(readiness, managementKey, signal, undefined), requestedAt);
+}
+
+function poolStatus(
+  { response, status }: Awaited<ReturnType<typeof healthResponse>>,
+  requestedAt: number,
+): PoolStatus {
   if (
     typeof status !== "object" ||
     status === null ||
@@ -58,11 +81,15 @@ export async function readRuntimeHealth(
   };
 }
 
-/** A response cannot carry usable authority after the maximum lease window has elapsed. */
+/**
+ * `limitMs`: a read for authority gives up at the maximum lease window, since a response after it
+ * can carry none; a liveness read passes none and waits as long as its caller does.
+ */
 async function healthResponse(
-  readiness: { fetch(input: string, init: RequestInit): Promise<Response> },
+  readiness: Readiness,
   managementKey: string,
   signal: AbortSignal,
+  limitMs: number | undefined,
   trace?: RuntimeReadTrace,
 ) {
   signal.throwIfAborted();
@@ -82,10 +109,14 @@ async function healthResponse(
     };
     bounded.addEventListener("abort", onAbort, { once: true });
   });
-  const timer = setTimeout(
-    () => deadline.abort(new DOMException("Runtime health deadline exceeded", "TimeoutError")),
-    policyHealthLeaseMs,
-  );
+  const timer =
+    limitMs === undefined
+      ? undefined
+      : setTimeout(
+          () =>
+            deadline.abort(new DOMException("Runtime health deadline exceeded", "TimeoutError")),
+          limitMs,
+        );
   try {
     response = await runtimeReadStep(
       trace,

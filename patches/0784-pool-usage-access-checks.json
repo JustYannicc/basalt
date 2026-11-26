@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-usage-access-checks",
+  "file": "0784-pool-usage-access-checks.patch",
+  "content_sha256": "b822ead72e5c1204cfb97b2cc92590109028c1527801a01816003053d2b9b131",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

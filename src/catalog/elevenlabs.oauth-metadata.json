@@ -30,7 +30,8 @@
     "ads_write",
     "user_read",
     "pronunciation_dictionaries_read",
-    "pronunciation_dictionaries_write"
+    "pronunciation_dictionaries_write",
+    "webhooks_write"
   ],
   "authorization_response_iss_parameter_supported": true,
   "client_id_metadata_document_supported": true,

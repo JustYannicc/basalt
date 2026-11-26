@@ -1,0 +1,311 @@
+diff --git a/apps/hosted/server/src/implementation/pool-membership.ts b/apps/hosted/server/src/implementation/pool-membership.ts
+--- a/apps/hosted/server/src/implementation/pool-membership.ts
++++ b/apps/hosted/server/src/implementation/pool-membership.ts
+@@ -15,7 +15,12 @@ import { HostedExecutor } from "../contracts/executor.ts";
+ import { withOrganizationAccessLock } from "./organization-access-lock.ts";
+ import { policyDatabase } from "./resource-policy.ts";
+ import { openEnvelope } from "./pool-token.ts";
+-import { preparePoolMembershipMirrors } from "./pool-membership-mirrors.ts";
++import {
++  awaitBefore,
++  poolMembershipAnswerBudgetMs,
++  poolMembershipMirrorBudgetMs,
++  preparePoolMembershipMirrors,
++} from "./pool-membership-mirrors.ts";
+ import {
+   PoolMembershipReconcileRequired,
+   readNativePoolRegistration,
+@@ -205,20 +210,39 @@ export const readNativePoolMembership = Effect.gen(function* () {
+   let membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
+     Effect.provideService(SqlClient.SqlClient, sql),
+   );
++  const unmirrored = new Set<string>();
+   if ("needsMirrors" in membership && membership.needsMirrors) {
+-    yield* preparePoolMembershipMirrors(executor, value.organization, value.pool).pipe(
+-      Effect.provideService(SqlClient.SqlClient, sql),
+-    );
+-    membership = yield* nativePoolMembership(value.organization, value.pool, executor).pipe(
+-      Effect.provideService(SqlClient.SqlClient, sql),
+-    );
++    const prepared = yield* preparePoolMembershipMirrors(
++      executor,
++      value.organization,
++      value.pool,
++      now + poolMembershipMirrorBudgetMs,
++    ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
++    for (const failure of prepared.failures) unmirrored.add(failure.account);
++    // With nothing newly mirrored the first read already holds every other account as it is.
++    if (prepared.mirrored.length > 0) {
++      // The second read waits on the organization lock again. Past the answer budget the first
++      // read answers instead, without the accounts mirrored since, which the next read serves.
++      const fresh = yield* awaitBefore(
++        nativePoolMembership(value.organization, value.pool, executor).pipe(
++          Effect.provideService(SqlClient.SqlClient, sql),
++        ),
++        now + poolMembershipAnswerBudgetMs,
++      );
++      if (Option.isSome(fresh)) membership = fresh.value;
++      else for (const account of prepared.mirrored) unmirrored.add(account);
++    }
+   }
+   return yield* HttpServerResponse.json(
+     {
+       pool: membership.pool,
+       organization: membership.organization,
+       native: membership.native,
+-      accounts: membership.accounts,
++      // The pool installs only a complete set, so an account that failed to mirror is left out
++      // rather than refusing the read for the pool's other accounts.
++      accounts: membership.accounts.filter(
++        (account: { readonly account: string }) => !unmirrored.has(account.account),
++      ),
+     },
+     {
+       headers: { "cache-control": "no-store" },
+diff --git a/apps/hosted/server/src/implementation/pool-membership-mirrors.ts b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
+--- a/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
++++ b/apps/hosted/server/src/implementation/pool-membership-mirrors.ts
+@@ -6,17 +6,111 @@ import {
+   type AppId,
+   type Executor,
+ } from "@executor-js/sdk/core";
+-import { Effect, Schema } from "effect";
++import { Clock, Effect, Fiber, Option, Schema } from "effect";
+ import { SqlClient } from "effect/sql";
+ import { usableAppLinks } from "./app-link-policy.ts";
++import { nativeMembershipReadTimeoutMs } from "./native-contract.ts";
++import { poolMembershipReferences } from "./pool-membership-reference-cache.ts";
+ 
+ const Candidate = Schema.Struct({ account: AccountId, owner: OwnerId, generation: Schema.Int });
+ 
+-/** Retained selections need the same mirror as new selections, before the organization lock. */
++/**
++ * The pool Worker abandons this read at its deadline, while one mirror may wait 15 s for its
++ * backend. Both budgets run from the read's arrival, so they include the first locked membership
++ * read: mirrors stop 6 s in, and the second membership read gives way 9 s in, so the answer
++ * leaves a second before the pool's 10.
++ */
++export const poolMembershipMirrorBudgetMs = nativeMembershipReadTimeoutMs - 4_000;
++export const poolMembershipAnswerBudgetMs = nativeMembershipReadTimeoutMs - 1_000;
++/** A Worker event keeps six connections open at most; the request's database pool holds two. */
++const mirrorConcurrency = 4;
++/**
++ * A failed account waits a minute before its next try, then 2 and 4 minutes, then every 5: an
++ * account whose backend comes back by itself is served by the first read 5 minutes after that.
++ */
++export const poolMembershipMirrorRetryMs = { first: 60_000, last: 5 * 60_000 } as const;
++const rememberedLimit = 4_096;
++/** A mirror started with less time left would only leave a pending reference behind. */
++const shortestAttemptMs = 250;
++
++/**
++ * Waits for `effect` until `deadline`, and no longer: past it, or when the caller is interrupted,
++ * the effect is interrupted in the background, so its finalizers (a stale mirror's removal has
++ * its own 15 s deadline) never hold the answer.
++ */
++export const awaitBefore = <A, E, R>(effect: Effect.Effect<A, E, R>, deadline: number) =>
++  Effect.gen(function* () {
++    const remaining = deadline - (yield* Clock.currentTimeMillis);
++    if (remaining <= 0) return Option.none<A>();
++    const fiber = yield* Effect.forkDetach(effect);
++    return yield* Fiber.join(fiber).pipe(
++      Effect.onInterrupt(() => Effect.asVoid(Effect.forkDetach(Fiber.interrupt(fiber)))),
++      Effect.timeoutOption(remaining),
++    );
++  });
++
++/** Closed reasons only: backend and provider text never leaves the mirror driver. */
++export interface PoolMembershipMirrorFailure {
++  readonly account: AccountId;
++  readonly reason:
++    | "registration"
++    | "binding"
++    | "changed"
++    | "unsupported"
++    | "not_found"
++    | "storage"
++    | "defect"
++    | "timeout";
++}
++type Reason = PoolMembershipMirrorFailure["reason"];
++interface Remembered {
++  /** The reason on the account's last line. */
++  readonly reason: Reason;
++  /** Failed attempts in a row; 0 while it has only been cut off at the budget. */
++  readonly failures: number;
++  /** Reads that left the account out without trying it, since its last line. */
++  readonly skipped: number;
++  readonly retryAt: number;
++  /** When its last attempt started; the oldest goes first, so a cut-off account goes next. */
++  readonly attemptedAt: number | undefined;
++}
++type Memory = Map<string, Remembered>;
++
++// The cloud builds an executor for every Worker event, so the memory is keyed on the isolate's
++// acquisition registration and credential key that carry 0540 binds each executor to; a host that
++// never binds keeps one per acquisition host. A lost entry costs one early retry, never a wrong
++// answer, so the backoff needs no table. A new credential generation is a new key, tried at once.
++const runtimes = new Map<string, Memory>();
++const unbound = new WeakMap<object, Memory>();
++const rememberedFor = (executor: Executor) => {
++  const runtime = poolMembershipReferences.scope(executor, "mirror-backoff");
++  const existing =
++    runtime === undefined ? unbound.get(executor[AccountAcquisitionHost]) : runtimes.get(runtime);
++  if (existing !== undefined) return existing;
++  const created: Memory = new Map();
++  if (runtime === undefined) unbound.set(executor[AccountAcquisitionHost], created);
++  else {
++    runtimes.set(runtime, created);
++    // A rotated key or registration leaves its old memory unreachable.
++    while (runtimes.size > 4) runtimes.delete(runtimes.keys().next().value!);
++  }
++  return created;
++};
++const remember = (memory: Memory, key: string, entry: Remembered) => {
++  memory.delete(key);
++  memory.set(key, entry);
++  while (memory.size > rememberedLimit) memory.delete(memory.keys().next().value!);
++};
++
++/**
++ * Retained selections need the same mirror as new selections, before the organization lock.
++ * Mirrors still running at `deadline` are abandoned, and accounts not yet started are cut off.
++ */
+ export const preparePoolMembershipMirrors = (
+   executor: Executor,
+   organization: string,
+   pool: AppId,
++  deadline: number,
+ ) =>
+   Effect.gen(function* () {
+     const sql = yield* SqlClient.SqlClient;
+@@ -36,11 +130,122 @@ export const preparePoolMembershipMirrors = (
+           or r.method <> a.method or r.generation <> a.credential_generation
+           or r.removal is not null or r.mirror_reference is null or r.mirror_ready))`;
+     const candidates = yield* Schema.decodeUnknownEffect(Schema.Array(Candidate))(rows);
+-    for (const candidate of candidates)
+-      yield* executor[AccountAcquisitionHost].ensureMirror({
+-        account: candidate.account,
+-        owner: candidate.owner,
+-        expectedGeneration: candidate.generation,
+-        operation: `native-pool-link:${pool}:${candidate.account}:${candidate.generation}`,
+-      });
++    const memory = rememberedFor(executor);
++    const started = yield* Clock.currentTimeMillis;
++    const keyOf = (candidate: typeof Candidate.Type) =>
++      JSON.stringify([candidate.account, candidate.generation]);
++    const lastAttempt = (candidate: typeof Candidate.Type) =>
++      memory.get(keyOf(candidate))?.attemptedAt ?? -Infinity;
++    // Oldest attempt first, then by account, so the account cut off at the budget is not always
++    // the same one: it has not been tried since, so it goes first on the next read.
++    const ordered = [...candidates].sort(
++      (a, b) =>
++        lastAttempt(a) - lastAttempt(b) ||
++        (a.account < b.account ? -1 : a.account > b.account ? 1 : 0),
++    );
++    const failed = (
++      candidate: typeof Candidate.Type,
++      line: { reason: Reason; failures: number; skipped: number; retryInMs: number },
++    ) =>
++      Effect.logWarning("Pool account could not be mirrored").pipe(
++        Effect.annotateLogs({ pool, account: candidate.account, ...line }),
++      );
++    // One account that cannot mirror must not stop the pool's others; it stays out until it does.
++    const outcomes = yield* Effect.forEach(
++      ordered,
++      (candidate) =>
++        Effect.gen(function* () {
++          const key = keyOf(candidate);
++          const last = memory.get(key);
++          if (last !== undefined && last.retryAt > started) {
++            remember(memory, key, { ...last, skipped: last.skipped + 1 });
++            return { account: candidate.account, reason: last.reason };
++          }
++          const attemptedAt = yield* Clock.currentTimeMillis;
++          // Still queued when the budget ran out: not this account's fault, so no backoff. Its
++          // first cut-off is logged, later ones are counted on its next line.
++          if (attemptedAt > deadline - shortestAttemptMs) {
++            if (last !== undefined) remember(memory, key, { ...last, skipped: last.skipped + 1 });
++            else {
++              remember(memory, key, {
++                reason: "timeout",
++                failures: 0,
++                skipped: 0,
++                retryAt: 0,
++                attemptedAt: undefined,
++              });
++              yield* failed(candidate, {
++                reason: "timeout",
++                failures: 0,
++                skipped: 0,
++                retryInMs: 0,
++              });
++            }
++            return { account: candidate.account, reason: "timeout" as const };
++          }
++          // An abandoned mirror keeps its pending reference and the same operation, exactly as
++          // when the SDK's own deadline passes, so the next try resumes it.
++          const reason: Reason | undefined = yield* awaitBefore(
++            executor[AccountAcquisitionHost]
++              .ensureMirror({
++                account: candidate.account,
++                owner: candidate.owner,
++                expectedGeneration: candidate.generation,
++                operation: `native-pool-link:${pool}:${candidate.account}:${candidate.generation}`,
++              })
++              .pipe(
++                Effect.as(undefined),
++                Effect.catchTags({
++                  AccountAcquisitionUnavailable: (error) => Effect.succeed(error.reason),
++                  AccountNotFound: () => Effect.succeed("not_found" as const),
++                  StorageError: () => Effect.succeed("storage" as const),
++                }),
++                Effect.catchDefect(() => Effect.succeed("defect" as const)),
++              ),
++            deadline,
++          ).pipe(Effect.map(Option.getOrElse((): Reason => "timeout")));
++          const finished = yield* Clock.currentTimeMillis;
++          if (reason === undefined) {
++            if (last !== undefined) {
++              memory.delete(key);
++              yield* Effect.logInfo("Pool account mirrored again").pipe(
++                Effect.annotateLogs({
++                  pool,
++                  account: candidate.account,
++                  failures: last.failures,
++                  skipped: last.skipped,
++                }),
++              );
++            }
++            return undefined;
++          }
++          const failures = (last?.failures ?? 0) + 1;
++          const wait = Math.min(
++            poolMembershipMirrorRetryMs.first * 2 ** Math.min(failures - 1, 16),
++            poolMembershipMirrorRetryMs.last,
++          );
++          remember(memory, key, {
++            reason,
++            failures,
++            skipped: 0,
++            retryAt: finished + wait,
++            attemptedAt,
++          });
++          // One line per attempt, so at most one per backoff step; the reads between are counted.
++          yield* failed(candidate, {
++            reason,
++            failures,
++            skipped: last?.skipped ?? 0,
++            retryInMs: wait,
++          });
++          return { account: candidate.account, reason };
++        }),
++      { concurrency: mirrorConcurrency },
++    );
++    return {
++      mirrored: ordered
++        .filter((_, index) => outcomes[index] === undefined)
++        .map((candidate) => candidate.account),
++      failures: outcomes.filter((outcome) => outcome !== undefined),
++    };
+   }).pipe(Effect.mapError(() => new StorageError()));

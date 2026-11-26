@@ -24,6 +24,42 @@ test("the AppPages boundary rejects parser and local OS modules at any size", ()
     );
 });
 
+test("the AppPages boundary rejects the skill parser and YAML at any size", () => {
+  for (const source of [
+    "apps/hosted/cloud/node_modules/.bun/yaml@2.9.1/node_modules/yaml/browser/dist/parse/parser.js",
+    "node_modules/yaml/dist/index.js",
+    "packages/apps/src/implementation/skill-files.ts",
+    "packages/sdk/src/implementation/skill-source.ts",
+    "packages/app-templates/src/implementation/skill-publishing.ts",
+    "apps/hosted/server/src/implementation/skills.ts",
+  ])
+    assert.throws(
+      () =>
+        assertAppPagesRuntimeBundle({ worker: "app-pages", sources: { [source]: 1 } }, () => ""),
+      /must not upload the skill parser or YAML/,
+    );
+});
+
+test("the AppPages boundary fails a module in the upload that calls the skills API", () => {
+  const upload = { worker: "app-pages", sources: { "packages/example/page.ts": 1 } };
+  for (const call of [
+    "yield* executor.skills.list({ app })",
+    "executor.skills.bundle(input)",
+    "host . skills . read (input)",
+    "linked(executor.skills.bundle)",
+    'const read = executor.skills["read"]',
+    "executor\n  .skills\n  .list({ app })",
+  ])
+    assert.throws(
+      () => assertAppPagesRuntimeBundle(upload, () => `const a = 1;\n${call};\n`),
+      /must not call the skills API.*packages\/example\/page\.ts:\d+/,
+    );
+  // A schema or a span name is not a call.
+  assert.doesNotThrow(() =>
+    assertAppPagesRuntimeBundle(upload, () => 'Effect.withSpan("sdk.skills.list");\nskills: {}\n'),
+  );
+});
+
 test("the AppPages boundary refuses a missing attribution or another Worker", () => {
   assert.throws(() => assertAppPagesRuntimeBundle({ worker: "app-pages", sources: {} }));
   assert.throws(() => assertAppPagesRuntimeBundle({ worker: "api", sources: { "entry.ts": 1 } }));

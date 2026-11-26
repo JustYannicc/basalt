@@ -58,7 +58,9 @@ test("the scheduled Worker keeps its passive probe and reports unavailable histo
   const native: string[] = [];
   const messages: string[] = [];
   const diagnostics: unknown[][] = [];
-  t.mock.method(console, "warn", (...args: unknown[]) => diagnostics.push(args));
+  t.mock.method(console, "warn", (...args: unknown[]) => {
+    if (args[0] !== "POOL_PROBE_VERDICT") diagnostics.push(args);
+  });
   t.mock.method(globalThis, "fetch", async (_input: unknown, init?: RequestInit) => {
     messages.push(new TextDecoder().decode(init?.body as ArrayBuffer));
     return new Response(null, { status: 202 });

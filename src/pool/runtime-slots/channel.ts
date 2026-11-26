@@ -10,7 +10,7 @@ import type { RuntimeConfiguration, RuntimeEnvironment } from "./configuration.t
 import type { RuntimeState } from "./runtime-state.ts";
 import { installNativePolicy } from "../native-policy-install.ts";
 import { reportPoolFailure } from "../json.ts";
-import { readRuntimeHealth } from "../runtime-health.ts";
+import { readRuntimeHealth, readRuntimeLiveness } from "../runtime-health.ts";
 import { policyUsePrefix, type NativeMembershipPolicy } from "../membership-contract.ts";
 import { signEnvelope } from "../token.ts";
 import { ReadinessReadFailure } from "../runtime-health.ts";
@@ -57,6 +57,11 @@ export class RuntimeChannel {
     if (!status.policyLeaseUntil || status.policyLeaseUntil <= performance.now())
       throw new SlotRefused("unhealthy");
     return status;
+  }
+  /** The readiness answer however late inside `signal`; see `readRuntimeLiveness`. */
+  async alive(configuration: RuntimeConfiguration, signal: AbortSignal) {
+    if (!this.ctx.container?.running) throw new SlotRefused("unhealthy");
+    return readRuntimeLiveness(this.port(8318), configuration.managementKey, signal);
   }
   async install(configuration: RuntimeConfiguration, policy: NativeMembershipPolicy) {
     if (!this.ctx.container) throw new SlotRefused("unhealthy");
