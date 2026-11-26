@@ -74,7 +74,7 @@ diff --git a/e2e/tests/pool-membership-shared-read.spec.ts b/e2e/tests/pool-memb
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-membership-shared-read.spec.ts
-@@ -0,0 +1,255 @@
+@@ -0,0 +1,252 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -251,8 +251,8 @@ new file mode 100644
 +          expect(besideMs).toBeLessThan(viewCap);
 +
 +          // 3. A role change, which takes the lock exclusively, still waits for a membership read
-+          //    in flight. Park the read on an account row it reads FOR SHARE, after it took the
-+          //    shared lock.
++          //    in flight. Park the read at its first FOR SHARE row lock, after it took the shared
++          //    lock: this table mode blocks row locks on the accounts table, not plain reads.
 +          const admin = yield* body(Viewer, yield* api.request(actors.admin, "GET", "/api/viewer"));
 +          const directory = yield* body(
 +            Members,
@@ -272,10 +272,7 @@ new file mode 100644
 +            });
 +          yield* Effect.addFinalizer(() => role("admin").pipe(Effect.asVoid, Effect.orDie));
 +          const rows = yield* cloudLocks;
-+          yield* rows.hold({
-+            sql: "select id from executor_accounts where id = $1 for update",
-+            params: [accounts[0]!.id],
-+          });
++          yield* rows.hold({ sql: "lock table executor_accounts in exclusive mode" });
 +          const waitFor = <A, E, R>(probe: Effect.Effect<A, E, R>, ready: (value: A) => boolean) =>
 +            probe.pipe(
 +              Effect.filterOrFail(ready, () => new Waiting()),
@@ -292,7 +289,7 @@ new file mode 100644
 +                  and l.objid::bigint = key.k & 4294967295`,
 +              params: [`executor-access:${organization}`, granted],
 +            });
-+          // One session holds this organization's lock shared and waits on a row: the parked read.
++          // One session holds this organization's lock shared and waits on another lock: the parked read.
 +          const parked = locks.run({
 +            sql: `select count(*)::int as n from pg_locks l,
 +              (select hashtextextended($1, 0) as k) key
