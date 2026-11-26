@@ -125,12 +125,10 @@ function runCommand(repositoryRoot: string, step: string, command: string, args:
  * the message is the only place a failed reconciliation says why.
  */
 export function publicRunFailure(error: unknown, token: string | undefined): string {
-  const message = error instanceof Error ? error.message : String(error);
+  let message = error instanceof Error ? error.message : String(error);
   // A secret pasted with a trailing newline reaches the process with it, and messages hold it bare.
-  return [token, token?.trim()].reduce(
-    (text, value) => (value ? text.replaceAll(value, "***") : text),
-    message,
-  );
+  for (const value of [token, token?.trim()]) if (value) message = message.replaceAll(value, "***");
+  return message;
 }
 
 function sourceFromArgs(args: string[]): UpdateSource {
