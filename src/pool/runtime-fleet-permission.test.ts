@@ -1,139 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { SlotMemory } from "../../scripts/pool-tests/runtime-slot-storage.ts";
-import { runtimeProofFixture } from "../../scripts/pool-fleet/test/runtime-proof-fixture.ts";
-import type { FleetConfiguration } from "./runtime-fleet/configuration.ts";
-import { PoolRuntimeFleet } from "./runtime-fleet/production.ts";
-import { decodeProviderApplication } from "./runtime-provider/application.ts";
-import { providerDigest } from "./runtime-provider/canonical.ts";
-import { RuntimeProviderReader } from "./runtime-provider/read.ts";
-import { runtimeApplicationSettings } from "./runtime-provider/settings.ts";
-import type { ControllerCode, SlotTarget } from "./runtime-slots/contract.ts";
-import { RuntimeHandoff } from "./runtime-slots/integration.ts";
-import { slotSelectionKey } from "./runtime-slots/storage.ts";
+import { poolRuntimeFleetFixture } from "../../scripts/pool-tests/pool-runtime-fleet-fixture.ts";
+import type { ControllerCode } from "./runtime-slots/contract.ts";
 
 // #1802: a Worker deploy changes the controller code. A permission the signed command committed
 // under the last code must stay in force under the next one; only the commit checks the code.
 const before: ControllerCode = { candidate: "c".repeat(40), workerInput: "d".repeat(64) };
 const after: ControllerCode = { candidate: "e".repeat(40), workerInput: "f".repeat(64) };
 
-async function fixture() {
-  const original = await runtimeProofFixture();
-  const raw = ["blue", "green"].map((color) => ({
-    ...structuredClone(original.raw),
-    id: color,
-    durable_objects: { namespace_id: `${color}-namespace` },
-    max_instances: 4,
-  }));
-  const provider = new RuntimeProviderReader("synthetic-read-token", async (input) => {
-    const app = raw.find((value) => new URL(input).pathname.includes(`/applications/${value.id}`));
-    assert.ok(app);
-    return Response.json({
-      success: true,
-      errors: [],
-      result: new URL(input).pathname.endsWith("instances-v2") ? [] : app,
-      result_info: { next_page_token: "" },
-    });
-  });
-  const applications = await Promise.all(
-    raw.map(async (app, index) => ({
-      color: index === 0 ? ("blue" as const) : ("green" as const),
-      applicationId: app.id,
-      namespaceId: app.durable_objects.namespace_id,
-      accountId: app.account_id,
-      applicationVersion: "1",
-      imageDigest: original.manifest.target.imageDigest,
-      imageInput: `${index + 1}`.repeat(16),
-      applicationConfigDigest: await providerDigest(
-        runtimeApplicationSettings(decodeProviderApplication(app)),
-      ),
-    })),
-  );
-  const controllerId = "a".repeat(64);
-  const legacy = {
-    ...original.manifest.selection.active!,
-    controllerId,
-    instanceId: controllerId,
-  };
-  const { bootId: _bootId, ...legacyTarget } = legacy;
-  const storage = new SlotMemory();
-  await storage.put(slotSelectionKey, {
-    epoch: 1,
-    active: { target: legacyTarget, identity: legacy, fenced: false },
-  });
-  const ctx = {
-    id: { toString: () => controllerId },
-    storage: Object.assign(storage, { getAlarm: async () => null, setAlarm: async () => {} }),
-    waitUntil: () => {},
-  };
-  const env = {
-    POOL_DATABASE_URL: "postgres://synthetic.invalid/pool",
-    POOL_MANAGEMENT_KEY: "synthetic",
-    POOL_APP_SIGNING_KEY: "a".repeat(64),
-    POOL_IMAGE_HASH: legacy.imageInput,
-    POOL_DEPLOYMENT_KEY: "e".repeat(64),
-    POOL_CONTAINER_APPLICATION_ID: legacy.applicationId,
-  };
-  let bound = applications;
-  // One Worker version: its own code and its own bound applications, over the one storage.
-  const worker = (code: ControllerCode) =>
-    new PoolRuntimeFleet({
-      ctx: ctx as never,
-      env,
-      code,
-      handoff: new RuntimeHandoff(ctx as never, env, code, { wrap: (response) => response }),
-      namespaces: () =>
-        bound.map(({ color, applicationId, imageInput }) => ({
-          color,
-          applicationId,
-          imageInput,
-          instanceId: (name: string) => `${color}-${name}`,
-          endpoint: () => {
-            throw new Error("No cell is started in this test");
-          },
-        })),
-      provider,
-      legacyPeers: {} as never,
-      currentRequests: () => 0,
-      wrap: (response) => response,
-    });
-  const configuration: FleetConfiguration = {
-    format: "pool-runtime-fleet-v1",
-    controllerCode: before,
-    controllerId,
-    legacy,
-    revision: 1,
-    previousDigest: null,
-    active: "blue",
-    applications,
-    maximum: 4,
-    targetActive: 25,
-    idleMilliseconds: 60_000,
-  };
-  let slot = 0;
-  const launch = (): SlotTarget => ({
-    format: "pool-runtime-slot-v1",
-    controllerId,
-    slotId: `cell-${++slot}`,
-    instanceId: `blue-runtime-${slot}`,
-    applicationId: applications[0]!.applicationId,
-    applicationVersion: applications[0]!.applicationVersion,
-    imageDigest: applications[0]!.imageDigest,
-    imageInput: applications[0]!.imageInput,
-    homePeerOrdinal: slot,
-  });
-  return {
-    worker,
-    configuration,
-    applications,
-    legacy,
-    storage,
-    launch,
-    rebind: (next: typeof applications) => {
-      bound = next;
-    },
-  };
-}
+const fixture = () => poolRuntimeFleetFixture(before);
 
 test("a permission committed under the last code launches and inspects in force under the next", async () => {
   const f = await fixture();
