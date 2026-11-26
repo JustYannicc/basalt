@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "Every browser query hold adds a route that never matches and never removes it, so removing a hold never removes its page's last route: removing the last route turns the page's request interception off, and a request paused at that moment is never continued or answered. The read-batch splitter does not count that route as an active test route. Each released held read records how it ended, and a step waiting on what held reads show reports a held read that answered with an error, with its status, apart from one that never answered. The hold's own test drives a real browser page against a local server and fails when removing a hold leaves any request unanswered."
+    }
+  }
+}
