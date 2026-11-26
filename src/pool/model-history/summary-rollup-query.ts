@@ -50,16 +50,24 @@ const literal = (at: string) => {
  */
 export function rollupRowsText(window: ReturnType<typeof rollupWindow>, target: UsageRollupTarget) {
   const rollup = usageRollupTargets[target];
-  const raw = window.segments.map(([a, b]) =>
-    rollup.projection(`(SELECT * FROM basalt_model_requests e
-      WHERE e.pool=$1 AND e.timestamp >= ${literal(a!)}::timestamptz - interval '1 microsecond'
-        AND e.timestamp < ${literal(b!)}::timestamptz + interval '1 microsecond'
-        AND e.timestamp_exact >= ${literal(a!)} AND e.timestamp_exact < ${literal(b!)})`),
-  );
-  return `SELECT u.* FROM ${rollup.hourly} u
+  const hourly = `SELECT u.* FROM ${rollup.hourly} u
         WHERE u.pool=$1 AND u.hour >= ${literal(window.from)}::timestamptz
           AND u.hour < ${literal(window.to)}::timestamptz
-          ${window.split.length ? `AND u.hour NOT IN (${window.split.map((at) => `${literal(at)}::timestamptz`).join(",")})` : ""}
+          ${window.split.length ? `AND u.hour NOT IN (${window.split.map((at) => `${literal(at)}::timestamptz`).join(",")})` : ""}`;
+  if (!window.segments.length) return hourly;
+  // The cut hours' raw rows are read once, over every partition, and each segment's groups come
+  // from that read: one partitioned scan per selection to plan instead of one per segment.
+  const raw = window.segments.map(([a, b]) =>
+    rollup.projection(`(SELECT * FROM cut_rows e
+      WHERE e.timestamp_exact >= ${literal(a!)} AND e.timestamp_exact < ${literal(b!)})`),
+  );
+  const ranges = window.segments.map(
+    ([a, b]) => `e.timestamp >= ${literal(a!)}::timestamptz - interval '1 microsecond'
+        AND e.timestamp < ${literal(b!)}::timestamptz + interval '1 microsecond'`,
+  );
+  return `WITH cut_rows AS MATERIALIZED (
+          SELECT * FROM basalt_model_requests e WHERE e.pool=$1 AND (${ranges.map((range) => `(${range})`).join(" OR ")})
+        ) ${hourly}
         ${raw.map((sql) => `UNION ALL ${sql}`).join("\n")}`;
 }
 
@@ -337,14 +345,18 @@ export function summaryModeTargets(
     ...(peopleTables ? ["v16" as const] : []),
     ...(rollupTables ? ["v15" as const] : []),
   ];
+  const bounded = (
+    target: UsageRollupTarget,
+  ) => `(SELECT 1 FROM ${usageRollupTargets[target].hourly} g
+        WHERE g.pool=$1 AND g.hour >= '${window.from}'::timestamptz AND g.hour < '${window.to}'::timestamptz
+        LIMIT ${rollupGroups + 1})`;
+  // v16's bounded count decides between v16 and v15 and is the read's group count when v16 is
+  // chosen, so it is counted once.
+  const counted = present.includes("v16") && present.includes("v15");
   // v16 multiplies v15's groups by the people and apps behind them, so a window v15 can serve may
   // be past the bound on v16: then the pool keeps reading v15 rather than refusing.
   const fits = (target: "v15" | "v16") =>
-    target === "v16" && present.includes("v15")
-      ? ` AND (SELECT count(*) FROM (SELECT 1 FROM ${usageRollupTargets.v16.hourly} g WHERE g.pool=$1
-          AND g.hour >= '${window.from}'::timestamptz AND g.hour < '${window.to}'::timestamptz
-          LIMIT ${rollupGroups + 1}) f) <= ${rollupGroups}`
-      : "";
+    target === "v16" && counted ? ` AND (SELECT n FROM v16_groups) <= ${rollupGroups}` : "";
   const choice = present.length
     ? `CASE ${present
         .map(
@@ -353,20 +365,20 @@ export function summaryModeTargets(
         )
         .join(" ")} END`
     : "NULL::text";
+  const groups = (target: UsageRollupTarget) =>
+    target === "v16" && counted
+      ? "(SELECT n FROM v16_groups)"
+      : `(SELECT count(*) FROM ${bounded(target)} f)`;
   const rolled = `${present.map((target) => `${rollupSelectionText(window, `rolled_${target}`, target)},`).join("\n")}
+    ${counted ? `v16_groups AS MATERIALIZED (SELECT count(*) AS n FROM ${bounded("v16")} f),` : ""}
     ready AS MATERIALIZED (
       SELECT r.rollup IS NOT NULL AS rolled,r.rollup FROM (SELECT ${choice} AS rollup) r
     ), rolled_rows AS MATERIALIZED (
       SELECT ${
         present.length
-          ? `count(*) AS n FROM (${present
-              .map(
-                (target) => `(SELECT 1 FROM ${usageRollupTargets[target].hourly} g
-        WHERE (SELECT rollup FROM ready)='${target}' AND g.pool=$1
-          AND g.hour >= '${window.from}'::timestamptz AND g.hour < '${window.to}'::timestamptz
-        LIMIT ${rollupGroups + 1})`,
-              )
-              .join(" UNION ALL ")}) bounded`
+          ? `CASE (SELECT rollup FROM ready) ${present
+              .map((target) => `WHEN '${target}' THEN ${groups(target)}`)
+              .join(" ")} ELSE 0 END AS n`
           : "0::bigint AS n"
       }
     ),`;

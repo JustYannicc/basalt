@@ -1,0 +1,122 @@
+diff --git a/packages/sdk/src/implementation/account-driver-health.ts b/packages/sdk/src/implementation/account-driver-health.ts
+--- a/packages/sdk/src/implementation/account-driver-health.ts
++++ b/packages/sdk/src/implementation/account-driver-health.ts
+@@ -54,12 +54,15 @@
+   ) =>
+     Effect.gen(function* () {
+       if (binding === undefined) return undefined;
+-      const checkable =
++      const declaresCheck =
+         binding.removal !== null || acquisition === undefined
+-          ? false
++          ? undefined
+           : yield* acquisition
+               .checkable(binding)
+-              .pipe(Effect.catchTag("AccountAcquisitionUnavailable", () => Effect.succeed(false)));
++              .pipe(
++                Effect.catchTag("AccountAcquisitionUnavailable", () => Effect.succeed(undefined)),
++              );
++      const checkable = declaresCheck === true;
+       const saved =
+         row !== undefined && row.driver === binding.driver && row.owner === account.owner
+           ? row
+@@ -81,8 +84,9 @@
+             version: saved?.driverRevision ?? binding.driverRevision,
+           },
+           checkable,
++          // A registration that defines no check has no result, whatever an earlier one recorded.
+           check:
+-            saved?.status == null
++            saved?.status == null || declaresCheck === false
+               ? null
+               : {
+                   status: saved.status,
+@@ -142,16 +146,29 @@
+       if (source === undefined) return;
+       const hook = source.check;
+       const startedAt = yield* Clock.currentTimeMillis;
+-      // Missing capability is not a successful credential check.
++      // Missing capability is not a successful credential check, nor a failed one: the row records
++      // that this binding cannot be checked, with no result.
+       if (hook === undefined) {
+         yield* transaction(db, () =>
+           Effect.gen(function* () {
+             if (!(yield* driverSourceCurrent(source, account))) return;
++            const state = {
++              owner: account.owner,
++              driver: source.binding.driver,
++              driverRevision: source.binding.driverRevision,
++              bindingRevision: source.binding.revision,
++              generation: account.credentialGeneration,
++              checkable: false,
++              status: null,
++              reason: null,
++              checkedAt: new Date(startedAt),
++              message: null,
++            };
+             yield* query(() =>
+-              db.updateMany("accountDriverChecks", {
+-                where: (b) =>
+-                  b.and(b("account", "=", account.id), b("driver", "=", source.binding.driver)),
+-                set: { checkable: false },
++              db.upsert("accountDriverChecks", {
++                where: (b) => b("account", "=", account.id),
++                create: { account: account.id, ...state },
++                update: state,
+               }),
+             );
+           }),
+diff --git a/apps/hosted/server/src/implementation/account-rechecks.ts b/apps/hosted/server/src/implementation/account-rechecks.ts
+--- a/apps/hosted/server/src/implementation/account-rechecks.ts
++++ b/apps/hosted/server/src/implementation/account-rechecks.ts
+@@ -64,8 +64,6 @@
+       const now = yield* Clock.currentTimeMillis;
+       if (check?.current === true && check.checkedAt.getTime() > now - 6 * 60 * 60_000)
+         return { outcome: "skipped" as const, retry: false, cooldown: false };
+-      if (target.app === null && before.driver?.checkable !== true)
+-        return { outcome: "skipped" as const, retry: true, cooldown: false };
+       const authorized = yield* automaticCheckAccounts(sql, [
+         { id: target.account, owner: target.owner },
+       ]);
+@@ -74,12 +72,23 @@
+         !(yield* makeAccountRecheckQueue(sql).start(target, lease))
+       )
+         return { outcome: "skipped" as const, retry: true, cooldown: false };
++      // A driver without a check sends nothing; the SDK records that once, so this account leaves
++      // the queue instead of coming back every 15 minutes.
++      const recording = target.app === null && before.driver?.checkable !== true;
+       // The explicit SDK path owns diagnostics and persistence, including phase/tag/vendor reason.
+-      const health = yield* executor.accounts.check({
+-        owner: target.owner,
+-        account: target.account,
+-        apps,
+-      });
++      const checked = yield* executor.accounts
++        .check({ owner: target.owner, account: target.account, apps })
++        .pipe(Effect.result);
++      if (Result.isFailure(checked)) {
++        if (recording) return { outcome: "skipped" as const, retry: true, cooldown: false };
++        return yield* Effect.fail(checked.failure);
++      }
++      const health = checked.success;
++      if (recording && health.driver === undefined)
++        return { outcome: "skipped" as const, retry: true, cooldown: false };
++      // A registration that gained a check since the first read was checked for real below.
++      if (recording && health.driver?.checkable !== true)
++        return { outcome: "skipped" as const, retry: false, cooldown: false };
+       const after = target.app === null ? health.driver?.check : health.apps[0]?.check;
+       const rateLimited = [health.driver?.check, ...health.apps.map((app) => app.check)].some(
+         (result) => result?.reason === "rate_limited",
+diff --git a/apps/hosted/server/src/implementation/pool-account-registry.ts b/apps/hosted/server/src/implementation/pool-account-registry.ts
+--- a/apps/hosted/server/src/implementation/pool-account-registry.ts
++++ b/apps/hosted/server/src/implementation/pool-account-registry.ts
+@@ -144,7 +144,8 @@
+                     };
+               },
+             }),
+-        ...(oauth
++        // A subscription is checked through its usage read, so a provider without one has no check.
++        ...(oauth && capability.quota === "home"
+           ? {
+               check: async (context: AccountAcquisitionAccountContext) => {
+                 const answer = await send(context, "check", {
