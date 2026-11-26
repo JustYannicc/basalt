@@ -16,6 +16,8 @@ export type RouteGatewayClass = "declared" | "absent";
 
 /** The class's container application in the release stack, which the declare release creates. */
 export const routeGatewayFqn = "RouteGateway";
+/** The Durable Object class itself, as PoolWorker's State row lists the classes it hosts. */
+export const routeGatewayClassName = "RouteGateway";
 
 /**
  * Whether the stage already hosts the class: PoolWorker's State row (or the one it replaces)
@@ -26,7 +28,7 @@ export const routeGatewayFqn = "RouteGateway";
 export const routeGatewayRecorded = (
   hostedClasses: readonly string[],
   applicationRecorded: boolean,
-) => hostedClasses.includes(routeGatewayFqn) || applicationRecorded;
+) => hostedClasses.includes(routeGatewayClassName) || applicationRecorded;
 
 export function routeGatewayClassFor(
   policyValue: RouteGatewayClass | undefined,
