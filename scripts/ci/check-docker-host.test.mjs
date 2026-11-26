@@ -16,7 +16,12 @@ const docker = `#!/usr/bin/env node
 const args = process.argv.slice(2);
 if (args[0] !== "run") process.exit(0);
 const mode = process.env.PROBE_RUN;
-if (mode === "hang") setInterval(() => {}, 1000);
+if (mode === "hang") {
+  // Like the real CLI, which forwards SIGTERM to the container and keeps waiting.
+  process.on("SIGTERM", () => {});
+  // Gone on its own if a regression leaves it running.
+  setTimeout(() => process.exit(1), 20_000);
+}
 else if (mode === "refuse") {
   process.stderr.write("urllib.error.URLError: <urlopen error [Errno 111] Connection refused>\\n");
   process.exit(1);
@@ -37,6 +42,8 @@ const probe = async (mode, limitSeconds) => {
       [script, "fixture:image", ...(limitSeconds ? [String(limitSeconds)] : [])],
       {
         env: { ...process.env, PATH: `${bin}${delimiter}${process.env.PATH}`, PROBE_RUN: mode },
+        // A limit that never reaches the probe must fail this test, not hang it.
+        timeout: 30_000,
       },
     ).then(
       ({ stdout }) => ({ ok: true, output: stdout }),
@@ -55,7 +62,10 @@ test("a container that answers passes on both bridges", async () => {
 });
 
 test("a probe that runs out of time says it timed out before the container answered", async () => {
+  const started = Date.now();
   const result = await probe("hang", 1);
+  // The 1 s limit reached the run, and the run ended at it, even ignoring SIGTERM.
+  assert.ok(Date.now() - started < 10_000, `the probe took ${Date.now() - started} ms`);
   assert.equal(result.ok, false);
   assert.match(
     result.output,
@@ -68,6 +78,6 @@ test("a container that ran and could not reach the host fails with what it repor
   assert.equal(result.ok, false);
   assert.match(
     result.output,
-    /The probe container on docker0 exited with 1 before answering: .*Connection refused/u,
+    /docker run on docker0 exited with 1 before the container answered: .*Connection refused/u,
   );
 });

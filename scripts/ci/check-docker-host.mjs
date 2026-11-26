@@ -24,7 +24,10 @@ const address = server.address();
 assert.ok(address && typeof address === "object");
 const url = new URL("http://host.docker.internal/");
 url.port = String(address.port);
-const docker = (args, timeout = 15_000) => execute("docker", args, { timeout });
+// A timed-out `docker run` is killed outright: it forwards SIGTERM to the container and keeps
+// waiting, so a gentler signal lets the probe outlive its limit. `rm --force` removes the container.
+const docker = (args, timeout = 15_000) =>
+  execute("docker", args, { timeout, killSignal: "SIGKILL" });
 
 /** One probe container on `bridge`; a failure says whether it ran out of time or answered badly. */
 async function probe(args, bridge) {
@@ -37,7 +40,7 @@ async function probe(args, bridge) {
         { cause: error },
       );
     throw new Error(
-      `The probe container on ${bridge} exited with ${error?.code ?? "a signal"} before answering: ${String(error?.stderr ?? "").trim() || "no output"}`,
+      `docker run on ${bridge} exited with ${error?.code ?? error?.signal ?? "no status"} before the container answered: ${String(error?.stderr ?? "").trim() || "no output"}`,
       { cause: error },
     );
   }
@@ -86,5 +89,9 @@ try {
   await new Promise((resolve, reject) =>
     server.close((error) => (error ? reject(error) : resolve())),
   );
-  if (createdNetwork) await docker(["network", "rm", network]);
+  // A failed cleanup is reported, never in place of the probe's own failure.
+  if (createdNetwork)
+    await docker(["network", "rm", network]).catch((error) =>
+      console.error(`Could not remove the probe network: ${String(error?.stderr ?? error).trim()}`),
+    );
 }
