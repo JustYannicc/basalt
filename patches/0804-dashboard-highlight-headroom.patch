@@ -11,10 +11,10 @@ index 000000000..3f9687a83
 +export const highlighter = Effect.fail(new HighlightUnavailable({}));
 diff --git a/apps/hosted/cloud/web/server-highlight.ts b/apps/hosted/cloud/web/server-highlight.ts
 new file mode 100644
-index 000000000..c0ce24672
+index 000000000..9871a7ff9
 --- /dev/null
 +++ b/apps/hosted/cloud/web/server-highlight.ts
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,35 @@
 +import { fileURLToPath } from "node:url";
 +import type { Plugin } from "vite-plus";
 +
@@ -23,10 +23,12 @@ index 000000000..c0ce24672
 +
 +/**
 + * Keep Shiki out of the server build, which the dashboard Worker uploads and compiles on every
-+ * cold start although no server render can use it: `highlighterAtom` loads the engine with a
-+ * dynamic import that cannot settle before the render, so the server always sends plain code and
-+ * the browser highlights after hydration. The client build keeps the real engine. The build fails
-+ * if the engine is no longer swapped, so a moved import cannot quietly bring Shiki back.
++ * cold start. With the real engine the server render waits for it and sends colored tokens, but
++ * highlighted tokens are not carried to the browser, whose first render is plain: hydration then
++ * mismatched and React rendered the block again in the browser. With the stub the server sends
++ * the same plain code the browser first renders, and the browser colors it once its engine loads.
++ * Only built Workers swap; a dev server still highlights on the server. The build fails if the
++ * engine is no longer swapped, so a moved import cannot quietly bring Shiki back.
 + */
 +export const serverHighlight = (): Plugin => {
 +  let swapped = false;
@@ -35,14 +37,15 @@ index 000000000..c0ce24672
 +    apply: "build",
 +    enforce: "pre",
 +    async resolveId(source, importer, options) {
-+      if (this.environment.name !== "ssr" || !source.endsWith("highlight-engine.ts")) return null;
++      if (this.environment.config.consumer !== "server" || !source.endsWith("highlight-engine.ts"))
++        return null;
 +      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
 +      if (!resolved?.id.endsWith(engine)) return null;
 +      swapped = true;
 +      return stub;
 +    },
 +    buildEnd(error) {
-+      if (this.environment.name === "ssr" && error === undefined && !swapped)
++      if (this.environment.config.consumer === "server" && error === undefined && !swapped)
 +        this.error(`The server build no longer imports ${engine}; update the highlight swap`);
 +    },
 +  };

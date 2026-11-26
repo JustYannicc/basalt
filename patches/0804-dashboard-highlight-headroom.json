@@ -1,7 +1,7 @@
 {
   "identity": "basalt-dashboard-highlight-headroom",
   "file": "0804-dashboard-highlight-headroom.patch",
-  "content_sha256": "64c54bdf0dc960aa7c1b507edc0e41d4855e7cf0ce1b0b73849faa4364137de5",
+  "content_sha256": "632564e7cb66887f86965249f9b4793005c8073219d1cde2f18cf548295c0330",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

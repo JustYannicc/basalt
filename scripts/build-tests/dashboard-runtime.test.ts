@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   assertDashboardRuntimeBundle,
   checkDashboardRuntimeBundle,
+  chunkSources,
 } from "../dashboard-runtime-bundle.ts";
 
 const client = ["main-abc12345.js", "highlight-engine-DkJn57Z2.js"];
@@ -25,7 +30,7 @@ test("the dashboard boundary rejects the highlighter at any size", () => {
         assertDashboardRuntimeBundle(
           { worker: "dashboard", sources: { [source]: 1 } },
           client,
-          () => undefined,
+          () => [],
         ),
       /must not upload the code highlighter/,
     );
@@ -62,4 +67,24 @@ test("the dashboard boundary refuses a missing attribution or another Worker", (
   assert.throws(() =>
     assertDashboardRuntimeBundle({ worker: "api", sources: { "entry.ts": 1 } }, client),
   );
+});
+
+test("a chunk the record names must exist and carry a source map", () => {
+  const root = mkdtempSync(join(tmpdir(), "basalt-dashboard-chunks-"));
+  try {
+    const assets = join(root, "apps/hosted/cloud/web/dist/server/assets");
+    mkdirSync(assets, { recursive: true });
+    const read = chunkSources(pathToFileURL(`${root}/`));
+    const manifest = "apps/hosted/cloud/web/dist/server/assets/_tanstack-start-manifest_v-B8Hh.js";
+    // A stale record, such as one from before the site was rebuilt, would otherwise pass unread.
+    assert.throws(() => read(chunk), /no longer has; rebuild the Workers/);
+    writeFileSync(join(root, chunk), "export {};");
+    assert.throws(() => read(chunk), /has no source map/);
+    writeFileSync(join(root, `${chunk}.map`), JSON.stringify({ sources: ["../../a.ts"] }));
+    assert.deepEqual(read(chunk), ["../../a.ts"]);
+    writeFileSync(join(root, manifest), "export {};");
+    assert.deepEqual(read(manifest), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

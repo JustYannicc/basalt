@@ -14,26 +14,44 @@ const highlighter =
 /** The chunk the site's server build names after the engine when it bundles it. */
 const engineChunk = /\/web\/dist\/server\/assets\/highlight-engine-[\w-]+\.js$/;
 
+/** The router's manifest chunk: a build-time route table the site build emits without a map. */
+const maplessChunk = /\/web\/dist\/server\/assets\/_tanstack-start-manifest_v-[\w-]+\.js$/;
+
+/**
+ * What each prebuilt site chunk holds, from its own source map under `root`. A chunk the record
+ * names but the site build no longer has, or one without a map, would hide what is inside it, so
+ * either fails the check instead of passing it.
+ */
+export const chunkSources =
+  (root: URL) =>
+  (path: string): ReadonlyArray<string> => {
+    const chunk = fileURLToPath(new URL(path, root));
+    if (!existsSync(chunk))
+      throw new Error(
+        `The dashboard upload record names ${path}, which the site build no longer has; rebuild the Workers`,
+      );
+    if (existsSync(`${chunk}.map`))
+      return JSON.parse(readFileSync(`${chunk}.map`, "utf8")).sources;
+    if (maplessChunk.test(path)) return [];
+    throw new Error(`${path} has no source map, so the dashboard check cannot see inside it`);
+  };
+
 /**
  * Carry 0804 swaps the code highlighter for a stub in the dashboard's server build, which the
  * dashboard Worker uploads; the browser loads the real engine. The Worker attributes the site's
- * prebuilt chunks to themselves, so each chunk's own source map, where the site build left one,
- * names what is inside it.
+ * prebuilt chunks to themselves, so each chunk's own source map names what is inside it.
  */
 export function assertDashboardRuntimeBundle(
   upload: WorkerUpload,
   clientAssets: ReadonlyArray<string>,
-  mapSources: (path: string) => ReadonlyArray<string> | undefined = (path) => {
-    const map = fileURLToPath(new URL(`${path}.map`, upstream));
-    return existsSync(map) ? JSON.parse(readFileSync(map, "utf8")).sources : undefined;
-  },
+  mapSources: (path: string) => ReadonlyArray<string> = chunkSources(upstream),
 ) {
   if (upload.worker !== "dashboard" || Object.keys(upload.sources).length === 0)
     throw new Error("Expected the attributed production dashboard upload");
   const retained = Object.keys(upload.sources).flatMap((source) => {
     if (highlighter.test(source) || engineChunk.test(source)) return [source];
     if (!source.includes("/web/dist/server/")) return [];
-    const inside = (mapSources(source) ?? []).filter((path) => highlighter.test(path));
+    const inside = mapSources(source).filter((path) => highlighter.test(path));
     return inside.length ? [`${source} (${inside.join(", ")})`] : [];
   });
   if (retained.length)

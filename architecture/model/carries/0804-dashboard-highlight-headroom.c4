@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "The dashboard's server render never highlights code: its server build swaps the code highlighter for an engine that reports it unavailable, so Shiki stays out of the dashboard Worker's upload and every server-rendered code view is plain text. The browser build keeps the real engine and highlights after hydration, and its first render shows the same plain text, so hydration matches. The server build fails if it no longer swaps the engine; production upload checks reject the highlighter in the dashboard upload and require it in the browser build. Worker upload and startup budgets stay unchanged."
+      constraint "The dashboard's built server render never highlights code: its server build swaps the code highlighter for an engine that reports it unavailable, so Shiki stays out of the dashboard Worker's upload and server-rendered code views are plain text. The browser build keeps the real engine; its first render shows the same plain text, so hydration keeps the server's markup, and it colors the code once the engine loads. Before the swap the server sent colored tokens that the browser's plain first render did not match. A dev server still highlights on the server. The server build fails if it no longer swaps the engine; production upload checks reject the highlighter in the dashboard upload, refuse a chunk they cannot read, and require the highlighter in the browser build. Worker upload and startup budgets stay unchanged."
     }
   }
 }
