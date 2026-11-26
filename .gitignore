@@ -9,6 +9,7 @@ node_modules
 !.env.example
 .DS_Store
 .t3/
+.wrangler/
 
 /scripts/architecture/gen/
 # Copied from the pinned tools service when the pool app is bundled.
