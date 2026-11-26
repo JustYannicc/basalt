@@ -16,7 +16,7 @@ import { readRehearsalMark, releaseMarkOf } from "./rehearsal-mark-read.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { previewStageOrigin, stageEnvironment } from "../environment.ts";
@@ -101,21 +101,86 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = join(root, ".upstream/apps/hosted/cloud");
 
 /**
- * The stage env names the harness tree's built app framework and its upstream pin. A candidate
- * tree releases what it built itself (`withStageBuild(candidate)`), so its own framework is the
- * one uploaded; a candidate on another upstream pin would carry a build version it did not build.
+ * The only stage-env keys a candidate tree replaces. Everything naming the stage (its stage,
+ * database, origin and secrets) still comes from the harness's `stageEnvironment` for this lane.
  */
-export function candidateTreeEnvironment(harness: string, tree: string): NodeJS.ProcessEnv {
+export const candidateTreeKeys = [
+  "EXECUTOR_BUILD_VERSION",
+  "EXECUTOR_APPS_VERSION",
+  "EXECUTOR_APPS_FRAMEWORK",
+] as const;
+
+/**
+ * The stage env names the harness tree's upstream pin, served framework version and framework
+ * build. A candidate tree releases on its own three instead, and only when it built them itself:
+ * its `.upstream` checkout sits at its own pin and its framework build declares its own version.
+ */
+export function candidateTreeEnvironment(
+  harness: string,
+  tree: string,
+): Partial<Record<(typeof candidateTreeKeys)[number], string>> {
   if (tree === harness) return {};
-  const pin = (at: string) =>
-    (JSON.parse(readFileSync(join(at, "upstream.json"), "utf8")) as { commit?: unknown }).commit;
-  if (pin(tree) !== pin(harness))
-    throw new Error("The candidate tree pins another upstream commit than the stage's harness");
-  // The served framework version also comes from the harness tree (`framework-release.ts`).
-  const served = (at: string) => readFileSync(join(at, "framework-release.ts"), "utf8");
-  if (served(tree) !== served(harness))
-    throw new Error("The candidate tree serves another framework version than the stage's harness");
-  return { EXECUTOR_APPS_FRAMEWORK: join(tree, ".upstream/.local/basalt-framework") };
+  const refusal = (why: string) => new Error(`The candidate tree ${why}; nothing runs on it`);
+  const read = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : undefined);
+  const parse = (text: string | undefined): unknown => {
+    try {
+      return text === undefined ? undefined : JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const pin = (parse(read(join(tree, "upstream.json"))) as { commit?: unknown } | undefined)
+    ?.commit;
+  if (typeof pin !== "string" || !/^[a-f0-9]{40}$/u.test(pin))
+    throw refusal("names no upstream commit in upstream.json");
+  const upstream = join(tree, ".upstream");
+  // Its own checkout, not the candidate's repository seen from a plain directory inside it.
+  const git = (...args: string[]) => {
+    try {
+      return execFileSync("git", ["-C", upstream, ...args], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
+    } catch {
+      return undefined;
+    }
+  };
+  const top = git("rev-parse", "--show-toplevel");
+  if (!top || !existsSync(upstream) || realpathSync(top) !== realpathSync(upstream))
+    throw refusal("has no prepared upstream checkout");
+  if (git("rev-parse", "HEAD") !== pin) throw refusal("has an upstream checkout off its own pin");
+
+  // A static read: the candidate's module never runs in this process, which holds the secrets.
+  const versions = [
+    ...(read(join(tree, "framework-release.ts")) ?? "").matchAll(
+      /^export const servedFrameworkVersion = "([0-9A-Za-z.+-]{1,80})";$/gmu,
+    ),
+  ];
+  const version = versions.length === 1 ? versions[0]![1] : undefined;
+  if (!version) throw refusal("serves no framework version in framework-release.ts");
+
+  // The build records its version (package.json, runtime.json) but not the pin it built from;
+  // the checkout's HEAD above stands for that.
+  const framework = join(upstream, ".local/basalt-framework");
+  const files = parse(read(join(framework, "framework.json"))) as
+    | Record<string, unknown>
+    | undefined;
+  const built = (name: string) =>
+    (
+      parse(typeof files?.[name] === "string" ? files[name] : undefined) as
+        | { version?: unknown }
+        | undefined
+    )?.version;
+  if (!files) throw refusal("has no framework build");
+  if (built("package.json") !== version || built("runtime.json") !== version)
+    throw refusal("has a framework build of another version");
+
+  return {
+    EXECUTOR_BUILD_VERSION: pin,
+    EXECUTOR_APPS_VERSION: version,
+    EXECUTOR_APPS_FRAMEWORK: framework,
+  };
 }
 
 async function runEntry(

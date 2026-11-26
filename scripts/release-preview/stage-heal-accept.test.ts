@@ -4,7 +4,12 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { candidateTreeEnvironment, overlayExtent, restartExpectArgs } from "./stage.ts";
+import {
+  candidateTreeEnvironment,
+  candidateTreeKeys,
+  overlayExtent,
+  restartExpectArgs,
+} from "./stage.ts";
 
 const older =
   'if [ -n "$within" ]; then expect=(--expect restart --root-boot .local/release/root-boot.json --serving .local/release/serving.json --within "$within"); fi';
@@ -33,32 +38,114 @@ test("restartExpectArgs refuses a workflow with no restart acceptance, or a miss
   );
 });
 
-test("a candidate tree uploads its own built framework, and only on the harness's upstream pin", async (t) => {
+test("a candidate tree releases on its own pin, served version and framework build", async (t) => {
   const at = await mkdtemp(join(tmpdir(), "stage-trees-"));
   t.after(() => rm(at, { recursive: true, force: true }));
-  const tree = async (name: string, commit: string) => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+      cwd,
+      encoding: "utf8",
+    }).trim();
+  const served = (version: string) => `export const servedFrameworkVersion = "${version}";\n`;
+  const build = (version: string) =>
+    JSON.stringify({
+      "package.json": JSON.stringify({ name: "apps", version }),
+      "runtime.json": JSON.stringify({ protocol: 1, version }),
+    });
+  /** A prepared candidate: its own repository, with `.upstream` its own checkout at `upstream.json`. */
+  const tree = async (name: string, version: string) => {
     const dir = join(at, name);
-    await mkdir(dir);
+    const upstream = join(dir, ".upstream");
+    await mkdir(join(upstream, ".local/basalt-framework"), { recursive: true });
+    git(upstream, "init", "-q");
+    git(upstream, "commit", "-q", "--allow-empty", "-m", `upstream for ${name}`);
+    const commit = git(upstream, "rev-parse", "HEAD");
     await writeFile(join(dir, "upstream.json"), JSON.stringify({ commit }));
-    await writeFile(
-      join(dir, "framework-release.ts"),
-      'export const servedFrameworkVersion = "1";\n',
-    );
-    return dir;
+    await writeFile(join(dir, "framework-release.ts"), served(version));
+    await writeFile(join(upstream, ".local/basalt-framework/framework.json"), build(version));
+    git(dir, "init", "-q");
+    git(dir, "add", "upstream.json", "framework-release.ts");
+    git(dir, "commit", "-q", "-m", "candidate");
+    return { dir, upstream, commit };
   };
-  const harness = await tree("harness", "a".repeat(40));
-  const same = await tree("same", "a".repeat(40));
-  const other = await tree("other", "b".repeat(40));
-  assert.deepEqual(candidateTreeEnvironment(harness, harness), {});
-  assert.deepEqual(candidateTreeEnvironment(harness, same), {
-    EXECUTOR_APPS_FRAMEWORK: join(same, ".upstream/.local/basalt-framework"),
+  const harness = await tree("harness", "1");
+  const candidate = await tree("candidate", "2");
+  assert.notEqual(candidate.commit, harness.commit);
+
+  assert.deepEqual(candidateTreeEnvironment(harness.dir, harness.dir), {});
+  const env = candidateTreeEnvironment(harness.dir, candidate.dir);
+  assert.deepEqual(env, {
+    EXECUTOR_BUILD_VERSION: candidate.commit,
+    EXECUTOR_APPS_VERSION: "2",
+    EXECUTOR_APPS_FRAMEWORK: join(candidate.upstream, ".local/basalt-framework"),
   });
-  assert.throws(() => candidateTreeEnvironment(harness, other), /another upstream commit/u);
-  await writeFile(
-    join(same, "framework-release.ts"),
-    'export const servedFrameworkVersion = "2";\n',
+  // A fixed set: nothing naming the stage, its database or its origin.
+  assert.deepEqual(Object.keys(env).sort(), [...candidateTreeKeys].sort());
+
+  const refused = (pattern: RegExp, why: string) =>
+    assert.throws(() => candidateTreeEnvironment(harness.dir, candidate.dir), pattern, why);
+  const pinFile = join(candidate.dir, "upstream.json");
+  const releaseFile = join(candidate.dir, "framework-release.ts");
+  const frameworkFile = join(candidate.upstream, ".local/basalt-framework/framework.json");
+
+  // 1. upstream.json missing, malformed, or without a 40-hex commit.
+  for (const body of [
+    undefined,
+    "{",
+    JSON.stringify({}),
+    JSON.stringify({ commit: "main" }),
+    JSON.stringify({ commit: candidate.commit.toUpperCase() }),
+  ]) {
+    await rm(pinFile, { force: true });
+    if (body !== undefined) await writeFile(pinFile, body);
+    refused(/names no upstream commit/u, String(body));
+  }
+
+  // 2. The prepared checkout is not at the pin: another commit, or no checkout of its own.
+  await writeFile(pinFile, JSON.stringify({ commit: harness.commit }));
+  refused(/upstream checkout off its own pin/u, "foreign pin");
+  await writeFile(pinFile, JSON.stringify({ commit: candidate.commit }));
+  git(candidate.upstream, "commit", "-q", "--allow-empty", "-m", "moved");
+  refused(/upstream checkout off its own pin/u, "checkout moved");
+  git(candidate.upstream, "reset", "-q", "--hard", candidate.commit);
+  await rm(join(candidate.upstream, ".git"), { recursive: true, force: true });
+  refused(/no prepared upstream checkout/u, "a plain directory in the candidate's repository");
+  git(candidate.upstream, "init", "-q");
+  git(candidate.upstream, "commit", "-q", "--allow-empty", "-m", "upstream");
+  const rebuilt = git(candidate.upstream, "rev-parse", "HEAD");
+  await writeFile(pinFile, JSON.stringify({ commit: rebuilt }));
+  assert.equal(
+    candidateTreeEnvironment(harness.dir, candidate.dir).EXECUTOR_BUILD_VERSION,
+    rebuilt,
   );
-  assert.throws(() => candidateTreeEnvironment(harness, same), /another framework version/u);
+
+  // 3. The framework build is missing, or records another version.
+  await rm(frameworkFile);
+  refused(/no framework build/u, "missing build");
+  await writeFile(frameworkFile, "not json");
+  refused(/no framework build/u, "unreadable build");
+  await writeFile(frameworkFile, build("1"));
+  refused(/framework build of another version/u, "harness's build");
+  await writeFile(
+    frameworkFile,
+    JSON.stringify({ ...JSON.parse(build("2")), "runtime.json": JSON.stringify({ version: "1" }) }),
+  );
+  refused(/framework build of another version/u, "mixed build");
+  await writeFile(frameworkFile, build("2"));
+
+  // 4. framework-release.ts is missing or yields no literal version.
+  for (const body of [
+    undefined,
+    "",
+    "export const servedFrameworkVersion = version;\n",
+    `${served("2")}${served("3")}`,
+  ]) {
+    await rm(releaseFile, { force: true });
+    if (body !== undefined) await writeFile(releaseFile, body);
+    refused(/serves no framework version/u, String(body));
+  }
+  await writeFile(releaseFile, served("2"));
+  assert.equal(candidateTreeEnvironment(harness.dir, candidate.dir).EXECUTOR_APPS_VERSION, "2");
 });
 
 test("a heal record measures the stage-only overlay back to the first unmarked commit", async (t) => {
@@ -97,13 +184,13 @@ test("a release run takes only a rehearse/ branch and a named policy from its ca
     { branch: "rehearse/x; rm -rf /", policy: "code" },
     { branch: "rehearse/release-a", policy: "" },
     { branch: "rehearse/release-a", policy: "../../etc/passwd" },
+    { branch: "rehearse/production-PLACEHOLDER", policy: "release" },
   ])
     assert.throws(() => releaseCandidate(JSON.stringify(spec)), /names no/u, JSON.stringify(spec));
-  // The committed file names nothing until a run is set up, so a stray label refuses.
+  // The committed file names a placeholder branch until a run is set up; no such branch exists.
   const { readFileSync } = await import("node:fs");
-  assert.throws(
-    () =>
-      releaseCandidate(readFileSync(new URL("./release-candidate.json", import.meta.url), "utf8")),
-    /names no rehearse\/ branch/u,
+  assert.deepEqual(
+    releaseCandidate(readFileSync(new URL("./release-candidate.json", import.meta.url), "utf8")),
+    { branch: "rehearse/production-placeholder", policy: "release" },
   );
 });
