@@ -294,3 +294,62 @@ test("a sweep line is attributed only by its own record's annotations", () => {
     { message: "Catalog app update failed", cause: "SqlError", app: "other" },
   ]);
 });
+
+test("a sweep's source failure carries its reason only when it is one of the SDK's words", () => {
+  const sweep = "basalt-catalog-apps:edb15509:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+  const line = (fields) =>
+    JSON.stringify({
+      message: ["Catalog app update failed; the job will retry", fields],
+      level: "WARN",
+      annotations: { job: sweep, attempt: 1 },
+    });
+  const multiLine = inspect(
+    {
+      message: [
+        "Catalog app update failed; the job will retry",
+        {
+          app: "app_5ec2e7aa-0000-4000-8000-00000000c0de",
+          organization: "OrgSentinelPrivate0000000000000000",
+          entry: "provider-openai",
+          cause: "SourceError",
+          reason: "not-found",
+        },
+      ],
+      level: "WARN",
+      annotations: { job: sweep, attempt: 2 },
+    },
+    { depth: 6, breakLength: 80 },
+  )
+    .split("\n")
+    .map((text) => `[Api] ${text}`);
+  const log = [
+    `[Api] ${line({ entry: "provider-openai", cause: "SourceError", reason: "git" })}`,
+    ...multiLine,
+    // A reason outside the list, or one that carries text, is dropped.
+    `[Api] ${line({ entry: "provider-openai", cause: "SourceError", reason: "Error: SECRET /home/x" })}`,
+    `[Api] ${line({ entry: "provider-openai", cause: "SourceError", reason: "lost" })}`,
+    // Only a source failure's reason is published.
+    `[Api] ${line({ entry: "provider-openai", cause: "StorageError", reason: "git" })}`,
+  ].join("\n");
+  const [history] = provisioningHistory([job(sweep, "running", 5)], log);
+  assert.deepEqual(history.logged, [
+    {
+      message: "Catalog app update failed",
+      cause: "SourceError",
+      reason: "git",
+      app: "provider-openai",
+    },
+    {
+      message: "Catalog app update failed",
+      cause: "SourceError",
+      reason: "not-found",
+      app: "provider-openai",
+    },
+    { message: "Catalog app update failed", cause: "SourceError", app: "provider-openai" },
+    { message: "Catalog app update failed", cause: "SourceError", app: "provider-openai" },
+    { message: "Catalog app update failed", cause: "StorageError", app: "provider-openai" },
+  ]);
+  const published = JSON.stringify(history.logged);
+  for (const sentinel of ["SECRET", "/home", "lost", "OrgSentinel", "app_5ec2"])
+    assert.ok(!published.includes(sentinel), sentinel);
+});
