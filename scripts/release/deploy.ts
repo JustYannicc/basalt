@@ -457,7 +457,7 @@ const include: string[] = values.include?.length ? values.include : [...(policy?
 if (stage === "production" && !policy && ["plan", "apply"].includes(command))
   throw new Error("Production plans and applies only under a policy");
 
-const { Effect, Logger } = await import("effect");
+const { Data, Effect, Logger } = await import("effect");
 const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
@@ -679,6 +679,9 @@ const scriptName = (fqn: string) =>
     return script as string;
   });
 
+/** A State row the entry needed could not be read; the release stops, naming only the FQN. */
+class StateReadFailed extends Data.TaggedError("StateReadFailed")<{ readonly fqn: string }> {}
+
 /** The container application a State row records, if the row exists yet. */
 const recordedApplication = (fqn: string) =>
   Effect.gen(function* () {
@@ -694,7 +697,7 @@ const recordedApplication = (fqn: string) =>
     return typeof id === "string" && id
       ? { id, name: typeof name === "string" && name ? name : undefined }
       : undefined;
-  });
+  }).pipe(Effect.mapError(() => new StateReadFailed({ fqn })));
 
 const planOf = (operation: "deploy" | "destroy") =>
   Alchemist.Stack.plan({
