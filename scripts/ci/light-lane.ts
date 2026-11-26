@@ -4,9 +4,21 @@ import { boxSettings, type BoxInput } from "./box-router.ts";
 
 // The light lane: the Check's seconds-long jobs run on the box's always-online light runners, named
 // by BASALT_CI_LIGHT_LABEL, on the same first attempts box routing takes; everything else, and
-// every job while the variable is empty, runs hosted. A job queued for the light runners can't move
+// every job while the variable is empty or names no light label, runs hosted. A job queued for the light runners can't move
 // to hosted runners, so light-rescue.yml re-runs a Check whose light job a down box holds; the
 // re-run is attempt 2, which these jobs' runs-on sends hosted.
+
+/**
+ * How a light runner label ends. No label other runners share ends so, which select's runs-on can
+ * check without naming them: a broad label would hand pull request code to the release runners.
+ */
+export const lightSuffix = "-light";
+
+/** The variable as the light runners' label, or "" when it is no plain label ending in the suffix. */
+export function usableLightLabel(value: string | undefined) {
+  const label = value ?? "";
+  return /^[\w.-]+$/.test(label) && label.toLowerCase().endsWith(lightSuffix) ? label : "";
+}
 
 /** The jobs the light lane runs. box-watch is not one: it cancels the Check when the box is down. */
 export const lightJobs = ["select", "long-started", "cpa-pipeline", "check"];
@@ -21,18 +33,22 @@ export type LightInput = Pick<
 
 /** The light runners' label for this Check, or "" when its light jobs run hosted. */
 export function lightLabel(input: LightInput) {
+  const label = usableLightLabel(input.label);
+  if (!label) return "";
   // Box routing's own rule for events, refs, attempts, forks and labels; the slot count is box
   // routing's alone, so it is fixed here.
-  const settings = boxSettings({ ...input, slots: "1", label: input.label ?? "" });
+  const settings = boxSettings({ ...input, slots: "1", label });
   return typeof settings === "string" ? "" : settings.label;
 }
 
 /**
  * select's runs-on. select can't read its own output, so it repeats lightLabel's event, ref,
- * attempt and fork rule over the variable itself; the later light jobs read select's output.
+ * attempt and fork rule over the variable itself, and as much of its label rule as an expression
+ * can: the suffix, and no space or comma. The later light jobs read select's output.
  */
 export const selectRunsOn =
-  "${{ github.run_attempt == 1 && vars.BASALT_CI_LIGHT_LABEL != '' && " +
+  `\${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '${lightSuffix}') && ` +
+  "!contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && " +
   "((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || " +
   "(github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && " +
   "vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}";

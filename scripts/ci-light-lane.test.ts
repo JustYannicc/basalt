@@ -37,7 +37,7 @@ const input = (combination: (typeof combinations)[number], light = label): Light
   label: light,
 });
 
-test("the light lane takes exactly the Checks box routing may route, and only a usable label", () => {
+test("the light lane takes exactly the Checks box routing may route, and only a light label", () => {
   let routed = 0;
   for (const combination of combinations)
     for (const light of [label, ""]) {
@@ -57,13 +57,14 @@ test("the light lane takes exactly the Checks box routing may route, and only a 
   assert.equal(routed, 7);
   const first = combinations[0]!;
   assert.equal(lightLabel(input(first)), label);
-  // Labels other runners share, and anything that isn't one plain label, never route.
+  // Labels other runners share, labels with no light suffix, and anything that isn't one plain
+  // label never route.
   for (const refused of ["self-hosted", "Self-Hosted", "basalt-release", "linux", "x64", "arm64"]) {
     assert.equal(lightLabel(input(first, refused)), "", refused);
     assert.equal(typeof boxSettings({ ...input(first, refused), slots: "1" }), "string", refused);
   }
-  for (const malformed of ["two words", "a,b", " basalt-light", "${{ x }}"])
-    assert.equal(lightLabel(input(first, malformed)), "", malformed);
+  for (const other of ["basalt-box", "two words-light", "a,b-light", " " + label, "${{ x }}-light"])
+    assert.equal(lightLabel(input(first, other)), "", other);
   assert.equal(lightLabel({ ...input(first), label: undefined }), "");
 });
 
@@ -86,6 +87,10 @@ function evaluate(expression: string, contexts: Record<string, unknown>): unknow
         .startsWith(String(b).toLowerCase()),
     contains: (a: unknown, b: unknown) =>
       Array.isArray(a) ? a.some((item) => same(item, b)) : String(a ?? "").includes(String(b)),
+    endsWith: (a: unknown, b: unknown) =>
+      String(a ?? "")
+        .toLowerCase()
+        .endsWith(String(b).toLowerCase()),
     fromJSON: JSON.parse,
     filter: (object: Record<string, Record<string, unknown>>, key: string) =>
       Object.values(object ?? {}).map((value) => value?.[key]),
@@ -109,8 +114,18 @@ const githubContext = ({ event, ref, attempt, headRepository }: (typeof combinat
 });
 
 test("select's runs-on applies lightLabel's rule to the variable; the later jobs read its output", () => {
+  // A label other runners share, one with no light suffix, or a list of labels keeps select hosted.
+  const values = [
+    label,
+    "",
+    "self-hosted",
+    "basalt-release",
+    "basalt-box",
+    "x-light,b",
+    "x y-light",
+  ];
   for (const combination of combinations)
-    for (const light of [label, ""])
+    for (const light of values)
       assert.equal(
         evaluate(selectRunsOn, {
           github: githubContext(combination),
@@ -251,7 +266,7 @@ test("the rescue runs hosted every 5 minutes, only while the variable is set", (
     workflow_dispatch: null,
   });
   assert.deepEqual(rescueWorkflow.permissions, {});
-  // A second rescue waits: one cancelled mid-rescue could leave a run cancelled and not re-run.
+  // A second rescue waits rather than cancelling the first between a cancel and its re-run.
   assert.deepEqual(rescueWorkflow.concurrency, {
     group: "light-rescue",
     "cancel-in-progress": false,
@@ -281,15 +296,30 @@ test("the rescue runs hosted every 5 minutes, only while the variable is set", (
 const start = Date.parse("2026-11-26T12:00:00Z");
 const ago = (minutes: number) => new Date(start - minutes * 60_000).toISOString();
 type Box = { age: number; healthy?: boolean; budget?: number } | "none";
-type FakeJob = { name: string; status: string; labels: string[]; queued: number };
+type FakeJob = {
+  name: string;
+  status: string;
+  labels: string[];
+  /** Minutes since it was queued. */
+  queued: number;
+  conclusion?: string;
+  /** The runner that took it; queued jobs and ones cancelled before a runner took them have none. */
+  runner?: string | null;
+  /** Minutes since it ended. */
+  ended?: number;
+};
 type FakeRun = {
   id: number;
   jobs: FakeJob[];
   attempt?: number;
   head?: string;
   event?: string;
+  /** Listed as a cancelled run, last updated this many minutes ago, rather than as an active one. */
+  cancelled?: number;
   /** The run's status on each read after the cancel; the last one repeats. */
   states?: string[];
+  /** How the run ended, and its attempt by then. */
+  ended?: { conclusion?: string; attempt?: number };
   /** Newer Checks for its pull request's branch. */
   newer?: number[];
 };
@@ -299,13 +329,40 @@ const lightJob = (name: string, status: string, queued: number): FakeJob => ({
   labels: [label],
   queued,
 });
+const otherJob = (name: string, labels: string[], conclusion: string): FakeJob => ({
+  name,
+  status: "completed",
+  conclusion,
+  labels,
+  queued: 20,
+  ended: 6,
+  runner: "runner-1",
+});
+/** A light job a cancel stopped `waited` minutes after it was queued, before any runner took it. */
+const strandedJob = (name: string, waited: number): FakeJob => ({
+  name,
+  status: "completed",
+  conclusion: "cancelled",
+  labels: [label],
+  queued: waited + 5,
+  ended: 5,
+  runner: null,
+});
 
-function fakeGitHub(box: Box, runs: FakeRun[], remaining = 900) {
+function fakeGitHub(
+  box: Box,
+  runs: FakeRun[],
+  options: { remaining?: number; lastRescue?: string; failing?: RegExp; lightLabel?: string } = {},
+) {
+  const { remaining = 900, lastRescue = "success", failing } = options;
   let now = start;
   const requests: string[] = [];
   const waits: number[] = [];
   const lines: string[] = [];
   const routes = new Map<string, () => unknown>();
+  routes.set("GET /actions/workflows/light-rescue.yml/runs?status=completed&per_page=1", () => ({
+    workflow_runs: [{ id: 9, conclusion: lastRescue }],
+  }));
   const heartbeatRuns = "/actions/workflows/box-heartbeat.yml/runs?status=completed&per_page=50";
   if (box === "none") routes.set("GET " + heartbeatRuns, () => ({ workflow_runs: [] }));
   else {
@@ -335,29 +392,48 @@ function fakeGitHub(box: Box, runs: FakeRun[], remaining = 900) {
         }),
     );
   }
-  const listed = runs.map((run) => ({
+  const listed = (run: FakeRun) => ({
     id: run.id,
     path: ".github/workflows/ci.yml",
     run_attempt: run.attempt ?? 1,
     event: run.event ?? "push",
     head_branch: "feature",
     head_repository: { full_name: run.head ?? repository },
-  }));
+    updated_at: ago(run.cancelled ?? 0),
+  });
+  const active = runs.filter((run) => run.cancelled === undefined).map(listed);
   routes.set("GET /actions/workflows/ci.yml/runs?status=in_progress&per_page=100&page=1", () => ({
-    workflow_runs: listed.slice(0, Math.ceil(listed.length / 2)),
+    workflow_runs: active.slice(0, Math.ceil(active.length / 2)),
   }));
   routes.set("GET /actions/workflows/ci.yml/runs?status=queued&per_page=100&page=1", () => ({
-    workflow_runs: listed.slice(Math.ceil(listed.length / 2)),
+    workflow_runs: active.slice(Math.ceil(active.length / 2)),
   }));
+  routes.set("GET /actions/workflows/ci.yml/runs?status=cancelled&per_page=100&page=1", () => ({
+    workflow_runs: runs.filter((run) => run.cancelled !== undefined).map(listed),
+  }));
+  const forceCancelled = new Set<number>();
   for (const run of runs) {
     routes.set(`GET /actions/runs/${run.id}/attempts/1/jobs?per_page=50&page=1`, () => ({
-      jobs: run.jobs.map((job, index) => ({
-        id: run.id * 100 + index,
-        name: job.name,
-        status: job.status,
-        labels: job.labels,
-        created_at: ago(job.queued),
-      })),
+      total_count: run.jobs.length,
+      jobs: run.jobs.map((job, index) => {
+        // A force-cancel stops every unfinished job; a queued one never had a runner.
+        const stopped = forceCancelled.has(run.id) && job.status !== "completed";
+        const ran = job.status === "in_progress" || job.status === "completed";
+        return {
+          id: run.id * 100 + index,
+          name: job.name,
+          status: stopped ? "completed" : job.status,
+          conclusion: stopped ? "cancelled" : (job.conclusion ?? null),
+          labels: job.labels,
+          runner_name: job.runner !== undefined ? job.runner : ran ? "runner-1" : null,
+          created_at: ago(job.queued),
+          completed_at: stopped
+            ? new Date(now).toISOString()
+            : job.ended === undefined
+              ? null
+              : ago(job.ended),
+        };
+      }),
     }));
     const states = [...(run.states ?? ["completed"])];
     routes.set(`GET /actions/runs/${run.id}`, () => {
@@ -365,12 +441,15 @@ function fakeGitHub(box: Box, runs: FakeRun[], remaining = 900) {
       return {
         id: run.id,
         status,
-        conclusion: status === "completed" ? "cancelled" : null,
-        run_attempt: 1,
+        conclusion: status === "completed" ? (run.ended?.conclusion ?? "cancelled") : null,
+        run_attempt: run.ended?.attempt ?? 1,
       };
     });
-    for (const action of ["force-cancel", "rerun-failed-jobs"])
-      routes.set(`POST /actions/runs/${run.id}/${action}`, () => ({}));
+    routes.set(`POST /actions/runs/${run.id}/force-cancel`, () => {
+      forceCancelled.add(run.id);
+      return {};
+    });
+    routes.set(`POST /actions/runs/${run.id}/rerun-failed-jobs`, () => ({}));
   }
   // Every fake pull request's branch is `feature`.
   routes.set(
@@ -384,6 +463,7 @@ function fakeGitHub(box: Box, runs: FakeRun[], remaining = 900) {
   const fetcher = async (url: string, init: RequestInit) => {
     const key = `${init.method ?? "GET"} ${url.replace("https://api.test/repos/" + repository, "")}`;
     requests.push(key);
+    if (failing?.test(key)) return new Response("bad gateway", { status: 502 });
     const route = routes.get(key);
     if (!route) return new Response("missing", { status: 404 });
     const body = route();
@@ -409,7 +489,7 @@ function fakeGitHub(box: Box, runs: FakeRun[], remaining = 900) {
           api: "https://api.test",
           repository,
           token: "t",
-          lightLabel: label,
+          lightLabel: options.lightLabel ?? label,
           boxLabel: "basalt-box",
         },
         fetcher,
@@ -418,6 +498,7 @@ function fakeGitHub(box: Box, runs: FakeRun[], remaining = 900) {
       ),
   };
 }
+const jobsRead = (id: number) => `GET /actions/runs/${id}/attempts/1/jobs?per_page=50&page=1`;
 
 test("a down box's queued light job gets its Check cancelled, then re-run, and no other Check", async () => {
   for (const box of [{ age: 30 }, { age: 1, healthy: false }, "none"] as const) {
@@ -440,9 +521,13 @@ test("a down box's queued light job gets its Check cancelled, then re-run, and n
       "POST /actions/runs/101/force-cancel",
       "POST /actions/runs/101/rerun-failed-jobs",
     ]);
-    // The re-run follows the read that saw the run end, after one poll interval and no other wait.
+    // The re-run follows the read that saw the run end and the read of its jobs, after one poll
+    // interval and no other wait.
     const rerun = github.requests.indexOf("POST /actions/runs/101/rerun-failed-jobs");
-    assert.equal(github.requests[rerun - 1], "GET /actions/runs/101");
+    assert.deepEqual(github.requests.slice(rerun - 2, rerun), [
+      "GET /actions/runs/101",
+      jobsRead(101),
+    ]);
     assert.deepEqual(github.waits, [pollMs]);
     assert.ok(
       github.lines.some((line) => /cancelled run 101: its select job waited 5 minutes/.test(line)),
@@ -452,9 +537,10 @@ test("a down box's queued light job gets its Check cancelled, then re-run, and n
   const prompt = fakeGitHub({ age: 30 }, [{ id: 103, jobs: [lightJob("check", "queued", 4)] }]);
   await prompt.rescue();
   assert.deepEqual(prompt.waits, []);
-  assert.deepEqual(prompt.requests.slice(-3), [
+  assert.deepEqual(prompt.requests.slice(-4), [
     "POST /actions/runs/103/force-cancel",
     "GET /actions/runs/103",
+    jobsRead(103),
     "POST /actions/runs/103/rerun-failed-jobs",
   ]);
 });
@@ -472,6 +558,14 @@ test("an up or holding box keeps its light jobs, and no Check is even listed", a
       JSON.stringify(github.requests),
     );
     assert.ok(github.lines.some((line) => line.includes("the box is up")));
+  }
+  // The lane is off for any value but the light runners' label: nothing is even read.
+  for (const lightLabel of ["", "self-hosted", "basalt-box"]) {
+    const off = fakeGitHub({ age: 30 }, [{ id: 101, jobs: [lightJob("select", "queued", 10)] }], {
+      lightLabel,
+    });
+    assert.equal(await off.rescue(), true);
+    assert.deepEqual(off.requests, [], lightLabel);
   }
 });
 
@@ -493,6 +587,104 @@ test("a down box leaves young, started, re-run, fork and hosted jobs alone", asy
   assert.ok(github.lines.some((line) => line.includes("0 of 3 first-attempt Checks")));
 });
 
+test("a cancelled Check is re-run only when its light job waited for a runner that never came", async () => {
+  const runs: FakeRun[] = [
+    { id: 701, cancelled: 10, jobs: [strandedJob("select", 4)] },
+    { id: 702, cancelled: 10, jobs: [strandedJob("select", 2)] },
+    { id: 703, cancelled: 10, jobs: [{ ...strandedJob("select", 4), runner: "light-1" }] },
+    { id: 704, cancelled: 180, jobs: [strandedJob("select", 4)] },
+    { id: 705, cancelled: 10, attempt: 2, jobs: [strandedJob("select", 4)] },
+    { id: 706, cancelled: 10, head: "fork/repo", jobs: [strandedJob("select", 4)] },
+    {
+      id: 707,
+      cancelled: 10,
+      event: "pull_request",
+      newer: [708],
+      jobs: [strandedJob("select", 4)],
+    },
+    {
+      id: 709,
+      cancelled: 10,
+      jobs: [{ ...strandedJob("fast", 4), labels: ["ubuntu-latest"] }],
+    },
+  ];
+  const github = fakeGitHub({ age: 30 }, runs);
+  assert.equal(await github.rescue(), true);
+  // Cancelled already, so nothing is cancelled again.
+  assert.deepEqual(github.posts(), ["POST /actions/runs/701/rerun-failed-jobs"]);
+  for (const id of [704, 705, 706]) assert.ok(!github.requests.includes(jobsRead(id)), String(id));
+  assert.ok(github.lines.some((line) => line.includes("and 2 cancelled ones wait")));
+  assert.ok(github.lines.some((line) => line.includes("left run 707 cancelled: a newer Check")));
+
+  // While the box is up they are looked for only after a rescue that did not finish, or whose
+  // end can't be read, and the active Checks are not listed at all.
+  for (const failing of [undefined, /light-rescue\.yml/])
+    for (const lastRescue of ["failure", "cancelled"]) {
+      const up = fakeGitHub(
+        { age: 1 },
+        [...runs, { id: 710, jobs: [lightJob("select", "queued", 10)] }],
+        {
+          lastRescue: failing ? "success" : lastRescue,
+          failing,
+        },
+      );
+      assert.equal(await up.rescue(), true);
+      assert.deepEqual(up.posts(), ["POST /actions/runs/701/rerun-failed-jobs"]);
+      assert.ok(!up.requests.some((request) => /status=(in_progress|queued)/.test(request)));
+      assert.ok(up.lines.some((line) => line.includes("the last rescue did not finish")));
+    }
+  const quiet = fakeGitHub({ age: 1 }, runs);
+  assert.equal(await quiet.rescue(), true);
+  assert.ok(!quiet.requests.some((request) => request.includes("status=cancelled")));
+});
+
+test("a job that failed for real leaves its Check cancelled for a person; a lost runner doesn't", async () => {
+  const github = fakeGitHub({ age: 30 }, [
+    {
+      id: 801,
+      jobs: [
+        lightJob("select", "queued", 5),
+        otherJob("fast-units (1)", ["ubuntu-latest"], "failure"),
+      ],
+    },
+    {
+      id: 802,
+      jobs: [
+        lightJob("check", "queued", 4),
+        otherJob("declared-cloud (1)", ["basalt-box"], "failure"),
+        otherJob("long-started", [label], "failure"),
+      ],
+    },
+  ]);
+  assert.equal(await github.rescue(), true);
+  assert.deepEqual(github.posts(), [
+    "POST /actions/runs/801/force-cancel",
+    "POST /actions/runs/802/force-cancel",
+    "POST /actions/runs/802/rerun-failed-jobs",
+  ]);
+  assert.ok(
+    github.lines.some((line) =>
+      line.includes(
+        "left run 801 cancelled for a person to classify: fast-units (1) failed for real",
+      ),
+    ),
+  );
+  // With the box up, a box job's failure is no lost runner.
+  const up = fakeGitHub(
+    { age: 1 },
+    [
+      {
+        id: 803,
+        cancelled: 10,
+        jobs: [strandedJob("check", 4), otherJob("declared-cloud (1)", ["basalt-box"], "failure")],
+      },
+    ],
+    { lastRescue: "failure" },
+  );
+  assert.equal(await up.rescue(), true);
+  assert.deepEqual(up.posts(), []);
+});
+
 test("a cancelled run is re-run only once it ends within a minute, and never past a newer Check", async () => {
   const stuck = fakeGitHub({ age: 30 }, [
     { id: 301, jobs: [lightJob("cpa-pipeline", "queued", 4)], states: ["in_progress"] },
@@ -511,11 +703,53 @@ test("a cancelled run is re-run only once it ends within a minute, and never pas
   assert.ok(
     superseded.lines.some((line) => line.includes("a newer Check runs for its pull request")),
   );
+
+  // A run something else re-ran, or that passed before the cancel landed, is left as it is.
+  const settled = fakeGitHub({ age: 30 }, [
+    { id: 311, jobs: [lightJob("select", "queued", 4)], ended: { attempt: 2 } },
+    { id: 312, jobs: [lightJob("check", "queued", 4)], ended: { conclusion: "success" } },
+  ]);
+  assert.equal(await settled.rescue(), true);
+  assert.deepEqual(settled.posts(), [
+    "POST /actions/runs/311/force-cancel",
+    "POST /actions/runs/312/force-cancel",
+  ]);
+  assert.ok(settled.lines.some((line) => line.includes("left run 311: something else re-ran it")));
+  assert.ok(settled.lines.some((line) => line.includes("left run 312: it passed before")));
+});
+
+test("GitHub answering badly never counts as a down box, and nothing is cancelled", async () => {
+  const held = (): FakeRun[] => [
+    { id: 901, jobs: [lightJob("select", "queued", 10)] },
+    { id: 902, cancelled: 10, jobs: [strandedJob("select", 4)] },
+  ];
+  for (const failing of [
+    /box-heartbeat\.yml/,
+    /\/actions\/runs\/7\/jobs/,
+    /\/actions\/jobs\/70\/logs/,
+    /status=in_progress/,
+    /status=cancelled/,
+    /\/attempts\/1\/jobs/,
+  ])
+    for (const lastRescue of ["success", "failure"]) {
+      // A heartbeat this stale would count as down, had it been read.
+      const github = fakeGitHub({ age: 30 }, held(), { failing, lastRescue });
+      // An unread state fails the rescue only after one that did not finish, so the run that one
+      // may have left cancelled is looked for again.
+      assert.equal(await github.rescue(), lastRescue === "success", `${failing} ${lastRescue}`);
+      assert.deepEqual(github.posts(), [], `${failing} ${lastRescue}`);
+      assert.ok(
+        github.lines.some((line) => line.includes("could not be read")),
+        `${failing} ${lastRescue}`,
+      );
+    }
 });
 
 test("the rescue bounds its REST calls and never strands a run it cancelled", async () => {
   // The token's last calls belong to the Checks: nothing is listed or cancelled.
-  const low = fakeGitHub({ age: 30 }, [{ id: 401, jobs: [lightJob("select", "queued", 5)] }], 150);
+  const low = fakeGitHub({ age: 30 }, [{ id: 401, jobs: [lightJob("select", "queued", 5)] }], {
+    remaining: 150,
+  });
   assert.equal(await low.rescue(), true);
   assert.deepEqual(low.posts(), []);
   assert.ok(!low.requests.some((request) => request.includes("/actions/workflows/ci.yml/")));

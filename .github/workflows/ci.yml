@@ -32,7 +32,7 @@ jobs:
       checks: read
     # The light runners on the first attempts box routing takes (scripts/ci/light-lane.ts). It
     # can't read its own output, so it repeats that rule over the variable; hosted otherwise.
-    runs-on: ${{ github.run_attempt == 1 && vars.BASALT_CI_LIGHT_LABEL != '' && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}
       evidence: ${{ steps.reuse.outputs.evidence }}
