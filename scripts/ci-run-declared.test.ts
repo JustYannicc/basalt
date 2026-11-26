@@ -362,3 +362,40 @@ test("retries past a step's annotation limit collapse into one line but stay in 
     const table = readFileSync(join(root, "summary.md"), "utf8");
     assert.equal(table.match(/\| passed on retry \|/g)?.length, 11);
   }));
+
+test("a file whose process tree cannot be listed reports an error instead of losing its detached processes", () =>
+  fixture(async (root) => {
+    // Only the tree listing fails; process snapshots and the test's own probes still work.
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const ps = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+    writeFileSync(
+      join(bin, "ps"),
+      `#!/bin/sh\n[ "$*" = "-A -o pid=,ppid=,pgid=" ] && { echo "listing refused" >&2; exit 1; }\nexec ${ps} "$@"\n`,
+      { mode: 0o755 },
+    );
+    const path = process.env.PATH;
+    process.env.PATH = `${bin}:${path}`;
+    const lines: string[] = [];
+    try {
+      const [result] = await runDeclaredShard([pair("hangs")], {
+        root,
+        evidence: join(root, "evidence"),
+        deadlineMs: 3_000,
+        graceMs: 1_000,
+        log: (line) => lines.push(line),
+      });
+      assert.equal(result!.outcome, "timed-out");
+    } finally {
+      process.env.PATH = path;
+      // Unlisted, its detached child was never signalled; it is this test's to stop.
+      const pid = join(root, "hung-Hangs.pid");
+      if (existsSync(pid)) process.kill(Number(readFileSync(pid, "utf8")), "SIGKILL");
+    }
+    assert.ok(
+      lines.includes(
+        "::error::declared:self-host hangs.spec.ts may have left processes running: could not list its process tree (ps exited 1: listing refused)",
+      ),
+      lines.join("\n"),
+    );
+  }));
