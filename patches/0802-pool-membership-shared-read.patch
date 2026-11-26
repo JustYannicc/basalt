@@ -74,7 +74,7 @@ diff --git a/e2e/tests/pool-membership-shared-read.spec.ts b/e2e/tests/pool-memb
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-membership-shared-read.spec.ts
-@@ -0,0 +1,253 @@
+@@ -0,0 +1,255 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
 +import { randomUUID } from "node:crypto";
@@ -193,7 +193,9 @@ new file mode 100644
 +            yield* wire.begin(0);
 +            const status = yield* view(`00-${trace}-${trace.slice(0, 16)}-01`);
 +            yield* wire.end(trace);
-+            const statements = wire.global().filter((item) => item.trace === trace);
++            // The pool reads membership in a request of its own, under a trace of its own, so the
++            // view's statements are every statement inside its window, not those of its trace.
++            const statements = wire.global();
 +            return {
 +              status,
 +              exclusive: statements.filter((item) => exclusiveLock.test(item.query)).length,
