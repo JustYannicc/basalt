@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { join } from "node:path";
+import { closedPageError } from "../scripts/connectors-tests/page-error.mjs";
 
 /** One integrated hosted connection, with the provider's consent emulated on its HTTPS fixture. */
 export function proveZohoMcpUi({
@@ -93,7 +94,13 @@ export function proveZohoMcpUi({
       const video = page.video();
       const errors = [];
       const setup = [];
-      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("pageerror", (error) => {
+        errors.push(error.message);
+        // The public summary names which of our code threw, never what it said.
+        diagnostics.pageErrors ??= [];
+        if (diagnostics.pageErrors.length < 5)
+          diagnostics.pageErrors.push(closedPageError(error, target.metadata.origin));
+      });
       page.on("request", (request) => {
         if (new URL(request.url()).pathname.endsWith("/oauth/mcp/setup")) setup.push(true);
       });

@@ -1951,6 +1951,16 @@ jobs:
           name: dashboard-batch-profile
           path: ${{ runner.temp }}/dashboard-batch-profile
           if-no-files-found: warn
+      - name: Collect bounded E2E evidence
+        if: failure()
+        run: node scripts/ci/collect-e2e-evidence.mjs .generated/e2e-evidence "$RUNNER_TEMP/basalt-e2e-evidence" .upstream/.local/e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dashboard-batch-e2e
+          path: ${{ runner.temp }}/basalt-e2e-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
   aws-connectors:
     needs: [select, long-started]
     if: contains(fromJSON(needs.select.outputs.jobs), 'aws-connectors')

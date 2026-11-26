@@ -10,6 +10,7 @@ import { collectConnectorEvidence } from "./collect-connector-evidence.mjs";
 import { connectorDiagnostic } from "./connector-diagnostics.mjs";
 import { describeGuidanceFailure } from "../connectors-tests/guidance-failure.ts";
 import { catalogBuildFailure } from "../catalog-compat/build-failure.mjs";
+import { closedPageError } from "../connectors-tests/page-error.mjs";
 
 const credential = "private-credential-sentinel";
 const tenant = "private-tenant-sentinel";
@@ -212,6 +213,51 @@ test("Zoho browser failures retain their phase and original error class without 
   );
   assert.ok(!JSON.stringify(summary).includes(credential));
   assert.ok(!JSON.stringify(summary).includes(tenant));
+});
+
+test("a page error reaches the summary as its name and our bundle's frame, never its text or hosts", async (t) => {
+  const root = await fixture(t);
+  const run = join(root, ".generated/zoho-people-mcp/ci");
+  const origin = "http://127.0.0.1:4321";
+  const error = new TypeError(`Cannot read ${credential} of ${tenant}`);
+  error.stack = [
+    `TypeError: Cannot read ${credential} of ${tenant}`,
+    `    at stranger (https://${tenant}.example/${credential}.js:1:1)`,
+    `    at async loadAccounts (${origin}/assets/index-B3x9.js?token=${credential}:123:45)`,
+    `    at ${origin}/assets/other.js:9:9`,
+  ].join("\n");
+  const unnamed = new Error(credential);
+  unnamed.name = `Not ${tenant}`;
+  unnamed.stack = `    at ${origin}/${credential}/main.js:7:8`;
+  await put(
+    join(run, "partial-results.json"),
+    JSON.stringify({
+      results: [{ name: tenant, actual: credential }],
+      pageErrors: [
+        closedPageError(error, origin),
+        closedPageError(unnamed, origin),
+        // A record written by anything else is checked again on the way out.
+        {
+          name: tenant,
+          frame: { function: credential, file: `${tenant}/x.js`, line: 1, column: 2 },
+        },
+      ],
+    }),
+  );
+  const summary = await collectConnectorEvidence(root, "catalog-compat");
+  const record = summary.runs[0].records.find((value) => value.stage === "partial-report");
+  assert.equal(record.checks, 1);
+  assert.deepEqual(record.pageErrors, [
+    {
+      name: "TypeError",
+      frame: { function: "loadAccounts", file: "index-B3x9.js", line: 123, column: 45 },
+    },
+    { name: "unknown", frame: { file: "main.js", line: 7, column: 8 } },
+    { name: "unknown" },
+  ]);
+  assert.ok(!JSON.stringify(summary).includes(credential));
+  assert.ok(!JSON.stringify(summary).includes(tenant));
+  assert.ok(!JSON.stringify(summary).includes("127.0.0.1"));
 });
 
 test("an unconfirmed report stays observed while tenant startup failures retain their phase", () => {
