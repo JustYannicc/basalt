@@ -200,7 +200,8 @@ const decide = (text: string | undefined, list = jobs, at = run) =>
   rerunDecision(at, text, list, "basalt-box");
 
 test("box-rerun acts only on box-watch's own verdict for that very run's first attempt", () => {
-  // A Check a person cancelled, or a superseded run force-cancelled: no verdict, nothing happens.
+  // A Check a person cancelled, or a superseded run force-cancelled: no verdict and no light job
+  // held, nothing happens.
   assert.equal(decide(undefined).action, "none");
   for (const text of [
     "",
@@ -327,7 +328,7 @@ test("box-rerun runs the default branch's file after a cancelled Check, with not
       "github.event.workflow_run.run_attempt == 1 && " +
       "github.event.workflow_run.head_repository.full_name == github.repository",
   );
-  assert.deepEqual(job.permissions, { actions: "write", contents: "read" });
+  assert.deepEqual(job.permissions, { actions: "write", checks: "read", contents: "read" });
   const download = job.steps.find((step: { uses?: string }) =>
     step.uses?.startsWith("actions/download-artifact"),
   );

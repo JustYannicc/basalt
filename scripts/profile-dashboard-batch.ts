@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -116,6 +117,9 @@ const measure = (label: "before" | "after") => {
       2,
     ),
   );
+  // Its numbers are copied above. A measured run, including the baseline that fails on purpose,
+  // stays out of the job's evidence, which holds only runs that went wrong.
+  rmSync(join(runs, created[0]!), { recursive: true, force: true });
   return profile;
 };
 
