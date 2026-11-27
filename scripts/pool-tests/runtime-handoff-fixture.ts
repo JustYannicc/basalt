@@ -105,6 +105,8 @@ export async function handoffRuntime(
     model: 0,
     install: [] as NativeMembershipPolicy[],
     interceptions: [] as { host: string; source: HomePeerSource }[],
+    /** The reasons this object reset itself with, in order. */
+    resets: [] as string[],
   };
   let running = options.running ?? false,
     bootId = crypto.randomUUID();
@@ -139,7 +141,23 @@ export async function handoffRuntime(
      */
     readinessLeaseMs: 1_500,
   };
+  // The code the platform serves this object once it resets: its own, until a release deploys one.
+  let served = options.code ?? runtimeFixtureCode;
+  let endpoint: RuntimeEndpoint;
+  // Counts resets, so a call the reset object hadn't answered yet fails as the platform fails it.
+  let generation = 0;
+  // What the object scheduled for after an answer, such as its reset: it runs once one has left.
+  const replies: (() => void)[] = [];
   const ctx = {
+    /**
+     * Resets the object as the platform does: storage and container stay, and its next event runs
+     * a fresh endpoint on the code the platform serves it.
+     */
+    abort(reason: string) {
+      calls.resets.push(reason);
+      generation++;
+      endpoint = build(served);
+    },
     exports: { PoolHomePeer: ({ props }: { props: { source: HomePeerSource } }) => ({ props }) },
     id: { toString: () => target.instanceId },
     storage,
@@ -314,14 +332,17 @@ export async function handoffRuntime(
       },
     },
   };
-  const endpoint = new RuntimeEndpoint(
-    ctx,
-    env,
-    options.role ?? "runtime",
-    options.code ?? runtimeFixtureCode,
-    nativeResponse,
-    { controlPair: nativeControlPair, ownStorage: storage, ...options.endpoint },
-  );
+  const build = (code: ControllerCode) =>
+    new RuntimeEndpoint(ctx, env, options.role ?? "runtime", code, nativeResponse, {
+      controlPair: nativeControlPair,
+      ownStorage: storage,
+      afterReply: (work) => {
+        replies.push(work);
+      },
+      ...options.endpoint,
+    });
+  endpoint = build(served);
+  const first = endpoint;
   return {
     ctx,
     env,
@@ -331,7 +352,8 @@ export async function handoffRuntime(
     hooks,
     policies,
     helper,
-    endpoint,
+    /** The object's first endpoint; a reset replaces the one requests reach, not this. */
+    endpoint: first,
     wrap: nativeResponse,
     storage,
     identity: (): SlotIdentity => ({ ...target, bootId }),
@@ -344,7 +366,19 @@ export async function handoffRuntime(
             : {}),
         }),
       ),
-    stub: { fetch: (request: Request) => runtimeRequest(request, endpoint) },
+    stub: {
+      fetch: async (request: Request) => {
+        const before = generation;
+        const response = await runtimeRequest(request, endpoint);
+        if (generation !== before) throw new Error("synthetic object reset");
+        for (const work of replies.splice(0)) work();
+        return response;
+      },
+    },
+    /** A release: an object the platform resets from now on comes back on `code`. */
+    deploy: (code: ControllerCode) => {
+      served = code;
+    },
     settle: async () => {
       for (let index = 0; index < background.length; index++) await background[index];
     },

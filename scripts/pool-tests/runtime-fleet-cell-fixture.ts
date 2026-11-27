@@ -1,3 +1,4 @@
+import { Effect, Schema } from "effect";
 import { handoffRuntime } from "./runtime-handoff-fixture.ts";
 import { RuntimeSqlite } from "./runtime-handoff-storage.ts";
 import { runtimeFixtureCode } from "./runtime-handoff-proofs.ts";
@@ -8,8 +9,15 @@ import { decodeProviderApplication } from "../../src/pool/runtime-provider/appli
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
-import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
+import { SlotRefused, SlotTarget } from "../../src/pool/runtime-slots/contract.ts";
 import { runtimeStopTiming } from "../../src/pool/runtime-slots/forced-stop.ts";
+import type { ControllerCode } from "../../src/pool/runtime-slots/contract.ts";
+
+/** The controller code a release deploys, which differs from the fixture's own in every field. */
+export const releasedCode: ControllerCode = {
+  candidate: "1".repeat(40),
+  workerInput: "2".repeat(64),
+};
 
 /**
  * The stop's grace runs the latest fixture's `timing`. It is installed once, here, as the handoff
@@ -106,11 +114,14 @@ export async function fleetCellFixture(
     /**
      * An endpoint still on older code, as for minutes after a release: `fence` decodes
      * `/abandon-start` as the fence alone, as code before its stop flag did; `missing` answers it as
-     * an action that code doesn't know.
+     * an action that code doesn't know; `witness` decodes `/witness` as its target alone, as code
+     * before the controller's code was passed did, and so never adopts.
      */
-    older: undefined as "fence" | "missing" | undefined,
+    older: undefined as "fence" | "missing" | "witness" | undefined,
     /** Whether each `/abandon-start` the cell sent asked for the stop, in the order sent. */
     abandons: [] as boolean[],
+    /** The control path of each call the cell sent its endpoint, in the order sent. */
+    sent: [] as string[],
   };
   /**
    * The stop's grace, on whatever clock the test moves. The handoff fixture runs a zero one; a test
@@ -118,12 +129,12 @@ export async function fleetCellFixture(
    */
   const timing = { stopGrace: async () => {} };
   timed = timing;
-  const makeCell = () =>
+  const makeCell = (code: ControllerCode = runtimeFixtureCode) =>
     boundFleetCell({
       ctx: root,
       env,
       target,
-      code: runtimeFixtureCode,
+      code,
       provider,
       // As the ledger does: the cell's own row, and the sibling's while it has one.
       counted: async () => new Set([target.instanceId, ...(sibling.counted ? [sibling.id] : [])]),
@@ -151,6 +162,7 @@ export async function fleetCellFixture(
               throw error;
             }
             const path = new URL(request.url).pathname;
+            transport.sent.push(path);
             if (path === "/abandon-start")
               transport.abandons.push(
                 ((await request.clone().json()) as { stop?: unknown }).stop === true,
@@ -160,7 +172,25 @@ export async function fleetCellFixture(
               await request.text();
               return runtimeErrorResponse(new SlotRefused(refused), "endpoint");
             }
-            if (transport.older && path === "/abandon-start") {
+            if (transport.older === "witness" && path === "/witness") {
+              // That code's own decode: it must take the newer read, ignoring what it doesn't know.
+              const { target } = await Effect.runPromise(
+                Schema.decodeUnknownEffect(Schema.Struct({ target: SlotTarget }))(
+                  await request.json(),
+                ),
+              );
+              return runtime.stub.fetch(
+                new Request(request.url, {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ target }),
+                }),
+              );
+            }
+            if (
+              (transport.older === "fence" || transport.older === "missing") &&
+              path === "/abandon-start"
+            ) {
               if (transport.older === "missing") {
                 await request.text();
                 return new Response(null, { status: 404 });
@@ -183,8 +213,9 @@ export async function fleetCellFixture(
     });
   const cell = makeCell();
   return {
-    // The same cell over the same storage, as the controller's replaced isolate builds it.
-    replacedCell: makeCell,
+    // The same cell over the same storage, as the controller's replaced isolate builds it; with
+    // `code`, as one on that code builds it.
+    replacedCell: (code?: ControllerCode) => makeCell(code),
     ...runtime,
     cell,
     storage,

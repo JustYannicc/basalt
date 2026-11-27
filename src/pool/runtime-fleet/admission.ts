@@ -14,10 +14,21 @@ import {
   runtimeAttestationFormat,
 } from "../runtime-slots/admission-proof.ts";
 import { configurationDigest, type RuntimeConfiguration } from "../runtime-slots/configuration.ts";
+import { CodeAdopting } from "../runtime-slots/code-adoption.ts";
 import type { RuntimeHandoff } from "../runtime-slots/integration.ts";
 import type { RuntimeProviderReader, RuntimeProviderTarget } from "../runtime-provider/read.ts";
 import { providerDigest } from "../runtime-provider/canonical.ts";
 import { signEnvelope } from "../token.ts";
+
+/** A first start's witness, or its endpoint adopting this controller's code. */
+const Observed = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("witness"),
+    controllerCode: ControllerCode,
+    witness: StartupWitness,
+  }),
+  CodeAdopting,
+]);
 
 interface Dependencies {
   handoff: RuntimeHandoff;
@@ -55,14 +66,11 @@ export class FleetAdmission {
     });
     let witness: typeof StartupWitness.Type | undefined;
     if (kind === "initial-attested") {
-      const observed = Schema.decodeUnknownSync(
-        Schema.Struct({
-          kind: Schema.Literal("witness"),
-          controllerCode: ControllerCode,
-          witness: StartupWitness,
-        }),
-      )(await handoff.witness(target));
+      const observed = Schema.decodeUnknownSync(Observed)(await handoff.startWitness(target));
+      // It resets onto the deployed code once this answer has left; the next pass reads it there.
+      if (observed.kind === "adopting") throw new SlotRefused("controller_code");
       witness = observed.witness;
+      // An endpoint on older code never saw this controller's code, so it can't adopt it.
       if (!sameControllerCode(observed.controllerCode, code))
         throw new SlotRefused("controller_code");
       if (
