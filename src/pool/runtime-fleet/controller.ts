@@ -159,9 +159,11 @@ export interface FleetCell {
   lastEnd?(identity: SlotIdentity): RuntimeEnd | undefined;
   /**
    * True only once no instance can run for a start that never served: nothing was ever sent, or the
-   * provider proves the instance absent. Without it, such a row holds its place.
+   * provider proves the instance absent. Without it, such a row holds its place. With `stop`, a
+   * container that a start which never activated left running is stopped once, so its absence can
+   * be proven at all.
    */
-  abandon?(target: SlotTarget): Promise<boolean>;
+  abandon?(target: SlotTarget, stop?: boolean): Promise<boolean>;
 }
 interface Dependencies {
   state: RuntimeFleetState;
@@ -439,7 +441,8 @@ export class RuntimeFleet {
     const row = (await this.deps.state.inspect()).find(
       (value) => value.target.slotId === identity.slotId,
     );
-    // Growth and upkeep can both observe one start; only the first admits it.
+    // Growth and upkeep can both observe one start; only the first admits it. A start its bound
+    // quarantined is never admitted, however late it activates.
     if (
       !row ||
       !["warming", "uncertain"].includes(row.phase) ||
@@ -1062,9 +1065,11 @@ export class RuntimeFleet {
       this.reported.set(row.target.slotId, reports);
       logQuarantine("held", row, age);
     }
+    // Only a start that never activated has its container stopped; one with an identity activated
+    // and keeps the failure path.
     const absent = row.identity
       ? await cell.failed(row.identity, row.active)
-      : ((await cell.abandon?.(row.target)) ?? false);
+      : ((await cell.abandon?.(row.target, true)) ?? false);
     if (!absent) return;
     if (row.identity)
       await this.deps.state.reclaimQuarantined(row.identity, cell.lastEnd?.(row.identity));
