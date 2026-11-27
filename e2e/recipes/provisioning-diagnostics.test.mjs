@@ -8,6 +8,7 @@ import {
   changeOutboxEmpty,
   openCatalogSweeps,
   openRollouts,
+  stackRollouts,
   provisioningHistory,
   provisioningMoved,
   provisioningSettled,
@@ -125,6 +126,50 @@ test("a stack without a repository service leaves catalog sweeps at their releas
     observed_at: "2026-11-25T12:55:00.000Z",
   };
   assert.equal(provisioningSettled([sweep]), true);
+});
+
+test("a stack's rollouts follow whether it declares a repository service", async () => {
+  const at = "2026-11-25T12:55:00.000Z";
+  const timed = (id, status, attempts, available) => ({
+    ...job(id, status, attempts),
+    available_at: available,
+    observed_at: at,
+  });
+  const bundle = timed("basalt-pool-bundle:7518f356:c5743dcb", "queued", 0, at);
+  const later = timed("basalt-catalog-apps:e781022:later", "queued", 0, "2026-11-25T13:10:00.000Z");
+  const soon = timed("basalt-catalog-apps:e781022:soon", "queued", 0, "2026-11-25T12:55:30.000Z");
+  const running = timed("basalt-catalog-apps:e781022:running", "running", 2, at);
+  const forwarded = async (rollouts) => {
+    const sent = [];
+    await rollouts.bringForward({ run: async (query) => sent.push(query) }, "org_1");
+    return sent[0].sql;
+  };
+  const ids = (list) => list.map(({ id }) => id);
+  // Saying nothing, or having one, runs and waits for every rollout and leaves nothing unproved.
+  for (const services of [undefined, {}, { repository: true }]) {
+    const rollouts = stackRollouts(services);
+    assert.ok((await forwarded(rollouts)).includes("'basalt-catalog-apps:%'"));
+    assert.deepEqual(ids(rollouts.open([bundle, later, running])), [
+      bundle.id,
+      later.id,
+      running.id,
+    ]);
+    assert.deepEqual(rollouts.unavoidable([bundle, later, soon, running]), []);
+    assert.equal(rollouts.notProved([later]), undefined);
+  }
+  // Without one, sweeps keep their delay and are not waited for; a sweep due within the margin, or
+  // already running, can't be kept out of the proof; and the proof says what it left unproved.
+  const without = stackRollouts({ repository: false });
+  assert.ok(!(await forwarded(without)).includes("basalt-catalog-apps"));
+  assert.deepEqual(ids(without.open([bundle, later, running])), [bundle.id]);
+  assert.deepEqual(ids(without.unavoidable([bundle, later, soon, running])), [soon.id, running.id]);
+  assert.deepEqual(without.notProved([bundle, later]), {
+    proof: "The organization's rollouts finished",
+    notWaitedFor: "catalog sweeps, left at their release delay",
+    open: 1,
+    reason: "no repository service in the local stack",
+    issue: "#2122",
+  });
 });
 
 test("the change outbox is empty only when no change waits for delivery", async () => {

@@ -46,9 +46,7 @@ export const catalogSweep = ({ id }) => id.startsWith("basalt-catalog-apps:");
  * brought forward nor waited for; every other stack runs and waits for all of them.
  */
 export const openRollouts = (jobs, { repositoryService = true } = {}) =>
-  jobs.filter(
-    (job) => open(job) && rolloutJob(job) && (repositoryService || !catalogSweep(job)),
-  );
+  jobs.filter((job) => open(job) && rolloutJob(job) && (repositoryService || !catalogSweep(job)));
 /** Catalog sweeps still open, which a stack without a repository service leaves unproved. */
 export const openCatalogSweeps = (jobs) => jobs.filter((job) => open(job) && catalogSweep(job));
 
@@ -61,11 +59,42 @@ export const bringRolloutsForward = (database, organization, { repositoryService
     sql: `update hosted_provisioning set available_at = now()
       where organization_id = $1 and status = 'queued' and available_at > now()
         and (id like 'basalt-pool-bundle:%' or id like 'basalt-pool-token:%'${
-          repositoryService ? `
-          or id like 'basalt-catalog-apps:%'` : ""
+          repositoryService
+            ? `
+          or id like 'basalt-catalog-apps:%'`
+            : ""
         })`,
     params: [organization],
   });
+
+/**
+ * How a proof runs the organization's rollouts on a stack. A stack that declares no repository
+ * service can never finish a catalog sweep (#2122): its sweeps keep their release delay, are not
+ * waited for, and are reported as not proved. Every other stack runs and waits for all of them.
+ */
+export const stackRollouts = (services) => {
+  const repositoryService = services?.repository !== false;
+  return {
+    bringForward: (database, organization) =>
+      bringRolloutsForward(database, organization, { repositoryService }),
+    open: (jobs) => openRollouts(jobs, { repositoryService }),
+    /** Sweeps that will run within the proof, which a stack without repositories can't leave out. */
+    unavoidable: (jobs) =>
+      repositoryService
+        ? []
+        : openCatalogSweeps(jobs).filter((job) => !deferred(job, observedAt(jobs))),
+    notProved: (jobs) =>
+      repositoryService
+        ? undefined
+        : {
+            proof: "The organization's rollouts finished",
+            notWaitedFor: "catalog sweeps, left at their release delay",
+            open: openCatalogSweeps(jobs).length,
+            reason: "no repository service in the local stack",
+            issue: "#2122",
+          },
+  };
+};
 
 /** Changes committed for the organization and not yet delivered to its live subscribers. */
 export const changeOutboxEmpty = (database, organization) =>
