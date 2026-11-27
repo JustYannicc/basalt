@@ -7,7 +7,6 @@
     "scripts/production.ts": 5,
     "scripts/release/deploy.ts": 27,
     "scripts/release/legacy-records.ts": 1,
-    "scripts/release/placeholder-repair.ts": 1,
     "scripts/release/root-settle-check.test.ts": 1,
     "scripts/release/root-settle-check.ts": 1,
     "scripts/release/stage-writes.ts": 2,

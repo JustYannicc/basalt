@@ -31,6 +31,9 @@ import { stampedMode } from "alchemy/ProviderMode";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Data, Effect, Option } from "effect";
 
+/** A provider lifecycle failure as alchemy-run/alchemy#3200 types it: tagged, with a message. */
+type ProviderError = { readonly _tag: string; readonly message?: string };
+
 /**
  * What `alchemy drift` observes of one row, read the way it reads every row (Drift.ts): the row's
  * own provider, in the mode that wrote it, reads with the row's props and attributes. The
@@ -41,27 +44,28 @@ export const observeRow = (fqn: string, row: ResourceState) =>
     const provider = yield* findProviderByType(row.resourceType as never, stampedMode(row));
     if (!provider.read) return undefined;
     const store = Option.getOrElse(yield* Effect.serviceOption(ArtifactStore), createArtifactStore);
-    const observed = yield* provider
-      .read({
-        id: row.logicalId,
-        fqn,
-        instanceId: row.instanceId,
-        olds: row.props as never,
-        output: row.attr as never,
-      })
-      .pipe(
-        // The pinned Alchemy types every provider read's error as `any`; the repair carries it as
-        // the cause. alchemy-run/alchemy#3200 types it (`ProviderError`), and this file's one
-        // `anyUnknownInErrorContext` entry in the Effect diagnostics baseline goes with the
-        // framework upgrade that brings it.
-        Effect.mapError((cause) => new ProviderReadFailed({ fqn, cause })),
-        Effect.provideService(Artifacts, makeScopedArtifacts(store, fqn)),
-        Effect.provideService(InstanceId, row.instanceId),
-      );
+    // The pinned Alchemy declares every provider read's error `any`. alchemy-run/alchemy#3200
+    // declares it `ProviderError`; this binding states the same type at the one call, and goes with
+    // the framework upgrade that brings it. The error is carried only as a cause.
+    const read: (
+      input: Parameters<NonNullable<typeof provider.read>>[0],
+    ) => Effect.Effect<unknown, ProviderError, InstanceId | Artifacts> =
+      provider.read.bind(provider);
+    const observed = yield* read({
+      id: row.logicalId,
+      fqn,
+      instanceId: row.instanceId,
+      olds: row.props as never,
+      output: row.attr as never,
+    }).pipe(
+      Effect.mapError((cause) => new ProviderReadFailed({ fqn, cause })),
+      Effect.provideService(Artifacts, makeScopedArtifacts(store, fqn)),
+      Effect.provideService(InstanceId, row.instanceId),
+    );
     if (observed === undefined) return { status: "missing" } satisfies Observation;
     // A placeholder's attributes never equal a live read (its id is local), and planRepair checks
     // the read's identity itself, so whatever the provider finds is drift from the placeholder.
-    return { status: "drifted", actual: stripUnowned(observed) } satisfies Observation;
+    return { status: "drifted", actual: stripUnowned(observed as object) } satisfies Observation;
   });
 
 /** The row's provider failed to read it; the repair stops. */
