@@ -1,0 +1,53 @@
+diff --git a/apps/hosted/cloud/src/contracts/emulators.ts b/apps/hosted/cloud/src/contracts/emulators.ts
+--- a/apps/hosted/cloud/src/contracts/emulators.ts
++++ b/apps/hosted/cloud/src/contracts/emulators.ts
+@@ -41,23 +41,26 @@
+   ))();
+ /**
+  * A hosted instance, or an emulator the harness runs on loopback. Only emulator configuration
+- * decodes this; an operator's Autumn endpoint decodes `AutumnServerUrl`, which stays HTTPS.
++ * decodes this, and `cloudEmulators` decodes it only on a loopback Cloud dev origin or a test
++ * stage; an operator's real providers and Autumn endpoint keep their own HTTPS settings.
+  */
+ export const HostedOrLoopbackUrl = /* @__PURE__ */ (() => Schema.Union([BaseUrl, LoopbackUrl]))();
+ const Provider = /* @__PURE__ */ (() =>
+   Schema.Struct({
+-    baseUrl: BaseUrl,
++    baseUrl: HostedOrLoopbackUrl,
+     clientId: Schema.NonEmptyString,
+     clientSecret: Schema.NonEmptyString,
+   }))();
+ 
++// Each endpoint must also lie under the provider's own base URL (`GoogleProvider`), so a hosted
++// provider cannot name a loopback endpoint or the other way round.
+ const GoogleDiscovery = /* @__PURE__ */ (() =>
+   Schema.Struct({
+-    issuer: BaseUrl,
+-    authorization_endpoint: BaseUrl,
+-    token_endpoint: BaseUrl,
+-    userinfo_endpoint: BaseUrl,
+-    jwks_uri: BaseUrl,
++    issuer: HostedOrLoopbackUrl,
++    authorization_endpoint: HostedOrLoopbackUrl,
++    token_endpoint: HostedOrLoopbackUrl,
++    userinfo_endpoint: HostedOrLoopbackUrl,
++    jwks_uri: HostedOrLoopbackUrl,
+     id_token_signing_alg_values_supported: Schema.Array(Schema.Literal("RS256")).check(
+       Schema.isMinLength(1),
+     ),
+@@ -85,10 +88,11 @@
+     ),
+     google: GoogleProvider,
+     github: Provider,
+-    mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
+-    company: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
+-    /** CI runs Autumn on loopback so billing never waits on a shared outside service. */
++    // CI runs these on loopback beside a local Cloud, so a run never waits on a shared outside
++    // service; a deployed stage keeps hosted instances.
++    mail: Schema.Struct({ baseUrl: HostedOrLoopbackUrl, token: Schema.NonEmptyString }),
++    company: Schema.Struct({ baseUrl: HostedOrLoopbackUrl, token: Schema.NonEmptyString }),
+     billing: Schema.Struct({ baseUrl: HostedOrLoopbackUrl, token: Schema.NonEmptyString }),
+     /** Stands in for v1's WorkOS environment in the v1 membership check. */
+-    workos: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
++    workos: Schema.Struct({ baseUrl: HostedOrLoopbackUrl, token: Schema.NonEmptyString }),
+   }))();

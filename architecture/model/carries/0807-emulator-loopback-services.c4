@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "The emulated sign-in, mail, company and directory services may name a loopback emulator, as billing already may, and the emulated sign-in provider's issuer and endpoints must lie under its own base. Only the emulator configuration decodes these, and only on a loopback Cloud dev origin or a dedicated e2e test stage; every other stage refuses it, and an operator's real providers keep their own HTTPS settings."
+    }
+  }
+}
