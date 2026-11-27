@@ -1,29 +1,23 @@
 import { fileURLToPath } from "node:url";
-import {
-  boxIsUp,
-  githubObserver,
-  heartbeatBudget,
-  tokenReserve,
-  TokenBudget,
-  type Heartbeat,
-} from "./box-router.ts";
+import { tokenReserve, TokenBudget } from "./box-router.ts";
 import { onLightRunners, queuedMinutes } from "./light-lane.ts";
 import { say } from "./workflow-run.ts";
 
 // light-rescue.yml, every 5 minutes. A Check job queued for the light runners can't move to hosted
-// runners, so while the box's heartbeat shows it down, each first attempt of this repository's own
-// Check whose light job has waited 3 minutes is force-cancelled. Its end starts box-rerun.yml like
-// any Check's, which finds the light job cancelled before a runner took it and re-runs the run's
-// failed and cancelled jobs as attempt 2, which runs them hosted; GitHub's completion event carries
-// the run from here to there, so a rescue stopped after its cancel strands nothing. A box that is
-// up, or holding with no CI budget, keeps its light jobs. GitHub answering badly never counts as
-// down. The rescue matches light jobs by their label's suffix, not the variable, so emptying the
-// variable during an outage still frees what it held.
+// runners. Only the first attempt of a push to main uses them (scripts/ci/light-lane.ts): a few
+// seconds-long jobs a few times an hour on two runners, which never queue behind each other for
+// minutes. So a light job of main's Check that has waited 3 minutes means the lane isn't taking
+// jobs (its runners are down, or the variable names a label none carries), and that Check is
+// force-cancelled whatever the box's heartbeat says. Its end starts box-rerun.yml like any Check's,
+// which finds the light job cancelled before a runner took it and re-runs the run's failed and
+// cancelled jobs as attempt 2, which runs them hosted; GitHub's completion event carries the run
+// from here to there, so a rescue stopped after its cancel strands nothing. A rescue that freed a
+// Check ends red, so a stopped lane shows. GitHub answering badly never cancels. Light jobs are
+// matched by their label's suffix, not the variable, so emptying it still frees what it held.
 
 /**
- * The most REST calls one rescue spends. Every Check shares the workflow token's hourly limit; an
- * up box costs 3 (the heartbeat), a down one 2 more, one or two per active first attempt and one
- * per cancel.
+ * The most REST calls one rescue spends. Every Check shares the workflow token's hourly limit; a
+ * rescue costs 2 (main's active Checks), one or two per active first attempt and one per cancel.
  */
 export const maxCalls = 100;
 const minute = 60_000;
@@ -35,9 +29,6 @@ export type RescueEnv = {
   api: string;
   repository: string;
   token: string;
-  /** The labels the box's heartbeat runs on, as select reads them. */
-  boxLabel: string;
-  heartbeatLabel?: string;
 };
 export type Clock = { now(): number; wait(ms: number): Promise<unknown> };
 const realClock: Clock = {
@@ -101,54 +92,13 @@ function client(env: RescueEnv, fetcher: Fetch, clock: Clock) {
 }
 type Client = ReturnType<typeof client>;
 
-/** Why the box counts as down, or undefined while it is up or its state can't be read. */
-async function boxDown(
-  env: RescueEnv,
-  api: Client,
-  now: () => number,
-  line: (text: string) => void,
-) {
-  let heartbeat: Heartbeat | undefined;
-  try {
-    heartbeat = await githubObserver(
-      {
-        api: env.api,
-        repository: env.repository,
-        token: env.token,
-        runId: "",
-        label: env.boxLabel,
-        heartbeatLabel: env.heartbeatLabel ?? "",
-      },
-      (url, init) => api.send(url, init),
-      now,
-    ).heartbeat();
-  } catch (error) {
-    if (error instanceof TokenBudget || api.failures()) {
-      line(
-        `the box's heartbeat could not be read (${(error as Error).message}); nothing is cancelled.`,
-      );
-      return undefined;
-    }
-    // GitHub answered every read, and none was a heartbeat from the box.
-    return "no completed heartbeat run is from the box";
-  }
-  const at = now();
-  const state = heartbeatBudget(heartbeat, at);
-  // A box with no CI budget is holding, not down: the light runners sit outside that budget.
-  if (!boxIsUp(heartbeat, at)) return String(state);
-  line(
-    `the box is up (${typeof state === "string" ? state : `a CI budget of ${state.budget}`}); its light runners take their own jobs.`,
-  );
-  return undefined;
-}
-
-/** This repository's own active first-attempt Checks old enough to hold a light job, newest first. */
+/** Main's own active first-attempt push Checks old enough to hold a light job, newest first. */
 async function activeChecks(env: RescueEnv, api: Client, at: number) {
   const listed = new Map<number, Json>();
   for (const status of ["in_progress", "queued"])
     for (let page = 1; ; page++) {
       const { workflow_runs: runs } = await api.json(
-        `/actions/workflows/ci.yml/runs?status=${status}&per_page=100&page=${page}`,
+        `/actions/workflows/ci.yml/runs?branch=main&event=push&status=${status}&per_page=100&page=${page}`,
       );
       if (!Array.isArray(runs)) throw new Error("GitHub listed no Check runs");
       for (const run of runs.map(record)) listed.set(Number(run.id), run);
@@ -158,6 +108,8 @@ async function activeChecks(env: RescueEnv, api: Client, at: number) {
   return [...listed.values()].filter(
     (run) =>
       String(run.path).split("@")[0] === checkPath &&
+      run.event === "push" &&
+      run.head_branch === "main" &&
       Number(run.run_attempt) === 1 &&
       record(run.head_repository).full_name === env.repository &&
       at - Date.parse(String(run.created_at)) >= queuedMinutes * minute,
@@ -182,7 +134,10 @@ async function heldJob(api: Client, id: number, at: number) {
   return undefined;
 }
 
-/** Cancels the Checks a down box holds; false when a cancel GitHub refused left one held. */
+/**
+ * Cancels main's Checks the light lane holds. `freed` counts the cancels; `refused` the held ones a
+ * cancel GitHub refused left held. Either makes the run red.
+ */
 export async function rescue(
   env: RescueEnv,
   fetcher: Fetch = fetch,
@@ -191,20 +146,18 @@ export async function rescue(
 ) {
   const line = (text: string) => print("Light rescue: " + text);
   const api = client(env, fetcher, clock);
-  const down = await boxDown(env, api, clock.now, line);
-  if (down === undefined) return true;
+  const result = { freed: 0, refused: 0 };
   const at = clock.now();
   let checks: Json[];
   try {
     checks = await activeChecks(env, api, at);
   } catch (error) {
-    line(`the Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
-    return true;
+    line(`main's Checks could not be read (${(error as Error).message}); nothing is cancelled.`);
+    return result;
   }
   // Each held run is cancelled as soon as it is found, so a rescue that runs out of calls still
   // frees some, and the next one finds the rest.
   let held = 0;
-  let cancelled = true;
   for (const run of checks) {
     const id = Number(run.id);
     let job: Json | undefined;
@@ -228,28 +181,31 @@ export async function rescue(
         break;
       }
       line(`could not cancel run ${id} (${(error as Error).message}).`);
-      cancelled = false;
+      result.refused++;
       continue;
     }
+    result.freed++;
     const waited = Math.floor((at - Date.parse(String(job.created_at))) / minute);
     line(
       `cancelled run ${id}: its ${String(job.name)} job waited ${waited} minutes for the light runners; box-rerun.yml re-runs it hosted once it ends.`,
     );
   }
   line(
-    `the box is down (${down}); ${held} of ${checks.length} first-attempt Checks have a light job queued ${queuedMinutes} minutes or more.`,
+    `${held} of ${checks.length} first attempts of main's Check have a light job queued ${queuedMinutes} minutes or more.`,
   );
-  return cancelled;
+  if (held)
+    line(
+      "the light lane is not taking main's jobs: its runners are down, or BASALT_CI_LIGHT_LABEL names a label none carries. Delete the variable to run main's Check hosted until it is fixed.",
+    );
+  return result;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = process.env;
-  const cancelled = await rescue({
+  const { freed, refused } = await rescue({
     api: env.GITHUB_API_URL ?? "https://api.github.com",
     repository: env.GITHUB_REPOSITORY ?? "",
     token: env.GITHUB_TOKEN ?? "",
-    boxLabel: env.BOX_LABEL ?? "",
-    heartbeatLabel: env.BOX_HEARTBEAT_LABEL ?? "",
   });
-  if (!cancelled) process.exitCode = 1;
+  if (freed || refused) process.exitCode = 1;
 }

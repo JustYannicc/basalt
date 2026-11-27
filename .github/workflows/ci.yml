@@ -30,9 +30,9 @@ jobs:
       contents: read
       actions: write
       checks: read
-    # The light runners on the first attempts box routing takes (scripts/ci/light-lane.ts). It
+    # The light runners on the first attempt of a push to main (scripts/ci/light-lane.ts). It
     # can't read its own output, so it repeats that rule over the variable; hosted otherwise.
-    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && ((github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/batch/'))) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
+    runs-on: ${{ github.run_attempt == 1 && endsWith(vars.BASALT_CI_LIGHT_LABEL, '-light') && !contains(vars.BASALT_CI_LIGHT_LABEL, ' ') && !contains(vars.BASALT_CI_LIGHT_LABEL, ',') && github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.BASALT_CI_LIGHT_LABEL || 'ubuntu-latest' }}
     outputs:
       reused: ${{ steps.reuse.outputs.reused }}
       evidence: ${{ steps.reuse.outputs.evidence }}
@@ -695,6 +695,8 @@ jobs:
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs scripts/pool-ui-tests/history-backend.test.mjs
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
+      - name: Verify a row menu's opening click chooses none of its items
+        run: node --test scripts/pool-ui-tests/account-row-menu.test.ts
       - name: Verify app query phase diagnostics
         working-directory: .upstream
         run: >-
@@ -2555,6 +2557,26 @@ jobs:
       - name: Typecheck the patched upstream the way upstream checks itself
         if: steps.lane.outputs.full_suite == 'true'
         run: npm run typecheck:upstream
+      # Every Check builds the budgeted Workers here, after framework:build above, so a pull request
+      # learns what it added before a release fails on a budget. About 20 seconds on a laptop.
+      - name: Restore the comparison commit's Worker upload sizes
+        uses: ./.github/actions/worker-upload-base
+        with:
+          mode: restore
+          base: ${{ steps.comparison.outputs.base_sha }}
+      - name: Build every budgeted Worker as the deploy does
+        id: worker-build
+        run: node scripts/worker-build.ts --base .generated/worker-uploads-base
+      - name: Fail a Worker left under its upload floor
+        run: node scripts/worker-floors.ts --base .generated/worker-uploads-base
+      # After the floor check, which reads the base from the same path, and even when it failed: a
+      # main commit under a floor must still leave its sizes, or every later change would compare
+      # with nothing and fail as if it had grown the Worker.
+      - name: Keep main's Worker upload sizes for later changes to compare with
+        if: ${{ !cancelled() && steps.worker-build.outcome == 'success' }}
+        uses: ./.github/actions/worker-upload-base
+        with:
+          mode: save
 
   # The owned unit tests fast's lane selects, split by scripts/ci/unit-tests.ts into one leg per
   # matrix row: each test file runs in exactly one leg. The suite took 6.8 of fast's 12.9 hosted
