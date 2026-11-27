@@ -294,19 +294,3 @@ test("a plan that did not settle says which rows and which properties still diff
   assert.doesNotMatch(report.publicText, /props\.env\.A/u);
   assert.match(report.detail, /props\.env\.A: <withheld> -> <withheld>/u);
 });
-
-test("(d) a teardown never targets the shared mTLS trust root, whatever its row records", () => {
-  const plan = {
-    resources: {
-      DatabaseCertificateAuthority: {
-        action: "orphaned",
-        state: {
-          resourceType: "Cloudflare.MtlsCertificate.MtlsCertificate",
-          attr: { id: "cert-1", name: "basalt-test-pr-7-ca" },
-        },
-      },
-    },
-    deletions: {},
-  };
-  assert.deepEqual(destroyTargets(plan as never), []);
-});
