@@ -4,9 +4,11 @@ import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { test } from "node:test";
 import { activeDispatches } from "./dispatch-busy.mjs";
-import { countingText } from "./fixtures.mjs";
+import { gate, mockCalls } from "./gateway.ts";
+import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
-import { checkFailures, emulatedStage, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
 import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
@@ -116,77 +118,180 @@ test("a long stream must last at least 30 s; a short one may be quick", () => {
   assert.equal(paced(false, 5), true);
 });
 
-const passing = () =>
+const passing = (kinds = ["short", "long"]) =>
   ["chat", "responses", "messages"].flatMap((shape) =>
-    ["short", "long"].map((kind) => ({ shape, kind, pass: true })),
+    kinds.map((kind) => ({ shape, kind, pass: true })),
   );
 const aimock401 = { status: 401, aimock: true };
+const refused = () =>
+  keyedRoutes.flatMap((path) =>
+    ["unkeyed", "wrong-key"].map((who) => ({ call: `${who} ${path}`, status: 401 })),
+  );
+const profilesPassing = () => ({
+  control: ["read", "slow", "limited", "restore"].map((step) => ({ step, status: 200 })),
+  calls: [
+    "via a",
+    "unprefixed beside b's latency",
+    "via b, slow",
+    "via a beside b's 429",
+    "unprefixed beside b's 429",
+  ].map((kind) => ({
+    shape: "messages",
+    kind,
+    pass: true,
+  })),
+  limited: { status: 429, retryAfter: "15", otherTimes: false, chaos: true },
+});
 
 test("a check passes only when every part does, and names each part that failed", () => {
   const ok = {
-    worker401: [401, 401],
+    worker401: refused(),
     refusal: { missing: aimock401, wrong: aimock401 },
     streams: passing(),
+    wholes: passing(["non-streamed"]),
+    profiles: profilesPassing(),
   };
   assert.deepEqual(checkFailures(ok), []);
   const streams = passing();
   streams[1] = { ...streams[1], pass: false, reason: "ended too soon" };
   streams[4] = { ...streams[4], pass: false, reason: "usage missing" };
+  const worker401 = refused();
+  worker401[3] = { ...worker401[3], status: 200 };
+  const wholes = passing(["non-streamed"]);
+  wholes[2] = { ...wholes[2], pass: false, reason: "content not exact" };
+  const profiles = profilesPassing();
+  profiles.control[3] = { step: "restore", status: 500 };
+  profiles.calls[2] = {
+    ...profiles.calls[2],
+    pass: false,
+    reason: "answered before profile b's latency",
+  };
+  profiles.limited = { status: 429, retryAfter: "1", otherTimes: true, chaos: false };
   assert.deepEqual(
     checkFailures({
-      worker401: [401, 200],
+      worker401,
       refusal: { missing: aimock401, wrong: { status: 401, aimock: false } },
       streams,
+      wholes,
+      profiles,
     }),
     [
-      "the Worker answered a call without the key",
+      "the Worker answered wrong-key /a/v1/models with HTTP 200",
       "the mock itself did not refuse a call without the right key",
       "chat long ended too soon",
       "messages short usage missing",
+      "messages non-streamed content not exact",
+      "profile b restore: HTTP 500",
+      "messages via b, slow answered before profile b's latency",
+      "profile b's 429 carried Retry-After 1, not 15",
+      "profile b's 429 carried aimock's own reset headers",
+      "profile b's 429 was not aimock's chaos answer",
     ],
   );
-  // Missing parts fail too: no refusal answer, fewer Worker calls or fewer streams.
-  assert.deepEqual(checkFailures({ worker401: [401], refusal: {}, streams: passing().slice(1) }), [
-    "the Worker answered a call without the key",
-    "the mock itself did not refuse a call without the right key",
-    "5 of 6 streams ran",
+  // Missing parts fail too: no refusal answer, fewer calls, or a profile proof that stopped.
+  assert.deepEqual(
+    checkFailures({
+      worker401: refused().slice(1),
+      refusal: {},
+      streams: passing().slice(1),
+      wholes: [],
+      profiles: { control: [{ step: "read", status: 200 }], calls: [], failure: "it stopped" },
+    }),
+    [
+      "7 of 8 calls without the right key ran",
+      "the mock itself did not refuse a call without the right key",
+      "5 of 6 streams ran",
+      "0 of 3 non-streamed calls ran",
+      "profile check: it stopped",
+      "profile b slow: HTTP -",
+      "profile b limited: HTTP -",
+      "profile b restore: HTTP -",
+      "0 of 5 profile calls ran",
+      "messages via b at a 429 share of 1: HTTP -",
+    ],
+  );
+  assert.deepEqual(checkFailures({ ...ok, profiles: undefined }), [
+    "the profile check did not run",
   ]);
 });
 
-const sse = (frames) => frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
-const responsesStream = (content, output) =>
-  sse([
-    { type: "response.output_text.delta", delta: content },
-    {
-      type: "response.completed",
-      response: { usage: { input_tokens: 11, output_tokens: output } },
-    },
-  ]);
+/**
+ * The deployed stage: the Worker's own gate, profiles and control, in front of a stand-in that
+ * answers like aimock. Every call carries the clock forward by what the mock would take.
+ */
+function deployedStage({ key = "k", store = memoryStore(), ...mock } = {}) {
+  const clock = { ms: NOW };
+  const aimock = fakeAimock({ key, clock, ...mock });
+  const answer = mockCalls({ store, key, start: async () => aimock.port });
+  const fetcher = (url, init) => gate(new Request(url, init), key, answer);
+  return { aimock, clock, store, fetcher, key };
+}
 
-test("a check judges each stream by its shape and its pace on the clock", async () => {
-  let clock = NOW;
-  const api = fakeApi({ resources: deployed(), lease: NOW + hour });
-  const answers = [];
-  const fetcher = async (url, init = {}) => {
-    const { pathname } = new URL(url);
-    if (pathname === "/v1/models") return new Response("{}", { status: 401 });
-    if (pathname === "/_emulated/mock-refusal")
-      return Response.json({ missing: aimock401, wrong: aimock401 });
-    const long =
-      JSON.parse(init.body).max_tokens === 4000 || JSON.parse(init.body).max_output_tokens === 4000;
-    answers.push(pathname);
-    // Only the responses shape answers, and its long stream comes back in 10 s.
-    if (pathname !== "/v1/responses") return new Response("no", { status: 500 });
-    clock += long ? 10_000 : 0;
-    return new Response(long ? responsesStream(countingText, 3000) : responsesStream("OK", 2));
-  };
-  await assert.rejects(stageOf(api, { fetcher, now: () => clock }).check(), (error) => {
-    assert.match(error.message, /responses long ended too soon/u);
-    assert.match(error.message, /chat short status/u);
-    assert.doesNotMatch(error.message, /responses short/u);
-    return true;
+test("a check through the Worker's gate and profiles passes, and puts profile b back as it found it", async () => {
+  const running = { rateLimitRate: 0.25, latencyMs: 7000 };
+  const stage = deployedStage({ store: memoryStore(running) });
+  const saved = {};
+  await stageOf(fakeApi({ resources: deployed(), lease: NOW + hour }), {
+    key: stage.key,
+    fetcher: stage.fetcher,
+    now: () => stage.clock.ms,
+    save: (name, value) => (saved[name] = value),
+  }).check();
+  assert.deepEqual(stage.store.value, running);
+  const { profiles } = saved.check;
+  assert.deepEqual(
+    profiles.control.map((row) => [row.step, row.status]),
+    [
+      ["read", 200],
+      ["slow", 200],
+      ["limited", 200],
+      ["restore", 200],
+    ],
+  );
+  assert.deepEqual(profiles.limited, {
+    status: 429,
+    retryAfter: "15",
+    otherTimes: false,
+    chaos: true,
   });
-  assert.equal(answers.length, 6);
+  assert.ok(profiles.calls.find((row) => row.kind === "via b, slow").ms >= SLOW_MS);
+  assert.ok(saved.check.wholes.every((row) => row.pass && row.kind === "non-streamed"));
+  assert.ok(saved.check.worker401.every((row) => row.status === 401));
+  // Only the profile calls reached the mock with chaos set, and only b's carried any.
+  const profiled = stage.aimock.calls.filter((call) => Object.keys(call.chaos).length);
+  assert.deepEqual(
+    profiled
+      .map((call) => [call.chaos["x-aimock-chaos-ratelimit"], call.chaos["x-aimock-chaos-latency"]])
+      .sort(),
+    [
+      ["0", "0"],
+      ["0", "0"],
+      ["0", String(SLOW_MS)],
+      ["1", "0"],
+    ],
+  );
+  assert.ok(profiled.every((call) => call.path === "/v1/messages"));
+});
+
+test("a check names a burst stream, a latency or 429 share the mock never saw, and still puts b back", async () => {
+  // The three long streams run at once on one clock: 5 s each is still 15 s in all, a burst.
+  const stage = deployedStage({ chaos: false, longMs: 5_000 });
+  await assert.rejects(
+    stageOf(fakeApi({ resources: deployed(), lease: NOW + hour }), {
+      key: stage.key,
+      fetcher: stage.fetcher,
+      now: () => stage.clock.ms,
+    }).check(),
+    (error) => {
+      for (const shape of ["chat", "responses", "messages"])
+        assert.match(error.message, new RegExp(`${shape} long ended too soon`, "u"));
+      assert.match(error.message, /messages via b, slow answered before profile b's latency/u);
+      assert.match(error.message, /messages via b at a 429 share of 1: HTTP 200/u);
+      assert.doesNotMatch(error.message, /short|non-streamed|via a|restore|Worker answered/u);
+      return true;
+    },
+  );
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
 });
 
 test("a check refuses past the lease without calling the stage", async () => {
@@ -235,7 +340,7 @@ const unreachable =
   };
 
 test("a failing stage fetch prints no hostname, at the top level or in the summary", async () => {
-  for (const reachable of [[], ["/v1/models"]]) {
+  for (const reachable of [[], keyedRoutes]) {
     const printed = [];
     const code = await main(dispatch, {
       fetcher: unreachable(reachable),
@@ -254,7 +359,7 @@ test("a failing stage fetch prints no hostname, at the top level or in the summa
       printed.at(-1),
       reachable.length
         ? /^Emulated upstream check failed: the mock itself did not refuse.*chat short The stage's chat short stream call failed \(TypeError\)/u
-        : /^The stage's unkeyed call failed \(TypeError\)$/u,
+        : /^The stage's unkeyed \/v1\/models call failed \(TypeError\)$/u,
     );
   }
   // Any error not raised by this stage prints as its kind only.
