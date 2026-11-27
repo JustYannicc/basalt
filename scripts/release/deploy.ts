@@ -948,9 +948,9 @@ try {
           at,
           stackState,
           runnerLocal: runnerLocalStateVersion,
-          open: Effect.gen(function* () {
-            return yield* Session.open(target as never);
-          }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn, cause }))),
+          open: Effect.suspend(() => Session.open(target as never)).pipe(
+            Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
+          ),
         });
       }),
     );
