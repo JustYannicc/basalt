@@ -738,6 +738,12 @@ test("a destroy reads the registry's list of digest entries and tags, however it
     { emptyEnd: false },
     { emptyEnd: true, order: "lexical" },
     { emptyEnd: false, order: "lexical" },
+    // The form recorded for this registry: the full request URL, no brackets, a second query.
+    { emptyEnd: true, linkForm: "recorded" },
+    { emptyEnd: false, linkForm: "recorded", order: "lexical" },
+    // A form nobody has seen: the spec's own `last` reads the list all the same.
+    { emptyEnd: false, linkForm: "unknown" },
+    { emptyEnd: true, linkForm: "unknown", order: "lexical" },
   ]) {
     const fake = cloudflareStage(shape);
     const { lines, saved } = await destroyOn(fake);
