@@ -32,6 +32,7 @@ import {
 } from "./answers.mjs";
 import { checkedBody, recordedConfiguration } from "./bodies.mjs";
 import { isProductionName, stageOwnership } from "./ownership.mjs";
+import { KEPT_TYPES } from "./kept-entries.mjs";
 import { readTagPages, TAG } from "./tag-pages.mjs";
 
 const API = "https://api.cloudflare.com/client/v4";
@@ -45,6 +46,8 @@ const MANIFEST_TYPES = [
   "application/vnd.oci.image.manifest.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
   "application/vnd.docker.distribution.manifest.v2+json",
+  // So a registry that serves its own artifacts under their own type still answers the read.
+  ...KEPT_TYPES,
 ].join(", ");
 const MAX_PAGES = 100;
 

@@ -34,7 +34,10 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
       ...resources.namespaces.map(
         (row) => `Durable Object namespace ${row.class} of ${row.script}`,
       ),
-      ...resources.images.map((row) => `registry repository ${row.name} (${row.tags.length} tags)`),
+      ...resources.images.map((row) => {
+        const digests = row.tags.filter((entry) => entry.startsWith("sha256:")).length;
+        return `registry repository ${row.name} (${row.tags.length - digests} tags, ${digests} digest entries)`;
+      }),
     ].join(", ");
   const empty = (resources) =>
     Object.entries(resources).every(([kind, rows]) => kind === "kept" || rows.length === 0);
@@ -59,24 +62,26 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
     // Deleting a Worker deletes the Durable Object namespaces it owns.
     for (const script of before.scripts)
       await attempt(`Worker ${script.id}`, () => stage.remove("scripts", script));
-    const keptNow = [];
+    // What each repository's delete pass returned in this run: the entries it found kept.
+    const keptBy = new Map();
     for (const image of [...before.images, ...before.kept.map((row) => row.image)]) {
       const kept = await attempt(`registry repository ${image.name}`, () =>
         stage.removeImage(image),
       );
-      if (kept) keptNow.push(...kept);
+      if (kept) keptBy.set(image.name, kept);
     }
     const after = await inventory();
-    // A refused registry delete fails the teardown even when a read leaves nothing but kept types:
-    // only a refusal of a kept class makes an entry the registry's.
-    if (!empty(after) || records.length) {
+    // A repository is the registry's only when its delete pass in this run returned, and the read
+    // after it finds exactly as many kept entries as that pass was refused.
+    const unproven = after.kept.filter((row) => keptBy.get(row.name)?.length !== row.types.length);
+    if (!empty(after) || records.length || unproven.length) {
       const error = new StageError(
-        `Emulated upstream resources remain after teardown: ${describe(after) || "only entries whose delete was refused"}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
+        `Emulated upstream resources remain after teardown: ${[describe(after), ...unproven.map((row) => `registry repository ${row.name} (${row.types.length} entries of a kept type, not proven kept in this run)`)].filter(Boolean).join(", ") || "only entries whose delete was refused"}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
       );
       if (records.length) error.record = Object.freeze({ teardown: Object.freeze(records) });
       throw error;
     }
-    return { before, failures, kept: keptNow, keptAfter: after.kept };
+    return { before, failures, kept: [...keptBy.values()].flat() };
   }
 
   /** The Worker's DELETE_BY lease in epoch milliseconds, or undefined when it has none. */

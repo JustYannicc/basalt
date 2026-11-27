@@ -20,6 +20,7 @@ export const IMAGE_TYPES = Object.freeze([
   "application/vnd.docker.distribution.manifest.list.v2+json",
   "application/vnd.docker.distribution.manifest.v2+json",
 ]);
+const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
 const IMAGE_CONFIGS = new Set([
   "application/vnd.oci.image.config.v1+json",
   "application/vnd.docker.container.image.v1+json",
@@ -29,20 +30,26 @@ const IMAGE_CONFIGS = new Set([
 export const KEPT_REFUSALS = Object.freeze(["409 SINGLETON_ARTIFACT_EXISTS", "403"]);
 
 /**
- * What a manifest is, from its own body: its artifact type when it names one, else its config's
- * media type when that is not an image's config, else its media type. An image manifest (one whose
- * config is an image config) and an index are their own media type.
+ * What a manifest is, from its own body. An index or a Docker manifest is its media type, and so
+ * is an OCI manifest whose config is an image's (or that has none). Any other OCI manifest is an
+ * artifact: its artifact type when it names one, else its config's media type.
  */
 export function typeOfManifest(data) {
   const field = (value, key) =>
     value !== null && typeof value === "object" && Object.hasOwn(value, key)
       ? value[key]
       : undefined;
+  const media = field(data, "mediaType");
+  const config = field(field(data, "config"), "mediaType");
+  // An index, a Docker manifest or a manifest with an image's config is an image, whatever else it
+  // names: an artifact type never makes one the registry's.
+  if (typeof media === "string" && IMAGE_TYPES.includes(media) && media !== OCI_MANIFEST)
+    return media;
+  if (media === OCI_MANIFEST && (typeof config !== "string" || IMAGE_CONFIGS.has(config)))
+    return media;
   const artifact = field(data, "artifactType");
   if (typeof artifact === "string") return artifact;
-  const config = field(field(data, "config"), "mediaType");
-  if (typeof config === "string" && !IMAGE_CONFIGS.has(config)) return config;
-  const media = field(data, "mediaType");
+  if (typeof config === "string") return config;
   return typeof media === "string" ? media : undefined;
 }
 

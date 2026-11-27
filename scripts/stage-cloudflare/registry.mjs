@@ -43,12 +43,13 @@ export function registryOperations(send) {
     const entries = await send({ kind: "images", operation: "tags", target: image });
     const tags = entries.filter((entry) => !DIGEST.test(entry));
     const digests = entries.filter((entry) => DIGEST.test(entry));
-    const deleted = new Set();
+    // Every digest a delete was sent for, so the digest loop never sends one twice.
+    const tried = new Set();
     const refused = [];
     const attempt = async (reference, kind, type) => {
+      tried.add(reference);
       try {
         await remove(image, reference);
-        deleted.add(reference);
         return undefined;
       } catch (error) {
         const refusal = error !== null && typeof error === "object" ? error.refusal : undefined;
@@ -66,13 +67,14 @@ export function registryOperations(send) {
           if (!reached.includes(child)) reached.push(child);
       }
       for (const digest of reached) {
+        if (tried.has(digest)) continue;
         const failed = await attempt(digest, "tag", tagged.type);
         if (failed) refused.push(failed);
       }
     }
     const kept = [];
     for (const digest of digests) {
-      if (deleted.has(digest)) continue;
+      if (tried.has(digest)) continue;
       const type = await typeOf(image, digest);
       const failed = await attempt(digest, "digest", type);
       if (!failed) continue;

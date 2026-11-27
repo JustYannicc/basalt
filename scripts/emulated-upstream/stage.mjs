@@ -247,29 +247,24 @@ export function emulatedStage({
   }
 
   async function destroy() {
-    const { before, failures, kept = [], keptAfter = [] } = await api.destroy();
+    const { before, failures, kept = [] } = await api.destroy();
     // Closed values only: a kept entry's type is on kept-entries.mjs's list, its class one of two.
+    // The account proved each one in this run: refused as kept, and found again after.
     const keptFacts = kept.map(({ type, class: refused }) => ({ type, class: refused }));
-    const keptCount = keptAfter.reduce((sum, row) => sum + row.types.length, 0);
     save("teardown", { before: counts(before), failures: failures.length, kept: keptFacts });
     summary(`- removed: ${api.describe(before) || "nothing was deployed"}`);
-    if (keptCount === 0)
+    if (keptFacts.length === 0)
       summary(
         `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`,
       );
     else {
       const classes = new Map();
-      for (const { type, class: refused } of keptFacts)
-        classes.set(
-          `${type}, delete refused ${refused}`,
-          (classes.get(`${type}, delete refused ${refused}`) ?? 0) + 1,
-        );
-      const earlier = keptCount - keptFacts.length;
+      for (const { type, class: refused } of keptFacts) {
+        const what = `${type}, delete refused ${refused}`;
+        classes.set(what, (classes.get(what) ?? 0) + 1);
+      }
       summary(
-        `- after teardown: no container application, Worker, Durable Object namespace or tag named ${prefix}-* remains; ${keptCount} ${keptCount === 1 ? "entry is" : "entries are"} kept by the registry: ${[
-          ...[...classes].map(([what, count]) => `${count} × ${what}`),
-          ...(earlier > 0 ? [`${earlier} found kept by type, not deleted in this run`] : []),
-        ].join("; ")}`,
+        `- after teardown: no container application, Worker, Durable Object namespace or tag named ${prefix}-* remains; ${keptFacts.length} ${keptFacts.length === 1 ? "entry is" : "entries are"} kept by the registry: ${[...classes].map(([what, count]) => `${count} × ${what}`).join("; ")}`,
       );
     }
     summary("- not checked: a manifest the registry's tag list does not name");

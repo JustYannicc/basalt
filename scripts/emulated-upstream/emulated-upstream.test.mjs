@@ -421,7 +421,7 @@ test("the inventory and the destroy touch only what carries the stage's prefix, 
   const found = await api.inventory();
   assert.deepEqual(
     api.describe(found),
-    `container application ${prefix}-mock, Worker ${prefix}-gateway, Durable Object namespace Mock of ${prefix}-gateway, registry repository ${prefix}-mock (1 tags)`,
+    `container application ${prefix}-mock, Worker ${prefix}-gateway, Durable Object namespace Mock of ${prefix}-gateway, registry repository ${prefix}-mock (1 tags, 0 digest entries)`,
   );
   await api.destroy();
   const deletes = calls.filter((call) => call.method === "DELETE").map((call) => call.path);
@@ -688,6 +688,17 @@ test("a destroy of a deployed stage whose image has a long tag list ends with no
   );
 });
 
+const imageManifest = () => ({
+  schemaVersion: 2,
+  mediaType: "application/vnd.oci.image.manifest.v1+json",
+  config: { mediaType: "application/vnd.oci.image.config.v1+json" },
+});
+const indexBody = () => ({
+  schemaVersion: 2,
+  mediaType: "application/vnd.oci.image.index.v1+json",
+  manifests: [],
+});
+
 // The registry as run 46020606930 read it: five entries a page whatever `n` asks, a next link of
 // the page's last entry, digest entries first, then the tags.
 const chainType = "application/vnd.cloudchamber.btrfs-chain.v1";
@@ -778,6 +789,39 @@ test("anything else the registry refuses fails the destroy closed, with a record
     },
     "the stage's own platform manifest": { refuse: { [ownPlatform]: { status: 403 } } },
     "the stage's own index, refused as an artifact would be": { refuse: { [ownIndex]: singleton } },
+    // An untagged entry that is an image, whatever it names, is never the registry's.
+    "an untagged image manifest refused 403": {
+      artifacts: [{ digest: chain, body: imageManifest(), refuse: { status: 403 } }],
+    },
+    "an untagged index refused as an artifact would be": {
+      artifacts: [{ digest: chain, body: indexBody(), refuse: singleton }],
+    },
+    "an index naming the registry's artifact type, refused 403": {
+      artifacts: [
+        {
+          digest: chain,
+          body: { ...indexBody(), artifactType: chainType },
+          refuse: { status: 403 },
+        },
+      ],
+    },
+    "an image manifest naming the registry's artifact type, refused 403": {
+      artifacts: [
+        {
+          digest: chain,
+          body: { ...imageManifest(), artifactType: chainType },
+          refuse: { status: 403 },
+        },
+      ],
+    },
+    "a kept type refused 409 without the registry's code": {
+      artifacts: [{ digest: chain, type: chainType, refuse: { status: 409 } }],
+    },
+    "a kept type refused 500 with the registry's code": {
+      artifacts: [
+        { digest: chain, type: chainType, refuse: { status: 500, code: singleton.code } },
+      ],
+    },
     "a kept artifact beside a refused image": {
       artifacts: [{ digest: chain, type: chainType, refuse: singleton }],
       refuse: { [ownPlatform]: { status: 403 } },
@@ -799,6 +843,106 @@ test("anything else the registry refuses fails the destroy closed, with a record
     // An entry beside a refused image is never the registry's: no tag may be left by then.
     if (name === "a kept artifact beside a refused image")
       assert.deepEqual(deletes.registryDeletes.kept, [], name);
+  }
+});
+
+test("an artifact whose delete could not be sent is never kept, though a read finds only its type", async () => {
+  const fake = cloudflareStage({
+    emptyEnd: true,
+    artifacts: [{ digest: chain, type: chainType, refuse: { throws: true } }],
+  });
+  await assert.rejects(
+    destroyOn(fake),
+    /^Error: Emulated upstream resources remain after teardown: .*not proven kept in this run/u,
+  );
+});
+
+test("a repository the registry keeps is tried again by the next teardown, and still said", async () => {
+  const fake = cloudflareStage({
+    emptyEnd: true,
+    artifacts: [{ digest: chain, type: chainType, refuse: singleton }],
+  });
+  const kept = `1 entry is kept by the registry: 1 × ${chainType}, delete refused 409 SINGLETON_ARTIFACT_EXISTS`;
+  for (const run of [1, 2]) {
+    const { lines } = await destroyOn(fake);
+    assert.ok(
+      lines.some((line) => line.endsWith(kept)),
+      `${run}: ${lines.join("\n")}`,
+    );
+  }
+  const deletes = fake.calls.filter(
+    (call) => call.method === "DELETE" && call.url.endsWith(`/manifests/${chain}`),
+  );
+  assert.equal(deletes.length, 2);
+});
+
+test("the deploy's guard ignores a repository only when every entry is the registry's", async () => {
+  const other = `sha256:${"d".repeat(64)}`;
+  const repositories = {
+    "only the registry's artifact": [
+      { own: false, artifacts: [{ digest: chain, type: chainType }] },
+      [],
+      false,
+    ],
+    "a tag beside the registry's artifact": [
+      { own: false, artifacts: [{ digest: chain, type: chainType }] },
+      ["h1"],
+      true,
+    ],
+    "a tag naming the registry's artifact": [
+      { own: false, tagged: { h1: chain }, artifacts: [{ digest: chain, type: chainType }] },
+      ["h1"],
+      true,
+    ],
+    "an image manifest beside the registry's artifact": [
+      {
+        own: false,
+        artifacts: [
+          { digest: chain, type: chainType },
+          { digest: other, body: imageManifest() },
+        ],
+      },
+      [],
+      true,
+    ],
+    "a type not on the list": [
+      { own: false, artifacts: [{ digest: chain, type: "application/vnd.example.thing" }] },
+      [],
+      true,
+    ],
+    "an unreadable manifest": [
+      { own: false, artifacts: [{ digest: chain, type: chainType, read: 500 }] },
+      [],
+      true,
+    ],
+  };
+  for (const [name, [cloudflare, tags, refused]] of Object.entries(repositories)) {
+    const fake = cloudflareStage({ emptyEnd: true, ...cloudflare }, tags);
+    fake.live.applications.length = 0;
+    fake.live.scripts.length = 0;
+    fake.live.namespaces.length = 0;
+    const error = await emulatedStage({
+      api: account(fake.fetcher),
+      key: "k".repeat(43),
+      fetcher: fake.fetcher,
+      summary: () => {},
+      save: () => {},
+      // The guard is all this test reads: past it, the deploy stops here.
+      deployEntry: () => {
+        throw new Error("past the guard");
+      },
+    })
+      .deploy()
+      .then(
+        () => undefined,
+        (caught) => caught,
+      );
+    assert.equal(
+      /already exists/u.test(error?.message ?? ""),
+      refused,
+      `${name}: ${error?.message}`,
+    );
+    if (!refused) assert.equal(error?.message, "past the guard", name);
   }
 });
 

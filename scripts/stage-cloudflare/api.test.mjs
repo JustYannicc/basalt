@@ -505,6 +505,31 @@ test("an empty page ends the list, with or without a next link", async () => {
   }
 });
 
+test("an empty page whose link carries a fresh cursor stops the read; one that leads nowhere new ends it", async () => {
+  // A fresh cursor after an empty first page, or after an empty page in the middle.
+  for (const pages of [
+    [[[], next("n=1000&last=a")]],
+    [
+      [["h1"], next("n=1000&last=h1")],
+      [[], next("n=1000&last=h5")],
+    ],
+    // A link the stage cannot read on an empty page leads nowhere it can check.
+    [[[], 'rel="next"']],
+  ]) {
+    const { error, record } = await stopOf(pages);
+    assert.match(error.message, /another page after an empty one/u, JSON.stringify(pages));
+    assert.equal(record.rule, "next-after-empty");
+  }
+  // The very query just sent, again: nothing new follows.
+  const { fetcher, sent } = scripted([
+    [["h1"], next("n=1000&last=h1")],
+    [[], next("n=1000&last=h1")],
+  ]);
+  const [image] = await stage(fetcher).images();
+  assert.deepEqual([...image.tags], ["h1"]);
+  assert.equal(sent.length, 2);
+});
+
 test("a 404 on a later page stops the read instead of ending the list", async () => {
   const { error, record } = await stopOf([
     [["h1"], next("last=h1")],
@@ -537,8 +562,8 @@ test("a tag list that repeats a tag, names one outside the grammar or never ends
       : fake.fetcher(url, init);
   await assert.rejects(stage(page(["h1", "h1"], false)).images(), /had already listed/u);
   await assert.rejects(stage(page(["../x"], false)).images(), /cannot name/u);
-  // An empty page ends the list even when it offers another.
-  assert.deepEqual([...(await stage(page([], true)).images())[0].tags], []);
+  // An empty page whose link carries a fresh cursor could hide the rest of the list.
+  await assert.rejects(stage(page([], true)).images(), /another page after an empty one/u);
   // The same page offered forever repeats its tags on the second read.
   await assert.rejects(stage(page(["h1"], true)).images(), /had already listed \(page 2/u);
 });

@@ -73,21 +73,25 @@ export function fakeAccount({
         new Map(
           cloudflare
             ? [
-                [DIGEST, { body: imageIndex([PLATFORM]) }],
-                [
-                  PLATFORM,
-                  {
-                    body: {
-                      schemaVersion: 2,
-                      mediaType: "application/vnd.oci.image.manifest.v1+json",
-                      config: { mediaType: "application/vnd.oci.image.config.v1+json" },
-                    },
-                  },
-                ],
+                ...(cloudflare.own === false ? [] : [[DIGEST, { body: imageIndex([PLATFORM]) }]]),
+                ...(cloudflare.own === false
+                  ? []
+                  : [
+                      [
+                        PLATFORM,
+                        {
+                          body: {
+                            schemaVersion: 2,
+                            mediaType: "application/vnd.oci.image.manifest.v1+json",
+                            config: { mediaType: "application/vnd.oci.image.config.v1+json" },
+                          },
+                        },
+                      ],
+                    ]),
                 ...(cloudflare.artifacts ?? []).map((artifact) => [
                   artifact.digest,
                   {
-                    body: {
+                    body: artifact.body ?? {
                       schemaVersion: 2,
                       mediaType: "application/vnd.oci.image.manifest.v1+json",
                       ...(artifact.type === undefined ? {} : { artifactType: artifact.type }),
@@ -226,11 +230,16 @@ export function fakeAccount({
   function cloudflareManifest(method, name, reference) {
     const manifests = live.manifests[name];
     if (!manifests) return json({}, { status: 404 });
-    const digest = live.tags[name]?.includes(reference) ? DIGEST : reference;
+    // A tag names the stage's own index unless `tagged` points it at another manifest.
+    const digest = live.tags[name]?.includes(reference)
+      ? (cloudflare.tagged?.[reference] ?? DIGEST)
+      : reference;
     const found = manifests.get(digest);
     if (!found) return json({}, { status: 404 });
     if (method === "DELETE") {
       const refusal = found.refuse ?? cloudflare.refuse?.[digest];
+      // A delete the transport itself fails, as a dropped connection does.
+      if (refusal?.throws) throw new TypeError("fetch failed");
       if (refusal)
         return json(
           { errors: refusal.code ? [{ code: refusal.code, message: "refused" }] : [] },

@@ -192,9 +192,19 @@ export async function readTagPages(first, fetchPage) {
     if (!answer.next) return Object.freeze(tags);
     const cursor = cursorOf(answer.target, first);
     pages.at(-1).link = cursor.facts;
-    // Cloudflare's registry ends a list only with an empty page, which still carries a next link
-    // with an empty cursor; nothing can follow a page that holds nothing.
-    if (!found.length) return Object.freeze(tags);
+    // An empty page ends the list when its link leads nowhere new: every cursor value empty, or the
+    // very query just sent. An empty page whose link carries a fresh cursor could hide the rest.
+    if (!found.length) {
+      const pairs =
+        answer.target === undefined ? undefined : queryPairs(new URL(answer.target, first).search);
+      // `n` is a page size, not a cursor.
+      if (
+        pairs !== undefined &&
+        (pairs.every(([name, value]) => name === "n" || value === "") || cursor.url === url)
+      )
+        return Object.freeze(tags);
+      throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
+    }
     if (cursor.url === undefined)
       throw stop("link-not-plain", "A registry tag list's next link is not plain cursor values");
     url = cursor.url;
