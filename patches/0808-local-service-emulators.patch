@@ -475,14 +475,21 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
  import { Target } from "../support/platform.ts";
  import { ssoFixture } from "../support/sso.ts";
  import { scenarios } from "../test-plan.ts";
-@@ -374,8 +375,21 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
+@@ -368,12 +369,30 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
+             issuer: "http://169.254.169.254",
+           })).status,
+         ).toBe(400);
+-        const publicRegistration = yield* api.request(
++        let publicRegistration = yield* api.request(
+           actors.owner,
+           "POST",
            "/api/auth/sso/register",
            { ...base, issuer: fixture.publicIssuer },
          );
--        expect(publicRegistration.status).toBe(200);
--        expect(JSON.stringify(publicRegistration.body)).not.toContain("synthetic-sso-secret");
 +        // A local Cloud's Google stand-in runs on loopback, so this stack has no public issuer:
 +        // the stand-in is refused like any private one, and the public case is proved elsewhere.
++        // The provider is registered against the stack's own trusted IdP instead, because the
++        // ambiguous-domain case below needs it.
 +        if (["localhost", "127.0.0.1"].includes(new URL(fixture.publicIssuer).hostname)) {
 +          expect(publicRegistration.status).toBe(400);
 +          const unproved = {
@@ -492,10 +499,11 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
 +          };
 +          console.log(`Not proved: ${JSON.stringify(unproved)}`);
 +          yield* (yield* Evidence).json("not-proved.json", [unproved]);
-+        } else {
-+          expect(publicRegistration.status).toBe(200);
-+          expect(JSON.stringify(publicRegistration.body)).not.toContain("synthetic-sso-secret");
++          publicRegistration = yield* api.request(actors.owner, "POST", "/api/auth/sso/register", {
++            ...base,
++            issuer: fixture.origin,
++          });
 +        }
+         expect(publicRegistration.status).toBe(200);
+         expect(JSON.stringify(publicRegistration.body)).not.toContain("synthetic-sso-secret");
          expect(
-           (yield* api.request(anonymous, "POST", "/api/auth/sign-in/social", {
-             provider: "google",
