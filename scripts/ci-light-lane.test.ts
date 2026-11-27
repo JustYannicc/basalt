@@ -793,6 +793,62 @@ test("box-rerun leaves main's Check red when a job failed off the light runners,
   assert.equal(rerunDecision(mainFailed(), undefined, hostedOnly, "basalt-box").action, "none");
 });
 
+test("every light job has a timeout, so a hung light runner can't hold main's Check for hours", () => {
+  // GitHub's default is 360 minutes; the longest light job of 26 Nov took 268 s. The aggregate's
+  // own artifact steps may take 17 minutes, so it gets 25.
+  for (const id of lightJobs) {
+    const minutes = workflow.jobs[id]["timeout-minutes"];
+    const most = id === "check" ? 25 : 15;
+    assert.ok(Number.isInteger(minutes) && minutes > 0 && minutes <= most, `${id}: ${minutes}`);
+  }
+});
+
+test("box-rerun re-runs main's Check hosted when a light job timed out", () => {
+  // select hung on a light runner past its timeout: GitHub cancelled it after it took the runner,
+  // and the aggregate failed hosted on the cancelled need.
+  const aggregate = ran(3, "check (fast-only)", ["ubuntu-latest"], "failure", "GitHub Actions 9");
+  const timedOut = [
+    ran(1, "select", [label], "cancelled"),
+    rerunJob(2, "fast-units (1)", ["ubuntu-latest"], "success", 0, "GitHub Actions 2"),
+    aggregate,
+  ];
+  assert.deepEqual(rerunDecision(mainFailed(), undefined, timedOut, "basalt-box"), {
+    action: "rerun",
+    stuck: [1],
+  });
+  // GitHub may also say timed_out.
+  const said = [ran(1, "cpa-pipeline", [label], "timed_out"), aggregate];
+  assert.deepEqual(rerunDecision(mainFailed(), undefined, said, "basalt-box"), {
+    action: "rerun",
+    stuck: [1],
+  });
+  // Only a light job that took a runner counts: one cancelled while still queued has none.
+  const queued = [rerunJob(1, "select", [label], "cancelled", 5), aggregate];
+  assert.equal(rerunDecision(mainFailed(), undefined, queued, "basalt-box").action, "none");
+  // A light timeout beside a hosted job that didn't pass stays red.
+  const beside = [
+    ran(1, "select", [label], "cancelled"),
+    ran(2, "client-connection", ["ubuntu-latest"], "cancelled", "GitHub Actions 4"),
+    aggregate,
+  ];
+  assert.equal(rerunDecision(mainFailed(), undefined, beside, "basalt-box").action, "report");
+});
+
+test("a hung aggregate ends main's Check cancelled, re-run only when it had waited 2 minutes for a runner", () => {
+  // Every need passed, and the aggregate timed out on a light runner: the run ends cancelled, and a
+  // timeout's annotation names nobody, so box-rerun's light path decides by the wait alone.
+  const needs = [
+    ran(1, "select", [label], "success"),
+    ran(2, "fast", ["ubuntu-latest"], "success"),
+  ];
+  const hung = (waited: number) => rerunJob(3, "check", [label], "cancelled", waited, "light-1");
+  assert.deepEqual(decideLight([...needs, hung(3)], false, undefined), {
+    action: "rerun",
+    stuck: [3],
+  });
+  assert.equal(decideLight([...needs, hung(0)], false, undefined).action, "none");
+});
+
 test("a second attempt never uses the lane", () => {
   const main = { event: "push", ref: "refs/heads/main", headRepository: repository };
   assert.equal(lightLabel(input({ ...main, attempt: "2" })), "");
