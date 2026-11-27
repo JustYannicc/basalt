@@ -38,6 +38,7 @@ Home's Management API uses the <code>MANAGEMENT_PASSWORD</code> environment over
 - <code>8317</code>: CLIProxyAPI client API.
 - <code>8327</code>: Home UI and Management API.
 - <code>8318</code>: readiness endpoint.
+- <code>127.0.0.1:20990</code>: outgoing routes, loopback only (see below).
 
 <code>GET /ready</code> on port <code>8318</code> requires <code>Authorization: Bearer &lt;POOL_MANAGEMENT_KEY&gt;</code>. It returns HTTP <code>200</code> only while both processes are live, the CPA health endpoint is healthy, Home reports this node as healthy, and the native scheduler veto has an unexpired health lease, and HTTP <code>503</code> otherwise. A <code>503</code> body names one closed <code>refusal</code>: <code>policy_fused</code> after Home reported that the native-policy plugin fused, <code>policy_unproven</code> while the veto has no live lease, or <code>degraded</code> when the lease is live but Home or the node is unhealthy, in that order of precedence. While the native-policy plugin is configured but not active, Home refuses every account pick with <code>scheduler_unavailable</code> instead of falling back to its built-in selector. Apart from <code>refusal</code>, the <code>200</code> and <code>503</code> bodies are the same JSON object: <code>boot_id</code> and <code>started_at</code>, generated for each supervisor process; the database distance (<code>db_rtt_state</code>, and once measured <code>db_rtt_ms</code>); <code>location</code> when the platform names it; and <code>refresh_in_flight</code>, the number of credential refreshes Home has started and not yet written back, taken from Home's <code>/healthz</code> by the 2-second liveness check and left out once that reading is more than 3 seconds old or Home does not report it. No secret, credential, user, node address, or database detail is included.
 
@@ -114,6 +115,12 @@ Authenticated <code>GET /user/models/accessible</code> returns the subset allowe
 Authenticated <code>GET /v1/models</code> lists the models allowed by the calling key. Clients that consume the richer backend catalog can request <code>GET /v1/models?client_version=cpa</code>. Basalt passes both responses through unchanged. It has no provider-specific tier table or catalog adapter.
 
 Known limitation: the pinned backend does not expose a complete non-Codex speed-tier matrix, including Claude Fast discovery. Basalt exposes whatever the backend can report today; it does not infer missing tiers or account eligibility. The gap is tracked in [CLIProxyAPI#6928](https://github.com/router-for-me/CLIProxyAPI/issues/6928) and [signalbox#1409](https://github.com/JustYannicc/signalbox/issues/1409). This limitation is accepted for the current release and does not hold the container, routing, or affinity delivery.
+
+## Outgoing routes
+
+A credential whose owner routes it carries a SOCKS5 proxy, <code>socks5://&lt;route id&gt;:x@127.0.0.1:20990</code>: a per-key <code>proxy-url</code> or a per-auth <code>proxy_url</code>. The controller writes these. <code>route_peer.py</code> treats the username as the route id. It opens the home-peer WebSocket wire to <code>route-peer.internal/route/&lt;id&gt;</code> and forwards the CONNECT unchanged, so the route's gateway resolves the name, never this container. If the tunnel can't open, or it closes before the gateway answers, the call is refused with <code>0x02</code>, never dialled directly. The node's error answer for that refusal names this address, and the controller replaces such an answer with <code>route_down</code> before it reaches a caller. A refusal inside an answer already under way, such as a WebSocket or a streamed <code>2xx</code>, is not rewritten.
+
+The pool never sets the node's global <code>proxy-url</code>: an empty per-credential value inherits it, so it would route credentials that Home creates and that nobody routed. <code>route_peer.py</code> repeats the PeerWire handshake rather than changing <code>home_peer_wire.py</code>, because that file is bundled into retained Homes by hash.
 
 ## Compatibility caveat
 
