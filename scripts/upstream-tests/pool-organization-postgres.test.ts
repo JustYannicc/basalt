@@ -34,7 +34,7 @@ async function withoutCancels(target: URL) {
   const sockets = new Set<net.Socket>();
   const server = net.createServer((client) => {
     sockets.add(client);
-    client.once("data", (first) => {
+    client.once("data", (first: Buffer) => {
       // A cancel request is 16 bytes: its length, then the code 80877102.
       if (first.length >= 8 && first.readUInt32BE(0) === 16 && first.readUInt32BE(4) === 80877102)
         return;
