@@ -23,6 +23,8 @@ export interface RuntimeState {
     exec?: DrainExecutor["exec"];
   };
   waitUntil(work: Promise<unknown>): void;
+  /** Resets the object onto the deployed code. A state scoped over another object's has none. */
+  abort?(reason: string): void;
 }
 /**
  * A runtime Durable Object's own storage. A state scoped over another object's storage never has it,

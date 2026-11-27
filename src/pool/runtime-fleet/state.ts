@@ -593,10 +593,11 @@ export class RuntimeFleetState {
     });
   }
   /**
-   * A start refused before its durable first-start intent was written reached no container, so
-   * waiting out its bound proves nothing more: it leaves its starting phase at once, with the
-   * refusal. Like a bound it adds no replacement demand and still holds its place until the cell's
-   * abandon proves nothing runs. False when the row already left its starting phases.
+   * A start refused before its durable first-start intent was written reached no container, and a
+   * sent one whose own witness proved it can never attest can't prove itself later, so waiting out
+   * its bound proves nothing more: it leaves its starting phase at once, with the refusal. Like a
+   * bound it adds no replacement demand and still holds its place until the cell's abandon proves
+   * nothing runs. False when the row already left its starting phases.
    */
   startRefused(target: SlotTarget, failure: FleetFailure) {
     return this.change((rows) => {

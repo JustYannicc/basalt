@@ -101,7 +101,7 @@ export async function handleRuntimeHandoff(
             ? value.intent.operationId
             : null,
     };
-    if (!sameControllerCode(value.controllerCode, code)) throw new SlotRefused("identity");
+    if (!sameControllerCode(value.controllerCode, code)) throw new SlotRefused("controller_code");
     if (
       [
         "adopt",
