@@ -180,6 +180,9 @@ async function withDatabase(
     schema: string;
     url: string;
   }) => Promise<void>,
+  // Metadata stored as jsonb: the rule's cast works, but `pg_input_is_valid(jsonb, …)` does not
+  // exist, so only the shape read fails, as on a database without that function.
+  { jsonbMetadata = false } = {},
 ) {
   const adminUrl = postgresUrl();
   const schema = `observation_${randomUUID().replaceAll("-", "")}`;
@@ -190,7 +193,9 @@ async function withDatabase(
   try {
     await admin.query(`create schema ${schema}`);
     await admin.query(`set search_path = ${schema}`);
-    await admin.query("create table organization (id text primary key, metadata text)");
+    await admin.query(
+      `create table organization (id text primary key, metadata ${jsonbMetadata ? "jsonb" : "text"})`,
+    );
     await admin.query(
       "create table executor_apps (id text primary key, owner text not null, active_deployment text)",
     );
@@ -199,7 +204,7 @@ async function withDatabase(
     for (const [organization, metadata, app] of [
       [person, record(pool), pool],
       ["org_other", record("app_unrelated"), "app_other_pool"],
-      ["org_unreadable", "{ not json", "app_unreadable_pool"],
+      ...(jsonbMetadata ? [] : [["org_unreadable", "{ not json", "app_unreadable_pool"]]),
     ]) {
       await admin.query("insert into organization values ($1, $2)", [organization, metadata]);
       await admin.query("insert into executor_apps values ($1, $2, $3)", [
@@ -267,8 +272,8 @@ test("the route answers and reports the same on the grouped pool as on a plain o
         "app_unreadable_pool",
         204,
         // Plain, the failed rule read ends its transaction and the shape is read in a second: eight
-        // round trips, past the bound at this link's delay. Grouped, the shape read goes first in
-        // the one flight, so the rule's failure is explained without a second read.
+        // round trips, past the bound at this link's delay. Grouped, the failed rule's shape is read
+        // again in a second flight: two round trips.
         { plain: ["Pool organization ownership not observed: timeout"], grouped: unreadable },
       ],
       ["org_missing", pool, 403, { plain: [], grouped: [] }],
@@ -296,7 +301,7 @@ test("a statement that fails inside the batch leaves the event's connection clea
     // One connection, so every statement after the batch runs on the connection the batch used.
     const runtime = eventPool(url, schema, "grouped", 1);
     try {
-      // The rule's cast fails inside the batch's transaction; the shape read before it answers why.
+      // The rule's cast fails inside the batch's transaction; a second flight reads why.
       const failed = await checkOn(runtime, "grouped", "org_unreadable", "app_unreadable_pool");
       assert.deepEqual(failed.lines, ["Pool organization would be refused: invalid-metadata"]);
       const next = await checkOn(runtime, "grouped", "org_other", pool);
@@ -332,4 +337,30 @@ test("a statement that fails inside the batch leaves the event's connection clea
       await runtime.dispose();
     }
   });
+});
+
+test("a shape read that fails never blinds a healthy check, on either pool", async () => {
+  await withDatabase(
+    async ({ schema, url }) => {
+      for (const mode of modes) {
+        const runtime = eventPool(url, schema, mode);
+        try {
+          // The rule alone decides a healthy check, so its own pool writes nothing.
+          assert.deepEqual((await checkOn(runtime, mode)).lines, [], mode);
+          // A refusal needs the shape read to say why, and says it could not. Plain, that takes
+          // two transactions, eight round trips, past the bound at this link's delay.
+          assert.deepEqual(
+            (await checkOn(runtime, mode, "org_other", pool)).lines,
+            [
+              `Pool organization ownership not observed: ${mode === "plain" ? "timeout" : "read-failed"}`,
+            ],
+            mode,
+          );
+        } finally {
+          await runtime.dispose();
+        }
+      }
+    },
+    { jsonbMetadata: true },
+  );
 });

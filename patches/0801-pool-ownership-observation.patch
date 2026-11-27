@@ -95,7 +95,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  
  export const poolOrganizationReadPath = "/api/internal/pool-organization";
  const Read = Schema.Struct({
-@@ -14,6 +17,262 @@ const Read = Schema.Struct({
+@@ -14,6 +17,263 @@ const Read = Schema.Struct({
    expiresAt: Schema.Finite,
  });
  
@@ -308,8 +308,9 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +    if (Exit.isFailure(read)) return { unobserved: "read-failed" as const };
 +    const shape = shapeOf(read.value, organization, pool, false);
 +    if (shape !== undefined) return { shape };
-+    // Both reads saw one snapshot, so no write landed between them: the rule refused and the shape
-+    // read found nothing to say why.
++    // The rule and the shape read saw one snapshot, so no write landed between them: the rule
++    // refused and the shape read found nothing to say why. A write before the flight, such as the
++    // organization removed after the existence read, can still lead here.
 +    return { unobserved: "unexplained" as const };
 +  }).pipe(Effect.catchCause(() => Effect.succeed({ unobserved: "read-failed" as const })));
 +
@@ -358,7 +359,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -32,6 +291,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -32,6 +292,7 @@ export const readPoolOrganization = Effect.gen(function* () {
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;
    const rows = yield* sql`select id from organization where id = ${value.organization}`;
