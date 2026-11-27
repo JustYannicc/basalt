@@ -32,6 +32,7 @@ import {
 } from "./answers.mjs";
 import { checkedBody, recordedConfiguration } from "./bodies.mjs";
 import { isProductionName, stageOwnership } from "./ownership.mjs";
+import { KEPT_TYPES } from "./kept-entries.mjs";
 import { readTagPages, TAG } from "./tag-pages.mjs";
 
 const API = "https://api.cloudflare.com/client/v4";
@@ -45,6 +46,8 @@ const MANIFEST_TYPES = [
   "application/vnd.oci.image.manifest.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
   "application/vnd.docker.distribution.manifest.v2+json",
+  // So a registry that serves its own artifacts under their own type still answers the read.
+  ...KEPT_TYPES,
 ].join(", ");
 const MAX_PAGES = 100;
 
@@ -461,9 +464,12 @@ export function stageRequests(options) {
 
   /** Every tag of one repository, recorded on its entry (tag-pages.mjs reads the pages). */
   async function readTags(planned, headers) {
-    return (planned.entry.tags = await readTagPages(planned.url, (url) =>
+    const entries = await readTagPages(planned.url, (url) =>
       exchange(url, "GET", "registry tags", headers),
-    ));
+    );
+    // A digest entry is addressed only as a manifest of this repository, as a digest read is.
+    for (const entry of entries) if (DIGEST.test(entry)) planned.entry.digests.add(entry);
+    return (planned.entry.tags = entries);
   }
 
   /** What a registry answer gives the caller: only the stage's own repositories, and their parts. */

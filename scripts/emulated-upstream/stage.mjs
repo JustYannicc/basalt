@@ -247,15 +247,27 @@ export function emulatedStage({
   }
 
   async function destroy() {
-    const { before, failures } = await api.destroy();
-    save("teardown", { before: counts(before), failures: failures.length });
+    const { before, failures, kept = [] } = await api.destroy();
+    // Closed values only: a kept entry's type is on kept-entries.mjs's list, its class one of two.
+    // The account proved each one in this run: refused as kept, and found again after.
+    const keptFacts = kept.map(({ type, class: refused }) => ({ type, class: refused }));
+    save("teardown", { before: counts(before), failures: failures.length, kept: keptFacts });
     summary(`- removed: ${api.describe(before) || "nothing was deployed"}`);
-    summary(
-      `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`,
-    );
-    summary(
-      "- not checked: a registry manifest pushed by digest alone, never tagged (the registry lists only tags)",
-    );
+    if (keptFacts.length === 0)
+      summary(
+        `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`,
+      );
+    else {
+      const classes = new Map();
+      for (const { type, class: refused } of keptFacts) {
+        const what = `${type}, delete refused ${refused}`;
+        classes.set(what, (classes.get(what) ?? 0) + 1);
+      }
+      summary(
+        `- after teardown: no container application, Worker, Durable Object namespace or tag named ${prefix}-* remains; ${keptFacts.length} ${keptFacts.length === 1 ? "entry is" : "entries are"} kept by the registry: ${[...classes].map(([what, count]) => `${count} × ${what}`).join("; ")}`,
+      );
+    }
+    summary("- not checked: a manifest the registry's tag list does not name");
   }
 
   /** Destroys the stage once its lease has passed, or when a run left it without one. */
@@ -366,7 +378,10 @@ export async function main(env, { fetcher = fetch, now = Date.now, error = conso
     error(publicMessage(caught));
     // A stop of the account layer can carry a record of closed facts (tag-pages.mjs); it is kept
     // before the run ends, per mode, so a teardown after a failed deploy keeps the deploy's.
-    if (isCloudflareApiError(caught) && Object.hasOwn(caught, "record")) {
+    if (
+      (isCloudflareApiError(caught) || caught instanceof StageError) &&
+      Object.hasOwn(caught, "record")
+    ) {
       io.summary?.(`- stop record: ${JSON.stringify(caught.record)}`);
       io.save?.(`stopped-${mode}`, caught.record);
     }
