@@ -47,12 +47,6 @@ import {
   type RetireRefusal,
 } from "./retire-stage.ts";
 import { summarize, type Sample } from "./stage-probe.ts";
-import {
-  candidateTreeEnvironment,
-  requireCandidateGuard,
-  requireSameStateDecoder,
-} from "./stage-candidate.ts";
-import { requireCandidateStack } from "./stage-candidate-stack.ts";
 import { manifestPath } from "./checkpoint.ts";
 import { sealManifest } from "./manifest.ts";
 import { nativeHooks } from "./rehearsal-native-hooks.ts";
@@ -113,6 +107,18 @@ export const declaration = {
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = join(root, ".upstream/apps/hosted/cloud");
 
+export const candidateTreeRefusal =
+  "This harness releases no candidate tree: a candidate from another lineage could deploy outside the lane's stack, which the lane's destroy never reads; nothing is checked out or deployed.";
+
+/**
+ * Every mode that would release another tree onto the stage calls this before it checks out,
+ * prepares or runs anything of that tree. No check of a candidate's own stack file proved sound,
+ * so none is admitted until the harness can destroy whatever a candidate released.
+ */
+function refuseCandidateTree() {
+  throw new Error(candidateTreeRefusal);
+}
+
 export async function runEntry(
   command: "plan" | "deploy" | "apply" | "serving" | "rollback" | "boot" | "accept",
   subject: StageSubject,
@@ -128,19 +134,16 @@ export async function runEntry(
     policy?: string | null;
     args?: readonly string[];
     include?: string | null;
-    /** Another prepared checkout whose own entry, policies and stack release onto the stage. */
+    /** The tree whose entry runs; anything but the harness's own is refused. */
     tree?: string;
   } = {},
 ) {
+  // A second line behind the modes' own refusal, before the stage env is composed.
+  if (tree !== root) refuseCandidateTree();
   const entry = join(tree, "scripts/release/deploy.ts");
   const cloud = join(tree, ".upstream/apps/hosted/cloud");
   if (!existsSync(entry))
     throw new Error("The release entry is not in this tree; nothing applies without it");
-  // All before the stage env is composed, so a refused candidate never sees a secret.
-  requireCandidateStack(root, tree, stageNames(subject).stage, source);
-  const own = candidateTreeEnvironment(root, tree);
-  await requireCandidateGuard(root, tree, outputs, source);
-  requireSameStateDecoder(root, tree);
   const config = stageEnvironment(subject, source);
   const seed = join(outputs, `seed-${command}-${Date.now()}.json`);
   const log = join(outputs, `entry-${command}-${Date.now()}.log`);
@@ -174,7 +177,6 @@ export async function runEntry(
           HOME: source.HOME,
           ...config.deploy,
           ...config.seed,
-          ...own,
           ...extra,
           ...rollbackPolicyEnv(command, policy),
           PREVIEW_AUTH_SEED_OUTPUT: seed,
@@ -508,12 +510,11 @@ export function releaseCandidate(text: string) {
 }
 
 /**
- * What a candidate run does outside this process: the harness it is checked against, its spec
- * files, the candidate's checkout and prepare, and the stage steps after them (probe, fault reads,
- * the acceptance device, the stage build, the Workers list). Tests replace them to prove the order.
+ * What a candidate run does outside this process: its spec files, the candidate's checkout and
+ * prepare, and the stage steps after them (probe, fault reads, the acceptance device, the stage
+ * build, the Workers list). Tests replace them to prove none runs before the refusal.
  */
 export interface CandidateRunServices {
-  readonly harness: string;
   readonly spec: (name: string) => Promise<string>;
   readonly checkout: (branch: string, dir: string) => void | Promise<void>;
   /** The candidate's own `prepare:upstream`, run with `candidatePrepareEnvironment` only. */
@@ -526,7 +527,6 @@ export interface CandidateRunServices {
 }
 
 const liveCandidateServices: CandidateRunServices = {
-  harness: root,
   spec: (name) => readFile(join(root, "scripts/release-preview", name), "utf8"),
   checkout: (branch, dir) => {
     execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
@@ -581,25 +581,16 @@ async function checkoutCandidate(branch: string, dir: string, io: CandidateRunSe
   return execFileSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).trim();
 }
 
-/**
- * The candidate's own prepare, then the checks that need it, before anything touches the stage: the
- * harness must decode State as the candidate does, and the candidate must deploy into the lane.
- */
-function prepareCandidate(
-  candidate: string,
-  subject: StageSubject,
-  source: NodeJS.ProcessEnv,
-  io: CandidateRunServices,
-) {
+/** The candidate's own prepare, with no deploy token or stage secret. */
+function prepareCandidate(candidate: string, source: NodeJS.ProcessEnv, io: CandidateRunServices) {
   io.prepare(candidate, candidatePrepareEnvironment(source));
-  requireSameStateDecoder(io.harness, candidate);
-  requireCandidateStack(io.harness, candidate, stageNames(subject).stage, source);
 }
 
 /**
  * One release of a candidate onto the stage, as production releases (lane 5's apply A, apply B and
  * the red run): its own entry, policy and stack, then a fresh plan. Around the apply: the pool
- * Worker versions it created, and the controller's selected boot before and after.
+ * Worker versions it created, and the controller's selected boot before and after. Refused for now
+ * (`refuseCandidateTree`).
  */
 export async function stageRelease(
   lane: number,
@@ -610,6 +601,7 @@ export async function stageRelease(
   kind: "release" | "classplan" = "release",
   io: CandidateRunServices = liveCandidateServices,
 ) {
+  refuseCandidateTree();
   const named = releaseCandidate(await io.spec("release-candidate.json"));
   // The class change plans the same candidate under its own policy and fleet declaration.
   const policy = kind === "classplan" ? "cutover-classes" : named.policy;
@@ -619,9 +611,9 @@ export async function stageRelease(
   result.candidate = await checkoutCandidate(branch, candidate, io);
   if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
     throw new Error(`The candidate has no ${policy} policy`);
-  // The harness's fault read is the boot proof after the release, even on a moved pin: it needs no
-  // acceptance device, which a lane does not have. So the candidate must decode State as it does.
-  prepareCandidate(candidate, subject, source, io);
+  prepareCandidate(candidate, source, io);
+  // The harness's fault read is the boot proof after the release: it needs no acceptance device,
+  // which a lane does not have.
   const bootOf = async (label: string) =>
     io.faultRead(lane, source, outputs, label, ["--read-only"]).then(
       (state) => (state.selection as { boot?: unknown; epoch?: unknown } | undefined) ?? null,
@@ -785,6 +777,7 @@ async function smokeIds(origin: string, source: NodeJS.ProcessEnv, stage: string
  * acceptance after it; the entry's own `rollback --from` the serving record; the boot read again;
  * re-acceptance; then every Worker's serving version compared by id and a plan read back. The
  * acceptance device is registered in the job by the candidate's own tool, its ids kept in memory.
+ * Refused for now (`refuseCandidateTree`).
  */
 export async function redRelease(
   lane: number,
@@ -794,14 +787,14 @@ export async function redRelease(
   hooks: ReturnType<typeof nativeHooks>,
   io: CandidateRunServices = liveCandidateServices,
 ) {
+  refuseCandidateTree();
   const { branch, policy } = releaseCandidate(await io.spec("release-candidate.json"));
   const result: Record<string, unknown> = { branch, policy, kind: "red" };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
   result.candidate = await checkoutCandidate(branch, candidate, io);
   if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
     throw new Error(`The candidate has no ${policy} policy`);
-  // Before the red commit, the device and the build: a refusal here leaves the stage untouched.
-  prepareCandidate(candidate, subject, source, io);
+  prepareCandidate(candidate, source, io);
   // The red commit: one exported marker in PoolWorker's entry, a real upload with no behaviour.
   const workerPath = join(candidate, "src/pool/worker.ts");
   await writeFile(
@@ -1029,6 +1022,7 @@ export async function redRelease(
  * One retry of the red release's refused rollback, for one Worker: the version that served it
  * just before the red apply began, from its own deployment history, written as a one-Worker
  * serving record, then the candidate entry's own `rollback --from` it. Read-only around it.
+ * Refused for now (`refuseCandidateTree`).
  */
 export async function rollbackRetry(
   subject: StageSubject,
@@ -1037,6 +1031,7 @@ export async function rollbackRetry(
   hooks: ReturnType<typeof nativeHooks>,
   io: CandidateRunServices = liveCandidateServices,
 ) {
+  refuseCandidateTree();
   const spec = JSON.parse(await io.spec("rollback-retry.json")) as {
     fqn?: unknown;
     servedBefore?: unknown;
@@ -1050,7 +1045,7 @@ export async function rollbackRetry(
   const result: Record<string, unknown> = { fqn, servedBefore: spec.servedBefore, branch, policy };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
   await checkoutCandidate(branch, candidate, io);
-  prepareCandidate(candidate, subject, source, io);
+  prepareCandidate(candidate, source, io);
   const { stage, stack } = stageNames(subject);
   const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
   const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
@@ -1095,7 +1090,6 @@ export async function rollbackRetry(
     POOL_ROOT_IMAGE: await rootPin(hooks, subject, source),
   };
   try {
-    // The candidate's entry releases only on its own framework build (candidateTreeEnvironment).
     await io.withStageBuild(candidate, subject, source, () =>
       runEntry("rollback", subject, source, env, outputs, {
         policy: null,
@@ -1126,6 +1120,7 @@ export async function healRelease(
   hooks: ReturnType<typeof nativeHooks>,
   io: CandidateRunServices = liveCandidateServices,
 ) {
+  refuseCandidateTree();
   const result: Record<string, unknown> = { reproduces: healReproduces };
   const probe = io.startProbe(lane, join(outputs, "probe-heal.jsonl"), source);
   // Seconds per phase, so the slow ones are named, not guessed.
@@ -1137,9 +1132,7 @@ export async function healRelease(
     mark = Date.now();
   };
   try {
-    // 1. The fix candidate in its own prepared checkout, built as the stage is built. Prepared
-    // before the fault, so a candidate the harness could not read or tear down is refused while
-    // the stage is still as it was.
+    // 1. The fix candidate in its own prepared checkout, built as the stage is built.
     const candidate = join(source.RUNNER_TEMP ?? root, "heal-candidate");
     result.candidate = await checkoutCandidate(healCandidateBranch, candidate, io);
     // What the candidate is made of: its first-parent commits back to the stage's deployed commit.
@@ -1154,7 +1147,7 @@ export async function healRelease(
     result.overlayStatement = healOverlayStatement;
     if (existsSync(join(candidate, "scripts/release-preview/stage-fault.ts")))
       throw new Error("The heal candidate still carries the rehearsal-only fault command");
-    prepareCandidate(candidate, subject, source, io);
+    prepareCandidate(candidate, source, io);
     lap("candidatePrepare");
     // 2. Production's stuck state, field for field: reuse a confirmed fault, or put one in place.
     const now = await io.faultRead(lane, source, outputs, "before", ["--read-only"]);
