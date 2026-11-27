@@ -441,7 +441,7 @@ model {
   basalt.toolsGateway -[sync]-> poolOwner "show pool tool result in hosted screen" { #planned }
   poolOwner -[sync]-> modelProviders "sign in on the provider's page in own browser"
   basalt.pool -[sync]-> basalt.router "pool control API: /pool/v1 with a pool token" {
-    description "Scoped to the pool's channel group; owner-only changes and owner-only usage reads by exact client session or key (GET /pool/v1/usage). GET /pool/v1/usage/summary answers any caller: the whole pool for the owner, only their own usage and cap for anyone else. The tools service supplies ctx.user.id as the caller."
+    description "Scoped to the pool's channel group; owner-only changes and owner-only usage reads by exact client session or key (GET /pool/v1/usage). A holder of the app signing key, such as the fleet lane, reads a registered models device's own usage rows for named sessions (GET /pool/v1/native/usage) with the same per-request model assertion as that device's model calls; the router signs such assertions only for model paths. Rows are limited to the device's key and say whether each account is in its pool, naming only accounts that are. GET /pool/v1/usage/summary answers any caller: the whole pool for the owner, only their own usage and cap for anyone else. The tools service supplies ctx.user.id as the caller."
   }
   basalt.router -[sync]-> basalt.modelGateway "POOL_SERVICE: /pool/v1/*"
   basalt.toolsGateway -[sync]-> basalt.router "access change: POST /pool/v1/access, signed sba1, before the change commits" {
