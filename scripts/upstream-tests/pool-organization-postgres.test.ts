@@ -21,11 +21,20 @@ const person = "org_person";
 const pool = "app_person_pool";
 const application = `observation-${randomUUID().slice(0, 8)}`;
 
+/** Each way's delay on the proxy: a database a Worker reaches over the network, not on loopback. */
+const linkDelayMs = 25;
+
 /**
- * A loopback proxy to the test database that never forwards a cancel request, as a Worker's socket
- * that closed with the response never sends one: only the database itself can end a cut read.
+ * A proxy to the test database that never forwards a cancel request, as a Worker's socket that
+ * closed with the response never sends one: only the database itself can end a cut read. Every chunk
+ * waits `linkDelayMs` each way, in order, so an observation outlasts the answer's bound and the
+ * path where the answer stops waiting for a read still running is the one under test.
  */
 async function withoutCancels(target: URL) {
+  const relay = (from: net.Socket, to: net.Socket) =>
+    from.on("data", (chunk: Buffer) =>
+      setTimeout(() => to.writable && to.write(chunk), linkDelayMs),
+    );
   const sockets = new Set<net.Socket>();
   const server = net.createServer((client) => {
     sockets.add(client);
@@ -34,9 +43,9 @@ async function withoutCancels(target: URL) {
       if (first.length >= 8 && first.readUInt32BE(0) === 16 && first.readUInt32BE(4) === 80877102)
         return;
       const upstream = net.connect(Number(target.port || 5432), target.hostname, () => {
-        upstream.write(first);
-        client.pipe(upstream);
-        upstream.pipe(client);
+        setTimeout(() => upstream.write(first), linkDelayMs);
+        relay(client, upstream);
+        relay(upstream, client);
       });
       sockets.add(upstream);
       for (const [a, b] of [
