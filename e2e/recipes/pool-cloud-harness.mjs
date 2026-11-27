@@ -293,6 +293,12 @@ export const poolCloudHarness = (
       fixture: setup.fixture,
       runtimeDirectory: target.directory,
       /**
+       * What this local stack provides. It has no repository service: the local runtime serves
+       * the Artifacts binding as a remote binding, and test stacks have no credentials for it, so
+       * every repository call fails (#2122). Remove this once the local stand-in (#2142) exists.
+       */
+      services: { repository: false },
+      /**
        * Make an account's next usage refresh due now, standing in for the server's refresh
        * interval passing, so the account row's own Refresh reads usage again at once.
        */

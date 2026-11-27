@@ -4,9 +4,12 @@ import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { test } from "node:test";
 import { activeDispatches } from "./dispatch-busy.mjs";
-import { countingText } from "./fixtures.mjs";
+import { gate, mockCalls, plainReason } from "./gateway.ts";
+import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
-import { checkFailures, emulatedStage, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import { prefix } from "./settings.ts";
+import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
 import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
@@ -99,6 +102,8 @@ test("deploy on an empty account records the lease, runs the entry, then checks"
     stageOf(api, {
       save: (name, value) => (saved[name] = value),
       deployEntry: (deleteBy) => (leased = deleteBy),
+      // The mock answers at once; nothing here leaves the test.
+      fetcher: async () => new Response(null, { status: 200 }),
     }).deploy(),
     /is not deployed/u,
   );
@@ -116,77 +121,180 @@ test("a long stream must last at least 30 s; a short one may be quick", () => {
   assert.equal(paced(false, 5), true);
 });
 
-const passing = () =>
+const passing = (kinds = ["short", "long"]) =>
   ["chat", "responses", "messages"].flatMap((shape) =>
-    ["short", "long"].map((kind) => ({ shape, kind, pass: true })),
+    kinds.map((kind) => ({ shape, kind, pass: true })),
   );
 const aimock401 = { status: 401, aimock: true };
+const refused = () =>
+  keyedRoutes.flatMap((path) =>
+    ["unkeyed", "wrong-key"].map((who) => ({ call: `${who} ${path}`, status: 401 })),
+  );
+const profilesPassing = () => ({
+  control: ["read", "slow", "limited", "restore"].map((step) => ({ step, status: 200 })),
+  calls: [
+    "via a",
+    "unprefixed beside b's latency",
+    "via b, slow",
+    "via a beside b's 429",
+    "unprefixed beside b's 429",
+  ].map((kind) => ({
+    shape: "messages",
+    kind,
+    pass: true,
+  })),
+  limited: { status: 429, retryAfter: "15", otherTimes: false, chaos: true },
+});
 
 test("a check passes only when every part does, and names each part that failed", () => {
   const ok = {
-    worker401: [401, 401],
+    worker401: refused(),
     refusal: { missing: aimock401, wrong: aimock401 },
     streams: passing(),
+    wholes: passing(["non-streamed"]),
+    profiles: profilesPassing(),
   };
   assert.deepEqual(checkFailures(ok), []);
   const streams = passing();
   streams[1] = { ...streams[1], pass: false, reason: "ended too soon" };
   streams[4] = { ...streams[4], pass: false, reason: "usage missing" };
+  const worker401 = refused();
+  worker401[3] = { ...worker401[3], status: 200 };
+  const wholes = passing(["non-streamed"]);
+  wholes[2] = { ...wholes[2], pass: false, reason: "content not exact" };
+  const profiles = profilesPassing();
+  profiles.control[3] = { step: "restore", status: 500 };
+  profiles.calls[2] = {
+    ...profiles.calls[2],
+    pass: false,
+    reason: "answered before profile b's latency",
+  };
+  profiles.limited = { status: 429, retryAfter: "1", otherTimes: true, chaos: false };
   assert.deepEqual(
     checkFailures({
-      worker401: [401, 200],
+      worker401,
       refusal: { missing: aimock401, wrong: { status: 401, aimock: false } },
       streams,
+      wholes,
+      profiles,
     }),
     [
-      "the Worker answered a call without the key",
+      "the Worker answered wrong-key /a/v1/models with HTTP 200",
       "the mock itself did not refuse a call without the right key",
       "chat long ended too soon",
       "messages short usage missing",
+      "messages non-streamed content not exact",
+      "profile b restore: HTTP 500",
+      "messages via b, slow answered before profile b's latency",
+      "profile b's 429 carried Retry-After 1, not 15",
+      "profile b's 429 carried aimock's own reset headers",
+      "profile b's 429 was not aimock's chaos answer",
     ],
   );
-  // Missing parts fail too: no refusal answer, fewer Worker calls or fewer streams.
-  assert.deepEqual(checkFailures({ worker401: [401], refusal: {}, streams: passing().slice(1) }), [
-    "the Worker answered a call without the key",
-    "the mock itself did not refuse a call without the right key",
-    "5 of 6 streams ran",
+  // Missing parts fail too: no refusal answer, fewer calls, or a profile proof that stopped.
+  assert.deepEqual(
+    checkFailures({
+      worker401: refused().slice(1),
+      refusal: {},
+      streams: passing().slice(1),
+      wholes: [],
+      profiles: { control: [{ step: "read", status: 200 }], calls: [], failure: "it stopped" },
+    }),
+    [
+      "7 of 8 calls without the right key ran",
+      "the mock itself did not refuse a call without the right key",
+      "5 of 6 streams ran",
+      "0 of 3 non-streamed calls ran",
+      "profile check: it stopped",
+      "profile b slow: HTTP -",
+      "profile b limited: HTTP -",
+      "profile b restore: HTTP -",
+      "0 of 5 profile calls ran",
+      "messages via b at a 429 share of 1: HTTP -",
+    ],
+  );
+  assert.deepEqual(checkFailures({ ...ok, profiles: undefined }), [
+    "the profile check did not run",
   ]);
 });
 
-const sse = (frames) => frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
-const responsesStream = (content, output) =>
-  sse([
-    { type: "response.output_text.delta", delta: content },
-    {
-      type: "response.completed",
-      response: { usage: { input_tokens: 11, output_tokens: output } },
-    },
-  ]);
+/**
+ * The deployed stage: the Worker's own gate, profiles and control, in front of a stand-in that
+ * answers like aimock. Every call carries the clock forward by what the mock would take.
+ */
+function deployedStage({ key = "k", store = memoryStore(), start, ...mock } = {}) {
+  const clock = { ms: NOW };
+  const aimock = fakeAimock({ key, clock, ...mock });
+  const answer = mockCalls({ store, key, start: start ?? (async () => aimock.port) });
+  const fetcher = (url, init) => gate(new Request(url, init), key, answer);
+  return { aimock, clock, store, fetcher, key };
+}
 
-test("a check judges each stream by its shape and its pace on the clock", async () => {
-  let clock = NOW;
-  const api = fakeApi({ resources: deployed(), lease: NOW + hour });
-  const answers = [];
-  const fetcher = async (url, init = {}) => {
-    const { pathname } = new URL(url);
-    if (pathname === "/v1/models") return new Response("{}", { status: 401 });
-    if (pathname === "/_emulated/mock-refusal")
-      return Response.json({ missing: aimock401, wrong: aimock401 });
-    const long =
-      JSON.parse(init.body).max_tokens === 4000 || JSON.parse(init.body).max_output_tokens === 4000;
-    answers.push(pathname);
-    // Only the responses shape answers, and its long stream comes back in 10 s.
-    if (pathname !== "/v1/responses") return new Response("no", { status: 500 });
-    clock += long ? 10_000 : 0;
-    return new Response(long ? responsesStream(countingText, 3000) : responsesStream("OK", 2));
-  };
-  await assert.rejects(stageOf(api, { fetcher, now: () => clock }).check(), (error) => {
-    assert.match(error.message, /responses long ended too soon/u);
-    assert.match(error.message, /chat short status/u);
-    assert.doesNotMatch(error.message, /responses short/u);
-    return true;
+test("a check through the Worker's gate and profiles passes, and puts profile b back as it found it", async () => {
+  const running = { rateLimitRate: 0.25, latencyMs: 7000 };
+  const stage = deployedStage({ store: memoryStore(running) });
+  const saved = {};
+  await stageOf(fakeApi({ resources: deployed(), lease: NOW + hour }), {
+    key: stage.key,
+    fetcher: stage.fetcher,
+    now: () => stage.clock.ms,
+    save: (name, value) => (saved[name] = value),
+  }).check();
+  assert.deepEqual(stage.store.value, running);
+  const { profiles } = saved.check;
+  assert.deepEqual(
+    profiles.control.map((row) => [row.step, row.status]),
+    [
+      ["read", 200],
+      ["slow", 200],
+      ["limited", 200],
+      ["restore", 200],
+    ],
+  );
+  assert.deepEqual(profiles.limited, {
+    status: 429,
+    retryAfter: "15",
+    otherTimes: false,
+    chaos: true,
   });
-  assert.equal(answers.length, 6);
+  assert.ok(profiles.calls.find((row) => row.kind === "via b, slow").ms >= SLOW_MS);
+  assert.ok(saved.check.wholes.every((row) => row.pass && row.kind === "non-streamed"));
+  assert.ok(saved.check.worker401.every((row) => row.status === 401));
+  // Only the profile calls reached the mock with chaos set, and only b's carried any.
+  const profiled = stage.aimock.calls.filter((call) => Object.keys(call.chaos).length);
+  assert.deepEqual(
+    profiled
+      .map((call) => [call.chaos["x-aimock-chaos-ratelimit"], call.chaos["x-aimock-chaos-latency"]])
+      .sort(),
+    [
+      ["0", "0"],
+      ["0", "0"],
+      ["0", String(SLOW_MS)],
+      ["1", "0"],
+    ],
+  );
+  assert.ok(profiled.every((call) => call.path === "/v1/messages"));
+});
+
+test("a check names a burst stream, a latency or 429 share the mock never saw, and still puts b back", async () => {
+  // The three long streams run at once on one clock: 5 s each is still 15 s in all, a burst.
+  const stage = deployedStage({ chaos: false, longMs: 5_000 });
+  await assert.rejects(
+    stageOf(fakeApi({ resources: deployed(), lease: NOW + hour }), {
+      key: stage.key,
+      fetcher: stage.fetcher,
+      now: () => stage.clock.ms,
+    }).check(),
+    (error) => {
+      for (const shape of ["chat", "responses", "messages"])
+        assert.match(error.message, new RegExp(`${shape} long ended too soon`, "u"));
+      assert.match(error.message, /messages via b, slow answered before profile b's latency/u);
+      assert.match(error.message, /messages via b at a 429 share of 1: HTTP 200/u);
+      assert.doesNotMatch(error.message, /short|non-streamed|via a|restore|Worker answered/u);
+      return true;
+    },
+  );
+  assert.deepEqual(stage.store.value, { rateLimitRate: 0, latencyMs: 0 });
 });
 
 test("a check refuses past the lease without calling the stage", async () => {
@@ -235,7 +343,7 @@ const unreachable =
   };
 
 test("a failing stage fetch prints no hostname, at the top level or in the summary", async () => {
-  for (const reachable of [[], ["/v1/models"]]) {
+  for (const reachable of [[], keyedRoutes]) {
     const printed = [];
     const code = await main(dispatch, {
       fetcher: unreachable(reachable),
@@ -254,13 +362,49 @@ test("a failing stage fetch prints no hostname, at the top level or in the summa
       printed.at(-1),
       reachable.length
         ? /^Emulated upstream check failed: the mock itself did not refuse.*chat short The stage's chat short stream call failed \(TypeError\)/u
-        : /^The stage's unkeyed call failed \(TypeError\)$/u,
+        : /^The stage's unkeyed \/v1\/models call failed \(TypeError\)$/u,
     );
   }
   // Any error not raised by this stage prints as its kind only.
   const raw = new TypeError(`fetch failed for ${worker}.${subdomain}.workers.dev`);
   assert.doesNotMatch(publicMessage(raw), /workers\.dev/u);
   assert.doesNotMatch(inspect(publicMessage(raw)), /workers\.dev/u);
+});
+
+test("a destroy stopped by the registry's tag list keeps its record of closed facts before it ends", async () => {
+  const repository = `acct/${prefix}-mock`;
+  const { fetcher: account } = fakeAccount({ tags: { [repository]: ["h1", "h2"] } });
+  // A registry that ignores the cursor: every page is the first one, with a next link.
+  const fetcher = async (url, init) =>
+    new URL(url).pathname.endsWith("/tags/list")
+      ? Response.json(
+          { name: repository, tags: ["h1", "h2"] },
+          { headers: { link: `</v2/${repository}/tags/list?n=2&last=h2>; rel="next"` } },
+        )
+      : account(url, init);
+  const printed = [];
+  const saved = {};
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: (name, value) => (saved[name] = value),
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.equal(
+    printed[0],
+    "A registry tag list answered a tag it had already listed (page 2, after 2 tags)",
+  );
+  assert.equal(saved["stopped-destroy"].tagRead.rule, "already-listed");
+  assert.equal(saved["stopped-destroy"].tagRead.sameAsFirstPage, true);
+  assert.equal(saved.teardown, undefined);
+  assert.ok(printed[1].startsWith("- stop record: {"), printed.join("\n"));
+  for (const line of printed) assert.doesNotMatch(line, /h1|h2|acct|https?:/u, line);
 });
 
 test("a refused guard prints only its token", async () => {
@@ -314,4 +458,130 @@ test("the expiry skips while a recent dispatched run on main is not completed, a
   );
   for (const body of [undefined, {}, { workflow_runs: {} }])
     assert.throws(() => activeDispatches(body), /answered without its runs/u);
+});
+
+// The platform's answer to a Durable Object that asks for its container too soon after a deploy.
+const noInstance =
+  "There is no container instance that can be provided to this Durable Object, try again later";
+
+test("a deploy waits for the platform to start the mock, then checks", async () => {
+  let refused = 3;
+  const stage = deployedStage({
+    start: async () => {
+      if (refused-- > 0) throw new Error(noInstance);
+      return stage.aimock.port;
+    },
+  });
+  const lines = [];
+  await stageOf(fakeApi({ lease: NOW + hour }), {
+    key: stage.key,
+    fetcher: stage.fetcher,
+    now: () => stage.clock.ms,
+    wait: async (ms) => (stage.clock.ms += ms),
+    summary: (line) => lines.push(line),
+  }).deploy();
+  assert.ok(
+    lines.includes("- the mock answered 15 s after the deploy (bound 120 s)"),
+    lines.join("\n"),
+  );
+});
+
+test("a mock the platform never starts fails the deploy with the platform's own reason", async () => {
+  const saved = {};
+  const stage = deployedStage({
+    start: async () => {
+      throw new Error(noInstance);
+    },
+  });
+  await assert.rejects(
+    stageOf(fakeApi({ lease: NOW + hour }), {
+      key: stage.key,
+      fetcher: stage.fetcher,
+      now: () => stage.clock.ms,
+      wait: async (ms) => (stage.clock.ms += ms),
+      save: (name, value) => (saved[name] = value),
+    }).deploy(),
+    new RegExp(`did not answer within 120 s of the deploy: ${noInstance}$`, "u"),
+  );
+  // The start was recorded, so the workflow's teardown after a failed deploy removes the stage.
+  assert.ok(saved["deploy-started"]);
+});
+
+test("a start failure that is not plain words reaches no caller", async () => {
+  for (const reason of [
+    "failed at https://host.example/x for 0123456789abcdef0123456789abcdef",
+    // Letters and dots only: the account's workers.dev host when its subdomain has no digits.
+    "Start failed for basalt-emulated-upstream-gateway.acct-secret-sub.workers.dev",
+    "Start failed\n::warning::look here",
+  ]) {
+    const stage = deployedStage({
+      start: async () => {
+        throw new Error(reason);
+      },
+    });
+    await assert.rejects(
+      stageOf(fakeApi({ lease: NOW + hour }), {
+        key: stage.key,
+        fetcher: stage.fetcher,
+        now: () => stage.clock.ms,
+        wait: async (ms) => (stage.clock.ms += ms),
+      }).deploy(),
+      /did not answer within 120 s of the deploy: an unrecognised start failure$/u,
+      reason,
+    );
+  }
+});
+
+test("the stage prints a Worker's start reason only as plain words, and never a body's own field", async () => {
+  const clock = { ms: NOW };
+  for (const [status, body, cause] of [
+    [503, { error: { type: "mock_unavailable", message: noInstance } }, noInstance],
+    [503, { error: { type: "mock_unavailable", message: "Down at acct.workers.dev" } }, "HTTP 503"],
+    [503, { error: { type: "mock_unavailable", message: "Down\n::warning::x" } }, "HTTP 503"],
+    [401, { error: { type: "mock_unavailable", message: "Plain words" } }, "HTTP 401"],
+    [401, { reason: "Down at acct.workers.dev" }, "HTTP 401"],
+    [503, { failed: "Down at acct.workers.dev" }, "HTTP 503"],
+  ]) {
+    // A Worker that answers anything: the stage's own rule is all that stands before the line.
+    const fetcher = async () => Response.json(body, { status });
+    await assert.rejects(
+      stageOf(fakeApi({ lease: NOW + hour }), {
+        fetcher,
+        now: () => clock.ms,
+        wait: async (ms) => (clock.ms += ms),
+      }).deploy(),
+      (error) => error.message.endsWith(`of the deploy: ${cause}`) || assert.fail(error.message),
+    );
+  }
+});
+
+test("only plain words pass as a platform reason, and a dot only ends a sentence", () => {
+  assert.equal(plainReason(noInstance), noInstance);
+  assert.equal(plainReason("The mock stopped while starting."), "The mock stopped while starting.");
+  for (const text of [
+    "acct.workers.dev",
+    "Failed. at host.example",
+    "Failed\nnext",
+    "::warning::x",
+    "",
+    "x".repeat(201),
+    undefined,
+    { message: noInstance },
+  ])
+    assert.equal(plainReason(text), undefined, String(text));
+});
+
+test("a deploy that left no Worker says so before it waits for the mock", async () => {
+  const stage = deployedStage({});
+  let waited = 0;
+  await assert.rejects(
+    stageOf(fakeApi({ lease: undefined }), {
+      key: stage.key,
+      fetcher: stage.fetcher,
+      now: () => stage.clock.ms,
+      wait: async (ms) => (waited += ms),
+    }).deploy(),
+    /is not deployed: Worker .* or its DELETE_BY lease is missing; run deploy$/u,
+  );
+  assert.equal(waited, 0);
 });
