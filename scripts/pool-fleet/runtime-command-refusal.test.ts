@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { BarrierRefusal } from "./refusal.ts";
+import { describeError } from "./errors.ts";
 import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
+import { throughController } from "../../src/pool/operations-call.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 import {
@@ -21,7 +23,7 @@ const adopt = {
 } as const;
 
 /** The public refusal a fleet operator prints: its reason, worker and redacted delta. */
-async function refusedEvidence(_t: TestContext, reply: () => Response) {
+async function refusedEvidence(_t: TestContext, reply: () => Response | Promise<Response>) {
   const target = {
     worker: "pool-worker",
     accountId: "account",
@@ -43,7 +45,7 @@ async function refusedEvidence(_t: TestContext, reply: () => Response) {
   const fields = Object.fromEntries(
     failure.delta.changed.map((change) => [change.path, change.new]),
   );
-  return { failure, fields, text };
+  return { failure, fields, text, error };
 }
 
 test("a 409 with a known runtime reason reaches failure.json", async (t) => {
@@ -61,6 +63,47 @@ test("a 409 with a known runtime reason reaches failure.json", async (t) => {
     ],
     ["adopt", "endpoint_route", "slot_draining", "runtime_endpoint_route_slot_draining"],
   );
+});
+
+test("a 500 the bridge built reads unmarked, and either 500 the pool gives reads pool", async (t) => {
+  const answers = {
+    // Wrangler's remote proxy Worker answers a service binding that threw with the error's text.
+    bridge: () => new Response("private proxy text", { status: 500 }),
+    // The entrypoint's own 500 when the call into the controller throws, with no reason headers.
+    entrypoint: () =>
+      throughController(
+        "/runtime-handoff",
+        () => Promise.reject(new Error("lost")),
+        () => {},
+      ),
+    controller: () =>
+      throughController(
+        "/runtime-handoff",
+        async () => runtimeErrorResponse(new TypeError("defect"), "handoff"),
+        () => {},
+      ),
+  };
+  t.mock.method(console, "error", () => {});
+  const seen: Record<string, unknown[]> = {};
+  for (const [name, reply] of Object.entries(answers)) {
+    const { error, fields, text } = await refusedEvidence(t, reply);
+    assert.doesNotMatch(text, /private proxy text/);
+    seen[name] = [
+      fields["handoff.response.http"],
+      fields["handoff.response.origin"],
+      fields["handoff.response.step"],
+    ];
+    // The public line a failed run prints carries it too.
+    assert.match(
+      describeError(error),
+      new RegExp(`handoff\\.response\\.origin=${String(fields["handoff.response.origin"])} `),
+    );
+  }
+  assert.deepEqual(seen, {
+    bridge: [500, "unmarked", "unclassified"],
+    entrypoint: [500, "pool", "unclassified"],
+    controller: [500, "pool", "endpoint_route"],
+  });
 });
 
 test("an unknown refusal reason is recorded as unclassified and nothing else from the body leaks", async (t) => {
