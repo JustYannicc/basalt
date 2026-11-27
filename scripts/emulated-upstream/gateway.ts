@@ -157,7 +157,24 @@ export function mockCalls({
   return async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
     if (pathname === profileControlPath) return profileControl(request, store);
-    const mock = await start();
+    let mock: MockPort;
+    try {
+      mock = await start();
+    } catch (error) {
+      // The platform's reason reaches the caller only when it is plain words, never a value.
+      const message = error instanceof Error ? error.message : "";
+      return Response.json(
+        {
+          error: {
+            type: "mock_unavailable",
+            message: /^[A-Za-z][A-Za-z ,.'-]{0,199}$/u.test(message)
+              ? message
+              : "an unrecognised start failure",
+          },
+        },
+        { status: 503 },
+      );
+    }
     if (pathname === refusalPath) return Response.json(await mockRefusal(mock, key));
     return forward(mock, request, await store.read());
   };

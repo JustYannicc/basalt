@@ -101,6 +101,8 @@ test("deploy on an empty account records the lease, runs the entry, then checks"
     stageOf(api, {
       save: (name, value) => (saved[name] = value),
       deployEntry: (deleteBy) => (leased = deleteBy),
+      // The mock answers at once; nothing here leaves the test.
+      fetcher: async () => new Response(null, { status: 200 }),
     }).deploy(),
     /is not deployed/u,
   );
@@ -219,10 +221,10 @@ test("a check passes only when every part does, and names each part that failed"
  * The deployed stage: the Worker's own gate, profiles and control, in front of a stand-in that
  * answers like aimock. Every call carries the clock forward by what the mock would take.
  */
-function deployedStage({ key = "k", store = memoryStore(), ...mock } = {}) {
+function deployedStage({ key = "k", store = memoryStore(), start, ...mock } = {}) {
   const clock = { ms: NOW };
   const aimock = fakeAimock({ key, clock, ...mock });
-  const answer = mockCalls({ store, key, start: async () => aimock.port });
+  const answer = mockCalls({ store, key, start: start ?? (async () => aimock.port) });
   const fetcher = (url, init) => gate(new Request(url, init), key, answer);
   return { aimock, clock, store, fetcher, key };
 }
@@ -419,4 +421,68 @@ test("the expiry skips while a recent dispatched run on main is not completed, a
   );
   for (const body of [undefined, {}, { workflow_runs: {} }])
     assert.throws(() => activeDispatches(body), /answered without its runs/u);
+});
+
+// The platform's answer to a Durable Object that asks for its container too soon after a deploy.
+const noInstance =
+  "There is no container instance that can be provided to this Durable Object, try again later";
+
+test("a deploy waits for the platform to start the mock, then checks", async () => {
+  let refused = 3;
+  const stage = deployedStage({
+    start: async () => {
+      if (refused-- > 0) throw new Error(noInstance);
+      return stage.aimock.port;
+    },
+  });
+  const lines = [];
+  await stageOf(fakeApi({ lease: NOW + hour }), {
+    key: stage.key,
+    fetcher: stage.fetcher,
+    now: () => stage.clock.ms,
+    wait: async (ms) => (stage.clock.ms += ms),
+    summary: (line) => lines.push(line),
+  }).deploy();
+  assert.ok(
+    lines.includes("- the mock answered 15 s after the deploy (bound 120 s)"),
+    lines.join("\n"),
+  );
+});
+
+test("a mock the platform never starts fails the deploy with the platform's own reason", async () => {
+  const saved = {};
+  const stage = deployedStage({
+    start: async () => {
+      throw new Error(noInstance);
+    },
+  });
+  await assert.rejects(
+    stageOf(fakeApi({ lease: NOW + hour }), {
+      key: stage.key,
+      fetcher: stage.fetcher,
+      now: () => stage.clock.ms,
+      wait: async (ms) => (stage.clock.ms += ms),
+      save: (name, value) => (saved[name] = value),
+    }).deploy(),
+    new RegExp(`did not answer within 120 s of the deploy: ${noInstance}$`, "u"),
+  );
+  // The start was recorded, so the workflow's teardown after a failed deploy removes the stage.
+  assert.ok(saved["deploy-started"]);
+});
+
+test("a start failure that is not plain words reaches no caller", async () => {
+  const stage = deployedStage({
+    start: async () => {
+      throw new Error("failed at https://host.example/x for 0123456789abcdef0123456789abcdef");
+    },
+  });
+  await assert.rejects(
+    stageOf(fakeApi({ lease: NOW + hour }), {
+      key: stage.key,
+      fetcher: stage.fetcher,
+      now: () => stage.clock.ms,
+      wait: async (ms) => (stage.clock.ms += ms),
+    }).deploy(),
+    /did not answer within 120 s of the deploy: an unrecognised start failure$/u,
+  );
 });

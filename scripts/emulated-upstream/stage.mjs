@@ -13,6 +13,9 @@ import { isMode, leaseHours, prefix, refusal as guardRefusal, stage, worker } fr
 export const LONG_MIN_MS = 30_000;
 const shortest = (long) => (long ? LONG_MIN_MS : 0);
 export const paced = (long, ms) => ms >= shortest(long);
+/** How long a deploy waits for the platform to start the mock, and how often it asks. */
+export const mockWaitBoundMs = 120_000;
+export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
 /** Every route the Worker refuses without the right key, profile b's control included. */
@@ -58,6 +61,7 @@ export function emulatedStage({
   key,
   fetcher = fetch,
   now = Date.now,
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   summary,
   save,
   deployEntry,
@@ -270,6 +274,49 @@ export function emulatedStage({
     return "destroyed";
   }
 
+  /**
+   * After a deploy, the platform can take a while to hand the mock's Durable Object a container
+   * instance. Waits for the mock to answer, a try every `mockWaitPauseMs` for at most
+   * `mockWaitBoundMs`, and fails with the first reason it was given, word for word.
+   */
+  async function waitForMock() {
+    const base = await origin();
+    const started = now();
+    let firstCause;
+    for (;;) {
+      const answer = await call(
+        base,
+        "mock start",
+        "/health",
+        {
+          headers: { authorization: `Bearer ${key}` },
+          signal: AbortSignal.timeout(mockWaitBoundMs),
+        },
+        (response) => (response.ok ? response.body?.cancel() : response.json().catch(() => ({}))),
+      ).catch((error) => ({
+        status: undefined,
+        ok: false,
+        body: { reason: publicMessage(error) },
+      }));
+      if (answer.ok) {
+        summary(
+          `- the mock answered ${Math.round((now() - started) / 1_000)} s after the deploy (bound ${mockWaitBoundMs / 1_000} s)`,
+        );
+        return;
+      }
+      firstCause ??=
+        answer.body?.error?.type === "mock_unavailable" &&
+        typeof answer.body.error.message === "string"
+          ? answer.body.error.message
+          : (answer.body?.reason ?? `HTTP ${answer.status}`);
+      if (now() - started + mockWaitPauseMs >= mockWaitBoundMs)
+        throw new StageError(
+          `The mock did not answer within ${mockWaitBoundMs / 1_000} s of the deploy: ${firstCause}`,
+        );
+      await wait(mockWaitPauseMs);
+    }
+  }
+
   async function deploy() {
     const existing = await api.inventory();
     if (!api.empty(existing))
@@ -280,6 +327,7 @@ export function emulatedStage({
     // From here on a failed or cancelled run tears down what it may have created.
     save("deploy-started", { stage, deleteBy: new Date(deleteBy).toISOString() });
     deployEntry(deleteBy);
+    await waitForMock();
     await check();
   }
 
