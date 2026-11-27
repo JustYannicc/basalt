@@ -57,6 +57,7 @@ export async function runModelHistoryPass(pass: ModelHistoryPass, progress: Repo
         progress.rows = (progress.rows ?? 0) + result.scanned;
         split.pages += result.pages;
         split.newRows += result.fresh;
+        // The ids the late-commit sweep checked; it reads in full only the rows history lacks.
         split.sweptRows += result.swept;
         caughtUp = result.caughtUp;
       } else caughtUp = true;
