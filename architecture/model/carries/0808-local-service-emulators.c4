@@ -1,7 +1,7 @@
 model {
   extend basalt.build {
     metadata {
-      constraint "When CI provides the emulate CLI, a local Cloud runs its sign-in, mail, company and directory stand-ins in one emulator process of its own on loopback, beside the billing one, and keys each at the service's root instead of creating a hosted instance. A stage signing in through another Cloud shares that Cloud's services. Without the CLI every service stays hosted, as before."
+      constraint "When CI provides the emulate CLI, a local Cloud runs its sign-in, mail, company and directory stand-ins in one emulator process of its own on loopback, beside the billing one, and keys each at the service's root instead of creating a hosted instance. A stage signing in through another Cloud shares that Cloud's services. Without the CLI every service stays hosted, as before. Emulator ports come from a block below every OS's ephemeral range, checked free on every interface, because the Cloud takes ephemeral ports it binds later; a start that still loses a port moves to a fresh block, at most three times."
     }
   }
 }

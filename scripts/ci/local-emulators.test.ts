@@ -72,3 +72,26 @@ test("a local Cloud's fixture keys every service on its own loopback emulator", 
   for (const origin of Object.values(started ?? {}))
     assert.equal(await listening(origin), false, `${origin} still listens`);
 });
+
+test("local Clouds started together each get their own stand-ins", async () => {
+  assert.ok(entry, "BASALT_E2E_AUTUMN_EMULATOR names the emulate CLI");
+  const directories = Array.from({ length: 10 }, () =>
+    mkdtempSync(join(tmpdir(), "basalt-local-emulators-")),
+  );
+  try {
+    const started = await Effect.runPromise(
+      Effect.scoped(
+        Effect.forEach(
+          directories,
+          (directory) =>
+            Effect.all([localAutumnEmulator(directory), localServiceEmulators(directory)]),
+          { concurrency: "unbounded" },
+        ),
+      ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+    );
+    const origins = started.flatMap(([billing, local]) => [billing!, ...Object.values(local!)]);
+    assert.equal(new Set(origins.map((origin) => new URL(origin).port)).size, origins.length);
+  } finally {
+    for (const directory of directories) rmSync(directory, { recursive: true, force: true });
+  }
+});
