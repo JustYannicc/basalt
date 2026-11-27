@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Effect } from "effect";
 import {
   alchemyPreviewStateReader,
   readProductionRecords,
@@ -8,6 +9,7 @@ import {
 } from "../preview/inventory.ts";
 import {
   databaseRefusal,
+  derivedNames,
   leftoversProof,
   ownershipRefusal,
   proveStages,
@@ -205,16 +207,35 @@ test("a whole stage whose rows name another stage's or production's objects is l
   }
 });
 
+/** The name Alchemy's own `createWorkerName` gives an unnamed Worker under the rehearsal stack. */
+async function workerName(id: string, stage: string, instanceId: string) {
+  // Not an exported subpath: Alchemy's own file beside the PhysicalName module its exports name.
+  const { createWorkerName } = (await import(
+    new URL("./Cloudflare/Workers/WorkerName.js", import.meta.resolve("alchemy/PhysicalName")).href
+  )) as { createWorkerName: (id: string, name: undefined) => Effect.Effect<string, never, never> };
+  const { StackContext } = await import("alchemy/StackContext");
+  const { Stage } = await import("alchemy/Stage");
+  const { InstanceId } = await import("alchemy/InstanceId");
+  return Effect.runPromise(
+    createWorkerName(id, undefined).pipe(
+      Effect.provideService(StackContext, { name: "basalt-rehearsal" } as never),
+      Effect.provideService(Stage, stage),
+      Effect.provideService(InstanceId, instanceId),
+    ),
+  );
+}
+
 test("an unnamed Worker cut to its 54 limit proves only as derived for its own id, instance and stage", async () => {
-  // Alchemy's `createWorkerName` for `Api`, lowercased (computed once with Alchemy).
-  const api = (workerName: string) => row("Cloudflare.Worker", { workerName }, "Api");
-  const ownApi = "basalt-rehearsal-api-test-rehed34q3xdnvov2xk5lvov2xk5l";
+  const api = (name: string) => row("Cloudflare.Worker", { workerName: name }, "Api");
+  const ownApi = await workerName("Api", stage, instance);
+  assert.equal(ownApi.length, 54);
+  assert.ok((await derivedNames("Api", instance, stage)).includes(ownApi));
   assert.equal(await ownershipRefusal([...whole, api(ownApi)], stage, own, production), undefined);
   for (const [why, name] of [
-    ["derived for another stage", "basalt-rehearsal-api-test-rehey4lomo57vov2xk5lvov2xk5l"],
-    ["derived for another instance", "basalt-rehearsal-api-test-rehew7sresduzxg43tonzxg43ton"],
+    ["derived for another stage", await workerName("Api", "test-rehearsal-9999", instance)],
+    ["derived for another instance", await workerName("Api", stage, "cd".repeat(16))],
     // A Worker's name is lowercased; the same cut in its id's case is no name Alchemy gives it.
-    ["the cut in mixed case", "basalt-rehearsal-Api-test-rehed34q3xdnvov2xk5lvov2xk5l"],
+    ["the cut in mixed case", ownApi.replace("-api-", "-Api-")],
   ] as const)
     assert.equal(
       (await ownershipRefusal([...whole, api(name)], stage, own, production))?.line,

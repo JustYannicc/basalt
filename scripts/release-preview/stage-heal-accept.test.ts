@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { laneSubject, overlayExtent, restartExpectArgs, runEntry } from "./stage.ts";
 import {
   candidateTreeEnvironment,
+  guardPipeGraceMs,
   requireCandidateGuard,
   requireSameStateDecoder,
   sameStateDecoder,
+  settleGroupChild,
   stateReadingSections,
   testsRan,
 } from "./stage-candidate.ts";
@@ -318,6 +320,47 @@ test("the guard child gets no stage secret from the harness's environment", asyn
   assert.equal("CLOUDFLARE_API_TOKEN" in env, false);
   assert.equal("PREVIEW_STATE_KEY" in env, false);
   assert.doesNotMatch(seen, /cloudflare-token-value|preview-state-key-value/u);
+  // A fresh home of its own as HOME and TMPDIR, gone once the guard is done.
+  assert.notEqual(env.HOME, process.env.HOME);
+  assert.equal(env.TMPDIR, env.HOME);
+  assert.equal(existsSync(env.HOME!), false);
+});
+
+test("the guard child finishes within its grace when a process it left holds its pipes", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-guard-pipes-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  const pidFile = join(at, "grandchild.pid");
+  // It exits at once, leaving a detached process with its stdout and stderr open for a minute.
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      `const { spawn } = require("node:child_process");
+const held = spawn("sleep", ["60"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });
+require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(held.pid));
+held.unref();
+console.log("ok 1 - guard");`,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"], detached: true },
+  );
+  let out = "";
+  child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
+  const started = Date.now();
+  const settled = await settleGroupChild(child);
+  const elapsed = Date.now() - started;
+  const held = Number(await readFile(pidFile, "utf8"));
+  // The grandchild's pid was captured at its own spawn; it is this test's to stop.
+  t.after(() => {
+    try {
+      process.kill(held, "SIGKILL");
+    } catch {}
+  });
+  assert.deepEqual(settled, { code: 0, timedOut: false });
+  assert.match(out, /ok 1 - guard/u);
+  // Still alive: only the grace ended the wait, not the grandchild.
+  assert.doesNotThrow(() => process.kill(held, 0));
+  assert.ok(elapsed >= guardPipeGraceMs - 500, `${elapsed}ms`);
+  assert.ok(elapsed < guardPipeGraceMs + 5_000, `${elapsed}ms`);
 });
 
 test("testsRan counts only tests that ran, not suites, skips or a file that held none", () => {

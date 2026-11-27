@@ -1,5 +1,6 @@
 /** Test fixtures: prepared candidate trees as the stage's candidate checks read them. */
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -18,8 +19,10 @@ export const build = (version: string) =>
 /** The rehearsal-stage handling the heal overlay gave `alchemy.run.ts`, as the stack file reads it. */
 export const stackHandling = {
   "alchemy.run.ts": `import * as Alchemy from "alchemy";
+import { Stage } from "alchemy/Stage";
+import { Effect } from "effect";
 import { stackNameForStage } from "./scripts/release-barrier/release-stage.ts";
-import { stageNames, subjectFromStage } from "./scripts/preview/subject.ts";
+import { subjectFromStage } from "./scripts/preview/subject.ts";
 
 export default Alchemy.Stack(
   stackNameForStage(process.env.ALCHEMY_STAGE),
@@ -27,6 +30,8 @@ export default Alchemy.Stack(
   Effect.gen(function* () {
     const stage = yield* Stage;
     const previewSubject = subjectFromStage(stage);
+    const preview = previewSubject === undefined ? undefined : { subject: previewSubject };
+    if (preview === undefined) yield* Effect.log("production only");
   }),
 );
 `,
@@ -37,6 +42,22 @@ export default Alchemy.Stack(
   /^test-rehearsal-[0-9]+$/u.test(stage) ? { kind: "rehearsal" } : undefined;
 `,
 };
+
+const real = (name: string) =>
+  readFileSync(new URL(`./stack-fixtures/${name}.fixture`, import.meta.url), "utf8");
+
+/**
+ * The heal overlay's own stack file and the stage-only modules it reads, as committed on the heal
+ * candidate (`1f8a687fd`'s overlay).
+ */
+export const healOverlay = () => ({
+  "alchemy.run.ts": real("heal-overlay-alchemy.run"),
+  "scripts/preview/rehearsal-stage.ts": real("heal-overlay-rehearsal-stage"),
+  "infrastructure/public-site-waitlist.ts": real("heal-overlay-public-site-waitlist"),
+});
+
+/** Main's stack file without the overlay: production's stack by name, previews only for PRs. */
+export const mainStack = () => ({ "alchemy.run.ts": real("main-alchemy.run") });
 
 export async function writeFiles(dir: string, files: Record<string, string>) {
   for (const [path, body] of Object.entries(files)) {

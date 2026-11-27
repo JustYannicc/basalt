@@ -516,7 +516,8 @@ export interface CandidateRunServices {
   readonly harness: string;
   readonly spec: (name: string) => Promise<string>;
   readonly checkout: (branch: string, dir: string) => void | Promise<void>;
-  readonly prepare: (dir: string) => void;
+  /** The candidate's own `prepare:upstream`, run with `candidatePrepareEnvironment` only. */
+  readonly prepare: (dir: string, env: NodeJS.ProcessEnv) => void;
   readonly startProbe: typeof startProbe;
   readonly faultRead: typeof faultRead;
   readonly device: (candidate: string, args: readonly string[], env: NodeJS.ProcessEnv) => string;
@@ -531,8 +532,8 @@ const liveCandidateServices: CandidateRunServices = {
     execFileSync("git", ["fetch", "-q", "--depth", "30", "origin", branch], { cwd: root });
     execFileSync("git", ["worktree", "add", "-q", "--detach", dir, "FETCH_HEAD"], { cwd: root });
   },
-  prepare: (dir) => {
-    execFileSync("npm", ["run", "prepare:upstream"], { cwd: dir, stdio: "ignore" });
+  prepare: (dir, env) => {
+    execFileSync("npm", ["run", "prepare:upstream"], { cwd: dir, env, stdio: "ignore" });
   },
   startProbe: (...args) => startProbe(...args),
   faultRead: (...args) => faultRead(...args),
@@ -551,6 +552,28 @@ const liveCandidateServices: CandidateRunServices = {
   workerScripts: (...args) => workerScripts(...args),
 };
 
+/**
+ * What the candidate's prepare runs with: a path, a home, and the caches it and the installers it
+ * starts read (`scripts/upstream-cache.ts`, bun, npm). The release-downloads switch is the one
+ * other variable `scripts/prepare-upstream.ts` reads; `GITHUB_ENV`, which it would write the job's
+ * later steps' env into, is not passed. No deploy token or stage secret reaches candidate code.
+ */
+export function candidatePrepareEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const name of [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "BASALT_UPSTREAM_CACHE",
+    "BUN_INSTALL",
+    "BUN_INSTALL_CACHE_DIR",
+    "npm_config_cache",
+    "BASALT_CI_OMIT_RELEASE_DOWNLOADS",
+  ])
+    if (source[name] !== undefined) env[name] = source[name];
+  return env;
+}
+
 /** A fresh detached checkout of `branch` at `dir`; returns its commit. */
 async function checkoutCandidate(branch: string, dir: string, io: CandidateRunServices) {
   await rm(dir, { recursive: true, force: true });
@@ -568,7 +591,7 @@ function prepareCandidate(
   source: NodeJS.ProcessEnv,
   io: CandidateRunServices,
 ) {
-  io.prepare(candidate);
+  io.prepare(candidate, candidatePrepareEnvironment(source));
   requireSameStateDecoder(io.harness, candidate);
   requireCandidateStack(io.harness, candidate, stageNames(subject).stage, source);
 }
@@ -578,23 +601,21 @@ function prepareCandidate(
  * the red run): its own entry, policy and stack, then a fresh plan. Around the apply: the pool
  * Worker versions it created, and the controller's selected boot before and after.
  */
-async function stageRelease(
+export async function stageRelease(
   lane: number,
   subject: StageSubject,
   source: NodeJS.ProcessEnv,
   outputs: string,
   hooks: ReturnType<typeof nativeHooks>,
   kind: "release" | "classplan" = "release",
+  io: CandidateRunServices = liveCandidateServices,
 ) {
-  const named = releaseCandidate(
-    await readFile(join(root, "scripts/release-preview/release-candidate.json"), "utf8"),
-  );
+  const named = releaseCandidate(await io.spec("release-candidate.json"));
   // The class change plans the same candidate under its own policy and fleet declaration.
   const policy = kind === "classplan" ? "cutover-classes" : named.policy;
   const { branch } = named;
   const result: Record<string, unknown> = { branch, policy, kind };
   const candidate = join(source.RUNNER_TEMP ?? root, "release-candidate");
-  const io = liveCandidateServices;
   result.candidate = await checkoutCandidate(branch, candidate, io);
   if (!existsSync(join(candidate, `scripts/release/policies/${policy}.json`)))
     throw new Error(`The candidate has no ${policy} policy`);
@@ -602,7 +623,7 @@ async function stageRelease(
   // acceptance device, which a lane does not have. So the candidate must decode State as it does.
   prepareCandidate(candidate, subject, source, io);
   const bootOf = async (label: string) =>
-    faultRead(lane, source, outputs, label, ["--read-only"]).then(
+    io.faultRead(lane, source, outputs, label, ["--read-only"]).then(
       (state) => (state.selection as { boot?: unknown; epoch?: unknown } | undefined) ?? null,
       (error: unknown) => ({ unreadable: error instanceof Error ? error.message : String(error) }),
     );
@@ -614,7 +635,7 @@ async function stageRelease(
   if (kind === "classplan") {
     // Plan only, as production's read-only plan runs: a refusal is the result, kept in plain text
     // (redacted of secrets) because it names the blocking resource.
-    await withStageBuild(candidate, subject, source, async () => {
+    await io.withStageBuild(candidate, subject, source, async () => {
       try {
         const planned = await runEntry("plan", subject, source, env, outputs, {
           policy,
@@ -669,7 +690,7 @@ async function stageRelease(
   const { stage, stack } = stageNames(subject);
   const account = encodeURIComponent(source.CLOUDFLARE_ACCOUNT_ID ?? "");
   const headers = { Authorization: `Bearer ${source.CLOUDFLARE_API_TOKEN ?? ""}` };
-  await withStageBuild(candidate, subject, source, async () => {
+  await io.withStageBuild(candidate, subject, source, async () => {
     const from = Date.now();
     try {
       result.release = await runEntry("deploy", subject, source, env, outputs, {

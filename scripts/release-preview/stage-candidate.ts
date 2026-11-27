@@ -3,10 +3,20 @@
  * build and served version, its own guard tests on a moved pin, and a State decoder the harness
  * shares, so the harness can still read and tear down what the candidate released.
  */
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessByStdio } from "node:child_process";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { Readable } from "node:stream";
 
 /**
  * The only stage-env keys a candidate tree replaces. Everything naming the stage (its stage,
@@ -246,8 +256,82 @@ export function testsRan(tap: string, files: readonly string[]) {
 
 /** Past this the guard child and every test process it started are killed. */
 const guardDeadlineMs = 10 * 60_000;
+/** After the guard child exits, how long a process it left holding its pipes may keep them. */
+export const guardPipeGraceMs = 10_000;
+
+/**
+ * A fresh empty directory as HOME and TMPDIR for a child that runs candidate code, so it finds none
+ * of the harness's credentials or caches; removed once `work` settles.
+ */
+export function withEmptyHome<A>(
+  source: NodeJS.ProcessEnv,
+  work: (env: NodeJS.ProcessEnv) => A,
+): A {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "candidate-home-")));
+  const remove = () => rmSync(home, { recursive: true, force: true });
+  let result: A;
+  try {
+    result = work({ PATH: source.PATH, HOME: home, TMPDIR: home });
+  } catch (error) {
+    remove();
+    throw error;
+  }
+  if (result instanceof Promise) return result.finally(remove) as A;
+  remove();
+  return result;
+}
 
 const guardRuns = new Map<string, Promise<void>>();
+
+/**
+ * The exit code of a child spawned `detached` with piped stdout and stderr, never waiting forever.
+ * Past `deadlineMs` its whole group is killed. A process it left behind can hold its pipes open, so
+ * `close` may never come: its own exit starts `graceMs` for the pipes instead, past which what is
+ * left of its group is killed and the pipes are dropped. A process that left the group keeps
+ * running, but nothing here waits on it.
+ */
+export function settleGroupChild(
+  child: ChildProcessByStdio<null, Readable, Readable>,
+  deadlineMs = guardDeadlineMs,
+  graceMs = guardPipeGraceMs,
+) {
+  return new Promise<{ code: number; timedOut: boolean }>((done) => {
+    let timedOut = false;
+    let exited: number | null = null;
+    let finished = false;
+    const finish = (code: number) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      done({ code, timedOut });
+    };
+    let timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, deadlineMs);
+    child.once("error", () => finish(1));
+    child.once("exit", (status) => {
+      exited = status;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        try {
+          process.kill(-child.pid!, "SIGKILL");
+        } catch {}
+        child.stdout.destroy();
+        child.stderr.destroy();
+        // The runner's own exit stands. It is node --test's verdict, given after its last TAP
+        // line, and everything it wrote before exiting was read during the grace; a lingering
+        // writer changes neither. Killed by a signal, it gave no verdict: a failure.
+        finish(exited ?? 1);
+      }, graceMs);
+    });
+    child.once("close", (status) => finish(status ?? exited ?? 1));
+  });
+}
 
 /**
  * On another upstream pin, the candidate's release guard runs on alchemy and effect versions nobody
@@ -292,7 +376,7 @@ export function requireCandidateGuard(
     const log = join(outputs, `candidate-guard-${pin.slice(0, 12)}.txt`);
     await writeFile(log, "", { mode: 0o600 });
     let tap = "";
-    const { code, timedOut } = await new Promise<{ code: number; timedOut: boolean }>((done) => {
+    const { code, timedOut } = await withEmptyHome(source, (env) => {
       // No stage env and no secrets: the guard tests need neither.
       const child = spawn(
         process.execPath,
@@ -305,38 +389,19 @@ export function requireCandidateGuard(
         ],
         {
           cwd: tree,
-          env: { PATH: source.PATH, HOME: source.HOME, TMPDIR: source.TMPDIR },
+          env,
           stdio: ["ignore", "pipe", "pipe"],
           // Its own process group, so the deadline kills the test processes it started too.
           detached: true,
         },
       );
-      let timedOut = false;
-      const deadline = setTimeout(() => {
-        timedOut = true;
-        try {
-          process.kill(-child.pid!, "SIGKILL");
-        } catch {
-          child.kill("SIGKILL");
-        }
-      }, guardDeadlineMs);
       const keep = (chunk: Buffer) => void appendFile(log, chunk, { mode: 0o600 });
       child.stdout.on("data", (chunk: Buffer) => {
         tap += chunk.toString("utf8");
         keep(chunk);
       });
       child.stderr.on("data", keep);
-      child.once("error", () => {
-        clearTimeout(deadline);
-        done({ code: 1, timedOut });
-      });
-      // Once the child has exited the deadline has nothing left to time, and a late kill could
-      // reach a process group id the system has handed out again.
-      child.once("exit", () => clearTimeout(deadline));
-      child.once("close", (status) => {
-        clearTimeout(deadline);
-        done({ code: status ?? 1, timedOut });
-      });
+      return settleGroupChild(child);
     });
     if (timedOut)
       throw new Error(

@@ -5,6 +5,7 @@
  * provider object carries is the stage's, and no id or name it records is one production's State
  * records. A stage that fails the proof is left, named by its kinds, and the next one is taken.
  */
+import type { Effect as EffectModule } from "effect";
 import { deployment } from "../../brand.ts";
 import type { NumberedStageRows, PreviewStateEntry } from "../preview/inventory.ts";
 import { subjectFromStage, type StageSubject } from "../preview/subject.ts";
@@ -123,32 +124,47 @@ const isIdKey = (key: string) =>
 const LOCAL_TYPES = /^(?:Alchemy|Command)\./u;
 
 /**
- * The names Alchemy gives an unnamed resource under the rehearsal stack and this stage, from the
- * row's own id and instance: each provider's length limit and case (64, 63, and a Worker's 54). A name cut to its limit keeps
- * only a hash of the stack, stage, id and instance, so only this row's own cut name matches.
+ * Alchemy's own `createWorkerName`. Its package exports no subpath for it, so it is loaded from
+ * beside the `PhysicalName` module its exports resolve to: the same installed build, the same tags.
  */
-async function derivedNames(id: string, instanceId: string, stage: string) {
+async function alchemyWorkerName() {
+  const beside = import.meta.resolve("alchemy/PhysicalName");
+  return (await import(new URL("./Cloudflare/Workers/WorkerName.js", beside).href)) as {
+    createWorkerName: (
+      id: string,
+      name: string | undefined,
+    ) => EffectModule.Effect<string, never, unknown>;
+  };
+}
+
+/**
+ * The names Alchemy gives an unnamed resource under the rehearsal stack and this stage, from the
+ * row's own id and instance: each provider's length limit and case (64, 63), and an unnamed
+ * Worker's, as Alchemy's own `createWorkerName` gives it. A name cut to its limit keeps only a hash
+ * of the stack, stage, id and instance, so only this row's own cut name matches.
+ */
+export async function derivedNames(id: string, instanceId: string, stage: string) {
   const { createPhysicalName } = await import("alchemy/PhysicalName");
+  const { createWorkerName } = await alchemyWorkerName();
   const { StackContext } = await import("alchemy/StackContext");
   const { Stage } = await import("alchemy/Stage");
   const { InstanceId } = await import("alchemy/InstanceId");
   const { Effect } = await import("effect");
-  const derive = (maxLength: number, lowercase: boolean) =>
+  const run = <E, R>(name: EffectModule.Effect<string, E, R>) =>
     Effect.runPromise(
-      createPhysicalName({ id, instanceId, maxLength, lowercase }).pipe(
+      name.pipe(
         Effect.provideService(StackContext, { name: "basalt-rehearsal" } as never),
         Effect.provideService(Stage, stage),
         Effect.provideService(InstanceId, instanceId),
-      ),
+      ) as EffectModule.Effect<string, E>,
     );
   const names: string[] = [];
   for (const maxLength of [64, 63])
     for (const lowercase of [true, false]) {
-      const name = await derive(maxLength, lowercase);
+      const name = await run(createPhysicalName({ id, instanceId, maxLength, lowercase }));
       names.push(name, name.toLowerCase());
     }
-  // An unnamed Worker (`createWorkerName`): cut to 54, then lowercased whole.
-  names.push((await derive(54, false)).toLowerCase());
+  names.push(await run(createWorkerName(id, undefined)));
   return names;
 }
 

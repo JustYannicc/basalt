@@ -10,11 +10,14 @@ import {
   redRelease,
   rollbackRetry,
   runEntry,
+  stageRelease,
   type CandidateRunServices,
 } from "./stage.ts";
 import { requireCandidateStack } from "./stage-candidate-stack.ts";
 import {
   decoderTree,
+  healOverlay,
+  mainStack,
   markingEntry,
   preparedTree,
   preparedTreeAt,
@@ -29,37 +32,6 @@ const wrongStack =
 const unhandled = /has no rehearsal-stage handling.*nothing is deployed/u;
 const production = /takes this stage for production.*nothing is deployed/u;
 
-// The heal overlay's other shape: both functions from one stage-only module.
-const overlayShape = {
-  "alchemy.run.ts": `import { disposableStageNames, stackNameForStage } from "./scripts/preview/rehearsal-stage.ts";
-export default Alchemy.Stack(
-  stackNameForStage(process.env.ALCHEMY_STAGE),
-  { providers: cloudProviders, state: stackState },
-  Effect.gen(function* () {
-    const stage = yield* Stage;
-    const previewNames = disposableStageNames(stage);
-  }),
-);
-`,
-  "scripts/preview/rehearsal-stage.ts": `export const stackNameForStage = (stage: string | undefined) =>
-  stage !== undefined && /^test-rehearsal-[1-9][0-9]{0,9}$/u.test(stage) ? "basalt-rehearsal" : "basalt";
-export const disposableStageNames = (stage: string) =>
-  /^test-(?:pr|rehearsal)-/u.test(stage) ? { slug: stage.slice(5) } : undefined;
-`,
-};
-// Main's stack file: production's stack by name, and previews only for pull requests.
-const mainShape = {
-  "alchemy.run.ts": `export default Alchemy.Stack(
-  "basalt",
-  { providers: cloudProviders, state: stackState },
-  Effect.gen(function* () {
-    const stage = yield* Stage;
-    const previewNumber = /^test-pr-([1-9][0-9]*)$/.exec(stage)?.[1];
-  }),
-);
-`,
-};
-
 test("a candidate deploys a rehearsal stage only into the lane's own stack, read from its stack file", async (t) => {
   const at = await mkdtemp(join(tmpdir(), "stage-stack-"));
   t.after(() => rm(at, { recursive: true, force: true }));
@@ -72,14 +44,14 @@ test("a candidate deploys a rehearsal stage only into the lane's own stack, read
   const check = async (files: Record<string, string>) =>
     requireCandidateStack("/harness", await tree(files), stage);
 
-  // Both shapes the heal and release candidates carry go on.
+  // Both shapes the heal and release candidates carry go on, the heal overlay's real file included.
   await check(stackHandling);
-  await check(overlayShape);
+  await check(healOverlay());
   // The same tree as the harness is not checked at all.
   requireCandidateStack(at, at, stage);
 
-  // Main names production's stack.
-  await assert.rejects(check(mainShape), wrongStack);
+  // Main's real stack file names production's stack.
+  await assert.rejects(check(mainStack()), wrongStack);
   // A stackNameForStage of its own that maps the stage to production's stack.
   await assert.rejects(
     check({
@@ -121,6 +93,16 @@ test("a candidate deploys a rehearsal stage only into the lane's own stack, read
     }),
     production,
   );
+  // Preview names that are no object (a flag, a string) name no preview.
+  for (const answer of ["true", '"rehearsal"'])
+    await assert.rejects(
+      check({
+        ...stackHandling,
+        "scripts/preview/subject.ts": `export const subjectFromStage = () => ${answer};\n`,
+      }),
+      production,
+      answer,
+    );
   // A namer that throws, or a module that cannot be loaded, is not handling either.
   await assert.rejects(
     check({
@@ -153,33 +135,211 @@ test("a candidate deploys a rehearsal stage only into the lane's own stack, read
   assert.throws(() => requireCandidateStack("/harness", linked, stage), unhandled);
 });
 
-test("the stack check's child gets no stage secret from the harness's environment", async (t) => {
+test("the stack check's child gets no secret, an empty home, and reads only its tree", async (t) => {
   const at = await mkdtemp(join(tmpdir(), "stage-stack-env-"));
   t.after(() => rm(at, { recursive: true, force: true }));
-  await writeFiles(at, {
+  const outside = join(at, "harness-secret.txt");
+  await writeFile(outside, "secret");
+  const tree = join(at, "tree");
+  // It answers a preview only when nothing leaked in and nothing outside the tree can be touched.
+  await writeFiles(tree, {
     ...stackHandling,
-    "scripts/preview/subject.ts": `import { writeFileSync } from "node:fs";
+    "scripts/preview/subject.ts": `import { readFileSync, writeFileSync } from "node:fs";
+const denied = (touch: () => unknown) => {
+  try {
+    touch();
+    return false;
+  } catch (error) {
+    return (error as { code?: string }).code === "ERR_ACCESS_DENIED";
+  }
+};
 export const subjectFromStage = (stage: string) => {
-  writeFileSync("stack-env.json", JSON.stringify(process.env));
-  return { kind: "rehearsal" };
+  const env = process.env;
+  const clean =
+    // macOS adds its own __CF_USER_TEXT_ENCODING to every process.
+    !Object.keys(env).some((name) => /TOKEN|SECRET|KEY|CLOUDFLARE/u.test(name)) &&
+    env.HOME !== undefined &&
+    env.HOME === env.TMPDIR &&
+    env.HOME !== ${JSON.stringify(process.env.HOME)};
+  const confined =
+    denied(() => writeFileSync("written", "")) &&
+    denied(() => readFileSync(${JSON.stringify(outside)}, "utf8")) &&
+    denied(() => readFileSync(\`\${env.HOME}/anything\`));
+  return clean && confined ? { kind: "rehearsal" } : undefined;
 };
 `,
   });
-  requireCandidateStack("/harness", at, stage, {
+  requireCandidateStack("/harness", tree, stage, {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     TMPDIR: process.env.TMPDIR,
     CLOUDFLARE_API_TOKEN: "cloudflare-token-value",
   });
-  const seen = await readFile(join(at, "stack-env.json"), "utf8");
-  assert.doesNotMatch(seen, /CLOUDFLARE_API_TOKEN|cloudflare-token-value/u);
+  assert.equal(existsSync(join(tree, "written")), false);
+});
+
+// The reviewer's tree: the overlay's words only in comments and imports, production's stack in code.
+const bypassModules = {
+  "scripts/release-barrier/release-stage.ts":
+    stackHandling["scripts/release-barrier/release-stage.ts"],
+  "scripts/preview/subject.ts": stackHandling["scripts/preview/subject.ts"],
+};
+const stackFile = (body: string, head = "") => `import * as Alchemy from "alchemy";
+import { Stage } from "alchemy/Stage";
+import { Effect } from "effect";
+import { stackNameForStage } from "./scripts/release-barrier/release-stage.ts";
+import { subjectFromStage } from "./scripts/preview/subject.ts";
+${head}
+${body}
+`;
+const handled = `export default Alchemy.Stack(
+  stackNameForStage(process.env.ALCHEMY_STAGE),
+  {},
+  Effect.gen(function* () {
+    const stage = yield* Stage;
+    const previewSubject = subjectFromStage(stage);
+    const preview = previewSubject === undefined ? undefined : { subject: previewSubject };
+    if (preview === undefined) yield* Effect.log("production only");
+  }),
+);`;
+
+test("comments, dead code, a second stack or a namer that gates nothing are no rehearsal-stage handling", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-stack-bypass-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  let count = 0;
+  const check = async (files: Record<string, string>) => {
+    const dir = join(at, `tree-${(count += 1)}`);
+    await writeFiles(dir, files);
+    return requireCandidateStack("/harness", dir, stage);
+  };
+  const refused = async (why: string, text: string) =>
+    assert.rejects(check({ ...bypassModules, "alchemy.run.ts": text }), unhandled, why);
+  // The control: the same modules with the handling in code go on.
+  await check({ ...bypassModules, "alchemy.run.ts": stackFile(handled) });
+
+  await refused(
+    "the reviewer's tree",
+    stackFile(`// Formerly: Alchemy.Stack(stackNameForStage(process.env.ALCHEMY_STAGE), ...)
+// const unused = subjectFromStage(stage)
+const name = "basalt";
+export default Alchemy.Stack(name, {}, Effect.gen(function* () {
+  const previewNumber = /^test-pr-([1-9][0-9]*)$/.exec(yield* Stage)?.[1];
+}));`),
+  );
+  await refused(
+    "the overlay's stack in a dead branch, production's exported",
+    stackFile(`if (false) Alchemy.Stack(stackNameForStage(process.env.ALCHEMY_STAGE), {}, Effect.gen(function* () {}));
+const name = "basalt";
+export default Alchemy.Stack(name, {}, Effect.gen(function* () {}));`),
+  );
+  await refused(
+    "the namer only in a dead branch",
+    stackFile(
+      handled.replace(
+        "const previewSubject = subjectFromStage(stage);\n    const preview = previewSubject === undefined",
+        "if (false) subjectFromStage(stage);\n    const previewNumber = /^test-pr-/u.exec(stage)?.[0];\n    const preview = previewNumber === undefined",
+      ),
+    ),
+  );
+  await refused(
+    "a second Stack under a variable name",
+    stackFile(
+      handled,
+      'const make = Alchemy.Stack;\nmake("basalt", {}, Effect.gen(function* () {}));',
+    ),
+  );
+  await refused(
+    "a second Stack read as a string key",
+    stackFile(handled, 'const make = (Effect as never)["Stack"];'),
+  );
+  await refused(
+    "the namer called but its result gating nothing",
+    stackFile(
+      handled.replace('    if (preview === undefined) yield* Effect.log("production only");\n', ""),
+    ),
+  );
+  await refused(
+    "the namer called, and production decided by a pattern instead",
+    stackFile(
+      handled.replace(
+        "previewSubject === undefined ? undefined",
+        "/^test-pr-/u.test(stage) === false ? undefined",
+      ),
+    ),
+  );
+  await refused(
+    "ALCHEMY_STAGE rewritten before the stack is named",
+    stackFile(handled, 'process.env.ALCHEMY_STAGE = "production";'),
+  );
+  await refused(
+    "the namer rebound locally",
+    stackFile(handled, "const subjectFromStage2 = 1;\nfunction subjectFromStage() {}"),
+  );
+  await refused(
+    "a stack file loaded at runtime instead",
+    stackFile(handled, 'await import("./other.ts");'),
+  );
+});
+
+test("a candidate that would declare a production-only resource on the stage is refused", async (t) => {
+  const at = await mkdtemp(join(tmpdir(), "stage-stack-production-"));
+  t.after(() => rm(at, { recursive: true, force: true }));
+  let count = 0;
+  const check = async (files: Record<string, string>) => {
+    const dir = join(at, `tree-${(count += 1)}`);
+    await writeFiles(dir, files);
+    return requireCandidateStack("/harness", dir, stage);
+  };
+  const overlay = healOverlay();
+  const text = overlay["alchemy.run.ts"];
+  // The real overlay keeps every production-only id behind its preview decision.
+  await check(overlay);
+  for (const [why, from, to, named] of [
+    [
+      "the public site out of its branch",
+      "    if (preview === undefined) {\n      // A separate release provisions the database",
+      "    if (true) {\n      // A separate release provisions the database",
+      /PublicSite/u,
+    ],
+    [
+      "the email domain on both sides",
+      "      preview === undefined\n        ? (yield* Cloudflare.Email.SendingSubdomain",
+      "      preview !== undefined || true\n        ? (yield* Cloudflare.Email.SendingSubdomain",
+      /AuthEmailDomain/u,
+    ],
+    [
+      "the browser check exemption behind another test",
+      "    if (preview === undefined) {\n      // API, MCP and CLI clients",
+      '    if (preview === undefined || stage !== "") {\n      // API, MCP and CLI clients',
+      /ApiBrowserCheckExemption/u,
+    ],
+  ] as const) {
+    assert.ok(text.includes(from), why);
+    await assert.rejects(
+      check({ ...overlay, "alchemy.run.ts": text.replace(from, to) }),
+      (error: Error) => unhandled.test(error.message) && named.test(error.message),
+      why,
+    );
+  }
+  // The waiting list's id is written in the module the stack imports; using it ungated declares it.
+  const waitlist = "      const waitlist = yield* provisionPublicSiteWaitlist;\n";
+  assert.ok(text.includes(waitlist));
+  await assert.rejects(
+    check({
+      ...overlay,
+      "alchemy.run.ts": text
+        .replace(waitlist, "")
+        .replace("    const api = yield* Api;\n", `    const api = yield* Api;\n${waitlist}`),
+    }),
+    /provisionPublicSiteWaitlist, which declares a production-only id/u,
+  );
 });
 
 test("a candidate that would deploy outside the lane is refused before any entry or stage env", async (t) => {
   const at = await mkdtemp(join(tmpdir(), "stage-stack-entry-"));
   t.after(() => rm(at, { recursive: true, force: true }));
   for (const [name, stack, refused] of [
-    ["main", mainShape, wrongStack],
+    ["main", mainStack(), wrongStack],
     ["unhandled", { "README.md": "" }, unhandled],
   ] as const) {
     // Unbuilt, on another pin, with a failing guard test: each of those would refuse later.
@@ -217,9 +377,15 @@ async function fakeRun(at: string, candidateStack: Record<string, string>, candi
   const harness = await preparedTree(at, "harness", "1");
   await decoderTree(harness.dir, decoder("read"));
   const steps: string[] = [];
+  const prepared: NodeJS.ProcessEnv[] = [];
   const step = (name: string) => () => {
     steps.push(name);
     throw new Error(`${name} ran`);
+  };
+  // The asynchronous steps reject, as theirs do.
+  const later = (name: string) => () => {
+    steps.push(name);
+    return Promise.reject(new Error(`${name} ran`));
   };
   const io: CandidateRunServices = {
     harness: harness.dir,
@@ -234,54 +400,60 @@ async function fakeRun(at: string, candidateStack: Record<string, string>, candi
         JSON.stringify({ commit: harness.commit }),
       );
       await decoderTree(dir, decoder(candidateState));
-      await writeFiles(dir, { "scripts/release/policies/code.json": "{}" });
+      await writeFiles(dir, {
+        "scripts/release/policies/code.json": "{}",
+        "src/pool/worker.ts": "export default {};\n",
+      });
     },
-    prepare: () => void steps.push("prepare"),
+    prepare: (_dir, env) => {
+      steps.push("prepare");
+      prepared.push(env);
+    },
     startProbe: () => ({ stop: async () => ({ samples: [] }) }),
-    faultRead: step("fault"),
+    faultRead: later("fault"),
     device: step("device"),
-    withStageBuild: step("build"),
-    workerScripts: step("workers"),
+    withStageBuild: later("build"),
+    workerScripts: later("workers"),
   };
   // Any hook (the native read-backs) is a step too.
   const hooks = new Proxy(
     {},
-    { get: (_target, name) => step(`hooks.${String(name)}`) },
+    { get: (_target, name) => later(`hooks.${String(name)}`) },
   ) as Parameters<typeof redRelease>[4];
   const outputs = join(at, "outputs");
   await mkdir(outputs, { recursive: true });
+  // The harness's job env: caches the prepare needs, and a deploy token and job file it must not see.
   const source = {
     PATH: process.env.PATH,
     HOME: process.env.HOME,
     TMPDIR: process.env.TMPDIR,
     RUNNER_TEMP: join(at, "runner"),
+    BASALT_UPSTREAM_CACHE: join(at, "cache"),
+    npm_config_cache: join(at, "npm-cache"),
+    CLOUDFLARE_API_TOKEN: "cloudflare-token-value",
+    GITHUB_ENV: join(at, "github-env"),
   };
-  return { io, hooks, outputs, source, steps };
+  return { io, hooks, outputs, source, steps, prepared };
 }
 
-test("redrelease, retry and heal refuse right after the candidate's prepare, before any device, build or fault", async (t) => {
+type Fake = Awaited<ReturnType<typeof fakeRun>>;
+const modes = [
+  [
+    "release",
+    (f: Fake) => stageRelease(2, laneSubject(2), f.source, f.outputs, f.hooks, "release", f.io),
+  ],
+  ["redrelease", (f: Fake) => redRelease(2, laneSubject(2), f.source, f.outputs, f.hooks, f.io)],
+  ["retry", (f: Fake) => rollbackRetry(laneSubject(2), f.source, f.outputs, f.hooks, f.io)],
+  ["heal", (f: Fake) => healRelease(2, laneSubject(2), f.source, f.outputs, f.hooks, f.io)],
+] as const;
+
+test("release, redrelease, retry and heal refuse right after the candidate's prepare, before any device, build or fault", async (t) => {
   const decoderRefusal = /alchemy or effect build differs from the harness's where it reads State/u;
   for (const [why, stack, state, refused] of [
     ["another State-reading carry", stackHandling, "read differently", decoderRefusal],
-    ["production's stack", mainShape, "read", wrongStack],
+    ["production's stack", mainStack(), "read", wrongStack],
   ] as const) {
-    for (const [mode, run] of [
-      [
-        "redrelease",
-        (f: Awaited<ReturnType<typeof fakeRun>>) =>
-          redRelease(2, laneSubject(2), f.source, f.outputs, f.hooks, f.io),
-      ],
-      [
-        "retry",
-        (f: Awaited<ReturnType<typeof fakeRun>>) =>
-          rollbackRetry(laneSubject(2), f.source, f.outputs, f.hooks, f.io),
-      ],
-      [
-        "heal",
-        (f: Awaited<ReturnType<typeof fakeRun>>) =>
-          healRelease(2, laneSubject(2), f.source, f.outputs, f.hooks, f.io),
-      ],
-    ] as const) {
+    for (const [mode, run] of modes) {
       const at = await mkdtemp(join(tmpdir(), `stage-early-${mode}-`));
       t.after(() => rm(at, { recursive: true, force: true }));
       const fake = await fakeRun(at, stack, state);
@@ -289,5 +461,47 @@ test("redrelease, retry and heal refuse right after the candidate's prepare, bef
       // Prepared, then refused: no device, build, fault, Workers list or native read ran.
       assert.deepEqual(fake.steps, ["prepare"], `${mode}: ${why}`);
     }
+  }
+});
+
+test("a candidate that passes goes on from its prepare to the mode's next step, and its prepare sees no token", async (t) => {
+  // Each mode's first step after the checks, as the fakes record it; the stage env, composed next
+  // from an env with no stage domain or secrets, stops the run before anything reaches the stage.
+  const missingSecret = /TEST_STAGE_DOMAIN must be a DNS zone name/u;
+  const expected = {
+    release: [["prepare", "fault"], missingSecret],
+    redrelease: [["prepare"], missingSecret],
+    retry: [["prepare", "workers"], /workers ran/u],
+    heal: [["prepare", "fault"], /fault ran/u],
+  } as const;
+  for (const [mode, run] of modes) {
+    const at = await mkdtemp(join(tmpdir(), `stage-on-${mode}-`));
+    t.after(() => rm(at, { recursive: true, force: true }));
+    const fake = await fakeRun(at, stackHandling, "read");
+    const [steps, stopped] = expected[mode];
+    await assert.rejects(run(fake), stopped, mode);
+    assert.deepEqual(fake.steps, steps, mode);
+    if (mode === "redrelease")
+      // The red commit came after the checks and before the stage env.
+      assert.match(
+        await readFile(
+          join(fake.source.RUNNER_TEMP, "release-candidate/src/pool/worker.ts"),
+          "utf8",
+        ),
+        /rehearsalRedMarker/u,
+      );
+    assert.deepEqual(
+      fake.prepared,
+      [
+        {
+          PATH: fake.source.PATH,
+          HOME: fake.source.HOME,
+          TMPDIR: fake.source.TMPDIR,
+          BASALT_UPSTREAM_CACHE: fake.source.BASALT_UPSTREAM_CACHE,
+          npm_config_cache: fake.source.npm_config_cache,
+        },
+      ],
+      mode,
+    );
   }
 });
