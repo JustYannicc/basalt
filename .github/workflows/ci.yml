@@ -2740,6 +2740,8 @@ jobs:
         run: |
           sudo iptables -I INPUT 1 -i docker0 -p tcp -j ACCEPT
           sudo iptables -I INPUT 1 -i br+ -p tcp -j ACCEPT
+      - name: Verify the container-to-host probe's time limit and failures
+        run: node --test scripts/ci/check-docker-host.test.mjs
       - name: Verify containers can reach the host fixture listeners
         run: node scripts/ci/check-docker-host.mjs basalt-1409-pool:test
       - name: Start the isolated transaction pooler
