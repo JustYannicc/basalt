@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import * as net from "node:net";
 import { test } from "node:test";
-import { ConfigProvider, Effect, Layer, Logger, ManagedRuntime, Redacted } from "effect";
+import { PgClient } from "@effect/sql-pg";
+import { ConfigProvider, Effect, Logger, ManagedRuntime, Redacted } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { SqlClient } from "effect/sql";
 import pg from "pg";
@@ -16,11 +16,6 @@ import {
 import { signEnvelope } from "../../src/pool/token.ts";
 import { postgresUrl } from "./org-lock-postgres-fixture.ts";
 
-const require = createRequire(
-  new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
-);
-const PgClient: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-pg/dist/PgClient.js") =
-  await import(require.resolve("@effect/sql-pg/PgClient"));
 const signingKey = "ab".repeat(32);
 const person = "org_person";
 const pool = "app_person_pool";
@@ -74,7 +69,7 @@ async function check(url: string, schema: string) {
       maxConnections: 2,
       applicationName: application,
       startupParameters: { search_path: schema },
-    }) as Layer.Layer<SqlClient.SqlClient, unknown>,
+    }),
   );
   const now = Date.now();
   const envelope = await signEnvelope(signingKey, "sbq1", {
