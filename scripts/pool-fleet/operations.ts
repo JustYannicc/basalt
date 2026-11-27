@@ -123,8 +123,8 @@ export const codeMismatch = (access: ControllerAccess, waitedMs?: number) =>
  * once. Past the window, a lost read refuses as controller-not-ready, old code as
  * controller-code-mismatch, and lagging bindings keep their own refusal. `onWait` hears why before
  * each wait, so every wait follows one read and one more read ends it. The bound is checked after
- * each read: no read begins once it has passed, but the one in flight finishes, so a wait can end
- * up to one poll plus one read past it.
+ * each read, before its wait: no wait begins once it has passed, so the last read can start up to
+ * one poll after it, and a wait can end up to one poll plus one read past it.
  */
 export const untilSettled = <A, E = unknown>(
   settle: Settle,

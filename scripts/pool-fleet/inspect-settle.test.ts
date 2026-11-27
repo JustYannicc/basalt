@@ -138,7 +138,7 @@ test("a read-only probe whose controller never takes the code fails at the bound
     }
 });
 
-test("each read taking time: no read begins past the bound, so the wait ends a little after it, and the line counts the real seconds", async () => {
+test("each read taking time: no wait begins past the bound, so the wait ends a little after it, and the line counts the real seconds", async () => {
   // Each refused read costs 6 s, as the production probe's bridge setup does.
   const { clock, lines, fixture, run } = await lane((clock) => ({
     handoffFailure: (action) => {
