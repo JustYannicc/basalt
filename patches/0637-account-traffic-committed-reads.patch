@@ -281,7 +281,72 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
 diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
 --- a/apps/hosted/web/src/contracts/change-signal.ts
 +++ b/apps/hosted/web/src/contracts/change-signal.ts
-@@ -26,9 +26,13 @@
+@@ -21,14 +21,78 @@
+ /** Feeds are shared only within one registry, so another registry never sees its heads. */
+ const feeds = new WeakMap<Registry, Map<string, ChangeFeed>>();
+ const retainedReads = new WeakMap<Registry, Map<string, Map<object, () => void>>>();
++
++/** After the page's root has hydrated and it has loaded, Safari's stand-in for an idle moment. */
++const hydrationFallbackMs = 250;
++/** The longest a document may count as hydrating, whatever its load does. */
++const hydrationCeilingMs = 10_000;
++/**
++ * Per registry, the reads still holding the server's value from the document, and whether that
++ * document has finished hydrating. Until it has, every evaluation of such a read shows the
++ * server's value, however often the page evaluates it; then all of them give up the server's
++ * flag together and follow the change feed like any other held value.
++ */
++const documents = new WeakMap<
++  Registry,
++  { hydrated: boolean; startedAt: number; reads: Map<object, () => void> }
++>();
++/** Runs `then` once the dashboard's root has hydrated: its first effect marks the document. */
++const whenRootHydrated = (then: () => void) => {
++  const root = window.document.documentElement;
++  if (root.hasAttribute("data-hydrated")) return then();
++  const observer = new MutationObserver(() => {
++    if (!root.hasAttribute("data-hydrated")) return;
++    observer.disconnect();
++    then();
++  });
++  observer.observe(root, { attributes: true, attributeFilter: ["data-hydrated"] });
++};
++const documentOf = (registry: Registry) => {
++  let state = documents.get(registry);
++  // A page whose load never comes (a hung image) still stops counting as hydrating.
++  if (state !== undefined && !state.hydrated && Date.now() - state.startedAt > hydrationCeilingMs)
++    finishDocumentHydration(registry);
++  if (state === undefined) {
++    state = { hydrated: false, startedAt: Date.now(), reads: new Map() };
++    documents.set(registry, state);
++    const finish = () => finishDocumentHydration(registry);
++    // Loaded, the root hydrated, and then idle: every streamed part of the document has arrived
++    // and the browser has run out of queued work, the later boundaries' hydration included.
++    // Without idle callbacks (Safari) a short delay stands in for the idle moment.
++    const idle = () =>
++      whenRootHydrated(() =>
++        "requestIdleCallback" in window
++          ? window.requestIdleCallback(finish, { timeout: hydrationCeilingMs })
++          : setTimeout(finish, hydrationFallbackMs),
++      );
++    if (typeof window.document === "object" && window.document.readyState === "complete") idle();
++    else window.addEventListener("load", idle, { once: true });
++  }
++  return state;
++};
++/**
++ * The document in this registry has hydrated: its reads give up the server's flag, and from now on
++ * show a held value only once the change feed confirms it.
++ */
++export const finishDocumentHydration = (registry: Registry) => {
++  const state = documents.get(registry);
++  if (state === undefined || state.hydrated) return;
++  state.hydrated = true;
++  for (const drop of state.reads.values()) drop();
++  state.reads.clear();
++};
+ const changeBase = (
+   registry: Registry,
    organization: OrganizationReference,
    pools: readonly string[] = [],
    suffix = "",
@@ -296,7 +361,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    return `/api/organizations/${encodeURIComponent(target)}/changes${suffix}${query.size ? `?${query}` : ""}`;
  };
  
-@@ -42,8 +46,9 @@
+@@ -42,8 +106,9 @@
    registry: Registry,
    organization: OrganizationReference,
    pools: readonly string[],
@@ -307,7 +372,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    let scoped = feeds.get(registry);
    if (scoped === undefined) {
      scoped = new Map();
-@@ -54,7 +59,7 @@
+@@ -54,7 +119,7 @@
    existing?.close();
    const feed = makeChangeFeed({
      stream: base,
@@ -316,7 +381,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    });
    scoped.set(base, feed);
    feed.onStatus(() => {
-@@ -83,8 +88,9 @@
+@@ -83,8 +148,9 @@
    organization: OrganizationReference,
    after: number,
    pools: readonly string[],
@@ -327,7 +392,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    let scoped = reads.get(registry);
    if (scoped === undefined) {
      scoped = new Map();
-@@ -119,7 +125,12 @@
+@@ -119,7 +185,12 @@
  
  /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
  const changeRetained =
@@ -341,7 +406,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
      type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
      const { source, cache, document: carriesDocument } = acceptedRead(self);
-@@ -137,26 +148,35 @@
+@@ -137,26 +208,48 @@
            retained = new Map();
            retainedReads.set(registry, retained);
          }
@@ -362,12 +427,28 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
            get.set(cache, undefined);
          }
 -        const document = held?.hydrated === true;
-+        const document = held?.hydrated === true || failed?.hydrated === true;
-         if (document && held !== undefined) {
-           held = { result: held.result, receipt: held.receipt };
-           get.set(cache, held);
+-        if (document && held !== undefined) {
+-          held = { result: held.result, receipt: held.receipt };
+-          get.set(cache, held);
++        const flagged = held?.hydrated === true || failed?.hydrated === true;
++        const hydration =
++          flagged && typeof window !== "undefined" ? documentOf(registry) : undefined;
++        if (hydration !== undefined) {
++          const drop = () => {
++            const entry = registry.get(cache);
++            if (entry?.hydrated !== true) return;
++            registry.set(
++              cache,
++              "failure" in entry
++                ? { failure: entry.failure }
++                : { result: entry.result, receipt: entry.receipt },
++            );
++          };
++          if (hydration.hydrated) drop();
++          else hydration.reads.set(cache, drop);
          }
-+        if (document && failed !== undefined) get.set(cache, { failure: failed.failure });
++        const document = flagged && hydration?.hydrated !== true;
++        const hydrating = () => hydration !== undefined && !hydration.hydrated;
          let shown: Value =
            typeof window === "undefined" || document
 -            ? (held?.result ?? AsyncResult.initial(true))
@@ -381,7 +462,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
              : AsyncResult.initial(true);
          let ended = false;
          let subscribed = false;
-@@ -185,7 +205,7 @@
+@@ -185,7 +278,7 @@
          const revoked = () => {
            ended = true;
            held = undefined;
@@ -390,7 +471,20 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
            resolveBody?.(AsyncResult.initial());
            resolveBody = undefined;
            publish(AsyncResult.fail(new OrganizationForbidden()));
-@@ -213,7 +233,7 @@
+@@ -200,7 +293,11 @@
+                   waiting: result.waiting,
+                 })
+               : result;
+-          held = { result: retained, receipt };
++          // While the document hydrates, an accepted refresh is still what the page rendered with,
++          // so a read evaluated again keeps showing it; the document's end drops the flag.
++          held = hydrating()
++            ? { result: retained, receipt, hydrated: true }
++            : { result: retained, receipt };
+           get.set(cache, held);
+           publish(retained);
+         };
+@@ -213,7 +310,7 @@
              } else {
                // The document uses its request-bound fetch; no browser stream or prior identity.
                for (let attempt = 0; attempt < 3; attempt++) {
@@ -399,7 +493,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  if (ended) return;
                  const result = await body();
                  if (ended) return;
-@@ -222,6 +242,7 @@
+@@ -222,6 +319,7 @@
                    organization,
                    before.sequence,
                    pools,
@@ -407,15 +501,21 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  );
                  if (ended) return;
                  if (before.receipt.identity !== after.receipt.identity) return revoked();
-@@ -236,6 +257,7 @@
+@@ -236,6 +334,13 @@
              if (ended) return;
              if (error instanceof OrganizationForbidden) return revoked();
              if (error instanceof ChangeReadRetry && error.reason === "hidden") return;
-+            if (held === undefined) get.set(cache, { failure: "unconfirmed" });
++            if (held === undefined)
++              get.set(
++                cache,
++                hydrating()
++                  ? { failure: "unconfirmed", hydrated: true }
++                  : { failure: "unconfirmed" },
++              );
              publish(
                AsyncResult.fail(new ChangeRefreshFailed(), {
                  previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
-@@ -246,7 +268,7 @@
+@@ -246,7 +351,7 @@
          const watch =
            typeof window === "undefined"
              ? undefined
@@ -424,7 +524,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  topics: watched,
                  ...(held === undefined ? {} : { accepted: held.receipt }),
                  confirmed: () => {
-@@ -277,10 +299,15 @@
+@@ -277,10 +382,15 @@
   * retry becomes one fenced read, and an invalidation only clears what is shown.
   */
  export const changeProtected =
@@ -807,6 +907,251 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
          expect(repeated).toEqual(upgraded);
          yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
            upgraded,
+diff --git a/e2e/tests/dashboard-hydration-markup.spec.ts b/e2e/tests/dashboard-hydration-markup.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/e2e/tests/dashboard-hydration-markup.spec.ts
+@@ -0,0 +1,240 @@
++import { expect, layer } from "@effect/vitest";
++import { Effect, Schedule, Schema } from "effect";
++import type { Page } from "playwright";
++import { randomUUID } from "node:crypto";
++import { Actors } from "../support/actors.ts";
++import { Api, body } from "../support/api.ts";
++import { Browser } from "../support/browser.ts";
++import { HostedLive, WebKitLive, withHostedCase } from "../support/case.ts";
++import { App } from "../support/contracts.ts";
++import { Evidence } from "../support/evidence.ts";
++import { scenarios } from "../test-plan.ts";
++import { appsManifest } from "../support/apps-release.ts";
++
++const snippet = "const count: number = 42;\nexport default count;";
++const Heads = Schema.Struct({
++  revisions: Schema.Array(Schema.Struct({ topic: Schema.String, revision: Schema.String })),
++});
++/** The topics the app page's reads follow (app, inventory, links), and every read's session. */
++const pageTopics = new Set(["accounts", "observations", "apps", "membership", "session"]);
++class Waiting extends Schema.TaggedError<Waiting>()("Waiting", {}) {}
++const reader = (page: Page) =>
++  page.getByRole("region", { name: "App skills", exact: true }).locator("pre").first();
++
++/**
++ * Record every element a script creates. The parser builds the server's markup without them, so a
++ * code block created by script means the page threw the server's markup away and rebuilt it.
++ */
++const recordScriptedElements = () => {
++  const scripted = new WeakSet<Element>();
++  for (const method of ["createElement", "createElementNS"] as const) {
++    const create = Document.prototype[method];
++    Object.defineProperty(Document.prototype, method, {
++      configurable: true,
++      writable: true,
++      value(this: Document, ...args: unknown[]) {
++        const element: Element = Reflect.apply(create, this, args);
++        scripted.add(element);
++        return element;
++      },
++    });
++  }
++  Object.defineProperty(window, "__executorScriptedElements", { value: scripted });
++  // The change feed's handshake is the `current` event on the organization's change stream; a
++  // copy of the stream's body is read for it.
++  const request = window.fetch;
++  window.fetch = (...args: Parameters<typeof fetch>) =>
++    request(...args).then((response) => {
++      const target = args[0] instanceof Request ? args[0].url : String(args[0]);
++      if (!new URL(target, location.href).pathname.endsWith("/changes")) return response;
++      if (!response.ok || response.body === null) return response;
++      const [page, copy] = response.body.tee();
++      const reader = copy.getReader();
++      const decoder = new TextDecoder();
++      let text = "";
++      const read = (): Promise<void> =>
++        reader.read().then(({ done, value }) => {
++          if (done) return;
++          text += decoder.decode(value, { stream: true });
++          if (!/(^|\n)event: current\n[^\n]*\n\n/.test(text)) return read();
++          Object.assign(window, { __executorChangeHandshake: true });
++          return reader.cancel();
++        });
++      read().catch(() => {});
++      return new Response(page, response);
++    });
++};
++/** The registry `recordScriptedElements` leaves on the page. */
++type ScriptedWindow = { readonly __executorScriptedElements: WeakSet<Element> };
++const keepsServerMarkup = (page: Page) =>
++  reader(page).evaluate(
++    (pre) => !(window as unknown as ScriptedWindow).__executorScriptedElements.has(pre),
++  );
++
++/**
++ * An app's page renders its reads on the server and hydrates them in the browser. A read the
++ * server rendered must show the server's value until the page's document has hydrated, or the
++ * page drops back to loading and rebuilds what the server rendered (issue #2123). The skills
++ * section's code block is the visible witness: it must stay the server's element through
++ * hydration and after the change feed's handshake.
++ */
++const keepsServerMarkupCase =
++  (viewport: { readonly width: number; readonly height: number }, engine = "chromium") =>
++  (context: Parameters<typeof withHostedCase>[0]) =>
++    withHostedCase(
++      context,
++      Effect.gen(function* () {
++        const actors = yield* Actors;
++        const api = yield* Api;
++        const browser = yield* Browser;
++        const evidence = yield* Evidence;
++        const prefix = `/api/organizations/${actors.organization.id}/apps`;
++        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
++          name: `Hydration markup ${randomUUID().slice(0, 8)}`,
++          files: [
++            {
++              path: "index.ts",
++              content: `import { defineApp } from "apps";\nexport default defineApp({}, async () => ({}));`,
++            },
++            {
++              path: "skills/count/SKILL.md",
++              content: `---\nname: count\ndescription: Count something.\n---\n# Count\n\n\`\`\`ts\n${snippet}\n\`\`\`\n`,
++            },
++            appsManifest,
++          ],
++        });
++        expect(deployed.status).toBe(200);
++        const app = yield* body(App, deployed);
++        yield* Effect.addFinalizer(() =>
++          api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(
++            Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
++            Effect.orDie,
++          ),
++        );
++        // The member's committed heads, read where the page's change fence reads them.
++        const heads = Effect.gen(function* () {
++          const response = yield* api.request(
++            actors.member,
++            "GET",
++            `/api/organizations/${actors.organization.id}/changes/current`,
++          );
++          const { revisions } = yield* body(Heads, response);
++          return JSON.stringify(revisions.filter((head) => pageTopics.has(head.topic)));
++        });
++        /**
++         * Waits for the member's heads to move past `before`: the head a write of this
++         * scenario produced. A page opened before that renders while the server's fence sees
++         * the heads move, and the server gives up on its reads.
++         */
++        const committed = (before: string, write: string) =>
++          heads.pipe(
++            Effect.filterOrFail(
++              (current) => current !== before,
++              () => new Waiting(),
++            ),
++            Effect.retry({ while: Schema.is(Waiting), schedule: Schedule.spaced("50 millis") }),
++            Effect.timeoutOption("10 seconds"),
++            Effect.flatMap((current) =>
++              current._tag === "Some"
++                ? Effect.succeed(current.value)
++                : heads.pipe(
++                    Effect.tap((last) =>
++                      evidence.json(`heads-${write}-${viewport.width}.json`, { before, last }),
++                    ),
++                    Effect.flatMap(() =>
++                      Effect.die(new Error(`The ${write}'s head never reached the member`)),
++                    ),
++                  ),
++            ),
++          );
++        const access = yield* body(
++          Schema.Struct({ revision: Schema.String }),
++          yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/access`),
++        );
++        const unshared = yield* heads;
++        expect(
++          (yield* api.request(actors.owner, "PATCH", `${prefix}/${app.id}/access`, {
++            revision: access.revision,
++            audience: { kind: "everyone" },
++          })).status,
++        ).toBe(200);
++        const shared = yield* committed(unshared, "share");
++        const url = `/org/${actors.organization.slug}/apps/${app.id}?view=skills`;
++
++        // Signing the member in is the scenario's last write: it moves the session head.
++        yield* browser.login(actors.member);
++        yield* committed(shared, "login");
++        yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
++        yield* browser.use("Record the elements scripts create", (page) =>
++          page.addInitScript(recordScriptedElements),
++        );
++        const html = yield* browser.use("Open the shared app's skills", (page) =>
++          page.goto(url).then((response) => {
++            if (response === null) throw new Error("The skills page answered no document");
++            return response.text().then((text) => ({ status: response.status(), text }));
++          }),
++        );
++        expect(html.status).toBe(200);
++        // The server may color the block itself, which splits it into tokens: compare its text.
++        const rendered = html.text.replace(/<[^>]*>/g, "");
++        if (!snippet.split("\n").every((line) => rendered.includes(line)))
++          yield* evidence.json(`document-${viewport.width}.json`, { html: html.text });
++        for (const line of snippet.split("\n")) expect(rendered).toContain(line);
++        yield* browser.use("The page hydrates", (page) =>
++          page.locator("html[data-hydrated]").waitFor({ state: "attached" }),
++        );
++        // Safari has no idle callbacks, so its run covers the stand-in that ends the document.
++        if (engine === "webkit")
++          expect(
++            yield* browser.use("The engine has no idle callbacks", (page) =>
++              page.evaluate(() => "requestIdleCallback" in window),
++            ),
++          ).toBe(false);
++        yield* browser.use("The reader shows the server's code block", (page) =>
++          reader(page).locator("code").waitFor({ state: "visible" }),
++        );
++        expect(
++          yield* browser.use("Hydration kept the server's code block", keepsServerMarkup),
++        ).toBe(true);
++        yield* browser.use("The change feed's handshake arrives", (page) =>
++          page.waitForFunction(
++            () => (window as { __executorChangeHandshake?: true }).__executorChangeHandshake,
++          ),
++        );
++        expect(
++          yield* browser.use("The handshake kept the server's code block", keepsServerMarkup),
++        ).toBe(true);
++        expect(
++          yield* browser.use("Read the code block", (page) =>
++            reader(page).locator("code").textContent(),
++          ),
++        ).toBe(`${snippet}\n`);
++        // The handshake's own publish may commit after the check above; look once more.
++        expect(yield* browser.use("The page kept the server's code block", keepsServerMarkup)).toBe(
++          true,
++        );
++        yield* browser.checkpoint(`${viewport.width} server code block kept`);
++      }),
++    );
++
++layer(HostedLive, { excludeTestServices: true })(
++  "Dashboard hydration keeps server markup",
++  (it) => {
++    for (const [scenario, viewport] of [
++      [scenarios.dashboardHydrationKeepsServerMarkup, { width: 1440, height: 960 }],
++      [scenarios.dashboardHydrationKeepsServerMarkupMobile, { width: 390, height: 844 }],
++    ] as const)
++      it.effect(scenario.title, keepsServerMarkupCase(viewport));
++  },
++);
++
++// Safari's engine has no idle callbacks, so the document's end comes from their stand-in.
++layer(WebKitLive, { excludeTestServices: true })(
++  "Dashboard hydration keeps server markup in Safari",
++  (it) => {
++    it.effect(
++      scenarios.dashboardHydrationKeepsServerMarkupSafari.title,
++      keepsServerMarkupCase({ width: 390, height: 844 }, "webkit"),
++    );
++  },
++);
 diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
 --- a/e2e/tests/legacy-profile-links.spec.ts
 +++ b/e2e/tests/legacy-profile-links.spec.ts
