@@ -253,8 +253,10 @@ test("every workflow job has a gate dependency and declared selection policy", (
   for (const id of startJobs) {
     const lane = jobs[id].steps.find((step: { id?: string }) => step.id === "lane");
     assert.equal(lane.run, "node scripts/ci/lane.ts", id);
-    for (const key of ["FULL_SUITE", "AFFECTED_LANE", "HEAD_SHA"])
+    for (const key of ["FULL_SUITE", "HEAD_SHA"])
       assert.equal(lane.env[key], selection.env[key], `${id} ${key}`);
+    // No event requests the affected lane.
+    assert.equal(lane.env.AFFECTED_LANE, undefined, id);
     assert.equal(lane.env.BASE_SHA, "${{ steps.comparison.outputs.base_sha }}", id);
   }
 });

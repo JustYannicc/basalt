@@ -68,10 +68,9 @@ const UserAgent = Header.check(
 // MCP names its headers under one prefix and adds more per revision, so the tunnel admits the
 // prefix rather than a list. Names must already be lowercase, as Node and fetch hand them over;
 // any other spelling stays an unknown key and refuses the frame.
+export const mcpHeaderName = /^mcp-[a-z0-9!#$%&'*+.^_`|~-]+$/u;
 const McpHeaders = Schema.Record(
-  Schema.TemplateLiteral(["mcp-", Schema.String]).check(
-    Schema.isPattern(/^mcp-[a-z0-9!#$%&'*+.^_`|~-]+$/u),
-  ),
+  Schema.TemplateLiteral(["mcp-", Schema.String]).check(Schema.isPattern(mcpHeaderName)),
   Header,
 );
 const mcpHeaderLimit = Schema.makeFilter(
@@ -93,6 +92,10 @@ const requestHeaderFields = Schema.Struct({
 export const TunnelRequestHeaders = Schema.StructWithRest(requestHeaderFields, [McpHeaders]).check(
   mcpHeaderLimit,
 );
+export const tunnelRequestHeaderNames: readonly string[] = Object.keys(requestHeaderFields.fields);
+export const decodeTunnelRequestHeaders = Schema.decodeUnknownSync(TunnelRequestHeaders, {
+  onExcessProperty: "error",
+});
 const responseHeaderFields = Schema.Struct({
   "content-type": Schema.optionalKey(Header),
   "content-encoding": Schema.optionalKey(Header),
@@ -158,7 +161,7 @@ const Operation = Schema.Union([
  * `user-agent` and the `mcp-*` names beyond the fixed two belong to MCP traffic. A model call keeps
  * the fixed set it always had: the pool's model proxy reads a client's user agent.
  */
-const toolsOnlyHeader = (key: string) =>
+export const toolsOnlyHeader = (key: string) =>
   key === "user-agent" ||
   (key.startsWith("mcp-") && !Object.hasOwn(requestHeaderFields.fields, key));
 export const TunnelOpen = Schema.Struct({

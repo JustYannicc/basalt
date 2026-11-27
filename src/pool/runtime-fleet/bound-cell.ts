@@ -24,6 +24,8 @@ interface Input {
   target: SlotTarget;
   application: FleetApplication;
   provider: RuntimeProviderReader;
+  /** The instances the fleet ledger counts, which no release of this cell waits on. */
+  counted(): Promise<ReadonlySet<string>>;
   authorizeStart?(transaction: SlotStorage): Promise<void>;
   remote(target: SlotTarget): RuntimeStub;
   wrap(response: Response, lease: NativeStreamLease): Response;
@@ -128,5 +130,6 @@ export function boundFleetCell(input: Input) {
     admission,
     application,
     provider: input.provider,
+    counted: input.counted,
   });
 }

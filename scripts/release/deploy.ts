@@ -28,7 +28,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { stackConfig } from "./stack-config.ts";
+import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const cloud = resolve(root, ".upstream/apps/hosted/cloud");
@@ -70,9 +70,10 @@ const { positionals, values } = parseArgs({
 resolvePathFlags(values, Object.keys(pathOptions) as (keyof typeof pathOptions)[], process.cwd());
 const command = positionals[0] ?? "";
 const stage = values.stage ?? "";
-const { config, scaleStack } = stackConfig(values.config, root, process.cwd());
+const { config, scaleStack, state: stackState } = stackConfig(values.config, root, process.cwd());
 
 if (command !== "compare") {
+  assertStateStage(stackState, stage);
   if (stage === "production") {
     if (
       process.env.GITHUB_ACTIONS !== "true" ||
@@ -82,7 +83,7 @@ if (command !== "compare") {
     if (command === "destroy" || command === "teardown")
       throw new Error("Production is never destroyed");
     if (command === "deploy") throw new Error("Production applies only a reviewed plan digest");
-  } else if (scaleStack ? !/^scale-[0-9]+$/u.test(stage) : !/^test-[a-z0-9-]+$/u.test(stage)) {
+  } else if (scaleStack ? !/^scale-[0-9]+$/u.test(stage) : !isTestStage(stage)) {
     throw new Error(
       "Use --stage production, a disposable test-* stage, or scale-<n> for the scale stack",
     );
@@ -447,6 +448,8 @@ if (initialCwd !== process.cwd())
   throw new Error(
     "Alchemy loaded before the entry moved into the cloud app, so the stack's command directories would resolve elsewhere",
   );
+// What Alchemy's local state answers for its version: the contract this Alchemy was built against.
+const { STATE_STORE_VERSION: runnerLocalStateVersion } = await import("alchemy/State");
 const policy = values.policy
   ? decodeReleasePolicy(JSON.parse(await readFile(values.policy, "utf8")))
   : undefined;
@@ -769,10 +772,13 @@ try {
           ...target,
         } as never) as unknown as Fx.Effect<StateService, unknown, never>;
         const version = yield* store.getVersion() as Fx.Effect<number, unknown, never>;
-        if (version !== 8)
-          return yield* Effect.die(
-            new Error(`State store version ${version}, expected 8: upgrade it deliberately first`),
-          );
+        const refused = stateStoreRefusal(
+          { id: store.id, version },
+          stackState,
+          stage,
+          runnerLocalStateVersion,
+        );
+        if (refused) return yield* refused;
         tracker.setPhase("plan");
         let snapshot = yield* planOf("deploy");
         // A build this job has not run plans as changed (its output is missing), and so does every
@@ -935,10 +941,13 @@ try {
           ...target,
         } as never) as unknown as Fx.Effect<StateService, unknown, never>;
         const version = yield* state.getVersion() as Fx.Effect<number, unknown, never>;
-        if (version !== 8)
-          return yield* Effect.die(
-            new Error(`State store version ${version}, expected 8: upgrade deliberately first`),
-          );
+        const refused = stateStoreRefusal(
+          { id: state.id, version },
+          stackState,
+          stage,
+          runnerLocalStateVersion,
+        );
+        if (refused) return yield* refused;
         const stack = yield* stackName();
         const rows = yield* legacy.stateRows(state, stack, stage);
         const key = process.env.EXECUTOR_ENCRYPTION_KEY ?? "";

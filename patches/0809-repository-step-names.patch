@@ -1,0 +1,324 @@
+diff --git a/apps/hosted/cloud/src/artifacts-credentials.ts b/apps/hosted/cloud/src/artifacts-credentials.ts
+--- a/apps/hosted/cloud/src/artifacts-credentials.ts
++++ b/apps/hosted/cloud/src/artifacts-credentials.ts
+@@ -29,6 +29,7 @@
+   envelope,
+   unavailable,
+ } from "./infrastructure/artifacts-tokens.ts";
++import { repositoryStepFailed } from "./implementation/repository-step.ts";
+ import { cloudEncryptionKey } from "./infrastructure/secrets.ts";
+ // The vault engine is Basalt's own drive, shared with its tests and migration tooling.
+ import { vaultObject } from "../../../../../src/drive/object.ts";
+@@ -129,6 +130,7 @@
+                 schedule: Schedule.spaced("5 seconds"),
+                 times: 2,
+               }),
++              Effect.tapError(repositoryStepFailed("coordinator-open")),
+               Effect.withSpan("source.repository.open"),
+             ),
+             (repo) => disposeRpc(repo.raw),
+@@ -172,7 +174,10 @@
+               const result = yield* Effect.acquireRelease(
+                 repo
+                   .createToken("write", tokenLifetimeSeconds)
+-                  .pipe(Effect.withSpan("source.repository.token")),
++                  .pipe(
++                    Effect.tapError(repositoryStepFailed("coordinator-mint")),
++                    Effect.withSpan("source.repository.token"),
++                  ),
+                 (result) => disposeRpc(result),
+               );
+               // RPC properties are read while the provider handle is alive; no plaintext is logged or stored.
+@@ -207,7 +212,11 @@
+             }),
+           ),
+         )
+-        .pipe(Effect.mapError(unavailable), Effect.withSpan("source.repository.token.acquire"));
++        .pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-token")),
++          Effect.mapError(unavailable),
++          Effect.withSpan("source.repository.token.acquire"),
++        );
+     return {
+       fetch: Effect.gen(function* () {
+         const request = yield* HttpServerRequest.toWeb(
+@@ -248,6 +257,7 @@
+             }));
+           }),
+         ).pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-history")),
+           Effect.mapError(unavailable),
+           Effect.withSpan("source.repository.history", {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+@@ -272,6 +282,7 @@
+             return head === undefined ? null : { commit: head.hash, tree: head.treeHash };
+           }),
+         ).pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-resolve")),
+           Effect.mapError(unavailable),
+           Effect.withSpan("source.repository.resolve", {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+@@ -311,6 +322,7 @@
+             return files;
+           }),
+         ).pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-tree")),
+           Effect.mapError(unavailable),
+           Effect.withSpan("source.repository.tree", {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+@@ -356,6 +368,7 @@
+             );
+           }),
+         ).pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-blobs")),
+           Effect.mapError(unavailable),
+           Effect.withSpan("source.repository.blobs", {
+             attributes: { "source.blobs.count": objects.length },
+@@ -378,6 +391,7 @@
+             });
+           }),
+         ).pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-file")),
+           Effect.mapError(unavailable),
+           Effect.withSpan("source.repository.file", {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+@@ -414,6 +428,8 @@
+                     ? Effect.succeed(null)
+                     : Effect.fail(error),
+                 ),
++                // After the catch: a repository that already exists is no failed step.
++                Effect.tapError(repositoryStepFailed("coordinator-create")),
+               ),
+               (created) => disposeRpc(created),
+             );
+@@ -438,6 +454,7 @@
+             return { version: 1 as const, encrypted };
+           }),
+         ).pipe(
++          Effect.tapError(repositoryStepFailed("coordinator-initialize")),
+           Effect.mapError(unavailable),
+           Effect.withSpan("source.repository.initialize", {
+             parent: Option.getOrUndefined(externalTrace(trace)),
+diff --git a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+--- a/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
++++ b/apps/hosted/cloud/src/infrastructure/artifacts-tokens.ts
+@@ -14,6 +14,7 @@
+ import { provisionVaultAttachments } from "../../../../../../infrastructure/vault-attachments.ts";
+ import { cloudEncryptionKey } from "./secrets.ts";
+ import { providerFailureCode } from "../implementation/provider-failure.ts";
++import { repositoryStepFailed } from "../implementation/repository-step.ts";
+ 
+ export const creation = Schema.Struct({
+   repository: AppCodeId,
+@@ -207,9 +208,11 @@
+                 ),
+               ),
+               Effect.withSpan("source.repository.credentials.rpc"),
++              Effect.tapError(repositoryStepFailed("credentials")),
+             );
+           const payload = yield* decrypt(repository, raw).pipe(
+             Effect.flatMap(Schema.decodeUnknownEffect(credential)),
++            Effect.tapError(repositoryStepFailed("decrypt")),
+           );
+           return { token: payload.token, generation: payload.generation };
+         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+@@ -228,34 +231,51 @@
+               Effect.withSpan("source.repository.history.rpc"),
+             );
+           return yield* Schema.decodeUnknownEffect(Schema.Array(GitCommit))(rows);
+-        }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
++        }).pipe(
++          Effect.provide(RuntimeContext.phantom),
++          // Outside the call, so an unreadable reply names its step too.
++          Effect.tapError(repositoryStepFailed("history")),
++          Effect.mapError(unavailable),
++        ),
+       resolve: (repository, ref) =>
+         Effect.gen(function* () {
+           return yield* coordinator
+             .getByName(repository)
+             .resolve(repository, ref, yield* currentTraceContext)
+-            .pipe(Effect.withSpan("source.repository.resolve.rpc"));
++            .pipe(
++              Effect.withSpan("source.repository.resolve.rpc"),
++              Effect.tapError(repositoryStepFailed("resolve")),
++            );
+         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+       tree: (repository, tree) =>
+         Effect.gen(function* () {
+           return yield* coordinator
+             .getByName(repository)
+             .tree(repository, tree, yield* currentTraceContext)
+-            .pipe(Effect.withSpan("source.repository.tree.rpc"));
++            .pipe(
++              Effect.withSpan("source.repository.tree.rpc"),
++              Effect.tapError(repositoryStepFailed("tree")),
++            );
+         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+       blobs: (repository, objects, mode, budget) =>
+         Effect.gen(function* () {
+           return yield* coordinator
+             .getByName(repository)
+             .blobs(repository, objects, mode, budget, yield* currentTraceContext)
+-            .pipe(Effect.withSpan("source.repository.blobs.rpc"));
++            .pipe(
++              Effect.withSpan("source.repository.blobs.rpc"),
++              Effect.tapError(repositoryStepFailed("blobs")),
++            );
+         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+       file: (repository, commit, path) =>
+         Effect.gen(function* () {
+           return yield* coordinator
+             .getByName(repository)
+             .file(repository, commit, path, yield* currentTraceContext)
+-            .pipe(Effect.withSpan("source.repository.file.rpc"));
++            .pipe(
++              Effect.withSpan("source.repository.file.rpc"),
++              Effect.tapError(repositoryStepFailed("file")),
++            );
+         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+       create: (repository) =>
+         Effect.gen(function* () {
+@@ -270,10 +290,12 @@
+                 ),
+               ),
+               Effect.withSpan("source.repository.initialize.rpc"),
++              Effect.tapError(repositoryStepFailed("initialize")),
+             );
+           if (raw === null) return null;
+           const payload = yield* decrypt(repository, raw).pipe(
+             Effect.flatMap(Schema.decodeUnknownEffect(creation)),
++            Effect.tapError(repositoryStepFailed("decrypt")),
+           );
+           return payload.token;
+         }).pipe(Effect.provide(RuntimeContext.phantom), Effect.mapError(unavailable)),
+diff --git a/packages/app-source/src/implementation/cloudflare-git.ts b/packages/app-source/src/implementation/cloudflare-git.ts
+--- a/packages/app-source/src/implementation/cloudflare-git.ts
++++ b/packages/app-source/src/implementation/cloudflare-git.ts
+@@ -98,8 +98,22 @@
+     ].filter((word) => cause.message.toLowerCase().includes(word));
+     failures.set(error, { type: cause.name, frames, categories });
+   }
++  return error;
++};
++/**
++ * A `git` failure this adapter raises itself, recorded with a fixed type and, for an HTTP answer,
++ * its status, so the failure line says which call it came from.
++ */
++const marked = (type: string, status?: number) => {
++  const error = new SourceError({ reason: "git" });
++  failures.set(error, { type, ...(status === undefined ? {} : { status }) });
+   return error;
+ };
++/** A `git` failure from the pack steps keeps their record, or is recorded as theirs. */
++const markPack = (error: SourceError) =>
++  Effect.sync(() => {
++    if (error.reason === "git" && !failures.has(error)) failures.set(error, { type: "Pack" });
++  });
+ /** Artifacts refused the repository token; the failure records it, and Git never sees it. */
+ const rejectedToken = (status: number) => {
+   const error = new SourceError({ reason: "git" });
+@@ -447,8 +461,7 @@
+         const files: SourceFile[] = [];
+         for (const [index, entry] of code.entries()) {
+           const bytes = codeBlobs[index]?.bytes;
+-          if (bytes === null || bytes === undefined)
+-            return yield* new SourceError({ reason: "git" });
++          if (bytes === null || bytes === undefined) return yield* marked("MissingBlob");
+           files.push({ path: entry.path, content: yield* utf8(bytes) });
+         }
+         for (const [index, entry] of served.entries()) {
+@@ -570,7 +583,7 @@
+           Effect.flatMap(({ response, body }) =>
+             response.status === 200
+               ? Stream.runDrain(body)
+-              : Effect.fail(new SourceError({ reason: "git" })),
++              : Effect.fail(marked("Advertise", response.status)),
+           ),
+           Effect.scoped,
+         );
+@@ -598,7 +611,7 @@
+                       return out;
+                     }),
+                   )
+-                : Effect.fail(new SourceError({ reason: "git" })),
++                : Effect.fail(marked("Receive", response.status)),
+             ),
+             Effect.scoped,
+             Effect.withSpan("source.git.push"),
+@@ -637,9 +650,11 @@
+             };
+           if ((current?.commit ?? null) !== input.expected)
+             return yield* new SourceError({ reason: "conflict" });
+-          return yield* report._tag === "Failure"
+-            ? report.failure
+-            : new SourceError({ reason: "git" });
++          if (report._tag === "Failure") {
++            yield* markPack(report.failure);
++            return yield* report.failure;
++          }
++          return yield* marked("RefRejected");
+         }
+         return {
+           commit: yield* Schema.decodeUnknownEffect(SourceCommit)(commit),
+diff --git a/apps/hosted/cloud/src/implementation/repository-step.ts b/apps/hosted/cloud/src/implementation/repository-step.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/implementation/repository-step.ts
+@@ -0,0 +1,56 @@
++import { Effect, Predicate } from "effect";
++import { providerFailureCode } from "./provider-failure.ts";
++
++/**
++ * The token coordinator's steps, on both sides of its RPC, that turn their own failure into a
++ * source failure with reason `git`. The Git adapter logs its own failures ("Managed Git operation
++ * failed"), so between them every `git` on the sweep's path names where it came from.
++ */
++export type RepositoryStep =
++  | "credentials"
++  | "decrypt"
++  | "history"
++  | "resolve"
++  | "tree"
++  | "blobs"
++  | "file"
++  | "initialize"
++  | "coordinator-open"
++  | "coordinator-token"
++  | "coordinator-mint"
++  | "coordinator-history"
++  | "coordinator-resolve"
++  | "coordinator-tree"
++  | "coordinator-blobs"
++  | "coordinator-file"
++  | "coordinator-create"
++  | "coordinator-initialize";
++
++/**
++ * Name which repository step failed, and how, before the failure becomes one `git` word: a tagged
++ * error by its tag and code, anything else by the provider failure code. Never its message or
++ * payload.
++ */
++export const repositoryStepFailed = (step: RepositoryStep) => (error: unknown) => {
++  const tagged = Predicate.hasProperty(error, "_tag") && typeof error._tag === "string";
++  return Effect.logWarning("Repository step failed", {
++    step,
++    error: tagged ? error._tag : providerFailureCode(error),
++    // A tag alone hides which kind: a provider's own code (`NOT_FOUND`), or how a transport
++    // failed (`reset`, `timeout`), from the provider failure code of what the tag wraps.
++    ...(tagged ? { code: failureCode(error) } : {}),
++  });
++};
++
++const providerCode = /^[A-Z][A-Z_]{0,39}$/;
++const failureCode = (error: object): string => {
++  const cause = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
++  for (const value of [error, cause])
++    if (
++      Predicate.hasProperty(value, "code") &&
++      typeof value.code === "string" &&
++      providerCode.test(value.code)
++    )
++      return value.code;
++  return providerFailureCode(cause ?? error);
++};

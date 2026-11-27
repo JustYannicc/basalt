@@ -114,13 +114,16 @@ async function fixture(directory: string, target: string, count: number, large =
   return { file, accepted, map, descriptor, prepare, raw, acceptedRaw, sourceHash, ids };
 }
 
-test("bulk CLI waits past thirty seconds for upload ACKs and stops uncertain or unsafe operations", async () => {
+// "ack" holds the first upload's ACK for 35 s and stops once the upload is checked; "safety" runs
+// every refusal without the hold, so neither test spends most of its limit waiting.
+async function bulkCli(mode: "ack" | "safety") {
   const directory = await mkdtemp(join(tmpdir(), "basalt-bulk-cli-"));
   let target = "",
     wrongViewer = false,
     wrongMap = false,
     dropUpload = false;
-  let slowUpload = true;
+  let slowUpload = mode === "ack",
+    held = false;
   let expectedGuard: Record<string, unknown> | undefined;
   let current: Record<string, unknown> = {},
     definition: Record<string, unknown> = {};
@@ -158,6 +161,7 @@ test("bulk CLI waits past thirty seconds for upload ACKs and stops uncertain or 
       if (slowUpload) {
         slowUpload = false;
         await delay(35_000);
+        held = true;
       }
       const previous = uploads.get(input.chunk);
       if (previous !== undefined) assert.equal(input.data, previous);
@@ -276,6 +280,8 @@ test("bulk CLI waits past thirty seconds for upload ACKs and stops uncertain or 
       assert.equal(hash(data), manifest.chunks[index].sha256);
       assert.equal(Buffer.byteLength(data), manifest.chunks[index].bytes);
     }
+    assert.equal(held, mode === "ack");
+    if (mode === "ack") return;
     const beforeWrong = network;
     assert.equal(
       (await command("apply", ["--approve", "0".repeat(64), "--guard-file", guard])).code,
@@ -399,7 +405,15 @@ test("bulk CLI waits past thirty seconds for upload ACKs and stops uncertain or 
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   }
-});
+}
+
+// Durable staging can take longer than 30 s to ACK an upload (carry 0655). The real hold is the
+// proof, so this test carries its own limit instead of the suite's 60 s.
+test("bulk CLI waits past thirty seconds for an upload ACK", { timeout: 120_000 }, () =>
+  bulkCli("ack"),
+);
+
+test("bulk CLI stops uncertain or unsafe operations", () => bulkCli("safety"));
 
 test("bulk descriptor stops coalescing at the byte limit before the row limit", async () => {
   const directory = await mkdtemp(join(tmpdir(), "basalt-bulk-bytes-"));

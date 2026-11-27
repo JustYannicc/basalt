@@ -2,7 +2,14 @@ import { appendFileSync } from "node:fs";
 
 // What box-rerun.yml and flake-rerun.yml read from GitHub about the Check run that triggered them.
 
-export type Run = { id: number; attempt: number; conclusion: string | null };
+export type Run = {
+  id: number;
+  attempt: number;
+  conclusion: string | null;
+  /** The run's event and head branch, as workflow_run gives them. */
+  event?: string;
+  branch?: string;
+};
 export type RunJob = {
   id: number;
   name: string;
@@ -10,6 +17,8 @@ export type RunJob = {
   labels?: readonly string[];
   runnerName?: string | null;
   startedAt?: string | null;
+  createdAt?: string | null;
+  completedAt?: string | null;
 };
 
 /** A GitHub call, tried three times: a 5xx or a dropped connection is common and passes. */
@@ -59,6 +68,8 @@ export const triggeringRun = (env = process.env): Run => ({
   id: Number(env.RUN_ID),
   attempt: Number(env.RUN_ATTEMPT),
   conclusion: env.RUN_CONCLUSION ?? null,
+  event: env.RUN_EVENT,
+  branch: env.HEAD_BRANCH,
 });
 
 export async function attemptJobs(api: GitHub, run: Run) {
@@ -79,6 +90,8 @@ export async function attemptJobs(api: GitHub, run: Run) {
         labels: Array.isArray(job.labels) ? job.labels.map(String) : [],
         runnerName: (job.runner_name as string | null) ?? null,
         startedAt: (job.started_at as string | null) ?? null,
+        createdAt: (job.created_at as string | null) ?? null,
+        completedAt: (job.completed_at as string | null) ?? null,
       });
     if (batch.length < 50) break;
   }
