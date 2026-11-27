@@ -247,10 +247,13 @@ test("the entry refuses a runner-local stack on production before anything loads
         assert.notEqual(refused.status, 0, `${command} ${config}`);
         assert.match(refused.output, refusal, `${command} ${config}`);
       }
-  // A shared stack on production passes the rule and stops at the production check after it.
+  // A shared stack that runs on production passes the rule and stops at the production check after
+  // it; the test-only shared stacks are refused by the stage rule instead (the test above).
   for (const config of [
     undefined,
-    ...stackConfigs.filter((s) => s.state === "shared").map((s) => s.path),
+    ...stackConfigs
+      .filter((s) => s.state === "shared" && s.stages.test("production"))
+      .map((s) => s.path),
   ]) {
     const args = ["deploy", "--stage", "production", ...(config ? ["--config", config] : [])];
     const stopped = runEntryWith(job, ...args);
