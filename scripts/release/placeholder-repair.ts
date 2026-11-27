@@ -33,6 +33,7 @@ import { CloudflareEnvironment } from "alchemy/Cloudflare";
 import { type Context, Data, Effect, Option } from "effect";
 import { safeJson } from "./safe-json.ts";
 import { type StackState, stateStoreRefusal } from "./stack-config.ts";
+import type { StageRows } from "./wire-config.ts";
 
 /** A provider lifecycle failure as alchemy-run/alchemy#3200 types it: tagged, with a message. */
 type ProviderError = { readonly _tag: string; readonly message?: string };
@@ -184,7 +185,12 @@ export function planRepair(input: {
   readonly hostedNamespace: (className: string) => string | undefined;
   readonly observed: Observation | undefined;
   /** Applications other rows record (the root's, the held ones): never this row's to adopt. */
-  readonly taken?: { readonly ids: ReadonlySet<string>; readonly names: ReadonlySet<string> };
+  readonly taken?: {
+    readonly ids: ReadonlySet<string>;
+    readonly names: ReadonlySet<string>;
+    /** A reserved row records an application by id alone: its live one can't be told apart. */
+    readonly unnamed?: boolean;
+  };
 }): RepairPlan | RepairRefused {
   const placeholder = placeholderOf(input.fqn, input.row);
   if (placeholder instanceof RepairRefused) return placeholder;
@@ -229,6 +235,9 @@ export function planRepair(input: {
     (taken.ids.has(live.applicationId.toLowerCase()) || taken.names.has(name.toLowerCase()))
   )
     return refuse("another row records the application under its name");
+  // Its id may be stale, so the live application under its name may be that row's.
+  if (taken?.unnamed)
+    return refuse("a reserved row records its application by id alone; record its name first");
   return { ...base, action: "adopt", application: live.applicationId, namespace };
 }
 
@@ -310,7 +319,7 @@ export const readRepair = <E, L, R>(input: RepairInput<E, L, R>) =>
     const observed = yield* input
       .observe(input.fqn)
       .pipe(Effect.mapError(failed("read the account")));
-    const taken = { ids: new Set<string>(), names: new Set<string>() };
+    const taken = { ids: new Set<string>(), names: new Set<string>(), unnamed: false };
     for (const other of input.reserved ?? []) {
       if (other === input.fqn) continue;
       const recorded = (yield* input.store
@@ -319,6 +328,8 @@ export const readRepair = <E, L, R>(input: RepairInput<E, L, R>) =>
       const { applicationId, applicationName } = recorded?.attr ?? {};
       if (typeof applicationId === "string") taken.ids.add(applicationId.toLowerCase());
       if (typeof applicationName === "string") taken.names.add(applicationName.toLowerCase());
+      if (typeof applicationId === "string" && applicationId && !applicationName)
+        taken.unnamed = true;
     }
     const plan = planRepair({
       fqn: input.fqn,
@@ -432,20 +443,6 @@ export const observeRecorded =
       return yield* observe(fqn, recorded as ResourceState).pipe(Effect.provide(session.context));
     });
 
-/** A stage's State store, as the release entry opens it (Alchemy's StateService). */
-export interface StageStore<E> {
-  readonly id: string;
-  readonly getVersion: () => Effect.Effect<number, E>;
-  readonly get: (key: { stack: string; stage: string; fqn: string }) => Effect.Effect<unknown, E>;
-  readonly set: (key: {
-    stack: string;
-    stage: string;
-    fqn: string;
-    value: never;
-  }) => Effect.Effect<unknown, E>;
-  readonly delete: (key: { stack: string; stage: string; fqn: string }) => Effect.Effect<void, E>;
-}
-
 /**
  * Everything `deploy.ts repair` does after it opens the stage's store and before it prints: the
  * store held to the release's contract, the row read through its own provider in the stack's
@@ -463,20 +460,15 @@ export const repairCommand = <E, O, C, S>(input: {
         readonly held: ReadonlyArray<string>;
       }
     | undefined;
-  readonly state: StageStore<E>;
-  readonly at: { readonly stack: string; readonly stage: string };
+  /** The stage's rows under the stack's key (`stageRowsOf`). */
+  readonly stage: StageRows<E>;
   readonly stackState: StackState;
   readonly runnerLocal: number;
   readonly open: Effect.Effect<{ readonly context: Context.Context<C> }, O, S>;
   /** The provider read; Alchemy's own unless a test stands one in. */
   readonly read?: typeof observeRow;
 }) => {
-  const { state, at } = input;
-  const store: RepairStore<E> = {
-    get: (fqn) => state.get({ ...at, fqn }),
-    set: (fqn, value) => state.set({ ...at, fqn, value: value as never }),
-    delete: (fqn) => state.delete({ ...at, fqn }),
-  };
+  const { state, at, store } = input.stage;
   return runRepair({
     fqn: input.fqn,
     worker: input.policy?.worker ?? "PoolWorker",

@@ -46,6 +46,41 @@ export function recordedApplicationOf(row: unknown): RecordedApplication | undef
     : undefined;
 }
 
+/** A stage's State store, as the release entry opens it (Alchemy's StateService). */
+export interface StageStore<E> {
+  readonly id: string;
+  readonly getVersion: () => Effect.Effect<number, E>;
+  readonly get: (key: { stack: string; stage: string; fqn: string }) => Effect.Effect<unknown, E>;
+  readonly set: (key: {
+    stack: string;
+    stage: string;
+    fqn: string;
+    value: never;
+  }) => Effect.Effect<unknown, E>;
+  readonly delete: (key: { stack: string; stage: string; fqn: string }) => Effect.Effect<void, E>;
+}
+
+/**
+ * A stage's State rows under one stack's key. Every row the release reads for its holds, and every
+ * row a repair reads or writes, is keyed here, each by its own fqn.
+ */
+export const stageRowsOf = <E>(state: StageStore<E>, stack: string, stage: string) => {
+  const at = { stack, stage };
+  const row = (fqn: string) => state.get({ ...at, fqn });
+  return {
+    state,
+    at,
+    row,
+    application: (fqn: string) => row(fqn).pipe(Effect.map(recordedApplicationOf)),
+    store: {
+      get: row,
+      set: (fqn: string, value: unknown) => state.set({ ...at, fqn, value: value as never }),
+      delete: (fqn: string) => state.delete({ ...at, fqn }),
+    },
+  };
+};
+export type StageRows<E> = ReturnType<typeof stageRowsOf<E>>;
+
 /** Commands that only read production: the guard refuses anything but reads while they run. */
 export const readOnlyRun = (stage: string, command: string, digest: string | undefined) =>
   stage === "production" &&
@@ -82,8 +117,13 @@ export const wireConfigFor = <E>(input: {
       return yield* new NoRootRecorded({ fqn: rootFqn });
     const held: (RecordedApplication | undefined)[] = [];
     for (const fqn of input.policy?.held ?? []) held.push(yield* input.recorded(fqn));
+    const holds = wireHolds(root, held);
+    // Frozen, as the entry freezes the guard's config once they are in it: nothing after this
+    // function edits what the run holds.
+    for (const list of Object.values(holds)) Object.freeze(list);
+    for (const application of holds.heldApplications) Object.freeze(application);
     return {
-      ...wireHolds(root, held),
+      ...holds,
       // Production keeps the root from the first request on; another stage once it records one.
       rootRequired: production || root !== undefined,
       // A root known by id alone makes the guard refuse every container write of the run.

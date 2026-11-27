@@ -30,7 +30,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { readOnlyRun, recordedApplicationOf, wireConfigFor, wireHolds } from "./wire-config.ts";
+import { readOnlyRun, stageRowsOf, wireConfigFor, wireHolds } from "./wire-config.ts";
 import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -608,16 +608,17 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             });
           }
           // The run's holds: the root by its own pair, the policy's held rows beside it.
+          const records = yield* stageState.pipe(Effect.orDie);
           const holds = yield* wireConfigFor({
             stage,
             policy: policy?.check && {
               rootFqn: policy.check.poolContainer.fqn,
               held: policy.wire.heldApplications ?? [],
             },
-            recorded: recordedApplication,
+            recorded: records.application,
           }).pipe(Effect.orDie);
           const { unnamedRoot, ...applied } = holds;
-          Object.assign(wire, applied);
+          Object.freeze(Object.assign(wire, applied));
           if (unnamedRoot)
             yield* Effect.promise(() =>
               summary(
@@ -699,25 +700,21 @@ interface RecordedRow {
   };
   old?: RecordedRow;
 }
-/** The stage's State store and this stack's key in it. */
+/** The stage's State rows under this stack's key (wire-config.ts). */
 const stageState = Effect.gen(function* () {
   const state = yield* Alchemist.State.store({
     backend: "configured",
     ...target,
   } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-  return { state, at: { stack: yield* stackName(), stage } };
+  return stageRowsOf(state, yield* stackName(), stage);
 }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: "(State store)", cause })));
 /** One resource's State row in this stage, if it exists yet. */
 const recordedRow = (fqn: string) =>
   stageState.pipe(
-    Effect.flatMap(({ state, at }) => state.get({ ...at, fqn })),
+    Effect.flatMap((rows) => rows.row(fqn)),
     Effect.map((row) => row as RecordedRow | undefined),
     Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
   );
-
-/** The container application a State row records, if the row exists yet. */
-const recordedApplication = (fqn: string) =>
-  recordedRow(fqn).pipe(Effect.map(recordedApplicationOf));
 
 const planOf = (operation: "deploy" | "destroy") =>
   Alchemist.Stack.plan({
@@ -926,7 +923,7 @@ try {
     const digest = values["plan-digest"];
     const result = await run(
       Effect.gen(function* () {
-        const { state, at } = yield* stageState;
+        const records = yield* stageState;
         return yield* repair.repairCommand({
           fqn,
           digest,
@@ -935,8 +932,7 @@ try {
             root: policy.check.poolContainer.fqn,
             held: policy.wire.heldApplications ?? [],
           },
-          state,
-          at,
+          stage: records,
           stackState,
           runnerLocal: runnerLocalStateVersion,
           open: Effect.suspend(() => Session.open(target as never)).pipe(
