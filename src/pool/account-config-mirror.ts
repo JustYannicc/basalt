@@ -93,8 +93,16 @@ export async function mirrorHomeConfig(
         if (typeof credential.token !== "string" || !credential.token || !object(credential.group))
           return unavailable();
         const group = credential.group;
+        // The node serves its built-in Claude model list for a claude key without models, so a
+        // custom address with none would answer real model names from someone else's gateway.
+        const unnamedGateway =
+          family === "claude" &&
+          typeof group["base-url"] === "string" &&
+          group["base-url"] !== "" &&
+          (!Array.isArray(group.models) || !group.models.length);
         if (
           "keys" in group ||
+          unnamedGateway ||
           (compatible &&
             (typeof group.name !== "string" ||
               !group.name ||

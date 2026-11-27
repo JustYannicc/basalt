@@ -38,19 +38,27 @@ export function notifyCollectionUnavailable(slo: PoolReliabilitySlo): boolean {
   );
 }
 
-/** Raw SLI breaches outlive failures; only a sampled, still-active breach earns percentage paging. */
-export function notifyPercentageFailure(slo: PoolReliabilitySlo): boolean {
+/**
+ * The windows a percentage page is decided on: the current one that keeps the breach active, and
+ * each hour or day window that is itself breached, unknown outcomes included. None when it doesn't page.
+ */
+export function percentageFailureWindows(slo: PoolReliabilitySlo): ("current" | "hour" | "day")[] {
   if (
     slo.state !== "breached" ||
     slo.current?.classification !== "ready" ||
     slo.current.real.failed === 0
   )
-    return false;
-  // The window that pages must itself be breached, unknown outcomes included.
-  return [slo.hour, slo.day].some(
-    (window) =>
-      window.classification === "ready" &&
-      window.real.requests >= reliabilityNotificationMinimumRequests &&
-      windowVerdict(window) === "breached",
+    return [];
+  const breached = (["hour", "day"] as const).filter(
+    (name) =>
+      slo[name].classification === "ready" &&
+      slo[name].real.requests >= reliabilityNotificationMinimumRequests &&
+      windowVerdict(slo[name]) === "breached",
   );
+  return breached.length ? ["current", ...breached] : [];
+}
+
+/** Raw SLI breaches outlive failures; only a sampled, still-active breach earns percentage paging. */
+export function notifyPercentageFailure(slo: PoolReliabilitySlo): boolean {
+  return percentageFailureWindows(slo).length > 0;
 }

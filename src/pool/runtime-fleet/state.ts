@@ -188,11 +188,21 @@ export class RuntimeFleetState {
   async inspect(storage: SlotStorage = this.storage) {
     return this.rows(await storage.get(key));
   }
+  /** Every target that holds a physical place: each live row, and the root's own physical boots. */
+  private async physical(storage: SlotStorage) {
+    return [
+      ...(await this.inspect(storage))
+        .filter((row) => row.phase !== "retired")
+        .map((row) => row.target),
+      ...(await physicalPrimaryTargets(storage)),
+    ];
+  }
   async physicalCount(storage: SlotStorage = this.storage) {
-    return (
-      (await this.inspect(storage)).filter((row) => row.phase !== "retired").length +
-      (await physicalPrimaryTargets(storage)).length
-    );
+    return (await this.physical(storage)).length;
+  }
+  /** The instances whose places the ledger holds, each until its own absence is proven. */
+  async counted(storage: SlotStorage = this.storage) {
+    return new Set((await this.physical(storage)).map((target) => target.instanceId));
   }
   async replacements(storage: SlotStorage = this.storage) {
     const count = Schema.decodeUnknownSync(Count)((await storage.get(replacementKey)) ?? 0);
@@ -600,6 +610,28 @@ export class RuntimeFleetState {
         reason: "start_unproven",
         failure,
       };
+      return true;
+    });
+  }
+  /**
+   * A start the endpoint refused for its own deployment, not for the slot, once its cell proved
+   * nothing was sent: it leaves as a retired slot that never started, its recent end saying why,
+   * so the refusal frees its place without counting against any runtime. False when the row
+   * already left its starting phases.
+   */
+  retireUnstarted(target: SlotTarget, failure: FleetFailure) {
+    return this.change(async (rows, transaction) => {
+      const row = rows.find((value) => sameTarget(value.target, target));
+      if (
+        !row ||
+        row.identity ||
+        row.active !== 0 ||
+        !["reserved", "warming", "uncertain"].includes(row.phase)
+      )
+        return false;
+      await transaction.put(retiredKey(target.slotId), { ...row, phase: "retired" });
+      await this.keepEnd(transaction, { ...row, failure });
+      rows.splice(rows.indexOf(row), 1);
       return true;
     });
   }

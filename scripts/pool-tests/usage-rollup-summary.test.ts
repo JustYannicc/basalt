@@ -85,6 +85,9 @@ async function history(f: Parameters<Parameters<typeof seriesFixture>[0]>[0]) {
     "2026-01-09T13:50:00Z",
   ])
     await fixture.native(++id, at, { model: "fixture-model-0" });
+  // History before the heatmap's start: the summary's training range reads it, the heatmap and
+  // native hours must leave it out.
+  await fixture.native(++id, "2025-11-01T09:30:00Z", { model: "fixture-model-0" });
   await fixture.cursor(id);
   await fixture.analyze();
   return fixture;
@@ -156,7 +159,7 @@ for (const target of ["v15", "v16"] as const)
       const raw = await summaries(f.db, fixture.authority);
       await backfill(f.db, target);
       const rolled = await summaries(f.db, fixture.authority);
-      // The coverage statement names the rollup only on the rollup path.
+      // The statement after the targets names the rollup only on the rollup path.
       assert.ok(
         rolled.statements[3]!.includes(usageRollupTargets[target].hourly),
         "the second read uses the rollup",
@@ -165,6 +168,59 @@ for (const target of ["v15", "v16"] as const)
       assert.deepEqual(data(rolled.provider), data(raw.provider));
       assert.deepEqual(data(rolled.model), data(raw.model));
       assert.ok(raw.provider.daily.length > 0 && raw.model.models?.status === "available");
+    });
+  });
+
+for (const target of ["v15", "v16"] as const)
+  test(`after its targets, a summary on the ${target} rollup reads its window's groups once`, async () => {
+    await seriesFixture(async (f) => {
+      const fixture = await history(f);
+      await backfill(f.db, target);
+      const hourly = usageRollupTargets[target].hourly;
+      const statements: { step?: string; text: string; values?: unknown[] }[] = [];
+      let step: string | undefined;
+      const to = "2026-01-09T13:37:12.000000123Z";
+      await poolUsageSummary(
+        {
+          query: (text, values) => {
+            statements.push({ step, text, values });
+            return f.db.query(text, values);
+          },
+        },
+        { pool, from: "2026-01-02T23:00:00Z", to, by: "model", authority: fixture.authority },
+        async () => ({ prices, issues: [] }),
+        Date.parse(to),
+        (next) => (step = next),
+      );
+      // The targets statement keeps its own bounded count; the coverage, daily and hourly figures
+      // after it are what this read shares.
+      const figures = statements.filter(
+        (statement) =>
+          ["figures", "coverage", "daily", "hourly"].includes(statement.step ?? "") &&
+          statement.text.includes(hourly),
+      );
+      assert.ok(figures.length > 0, "the summary reads the rollup");
+      let scanned = 0;
+      for (const { text, values } of figures) {
+        const plan = (await f.db.query(`EXPLAIN (ANALYZE, FORMAT JSON) ${text}`, values)).rows[0]!;
+        const visit = (node: Record<string, unknown>) => {
+          if (node["Relation Name"] === hourly)
+            scanned += Number(node["Actual Rows"]) * Number(node["Actual Loops"]);
+          for (const child of (node.Plans as Record<string, unknown>[] | undefined) ?? [])
+            visit(child);
+        };
+        visit((plan["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]!.Plan);
+      }
+      const poolId = (await digest(pool)).slice(0, 16);
+      const groups = Number(
+        (await f.db.query(`SELECT count(*)::int AS n FROM ${hourly} WHERE pool=$1`, [poolId]))
+          .rows[0]!.n,
+      );
+      assert.ok(groups > 0);
+      assert.ok(
+        scanned <= groups,
+        `the figures read ${scanned} rollup rows in ${figures.length} statements, for ${groups} groups`,
+      );
     });
   });
 
@@ -314,3 +370,62 @@ async function withoutCaptureHours(db: HistoryDatabase) {
     historyCaptureHoursVersion,
   ]);
 }
+
+/** Scans in a statement's plan: the raw table's partitions, and the people rollup. */
+async function planned(db: HistoryDatabase, text: string, values: unknown[] | undefined) {
+  const [row] = (await db.query(`EXPLAIN (FORMAT JSON) ${text}`, values)).rows;
+  const counts = { partitions: 0, people: 0 };
+  const walk = (node: Record<string, unknown>) => {
+    const relation = String(node["Relation Name"] ?? "");
+    if (/^basalt_model_requests_\d+$/.test(relation)) counts.partitions++;
+    if (relation === "basalt_model_usage_people_hourly") counts.people++;
+    for (const child of (node.Plans as Record<string, unknown>[] | undefined) ?? []) walk(child);
+  };
+  walk((row!["QUERY PLAN"] as { Plan: Record<string, unknown> }[])[0]!.Plan);
+  return counts;
+}
+
+test("a v16 summary plans each selection's cut hours as one partitioned read and counts its rollup window once", async () => {
+  await seriesFixture(async (f) => {
+    const fixture = await history(f);
+    await backfill(f.db, "v16");
+    const statements: { text: string; values?: unknown[] }[] = [];
+    const recorded: HistoryDatabase = {
+      query: (text, values) => {
+        statements.push({ text, values });
+        return f.db.query(text, values);
+      },
+    };
+    await summary(recorded, fixture.authority, "provider");
+    const partitions = Number(
+      (
+        await f.db.query(
+          "SELECT count(*)::int AS n FROM pg_inherits WHERE inhparent='basalt_model_requests'::regclass",
+        )
+      ).rows[0]!.n,
+    );
+    const plans = [];
+    for (const statement of statements.filter(({ text }) => /^\s*WITH bindings/.test(text)))
+      plans.push(await planned(f.db, statement.text, statement.values));
+    // Coverage, daily and hourly are one statement over one selection of the window, so two
+    // statements read the rollup: the targets, then the figures.
+    assert.equal(plans.length, 2, "the targets and the figures statement read the rollup");
+    const [targets, figures] = plans;
+    // The window's off-hour boundaries cut several hours; their raw rows are one read per selection,
+    // and the figures read the window's groups once for all three parts. That this one read answers
+    // what coverage, daily and hourly read separately before is proven by "a summary read from the
+    // v16 rollup is identical to the same summary read from raw rows" and "after its targets, a
+    // summary on the v16 rollup reads its window's groups once".
+    assert.equal(
+      figures!.partitions,
+      partitions,
+      "the figures plan one read of the raw partitions",
+    );
+    assert.equal(figures!.people, 1, "the figures read the people rollup once");
+    // The targets statement builds the raw selection, each rollup's selection and the raw window
+    // count, one partitioned read each, and reads the v16 window's groups twice: once to count
+    // them, once to select them.
+    assert.equal(targets!.partitions, 4 * partitions);
+    assert.equal(targets!.people, 2);
+  });
+});

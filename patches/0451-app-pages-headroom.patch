@@ -10,8 +10,22 @@ index 0000000000000000000000000000000000000000..b3e3035fc97d4db211c5b844615beffc
 +import { Layer } from "effect";
 +
 +export const layer = Layer.mergeAll(NodeCrypto.layer, NodePath.layer);
+diff --git a/apps/hosted/cloud/src/infrastructure/app-pages-skill-source.ts b/apps/hosted/cloud/src/infrastructure/app-pages-skill-source.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..fdf3868756c311086e2a60da82feb0d932e9cc3a
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/app-pages-skill-source.ts
+@@ -0,0 +1,8 @@
++import { Effect } from "effect";
++
++/**
++ * App pages serve app documents and never read an app's skills, so the skill parser and its YAML
++ * reader stay out of their upload. A call here is a bug: it dies loudly instead of parsing.
++ */
++export const prepareAppSkills = (_files: ReadonlyArray<unknown>) =>
++  Effect.die(new Error("No skill parsing in app pages"));
 diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446eddd0048f 100644
+index f536c8449a5153342f9113cb9274a20e2222407e..a4a9e37ad5cfd621c60c11664c5af24559852156 100644
 --- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
 +++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
 @@ -1,3 +1,4 @@
@@ -19,7 +33,7 @@ index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446e
  /** Rolldown output rules for each Worker: upload only reachable modules, within a budget. */
  import * as NodeServices from "@effect/platform-node/NodeServices";
  import type { WorkerProps } from "alchemy/Cloudflare";
-@@ -169,6 +170,30 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
+@@ -169,6 +170,36 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
                input: {
                  resolve: {
                    alias: {
@@ -45,6 +59,12 @@ index f536c8449a5153342f9113cb9274a20e2222407e..f816871fedebafb14935802acefe446e
 +                              new URL("../../../../../packages/apps/package.json", import.meta.url),
 +                            ).resolve("parse5"),
 +                          ).resolve("entities/decode"),
++                          // Pages never read an app's skills, so their parser and YAML stay out.
++                          [new URL(
++                            "../../../../../packages/sdk/src/implementation/skill-source.ts",
++                            import.meta.url,
++                          ).pathname]: new URL("./app-pages-skill-source.ts", import.meta.url)
++                            .pathname,
 +                        }
 +                      : {}),
                      "@executor-js/sdk/oauth-protocol": new URL(

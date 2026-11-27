@@ -108,12 +108,14 @@ export async function captureFixture(f: Fixture) {
       await f.db.query("ROLLBACK");
     }
   };
+  // The counts taken, not the pending marks a history write leaves in an hour (capture-hours-mark.ts).
   const stored = async (pool = poolId) =>
     Object.fromEntries(
       (
         await f.db.query(
           `SELECT to_char(hour AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') AS hour,
-          usage_requests FROM basalt_model_capture_hours WHERE pool=$1 ORDER BY hour`,
+          usage_requests FROM basalt_model_capture_hours
+          WHERE pool=$1 AND checked_at > '-infinity'::timestamptz ORDER BY hour`,
           [pool],
         )
       ).rows.map((row) => [String(row.hour), Number(row.usage_requests)]),

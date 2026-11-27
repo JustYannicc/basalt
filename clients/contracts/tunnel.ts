@@ -58,7 +58,26 @@ const Id = Schema.Int.check(Schema.makeFilter((id) => id > 0 && id <= 0x7fff_fff
 const Header = Schema.String.check(
   Schema.makeFilter((value) => value.length <= 4096 && !/[\r\n\0]/u.test(value)),
 );
-export const TunnelRequestHeaders = Schema.Struct({
+/** Enough for any real client's product tokens, and small enough to log. */
+export const maximumUserAgentLength = 512;
+/** MCP routing headers (`mcp-method`, `mcp-name`, `mcp-param-*`) per frame, fixed ones included. */
+export const maximumMcpHeaders = 32;
+const UserAgent = Header.check(
+  Schema.makeFilter((value) => value.length <= maximumUserAgentLength),
+);
+// MCP names its headers under one prefix and adds more per revision, so the tunnel admits the
+// prefix rather than a list. Names must already be lowercase, as Node and fetch hand them over;
+// any other spelling stays an unknown key and refuses the frame.
+export const mcpHeaderName = /^mcp-[a-z0-9!#$%&'*+.^_`|~-]+$/u;
+const McpHeaders = Schema.Record(
+  Schema.TemplateLiteral(["mcp-", Schema.String]).check(Schema.isPattern(mcpHeaderName)),
+  Header,
+);
+const mcpHeaderLimit = Schema.makeFilter(
+  (headers: object) =>
+    Object.keys(headers).filter((key) => key.startsWith("mcp-")).length <= maximumMcpHeaders,
+);
+const requestHeaderFields = Schema.Struct({
   accept: Schema.optionalKey(Header),
   "content-type": Schema.optionalKey(Header),
   "content-encoding": Schema.optionalKey(Header),
@@ -68,8 +87,16 @@ export const TunnelRequestHeaders = Schema.Struct({
   "anthropic-version": Schema.optionalKey(Header),
   "anthropic-beta": Schema.optionalKey(Header),
   "openai-beta": Schema.optionalKey(Header),
+  "user-agent": Schema.optionalKey(UserAgent),
 });
-export const TunnelResponseHeaders = Schema.Struct({
+export const TunnelRequestHeaders = Schema.StructWithRest(requestHeaderFields, [McpHeaders]).check(
+  mcpHeaderLimit,
+);
+export const tunnelRequestHeaderNames: readonly string[] = Object.keys(requestHeaderFields.fields);
+export const decodeTunnelRequestHeaders = Schema.decodeUnknownSync(TunnelRequestHeaders, {
+  onExcessProperty: "error",
+});
+const responseHeaderFields = Schema.Struct({
   "content-type": Schema.optionalKey(Header),
   "content-encoding": Schema.optionalKey(Header),
   "content-length": Schema.optionalKey(Header),
@@ -81,7 +108,13 @@ export const TunnelResponseHeaders = Schema.Struct({
   "x-request-id": Schema.optionalKey(Header),
   "request-id": Schema.optionalKey(Header),
 });
-export const tunnelResponseHeaderNames = Object.keys(TunnelResponseHeaders.fields);
+// Decoders ship before emitters: installed clients refuse any response header key they do not
+// know, so the server keeps emitting only the fixed names until clients that accept `mcp-*` are
+// out. Emission is the fixed list below, never the prefix.
+export const TunnelResponseHeaders = Schema.StructWithRest(responseHeaderFields, [
+  McpHeaders,
+]).check(mcpHeaderLimit);
+export const tunnelResponseHeaderNames = Object.keys(responseHeaderFields.fields);
 // Consumers can resolve another Effect installation. Decode with the schema's own runtime.
 export const decodeTunnelResponseHeaders = Schema.decodeUnknownSync(TunnelResponseHeaders, {
   onExcessProperty: "error",
@@ -124,13 +157,25 @@ const Operation = Schema.Union([
     transport: Schema.Literal("http"),
   }),
 ]);
+/**
+ * `user-agent` and the `mcp-*` names beyond the fixed two belong to MCP traffic. A model call keeps
+ * the fixed set it always had: the pool's model proxy reads a client's user agent.
+ */
+export const toolsOnlyHeader = (key: string) =>
+  key === "user-agent" ||
+  (key.startsWith("mcp-") && !Object.hasOwn(requestHeaderFields.fields, key));
 export const TunnelOpen = Schema.Struct({
   v: Schema.Literal(1),
   type: Schema.Literal("open"),
   id: Id,
   operation: Operation,
   headers: TunnelRequestHeaders,
-});
+}).check(
+  Schema.makeFilter(
+    (open: { readonly operation: { readonly service: string }; readonly headers: object }) =>
+      open.operation.service === "tools" || !Object.keys(open.headers).some(toolsOnlyHeader),
+  ),
+);
 const Bytes = Schema.String.check(
   Schema.makeFilter(
     (value) =>

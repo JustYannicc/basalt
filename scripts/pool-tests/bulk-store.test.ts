@@ -214,7 +214,7 @@ for (const changed of [false, true]) {
             if (text.includes("AS conflict"))
               comparisons.push(JSON.parse(String(values![0])).map((row: { id: string }) => row.id));
             const pending = other.query(text, values);
-            if (text.startsWith("INSERT INTO basalt_model_requests")) insertionStarted();
+            if (text.includes("INSERT INTO basalt_model_requests")) insertionStarted();
             return pending;
           },
         };

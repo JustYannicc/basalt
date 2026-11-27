@@ -14,16 +14,14 @@ import {
   captureHoursStuckPools,
   captureHoursTick,
 } from "./model-history/capture-hours-auto.ts";
+import { logHistoryGap } from "./model-history/capture-gap.ts";
 import { reportWhenDue } from "./reporting.ts";
 import { UsageAccountLabels } from "./usage-account-labels.ts";
 import { HomeDatabasePoolMonitor } from "./home-database-pool.ts";
 import { handleUsageAccountLabel, usageAccountLabelPath } from "./usage-account-label-http.ts";
 import { PoolChanges, publishPoolChanges } from "./change-revisions.ts";
 import { poolChangesPath, readCommittedPoolChanges } from "./change-http.ts";
-import {
-  readPoolHistorySnapshot,
-  deliverPoolHistoryChanges,
-} from "./model-history/change-revisions.ts";
+import { readPoolHistorySnapshot } from "./model-history/change-revisions.ts";
 import { creditRoutingPaths, handleCreditRouting } from "./credit-routing-http.ts";
 export { PoolRuntime, PoolRuntimeBlue, PoolRuntimeGreen } from "./runtime-do.worker.ts";
 export { PoolHomePeer } from "./home-peer.worker.ts";
@@ -90,8 +88,9 @@ import { observeAutomaticPool } from "./automatic-observation.ts";
 import { automaticRecoveryAuthority } from "./automatic-authority.ts";
 import { reportPoolStorage } from "./inventory-storage.ts";
 import { migrateCodexWebSockets, type CodexWebSocketPlan } from "./codex-websockets.ts";
-import { captureHomeRequests } from "./model-history/capture.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
+import { runModelHistoryPass, type ModelHistoryPass } from "./model-history/pass.ts";
+import type { HistoryDatabase } from "./model-history/schema.ts";
 import { handleModelHistory, modelHistoryPath } from "./model-history/http.ts";
 import {
   handleUsageSeries,
@@ -124,6 +123,11 @@ import { accountAcquisitionPath } from "./account-acquisition-contract.ts";
 import { NativeStreams } from "./native-streams.ts";
 import { createPoolLifecycle } from "./runtime.worker.ts";
 import { admitModelCall, forwardPoolRequest } from "./forward.worker.ts";
+import { poolArrival, stampPoolReceive, type PoolArrival } from "./pool-arrival.ts";
+import { unknownPlacement, unplaced } from "./runtime-placement.worker.ts";
+import { startPoolRequestEvent } from "../telemetry/pool-request.ts";
+import { pageTemplate } from "../telemetry/privacy.ts";
+import { endpointMetadata } from "./model-history/record.ts";
 import { RuntimeProtection } from "./runtime-protection.ts";
 import { readRuntimeHealth } from "./runtime-health.ts";
 import { containerAnswer } from "./controller-unsent.ts";
@@ -148,7 +152,7 @@ import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
-import { fetchController } from "./controller-reset.ts";
+import { controllerInstanceEnded, fetchController } from "./controller-reset.ts";
 import { detachFromCaller, followsCaller } from "./caller-signal.ts";
 import { isolate } from "./isolate.ts";
 import { routerResume, routerResumePath } from "./router-resume.ts";
@@ -158,7 +162,7 @@ import {
   HandoverCount,
   handoverRefusal,
 } from "./code-handover.ts";
-import { resumeGone, resumeRoute, toLayer } from "./stream-resume.ts";
+import { resumeGone, resumeRoute, toLayer, type StreamResumeInput } from "./stream-resume.ts";
 import { governedResume } from "./resume-admission.worker.ts";
 import { boundedLog } from "./bounded-log.ts";
 import { resumedTerminal } from "./terminal-recording.worker.ts";
@@ -200,6 +204,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   private peers: RuntimeHomePeerTransport;
   private alarms: PoolAlarms;
   private homeUpkeepTask?: Promise<void>;
+  private modelHistoryTask?: Promise<void>;
   private alarmInFlight = false;
   private control: PoolControl;
   private mirrorHome: HomeClient;
@@ -255,7 +260,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       storage: ctx.storage,
       inFlight: () => this.handoverCount.active,
       busy: () =>
-        this.alarmInFlight || this.homeUpkeepTask !== undefined || this.handoffsInFlight > 0,
+        this.alarmInFlight ||
+        this.homeUpkeepTask !== undefined ||
+        this.modelHistoryTask !== undefined ||
+        this.handoffsInFlight > 0,
       abort: (reason) => ctx.abort(reason),
       defer: (work) => ctx.waitUntil(work.catch(() => console.error("POOL_CODE_HANDOVER_PENDING"))),
     });
@@ -440,6 +448,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.control = new PoolControl(ctx.storage, {
       nativeMembership: (pool, organization) =>
         readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
+      // The control path's gate ran memberships.ensure just before; its read is the view's too.
+      nativeIdentities: (pool) => this.memberships.identities(pool),
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool),
@@ -822,56 +832,60 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
         ),
       )
       .catch(() => console.error("POOL_ACCOUNT_OBSERVATIONS_PENDING"));
-    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") {
-      try {
-        await trace.run("model_history", () =>
-          reportWhenDue(this.ctx.storage, "model-history", async (progress) => {
-            await withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, async (db) => {
-              const result = await captureHomeRequests(db);
-              progress.rows = result.state === "active" ? result.scanned : 0;
-              await deliverPoolHistoryChanges(db, result.pending, (changes) =>
-                publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
-              );
-            });
-            // Its own session, so a slow figure cannot fail a capture that already committed.
-            const target = this.env.POOL_AVAILABILITY_TARGET;
-            if (validProbeTarget(target))
-              await recordReliability(this.ctx.storage, target, (now) =>
-                readReliabilityInSession(
-                  this.env.POOL_AUTH_DATABASE?.connectionString,
-                  target,
-                  now,
-                ),
-              ).catch(() => console.error("POOL_RELIABILITY_CAPTURE_PENDING"));
-            // Last, and only after a capture that committed: the pool backfills its own usage
-            // rollup in bounded sessions, so nothing above waits behind it. It runs within this
-            // Home pass, which the alarm keeps alive through waitUntil (up to 15 minutes in a
-            // Durable Object). A code handover ends it after the hour in flight, so the handover
-            // waits for one hour's recompute, never the whole tick.
-            await usageRollupTick(
-              this.ctx.storage,
-              (work) =>
-                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
-                  totalTimeoutMs: 20_000,
-                }),
-              { stopped: () => this.handover.draining },
-            ).catch(() => console.error("POOL_USAGE_ROLLUP_TICK_PENDING"));
-            // After the rollup's, in sessions of its own: the pool counts each settled hour's Home
-            // usage rows, so the summary compares counts instead of probing every usage row.
-            await captureHoursTick(
-              this.ctx.storage,
-              (work) =>
-                withHistoryDatabase(this.env.POOL_AUTH_DATABASE?.connectionString, work, {
-                  totalTimeoutMs: 20_000,
-                }),
-              { stopped: () => this.handover.draining },
-            ).catch(() => console.error("POOL_CAPTURE_HOURS_TICK_PENDING"));
-          }),
-        );
-      } catch {
-        console.error("POOL_MODEL_HISTORY_FAILURE count=1");
-      }
+    if (this.env.POOL_MODEL_HISTORY_ENABLED === "true") this.startModelHistory(trace);
+  }
+
+  /**
+   * The model-history pass as its own task: the Home pass's steps never wait for it, one pass runs
+   * at a time, and a code handover waits for it as for the Home pass.
+   */
+  private startModelHistory(trace: PoolUpkeepTrace) {
+    if (this.modelHistoryTask) {
+      trace.event("model_history_shared");
+      return;
     }
+    const work = trace
+      .run("model_history", () =>
+        reportWhenDue(this.ctx.storage, "model-history", (progress) =>
+          runModelHistoryPass(this.modelHistoryPass(), progress),
+        ),
+      )
+      .catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1"))
+      .finally(() => {
+        if (this.modelHistoryTask === work) this.modelHistoryTask = undefined;
+      });
+    this.modelHistoryTask = work;
+    this.ctx.waitUntil(work);
+  }
+
+  /**
+   * The model-history pass's steps, each in sessions of its own. The rollup and capture-hours ticks
+   * end after the hour in flight once a code handover starts, so the handover waits for one hour's
+   * work, never the whole tick.
+   */
+  private modelHistoryPass(): ModelHistoryPass {
+    const connection = this.env.POOL_AUTH_DATABASE?.connectionString;
+    const session = <T>(work: (db: HistoryDatabase) => Promise<T>) =>
+      withHistoryDatabase(connection, work, { totalTimeoutMs: 20_000 });
+    const target = this.env.POOL_AVAILABILITY_TARGET;
+    const stopped = () => this.handover.draining;
+    return {
+      session: (work) => withHistoryDatabase(connection, work),
+      publish: (changes) =>
+        publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
+      ...(validProbeTarget(target)
+        ? {
+            reliability: () =>
+              recordReliability(this.ctx.storage, target, (now) =>
+                readReliabilityInSession(connection, target, now),
+              ),
+          }
+        : {}),
+      rollup: () => usageRollupTick(this.ctx.storage, session, { stopped }),
+      hours: () => captureHoursTick(this.ctx.storage, session, { stopped }),
+      gap: () => session(logHistoryGap),
+      stopped,
+    };
   }
 
   async migrationInventory(): Promise<void> {
@@ -1020,7 +1034,9 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
   }
 
   async fetch(request: Request): Promise<Response> {
-    request = followsCaller(request);
+    // Before the first await: what follows is this object's own work, not time spent queued for it.
+    const arrival = poolArrival(request);
+    request = followsCaller(arrival.request);
     this.ensureAlarm();
     const pathname = new URL(request.url).pathname;
     if (pathname === poolChangesPath)
@@ -1216,16 +1232,23 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     }
     const port = poolPort(pathname);
     if (!port && pathname !== "/__warm") return new Response(null, { status: 404 });
-    return this.forward(request);
+    return this.forward(request, undefined, arrival);
   }
 
-  private forward(request: Request, appModel?: ModelIdentity): Promise<Response> {
+  private forward(
+    request: Request,
+    appModel?: ModelIdentity,
+    arrival?: PoolArrival,
+  ): Promise<Response> {
     const port = poolPort(new URL(request.url).pathname);
     // An app model call was already refused or counted where it entered the object.
-    if (port !== 8317 || appModel !== undefined) return this.forwardPool(request, port, appModel);
+    if (port !== 8317 || appModel !== undefined)
+      return this.forwardPool(request, port, appModel, arrival);
     // Refused or counted in the same synchronous step, so no call slips past the handover's count.
     if (this.handover.draining) return Promise.resolve(handoverRefusal(request));
-    return this.handoverCount.track(request, () => this.forwardPool(request, port));
+    return this.handoverCount.track(request, () =>
+      this.forwardPool(request, port, undefined, arrival),
+    );
   }
 
   /** What a first call and a resume of one are both admitted by (`admitModelCall`). */
@@ -1246,9 +1269,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     request: Request,
     port: ReturnType<typeof poolPort>,
     appModel?: ModelIdentity,
+    arrival?: PoolArrival,
   ): Promise<Response> {
     return forwardPoolRequest(request, port, {
       ...this.admission(appModel),
+      ...(arrival === undefined ? {} : { arrival }),
       lifecycle: this.lifecycle,
       protection: this.protection,
       databasePool: this.homeDatabasePool,
@@ -1277,21 +1302,120 @@ function singleton(env: PoolEnvironment) {
   return env.PoolContainer.jurisdiction("eu").getByName("control-plane");
 }
 
+/**
+ * Every call to the pool's Durable Object carries the Worker's receive times. A call that fails
+ * before the object answers is the one request the object can never report itself.
+ */
+async function callController(
+  request: Request,
+  env: PoolEnvironment,
+  receivedAt: number,
+  defer: (work: Promise<unknown>) => void,
+  readmit: (call: Request) => Promise<boolean>,
+): Promise<Response> {
+  // Every call to the object, first and replayed; each carries its own call time, so a replay's
+  // queue wait is not the failed attempt's.
+  const calls: number[] = [];
+  let failure: unknown;
+  let answered = false;
+  const requestId = crypto.randomUUID();
+  const unanswered = (error: unknown, response?: Response) => {
+    try {
+      const pathname = new URL(request.url).pathname;
+      // Cloudflare marks an error the object's own code threw, and one from an object with more
+      // work queued than it can take. Only the first means the handler ran.
+      // What the object last failed with, not an abort that ended the wait for a replay.
+      const cut = failure ?? error;
+      const flag = (name: string) =>
+        typeof cut === "object" && cut !== null && Reflect.get(cut, name) === true;
+      const event = startPoolRequestEvent(env, () => ({
+        // The same ID as the hop's log lines and any answer the Worker gave.
+        requestId,
+        method: request.method,
+        route: endpointMetadata(pathname).endpoint ?? pageTemplate(pathname),
+        port: poolPort(pathname),
+        receivedAt,
+        calledAt: calls.at(-1) ?? receivedAt,
+        firstCalledAt: calls.length > 1 ? calls[0] : undefined,
+        traceparent: request.headers.get("traceparent"),
+        defer,
+      }));
+      const outcome = request.signal.aborted
+        ? "client_closed"
+        : controllerInstanceEnded(cut)
+          ? "controller_reset"
+          : flag("remote")
+            ? "controller_failed"
+            : "controller_unavailable";
+      event?.set({
+        // An object that never ran the call placed it nowhere; one that ran it and then failed or
+        // ended may have sent it to a runtime, and its own event went with it.
+        ...(outcome === "controller_unavailable" ? unplaced : unknownPlacement),
+        cause:
+          error instanceof DOMException ? error.name : error instanceof Error ? "Error" : "unknown",
+        overloaded: flag("overloaded"),
+      });
+      event?.end({ outcome, status: response?.status });
+    } catch {
+      console.error("POOL_REQUEST_EVENT_UNAVAILABLE");
+    }
+  };
+  let response: Response;
+  try {
+    // The controller hop owns retries and its own log lines.
+    response = await fetchController(request, {
+      controller: () => {
+        const stub = singleton(env);
+        return {
+          fetch: async (forwarded: Request) => {
+            const at = Date.now();
+            calls.push(at);
+            try {
+              const answer = await stub.fetch(
+                stampPoolReceive(
+                  forwarded,
+                  receivedAt,
+                  at,
+                  calls.length > 1 ? calls[0] : undefined,
+                ),
+              );
+              answered = true;
+              return answer;
+            } catch (error) {
+              failure = error;
+              throw error;
+            }
+          },
+          // A resume comes after the answer started, so it is no call this event times.
+          resume: (input: StreamResumeInput) => stub.resume(input),
+        };
+      },
+      env,
+      defer,
+      requestId,
+      signing: { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
+      readmit,
+    });
+  } catch (error) {
+    unanswered(error);
+    throw error;
+  }
+  // Retry advice or an unknown outcome the hop built itself after a reset: the object never
+  // answered, so it never reported this request.
+  if (!answered) unanswered(failure, response);
+  return response;
+}
+
 export async function handlePoolWorkerRequest(
   request: Request,
   env: PoolEnvironment,
   lookupHomeApiKey: HomeApiKeyLookup = hasActiveHomeApiKey,
   defer: (work: Promise<unknown>) => void = (work) => void work.catch(() => {}),
 ): Promise<Response> {
+  const receivedAt = Date.now();
   const readmit = async (call: Request) => !(await homeKeyRefusal(call, env, lookupHomeApiKey));
   const controller = (forwarded: Request) =>
-    fetchController(forwarded, {
-      controller: () => singleton(env),
-      env,
-      defer,
-      signing: { key: env.POOL_APP_SIGNING_KEY, previous: env.POOL_APP_SIGNING_KEY_PREVIOUS },
-      readmit,
-    });
+    callController(forwarded, env, receivedAt, defer, readmit);
   request = followsCaller(stripModelLifetimeRequest(request));
   const pathname = new URL(request.url).pathname;
   if (pathname === bulkImportPath)

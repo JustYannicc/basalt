@@ -17,7 +17,9 @@ import {
   equalMembershipAccounts as equal,
   membershipPolicy as publicPolicy,
   membershipReadDue,
+  type MembershipIdentity,
   type MembershipState as State,
+  type NativeAccountIdentities,
 } from "./membership-state.ts";
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
@@ -37,6 +39,23 @@ interface Dependencies {
   now?: () => number;
 }
 const storageKey = "native-pool-memberships-v1";
+/** Each resolved Home reference with its saved account, in a stable order. */
+const identitiesOf = (accounts: NativeMembershipSnapshot["accounts"]): MembershipIdentity[] =>
+  accounts
+    .flatMap(({ account, homeReference }) =>
+      homeReference === null
+        ? []
+        : homeReferences(homeReference).map((reference) => ({ reference, account })),
+    )
+    .sort((a, b) => {
+      const [left, right] = [`${a.reference}\0${a.account}`, `${b.reference}\0${b.account}`];
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+const sameIdentities = (
+  left: readonly MembershipIdentity[] | undefined,
+  right: MembershipIdentity[],
+) => left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+
 const confirmedNative = (state: State | undefined) =>
   state?.nativeConfirmed ??
   Boolean(state?.native && state.checkedAt > 0 && state.installedRevision > 0);
@@ -54,6 +73,8 @@ export class NativeMemberships {
   private ticking?: Promise<void>;
   private failures = new Map<string, PoolFailureDiagnostic>();
   private installations = new Map<string, Set<Promise<void>>>();
+  /** Reads an unresolved account was seen in since its first log, keyed by pool and account. */
+  private unresolved = new Map<string, number>();
   private deps: Dependencies;
   constructor(deps: Dependencies) {
     this.deps = {
@@ -211,6 +232,33 @@ export class NativeMemberships {
     if (resumed) await this.schedule();
   }
 
+  /** Logs an unresolved account once, counts later sightings, and logs its return with the count. */
+  private noteUnresolved(pool: string, accounts: NativeMembershipSnapshot["accounts"]) {
+    const seen = new Set<string>(),
+      linked = new Set(accounts.map(({ account }) => `${pool}\u0000${account}`));
+    for (const { account, homeReference } of accounts) {
+      if (homeReference !== null) continue;
+      const key = `${pool}\u0000${account}`;
+      seen.add(key);
+      const repeats = this.unresolved.get(key);
+      if (repeats === undefined)
+        console.warn("POOL_MEMBERSHIP_ACCOUNT_UNRESOLVED", {
+          account,
+          reason: "no_home_reference",
+        });
+      this.unresolved.set(key, (repeats ?? -1) + 1);
+    }
+    for (const [key, repeats] of this.unresolved) {
+      if (!key.startsWith(`${pool}\u0000`) || seen.has(key)) continue;
+      this.unresolved.delete(key);
+      // An account unlinked while unresolved simply leaves; only one still linked has resolved.
+      if (!linked.has(key)) continue;
+      console.info("POOL_MEMBERSHIP_ACCOUNT_RESOLVED", {
+        account: key.slice(pool.length + 1),
+        repeats,
+      });
+    }
+  }
   async authority(pool: string): Promise<NativeMembershipPolicy | undefined> {
     return this.run(async (state) => acknowledgedMembership(state[pool], this.now()));
   }
@@ -231,6 +279,22 @@ export class NativeMemberships {
         (policy) => this.deps.install(policy),
       ),
     );
+  }
+  /**
+   * The saved account behind each Home reference, as the last host read found them, for the pool
+   * view: it annotates from this instead of reading membership again in the same request. Undefined
+   * for a pool with no state or one written before the mapping was kept.
+   */
+  async identities(pool: string): Promise<NativeAccountIdentities | undefined> {
+    const policy = (await this.deps.storage.get<Record<string, State>>(storageKey))?.[pool];
+    if (!policy?.identities) return undefined;
+    return {
+      native: policy.native,
+      accounts: policy.identities.map(({ reference, account }) => ({
+        account,
+        homeReference: reference,
+      })),
+    };
   }
   async inspect(pool: string) {
     const state = await this.deps.storage.get<Record<string, State>>(storageKey);
@@ -446,8 +510,15 @@ export class NativeMemberships {
           ),
         ),
       ].sort();
+      this.noteUnresolved(pool, snapshot.accounts);
+      const identities = identitiesOf(snapshot.accounts);
+      // An account without a Home reference is left out of the policy, so the others keep serving.
+      // A pool none of whose linked accounts resolve stays refused: reconciling it to no accounts
+      // would remove every Home link at once when a release briefly unresolves them all.
       const valid =
-        snapshot.native && snapshot.accounts.every((account) => account.homeReference !== null);
+        snapshot.native &&
+        (snapshot.accounts.length === 0 ||
+          snapshot.accounts.some((account) => account.homeReference !== null));
       const prepared = await this.run(async (state) => {
         const current = state[pool];
         if (!current || current.retired || current.revision !== before.revision) return undefined;
@@ -457,16 +528,18 @@ export class NativeMemberships {
           (!valid && !current.dirty);
         // Home repair can fail after the host confirms native ownership; deletion must still retire it.
         if (!changed) {
-          if (!snapshot.native || current.nativeConfirmed === true) return current;
-          const confirmed = { ...current, nativeConfirmed: true };
-          state[pool] = confirmed;
+          const confirm = snapshot.native && current.nativeConfirmed !== true;
+          if (!confirm && sameIdentities(current.identities, identities)) return current;
+          const kept = { ...current, identities, ...(confirm ? { nativeConfirmed: true } : {}) };
+          state[pool] = kept;
           await this.save(state);
-          return confirmed;
+          return kept;
         }
         // An observed selection change must veto old authority before fallible Home repair.
         const next: State = {
           ...current,
           accounts,
+          identities,
           native: snapshot.native,
           nativeConfirmed: snapshot.native,
           dirty: true,

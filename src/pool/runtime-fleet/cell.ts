@@ -22,6 +22,8 @@ interface Dependencies {
   admission: FleetAdmission;
   application: RuntimeProviderTarget;
   provider: RuntimeProviderReader;
+  /** The instances the fleet ledger counts, read afresh for each release. */
+  counted(): Promise<ReadonlySet<string>>;
 }
 
 /** A fleet cell reuses slot startup, policy installation and body lifetime rather than adding a second execution path. */
@@ -153,14 +155,12 @@ export class FleetHandoffCell implements FleetCell {
     if (!sameTarget(initial.target, target)) return false;
     // A destroyed instance stays listed as inactive. That counts as absent only once the fenced
     // endpoint, which can start nothing more, reports its container stopped.
-    const proven = fenced.stopped ? { driverStopped: true as const } : undefined;
+    const proven = fenced.stopped ? { driverStopped: true as const } : {};
     if (
-      !(await this.deps.provider.absent(
-        this.deps.application,
-        target.instanceId,
-        undefined,
-        proven,
-      ))
+      !(await this.deps.provider.absent(this.deps.application, target.instanceId, undefined, {
+        ...proven,
+        counted: await this.deps.counted(),
+      }))
     )
       return this.present();
     // A listing can lag a start that was just sent, from this isolate or a replaced one, so an
@@ -182,8 +182,12 @@ export class FleetHandoffCell implements FleetCell {
   }
   async retire(identity: SlotIdentity, begin: () => Promise<void>) {
     const trace = new RuntimeRetirementTrace("cell", ++this.retirementAttempts);
-    await trace.run("provider_observe", () =>
-      this.deps.provider.observe(this.deps.application, identity.instanceId),
+    await trace.run("provider_observe", async () =>
+      this.deps.provider.retiring(
+        this.deps.application,
+        identity.instanceId,
+        await this.deps.counted(),
+      ),
     );
     await begin();
     const signal = AbortSignal.timeout(2_000);
@@ -229,7 +233,11 @@ export class FleetHandoffCell implements FleetCell {
     ) {
       const drain = await this.drain(identity);
       if (!drain.known || drain.active !== 0) return false;
-      await this.deps.provider.observe(this.deps.application, identity.instanceId);
+      await this.deps.provider.retiring(
+        this.deps.application,
+        identity.instanceId,
+        await this.deps.counted(),
+      );
       // Only the child's zero-activity draining state proves the earlier retire never reached its intent.
       // Endpoint serialization and its retiring latch prevent concurrent recoveries from destroying twice.
       await this.deps.driver.retire(identity, identity, AbortSignal.timeout(2_000));
@@ -243,9 +251,10 @@ export class FleetHandoffCell implements FleetCell {
       "provider_absent",
       () =>
         awaitProbe(
-          () =>
+          async () =>
             this.deps.provider.absent(this.deps.application, identity.instanceId, observation, {
               driverStopped: true,
+              counted: await this.deps.counted(),
             }),
           observation,
         ),
@@ -270,6 +279,7 @@ export class FleetHandoffCell implements FleetCell {
       if (end) this.ends.set(identity.slotId, end);
       return this.deps.provider.absent(this.deps.application, identity.instanceId, undefined, {
         driverStopped: true,
+        counted: await this.deps.counted(),
       });
     }
     if (active !== 0) return false;
