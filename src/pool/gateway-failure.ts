@@ -4,6 +4,7 @@ import { captureError } from "../telemetry/sentry.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { recordGatewayRefusal } from "./model-history/gateway.ts";
+import { reliabilityFailure } from "./model-history/reliability-read-failure.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { ProtectionRefusal } from "./runtime-protection.ts";
 import type { HomeDatabasePoolObservation } from "./home-database-pool.ts";
@@ -79,17 +80,23 @@ export function gatewayUnavailable(
         }
         const model = await requestedModel;
         if (caller)
-          await withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-            recordGatewayRefusal(db, {
-              ...caller,
-              requestId: attemptRequestId,
-              at: new Date().toISOString(),
-              pathname,
-              latencyMs: performance.now() - started,
-              requestedModel: model,
-            }),
+          await withHistoryDatabase(
+            env.POOL_AUTH_DATABASE?.connectionString,
+            (db) =>
+              recordGatewayRefusal(db, {
+                ...caller,
+                requestId: attemptRequestId,
+                at: new Date().toISOString(),
+                pathname,
+                latencyMs: performance.now() - started,
+                requestedModel: model,
+              }),
+            // Its timeouts keep their own reason, so the failure line can name it.
+            { timeoutFailure: "history" },
           );
-      })().catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1")),
+      })().catch((error: unknown) =>
+        console.error("POOL_MODEL_HISTORY_FAILURE count=1", reliabilityFailure(error)),
+      ),
     );
   return Response.json(
     {
