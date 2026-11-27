@@ -29,12 +29,19 @@ export function mockStarter(
   let ready = false;
   let starting: Promise<void> | undefined;
   const start = async () => {
-    const run = { stopped: false };
-    if (!container.running) container.start({ enableInternet: false, env });
-    const stopped = () => {
+    // The platform's own reason, kept word for word: a stop without one says only that it stopped.
+    const run: { stopped: boolean; cause?: string } = { stopped: false };
+    const stopped = (reason?: unknown) => {
       run.stopped = true;
+      run.cause ??= reason instanceof Error ? reason.message : undefined;
       ready = false;
     };
+    try {
+      if (!container.running) container.start({ enableInternet: false, env });
+    } catch (error) {
+      stopped(error);
+      throw new Error(run.cause ?? "The mock stopped while starting");
+    }
     container.monitor().then(stopped, stopped);
     for (let attempt = 0; attempt < attempts && !run.stopped; attempt++) {
       try {
@@ -50,7 +57,9 @@ export function mockStarter(
       } catch {}
       await wait(500);
     }
-    throw new Error(run.stopped ? "The mock stopped while starting" : "The mock did not start");
+    throw new Error(
+      run.stopped ? (run.cause ?? "The mock stopped while starting") : "The mock did not start",
+    );
   };
   return {
     async ready() {

@@ -686,3 +686,22 @@ test("a destroy of a deployed stage whose image has a long tag list ends with no
     lines.join("\n"),
   );
 });
+
+test("a container the platform stops while starting fails with the platform's own reason", async () => {
+  const reason =
+    "There is no container instance that can be provided to this Durable Object, try again later";
+  let starts = 0;
+  const container = {
+    running: false,
+    start() {
+      starts += 1;
+    },
+    monitor: () => Promise.reject(new Error(reason)),
+    getTcpPort: () => ({ fetch: () => Promise.reject(new Error("nothing listens")) }),
+  };
+  const starter = mockStarter(container, {}, async () => {});
+  await assert.rejects(starter.ready(), new RegExp(`^Error: ${reason}$`, "u"));
+  // The next call starts the container again instead of keeping the failure.
+  await assert.rejects(starter.ready(), new RegExp(`^Error: ${reason}$`, "u"));
+  assert.equal(starts, 2);
+});
