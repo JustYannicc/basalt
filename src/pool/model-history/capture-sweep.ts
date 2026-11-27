@@ -1,4 +1,5 @@
 import { homeHistorySelect } from "./home.ts";
+import { invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { historyBatchSize } from "./store.ts";
 
@@ -16,14 +17,17 @@ export interface SweepCursor {
   /** The range's end: the forward cursor when the session before set it. */
   readonly sweepUpper: string;
   readonly forward: string;
+  /** The backfill's upper bound: every id at or below it is the backfill's to read. */
+  readonly backfillUpper: string;
 }
 
 /**
  * Home allocates an id before its row commits, so the forward pages can pass a row whose
- * transaction is still open. The sweep checks each id the pages passed once, two sessions later:
- * a session sets the range's end to where the forward cursor starts it, and the session after next
- * has that range checked. A check is one probe of history's primary key per id; only the rows
- * history lacks are read in full, at most a batch a session, in id order.
+ * transaction is still open. The sweep checks each id the pages passed once, two sessions later: a
+ * session sets the range's end to where the forward cursor starts it, and the next session checks
+ * that range, up to `sweepIdsPerSession` ids, going on where it stopped. A check is one probe of
+ * history's primary key per id; only the rows history lacks are read in full, at most a batch a
+ * session, in id order.
  *
  * Not repaired by itself: a row that commits after its id was checked. Home writes one autocommit
  * row per request, so that window is the commit's own milliseconds; such a row shows as uncaptured
@@ -54,7 +58,10 @@ const larger = (a: bigint, b: bigint) => (a > b ? a : b);
  */
 export async function sweepLateCommits(db: HistoryDatabase, source: string, cursor: SweepCursor) {
   const forward = BigInt(cursor.forward);
-  const lower = larger(BigInt(cursor.sweepId), forward - sweepReachIds);
+  const lower = larger(
+    larger(BigInt(cursor.sweepId), forward - sweepReachIds),
+    BigInt(cursor.backfillUpper),
+  );
   const upper = BigInt(cursor.sweepUpper);
   // The range is checked: the next one ends where the forward cursor starts this session.
   const done = (through: bigint) => ({
@@ -71,19 +78,29 @@ export async function sweepLateCommits(db: HistoryDatabase, source: string, curs
       source,
     ])
   ).rows[0];
-  const missing = Array.isArray(row?.missing) ? row.missing.map(String) : [];
+  if (!Array.isArray(row?.missing)) return invalidHistory();
+  const missing = row.missing.map(String);
   const capped = missing.length >= historyBatchSize;
   // A full batch of missing rows ends the check at its last one; the next session goes on after it.
   const checked = Number(capped ? row?.through_missing : row?.scanned) || 0;
   const last = capped ? row?.last_missing : row?.last;
   const through = typeof last === "string" ? BigInt(last) : upper;
-  const rows = missing.length
+  const read = missing.length
     ? (
         await db.query(`${homeHistorySelect} WHERE u.id = ANY($1::bigint[]) ORDER BY u.id`, [
           missing,
         ])
       ).rows
     : [];
+  // One row per id: a second join match must not grow the batch past its limit.
+  const ids = new Set<string>();
+  const rows: typeof read = [];
+  for (const found of read) {
+    const id = String(found.source_id);
+    if (ids.has(id)) continue;
+    ids.add(id);
+    rows.push(found);
+  }
   const finished =
     through >= upper || (!capped && (Number(row?.scanned) || 0) < sweepIdsPerSession);
   return {

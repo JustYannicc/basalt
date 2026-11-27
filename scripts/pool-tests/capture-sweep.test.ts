@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
-import { sweepReachIds } from "../../src/pool/model-history/capture-sweep.ts";
+import { sweepIdsPerSession, sweepReachIds } from "../../src/pool/model-history/capture-sweep.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { historyBatchSize } from "../../src/pool/model-history/store.ts";
 import { addHome, captured, fixture } from "./capture-fixture.ts";
@@ -117,4 +117,28 @@ test("a row whose key moved to another pool after capture is checked once and ne
       JSON.stringify(read),
     );
     assert.equal(await captured(db), rows);
+  }));
+
+test("a range longer than one session's checks goes on where the last session stopped", () =>
+  fixture(async ({ db }) => {
+    const ids = sweepIdsPerSession + 400;
+    const late = sweepIdsPerSession + 200;
+    await homeRows(db, 1, late - 1);
+    await homeRows(db, late + 1, ids);
+    const first = await captureHomeRequests(db);
+    assert.ok(first.state === "active" && first.caughtUp);
+    // Past the first session's checks, a row commits after the pages passed its id.
+    await homeRows(db, late, late);
+    const read = await sessions(db, [0, 0, 0, 0, 0]);
+    assert.deepEqual(
+      read.map((session) => session.swept),
+      [0, sweepIdsPerSession, ids - sweepIdsPerSession, 0, 0],
+      JSON.stringify(read),
+    );
+    assert.deepEqual(
+      read.map((session) => session.inserted),
+      [0, 0, 1, 0, 0],
+      JSON.stringify(read),
+    );
+    assert.equal(await captured(db), ids);
   }));

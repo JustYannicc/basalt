@@ -207,7 +207,7 @@ test("capture commits history and cursor before projection failure and a fresh c
         backfill_upper: "1",
         backfill_id: "1",
         backfill_complete: true,
-        sweep_id: "0",
+        sweep_id: "1",
         sweep_upper: "1",
       },
     ]);

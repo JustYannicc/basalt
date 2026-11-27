@@ -28,6 +28,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
   await db.query("BEGIN");
   let inserted = 0,
     swept = 0,
+    sweptRead = 0,
     backfilled = 0,
     old: string,
     complete: boolean,
@@ -103,6 +104,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
       sweepId: sweep,
       sweepUpper: savedSweepUpper,
       forward,
+      backfillUpper: upper,
     });
     batches.push(await Promise.all(late.rows.map((row) => homeRequest(row, source))));
     if (writes.captureHours) {
@@ -118,6 +120,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     // re-reading Home's current key owner must neither rewrite the row nor stall capture.
     for (const batch of batches) inserted += await insertRequests(db, batch, true, false, true);
     swept = late.checked;
+    sweptRead = late.rows.length;
     // The forward cursor and the capture time are the pages' own; this moves the backfill and sweep.
     await db.query(
       `UPDATE basalt_model_history_cursor SET sweep_id=$2,backfill_id=$3,
@@ -146,7 +149,8 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
   pending = await project(db, journalReady, unprojected || inserted > 0, pending);
   return {
     state: "active" as const,
-    scanned: fresh + backfilled + swept,
+    // Rows read in full; the sweep's id checks are `swept`.
+    scanned: fresh + backfilled + sweptRead,
     inserted,
     pages,
     fresh,
