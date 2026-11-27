@@ -97,6 +97,13 @@ export function fastPlan(document: unknown, context: FastContext) {
         skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
         continue;
       }
+      // Locally no base records are restored, so the floor check reports the growth as unknown.
+      // The cache runs only in GitHub Actions, whatever its condition.
+      if (step.uses === "./.github/actions/worker-upload-base") {
+        if (typeof step.name !== "string") throw new Error("Fast cache steps need a name");
+        skipped.push({ name: step.name, reason: "the Worker size cache requires GitHub Actions" });
+        continue;
+      }
       const skip = typeof step.if === "string" ? otherLanes.get(step.if) : undefined;
       if (step.if !== undefined && step.if !== everyLane && !skip)
         throw new Error("Unsupported fast step condition");
