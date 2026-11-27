@@ -95,7 +95,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  
  export const poolOrganizationReadPath = "/api/internal/pool-organization";
  const Read = Schema.Struct({
-@@ -14,6 +17,244 @@ const Read = Schema.Struct({
+@@ -14,6 +17,262 @@ const Read = Schema.Struct({
    expiresAt: Schema.Finite,
  });
  
@@ -196,7 +196,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 + * `readBound`, far sooner, so only a read whose connection no longer answers is ever interrupted.
 + */
 +const interruptGraceMs = 2_000;
-+type Unobserved = "timeout" | "read-failed" | "changed";
++type Unobserved = "timeout" | "read-failed" | "changed" | "unexplained";
 +/** What one observation saw: a refusal's shape, why it saw nothing, or nothing to report. */
 +type Seen = { readonly shape: Refusal } | { readonly unobserved: Unobserved } | undefined;
 +
@@ -258,9 +258,11 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +};
 +
 +/**
-+ * The settings, the shape read and the rule in one write and one read-only transaction (Cloud's
-+ * grouped event pool): one round trip. The shape goes before the rule, so a rule that fails on
-+ * metadata the database cannot read still has its facts, and nothing is read again.
++ * The settings, the rule and the shape read in one write and one read-only transaction (Cloud's
++ * grouped event pool): one round trip. The rule goes first, so a shape read that fails (a database
++ * without `pg_input_is_valid`) never blinds a healthy check. A rule that fails for a reason other
++ * than the database's timeouts aborts the transaction, so only then is its shape read again, in a
++ * second flight.
 + */
 +const inOneFlight = (
 +  batch: Batch,
@@ -269,30 +271,46 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +  pool: AppId,
 +): Effect.Effect<Seen> =>
 +  Effect.gen(function* () {
-+    const settings = leaf(
-+      sql`select set_config('transaction_read_only', 'on', true),
-+        set_config('statement_timeout', ${readBound}, true),
-+        set_config('lock_timeout', ${readBound}, true)`,
-+    );
-+    const facts = leaf(factsOf(sql, organization, pool));
++    const settings = () =>
++      leaf(
++        sql`select set_config('transaction_read_only', 'on', true),
++          set_config('statement_timeout', ${readBound}, true),
++          set_config('lock_timeout', ${readBound}, true)`,
++      );
++    const bounded = settings();
 +    const rule = leaf(
 +      organizationOwnsPool(organization, pool).pipe(
 +        Effect.provideService(SqlClient.SqlClient, sql),
 +      ),
 +    );
-+    yield* batch([settings.effect, facts.effect, rule.effect], { outside: 0 });
-+    const [set, read, owns] = [settings.exit(), facts.exit(), rule.exit()];
++    const facts = leaf(factsOf(sql, organization, pool));
++    yield* batch([bounded.effect, rule.effect, facts.effect], { outside: 0 });
++    const [set, owns, read] = [bounded.exit(), rule.exit(), facts.exit()];
 +    if (Exit.isSuccess(owns) && owns.value) return undefined;
 +    const causes: Array<Cause.Cause<unknown>> = [];
 +    if (Exit.isFailure(set)) causes.push(set.cause);
-+    if (Exit.isFailure(read)) causes.push(read.cause);
 +    if (Exit.isFailure(owns)) causes.push(owns.cause);
++    if (Exit.isFailure(read)) causes.push(read.cause);
 +    if (causes.some(endedByDatabase)) return { unobserved: "timeout" as const };
-+    if (Exit.isFailure(set) || Exit.isFailure(read)) return { unobserved: "read-failed" as const };
-+    const shape = shapeOf(read.value, organization, pool, Exit.isFailure(owns));
++    if (Exit.isFailure(set)) return { unobserved: "read-failed" as const };
++    if (Exit.isFailure(owns)) {
++      // The failed rule aborted the batch's transaction, the shape read with it: read it again in
++      // a second flight of its own.
++      const boundedAgain = settings();
++      const again = leaf(factsOf(sql, organization, pool));
++      yield* batch([boundedAgain.effect, again.effect], { outside: 0 });
++      const [setAgain, readAgain] = [boundedAgain.exit(), again.exit()];
++      if (Exit.isFailure(setAgain) || Exit.isFailure(readAgain))
++        return { unobserved: "read-failed" as const };
++      const shape = shapeOf(readAgain.value, organization, pool, true);
++      return shape !== undefined ? { shape } : { unobserved: "read-failed" as const };
++    }
++    if (Exit.isFailure(read)) return { unobserved: "read-failed" as const };
++    const shape = shapeOf(read.value, organization, pool, false);
 +    if (shape !== undefined) return { shape };
-+    if (Exit.isFailure(owns)) return { unobserved: "read-failed" as const };
-+    return { unobserved: "changed" as const };
++    // Both reads saw one snapshot, so no write landed between them: the rule refused and the shape
++    // read found nothing to say why.
++    return { unobserved: "unexplained" as const };
 +  }).pipe(Effect.catchCause(() => Effect.succeed({ unobserved: "read-failed" as const })));
 +
 +const observation = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
@@ -340,7 +358,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -32,6 +273,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -32,6 +291,7 @@ export const readPoolOrganization = Effect.gen(function* () {
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;
    const rows = yield* sql`select id from organization where id = ${value.organization}`;

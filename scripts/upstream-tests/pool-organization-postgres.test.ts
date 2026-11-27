@@ -75,7 +75,8 @@ async function withoutCancels(target: URL) {
 /**
  * One Worker event's pool. `grouped` is Cloud's event pool on the ownership route: it leases one
  * connection at a time and groups statements, and the route sends its batch in one write as one
- * read-only transaction (main.ts). `plain` is every other route's pool.
+ * read-only transaction (main.ts). `plain` is every other route's pool, which the ownership route
+ * also gets when its event built the pool before the route asked for groups.
  */
 type Mode = "plain" | "grouped";
 const modes: ReadonlyArray<Mode> = ["plain", "grouped"];
@@ -136,18 +137,18 @@ async function checkOn(
         ),
         Effect.provide(Logger.layer([logger])),
       );
-      return yield* mode === "grouped"
-        ? route.pipe(
-            Effect.provideService(StatementBatch, (leaves, { outside }) =>
-              PgPool.held(
-                PgConnection.pipelined(leaves, {
-                  outside,
-                  begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
-                }),
-              ),
-            ),
-          )
-        : route;
+      // Cloud's route always hands over its batch; only the event's pool decides whether it is
+      // used. A plain pool (one built before the route asked for groups) must fall back.
+      return yield* route.pipe(
+        Effect.provideService(StatementBatch, (leaves, { outside }) =>
+          PgPool.held(
+            PgConnection.pipelined(leaves, {
+              outside,
+              begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
+            }),
+          ),
+        ),
+      );
     }),
   );
   return { status: response.status, ms: performance.now() - started, lines };
