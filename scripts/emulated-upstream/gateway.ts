@@ -10,6 +10,15 @@ export interface Chaos {
 }
 export const calm: Chaos = { rateLimitRate: 0, latencyMs: 0 };
 
+/**
+ * A platform reason that is plain words, or undefined. A dot only ends a sentence, so no host or
+ * dotted name gets through.
+ */
+export const plainReason = (text: unknown): string | undefined =>
+  typeof text === "string" && /^[A-Za-z](?:[A-Za-z ,'-]|\.(?= |$)){0,199}$/u.test(text)
+    ? text
+    : undefined;
+
 /** Profile a never has faults; profile b's are read and replaced here during a run, no redeploy. */
 export const profileControlPath = "/_emulated/profiles/b";
 
@@ -167,9 +176,7 @@ export function mockCalls({
         {
           error: {
             type: "mock_unavailable",
-            message: /^[A-Za-z][A-Za-z ,.'-]{0,199}$/u.test(message)
-              ? message
-              : "an unrecognised start failure",
+            message: plainReason(message) ?? "an unrecognised start failure",
           },
         },
         { status: 503 },

@@ -2,7 +2,7 @@
 // stage's fetch. Raw provider output never reaches logs: only the release entry's own public lines
 // and this stage's counts and names.
 import { emulatedAccount } from "./cloudflare.mjs";
-import { profileControlPath } from "./gateway.ts";
+import { plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
@@ -156,7 +156,7 @@ export function emulatedStage({
   const streamed = (base, shape, long) =>
     model(base, shape, { kind: long ? "long" : "short", long, atLeastMs: shortest(long) });
 
-  async function check() {
+  async function leased() {
     const deleteBy = await api.lease(worker);
     if (deleteBy === undefined)
       throw new StageError(
@@ -166,6 +166,11 @@ export function emulatedStage({
       throw new StageError(
         `The emulated upstream's lease ended at ${new Date(deleteBy).toISOString()}; run destroy, or let the hourly expiry remove it`,
       );
+    return deleteBy;
+  }
+
+  async function check() {
+    const deleteBy = await leased();
     const base = await origin();
     // The Worker refuses these itself, before the container starts. Profile b's control gets a PUT
     // of no faults, so a gate that let one through could only calm b, never break a run.
@@ -280,6 +285,8 @@ export function emulatedStage({
    * `mockWaitBoundMs`, and fails with the first reason it was given, word for word.
    */
   async function waitForMock() {
+    // A deploy that left no Worker says so now, not as a timeout.
+    await leased();
     const base = await origin();
     const started = now();
     let firstCause;
@@ -290,25 +297,24 @@ export function emulatedStage({
         "/health",
         {
           headers: { authorization: `Bearer ${key}` },
-          signal: AbortSignal.timeout(mockWaitBoundMs),
+          // A try gets only what is left of the bound, so the wait never outlasts it.
+          signal: AbortSignal.timeout(Math.max(1, mockWaitBoundMs - (now() - started))),
         },
         (response) => (response.ok ? response.body?.cancel() : response.json().catch(() => ({}))),
-      ).catch((error) => ({
-        status: undefined,
-        ok: false,
-        body: { reason: publicMessage(error) },
-      }));
+      ).catch((error) => ({ status: undefined, ok: false, failed: publicMessage(error) }));
       if (answer.ok) {
         summary(
           `- the mock answered ${Math.round((now() - started) / 1_000)} s after the deploy (bound ${mockWaitBoundMs / 1_000} s)`,
         );
         return;
       }
+      // The Worker's reason is printed only when it is plain words; anything else is its status.
       firstCause ??=
-        answer.body?.error?.type === "mock_unavailable" &&
-        typeof answer.body.error.message === "string"
-          ? answer.body.error.message
-          : (answer.body?.reason ?? `HTTP ${answer.status}`);
+        answer.failed ??
+        (answer.status === 503 && answer.body?.error?.type === "mock_unavailable"
+          ? plainReason(answer.body.error.message)
+          : undefined) ??
+        `HTTP ${answer.status}`;
       if (now() - started + mockWaitPauseMs >= mockWaitBoundMs)
         throw new StageError(
           `The mock did not answer within ${mockWaitBoundMs / 1_000} s of the deploy: ${firstCause}`,

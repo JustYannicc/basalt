@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { inspect } from "node:util";
 import { test } from "node:test";
 import { activeDispatches } from "./dispatch-busy.mjs";
-import { gate, mockCalls } from "./gateway.ts";
+import { gate, mockCalls, plainReason } from "./gateway.ts";
 import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
 import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
@@ -471,18 +471,57 @@ test("a mock the platform never starts fails the deploy with the platform's own 
 });
 
 test("a start failure that is not plain words reaches no caller", async () => {
-  const stage = deployedStage({
-    start: async () => {
-      throw new Error("failed at https://host.example/x for 0123456789abcdef0123456789abcdef");
-    },
-  });
+  for (const reason of [
+    "failed at https://host.example/x for 0123456789abcdef0123456789abcdef",
+    // Letters and dots only: the account's workers.dev host when its subdomain has no digits.
+    "Start failed for basalt-emulated-upstream-gateway.acct-secret-sub.workers.dev",
+    "Start failed\n::warning::look here",
+  ]) {
+    const stage = deployedStage({
+      start: async () => {
+        throw new Error(reason);
+      },
+    });
+    await assert.rejects(
+      stageOf(fakeApi({ lease: NOW + hour }), {
+        key: stage.key,
+        fetcher: stage.fetcher,
+        now: () => stage.clock.ms,
+        wait: async (ms) => (stage.clock.ms += ms),
+      }).deploy(),
+      /did not answer within 120 s of the deploy: an unrecognised start failure$/u,
+      reason,
+    );
+  }
+});
+
+test("only plain words pass as a platform reason, and a dot only ends a sentence", () => {
+  assert.equal(plainReason(noInstance), noInstance);
+  assert.equal(plainReason("The mock stopped while starting."), "The mock stopped while starting.");
+  for (const text of [
+    "acct.workers.dev",
+    "Failed. at host.example",
+    "Failed\nnext",
+    "::warning::x",
+    "",
+    "x".repeat(201),
+    undefined,
+    { message: noInstance },
+  ])
+    assert.equal(plainReason(text), undefined, String(text));
+});
+
+test("a deploy that left no Worker says so before it waits for the mock", async () => {
+  const stage = deployedStage({});
+  let waited = 0;
   await assert.rejects(
-    stageOf(fakeApi({ lease: NOW + hour }), {
+    stageOf(fakeApi({ lease: undefined }), {
       key: stage.key,
       fetcher: stage.fetcher,
       now: () => stage.clock.ms,
-      wait: async (ms) => (stage.clock.ms += ms),
+      wait: async (ms) => (waited += ms),
     }).deploy(),
-    /did not answer within 120 s of the deploy: an unrecognised start failure$/u,
+    /is not deployed: Worker .* or its DELETE_BY lease is missing; run deploy$/u,
   );
+  assert.equal(waited, 0);
 });
