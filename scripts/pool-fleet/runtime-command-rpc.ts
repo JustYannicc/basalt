@@ -104,7 +104,8 @@ export async function sendRuntimeCommand(
           { path: "handoff.command.action", old: null, new: frozen.action },
           // The status as a number, so a public line can say which answer it was.
           { path: "handoff.response.http", old: null, new: response.status },
-          // Without the pool's mark, a proxy on the bridge built this answer, not the pool.
+          // Without the pool's mark no answer left the pool's handoff code: a proxy on the bridge, a
+          // throw or platform failure in the pool's invocation before it, or a pool from before the mark.
           { path: "handoff.response.origin", old: null, new: detail.origin },
           { path: "handoff.response.step", old: null, new: detail.step },
           { path: "handoff.response.reason", old: null, new: detail.reason },

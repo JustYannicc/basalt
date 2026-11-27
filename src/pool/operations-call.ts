@@ -2,12 +2,12 @@ import { shape } from "./error-shape.ts";
 
 /**
  * Set on every answer that leaves through here. The operator's bridge reaches this entrypoint
- * through proxies that build their own 500s, so an answer without it never came from the pool.
+ * through proxies that build their own 500s, so an answer without it never left this code.
  */
 export const poolOperationsAnswerHeader = "X-Signalbox-Pool-Operations";
 const ownAnswer = "answered";
 
-/** Whether the PoolOperations entrypoint itself gave this answer, not a hop in front of it. */
+/** Whether throughController gave this answer (the runtime-handoff route), not a hop before it. */
 export const poolOperationsAnswered = (response: Response) =>
   response.headers.get(poolOperationsAnswerHeader) === ownAnswer;
 
@@ -34,7 +34,8 @@ export async function throughController(
       headers: { "Cache-Control": "no-store", [poolOperationsAnswerHeader]: ownAnswer },
     });
   }
-  // An answer returned over RPC may hold immutable headers; the copy keeps its body streaming.
+  // Defensive: an RPC answer's headers are mutable today, a fetched one's are not. The copy keeps
+  // the status, headers and a streaming body.
   const answer = new Response(response.body, response);
   answer.headers.set(poolOperationsAnswerHeader, ownAnswer);
   return answer;
