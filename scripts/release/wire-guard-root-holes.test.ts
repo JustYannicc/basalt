@@ -410,6 +410,15 @@ test("the run's holds come from the policy's rows, and an unnamed root still ref
   assert.ok(Exit.isSuccess(gatewayRun.exit));
   refusalOf(gatewayRun.exit.value.patch);
   assert.deepEqual(gatewayRun.writes, []);
+  // A stage that records its root under a policy keeps it as production does.
+  const rehearsal = await Effect.runPromise(
+    wireConfigFor({
+      stage: "test-rehearsal-1",
+      policy: { rootFqn: "PoolContainer", held: [] },
+      recorded: read,
+    }),
+  );
+  assert.equal(rehearsal.rootRequired, true);
   // Production under a policy that records no root stops; a preview without one holds nothing.
   const none = await Effect.runPromiseExit(
     wireConfigFor({ stage: "production", policy: { rootFqn: "Absent", held: [] }, recorded: read }),

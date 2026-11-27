@@ -320,6 +320,16 @@ test("the read reports the account the session's Cloudflare environment lists", 
     ),
   );
   assert.deepEqual(observed, { status: "missing", account: ACCOUNT });
+  // The account is the environment's, whatever the row records.
+  const other = await Effect.runPromise(
+    observeRow("RouteGateway", row, read).pipe(
+      Effect.provideService(
+        CloudflareEnvironment,
+        Effect.succeed({ accountId: "b".repeat(32) } as never),
+      ),
+    ),
+  );
+  assert.equal(other?.account, "b".repeat(32));
 });
 
 test("the entry's account read never turns a failure into nothing there", async () => {
@@ -344,6 +354,38 @@ test("the entry's account read never turns a failure into nothing there", async 
     observeRecorded(state.store, session, breaks)("RouteGateway"),
   );
   assert.ok(Exit.isFailure(failed) && Cause.squash(failed.cause) instanceof ReadBroke);
+});
+
+test("a row is the one planned from only if its status, instance and application all match", async () => {
+  const observe = () => Effect.succeed<Observation>({ status: "missing", account: ACCOUNT });
+  for (const [label, start, moved] of [
+    ["a new instance", placeholder(), placeholder({ instanceId: "instance-2" })],
+    // A row with a part missing is never taken for the one planned from.
+    [
+      "no instance on either read",
+      placeholder({ instanceId: undefined }),
+      placeholder({ instanceId: undefined }),
+    ],
+  ] as const) {
+    const rows: Record<string, unknown> = { RouteGateway: start, PoolWorker: worker };
+    const state = memory(rows);
+    const planned = await Effect.runPromiseExit(readRepair(input(state.store, observe)));
+    if (Exit.isFailure(planned)) continue;
+    let reads = 0;
+    const racing = {
+      ...state.store,
+      get: (fqn: string) =>
+        Effect.sync(() => {
+          if (fqn === "RouteGateway" && ++reads === 2) rows.RouteGateway = moved;
+          return structuredClone(rows[fqn]);
+        }),
+    };
+    const exit = await Effect.runPromiseExit(
+      applyRepair({ ...input(racing, observe), digest: repairDigest(planned.value.plan) }),
+    );
+    assert.ok(Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof RepairRefused, label);
+    assert.deepEqual(state.writes, [], label);
+  }
 });
 
 test("a row a running apply moved on is never repaired, even with its id unchanged", async () => {
@@ -434,6 +476,44 @@ test("the command holds the store to the contract before an apply too, and keys 
   const exit = await Effect.runPromiseExit(command(7, "f".repeat(64)));
   assert.ok(Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof StateStoreRefused);
   assert.deepEqual(keys, []);
+  // A runner-local stack is held to its own contract: a shared store refuses it.
+  const local = await Effect.runPromiseExit(
+    repairCommand({
+      fqn: "RouteGateway",
+      digest: undefined,
+      worker: "PoolWorker",
+      reserved: [],
+      state: stageStore(8),
+      at: { stack: "basalt", stage: "test-route-scratch-1" },
+      stackState: "runner-local",
+      runnerLocal: 1,
+      open: Effect.succeed({ context: Context.empty() }),
+    }),
+  );
+  assert.ok(Exit.isFailure(local) && Cause.squash(local.cause) instanceof StateStoreRefused);
+  // Through the command, an approved forget deletes the row itself, under the stage's key.
+  keys.length = 0;
+  const finds = (() =>
+    Effect.succeed({ status: "missing", account: ACCOUNT })) as unknown as typeof observeRow;
+  const via = (digest: string | undefined) =>
+    repairCommand({
+      fqn: "RouteGateway",
+      digest,
+      worker: "PoolWorker",
+      reserved: ["PoolContainer"],
+      state: stageStore(8),
+      at: { stack: "basalt", stage: "production" },
+      stackState: "shared",
+      runnerLocal: 1,
+      open: Effect.succeed({ context: Context.empty() }),
+      read: finds,
+    });
+  const first = await Effect.runPromise(via(undefined));
+  await Effect.runPromise(via(repairDigest(first.plan)));
+  assert.deepEqual(
+    keys.map(String).filter((key) => !key.startsWith("get")),
+    ["delete basalt/production/RouteGateway"],
+  );
 });
 
 test("the entry hands the repair and the holds exactly what the release decided", async () => {

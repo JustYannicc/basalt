@@ -373,6 +373,7 @@ test("a declaration is the recorded one only with the same props and the same bu
     { ...props },
     { ...props, context: here, instanceType: "standard" },
     { ...props, context: here, image: "registry.cloudflare.com/account/route-gateway@sha256:aa" },
+    { ...props, context: here, name: "basalt-production-another" },
   ])
     assert.equal(
       sameDeclaration(recorded, { ...props, context: here }),

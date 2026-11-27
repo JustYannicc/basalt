@@ -462,6 +462,8 @@ export const repairCommand = <E, O, C, S>(input: {
   readonly stackState: StackState;
   readonly runnerLocal: number;
   readonly open: Effect.Effect<{ readonly context: Context.Context<C> }, O, S>;
+  /** The provider read; Alchemy's own unless a test stands one in. */
+  readonly read?: typeof observeRow;
 }) => {
   const { state, at } = input;
   const store: RepairStore<E> = {
@@ -475,7 +477,7 @@ export const repairCommand = <E, O, C, S>(input: {
     reserved: input.reserved,
     digest: input.digest,
     store,
-    observe: observeRecorded(store, input.open),
+    observe: observeRecorded(store, input.open, input.read),
     contract: {
       id: state.id,
       version: state.getVersion(),
