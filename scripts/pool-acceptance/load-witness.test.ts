@@ -92,6 +92,31 @@ test("a 200 record cut before any content vouches for nothing, though its wait s
   assert.deepEqual(beside.run.calls[0]!.classes, ["witnesses_disagree"]);
 });
 
+test("an answer the driver read to its end that the mock's record never ended is mock_cut, and fails the run", async () => {
+  // The mock passed the first content on, then its record ends cut: it never vouched for the end.
+  const cutAfter = (send: MockSend): MockSend => ({
+    ...send,
+    end: "cut",
+    stallMs: undefined,
+    endedAt: send.firstContentAt!,
+  });
+  const { run, lines } = await load([streamed({ says: (send) => [cutAfter(send)] })], 1);
+  assert.equal(run.calls[0]!.attempts[0]!.end, "complete", "the driver read it to its end");
+  assert.deepEqual(run.calls[0]!.classes, ["mock_cut"]);
+  onlyCounts(run.verdict.counts, { mock_cut: 1 });
+  assert.equal(run.verdict.passed, false);
+  assert.match(lines[1]!, / mock_cut=1 /u);
+  // Beside a record that did end the answer, the cut try vouches for nothing and costs nothing.
+  const beside = await load([streamed({ says: (send) => [cutAfter(send), send] })], 1);
+  assert.deepEqual(beside.run.calls[0]!.classes, []);
+  // A complete record of a refusal does not end the answer either.
+  const refused = await load(
+    [streamed({ says: (send) => [cutAfter(send), { ...send, status: 429 }] })],
+    1,
+  );
+  assert.deepEqual(refused.run.calls[0]!.classes, ["mock_cut"]);
+});
+
 test("only the mock's 200 answers judge a call, and every one of them does", async () => {
   const later = (send: MockSend): MockSend => ({
     ...send,

@@ -85,8 +85,11 @@ export function mockWitness({
   };
 }
 
-/** The mock's view of a call: whether every answer it sent was in time, or that it has none. */
-export type MockView = "in_time" | "late" | "missing";
+/**
+ * The mock's view of a call: whether every answer it sent was in time, that it has none, or that it
+ * never sent to its end an answer the driver read to its end.
+ */
+export type MockView = "in_time" | "late" | "missing" | "cut";
 
 const markerOf = (run: string, call: CallRecord, attempt: Pick<Attempt, "attempt">) =>
   sendMarker(run, call.traceId, attempt.attempt);
@@ -107,6 +110,7 @@ export function mockView(
 ): MockView {
   if (!sends) return "missing";
   let view: MockView = "in_time";
+  let cut = false;
   for (const attempt of call.attempts) {
     const answers = (sends.get(markerOf(run, call, attempt)) ?? []).filter(
       (send) => send.status === 200,
@@ -115,23 +119,34 @@ export function mockView(
     if (attempt.status === 200 && answers.length === 0) return "missing";
     if (attempt.status === 200 && attempt.firstContentMs !== undefined && carried.length === 0)
       return "missing";
+    // Where the mock's record has no end, only the driver would vouch for the end of the answer.
+    if (
+      attempt.status === 200 &&
+      attempt.end === "complete" &&
+      !carried.some((send) => send.end === "complete")
+    )
+      cut = true;
     for (const send of answers) {
       const firstMs = (send.firstContentAt ?? send.endedAt) - attempt.startedAt;
       if (Math.max(firstMs, send.stallMs ?? 0) > kind.ttfbProfileMs + delayBarMs) view = "late";
     }
   }
-  return view;
+  return cut ? "cut" : view;
 }
 
-/** Both in time: none. Both late: delayed. One late: they disagree. No record: the mock's missing. */
+/**
+ * Both in time: none. Both late: delayed. One late: they disagree. No record: the mock's missing.
+ * A record that never ended an answer the driver read to its end: the mock's cut.
+ */
 export function timeClass(driverLate: boolean, mock: MockView): LoadClass | undefined {
   if (mock === "missing") return "mock_missing";
+  if (mock === "cut") return "mock_cut";
   if (driverLate && mock === "late") return "delayed";
   if (driverLate || mock === "late") return "witnesses_disagree";
   return undefined;
 }
 
-const witnessClasses: readonly LoadClass[] = ["witnesses_disagree", "mock_missing"];
+const witnessClasses: readonly LoadClass[] = ["witnesses_disagree", "mock_missing", "mock_cut"];
 
 /**
  * A judged call with the driver-only `delayed` replaced by both witnesses' outcome. A call in flight

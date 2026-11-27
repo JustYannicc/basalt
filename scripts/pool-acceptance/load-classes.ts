@@ -8,7 +8,8 @@ import type { WitnessRead } from "./load-witness.ts";
  * or a wait between its frames after that, came more than 30 s past its profile's time to first
  * token, by the driver's measure and by the mock's record both. witnesses_disagree: one of the two
  * says late and the other in time. mock_missing: a 200 the mock has no record of, or no record read
- * at all. missing_boot: an answer without the pool's boot header. in_flight_cut: in flight at the
+ * at all. mock_cut: an answer the driver read to its end that the mock never sent to its end, so
+ * only the driver vouches for its end. missing_boot: an answer without the pool's boot header. in_flight_cut: in flight at the
  * kill time and not clean, in place of the others but the two witness classes.
  */
 export type LoadClass =
@@ -17,6 +18,7 @@ export type LoadClass =
   | "delayed"
   | "witnesses_disagree"
   | "mock_missing"
+  | "mock_cut"
   | "missing_boot"
   | "in_flight_cut";
 export const loadClasses: readonly LoadClass[] = [
@@ -25,6 +27,7 @@ export const loadClasses: readonly LoadClass[] = [
   "delayed",
   "witnesses_disagree",
   "mock_missing",
+  "mock_cut",
   "missing_boot",
   "in_flight_cut",
 ];
