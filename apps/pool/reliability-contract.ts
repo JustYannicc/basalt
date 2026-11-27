@@ -43,6 +43,15 @@ export interface PoolReliabilitySlo {
   readonly target: 99;
   readonly state: "ok" | "breached" | "no_traffic" | "unavailable";
   readonly captureAt: string | null;
+  /**
+   * This pool's Home requests not yet in history, among the bounded read past the capture cursor;
+   * `complete` is false when that read stopped at its bound, so `requests` is a lower bound.
+   */
+  readonly pending?: {
+    readonly requests: number;
+    readonly oldestAt: string | null;
+    readonly complete: boolean;
+  };
   readonly reason?:
     | "history_inactive"
     | "capture_stale"

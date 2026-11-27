@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-repository-step-names",
+  "file": "0809-repository-step-names.patch",
+  "content_sha256": "41157fb323cb140163becc1ed8df5b581b40ec67a1a814894a7c8fa4ea740ebd",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

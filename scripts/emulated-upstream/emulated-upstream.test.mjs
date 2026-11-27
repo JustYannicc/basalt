@@ -13,6 +13,7 @@ import { mockRefusal, mockStarter } from "./mock-start.ts";
 import { countingText, fixtures, fixturesFile, fixturesText } from "./fixtures.mjs";
 import { LONG_COUNT, longMatch, longPrompt, shortPrompt } from "./prompts.ts";
 import { paths, requestBody, verdict } from "./shapes.mjs";
+import { emulatedStage } from "./stage.mjs";
 import { chaos429Body, streamOf, wholeOf } from "./test/aimock-shapes.mjs";
 import {
   application,
@@ -654,4 +655,34 @@ test("an event prints as what was checked, so a duplicate key, an escape or padd
   // The list is frozen and the set that decides is private: adding to the list changes nothing.
   assert.throws(() => progressTags.push("api.cloudflare.com"));
   assert.deepEqual(publicEntryLines('{"_tag":"api.cloudflare.com"}'), []);
+});
+
+test("a destroy of a deployed stage whose image has a long tag list ends with nothing left", async () => {
+  const { live, fetcher } = fakeAccount({
+    live: {
+      applications: [application({ id: "a1", name: `${prefix}-mock` })],
+      scripts: [script(`${prefix}-gateway`)],
+      namespaces: [namespace({ id: "n1", className: "Mock", script: `${prefix}-gateway` })],
+    },
+    tags: { [`acct/${prefix}-mock`]: ["h1", "h2", "cache.v1", "h3", "h4"] },
+    tagPageSize: 2,
+  });
+  const lines = [];
+  await emulatedStage({
+    api: account(fetcher),
+    key: "k".repeat(43),
+    fetcher,
+    summary: (line) => lines.push(line),
+    save: () => {},
+    deployEntry: () => {},
+  }).destroy();
+  assert.equal(live.applications.length, 0);
+  assert.equal(live.scripts.length, 0);
+  assert.equal(live.namespaces.length, 0);
+  assert.ok(
+    lines.includes(
+      `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`,
+    ),
+    lines.join("\n"),
+  );
 });
