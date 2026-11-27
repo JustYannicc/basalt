@@ -61,6 +61,7 @@ import { admitRuntimeRestart, confirmedStopped } from "./restart-admission.ts";
 import { RuntimeForcedStop, stopGracefully } from "./forced-stop.ts";
 import { leakedStreamsMs } from "./forced-restart-timing.ts";
 import { RuntimeStartupStop } from "./startup-stop.ts";
+import { RuntimeAbandonedStop } from "./abandoned-stop.ts";
 import { endedForGood, lastContainerEnd, markStopSent } from "./container-end.ts";
 import type { StartupStopIntent } from "./startup-abort-contract.ts";
 
@@ -103,6 +104,7 @@ export class RuntimeEndpoint {
   private refusals = new RuntimeHealthRefusalLog();
   private maintenance: RuntimeMaintenance;
   private startupStop: RuntimeStartupStop;
+  private abandonedStop: RuntimeAbandonedStop;
   private modelLifetimes: RuntimeModelLifetimes;
   private leaseProofs = new Map<string, number>();
   private settleFailures = new Map<string, number>();
@@ -127,6 +129,7 @@ export class RuntimeEndpoint {
       role === "runtime" ? options.ownStorage : undefined,
     );
     this.startupStop = new RuntimeStartupStop(ctx, this.store);
+    this.abandonedStop = new RuntimeAbandonedStop(ctx, this.store, role);
     this.channel = new RuntimeChannel(ctx, env);
     this.activity = new RuntimeActivity(ctx.storage);
     this.maintenance = new RuntimeMaintenance({
@@ -599,12 +602,15 @@ export class RuntimeEndpoint {
   /**
    * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
    * is durable before it answers, and from then on this slot is never admitted or started again, so
-   * a container it finds stopped can't come back.
+   * a container it finds stopped can't come back. With `stop`, a container that a first start which
+   * never attested left running is then stopped, once (`RuntimeAbandonedStop`).
    */
-  abandonStart(target: SlotTarget) {
+  abandonStart(target: SlotTarget, stop = false) {
     return this.serialize(async () => {
       this.bound(target);
       await this.store.abandon(target);
+      // Only behind the fence, which refuses every later start and attestation for this slot.
+      if (stop) await this.abandonedStop.stop(target);
       return { stopped: !this.ctx.container!.running };
     });
   }

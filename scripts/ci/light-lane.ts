@@ -8,7 +8,7 @@ import { boxSettings, type BoxInput } from "./box-router.ts";
 // summary job is created last and waited behind batch jobs for a hosted runner (#2118); the light
 // runners don't count toward the account's hosted limit. A job queued for the light runners can't
 // move to hosted runners, so light-rescue.yml cancels main's Check when its light job has waited 3
-// minutes, and box-rerun.yml re-runs it once it ends, as it does when only a light job failed; the
+// minutes, and box-rerun.yml re-runs it once it ends, as it does when only a light job failed or timed out; the
 // re-run is attempt 2, which these jobs' runs-on sends hosted.
 
 /**
