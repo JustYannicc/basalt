@@ -120,7 +120,7 @@
     "src/pool/runtime-fleet-quarantine-write.worker.test.ts": 1,
     "src/pool/runtime-fleet-routing.test.ts": 4,
     "src/pool/runtime-fleet-start-refused.test.ts": 3,
-    "src/pool/runtime-forced-restart.worker.test.ts": 4,
+    "src/pool/runtime-forced-restart.worker.test.ts": 3,
     "src/pool/runtime-forced-stop.test.ts": 1,
     "src/pool/runtime-graceful-stop.test.ts": 3,
     "src/pool/runtime-heal-no-alarm.worker.test.ts": 1,
