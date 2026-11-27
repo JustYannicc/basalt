@@ -31,6 +31,7 @@ import {
   configureFleet,
   configureOperationId,
   disableFleet,
+  handoverLeft,
   retireRow,
   step,
   untilSettled,
@@ -293,41 +294,54 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     const worker = yield* poolWorkerName(deps.cloudflare);
     const access = deps.controller(worker);
     const evidence: Record<string, unknown> = { controllerCode: access.code };
-    // configure-and-accept may run right after a deploy: every read before its send shares one wait
-    // for the controller's code handover. inspect and retire-check send nothing, so their probe
-    // waits the same, and says what it waited for.
-    const settle = { clock: { sleep: deps.sleep, now: deps.now }, from: deps.now() };
+    // inspect and retire-check send nothing, so their probe waits out the controller's code handover
+    // too, but only for what's left of it since the PoolWorker's latest deployment: the lane holds
+    // the release lock, and a wait no handover can end would only hold it. Unread waits for nothing.
     const readOnly = mode === "inspect" || mode === "retire-check";
+    const window = readOnly ? yield* handoverLeft(deps.cloudflare, worker, deps.now) : undefined;
+    // configure-and-accept may run right after a deploy: every read before its send shares one wait
+    // for the controller's code handover.
+    const settle = { clock: { sleep: deps.sleep, now: deps.now }, from: deps.now() };
+    const probeSettle =
+      mode === "configure-and-accept"
+        ? settle
+        : typeof window === "number" && window > 0
+          ? { ...settle, boundMs: window * 1000 }
+          : undefined;
     const waits: SettleWait[] = [];
     // Signing uses this checkout's generated code (git HEAD at prepare time); say so when it is stale.
     const probe = yield* Effect.result(
-      mode === "configure-and-accept" || readOnly
+      probeSettle
         ? untilSettled(
-            settle,
+            probeSettle,
             access,
             step("probe", () => inspectController(access)).pipe(Effect.map((value) => ({ value }))),
             readOnly ? (wait) => waits.push(wait) : undefined,
           )
         : call(() => inspectController(access)),
     );
-    if (waits.length) {
+    if (readOnly && (waits.length || Result.isFailure(probe))) {
       const probeWait = {
+        window,
         seconds: Math.round((deps.now() - settle.from) / 1000),
         reads: waits.length + 1,
         for: waits,
       };
       evidence.probeWait = probeWait;
       deps.log(
-        `probe_wait seconds=${probeWait.seconds} reads=${probeWait.reads} for=${waits.join(",")}`,
+        `probe_wait window=${window} seconds=${probeWait.seconds} reads=${probeWait.reads} for=${waits.join(",")}`,
       );
     }
+    // Once the probe logged its wait, every failure of the run keeps it.
+    const keepingWait = <A, E>(work: Effect.Effect<A, E>) =>
+      "probeWait" in evidence
+        ? work.pipe(Effect.mapError((failure) => ({ cause: describeError(failure), evidence })))
+        : work;
     if (Result.isFailure(probe)) {
       const failure = /slot_identity/u.test(describeError(probe.failure))
-        ? codeMismatch(access, false)
+        ? codeMismatch(access)
         : probe.failure;
-      return yield* Effect.fail(
-        waits.length ? { cause: describeError(failure), evidence } : failure,
-      );
+      return yield* keepingWait(Effect.fail(failure));
     }
     const read = () =>
       Effect.gen(function* () {
@@ -378,7 +392,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
             ? "full"
             : "device-only (no dedicated acceptance pool)";
       deps.log(`acceptance=${acceptance}`);
-      return { ...evidence, acceptance, ...(yield* read()) };
+      return { ...evidence, acceptance, ...(yield* keepingWait(read())) };
     }
     if (mode === "disable") return { ...evidence, disable: yield* disableFleet(access, input.go) };
     if (mode === "retire-row") {
@@ -392,7 +406,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       return { ...evidence, before, retired, warning, after: named((yield* read()).fleet) };
     }
     if (mode === "retire-check") {
-      const check = yield* checkRetireRow(access, input.key ?? "");
+      const check = yield* keepingWait(checkRetireRow(access, input.key ?? ""));
       deps.log(
         check.wouldProceed
           ? "retire-row would proceed"
