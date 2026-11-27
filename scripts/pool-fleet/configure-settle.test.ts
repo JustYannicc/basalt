@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { runPoolFleet, type DispatchInput } from "./dispatch.ts";
 import { controllerSettleMs } from "./operations.ts";
+import { fakeClock } from "./test/fake-clock.ts";
 import { harness } from "./test/harness.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
@@ -13,20 +14,6 @@ const dispatch = (mode: string): DispatchInput => ({
   ref: "refs/heads/main",
   event: "workflow_dispatch",
 });
-/** A clock the lane's waits move, so the handover bound runs in no real time; signed commands stay fresh. */
-const fakeClock = () => {
-  const clock = { start: Date.now(), at: Date.now(), sleeps: [] as number[] };
-  return {
-    clock,
-    deps: {
-      now: () => clock.at,
-      sleep: async (ms: number) => {
-        clock.sleeps.push(ms);
-        clock.at += ms;
-      },
-    },
-  };
-};
 const cause = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
   String("cause" in result ? result.cause : "");
 

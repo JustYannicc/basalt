@@ -87,6 +87,8 @@ export interface Settle {
   from: number;
 }
 export type Settled<A> = { value: A } | { lagging: FleetLaneRefused };
+/** Why a read didn't settle and the next one waits: old code, a read lost on the way, or lagging bindings. */
+export type SettleWait = "old_code" | "read_lost" | "bindings_lag";
 
 /** A read the controller refused as slot_identity: it runs other code than this checkout signs for. */
 export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
@@ -101,25 +103,30 @@ export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
  * read lost on the way, a controller still on its old code (it refuses the new code's signature as
  * slot_identity) and lagging bindings wait. A typed refusal and any other Worker answer stand at
  * once. Past the window, a lost read refuses as controller-not-ready, old code as
- * controller-code-mismatch, and lagging bindings keep their own refusal.
+ * controller-code-mismatch, and lagging bindings keep their own refusal. `onWait` hears why before
+ * each wait, so every wait follows one read and one more read ends it.
  */
 export const untilSettled = <A, E = unknown>(
   settle: Settle,
   access: ControllerAccess,
   read: Effect.Effect<Settled<A>, E>,
+  onWait?: (wait: SettleWait) => void,
 ) =>
   Effect.gen(function* () {
     for (let reads = 1; ; reads++) {
       const outcome = yield* Effect.result(read);
       let lagging: FleetLaneRefused;
+      let wait: SettleWait;
       if (Result.isSuccess(outcome)) {
         if ("value" in outcome.success) return outcome.success.value;
         lagging = outcome.success.lagging;
+        wait = "bindings_lag";
       } else {
         const failure = outcome.failure;
         const answer = workerAnswer(failure);
         if (failure instanceof FleetLaneRefused || (answer && answer !== "slot_identity"))
           return yield* Effect.fail(failure);
+        wait = answer ? "old_code" : "read_lost";
         lagging = answer
           ? codeMismatch(access, true)
           : refuse(
@@ -130,6 +137,7 @@ export const untilSettled = <A, E = unknown>(
       }
       if (settle.clock.now() - settle.from >= controllerSettleMs || reads >= settleReads)
         return yield* Effect.fail(lagging);
+      onWait?.(wait);
       yield* Effect.promise(() => settle.clock.sleep(settlePollMs));
     }
   });

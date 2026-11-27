@@ -35,6 +35,7 @@ import {
   step,
   untilSettled,
   waitForReadyCell,
+  type SettleWait,
 } from "./operations.ts";
 
 export const modes = [
@@ -293,24 +294,41 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     const access = deps.controller(worker);
     const evidence: Record<string, unknown> = { controllerCode: access.code };
     // configure-and-accept may run right after a deploy: every read before its send shares one wait
-    // for the controller's code handover.
+    // for the controller's code handover. inspect and retire-check send nothing, so their probe
+    // waits the same, and says what it waited for.
     const settle = { clock: { sleep: deps.sleep, now: deps.now }, from: deps.now() };
+    const readOnly = mode === "inspect" || mode === "retire-check";
+    const waits: SettleWait[] = [];
     // Signing uses this checkout's generated code (git HEAD at prepare time); say so when it is stale.
     const probe = yield* Effect.result(
-      mode === "configure-and-accept"
+      mode === "configure-and-accept" || readOnly
         ? untilSettled(
             settle,
             access,
             step("probe", () => inspectController(access)).pipe(Effect.map((value) => ({ value }))),
+            readOnly ? (wait) => waits.push(wait) : undefined,
           )
         : call(() => inspectController(access)),
     );
-    if (Result.isFailure(probe))
-      return yield* Effect.fail(
-        /slot_identity/u.test(describeError(probe.failure))
-          ? codeMismatch(access, false)
-          : probe.failure,
+    if (waits.length) {
+      const probeWait = {
+        seconds: Math.round((deps.now() - settle.from) / 1000),
+        reads: waits.length + 1,
+        for: waits,
+      };
+      evidence.probeWait = probeWait;
+      deps.log(
+        `probe_wait seconds=${probeWait.seconds} reads=${probeWait.reads} for=${waits.join(",")}`,
       );
+    }
+    if (Result.isFailure(probe)) {
+      const failure = /slot_identity/u.test(describeError(probe.failure))
+        ? codeMismatch(access, false)
+        : probe.failure;
+      return yield* Effect.fail(
+        waits.length ? { cause: describeError(failure), evidence } : failure,
+      );
+    }
     const read = () =>
       Effect.gen(function* () {
         const view = yield* call(() => inspectController(access));
@@ -532,8 +550,12 @@ export async function runPoolFleet(input: DispatchInput, deps: DispatchDependenc
       secrets,
     );
   const failure = outcome.failure;
+  // A configure failure carries its rollback and evidence; a probe that waited, its evidence.
   const detail =
-    failure !== null && typeof failure === "object" && "cause" in failure && "rollback" in failure
+    failure !== null &&
+    typeof failure === "object" &&
+    "cause" in failure &&
+    ("rollback" in failure || "evidence" in failure)
       ? failure
       : { cause: describeError(failure) };
   return redact({ mode: input.mode, go: input.go, startedAt, ok: false, ...detail }, secrets);
