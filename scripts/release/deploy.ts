@@ -539,6 +539,7 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
+          heldApplications: [] as { id: string; name?: string }[],
           // Production keeps the root from the first request on: until both its id and its name
           // are pushed below, no container application write leaves.
           rootRequired: stage === "production",
@@ -629,11 +630,11 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
             } else if (stage === "production" && policy?.check)
               return yield* Effect.die(new Error("No root application recorded on production"));
           }
+          // Held as the root is, but apart from it: knowing the root still takes the root's own id
+          // and name (rootRequired), whatever the policy holds besides.
           for (const fqn of policy?.wire.heldApplications ?? []) {
             const held = yield* recordedApplication(fqn);
-            if (!held) continue;
-            wire.rootApplications.push(held.id);
-            if (held.name) wire.rootApplicationNames.push(held.name);
+            if (held) wire.heldApplications.push(held.name ? held : { id: held.id });
           }
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
@@ -943,7 +944,7 @@ try {
     const fqn = values.fqn ?? "";
     if (!fqn) throw new Error("A repair names the container's row with --fqn");
     const digest = values["plan-digest"];
-    const plan = await run(
+    const result = await run(
       Effect.gen(function* () {
         const { state, at } = yield* stageState;
         // The repair writes State, so it holds the store to the contract every release holds it to.
@@ -975,14 +976,15 @@ try {
                 .pipe(Effect.provide(session.context));
             }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: row, cause }))),
         };
-        if (!digest) return (yield* repair.readRepair(input)).plan;
+        if (!digest) return { plan: (yield* repair.readRepair(input)).plan, before: undefined };
         return yield* repair.applyRepair({ ...input, digest });
       }),
     );
     // Names and the account stay in the private record; the summary says what and what next.
-    await keepPrivate("repair", safeJson(plan, 2));
+    // The sealed record keeps the row as it was before a write, so a wrong repair can be undone.
+    await keepPrivate("repair", safeJson(result, 2));
     await summary(
-      `${digest ? "Repaired" : "Planned the repair of"} ${fqn}: ${plan.action === "forget" ? "forget the placeholder row (no application exists under its name)" : "adopt the live application under its name"}; digest \`${repair.repairDigest(plan)}\`. Next: ${repair.nextRelease(plan)}.`,
+      `${digest ? "Repaired" : "Planned the repair of"} ${fqn}: ${result.plan.action === "forget" ? "forget the placeholder row (no application exists under its name)" : "adopt the live application under its name"}; digest \`${repair.repairDigest(result.plan)}\`. Next: ${repair.nextRelease(result.plan)}.`,
     );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");

@@ -80,6 +80,13 @@ export interface WireGuardConfig {
    */
   readonly rootRequired?: boolean;
   /**
+   * Container applications besides the root that no request of the run may change, as the root is
+   * held: by recorded id, and by name through every read or create that answers with it. They never
+   * count toward knowing the root (`rootRequired`). One recorded without a name refuses every
+   * container application write, as a root known by id alone does.
+   */
+  readonly heldApplications?: ReadonlyArray<{ readonly id: string; readonly name?: string }>;
+  /**
    * Destroy of a disposable stage only: the names and ids its destroy plan records for the
    * resources it deletes. A delete of exactly one of them is admitted; every other stays refused.
    */
@@ -217,6 +224,22 @@ const DATA_DELETE: ReadonlyArray<readonly [RegExp, string]> = [
   [/^\/accounts\/[^/]+\/queues\/([^/]+)\/(?:messages\/)?purge$/, "Queue"],
 ];
 // Alchemy's shared State store Worker (StateStore/State.ts STATE_STORE_SCRIPT_NAME) and every secret write.
+/** Every application the run holds, the root's and the policy's, by recorded id and by name. */
+const heldIds = (config: WireGuardConfig) =>
+  new Set(
+    [
+      ...(config.rootApplications ?? []),
+      ...(config.heldApplications ?? []).map(({ id }) => id),
+    ].map((id) => id.toLowerCase()),
+  );
+const heldNames = (config: WireGuardConfig) =>
+  new Set(
+    [
+      ...(config.rootApplicationNames ?? []),
+      ...(config.heldApplications ?? []).flatMap(({ name }) => (name ? [name] : [])),
+    ].map((name) => name.toLowerCase()),
+  );
+
 const STATE_STORE =
   /^\/accounts\/[^/]+\/workers\/(?:scripts|workers|services)\/alchemy-state-store(?:\/|$)/;
 const STATE_STORE_PREVIEW =
@@ -468,10 +491,7 @@ const checkUnattached = (
     );
     const { name, durable_objects: attached, health } = read.result;
     // The root, by the name Cloudflare reads back, whatever its attachment and its instances.
-    if (
-      name !== undefined &&
-      config.rootApplicationNames?.some((root) => root.toLowerCase() === name.toLowerCase())
-    )
+    if (name !== undefined && heldNames(config).has(name.toLowerCase()))
       return yield* refuse(at, "root", "name", "root");
     if (attached !== undefined && attached !== null)
       return yield* refuse(at, "application", "durable_objects", "attached");
@@ -763,15 +783,15 @@ const check = (
     // Cloudflare's ids are not case sensitive, so neither is the comparison.
     const root =
       application !== undefined &&
-      (config.rootApplications?.some((id) => id.toLowerCase() === application.toLowerCase()) ||
-        held.has(application.toLowerCase()));
+      (heldIds(config).has(application.toLowerCase()) || held.has(application.toLowerCase()));
     if (write && root)
       return yield* refuse(at("container application", application), "root", "method", method);
     if (
       write &&
-      config.rootRequired &&
       APPLICATION.test(path) &&
-      !(config.rootApplications?.length && config.rootApplicationNames?.length)
+      ((config.rootRequired &&
+        !(config.rootApplications?.length && config.rootApplicationNames?.length)) ||
+        config.heldApplications?.some((application) => !application.name) === true)
     )
       return yield* refuse(
         at("container application", application ?? "{id}"),
@@ -884,10 +904,10 @@ export const install = (config: WireGuardConfig = {}) =>
       // Any application Cloudflare names as the root, in a read or a create's answer, is the root.
       if (
         (request.method === "GET" || (request.method === "POST" && APPLICATIONS.test(path))) &&
-        config.rootApplicationNames?.length &&
+        heldNames(config).size > 0 &&
         APPLICATION.test(path)
       ) {
-        const names = new Set(config.rootApplicationNames.map((name) => name.toLowerCase()));
+        const names = heldNames(config);
         const body = (await response
           .clone()
           .json()

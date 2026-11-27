@@ -70,6 +70,22 @@ export const ReleasePolicy = Schema.Struct({
 });
 export type ReleasePolicy = typeof ReleasePolicy.Type;
 
-export const decodeReleasePolicy = Schema.decodeUnknownSync(ReleasePolicy, {
+const decodePolicyFile = Schema.decodeUnknownSync(ReleasePolicy, {
   onExcessProperty: "error",
 });
+
+/**
+ * A policy file, decoded whole. A container admitted for an attachment-only update must also be
+ * held at the wire: the plan cannot show a new image, so only the hold refuses one.
+ */
+export function decodeReleasePolicy(input: unknown): ReleasePolicy {
+  const policy = decodePolicyFile(input);
+  const unheld = (policy.check.attachmentOnly ?? []).filter(
+    (fqn) => !policy.wire.heldApplications?.includes(fqn),
+  );
+  if (unheld.length)
+    throw new Error(
+      `check.attachmentOnly names ${unheld.join(", ")} without wire.heldApplications: hold every container admitted for its attachment alone.`,
+    );
+  return policy;
+}

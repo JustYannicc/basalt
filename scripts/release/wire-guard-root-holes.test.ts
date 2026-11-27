@@ -170,6 +170,60 @@ test("a root held by id but not by name: the application the provider finds by n
   assert.deepEqual(run.writes, []);
 });
 
+test("a held application never stands in for the root's name", async (t) => {
+  // The policy's held gateway has a name; the root, known by id alone, still has none. Knowing the
+  // root takes the root's own pair, so the provider still never patches it by name.
+  const run = await guarded(
+    t,
+    {
+      rootApplications: [RECORDED],
+      rootApplicationNames: [],
+      rootRequired: true,
+      heldApplications: [{ id: "held-application", name: "held-name" }],
+    },
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.exit(
+          Containers.getContainerApplication({ accountId: ACCOUNT, applicationId: RECORDED }),
+        );
+        const apps = yield* Containers.listContainerApplications({ accountId: ACCOUNT });
+        const found = apps.find((app) => app.name === NAME);
+        assert.ok(found);
+        return yield* patchAndRollout(found.id);
+      }),
+  );
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  refusalOf(run.exit.value.patch);
+  refusalOf(run.exit.value.rollout);
+  assert.deepEqual(run.writes, []);
+});
+
+test("a held application is never written, and one held without a name holds every application", async (t) => {
+  const root = { rootApplications: [RECORDED], rootApplicationNames: [NAME], rootRequired: true };
+  const held = await guarded(
+    t,
+    { ...root, heldApplications: [{ id: "held-application", name: "held-name" }] },
+    () => patchAndRollout("held-application"),
+  );
+  assert.ok(Exit.isSuccess(held.exit));
+  refusalOf(held.exit.value.patch);
+  refusalOf(held.exit.value.rollout);
+  assert.deepEqual(held.writes, []);
+  // Recorded by id alone, it could be found by name under another id: nothing is written.
+  const unnamed = await guarded(
+    t,
+    { ...root, heldApplications: [{ id: "held-application" }] },
+    () => patchAndRollout("another-application"),
+  );
+  assert.ok(Exit.isSuccess(unnamed.exit));
+  refusalOf(unnamed.exit.value.patch);
+  refusalOf(unnamed.exit.value.rollout);
+  assert.deepEqual(unnamed.writes, []);
+});
+
 test("a production run that has not pushed the root refuses every container application write", async (t) => {
   // Production keeps the root from the first request on (deploy.ts): until both the root's id and
   // name are pushed, which a command without a policy and a row without a name never had.

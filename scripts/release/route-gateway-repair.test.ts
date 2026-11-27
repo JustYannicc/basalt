@@ -151,8 +151,10 @@ for (const stop of stops)
         `${name} plans ${row} of the placeholder without the placeholder rule`,
       );
     }
-    // Not vacuous: the automatic release meets the row, and so does the declare run again.
-    assert.ok(touched.includes("code") && touched.includes("route-gateway-class"), `${touched}`);
+    // Not vacuous: the automatic release, the declare run again and an ordinary release meet the row.
+    // `release` is the one policy whose only refusal of the row is the placeholder rule itself.
+    for (const name of ["code", "route-gateway-class", "release"])
+      assert.ok(touched.includes(name), `${name} never met the row: ${touched}`);
   });
 
 for (const stop of ["upload-refused", "create-refused"] as const)
@@ -162,10 +164,13 @@ for (const stop of ["upload-refused", "create-refused"] as const)
     const { rows } = await declareTo(context, stop, applications);
     const { plan } = await Effect.runPromise(readRepair(repairOn(context, rows, applications)));
     assert.equal(plan.action, "forget");
-    await Effect.runPromise(
+    const placeholder = structuredClone(rows.RouteGateway);
+    const applied = await Effect.runPromise(
       applyRepair({ ...repairOn(context, rows, applications), digest: repairDigest(plan) }),
     );
     assert.equal(rows.RouteGateway, undefined);
+    // The run keeps the row it removed, so a wrong repair can be put back.
+    assert.deepEqual(applied.before, placeholder);
     // The declare's own plan and verdict are then a fresh declare's.
     const again = await makePlan(context, { rows, ...asDeclared, applications });
     assert.equal(action(again.plan, "RouteGateway"), "create");

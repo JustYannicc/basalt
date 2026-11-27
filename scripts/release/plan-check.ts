@@ -770,13 +770,25 @@ export const checkPlan = (
         !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
       const attachedOnly = (fqn: string) => {
         const node = nodes.find((candidate) => candidate.resource.FQN === fqn);
-        const props = node && record(node.resource.Props) ? node.resource.Props : {};
+        if (!node || policy.attachmentOnly?.includes(fqn) !== true) return false;
+        const props: Record<string, unknown> = record(node.resource.Props)
+          ? node.resource.Props
+          : {};
+        const before = recorded(node)?.props;
+        const was: Record<string, unknown> = record(before) ? before : {};
+        // A build context is an absolute path in this checkout; the recorded one may sit in the
+        // checkout of the release that declared it, as an entry file may (sameEntryFile).
+        const { context: declaredContext, ...declared } = props;
+        const { context: recordedContext, ...kept } = was;
+        const sameContext =
+          declaredContext === recordedContext || sameEntryFile(recordedContext, declaredContext);
         return (
-          !!node &&
-          policy.attachmentOnly?.includes(fqn) === true &&
           node.resource.Type === "Cloudflare.Container" &&
+          // A settled row only: an update of a `replaced` one also collects older generations.
+          (node.state?.status === "created" || node.state?.status === "updated") &&
           node.action === "update" &&
-          propChanges(recorded(node)?.props, props).length === 0 &&
+          sameContext &&
+          propChanges(kept, declared).length === 0 &&
           attachmentWaitsOnWorker(node, policy.poolWorker, workerContext)
         );
       };

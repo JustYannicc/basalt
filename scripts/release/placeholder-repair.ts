@@ -311,5 +311,6 @@ export const applyRepair = <E, L, R>(input: RepairInput<E, L, R> & { readonly di
         (cause) => new RepairStepFailed({ fqn: input.fqn, check: "write State", cause }),
       ),
     );
-    return plan;
+    // The row as it was before the write, so a wrong repair can be put back by hand.
+    return { plan, before: row };
   });
