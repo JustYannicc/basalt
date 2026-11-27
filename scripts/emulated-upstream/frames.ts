@@ -45,17 +45,33 @@ export function frameText(shape: Shape, line: string) {
   return joined(read(read(read(read(frame, "choices"), "0"), "delta"), "content") ?? "");
 }
 
+/** Whether one line is the stream's own terminal event, the frame a client stops reading at. */
+export function isTerminal(shape: Shape, line: string) {
+  if (!line.startsWith("data:")) return false;
+  const data = line.slice(line.startsWith("data: ") ? 6 : 5);
+  if (shape === "chat") return data === "[DONE]";
+  let frame: Frame;
+  try {
+    frame = JSON.parse(data) as Frame;
+  } catch {
+    return false;
+  }
+  return read(frame, "type") === (shape === "responses" ? "response.completed" : "message_stop");
+}
+
 /**
  * Times a stream by the frames that add text to the judged answer, as their lines complete. Text
  * that trims to nothing is no content, so a ping, an empty delta or a space neither starts the
- * answer nor ends a stall.
+ * answer nor ends a stall. It also notes when the stream's terminal event passed.
  */
 export function frameTimer(shape: Shape) {
   let pending = "";
   let firstContentMs: number | undefined;
   let lastContentMs: number | undefined;
   let stallMs: number | undefined;
+  let terminalMs: number | undefined;
   const line = (text: string, atMs: number) => {
+    if (terminalMs === undefined && isTerminal(shape, text)) terminalMs = atMs;
     if (!frameText(shape, text).trim()) return;
     if (lastContentMs === undefined) firstContentMs = atMs;
     else stallMs = Math.max(stallMs ?? 0, atMs - lastContentMs);
@@ -80,6 +96,10 @@ export function frameTimer(shape: Shape) {
     },
     get stallMs() {
       return stallMs;
+    },
+    /** When the stream's terminal event's line completed; undefined until it has. */
+    get terminalMs() {
+      return terminalMs;
     },
   };
 }

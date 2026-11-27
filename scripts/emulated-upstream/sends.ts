@@ -110,11 +110,15 @@ export function recorded(
   const timer = shape && streamed ? frameTimer(shape) : undefined;
   const decoder = new TextDecoder();
   let saved = false;
-  const finish = (end: MockSend["end"]) => {
+  const finish = (cut: boolean) => {
     if (saved) return;
     saved = true;
-    const endedAt = now();
+    // A reader that stops once the stream's terminal event reached it, as the pool does, has had
+    // the whole answer: the record ends there, complete. A cut before it stays a cut.
+    const endedAt = (cut ? timer?.terminalMs : undefined) ?? now();
+    // The last line counts though it had no line ending, so a terminal event in it counts too.
     timer?.end(endedAt);
+    const end: MockSend["end"] = cut && timer?.terminalMs === undefined ? "cut" : "complete";
     save({
       marker,
       path,
@@ -129,7 +133,7 @@ export function recorded(
   };
   const reader = answer.body?.getReader();
   if (!reader) {
-    finish("complete");
+    finish(false);
     return answer;
   }
   const body = new ReadableStream<Uint8Array>(
@@ -139,13 +143,13 @@ export function recorded(
         try {
           part = await reader.read();
         } catch (error) {
-          finish("cut");
+          finish(true);
           controller.error(error);
           return;
         }
         if (part.done) {
           timer?.observe(decoder.decode(), now());
-          finish("complete");
+          finish(false);
           controller.close();
           return;
         }
@@ -153,7 +157,7 @@ export function recorded(
         controller.enqueue(part.value);
       },
       cancel(reason) {
-        finish("cut");
+        finish(true);
         return reader.cancel(reason);
       },
     },

@@ -13,7 +13,7 @@ import {
 } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
 import { sendMarker } from "./prompts.ts";
-import { durableSends, sendsPage, sendsPath } from "./sends.ts";
+import { durableSends, recorded, sendsPage, sendsPath } from "./sends.ts";
 import { memorySendStorage } from "./test/memory-sends.ts";
 import { paths, requestBody, verdict } from "./shapes.mjs";
 import { chaos429Body } from "./test/aimock-shapes.mjs";
@@ -327,4 +327,88 @@ test("a run's records are read back in pages, and only with a run and cursor the
   for (const query of ["", "?run=XYZ", `?run=${run}&after=../x`, `?run=${run}0`])
     assert.equal((await read(query)).status, 400, query);
   assert.equal((await read(`?run=${run}`, { method: "PUT" })).status, 405);
+});
+
+/** One recorded stream read by a client that cancels once `stopAfter` has reached it. */
+async function readAndStop(path, lines, stopAfter) {
+  const encoder = new TextEncoder();
+  let clock = 1_000;
+  const answer = new Response(
+    new ReadableStream({
+      pull(controller) {
+        const next = lines.shift();
+        if (next === undefined) return controller.close();
+        clock += 100;
+        controller.enqueue(encoder.encode(next));
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  const saved = [];
+  const response = recorded(answer, {
+    marker: "m",
+    path,
+    receivedAt: 1_000,
+    now: () => clock,
+    save: (send) => saved.push(send),
+  });
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let seen = "";
+  for (;;) {
+    const part = await reader.read();
+    if (part.done) break;
+    seen += decoder.decode(part.value, { stream: true });
+    if (stopAfter && seen.includes(stopAfter)) {
+      // The pool stops at the terminal event; time passes before its cancel reaches the mock.
+      clock += 5_000;
+      await reader.cancel();
+      break;
+    }
+  }
+  return saved[0];
+}
+
+test("a reader that stops at the stream's terminal event had the whole answer; one that stops before it did not", async () => {
+  const streams = {
+    "/v1/chat/completions": [
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+      "data: [DONE]\n\n",
+      ": trailing\n\n",
+    ],
+    "/v1/responses": [
+      'data: {"type":"response.output_text.delta","delta":"hi"}\n\n',
+      'data: {"type":"response.completed","response":{}}\n\n',
+      ": trailing\n\n",
+    ],
+    "/v1/messages": [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'data: {"type":"message_stop"}\n\n',
+      ": trailing\n\n",
+    ],
+  };
+  const terminalOf = {
+    "/v1/chat/completions": "[DONE]",
+    "/v1/responses": "response.completed",
+    "/v1/messages": "message_stop",
+  };
+  for (const [path, lines] of Object.entries(streams)) {
+    const atTerminal = await readAndStop(path, [...lines], terminalOf[path]);
+    assert.equal(atTerminal.end, "complete", path);
+    // It ended when the terminal event passed, not when the cancel arrived.
+    assert.ok(atTerminal.endedAt < 2_000, `${path} ${atTerminal.endedAt}`);
+    assert.ok(atTerminal.firstContentAt !== undefined, path);
+    const before = await readAndStop(path, [...lines], "hi");
+    assert.equal(before.end, "cut", path);
+    const whole = await readAndStop(path, [...lines], undefined);
+    assert.equal(whole.end, "complete", path);
+  }
+  // A terminal event on a last line with no line ending still counts once the body is flushed.
+  const unterminated = await readAndStop(
+    "/v1/chat/completions",
+    ['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', "data: [DONE]"],
+    "[DONE]",
+  );
+  assert.equal(unterminated.end, "complete");
 });

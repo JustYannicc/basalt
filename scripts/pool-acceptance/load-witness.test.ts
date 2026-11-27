@@ -109,6 +109,19 @@ test("an answer the driver read to its end that the mock's record never ended is
   // Beside a record that did end the answer, the cut try vouches for nothing and costs nothing.
   const beside = await load([streamed({ says: (send) => [cutAfter(send), send] })], 1);
   assert.deepEqual(beside.run.calls[0]!.classes, []);
+  // Nor does a complete record that carried no content.
+  const empty = await load(
+    [
+      streamed({
+        says: (send) => [
+          cutAfter(send),
+          { ...send, firstContentAt: undefined, stallMs: undefined },
+        ],
+      }),
+    ],
+    1,
+  );
+  assert.deepEqual(empty.run.calls[0]!.classes, ["mock_cut"]);
   // A complete record of a refusal does not end the answer either.
   const refused = await load(
     [streamed({ says: (send) => [cutAfter(send), { ...send, status: 429 }] })],
