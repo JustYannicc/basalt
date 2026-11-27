@@ -103,6 +103,9 @@ export class Computers {
   wasCut(call: string) {
     return this.native.wasCut(call);
   }
+  nativeUsage(request: Request) {
+    return this.native.usage(request);
+  }
   abortPool(pool: string) {
     this.native.abortPool(pool);
   }
