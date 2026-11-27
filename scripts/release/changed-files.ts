@@ -1,5 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import type * as AlchemyPlan from "alchemy/Plan";
+import { ChildProcessFailure, childReport, notStarted } from "../failure/child.ts";
 
 /**
  * The files a release changes since the commit production runs now, as repository paths. Files of
@@ -128,12 +129,22 @@ export function changedFiles(
   const git = (...args: string[]) => {
     const left = deadline - Date.now();
     if (left <= 0) throw new OutOfTime();
-    return execFileSync("git", ["-C", root, ...args], {
+    const result = spawnSync("git", ["-C", root, ...args], {
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 256 * 1024 * 1024,
       timeout: left,
+      killSignal: "SIGKILL",
     });
+    if (!result.error && result.status === 0) return result.stdout;
+    const ended =
+      result.error && Reflect.get(result.error, "code") !== "ETIMEDOUT"
+        ? notStarted(result.error)
+        : { exitCode: result.status, signal: result.signal };
+    // Callers turn any failure into "unknown" and print a fixed line, so this tail stays in the error.
+    throw new ChildProcessFailure(
+      childReport("git", ended, { stdout: "", stderr: result.stderr ?? "" }, process.env),
+    );
   };
   let from: string;
   let to: string;
