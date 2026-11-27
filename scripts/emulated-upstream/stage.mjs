@@ -275,11 +275,19 @@ export function emulatedStage({
   }
 
   async function destroy() {
-    const { before, failures, kept = [] } = await api.destroy();
+    const { before, failures, kept = [], gone = [], record } = await api.destroy();
     // Closed values only: a kept entry's type is on kept-entries.mjs's list, its class one of two.
     // The account proved each one in this run: refused as kept, and found again after.
     const keptFacts = kept.map(({ type, class: refused }) => ({ type, class: refused }));
-    save("teardown", { before: counts(before), failures: failures.length, kept: keptFacts });
+    // Each repository whose every listed entry read 404 to the credential its list answered to.
+    const goneFacts = gone.map((row) => row.facts);
+    save("teardown", {
+      before: counts(before),
+      failures: failures.length,
+      kept: keptFacts,
+      listedWithoutManifest: goneFacts,
+      ...(record ? { record } : {}),
+    });
     summary(`- removed: ${api.describe(before) || "nothing was deployed"}`);
     if (keptFacts.length === 0)
       summary(
@@ -295,13 +303,22 @@ export function emulatedStage({
         `- after teardown: no container application, Worker, Durable Object namespace or tag named ${prefix}-* remains; ${keptFacts.length} ${keptFacts.length === 1 ? "entry is" : "entries are"} kept by the registry: ${[...classes].map(([what, count]) => `${count} × ${what}`).join("; ")}`,
       );
     }
+    if (goneFacts.length) {
+      const tags = goneFacts.reduce((sum, row) => sum + row.tags, 0);
+      const digests = goneFacts.reduce((sum, row) => sum + row.digests, 0);
+      summary(
+        `- listed without a manifest: ${tags} tags and ${digests} digest entries the registry's list still names, each read 404 by its own reference to the credential that list answered to`,
+      );
+    }
     summary("- not checked: a manifest the registry's tag list does not name");
   }
 
   /** Destroys the stage once its lease has passed, or when a run left it without one. */
   async function expire() {
     const found = await api.inventory();
+    const facts = { found: api.counted(found), repositories: found.facts };
     if (api.empty(found)) {
+      save("expire", { outcome: "nothing", ...facts });
       summary(`- nothing named ${prefix}-* is deployed`);
       return "nothing";
     }
@@ -309,6 +326,7 @@ export function emulatedStage({
       ? await api.lease(worker)
       : undefined;
     if (deleteBy !== undefined && deleteBy > now()) {
+      save("expire", { outcome: "kept", ...facts });
       summary(`- lease ends ${new Date(deleteBy).toISOString()}; nothing to do`);
       return "kept";
     }
@@ -316,6 +334,7 @@ export function emulatedStage({
     summary(
       `- ${deleteBy === undefined ? "no lease" : `lease ended ${new Date(deleteBy).toISOString()}`}; destroying`,
     );
+    save("expire", { outcome: "destroying", ...facts });
     await destroy();
     return "destroyed";
   }
@@ -368,8 +387,11 @@ export function emulatedStage({
   async function deploy() {
     const existing = await api.inventory();
     if (!api.empty(existing))
-      throw new StageError(
-        `The emulated upstream stage already exists (${api.describe(existing)}); run destroy first`,
+      throw Object.assign(
+        new StageError(
+          `The emulated upstream stage already exists (${api.describe(existing)}); run destroy first`,
+        ),
+        { record: Object.freeze({ found: api.counted(existing), repositories: existing.facts }) },
       );
     const deleteBy = now() + leaseHours * 60 * 60_000;
     // From here on a failed or cancelled run tears down what it may have created.
@@ -386,11 +408,16 @@ export function emulatedStage({
  * One run of the mode the environment names. Returns the exit code; prints only the guard's token
  * or this stage's own messages.
  */
-export async function main(env, { fetcher = fetch, now = Date.now, error = console.error, ...io }) {
+export async function main(
+  env,
+  { fetcher = fetch, now = Date.now, wait, error = console.error, ...io },
+) {
   const refused = guardRefusal(env, { credentialsLoaded: true });
   const mode = env.EMULATED_MODE ?? "";
   if (refused || !isMode(mode)) {
-    error(refused ?? "emulated_upstream_mode_expected_deploy_check_destroy_or_expire");
+    const token = refused ?? "emulated_upstream_mode_expected_deploy_check_destroy_or_expire";
+    error(token);
+    io.save?.(`stopped-${isMode(mode) ? mode : "run"}`, { guard: token });
     return 1;
   }
   try {
@@ -404,20 +431,29 @@ export async function main(env, { fetcher = fetch, now = Date.now, error = conso
       ...(mode === "destroy" || mode === "expire"
         ? { deadline: teardownDeadline(env, now()), now }
         : {}),
+      ...(wait ? { wait } : {}),
     });
-    await emulatedStage({ api, key: env.EMULATED_UPSTREAM_KEY, fetcher, now, ...io })[mode]();
+    await emulatedStage({
+      api,
+      key: env.EMULATED_UPSTREAM_KEY,
+      fetcher,
+      now,
+      ...(wait ? { wait } : {}),
+      ...io,
+    })[mode]();
     return 0;
   } catch (caught) {
     error(publicMessage(caught));
-    // A stop of the account layer can carry a record of closed facts (tag-pages.mjs); it is kept
-    // before the run ends, per mode, so a teardown after a failed deploy keeps the deploy's.
-    if (
+    // Every stop leaves its file, per mode, so a teardown after a failed deploy keeps the deploy's.
+    // A stop of the account layer can carry a record of closed facts (tag-pages.mjs); any other
+    // error's own fields are never read, and its file says it had none.
+    const record =
       (isCloudflareApiError(caught) || caught instanceof StageError) &&
       Object.hasOwn(caught, "record")
-    ) {
-      io.summary?.(`- stop record: ${JSON.stringify(caught.record)}`);
-      io.save?.(`stopped-${mode}`, caught.record);
-    }
+        ? caught.record
+        : undefined;
+    if (record !== undefined) io.summary?.(`- stop record: ${JSON.stringify(record)}`);
+    io.save?.(`stopped-${mode}`, record ?? { record: "none" });
     return 1;
   }
 }

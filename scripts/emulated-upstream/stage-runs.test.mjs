@@ -21,7 +21,7 @@ import {
 } from "./stage.mjs";
 import { prefix } from "./settings.ts";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
-import { application, script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { application, refusalBody, script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 const worker = "basalt-emulated-upstream-gateway";
@@ -50,6 +50,8 @@ function fakeApi({ resources = none(), lease } = {}) {
       return "acctsub";
     },
     empty: (found) => Object.values(found).every((rows) => rows.length === 0),
+    counted: (found) =>
+      Object.fromEntries(Object.entries(found).map(([kind, rows]) => [kind, rows.length])),
     describe: (found) => found.scripts.map((row) => `Worker ${row.id}`).join(", "),
   };
 }
@@ -356,10 +358,11 @@ const unreachable =
 test("a failing stage fetch prints no hostname, at the top level or in the summary", async () => {
   for (const reachable of [[], keyedRoutes]) {
     const printed = [];
+    const errors = [];
     const code = await main(dispatch, {
       fetcher: unreachable(reachable),
       now: () => NOW,
-      error: (line) => printed.push(line),
+      error: (line) => printed.push(line) && errors.push(line),
       summary: (line) => printed.push(line),
       save: (name, value) => printed.push(JSON.stringify(value)),
       deployEntry: () => {},
@@ -370,7 +373,7 @@ test("a failing stage fetch prints no hostname, at the top level or in the summa
       assert.doesNotMatch(line, new RegExp(`${subdomain}|workers\\.dev|ENOTFOUND`, "u"), line);
     }
     assert.match(
-      printed.at(-1),
+      errors.at(-1),
       reachable.length
         ? /^Emulated upstream check failed: the mock itself did not refuse.*chat short The stage's chat short stream call failed \(TypeError\)/u
         : /^The stage's unkeyed \/v1\/models call failed \(TypeError\)$/u,
@@ -444,6 +447,12 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
   assert.equal(code, 1);
   const [deletes] = saved["stopped-destroy"].teardown;
   assert.deepEqual(deletes.registryDeletes, {
+    // The list held the tag and the two manifests of its image; the tag's read reached both, the
+    // index's delete was accepted and the platform's refused.
+    tags: 1,
+    digests: 2,
+    tagRead: { ok: 1, absent: 0 },
+    delete: { accepted: 1, absent: 0, refused: 1 },
     kept: [],
     refused: [
       {
@@ -535,15 +544,175 @@ test("a teardown out of time during its deletes keeps everything it gathered", a
       failedDeletes > 0,
       String(step),
     );
-    assert.deepEqual(saved["stopped-destroy"], {
-      teardown: [],
-      readBack: "not-completed",
-      found: { applications: 1, namespaces: 0, scripts: 1, images: 1, kept: 0 },
-      failedDeletes,
+    const stopped = saved["stopped-destroy"];
+    assert.equal(stopped.readBack, "not-completed", String(step));
+    assert.deepEqual(stopped.found, {
+      applications: 1,
+      namespaces: 0,
+      scripts: 1,
+      images: 1,
+      kept: 0,
+      gone: 0,
     });
+    assert.equal(stopped.failedDeletes, failedDeletes, String(step));
+    assert.deepEqual(stopped.reads, [], String(step));
+    // The repository's delete pass, finished or cut, left its counts.
+    assert.equal(stopped.registryDeletes.length, 1, String(step));
+    assert.equal(stopped.registryDeletes[0].stopped === true, failedDeletes > 0, String(step));
     // The app and the Worker went first, inside the budget.
     assert.equal(fake.live.applications.length, 0, String(step));
     assert.equal(fake.live.scripts.length, 0, String(step));
+  }
+});
+
+/** One run of `main`, with every file it saves and every line it prints. */
+async function runOf(env, fetcher, { now = () => NOW, wait = async () => {} } = {}) {
+  const printed = [];
+  const saved = {};
+  const code = await main(env, {
+    fetcher,
+    now,
+    wait,
+    error: (line) => printed.push(line),
+    summary: (line) => printed.push(line),
+    save: (name, value) => (saved[name] = value),
+    deployEntry: () => {},
+  });
+  return { code, printed, saved };
+}
+/** The account `fake`, refusing any registry credential that may push. */
+const pushRefused = (fake) => ({
+  ...fake,
+  fetcher: (url, init) =>
+    url.endsWith("/credentials") && JSON.parse(init.body).permissions.includes("push")
+      ? Promise.resolve(
+          Response.json(refusalBody([{ code: 10000, message: "x" }]), { status: 403 }),
+        )
+      : fake.fetcher(url, init),
+});
+/** The stage deployed in an account whose registry answers as Cloudflare's does, per `cloudflare`. */
+const stageAccount = (cloudflare = {}, { lease } = {}) =>
+  fakeAccount({
+    live: {
+      applications: [application({ id: "a1", name: `${prefix}-mock` })],
+      scripts: [script(`${prefix}-gateway`)],
+    },
+    bindings: lease === undefined ? {} : { [`${prefix}-gateway`]: { DELETE_BY: String(lease) } },
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: { pageSize: 5, emptyEnd: true, ...cloudflare },
+  });
+
+test("the read-back's retries stay inside the teardown's budget, and a cut leaves the record", async () => {
+  const fake = stageAccount({ collectAfter: 1_000 });
+  let clock = NOW;
+  const started = [];
+  const fetcher = async (url, init) => {
+    started.push(clock);
+    return fake.fetcher(url, init);
+  };
+  // A job whose limit leaves this teardown 90 seconds.
+  const deadline = NOW + 90_000;
+  const env = {
+    ...dispatch,
+    EMULATED_MODE: "destroy",
+    EMULATED_JOB_STARTED_MS: String(deadline + jobReserveMs - 60 * 60_000),
+    EMULATED_JOB_LIMIT_MINUTES: "60",
+  };
+  const { code, printed, saved } = await runOf(env, fetcher, {
+    now: () => clock,
+    wait: async (ms) => void (clock += ms),
+  });
+  assert.equal(code, 1);
+  assert.match(printed[0], /; the read after was cut by the run's time budget$/u);
+  const stopped = saved["stopped-destroy"];
+  assert.equal(stopped.readBackCut, true);
+  // Reads at 0, 20, 40 and 60 s; one at 80 s would leave its requests no room before 90 s.
+  assert.equal(stopped.reads.length, 4);
+  assert.ok(
+    started.every((at) => at + 30_000 <= deadline),
+    started.join(","),
+  );
+});
+
+test("every exit of a destroy or an expiry leaves its file", async () => {
+  const destroy = { ...dispatch, EMULATED_MODE: "destroy" };
+  const expire = {
+    ...dispatch,
+    GITHUB_EVENT_NAME: "schedule",
+    EMULATED_MODE: "expire",
+    EMULATED_GO: undefined,
+  };
+  const ghosts = [`sha256:${"e".repeat(64)}`];
+  const cases = [
+    // The green line, with and without entries listed without a manifest.
+    ["destroy, green", destroy, stageAccount(), 0, "teardown"],
+    [
+      "destroy, green, listed without a manifest",
+      destroy,
+      stageAccount({ own: false, ghosts }),
+      0,
+      "teardown",
+    ],
+    // A delete refused: the record of its refusals.
+    [
+      "destroy, refused",
+      destroy,
+      stageAccount({ refuse: { [`sha256:${"b".repeat(64)}`]: { status: 403 } } }),
+      1,
+      "stopped-destroy",
+    ],
+    // Every delete accepted, and the list still names them: the path that once saved nothing.
+    [
+      "destroy, remains with nothing refused",
+      destroy,
+      stageAccount({ collectAfter: 1_000 }),
+      1,
+      "stopped-destroy",
+    ],
+    // An error that carries no record, before any account call.
+    [
+      "destroy, no credentials",
+      { ...destroy, CLOUDFLARE_API_TOKEN: "" },
+      stageAccount(),
+      1,
+      "stopped-destroy",
+    ],
+    ["destroy, guard", { ...destroy, EMULATED_GO: "" }, stageAccount(), 1, "stopped-destroy"],
+    ["expire, nothing", expire, fakeAccount({ cloudflare: { pageSize: 5 } }), 0, "expire"],
+    ["expire, kept", expire, stageAccount({}, { lease: NOW + hour }), 0, "expire"],
+    ["expire, destroyed", expire, stageAccount({}, { lease: NOW - 1 }), 0, "teardown"],
+    ["expire, fails", expire, stageAccount({ collectAfter: 1_000 }), 1, "stopped-expire"],
+    [
+      "expire, guard",
+      { ...expire, GITHUB_REF: "refs/heads/x" },
+      stageAccount(),
+      1,
+      "stopped-expire",
+    ],
+    // An expiry whose token may mint pull but not push: its deletes fail, and it says so.
+    [
+      "expire, push refused",
+      expire,
+      pushRefused(stageAccount({}, { lease: NOW - 1 })),
+      1,
+      "stopped-expire",
+    ],
+  ];
+  for (const [name, env, fake, code, file] of cases) {
+    const run = await runOf(env, fake.fetcher);
+    if (name === "expire, push refused") {
+      assert.match(
+        run.printed.join("\n"),
+        /remain after teardown: .*; failed: registry repository .*: Cloudflare POST containers\/registries failed \(403\)/u,
+      );
+      assert.equal(run.saved["stopped-expire"].registryDeletes[0].stopped, true);
+    }
+    assert.equal(run.code, code, `${name}: ${run.printed.join("\n")}`);
+    assert.ok(run.saved[file], `${name}: saved ${Object.keys(run.saved).join(", ")}`);
+    if (env === expire || env.EMULATED_MODE === "expire")
+      assert.ok(code === 1 || run.saved.expire, `${name}: no expire file`);
+    for (const value of Object.values(run.saved))
+      assert.doesNotMatch(JSON.stringify(value), /sha256:|acct\/|"h1"/u, name);
   }
 });
 
