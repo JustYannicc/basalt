@@ -25,7 +25,10 @@ export const perReleaseFiles = [
   ".upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts",
 ];
 
-/** A row an apply began and did not finish: its State still holds what came before that apply. */
+/**
+ * A row an apply began and did not finish. Most still hold what came before that apply; a
+ * `replaced` one holds the new generation, but its apply's clean-up failed, so it did not finish.
+ */
 const inFlight = new Set(["creating", "updating", "deleting", "replacing", "replaced"]);
 
 /**
@@ -69,7 +72,9 @@ export const patchTargets = (patch: string) => {
  */
 const patchSections = (patch: string) => {
   const sections = new Map<string, string>();
-  for (const section of patch.split(/^(?=diff --git )/mu)) {
+  // format-patch's signature (`-- ` then the git version) closes the last section, not a file's.
+  const body = patch.replace(/\n-- \n[^\n]*\n*$/u, "\n");
+  for (const section of body.split(/^(?=diff --git )/mu)) {
     const header = /^diff --git a\/(\S+) b\/(\S+)$/mu.exec(section);
     if (!header) continue;
     const body = section
@@ -85,8 +90,18 @@ const patchSections = (patch: string) => {
 /** The upstream files two versions of one carry change differently; a patch without git headers, all. */
 export const carryTargets = (before: string | undefined, after: string | undefined) => {
   const texts = [before, after].filter((text) => text !== undefined);
-  if (texts.some((text) => !/^diff --git /mu.test(text)))
-    return [...new Set(texts.flatMap(patchTargets))];
+  // Sections compare only text git wrote out in full: no binary change (its only difference can be
+  // the `index` line) and no file header before the first `diff --git`.
+  const whole = (text: string) =>
+    /^diff --git /mu.test(text) &&
+    !/^(Binary files |GIT binary patch)/mu.test(text) &&
+    !/^\+\+\+ /mu.test(text.split(/^diff --git /mu)[0]!);
+  // Falling back, every file either kind of header names; a removed line read as one only adds a name.
+  const every = (text: string) => [
+    ...patchTargets(text),
+    ...[...text.matchAll(/^(?:---|\+\+\+) [ab]\/(\S+)/gmu)].map((match) => match[1]!),
+  ];
+  if (!texts.every(whole)) return [...new Set(texts.flatMap(every))];
   const [from, to] = [before, after].map((text) =>
     text === undefined ? new Map<string, string>() : patchSections(text),
   );
@@ -95,24 +110,31 @@ export const carryTargets = (before: string | undefined, after: string | undefin
   );
 };
 
+class OutOfTime extends Error {}
+
 /**
  * `git diff --name-only <deployed>..<candidate>` in the checkout, with each changed carry's files.
- * Undefined when either commit is not in the checkout.
+ * Undefined when either commit is not in the checkout, or when reading them takes past `withinMs`:
+ * these calls block, so the deploy's own bound on the reasons cannot cut them short.
  */
 export function changedFiles(
   root: string,
   deployed: string | undefined,
   candidate: string,
+  withinMs = 30_000,
 ): ChangedFiles | undefined {
   if (!deployed) return undefined;
-  const git = (...args: string[]) =>
-    execFileSync("git", ["-C", root, ...args], {
+  const deadline = Date.now() + withinMs;
+  const git = (...args: string[]) => {
+    const left = deadline - Date.now();
+    if (left <= 0) throw new OutOfTime();
+    return execFileSync("git", ["-C", root, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 256 * 1024 * 1024,
-      // The checkout is local, so a git that takes this long is stuck; the reasons give up.
-      timeout: 30_000,
+      timeout: left,
     });
+  };
   let from: string;
   let to: string;
   let names: string[];
@@ -126,18 +148,35 @@ export function changedFiles(
     return undefined;
   }
   const files = new Set(names);
+  try {
+    carries(names, from, to, git, deadline, files);
+  } catch {
+    // Out of time: a partial set would name too few files, so none is named.
+    return undefined;
+  }
+  if (from !== to) for (const file of perReleaseFiles) files.add(file);
+  return { deployed: from, files, upstreamPin: names.includes("upstream.json") };
+}
+
+function carries(
+  names: readonly string[],
+  from: string,
+  to: string,
+  git: (...args: string[]) => string,
+  deadline: number,
+  files: Set<string>,
+) {
   for (const name of names) {
     if (!/^patches\/[^/]+\.patch$/u.test(name)) continue;
     const [before, after] = [from, to].map((commit) => {
       try {
         return git("show", `${commit}:${name}`);
-      } catch {
+      } catch (error) {
+        if (error instanceof OutOfTime || Date.now() >= deadline) throw new OutOfTime();
         // Added or retired in this range: the other side names its files.
         return undefined;
       }
     });
     for (const target of carryTargets(before, after)) files.add(`.upstream/${target}`);
   }
-  if (from !== to) for (const file of perReleaseFiles) files.add(file);
-  return { deployed: from, files, upstreamPin: names.includes("upstream.json") };
 }

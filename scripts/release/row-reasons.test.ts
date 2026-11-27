@@ -435,9 +435,10 @@ test("the entry's reasons read a real plan's State and session and change neithe
     ),
   );
   const digest = planDigest(planned.plan);
+  // Each entry by identity: a read that replaced or added a value would differ here.
   const stored = () =>
-    JSON.stringify(
-      [...planned.artifacts].map(([fqn, entries]) => [fqn, [...entries.keys()].sort()]),
+    [...planned.artifacts].flatMap(([fqn, entries]) =>
+      [...entries].map(([key, value]) => [fqn, key, value] as const),
     );
   const before = stored();
   const rows = changedRows({ resources: rowsOf(planned.plan), summary: {}, native: planned.plan });
@@ -451,5 +452,151 @@ test("the entry's reasons read a real plan's State and session and change neithe
   // The bundle came from the session's artifact store, so its source map was read.
   assert.ok(lines.includes("Api: no changed file reaches this Worker"), lines.join("\n"));
   assert.equal(planDigest(planned.plan), digest);
-  assert.equal(stored(), before);
+  const after = stored();
+  assert.equal(after.length, before.length);
+  after.forEach(([fqn, key, value], index) => {
+    assert.equal(fqn, before[index]![0]);
+    assert.equal(key, before[index]![1]);
+    assert.equal(value, before[index]![2], `${fqn} ${key}`);
+  });
+});
+
+/** A checkout of its own with the given files, and a Worker bundle whose source map names them. */
+function bundledTree(context: TestContext, files: readonly string[]) {
+  const tree = mkdtempSync(join(tmpdir(), "row-reasons-tree-"));
+  context.after(() => rmSync(tree, { recursive: true, force: true }));
+  for (const file of files) {
+    mkdirSync(dirname(join(tree, file)), { recursive: true });
+    writeFileSync(join(tree, file), file);
+  }
+  const map = { version: 3, sources: files.map((file) => join(tree, file)), mappings: "" };
+  const artifacts = new Map([
+    [
+      "Site",
+      new Map<string, unknown>([
+        [
+          "build",
+          {
+            hash: "e".repeat(64),
+            files: [{ path: "worker.js.map", content: JSON.stringify(map) }],
+          },
+        ],
+      ]),
+    ],
+  ]);
+  return { tree, artifacts };
+}
+
+test("the per-release stamp is named apart from the changed files that reach a Worker", async (context) => {
+  const stamp = perReleaseFiles[0]!;
+  const { tree, artifacts } = bundledTree(context, [stamp, "src/worker.ts"]);
+  const plan = providerOnly({}, {});
+  const read = (changed: ChangedFiles) =>
+    rowReasons({ plan, rows: [row], root: tree, changed, artifacts, provide });
+  assert.ok(
+    (await read(changes(stamp))).includes("Site: only the per-release stamp reaches this Worker"),
+  );
+  assert.ok(
+    (await read(changes(stamp, "src/worker.ts"))).includes(
+      "Site: 1 changed file reaches this Worker: src/worker.ts, plus the per-release stamp",
+    ),
+  );
+  // A root lockfile can change any bundle; another client's package file cannot reach this one.
+  const lines = await read(changes(stamp, "bun.lock", "clients/other/package.json"));
+  assert.ok(
+    lines.includes(
+      "Site: only the per-release stamp reaches this Worker; dependencies or build configuration changed: bun.lock",
+    ),
+    lines.join("\n"),
+  );
+  const scoped = await read(changes("src/package.json", "clients/other/package.json"));
+  assert.ok(
+    scoped.includes(
+      "Site: no changed source file reaches this Worker; dependencies or build configuration changed: src/package.json",
+    ),
+    scoped.join("\n"),
+  );
+});
+
+test("a command that is new, or whose props changed, gets no key-file line; a build says what is not compared", async (context) => {
+  const tree = mkdtempSync(join(tmpdir(), "row-reasons-command-"));
+  context.after(() => rmSync(tree, { recursive: true, force: true }));
+  writeFileSync(join(tree, "input.txt"), "1");
+  const props = { cwd: tree, memo: { include: ["**/*"] } };
+  const plan = {
+    resources: {
+      Fresh: { action: "create", props },
+      Changed: { action: "update", props },
+      Build: { action: "update", props },
+    },
+    deletions: {},
+  } as unknown as AlchemyPlan.Plan;
+  const rows = [
+    { fqn: "Fresh", type: "Command.Exec", action: "create", changedProps: [], bindings: [] },
+    { fqn: "Changed", type: "Command.Exec", action: "update", changedProps: ["env"], bindings: [] },
+    { fqn: "Build", type: "Command.Build", action: "update", changedProps: [], bindings: [] },
+  ];
+  const lines = await rowReasons({
+    plan,
+    rows,
+    root,
+    changed: changes("README.md"),
+    artifacts: undefined,
+    provide,
+  });
+  assert.ok(lines.includes("Fresh: new, so it runs"), lines.join("\n"));
+  assert.ok(!lines.some((line) => line.startsWith("Changed: ")), lines.join("\n"));
+  assert.ok(
+    lines.includes(
+      "Build: no key file changed (1 key files); a build also plans when its output hash differs, which this entry does not compare",
+    ),
+    lines.join("\n"),
+  );
+});
+
+test("a Worker with an inline script, or that lost its entry file, says so instead of a hash", async () => {
+  const read = async (props: object, hash: Record<string, unknown>) =>
+    (
+      await rowReasons({
+        plan: providerOnly(props, hash),
+        rows: [row],
+        root,
+        changed: undefined,
+        artifacts: undefined,
+        provide,
+      })
+    ).find((line) => line.startsWith("Site: planned"));
+  assert.equal(
+    await read({ script: "export default {}" }, { bundle: "a".repeat(64) }),
+    "Site: planned by the provider's own diff; an inline script's hash is not compared here",
+  );
+  assert.equal(
+    await read({}, { bundle: "a".repeat(64) }),
+    "Site: planned by the provider's own diff: it no longer has an entry file, while State still records a bundle",
+  );
+});
+
+test("a binary change, a headerless section or a signature trailer falls back or is ignored as git means it", () => {
+  const section = (target: string, line: string) =>
+    `diff --git a/${target} b/${target}\nindex 1111111..2222222 100644\n--- a/${target}\n+++ b/${target}\n@@ -1 +1 @@\n-old\n+${line}\n`;
+  const binary = (index: string) =>
+    `diff --git a/logo.png b/logo.png\nindex ${index} 100644\nBinary files a/logo.png and b/logo.png differ\n`;
+  // The two versions differ only in the binary's index line: every file is named.
+  assert.deepEqual(carryTargets(binary("1111111..2222222"), binary("1111111..3333333")), [
+    "logo.png",
+  ]);
+  // A format-patch signature names no file: only the git version under it changed.
+  assert.deepEqual(
+    carryTargets(
+      `${section("apps/one.ts", "a")}-- \n2.50.0\n\n`,
+      `${section("apps/one.ts", "a")}-- \n2.51.1\n`,
+    ),
+    [],
+  );
+  const headerless = `--- a/early.ts\n+++ b/early.ts\n@@ -1 +1 @@\n-x\n+y\n${section("apps/one.ts", "a")}`;
+  assert.deepEqual(carryTargets(headerless, headerless).sort(), ["apps/one.ts", "early.ts"]);
+});
+
+test("changed files past their time bound are unknown, never a partial set", () => {
+  assert.equal(changedFiles(root, "HEAD", "HEAD", 0), undefined);
 });

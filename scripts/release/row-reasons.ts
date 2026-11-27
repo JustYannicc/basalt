@@ -233,7 +233,22 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
       const reached = touched.filter((file) => !stamps.has(file));
       // Every release rewrites these, so a Worker that reaches one always changes; listed apart.
       const stamped = touched.length > reached.length ? ", plus the per-release stamp" : "";
-      const inputs = [...changed.files].filter(buildInput).sort();
+      // Only inputs that can bear on this Worker: at a root, or in a folder its sources sit under.
+      const sourcePaths = sources.flatMap((file) => repoPath(file) ?? []);
+      const inputs = [...changed.files]
+        .filter((file) => {
+          if (!buildInput(file)) return false;
+          const folder = path.posix.dirname(file);
+          return (
+            folder === "." ||
+            folder === ".upstream" ||
+            sourcePaths.some((source) => source.startsWith(`${folder}/`))
+          );
+        })
+        .sort();
+      const configured = inputs.length
+        ? `; dependencies or build configuration changed: ${listed(inputs)}`
+        : "";
       const vite = Boolean(("props" in node ? (node.props as WorkerProps) : {}).vite);
       lines.push(
         !bundle
@@ -243,9 +258,9 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
             : reached.length
               ? `${row.fqn}: ${reached.length} changed ${reached.length === 1 ? "file reaches" : "files reach"} this Worker: ${listed(reached)}${stamped}`
               : stamped
-                ? `${row.fqn}: only the per-release stamp reaches this Worker`
+                ? `${row.fqn}: only the per-release stamp reaches this Worker${configured}`
                 : inputs.length
-                  ? `${row.fqn}: no changed source file reaches this Worker; dependencies or build configuration changed: ${listed(inputs)}`
+                  ? `${row.fqn}: no changed source file reaches this Worker${configured}`
                   : `${row.fqn}: no changed file reaches this Worker`,
       );
     }
@@ -260,7 +275,7 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
         (changed.upstreamPin
           ? "; the upstream pin moved too, so prepared files no changed carry names can differ as well"
           : "")
-      : "Changed files unknown: State records no one deployed commit, or this checkout does not hold it, so no row names a file",
+      : "Changed files unknown: State records no one deployed commit, an apply left a row unfinished, or this checkout does not hold the commit, so no row names a file",
   ];
   for (const row of input.rows) {
     const node = input.plan.resources[row.fqn];
@@ -319,7 +334,7 @@ async function providerDiff(
     if (bundle) compare("bundle", bundle.hash);
     else
       differs.push(
-        `the plan built no bundle, so its diff stopped before the code: its metadata hash differs (State metadata ${short(recorded.metadata)})`,
+        `the plan built no bundle, so its diff stopped before the code: its metadata hash differs, or the row predates the stored Worker id (State metadata ${short(recorded.metadata)})`,
       );
   } else if (recorded.bundle !== undefined) {
     differs.push("it no longer has an entry file, while State still records a bundle");
