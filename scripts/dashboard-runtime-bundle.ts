@@ -8,11 +8,13 @@ type WorkerUpload = {
 
 const upstream = new URL("../.upstream/", import.meta.url);
 
-/** Shiki, its grammars, themes and regex engine, and the module that loads them. */
-const highlighter =
-  /(?:node_modules\/(?:@shikijs\/|shiki\/|oniguruma-to-es\/|oniguruma-parser\/)|packages\/ui\/src\/implementation\/highlight-engine\.ts$)/;
-/** The chunk the site's server build names after the engine when it bundles it. */
-const engineChunk = /\/web\/dist\/server\/assets\/highlight-engine-[\w-]+\.js$/;
+/** The grammars the dashboard's server engine carries; every other grammar stays in the browser. */
+export const serverGrammars = ["typescript", "json", "shellscript"] as const;
+const grammar =
+  /node_modules\/(?:\.bun\/[^/]+\/node_modules\/)?@shikijs\/langs\/dist\/([\w-]+)\.mjs$/;
+/** The browser's engine with every grammar, and the chunk a server build would name after it. */
+const fullEngine =
+  /(?:packages\/ui\/src\/implementation\/highlight-engine\.ts|\/web\/dist\/server\/assets\/highlight-engine-[\w-]+\.js)$/;
 
 /** The router's manifest chunk: a build-time route table the site build emits without a map. */
 const maplessChunk = /\/web\/dist\/server\/assets\/_tanstack-start-manifest_v-[\w-]+\.js$/;
@@ -36,9 +38,9 @@ export const chunkSources =
   };
 
 /**
- * Carry 0804 swaps the code highlighter for a stub in the dashboard's server build, which the
- * dashboard Worker uploads; the browser loads the real engine. The Worker attributes the site's
- * prebuilt chunks to themselves, so each chunk's own source map names what is inside it.
+ * Carry 0804 gives the dashboard's server build, which the dashboard Worker uploads, an engine
+ * with only the server grammars; the browser loads the full engine. The Worker attributes the
+ * site's prebuilt chunks to themselves, so each chunk's own source map names what is inside it.
  */
 export function assertDashboardRuntimeBundle(
   upload: WorkerUpload,
@@ -47,14 +49,28 @@ export function assertDashboardRuntimeBundle(
 ) {
   if (upload.worker !== "dashboard" || Object.keys(upload.sources).length === 0)
     throw new Error("Expected the attributed production dashboard upload");
-  const retained = Object.keys(upload.sources).flatMap((source) => {
-    if (highlighter.test(source) || engineChunk.test(source)) return [source];
-    if (!source.includes("/web/dist/server/")) return [];
-    const inside = mapSources(source).filter((path) => highlighter.test(path));
-    return inside.length ? [`${source} (${inside.join(", ")})`] : [];
-  });
-  if (retained.length)
-    throw new Error(`The dashboard must not upload the code highlighter: ${retained.join("; ")}`);
+  // Each uploaded module with where it sits: a source of its own, or a site chunk's map source.
+  const uploaded = Object.keys(upload.sources).flatMap((source) => [
+    { path: source, label: source },
+    ...(source.includes("/web/dist/server/")
+      ? mapSources(source).map((path) => ({ path, label: `${source} (${path})` }))
+      : []),
+  ]);
+  const grammars = new Set<string>();
+  const refused: string[] = [];
+  for (const { path, label } of uploaded) {
+    const name = grammar.exec(path)?.[1];
+    if (name !== undefined) grammars.add(name);
+    const allowed = name === undefined || (serverGrammars as ReadonlyArray<string>).includes(name);
+    if (!allowed || fullEngine.test(path)) refused.push(label);
+  }
+  if (refused.length)
+    throw new Error(
+      `The dashboard must upload only the ${serverGrammars.join(", ")} grammars: ${refused.join("; ")}`,
+    );
+  const missing = serverGrammars.filter((name) => !grammars.has(name));
+  if (missing.length)
+    throw new Error(`The dashboard's server render must keep the ${missing.join(", ")} grammars`);
   if (!clientAssets.some((asset) => /^highlight-engine-[\w-]+\.js$/.test(asset)))
     throw new Error("The dashboard's browser build must keep the code highlighter");
 }

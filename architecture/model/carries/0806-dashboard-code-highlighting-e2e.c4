@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "A shared app's skill reader must receive its fenced code in the Cloud dashboard's server-rendered document as plain text, and color it in the browser once the engine loads, at desktop and phone width. The browser's highlight engine is held until the plain block is measured, and its box must not move by more than half a pixel when the colors arrive; the document the browser loads must carry no Shiki colors. Whether the block stays the server's element is not checked while issue #2123 can rebuild it after hydration."
+      constraint "A shared app's skill reader must receive, in the Cloud dashboard's server-rendered document, its TypeScript fence colored and its JavaScript fence plain, and the browser must color the JavaScript fence once its engine loads, at desktop and phone width. The browser's highlight engine is held until the blocks are measured, and no block may move by more than half a pixel when the colors arrive. Whether the TypeScript block keeps the server's colors through hydration is not checked while issue #2123 can rebuild it after hydration."
     }
   }
 }

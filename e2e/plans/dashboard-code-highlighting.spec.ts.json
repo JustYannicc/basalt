@@ -6,7 +6,7 @@
       "targets": {
         "self-host": {
           "status": "not-applicable",
-          "reason": "Only the Cloud dashboard's server build swaps the highlighter out; self-host builds its own site."
+          "reason": "Only the Cloud dashboard's server build swaps in the three-grammar engine; self-host builds its own site."
         },
         "cloud": {
           "status": "scheduled"
@@ -23,7 +23,7 @@
       "targets": {
         "self-host": {
           "status": "not-applicable",
-          "reason": "Only the Cloud dashboard's server build swaps the highlighter out; self-host builds its own site."
+          "reason": "Only the Cloud dashboard's server build swaps in the three-grammar engine; self-host builds its own site."
         },
         "cloud": {
           "status": "scheduled"
@@ -40,13 +40,13 @@
     "dashboardCodeHighlightingMobile": ["declared:cloud"]
   },
   "inputs": [
-    ".upstream/apps/hosted/cloud/web/server-highlight-engine.ts",
     ".upstream/apps/hosted/cloud/web/server-highlight.ts",
     ".upstream/apps/hosted/cloud/web/vite.config.ts",
     ".upstream/packages/ui/src/contracts/highlight.ts",
     ".upstream/packages/ui/src/implementation/dashboard/code.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/markdown.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/skill-content.tsx",
-    ".upstream/packages/ui/src/implementation/highlight-engine.ts"
+    ".upstream/packages/ui/src/implementation/highlight-engine.ts",
+    ".upstream/packages/ui/src/implementation/server-highlight-engine.ts"
   ]
 }

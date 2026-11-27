@@ -1,34 +1,25 @@
-diff --git a/apps/hosted/cloud/web/server-highlight-engine.ts b/apps/hosted/cloud/web/server-highlight-engine.ts
-new file mode 100644
-index 000000000..3f9687a83
---- /dev/null
-+++ b/apps/hosted/cloud/web/server-highlight-engine.ts
-@@ -0,0 +1,5 @@
-+import { HighlightUnavailable } from "@executor-js/ui/contracts/highlight";
-+import { Effect } from "effect";
-+
-+/** The server render's highlight engine: it never highlights, so code renders as plain text. */
-+export const highlighter = Effect.fail(new HighlightUnavailable({}));
 diff --git a/apps/hosted/cloud/web/server-highlight.ts b/apps/hosted/cloud/web/server-highlight.ts
 new file mode 100644
-index 000000000..1277787f8
+index 000000000..24246bda3
 --- /dev/null
 +++ b/apps/hosted/cloud/web/server-highlight.ts
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,37 @@
 +import { fileURLToPath } from "node:url";
 +import type { Plugin } from "vite-plus";
 +
 +const engine = "/packages/ui/src/implementation/highlight-engine.ts";
-+const stub = fileURLToPath(new URL("./server-highlight-engine.ts", import.meta.url));
++const serverEngine = fileURLToPath(
++  new URL("../../../../packages/ui/src/implementation/server-highlight-engine.ts", import.meta.url),
++);
 +
 +/**
-+ * Keep Shiki out of the server build, which the dashboard Worker uploads and compiles on every
-+ * cold start. With the real engine the server render waits for it and sends colored tokens, which
-+ * hydration keeps because each line holds the same text. With the stub the server sends plain
-+ * code, so a page load shows its code blocks plain until the browser's engine loads and colors
-+ * them; views opened later in the same page find the engine loaded. Only built Workers swap; a
-+ * dev server still highlights on the server. The build fails if the engine is no longer swapped,
-+ * so a moved import cannot quietly bring Shiki back.
++ * Give the server build an engine with only three grammars (TypeScript, JSON and shell) instead
++ * of all seven, which the dashboard Worker would otherwise upload and compile on every cold start.
++ * Code in those languages is colored in the server's HTML, and hydration keeps those colors
++ * because each line holds the same text. Other languages render plain on a page load and take
++ * their colors once the browser's full engine loads. Only built Workers swap; a dev server
++ * renders with the full engine. The build fails if the engine is no longer swapped, so a moved
++ * import cannot quietly bring every grammar back.
 + */
 +export const serverHighlight = (): Plugin => {
 +  let swapped = false;
@@ -42,7 +33,7 @@ index 000000000..1277787f8
 +      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
 +      if (!resolved?.id.endsWith(engine)) return null;
 +      swapped = true;
-+      return stub;
++      return serverEngine;
 +    },
 +    buildEnd(error) {
 +      if (this.environment.config.consumer === "server" && error === undefined && !swapped)
@@ -50,24 +41,6 @@ index 000000000..1277787f8
 +    },
 +  };
 +};
-diff --git a/apps/hosted/cloud/web/tsconfig.json b/apps/hosted/cloud/web/tsconfig.json
-index 49475957d..656f93a6b 100644
---- a/apps/hosted/cloud/web/tsconfig.json
-+++ b/apps/hosted/cloud/web/tsconfig.json
-@@ -7,6 +7,12 @@
-       "@/*": ["./src/*"]
-     }
-   },
--  "include": ["src", "vite.config.ts", "cloudflare-routes.ts", "server.d.ts"],
-+  "include": [
-+    "src",
-+    "vite.config.ts",
-+    "cloudflare-routes.ts",
-+    "server-highlight-engine.ts",
-+    "server.d.ts"
-+  ],
-   "exclude": []
- }
 diff --git a/apps/hosted/cloud/web/vite.config.ts b/apps/hosted/cloud/web/vite.config.ts
 index 8d03f7873..d6f7d41e9 100644
 --- a/apps/hosted/cloud/web/vite.config.ts
@@ -88,3 +61,67 @@ index 8d03f7873..d6f7d41e9 100644
        // The stack sets a release only for stages that report to Sentry. Every such build injects
        // the same code; only a build holding the upload token sends its source maps.
        ...(process.env.SENTRY_RELEASE
+diff --git a/packages/ui/src/contracts/highlight.ts b/packages/ui/src/contracts/highlight.ts
+index 034f0cf25..2b8209fbc 100644
+--- a/packages/ui/src/contracts/highlight.ts
++++ b/packages/ui/src/contracts/highlight.ts
+@@ -22,11 +22,25 @@ export const highlightedAtom = Atom.family(
+     Atom.make((get) =>
+       Effect.gen(function* () {
+         const highlighter = yield* get.result(highlighterAtom);
+-        return highlightTokens(highlighter, input.code, input.language);
++        return yield* highlightLines(highlighter, input.code, input.language);
+       }),
+     ),
+ );
+ 
++/**
++ * Tokenize when the engine has the language's grammar, and otherwise fail as unavailable so the
++ * view renders plain text: an engine may load only some grammars, and Shiki throws on the others.
++ * Plain text needs no grammar.
++ */
++export const highlightLines = (
++  highlighter: Pick<HighlighterCore, "codeToTokens" | "getLoadedLanguages">,
++  code: string,
++  language: string,
++) =>
++  language === "text" || highlighter.getLoadedLanguages().includes(language)
++    ? Effect.sync(() => highlightTokens(highlighter, code, language))
++    : Effect.fail(new HighlightUnavailable({}));
++
+ /** Tokenize with both themes; each token carries its light color and a `--shiki-dark` variable. */
+ export function highlightTokens(
+   highlighter: Pick<HighlighterCore, "codeToTokens">,
+diff --git a/packages/ui/src/implementation/server-highlight-engine.ts b/packages/ui/src/implementation/server-highlight-engine.ts
+new file mode 100644
+index 000000000..2fed6e850
+--- /dev/null
++++ b/packages/ui/src/implementation/server-highlight-engine.ts
+@@ -0,0 +1,27 @@
++import { HighlightUnavailable } from "../contracts/highlight.ts";
++import { Effect } from "effect";
++import { createHighlighterCore } from "shiki/core";
++import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
++import typescript from "shiki/langs/typescript.mjs";
++import json from "shiki/langs/json.mjs";
++import shellscript from "shiki/langs/shellscript.mjs";
++import light from "shiki/themes/github-light.mjs";
++import dark from "shiki/themes/github-dark.mjs";
++
++/**
++ * The engine for a server render that has to fit a Worker's upload: only the grammars of the code
++ * a page load most often shows (schemas, install snippets and TypeScript source). Other languages
++ * render plain there and take their colors when the browser's full engine loads.
++ */
++export const highlighter = Effect.acquireRelease(
++  Effect.tryPromise({
++    try: () =>
++      createHighlighterCore({
++        themes: [light, dark],
++        langs: [typescript, json, shellscript],
++        engine: createJavaScriptRegexEngine(),
++      }),
++    catch: () => new HighlightUnavailable({}),
++  }),
++  (value) => Effect.sync(() => value.dispose()),
++);

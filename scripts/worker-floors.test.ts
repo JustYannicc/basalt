@@ -10,11 +10,11 @@ const base = (...uploads: ReturnType<typeof upload>[]) =>
   new Map(uploads.map((entry) => [entry.worker, entry]));
 
 test("each Worker's levels are its shares of its own budget, warn above fail", () => {
-  assert.deepEqual(floorOf(upload("dashboard", 0, 3_900_000)), { warn: 585_000, fail: 390_000 });
+  assert.deepEqual(floorOf(upload("dashboard", 0, 3_900_000)), { warn: 351_000, fail: 234_000 });
   assert.deepEqual(floorOf(upload("app-pages", 0, 2_500_000)), { warn: 100_000, fail: 75_000 });
   assert.deepEqual(floorOf(upload("app-data", 0, 700_000)), { warn: 35_000, fail: 21_000 });
   // A budget an upstream sync changes moves the levels with it.
-  assert.deepEqual(floorOf(upload("dashboard", 0, 4_500_000)), { warn: 675_000, fail: 450_000 });
+  assert.deepEqual(floorOf(upload("dashboard", 0, 4_500_000)), { warn: 405_000, fail: 270_000 });
   for (const worker of [...Object.keys(uploadFloors), "any-other"]) {
     const floor = floorOf(upload(worker, 0, 1_000_000));
     assert.ok(floor.warn > floor.fail && floor.fail > 0, worker);
@@ -23,17 +23,17 @@ test("each Worker's levels are its shares of its own budget, warn above fail", (
 
 test("a Worker below its fail level fails with the bytes the change added", () => {
   const [finding, ...rest] = checkFloors(
-    [upload("dashboard", 3_510_001, 3_900_000)],
-    base(upload("dashboard", 3_074_648, 3_900_000)),
+    [upload("dashboard", 3_666_001, 3_900_000)],
+    base(upload("dashboard", 3_430_770, 3_900_000)),
   );
   assert.equal(rest.length, 0);
   assert.equal(finding!.level, "error");
   assert.equal(finding!.worker, "dashboard");
-  assert.match(finding!.message, /leaves 389,999 bytes of its 3,900,000-byte upload budget/);
-  assert.match(finding!.message, /below its 390,000-byte fail level/);
+  assert.match(finding!.message, /leaves 233,999 bytes of its 3,900,000-byte upload budget/);
+  assert.match(finding!.message, /below its 234,000-byte fail level/);
   assert.match(
     finding!.message,
-    /This change added 435,353 bytes compared with the base \(3,074,648 to 3,510,001\)/,
+    /This change added 235,231 bytes compared with the base \(3,430,770 to 3,666,001\)/,
   );
 });
 
@@ -57,7 +57,7 @@ test("at or above its warn level a Worker is silent", () => {
   assert.deepEqual(
     checkFloors(
       [
-        upload("dashboard", 3_315_000, 3_900_000),
+        upload("dashboard", 3_549_000, 3_900_000),
         upload("app-pages", 2_400_000, 2_500_000),
         upload("api", 5_119_032, 5_460_000),
       ],

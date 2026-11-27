@@ -18,9 +18,10 @@ type Finding = {
  * Others warn below 5% left, where upstream's report flags a Worker low, and fail below 3%.
  */
 export const uploadFloors: Readonly<Record<string, Floor>> = {
-  // The dashboard grows with every page. A tenth stays free; the band above it holds several
-  // pages' growth, so the trend shows for a while before a change fails.
-  dashboard: { warn: 0.15, fail: 0.1 },
+  // Levels for a dashboard whose server render carries three grammars (carry 0804), which leaves
+  // it about 12% free. When the warning fires, the next cut is due: the server's TypeScript
+  // grammar, about 181 KB of the upload, after which TypeScript code colors in the browser.
+  dashboard: { warn: 0.09, fail: 0.06 },
   "app-pages": { warn: 0.04, fail: 0.03 },
 };
 const defaultShares: Floor = { warn: 0.05, fail: 0.03 };

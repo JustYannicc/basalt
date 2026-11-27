@@ -1,9 +1,9 @@
 diff --git a/e2e/tests/dashboard-code-highlighting.spec.ts b/e2e/tests/dashboard-code-highlighting.spec.ts
 new file mode 100644
-index 000000000..2cf4aa750
+index 000000000..6a24f4633
 --- /dev/null
 +++ b/e2e/tests/dashboard-code-highlighting.spec.ts
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,192 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import type { Page } from "playwright";
@@ -17,26 +17,38 @@ index 000000000..2cf4aa750
 +import { appsManifest } from "../support/apps-release.ts";
 +
 +/** Text without quotes or angle brackets, so the server's escaping leaves it unchanged. */
-+const snippet = "const count: number = 42;\nexport default count;";
-+/** A highlighted token carries Shiki's inline colors; the class names only mention the variable. */
-+const shikiStyle = /style="[^"]*--shiki-dark/;
-+const reader = (page: Page) =>
-+  page.getByRole("region", { name: "App skills", exact: true }).locator("pre").first();
-+const box = (page: Page) =>
-+  reader(page)
++const snippets = {
++  /** A grammar the server engine carries: the document arrives colored. */
++  typescript: "const count: number = 42;\nexport default count;",
++  /** One it leaves to the browser: the document arrives plain. */
++  javascript: "const total = 40 + 2;\nexport default total;",
++} as const;
++type Language = keyof typeof snippets;
++const languages = Object.keys(snippets) as ReadonlyArray<Language>;
++const block = (page: Page, language: Language) =>
++  page
++    .getByRole("region", { name: "App skills", exact: true })
++    .locator("pre", { hasText: snippets[language].split("\n")[0]! });
++const box = (page: Page, language: Language) =>
++  block(page, language)
 +    .boundingBox()
 +    .then((value) => {
-+      if (value === null) throw new Error("The skill reader's code block is not laid out");
++      if (value === null) throw new Error(`The ${language} code block is not laid out`);
 +      return value;
 +    });
++const colors = (page: Page, language: Language) =>
++  block(page, language)
++    .locator("code span[style]")
++    .evaluateAll((tokens) => new Set(tokens.map((token) => getComputedStyle(token).color)).size);
 +
 +/**
-+ * The dashboard's server build never highlights code (carry 0804 swaps the engine out of the
-+ * dashboard Worker). A reader of a shared app gets its skill with the page, so the server sends
-+ * the code block as plain text and the browser colors it once its engine loads. The browser's
-+ * engine chunk is held until the plain block is measured, so the colors are the only change the
-+ * test can see, and nothing in the block may move when they arrive. The block is not required to
-+ * stay the server's element: the page can still rebuild it after hydration (issue #2123).
++ * The dashboard's server build highlights with only the TypeScript, JSON and shell grammars
++ * (carry 0804). A reader of a shared app gets its skill with the page, so the document carries
++ * the TypeScript block colored and the JavaScript block plain, and the browser colors the plain
++ * one once its engine loads. The browser's engine chunk is held until the blocks are measured, so
++ * the colors are the only change the test can see, and nothing may move when they arrive. Whether
++ * the TypeScript block keeps the server's colors through hydration is not checked here: the page
++ * can still rebuild it after hydration (issue #2123), and then it waits for the engine too.
 + */
 +layer(HostedLive, { excludeTestServices: true })("Dashboard code highlighting", (it) => {
 +  for (const [scenario, viewport] of [
@@ -60,7 +72,7 @@ index 000000000..2cf4aa750
 +              },
 +              {
 +                path: "skills/count/SKILL.md",
-+                content: `---\nname: count\ndescription: Count something.\n---\n# Count\n\n\`\`\`ts\n${snippet}\n\`\`\`\n`,
++                content: `---\nname: count\ndescription: Count something.\n---\n# Count\n\n\`\`\`ts\n${snippets.typescript}\n\`\`\`\n\n\`\`\`js\n${snippets.javascript}\n\`\`\`\n`,
 +              },
 +              appsManifest,
 +            ],
@@ -107,53 +119,79 @@ index 000000000..2cf4aa750
 +            }),
 +          );
 +          expect(html.status).toBe(200);
-+          for (const line of snippet.split("\n")) expect(html.text).toContain(line);
-+          expect(html.text).not.toMatch(shikiStyle);
++          const served = yield* browser.use("Read the code blocks the document carries", (page) =>
++            page.evaluate(
++              (text) =>
++                [
++                  ...new DOMParser()
++                    .parseFromString(text, "text/html")
++                    .querySelectorAll("pre code"),
++                ].map((code) => ({
++                  text: code.textContent ?? "",
++                  colors: new Set(
++                    [...code.querySelectorAll("span[style*='--shiki-dark']")].map((span) =>
++                      span.getAttribute("style"),
++                    ),
++                  ).size,
++                })),
++              html.text,
++            ),
++          );
++          const servedAs = (language: Language) =>
++            served.find((entry) => entry.text === `${snippets[language]}\n`);
++          expect(servedAs("typescript")?.colors).toBeGreaterThan(1);
++          expect(servedAs("javascript")?.colors).toBe(0);
++
 +          yield* browser.use("The page hydrates", (page) =>
 +            page.locator("html[data-hydrated]").waitFor({ state: "attached" }),
 +          );
-+          yield* browser.use("The reader shows the server's code block", (page) =>
-+            reader(page).locator("code").waitFor({ state: "visible" }),
-+          );
++          for (const language of languages) {
++            yield* browser.use(`The reader shows the ${language} block`, (page) =>
++              block(page, language).locator("code").waitFor({ state: "visible" }),
++            );
++            expect(
++              yield* browser.use(`Read the ${language} block`, (page) =>
++                block(page, language).locator("code").textContent(),
++              ),
++            ).toBe(`${snippets[language]}\n`);
++          }
 +          expect(
-+            yield* browser.use("Read the plain code block", (page) =>
-+              reader(page).locator("code").textContent(),
-+            ),
-+          ).toBe(`${snippet}\n`);
-+          expect(
-+            yield* browser.use("Nothing is colored before the engine loads", (page) =>
-+              reader(page).locator("code span[style]").count(),
++            yield* browser.use("The JavaScript block is plain before the engine loads", (page) =>
++              block(page, "javascript").locator("code span[style]").count(),
 +            ),
 +          ).toBe(0);
-+          const before = yield* browser.use("Measure the plain code block", box);
-+          yield* browser.checkpoint(`${viewport.width} plain code block before highlighting`);
++          const before = {
++            typescript: yield* browser.use("Measure the TypeScript block", (page) =>
++              box(page, "typescript"),
++            ),
++            javascript: yield* browser.use("Measure the JavaScript block", (page) =>
++              box(page, "javascript"),
++            ),
++          };
++          yield* browser.checkpoint(`${viewport.width} code blocks before the browser engine`);
 +
 +          yield* Effect.sync(release);
-+          yield* browser.use("The code block takes distinct syntax colors", (page) =>
-+            expect
-+              .poll(
-+                () =>
-+                  reader(page)
-+                    .locator("code span[style]")
-+                    .evaluateAll(
-+                      (tokens) =>
-+                        new Set(tokens.map((token) => getComputedStyle(token).color)).size,
-+                    ),
++          for (const language of languages)
++            yield* browser.use(`The ${language} block takes distinct syntax colors`, (page) =>
++              expect
 +                // The engine is about 730 KB to fetch and start once released.
-+                { timeout: 30_000 },
-+              )
-+              .toBeGreaterThan(1),
-+          );
++                .poll(() => colors(page, language), { timeout: 30_000 })
++                .toBeGreaterThan(1),
++            );
 +          expect(engineRequests.length).toBeGreaterThan(0);
-+          expect(
-+            yield* browser.use("Read the highlighted code block", (page) =>
-+              reader(page).locator("code").textContent(),
-+            ),
-+          ).toBe(`${snippet}\n`);
-+          const after = yield* browser.use("Measure the highlighted code block", box);
-+          for (const side of ["x", "y", "width", "height"] as const)
-+            expect(Math.abs(after[side] - before[side])).toBeLessThanOrEqual(0.5);
-+          yield* browser.checkpoint(`${viewport.width} highlighted code block`);
++          for (const language of languages) {
++            expect(
++              yield* browser.use(`Read the highlighted ${language} block`, (page) =>
++                block(page, language).locator("code").textContent(),
++              ),
++            ).toBe(`${snippets[language]}\n`);
++            const after = yield* browser.use(`Measure the highlighted ${language} block`, (page) =>
++              box(page, language),
++            );
++            for (const side of ["x", "y", "width", "height"] as const)
++              expect(Math.abs(after[side] - before[language][side])).toBeLessThanOrEqual(0.5);
++          }
++          yield* browser.checkpoint(`${viewport.width} highlighted code blocks`);
 +        }),
 +      ),
 +    );

@@ -12,52 +12,62 @@ import {
 
 const client = ["main-abc12345.js", "highlight-engine-DkJn57Z2.js"];
 const chunk = "apps/hosted/cloud/web/dist/server/assets/code-AbC12345.js";
+const grammar = (name: string) =>
+  `../../../../node_modules/.bun/@shikijs+langs@3.23.0/node_modules/@shikijs/langs/dist/${name}.mjs`;
+/** What the server engine's chunk holds: its three grammars and the shared Shiki core. */
+const serverEngine = [
+  ...["typescript", "json", "shellscript"].map(grammar),
+  "../../../../node_modules/.bun/@shikijs+core@3.23.0/node_modules/@shikijs/core/dist/index.mjs",
+  "../../../../packages/ui/src/implementation/server-highlight-engine.ts",
+];
+const upload = { worker: "dashboard", sources: { [chunk]: 1 } };
 
-test("the production dashboard upload leaves the code highlighter to the browser", () => {
+test("the production dashboard upload carries only the server grammars", () => {
   checkDashboardRuntimeBundle();
 });
 
-test("the dashboard boundary rejects the highlighter at any size", () => {
-  for (const source of [
-    "apps/hosted/cloud/web/dist/server/assets/highlight-engine-DkJn57Z2.js",
-    "node_modules/.bun/@shikijs+langs@3.23.0/node_modules/@shikijs/langs/dist/typescript.mjs",
-    "node_modules/shiki/dist/core.mjs",
-    "node_modules/oniguruma-to-es/dist/esm/index.js",
-    "packages/ui/src/implementation/highlight-engine.ts",
-  ])
+test("the dashboard upload keeps the three server grammars and the shared core", () => {
+  assert.doesNotThrow(() => assertDashboardRuntimeBundle(upload, client, () => serverEngine));
+  for (const name of ["typescript", "json", "shellscript"])
     assert.throws(
       () =>
-        assertDashboardRuntimeBundle(
-          { worker: "dashboard", sources: { [source]: 1 } },
-          client,
-          () => [],
+        assertDashboardRuntimeBundle(upload, client, () =>
+          serverEngine.filter((path) => path !== grammar(name)),
         ),
-      /must not upload the code highlighter/,
+      new RegExp(`server render must keep the ${name} grammars`),
     );
 });
 
-test("the dashboard boundary reads inside the site's prebuilt chunks", () => {
-  const upload = { worker: "dashboard", sources: { [chunk]: 1 } };
+test("the dashboard upload refuses every other grammar and the full engine", () => {
+  for (const extra of [
+    ...["javascript", "css", "html", "markdown", "python"].map(grammar),
+    "../../../../packages/ui/src/implementation/highlight-engine.ts",
+  ])
+    assert.throws(
+      () => assertDashboardRuntimeBundle(upload, client, () => [...serverEngine, extra]),
+      /must upload only the typescript, json, shellscript grammars.*code-AbC12345\.js \(/,
+    );
+  // A source of its own counts too, not only one inside a site chunk.
   assert.throws(
     () =>
-      assertDashboardRuntimeBundle(upload, client, () => [
-        "../../../../../../.cache/x/node_modules/.bun/@shikijs+core@3.23.0/node_modules/@shikijs/core/dist/index.mjs",
-      ]),
-    /must not upload the code highlighter.*code-AbC12345\.js \(.*@shikijs\/core/,
-  );
-  // The stub and the contracts that load it are not the engine.
-  assert.doesNotThrow(() =>
-    assertDashboardRuntimeBundle(upload, client, () => [
-      "../../server-highlight-engine.ts",
-      "../../../../../../packages/ui/src/contracts/highlight.ts",
-    ]),
+      assertDashboardRuntimeBundle(
+        {
+          worker: "dashboard",
+          sources: {
+            [chunk]: 1,
+            "apps/hosted/cloud/web/dist/server/assets/highlight-engine-x1.js": 1,
+          },
+        },
+        client,
+        () => serverEngine,
+      ),
+    /must upload only/,
   );
 });
 
-test("the dashboard boundary requires the browser build to keep the highlighter", () => {
-  const upload = { worker: "dashboard", sources: { [chunk]: 1 } };
+test("the dashboard boundary requires the browser build to keep the full engine", () => {
   assert.throws(
-    () => assertDashboardRuntimeBundle(upload, ["main-abc12345.js"], () => []),
+    () => assertDashboardRuntimeBundle(upload, ["main-abc12345.js"], () => serverEngine),
     /browser build must keep the code highlighter/,
   );
 });
