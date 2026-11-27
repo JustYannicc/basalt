@@ -1,16 +1,27 @@
 // What deploy, check, destroy and the expiry decide on their own, and that no run prints the
 // account's workers.dev hostname.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { test } from "node:test";
-import { activeDispatches } from "./dispatch-busy.mjs";
+import { activeDispatches, busyFor } from "./dispatch-busy.mjs";
 import { gate, mockCalls, plainReason } from "./gateway.ts";
 import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
-import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import {
+  checkFailures,
+  emulatedStage,
+  keyedRoutes,
+  LONG_MIN_MS,
+  main,
+  jobReserveMs,
+  paced,
+  teardownBudgetMs,
+  teardownDeadline,
+} from "./stage.mjs";
 import { prefix } from "./settings.ts";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
-import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { application, script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 const worker = "basalt-emulated-upstream-gateway";
@@ -444,6 +455,213 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
     ],
   });
   for (const line of printed) assert.doesNotMatch(line, /sha256|acct\//u, line);
+});
+
+test("a teardown spends at most its budget on stage requests, and stops between them", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1", "h2", "h3"] },
+    cloudflare: { pageSize: 1, emptyEnd: true },
+  });
+  let clock = NOW;
+  const started = [];
+  // A registry that takes four minutes a request: the 15-minute budget fits three of them.
+  const slow = async (url, init) => {
+    started.push(clock);
+    clock += 4 * 60_000;
+    return fake.fetcher(url, init);
+  };
+  const printed = [];
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher: slow,
+      now: () => clock,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.match(printed.join("\n"), /time budget is spent/u);
+  // Every request started with a whole 30-second timeout still inside the budget.
+  assert.ok(
+    started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
+    started.join(","),
+  );
+  assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
+});
+
+test("a teardown out of time during its deletes keeps everything it gathered", async () => {
+  // Forty seconds a request: every delete is sent, then the read back runs out. Fifty: the
+  // repository's own delete runs out too, and the line names it.
+  for (const [step, failedDeletes] of [
+    [40_000, 0],
+    [50_000, 1],
+  ]) {
+    const fake = fakeAccount({
+      live: {
+        applications: [application({ id: "a1", name: `${prefix}-mock` })],
+        scripts: [script(`${prefix}-gateway`)],
+      },
+      tags: { [`acct/${prefix}-mock`]: ["h1"] },
+      cloudflare: { pageSize: 5, emptyEnd: true },
+    });
+    let clock = NOW;
+    const slow = async (url, init) => {
+      clock += step;
+      return fake.fetcher(url, init);
+    };
+    const printed = [];
+    const saved = {};
+    const code = await main(
+      { ...dispatch, EMULATED_MODE: "destroy" },
+      {
+        fetcher: slow,
+        now: () => clock,
+        error: (line) => printed.push(line),
+        summary: (line) => printed.push(line),
+        save: (name, value) => (saved[name] = value),
+        deployEntry: () => {},
+      },
+    );
+    assert.equal(code, 1, String(step));
+    assert.match(
+      printed[0],
+      /^Emulated upstream teardown could not read back what remains: .*time budget is spent/u,
+    );
+    assert.equal(
+      /; failed: registry repository /u.test(printed[0]),
+      failedDeletes > 0,
+      String(step),
+    );
+    assert.deepEqual(saved["stopped-destroy"], {
+      teardown: [],
+      readBack: "not-completed",
+      found: { applications: 1, namespaces: 0, scripts: 1, images: 1, kept: 0 },
+      failedDeletes,
+    });
+    // The app and the Worker went first, inside the budget.
+    assert.equal(fake.live.applications.length, 0, String(step));
+    assert.equal(fake.live.scripts.length, 0, String(step));
+  }
+});
+
+test("a teardown's deadline is its budget or its job's limit less a reserve, whichever is first", () => {
+  const at = Date.parse("2026-11-27T18:00:00Z");
+  assert.equal(teardownDeadline({}, at), at + teardownBudgetMs);
+  // A job that has run 50 of its 60 minutes leaves the teardown seven of them.
+  const started = at - 50 * 60_000;
+  assert.equal(
+    teardownDeadline(
+      { EMULATED_JOB_STARTED_MS: String(started), EMULATED_JOB_LIMIT_MINUTES: "60" },
+      at,
+    ),
+    started + 60 * 60_000 - jobReserveMs,
+  );
+  for (const env of [
+    { EMULATED_JOB_STARTED_MS: "x", EMULATED_JOB_LIMIT_MINUTES: "60" },
+    { EMULATED_JOB_STARTED_MS: String(started), EMULATED_JOB_LIMIT_MINUTES: "0" },
+  ])
+    assert.equal(teardownDeadline(env, at), at + teardownBudgetMs);
+});
+
+test("each teardown job states its own limit, and the budget with its reserve fits in it", () => {
+  const workflow = readFileSync(
+    new URL("../../.github/workflows/emulated-upstream.yml", import.meta.url),
+    "utf8",
+  );
+  for (const job of ["emulated", "expire"]) {
+    const body = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z]+:\n/u)[0];
+    const limit = Number(/\n    timeout-minutes: (\d+)/u.exec(body)?.[1]);
+    assert.equal(Number(/EMULATED_JOB_LIMIT_MINUTES: (\d+)/u.exec(body)?.[1]), limit, job);
+    // The start is noted second, before anything that could take time.
+    const steps = body.split("\n      - ").slice(1);
+    assert.match(
+      steps[1],
+      /^name: Note when the job started\n(?: {8}timeout-minutes: \d+\n)? {8}run: echo "EMULATED_JOB_STARTED_MS=\$\(date \+%s%3N\)" >> "\$GITHUB_ENV"/u,
+      job,
+    );
+    assert.ok(teardownBudgetMs + jobReserveMs + 60_000 <= limit * 60_000, job);
+  }
+  // Every step up to and including the mode has its own limit, and after the longest of each the
+  // teardown after a failed deploy still has ten minutes before the job's reserve.
+  const emulated = workflow.split("\n  emulated:\n")[1].split(/\n  [a-z]+:\n/u)[0];
+  const jobLimit = Number(/\n    timeout-minutes: (\d+)/u.exec(emulated)?.[1]);
+  const steps = emulated.split("\n      - ").slice(1);
+  const mode = steps.findIndex((step) => step.startsWith("name: Execute the mode\n"));
+  assert.ok(mode > 0);
+  let before = 0;
+  for (const step of steps.slice(0, mode + 1)) {
+    const limit = /\n {8}timeout-minutes: (\d+)/u.exec(step);
+    assert.ok(limit, `a step without its own limit: ${step.split("\n")[0]}`);
+    before += Number(limit[1]) * 60_000;
+  }
+  assert.ok(jobLimit * 60_000 - before - jobReserveMs >= 10 * 60_000, String(before));
+  // The expiry's busy window covers a dispatch that waits one job and then runs one.
+  assert.ok(busyFor >= 2 * jobLimit * 60_000 + 30 * 60_000);
+  // The reserve covers saving the record and uploading the artifact.
+  assert.ok(jobReserveMs >= 2 * 60_000);
+});
+
+test("a teardown whose job has no time left sends nothing, and says so", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: { pageSize: 5 },
+  });
+  const printed = [];
+  const code = await main(
+    {
+      ...dispatch,
+      EMULATED_MODE: "destroy",
+      // 89 of the job's 90 minutes are gone: less than its reserve is left.
+      EMULATED_JOB_STARTED_MS: String(NOW - 89 * 60_000),
+      EMULATED_JOB_LIMIT_MINUTES: "90",
+    },
+    {
+      fetcher: fake.fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.equal(fake.calls.length, 0);
+  assert.match(printed.join("\n"), /time budget is spent/u);
+});
+
+test("an expiry spends at most its budget too", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1", "h2", "h3"] },
+    cloudflare: { pageSize: 1, emptyEnd: true },
+  });
+  let clock = NOW;
+  const started = [];
+  const slow = async (url, init) => {
+    started.push(clock);
+    clock += 4 * 60_000;
+    return fake.fetcher(url, init);
+  };
+  const printed = [];
+  const code = await main(
+    { ...dispatch, GITHUB_EVENT_NAME: "schedule", EMULATED_MODE: "expire" },
+    {
+      fetcher: slow,
+      now: () => clock,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1, printed.join("\n"));
+  assert.match(printed.join("\n"), /time budget is spent/u);
+  assert.ok(
+    started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
+    started.join(","),
+  );
 });
 
 test("a refused guard prints only its token", async () => {

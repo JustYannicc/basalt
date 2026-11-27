@@ -107,7 +107,18 @@ const ON_RESOURCE = table({
 });
 const PERMISSIONS = table({ pull: Object.freeze(["pull"]), push: Object.freeze(["pull", "push"]) });
 const REQUEST_FIELDS = Object.freeze(["kind", "operation", "target", "reference", "body"]);
-const OPTIONS = Object.freeze(["accountId", "token", "prefix", "owns", "fetcher", "signal"]);
+const OPTIONS = Object.freeze([
+  "accountId",
+  "token",
+  "prefix",
+  "owns",
+  "fetcher",
+  "signal",
+  "deadline",
+  "now",
+]);
+/** The longest one request may take: its own abort deadline. */
+const REQUEST_TIMEOUT_MS = 30_000;
 /** Every field a step has, each set here, so none is ever looked up anywhere else. */
 const STEP = table({
   label: "",
@@ -174,16 +185,23 @@ function ownFields(value, allowed, what) {
 /**
  * The choke point for one stage of one account: `{ send, owned, prefix }`. `prefix` is the stage's
  * registered prefix and `owns`, when given, narrows it (ownership.mjs); construction throws on
- * either refusal. `signal` gives each call its deadline. `send(request)` takes
+ * either refusal. `signal` gives each call its deadline. `deadline`, an epoch time in
+ * milliseconds read against `now`, bounds the whole run: no request starts unless a full request
+ * timeout still fits before it, so every request ends by the deadline. `send(request)` takes
  * `{ kind, operation, target?, reference?, body? }`.
  */
 export function stageRequests(options) {
   const given = ownFields(options, OPTIONS, "stage");
   const { accountId, token, prefix, owns } = given;
   const fetcher = given.fetcher === undefined ? fetch : given.fetcher;
-  const signal = given.signal === undefined ? () => AbortSignal.timeout(30_000) : given.signal;
-  if (typeof fetcher !== "function" || typeof signal !== "function")
-    throw refuse("the fetcher and the signal are functions");
+  const signal =
+    given.signal === undefined ? () => AbortSignal.timeout(REQUEST_TIMEOUT_MS) : given.signal;
+  const now = given.now === undefined ? Date.now : given.now;
+  const { deadline } = given;
+  if (typeof fetcher !== "function" || typeof signal !== "function" || typeof now !== "function")
+    throw refuse("the fetcher, the signal and the clock are functions");
+  if (deadline !== undefined && !Number.isSafeInteger(deadline))
+    throw refuse("the deadline is an epoch time in milliseconds");
   if (typeof accountId !== "string" || !SEGMENT.test(accountId))
     throw refuse("the account id is not one a URL can hold as it is");
   let owned;
@@ -252,6 +270,10 @@ export function stageRequests(options) {
    */
   async function exchange(url, method, label, headers, body) {
     unchangedWhenParsed(url);
+    // A request that might outlast the run's deadline is not started: a run ends between requests,
+    // never in one, so a job's own time limit never cuts a delete.
+    if (deadline !== undefined && now() + REQUEST_TIMEOUT_MS > deadline)
+      throw fail(`${method} ${label} was not sent: the run's time budget is spent`);
     const init = Object.create(null);
     init.method = method;
     init.headers = headers;
