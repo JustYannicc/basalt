@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-membership-shared-read",
   "file": "0802-pool-membership-shared-read.patch",
-  "content_sha256": "9269668ae92f274acb7fb553a16d86b3b1da56659d4ce0e6107938783bb213aa",
+  "content_sha256": "1c11e9172f455311ad40fc7006007cba9a264f0964662d6bebd0028b2a0e179b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -22,7 +22,9 @@
     }
   },
   "runs": {
-    "poolMembershipSharedRead": ["declared:cloud"]
+    "poolMembershipSharedRead": [
+      "declared:cloud"
+    ]
   },
   "inputs": [
     ".upstream/apps/hosted/server/src/implementation/organization-access-lock.ts",
@@ -38,7 +40,9 @@
     ".upstream/e2e/support/pool-history-database.ts",
     "src/pool/control.ts",
     "src/pool/membership-read.ts",
-    "scripts/pool-tests/history-schema-fixture.ts"
+    "scripts/pool-tests/history-schema-fixture.ts",
+    ".upstream/e2e/support/cloud-pool-gateway.ts",
+    "src/pool/token.ts"
   ],
   "fixture": "pool-setup"
 }

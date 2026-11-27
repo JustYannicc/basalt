@@ -74,7 +74,7 @@ diff --git a/e2e/tests/pool-membership-shared-read.spec.ts b/e2e/tests/pool-memb
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-membership-shared-read.spec.ts
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,222 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Schema } from "effect";
 +import { createHmac, randomUUID } from "node:crypto";
@@ -108,10 +108,8 @@ new file mode 100644
 +const sharedLock = /^\s*select pg_advisory_xact_lock_shared\(hashtextextended/i;
 +/** The membership read's first row lock: its presence proves the read itself ran. */
 +const membershipRows = /from hosted_app_account_links l[\s\S]*for share of a/i;
-+/** The membership read's registration check, which the shared and the exclusive read both run. */
-+const registrations = /select current_database\(\) as database,\s*current_schema\(\) as schema/i;
 +/** Below the pool's membership read timeout (10 s), which its read would otherwise wait out. */
-+const viewCap = 6_000;
++const readCap = 6_000;
 +
 +layer(HostedLive, { excludeTestServices: true })(
 +  "Pool membership reads share the organization lock",
@@ -184,45 +182,45 @@ new file mode 100644
 +            );
 +          // The signed request the pool makes for every membership read: its gate's refresh and its
 +          // once-a-minute read. Back a second, so a server clock slightly behind still accepts it.
-+          const membershipRead = Effect.gen(function* () {
-+            const at = (yield* Clock.currentTimeMillis) - 1_000;
-+            const payload = Buffer.from(
-+              JSON.stringify({ pool: pool.id, organization, at, expiresAt: at + 30_000 }),
-+            ).toString("base64url");
-+            const signature = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
-+              .update(`sbq1.${payload}`)
-+              .digest("base64url");
-+            const response = yield* api.request(
-+              actors.owner,
-+              "POST",
-+              "/api/internal/pool-membership",
-+              { envelope: `sbq1.${payload}.${signature}` },
-+            );
-+            return response.status;
-+          });
++          const membershipRead = (traceparent?: string) =>
++            Effect.gen(function* () {
++              const at = (yield* Clock.currentTimeMillis) - 1_000;
++              const payload = Buffer.from(
++                JSON.stringify({ pool: pool.id, organization, at, expiresAt: at + 30_000 }),
++              ).toString("base64url");
++              const signature = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
++                .update(`sbq1.${payload}`)
++                .digest("base64url");
++              const response = yield* api.request(
++                actors.owner,
++                "POST",
++                "/api/internal/pool-membership",
++                { envelope: `sbq1.${payload}.${signature}` },
++                traceparent === undefined ? {} : { traceparent },
++              );
++              return response.status;
++            });
++          // The read's own statements, by the trace its request carries: the pool's own reads and
++          // other requests that take the same lock in the same moments never count.
 +          const counted = Effect.gen(function* () {
++            const trace = randomUUID().replaceAll("-", "");
 +            yield* wire.begin(0);
-+            const status = yield* membershipRead;
-+            yield* wire.end(randomUUID().replaceAll("-", ""));
-+            // Every trace in the window that ran a membership read's statements: the read's own and
-+            // any the pool made meanwhile, which take the same lock. Other sessions' text-keyed locks
-+            // in the same run run under traces that ran neither statement, so they never count.
-+            const window = wire.global();
-+            const traces = new Set<string>();
-+            for (const item of window)
-+              if (
-+                item.trace !== undefined &&
-+                (membershipRows.test(item.query) || registrations.test(item.query))
-+              )
-+                traces.add(item.trace);
-+            const statements = window.filter(
-+              (item) => item.trace !== undefined && traces.has(item.trace),
-+            );
++            const status = yield* membershipRead(`00-${trace}-${trace.slice(0, 16)}-01`);
++            yield* wire.end(trace);
++            const statements = wire.global().filter((item) => item.trace === trace);
++            const lock = statements.find((item) => sharedLock.test(item.query));
++            const rows = statements.find((item) => membershipRows.test(item.query));
 +            return {
 +              status,
 +              exclusive: statements.filter((item) => exclusiveLock.test(item.query)).length,
 +              shared: statements.filter((item) => sharedLock.test(item.query)).length,
 +              membership: statements.filter((item) => membershipRows.test(item.query)).length,
++              // The read's row locks run in the shared lock's transaction: same session, after it.
++              lockedRead:
++                lock !== undefined &&
++                rows !== undefined &&
++                lock.connection === rows.connection &&
++                lock.start <= rows.start,
 +            };
 +          });
 +          const locks = yield* cloudLocks;
@@ -239,6 +237,9 @@ new file mode 100644
 +          // 1. A legacy registration is handed off under the exclusive lock, as before: that is a
 +          //    write. A native registration's read takes no exclusive lock, only the shared one.
 +          //    The only historical state: an existing registration predating the membership marker.
++          //    The pool's own once-a-minute read could hand it off first, between the update and
++          //    the test's read; and a native read that still has accounts to mirror takes the lock
++          //    exclusively for that write. Both are rare here and fail loudly.
 +          yield* locks.run({
 +            sql: `update organization set metadata=(select jsonb_set(metadata::jsonb, '{basaltPools}', jsonb_object_agg(entry.key, case when entry.value->>'app'=$2 then entry.value-'membership' else entry.value end))::text from jsonb_each(metadata::jsonb->'basaltPools') entry) where id=$1`,
 +            params: [organization, pool.id],
@@ -260,6 +261,9 @@ new file mode 100644
 +          expect.soft(native.membership, "the native read ran").toBeGreaterThan(0);
 +          expect.soft(native.exclusive, "the native read takes no exclusive lock").toBe(0);
 +          expect.soft(native.shared, "the native read takes the lock shared").toBeGreaterThan(0);
++          expect
++            .soft(native.lockedRead, "the native read's rows are read under the shared lock")
++            .toBe(true);
 +
 +          // 2. A usage read in flight holds the shared lock through its pool's answer. A membership
 +          //    read must not wait for it.
@@ -269,7 +273,7 @@ new file mode 100644
 +            params: [`executor-access:${organization}`],
 +          });
 +          const started = yield* Clock.currentTimeMillis;
-+          const beside = yield* membershipRead.pipe(Effect.timeoutOption(viewCap + 2_000));
++          const beside = yield* membershipRead().pipe(Effect.timeoutOption(readCap + 2_000));
 +          const besideMs = (yield* Clock.currentTimeMillis) - started;
 +          yield* reader.release;
 +          yield* evidence.json("read-beside-a-reader.json", {
@@ -277,7 +281,7 @@ new file mode 100644
 +            ms: besideMs,
 +          });
 +          expect.soft(beside._tag === "Some" ? beside.value : "waiting").toBe(200);
-+          expect.soft(besideMs, "the read does not wait for a shared holder").toBeLessThan(viewCap);
++          expect.soft(besideMs, "the read does not wait for a shared holder").toBeLessThan(readCap);
 +
 +          // 3. The pool view still names each Home account's saved account from that membership.
 +          const shown = yield* view();

@@ -53,7 +53,9 @@ test("membership readers share the organization lock and a writer waits for ever
             organization,
             Deferred.succeed(inside, undefined).pipe(Effect.andThen(Deferred.await(release))),
           ).pipe(Effect.forkChild);
-          yield* Deferred.await(inside);
+          // A reader blocked by another reader is the regression this proves absent: fail on it.
+          const entered = yield* Deferred.await(inside).pipe(Effect.timeoutOption("10 seconds"));
+          assert.equal(entered._tag, "Some", "a reader is not blocked by another reader");
           return { fiber, release: Deferred.succeed(release, undefined) };
         });
 
@@ -99,6 +101,7 @@ test("membership readers share the organization lock and a writer waits for ever
         yield* Fiber.join(writer);
         assert.equal(yield* Deferred.isDone(wrote), true);
         assert.deepEqual(yield* locks, []);
+        // Two readers, the writer and the lock view each hold a session at once.
       }).pipe(Effect.provide(PgClient.layer({ url: Redacted.make(url), maxConnections: 4 }))),
     ),
   ));
