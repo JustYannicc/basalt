@@ -1,7 +1,7 @@
 diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 --- a/e2e/support/autumn-emulator.ts
 +++ b/e2e/support/autumn-emulator.ts
-@@ -1,80 +1,196 @@
+@@ -1,80 +1,197 @@
  /**
 - * The Autumn billing emulator a local Cloud runs beside itself when CI provides one, so billing
 - * never waits on a shared outside service. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI;
@@ -12,10 +12,7 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 + * the hosted emulator exactly as before.
   */
 -import { Effect, FileSystem, Schedule, Stream } from "effect";
-+import { mkdirSync, rmSync } from "node:fs";
 +import { createServer } from "node:net";
-+import { tmpdir } from "node:os";
-+import { join } from "node:path";
 +import { Effect, Exit, FileSystem, Schedule, Scope, Stream } from "effect";
  import { HttpClient } from "effect/http";
  import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -46,7 +43,8 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
   */
 -export const localAutumnEmulator = (directory: string) =>
 +const blockRange = { from: 20_000, to: 32_000 } as const;
-+const reservations = join(tmpdir(), "basalt-emulator-ports");
++/** Shared by every start on the machine, so concurrent starts see each other's reservations. */
++export const emulatorPortReservations = `${(process.env.TMPDIR ?? "/tmp").replace(/\/+$/u, "")}/basalt-emulator-ports`;
 +
 +/** The lowest port the OS hands out on its own, where it says so (Linux). */
 +const ephemeralFloor = Effect.gen(function* () {
@@ -71,20 +69,18 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 +
 +/** Reserve `port` for the caller's scope; `false` when another start holds it. */
 +const reserve = (port: number) =>
-+  Effect.acquireRelease(
-+    Effect.sync(() => {
-+      try {
-+        mkdirSync(join(reservations, String(port)), { recursive: false });
-+        return true;
-+      } catch {
-+        return false;
-+      }
-+    }),
-+    (held) =>
-+      held
-+        ? Effect.sync(() => rmSync(join(reservations, String(port)), { recursive: true, force: true }))
-+        : Effect.void,
-+  );
++  Effect.gen(function* () {
++    const fs = yield* FileSystem.FileSystem;
++    const entry = `${emulatorPortReservations}/${port}`;
++    // Creating the entry without `recursive` fails when it exists, so only one start gets it.
++    return yield* Effect.acquireRelease(
++      fs.makeDirectory(entry).pipe(
++        Effect.as(true),
++        Effect.orElseSucceed(() => false),
++      ),
++      (held) => (held ? fs.remove(entry, { recursive: true }).pipe(Effect.ignore) : Effect.void),
++    );
++  });
 +
 +/** `count` consecutive ports reserved for the caller's scope, each free on every interface. */
 +const reservedBlock = (count: number) =>
@@ -94,7 +90,12 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 +      return yield* new CloudStartFailed({
 +        operation: `The OS hands out ports from ${floor}, inside the emulators' block`,
 +      });
-+    mkdirSync(reservations, { recursive: true });
++    const fs = yield* FileSystem.FileSystem;
++    yield* fs
++      .makeDirectory(emulatorPortReservations, { recursive: true })
++      .pipe(
++        Effect.mapError(() => new CloudStartFailed({ operation: "Cannot reserve emulator ports" })),
++      );
 +    for (let tries = 0; tries < 50; tries++) {
 +      const first =
 +        blockRange.from + Math.floor(Math.random() * (blockRange.to - blockRange.from - count));
@@ -241,7 +242,7 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
              }),
            ),
          ),
-@@ -85,10 +201,58 @@ export const localAutumnEmulator = (directory: string) =>
+@@ -85,10 +202,58 @@ export const localAutumnEmulator = (directory: string) =>
          orElse: () =>
            Effect.fail(
              new CloudStartFailed({

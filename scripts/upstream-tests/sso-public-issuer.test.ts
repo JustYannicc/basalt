@@ -54,7 +54,11 @@ test("a public issuer registers from its discovery document", () =>
 
 test("a loopback or link-local issuer is refused before anything is fetched", () =>
   withIssuer(async (requested) => {
-    for (const refused of ["http://localhost:21234", "http://127.0.0.1:21234", "http://169.254.169.254"])
+    for (const refused of [
+      "http://localhost:21234",
+      "http://127.0.0.1:21234",
+      "http://169.254.169.254",
+    ])
       await assert.rejects(
         discoverOIDCConfig({ issuer: refused, isTrustedOrigin: untrusted }),
         (error: { code?: string }) => error.code === "discovery_private_host",

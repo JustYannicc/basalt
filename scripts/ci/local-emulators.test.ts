@@ -8,6 +8,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Redacted } from "../../.upstream/node_modules/effect/dist/index.js";
 import { FetchHttpClient } from "../../.upstream/node_modules/effect/dist/http/index.js";
 import {
+  emulatorPortReservations,
   localAutumnEmulator,
   localServiceEmulators,
 } from "../../.upstream/e2e/support/autumn-emulator.ts";
@@ -92,9 +93,12 @@ test("local Clouds started together each get their own stand-ins", async () => {
     const origins = started.flatMap(([billing, local]) => [billing!, ...Object.values(local!)]);
     assert.equal(new Set(origins.map((origin) => new URL(origin).port)).size, origins.length);
     // Closing the scope gave every reserved port back.
-    const reserved = join(tmpdir(), "basalt-emulator-ports");
     for (const origin of origins)
-      assert.equal(existsSync(join(reserved, new URL(origin).port)), false, origin);
+      assert.equal(
+        existsSync(`${emulatorPortReservations}/${new URL(origin).port}`),
+        false,
+        origin,
+      );
   } finally {
     for (const directory of directories) rmSync(directory, { recursive: true, force: true });
   }
