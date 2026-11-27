@@ -137,8 +137,10 @@ export function stageReach(fake, prefix) {
         parsed.pathname,
       );
       if (!match) return "a registry path no stage asks for";
-      // Only a tag list carries a query: its page size, and the last tag of the page before.
-      const tagPage = /^\?n=1000(?:&last=[A-Za-z0-9_][A-Za-z0-9._-]{0,127})?$/u;
+      // Only a tag list carries a query: its first page size, or a later page's cursor parameters,
+      // plain names with values encoded so nothing in them is a separator.
+      const tagPage =
+        /^\?(?:n=1000|[A-Za-z_]{1,32}=[A-Za-z0-9._~%-]{1,3072}(?:&[A-Za-z_]{1,32}=[A-Za-z0-9._~%-]{1,3072}){0,3})$/u;
       if (parsed.search && !(match[3] === "tags/list" && tagPage.test(parsed.search)))
         return "a registry path no stage asks for";
       if (match[1] !== accountId || !repositories.has(match[2])) return "another repository";

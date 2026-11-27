@@ -990,6 +990,7 @@ try {
       complete: report.complete,
       accountsProved: true,
       poolProved: report.poolProved,
+      notProved: report.diagnostics.notProved ?? [],
       directory,
     }),
   );
