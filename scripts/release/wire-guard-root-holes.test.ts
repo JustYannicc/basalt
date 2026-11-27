@@ -302,15 +302,19 @@ test("a held name is held on a stage with no root recorded, and in any case", as
     refusalOf(run.exit.value.patch);
     assert.deepEqual(run.writes, [], held.name);
   }
-  // A held id in another case than the request's is the same application.
-  const byId = await guarded(
-    t,
-    { heldApplications: [{ id: GATEWAY_LIVE.toUpperCase(), name: GATEWAY }] },
-    () => patchAndRollout(GATEWAY_LIVE),
-  );
-  assert.ok(Exit.isSuccess(byId.exit));
-  refusalOf(byId.exit.value.patch);
-  assert.deepEqual(byId.writes, []);
+  // Cloudflare's ids are not case sensitive: a held id and a request in another case are the same.
+  const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  for (const [held, sent] of [
+    [lettered, lettered.toUpperCase()],
+    [lettered.toUpperCase(), lettered],
+  ]) {
+    const byId = await guarded(t, { heldApplications: [{ id: held!, name: GATEWAY }] }, () =>
+      patchAndRollout(sent!),
+    );
+    assert.ok(Exit.isSuccess(byId.exit));
+    refusalOf(byId.exit.value.patch);
+    assert.deepEqual(byId.writes, [], `${held} / ${sent}`);
+  }
 });
 
 test("an unattached application is not deleted while its read names a held application", async (t) => {
