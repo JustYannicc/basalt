@@ -1,0 +1,394 @@
+diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
+--- a/e2e/support/autumn-emulator.ts
++++ b/e2e/support/autumn-emulator.ts
+@@ -1,80 +1,108 @@
+ /**
+- * The Autumn billing emulator a local Cloud runs beside itself when CI provides one, so billing
+- * never waits on a shared outside service. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI;
+- * without it, billing uses the hosted emulator exactly as before.
++ * The emulators a local Cloud runs beside itself when CI provides them, so a run never waits on a
++ * shared outside service: Autumn for billing, and one process for Google, GitHub, mail, company
++ * and WorkOS. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI; without it, every service uses
++ * the hosted emulator exactly as before.
+  */
+-import { Effect, FileSystem, Schedule, Stream } from "effect";
++import { Effect, FileSystem, Option, Schedule, Stream } from "effect";
+ import { HttpClient } from "effect/http";
+ import { ChildProcess, ChildProcessSpawner } from "effect/process";
+ import { outputLines } from "./alchemy-dev-output.ts";
+ import { CloudStartFailed } from "./cloud-startup-output.ts";
+-import { freePort } from "./ports.ts";
++import { freePort, holdPort } from "./ports.ts";
+ 
+ /** It starts in about a second; the bound allows for a loaded runner. */
+ const startupDeadline = "30 seconds";
+ 
++/** The service a control plane's manifest names, or `undefined` for any other answer. */
++const manifestId = (text: string) => {
++  try {
++    const id = (JSON.parse(text) as { manifest?: { id?: unknown } }).manifest?.id;
++    return typeof id === "string" ? id : undefined;
++  } catch {
++    return undefined;
++  }
++};
++
+ /**
+- * Start the emulator for the caller's scope and return the loopback origin it is addressed at, or
+- * `undefined` when this run uses the hosted one. emulate has no host option, so it listens on every
+- * interface; only its address is loopback. Its output goes to `autumn-emulator.log`; closing the
+- * scope stops the process this started.
++ * Run one `emulate` process for the caller's scope, serving `services` on consecutive ports from
++ * `port`, and wait until each service's control plane answers. emulate has no host option, so it
++ * listens on every interface; only the addresses it is reached at are loopback. Its output goes to
++ * `<name>.log`; closing the scope stops the process this started.
+  */
+-export const localAutumnEmulator = (directory: string) =>
++const runEmulate = (
++  directory: string,
++  entry: string,
++  name: string,
++  args: readonly string[],
++  /** Each service it serves, at the origin it must answer on. */
++  origins: ReadonlyArray<{ readonly service: string; readonly origin: string }>,
++) =>
+   Effect.gen(function* () {
+-    const entry = process.env.BASALT_E2E_AUTUMN_EMULATOR;
+-    if (entry === undefined || entry === "") return undefined;
+     const fs = yield* FileSystem.FileSystem;
+     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+     const http = yield* HttpClient.HttpClient;
+-    const origin = `http://127.0.0.1:${yield* freePort}`;
+-    const port = new URL(origin).port;
+     // emulate reads any emulate.config.* in its working directory, so it gets an empty one.
+-    const cwd = `${directory}/autumn-emulator`;
++    const cwd = `${directory}/${name}`;
+     yield* fs.makeDirectory(cwd, { recursive: true, mode: 0o700 });
+-    const log = `${directory}/autumn-emulator.log`;
++    const log = `${directory}/${name}.log`;
+     // This Node, not the first `node` on PATH: a harness may put a shim there that exports its own
+     // secrets before it execs Node.
+     const child = yield* processes.spawn(
+-      ChildProcess.make(
+-        process.execPath,
+-        [entry, "--service", "autumn", "--port", port, "--base-url", origin],
+-        {
+-          cwd,
+-          env: { PATH: process.env.PATH ?? "", NO_COLOR: "1" },
+-          extendEnv: false,
+-          stdout: "pipe",
+-          stderr: "pipe",
+-          forceKillAfter: "5 seconds",
+-        },
+-      ),
++      ChildProcess.make(process.execPath, [entry, ...args], {
++        cwd,
++        env: { PATH: process.env.PATH ?? "", NO_COLOR: "1" },
++        extendEnv: false,
++        stdout: "pipe",
++        stderr: "pipe",
++        forceKillAfter: "5 seconds",
++      }),
+     );
+     yield* outputLines(child).pipe(
+       Stream.runForEach((line) => fs.writeFileString(log, `${line}\n`, { flag: "a", mode: 0o600 })),
+       Effect.forkScoped,
+     );
+-    // emulate prints its banner before Node reports a failed bind, and the port was free only
+-    // when freePort released it. Only an answer from emulate's control plane proves it holds it.
+-    // Each probe has its own bound so one held request cannot use up the startup deadline.
+-    const answers = Effect.scoped(
+-      http.get(`${origin}/_emulate/manifest`).pipe(
+-        Effect.flatMap((response) =>
+-          Effect.gen(function* () {
+-            yield* response.text;
+-            if (response.status !== 200)
+-              return yield* new CloudStartFailed({
+-                operation: `The local Autumn emulator answered ${response.status}`,
+-              });
+-          }),
++    // emulate prints its banner before Node reports a failed bind, and a port was free only when
++    // it was checked. Only an answer from each service's control plane proves the process holds
++    // it. Each probe has its own bound so one held request cannot use up the startup deadline.
++    // Each origin must also name its own service: emulate gives ports out in `--service` order,
++    // and a key made on the wrong service would succeed there and test the wrong stand-in.
++    // A wrong service is permanent, so it fails at once instead of being retried to the deadline.
++    const answers = Effect.forEach(origins, ({ service, origin }) =>
++      Effect.scoped(
++        http.get(`${origin}/_emulate/manifest`).pipe(
++          Effect.flatMap((response) =>
++            Effect.gen(function* () {
++              const text = yield* response.text;
++              if (response.status !== 200)
++                return yield* new CloudStartFailed({
++                  operation: `The local ${name} answered ${response.status}`,
++                });
++              return manifestId(text);
++            }),
++          ),
+         ),
++      ).pipe(
++        Effect.timeout("5 seconds"),
++        Effect.retry({ schedule: Schedule.spaced("100 millis") }),
++        Effect.flatMap((id) =>
++          id === service
++            ? Effect.void
++            : Effect.fail(
++                new CloudStartFailed({
++                  operation: `The local ${name} serves another service at the ${service} port`,
++                }),
++              ),
++        ),
+       ),
+-    ).pipe(Effect.timeout("5 seconds"), Effect.retry({ schedule: Schedule.spaced("100 millis") }));
++    );
+     yield* Effect.raceFirst(
+       answers,
+       child.exitCode.pipe(
+         Effect.flatMap((code) =>
+           Effect.fail(
+             new CloudStartFailed({
+-              operation: `The local Autumn emulator exited with ${code}; see autumn-emulator.log`,
++              operation: `The local ${name} exited with ${code}; see ${name}.log`,
+             }),
+           ),
+         ),
+@@ -85,10 +113,75 @@
+         orElse: () =>
+           Effect.fail(
+             new CloudStartFailed({
+-              operation: `The local Autumn emulator did not start within ${startupDeadline}; see autumn-emulator.log`,
++              operation: `The local ${name} did not start within ${startupDeadline}; see ${name}.log`,
+             }),
+           ),
+       }),
+     );
++  });
++
++/**
++ * Start the Autumn emulator for the caller's scope and return the loopback origin it is addressed
++ * at, or `undefined` when this run uses the hosted one.
++ */
++export const localAutumnEmulator = (directory: string) =>
++  Effect.gen(function* () {
++    const entry = process.env.BASALT_E2E_AUTUMN_EMULATOR;
++    if (entry === undefined || entry === "") return undefined;
++    const origin = `http://127.0.0.1:${yield* freePort}`;
++    const port = new URL(origin).port;
++    yield* runEmulate(
++      directory,
++      entry,
++      "autumn-emulator",
++      ["--service", "autumn", "--port", port, "--base-url", origin],
++      [{ service: "autumn", origin }],
++    );
+     return origin;
+   });
++
++/** The sign-in, mail, company and WorkOS stand-ins, in the order emulate assigns their ports. */
++export const localServiceNames = ["google", "github", "resend", "context", "workos"] as const;
++export type LocalServices = { readonly [S in (typeof localServiceNames)[number]]: string };
++
++/** `count` consecutive ports that were all free when checked, starting at a port the OS chose. */
++const consecutiveFreePorts = (count: number) =>
++  Effect.gen(function* () {
++    for (let tries = 0; tries < 20; tries++) {
++      const first = yield* freePort;
++      if (first + count > 65_536) continue;
++      const rest = yield* Effect.forEach(
++        Array.from({ length: count - 1 }, (_, index) => first + index + 1),
++        (port) => Effect.scoped(holdPort(port)).pipe(Effect.option),
++      );
++      if (rest.every(Option.isSome)) return first;
++    }
++    return yield* new CloudStartFailed({
++      operation: "No run of free ports for the local emulators",
++    });
++  });
++
++/**
++ * Start one emulator for the caller's scope serving Google, GitHub, mail (Resend), company
++ * (Context) and WorkOS, and return each service's loopback origin; `undefined` when this run uses
++ * the hosted service. One process per Cloud keeps each Cloud's stand-ins its own. Locally,
++ * emulate serves one instance per service at the service's root, and its OpenID issuer names
++ * `localhost`, so every origin is `http://localhost:<port>`.
++ */
++export const localServiceEmulators = (directory: string) =>
++  Effect.gen(function* () {
++    const entry = process.env.BASALT_E2E_AUTUMN_EMULATOR;
++    if (entry === undefined || entry === "") return undefined;
++    const first = yield* consecutiveFreePorts(localServiceNames.length);
++    const origins = localServiceNames.map((_, index) => `http://localhost:${first + index}`);
++    yield* runEmulate(
++      directory,
++      entry,
++      "service-emulators",
++      ["--service", localServiceNames.join(","), "--port", String(first)],
++      localServiceNames.map((service, index) => ({ service, origin: origins[index]! })),
++    );
++    return Object.fromEntries(
++      localServiceNames.map((service, index) => [service, origins[index]!]),
++    ) as LocalServices;
++  });
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -19,6 +19,7 @@
+ import { Target } from "./platform.ts";
+ import { roleHost } from "./role-hosts.ts";
+ import { TransportDiagnostic, transportDiagnostic } from "./transport-diagnostic.ts";
++import type { LocalServices } from "./autumn-emulator.ts";
+ 
+ export const BaseUrl = Schema.String.check(
+   Schema.makeFilter((value) => {
+@@ -35,17 +36,36 @@
+     );
+   }),
+ );
++/** An emulator this run started on this machine. */
++const LoopbackUrl = Schema.String.check(
++  Schema.makeFilter((value) => {
++    const url = URL.parse(value);
++    return (
++      url !== null &&
++      !url.username &&
++      !url.password &&
++      !url.search &&
++      !url.hash &&
++      !value.endsWith("/") &&
++      url.protocol === "http:" &&
++      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
++    );
++  }),
++);
++/** A hosted instance, or a stand-in this run started on loopback (`localServiceEmulators`). */
++const ServiceUrl = Schema.Union([BaseUrl, LoopbackUrl]);
+ const Provider = Schema.Struct({
+-  baseUrl: BaseUrl,
++  baseUrl: ServiceUrl,
+   clientId: Schema.NonEmptyString,
+   clientSecret: Schema.NonEmptyString,
+ });
++// Each endpoint must also lie under the provider's own base URL (`GoogleProvider`).
+ const GoogleDiscovery = Schema.Struct({
+-  issuer: BaseUrl,
+-  authorization_endpoint: BaseUrl,
+-  token_endpoint: BaseUrl,
+-  userinfo_endpoint: BaseUrl,
+-  jwks_uri: BaseUrl,
++  issuer: ServiceUrl,
++  authorization_endpoint: ServiceUrl,
++  token_endpoint: ServiceUrl,
++  userinfo_endpoint: ServiceUrl,
++  jwks_uri: ServiceUrl,
+   id_token_signing_alg_values_supported: Schema.Array(Schema.Literal("RS256")).check(
+     Schema.isMinLength(1),
+   ),
+@@ -63,22 +83,6 @@
+   ),
+ );
+ 
+-/** An emulator this run started on this machine. */
+-const LoopbackUrl = Schema.String.check(
+-  Schema.makeFilter((value) => {
+-    const url = URL.parse(value);
+-    return (
+-      url !== null &&
+-      !url.username &&
+-      !url.password &&
+-      !url.search &&
+-      !url.hash &&
+-      !value.endsWith("/") &&
+-      url.protocol === "http:" &&
+-      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+-    );
+-  }),
+-);
+ const RoutesFixture = Schema.Struct({ baseUrl: LoopbackUrl, token: Schema.NonEmptyString });
+ 
+ /** The fields of v1 WorkOS listings that seeding reads back. */
+@@ -101,14 +105,11 @@
+     mapsRoutes: Schema.optionalKey(RoutesFixture),
+     google: GoogleProvider,
+     github: Provider,
+-    mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
+-    company: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
++    mail: Schema.Struct({ baseUrl: ServiceUrl, token: Schema.NonEmptyString }),
++    company: Schema.Struct({ baseUrl: ServiceUrl, token: Schema.NonEmptyString }),
+     /** Hosted, or the local Autumn emulator a CI job runs (`localAutumnEmulator`). */
+-    billing: Schema.Struct({
+-      baseUrl: Schema.Union([BaseUrl, LoopbackUrl]),
+-      token: Schema.NonEmptyString,
+-    }),
+-    workos: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
++    billing: Schema.Struct({ baseUrl: ServiceUrl, token: Schema.NonEmptyString }),
++    workos: Schema.Struct({ baseUrl: ServiceUrl, token: Schema.NonEmptyString }),
+   }),
+ });
+ /**
+@@ -475,6 +476,11 @@
+   origin: string,
+   /** A local Autumn emulator's origin to key in place of a hosted instance. */
+   localBilling?: string,
++  /**
++   * Stand-ins this run started on loopback (`localServiceEmulators`). Each serves one instance at
++   * its root, so it is keyed there instead of creating a hosted instance.
++   */
++  local?: LocalServices,
+ ) =>
+   Effect.gen(function* () {
+     const instance = `executor-onboarding-${randomUUID()}`;
+@@ -489,7 +495,8 @@
+       );
+     const oauth = (service: "google" | "github") =>
+       Effect.gen(function* () {
+-        const instance = yield* create(service);
++        const instance =
++          local === undefined ? yield* create(service) : { providerBaseUrl: local[service] };
+         // Explicit credentials make an ambiguous response safe to repeat without creating another client.
+         const clientId = `executor_e2e_${randomUUID().replaceAll("-", "")}`;
+         const clientSecret = randomUUID();
+@@ -550,15 +557,15 @@
+         services: {
+           google,
+           github,
+-          mail: yield* keyed("resend"),
+-          company: yield* keyed("context"),
++          mail: yield* keyed("resend", undefined, local?.resend),
++          company: yield* keyed("context", undefined, local?.context),
+           // Cloud accepts only Autumn-shaped keys; a private instance is keyed like the sandbox.
+           billing: yield* keyed(
+             "autumn",
+             `am_sk_test_${randomUUID().replaceAll("-", "")}`,
+             localBilling,
+           ),
+-          workos: yield* keyed("workos"),
++          workos: yield* keyed("workos", undefined, local?.workos),
+         },
+       }),
+     );
+diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+--- a/e2e/support/cloud-environment.ts
++++ b/e2e/support/cloud-environment.ts
+@@ -19,7 +19,7 @@
+ import { serveShardedOtlpCollector } from "./otlp-collector.ts";
+ import { randomBytes } from "node:crypto";
+ import { createEmulatorFixture, EmulatorFixture, provisionEmulatorRequest } from "./emulators.ts";
+-import { localAutumnEmulator } from "./autumn-emulator.ts";
++import { localAutumnEmulator, localServiceEmulators } from "./autumn-emulator.ts";
+ import {
+   createV1Database,
+   cloudRuntimeDatabaseRole,
+@@ -220,9 +220,11 @@
+     // A stage signing in through another Cloud shares that Cloud's services, billing included.
+     const localBilling =
+       input.signInThrough === undefined ? yield* localAutumnEmulator(directory) : undefined;
++    const localServices =
++      input.signInThrough === undefined ? yield* localServiceEmulators(directory) : undefined;
+     const fixture =
+       input.signInThrough === undefined
+-        ? yield* createEmulatorFixture(input.origin, localBilling)
++        ? yield* createEmulatorFixture(input.origin, localBilling, localServices)
+         : Redacted.make(
+             EmulatorFixture.make({
+               version: 4,
