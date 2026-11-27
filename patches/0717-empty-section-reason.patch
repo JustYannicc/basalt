@@ -1,21 +1,23 @@
 diff --git a/apps/docs/content/mcp.md b/apps/docs/content/mcp.md
+index 29fbc0170..6b27c08f5 100644
 --- a/apps/docs/content/mcp.md
 +++ b/apps/docs/content/mcp.md
-@@ -45,7 +45,9 @@
+@@ -45,7 +45,9 @@ For one or a few calls, an agent needs no program:
  
  `call` returns each call's outcome in order, with `ok` and its `value` or
  `error`. One failed call does not stop the others. An unknown path comes back
--with the closest paths. A result that would pass the output limit is refused
+-with the closest paths. Results come back whole, however large; `execute` can
 +with the closest paths. A path in a section that lists no tools for you, such as
 +one that needs an account connected another way, comes back with that section's
-+title and description. A result that would pass the output limit is refused
- rather than cut, with a pointer to `execute`, which can return only the fields
- you need. Approvals and input pause `call` exactly as they pause `execute`,
++title and description. Results come back whole, however large; `execute` can
+ return only the fields you need. Approvals and input pause `call` exactly as they pause `execute`,
  except in [native mode](#elicitation-modes): there `call` is marked destructive
+ and open-world, so your MCP client confirms each call before it runs, and that
 diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/execute.ts
+index 90e9957a7..94c5c86f0 100644
 --- a/packages/mcp/src/contracts/execute.ts
 +++ b/packages/mcp/src/contracts/execute.ts
-@@ -405,7 +405,12 @@
+@@ -444,7 +444,12 @@ export const DescribeResult = Schema.Struct({
    ),
    namespaces: Schema.Array(SearchNamespace),
    missing: Schema.Array(
@@ -29,7 +31,7 @@ diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/
    ),
  });
  /** One direct tool call: an exact path from search and the tool's JSON input. */
-@@ -510,7 +515,7 @@
+@@ -544,7 +549,7 @@ export const SearchTool = McpTool.make("search", {
  /** Full signatures for exact paths, as tools.search.describe returns them in a program. */
  export const DescribeTool = McpTool.make("describe", {
    description:
@@ -39,9 +41,10 @@ diff --git a/packages/mcp/src/contracts/execute.ts b/packages/mcp/src/contracts/
    success: DescribeResult,
    failure: CatalogUnavailable,
 diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/implementation/execute.ts
+index 2b852df3f..042950f90 100644
 --- a/packages/mcp/src/implementation/execute.ts
 +++ b/packages/mcp/src/implementation/execute.ts
-@@ -455,6 +455,35 @@
+@@ -459,6 +459,35 @@ const canonical = (name: string) => {
  const within = (path: string, namespace: string) =>
    path === namespace || path.startsWith(`${namespace}.`);
  
@@ -77,7 +80,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
  /** Loads the apps named (or every app) and returns their tools in path order. */
  type Described<E> = (
    names: ReadonlyArray<string> | "all",
-@@ -677,9 +706,14 @@
+@@ -679,9 +708,14 @@ const globalSearchPage = <E extends Error>(
  
  /**
   * Full detail for exact tool paths. A path that names no tool is reported with the paths in its
@@ -94,7 +97,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
    Effect.gen(function* () {
      const named = paths.map(canonical);
      const entries = yield* described(named.filter((path) => path !== ""));
-@@ -698,7 +732,13 @@
+@@ -700,7 +734,13 @@ const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>)
              .map((candidate) => candidate.path),
            3,
          );
@@ -109,7 +112,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
          continue;
        }
        items.push({
-@@ -899,6 +939,17 @@
+@@ -906,6 +946,17 @@ function catalog(
      // Tool path prefixes that expose no tools in this execution, and those that do. A call is
      // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
      const namespaces: Namespaces = new Map();
@@ -126,17 +129,17 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
 +    };
      /** The version each loaded namespace's tools came from. */
      const loadedFrom = new Map<string, VersionId>();
-     const unavailableOf = (app: AppId) => {
-@@ -1102,6 +1153,8 @@
+     /** The app and accounts each loaded app's tools were listed with. */
+@@ -1122,6 +1173,8 @@ function catalog(
            failed.push(entry);
-           namespaces.set(namespace, entry);
+           if (namespace !== undefined) namespaces.set(namespace, entry);
          }
 +        for (const [namespace, reason] of emptySections(app.slug, catalog.routers, catalog.tools))
 +          sections.set(namespace, reason);
          const described: Target = {
            ...placeOf(app, linked),
            routers: new Map(catalog.routers.map((router) => [router.path, router])),
-@@ -1380,14 +1433,19 @@
+@@ -1417,14 +1470,19 @@ function catalog(
        unavailableApps,
        unavailableToolReason: (path: string) => {
          const app = apps.find((app) => unique(app) && path.startsWith(`${app.slug}.`));
@@ -163,8 +166,8 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
 +        );
        },
        unknownTool: (error: CodeMode.Diagnostic) => unknownTool(error, loadedFrom, slugs),
-     };
-@@ -1634,7 +1692,8 @@
+       /**
+@@ -1714,7 +1772,8 @@ function runProgram(
            "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from tools.search.",
          input: DescribeInput,
          output: DescribeResult,
@@ -174,7 +177,7 @@ diff --git a/packages/mcp/src/implementation/execute.ts b/packages/mcp/src/imple
        });
        const runtime = CodeMode.make({
          tools: {
-@@ -1957,6 +2016,6 @@
+@@ -2028,6 +2087,6 @@ export const searchCatalog = (backend: McpBackend<Error>, input: typeof SearchIn
  
  /** The describe tool: full signatures for exact paths, as tools.search.describe returns them. */
  export const describeCatalog = (backend: McpBackend<Error>, input: typeof DescribeInput.Type) =>

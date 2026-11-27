@@ -1,7 +1,7 @@
 {
   "identity": "basalt-settings-catalog-copy-note",
   "file": "0729-settings-catalog-copy-note.patch",
-  "content_sha256": "e5d92b954a36efbfad9da3c5385f389f2b88a61596e2dce471a21cfe5a0c78c6",
+  "content_sha256": "65cbdddb93d4a5ef21fc79fb0cf1975749e5fc6b97d31109834ad8be386a81e6",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

@@ -102,13 +102,16 @@ test("both Google halves retain browser setup, ten-minute budgets and independen
     assert.equal(job["runs-on"], "ubuntu-latest");
     assert.equal(job["timeout-minutes"], 10);
     assert.equal(job.if, `contains(fromJSON(needs.select.outputs.jobs), '${ids[index]}')`);
-    assert.equal(job.steps[3].uses, "./.github/actions/setup-browser");
-    assert.deepEqual(job.steps[3].with, { "prepare-upstream": "true" });
-    assert.equal(job.steps[3]["timeout-minutes"], 5);
-    assert.equal(job.steps[4].run, "bun run e2e:prepare");
-    assert.equal(job.steps[4]["timeout-minutes"], 2);
-    assert.equal(job.steps[5].run, "node ../scripts/check-e2e-browser.mjs");
-    assert.equal(job.steps[5]["timeout-minutes"], 1);
+    const browser = job.steps.findIndex(
+      (step: { uses?: string }) => step.uses === "./.github/actions/setup-browser",
+    );
+    assert.ok(browser > 0);
+    assert.deepEqual(job.steps[browser].with, { "prepare-upstream": "true" });
+    assert.equal(job.steps[browser]["timeout-minutes"], 5);
+    assert.equal(job.steps[browser + 1].run, "bun run e2e:prepare");
+    assert.equal(job.steps[browser + 1]["timeout-minutes"], 2);
+    assert.equal(job.steps[browser + 2].run, "node ../scripts/check-e2e-browser.mjs");
+    assert.equal(job.steps[browser + 2]["timeout-minutes"], 1);
     assert.deepEqual(job.steps.at(-2), recovery.steps.at(-2));
     assert.equal(job.steps.at(-2).if, "always()");
     assert.equal(job.steps.at(-1).if, "always()");

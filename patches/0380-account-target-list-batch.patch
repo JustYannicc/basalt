@@ -1,201 +1,46 @@
-diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
---- a/packages/sdk/src/implementation/account-targets.ts
-+++ b/packages/sdk/src/implementation/account-targets.ts
-@@ -16,13 +16,18 @@
- /** Saves target metadata and refuses bound accounts before any cloud credential resolution. */
- export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined) => {
-+  const readMany = (accounts: readonly AccountId[], owner: OwnerId) =>
-+    Effect.gen(function* () {
-+      if (accounts.length === 0) return [];
-+      const rows = yield* query(() =>
-+        db.findMany("accountTargets", {
-+          where: (b) => b.and(b("account", "in", accounts), b("owner", "=", owner)),
-+        }),
-+      );
-+      return (yield* Effect.forEach(rows, decodeAccountTarget)).filter(
-+        (binding) => binding !== undefined,
-+      );
-+    });
-   const read = (account: AccountId, owner: OwnerId) =>
--    Effect.gen(function* () {
--      const row = yield* query(() =>
--        db.findFirst("accountTargets", {
--          where: (b) => b.and(b("account", "=", account), b("owner", "=", owner)),
--        }),
--      );
--      return yield* decodeAccountTarget(row);
--    });
-+    readMany([account], owner).pipe(Effect.map((rows) => rows[0]));
-   const authorize = (binding: AccountTargetBinding, managing: boolean) =>
-     Effect.gen(function* () {
-@@ -145,10 +150,8 @@
-       }),
-   };
--  const execution = (input: {
--    readonly id: AccountId;
--    readonly owner: OwnerId;
--  }): Effect.Effect<AccountExecution | undefined, StorageError> =>
--    Effect.gen(function* () {
--      const binding = yield* read(input.id, input.owner);
-+  const projectExecution = (
-+    binding: AccountTargetBinding | undefined,
-+  ): Effect.Effect<AccountExecution | undefined, StorageError> =>
-+    Effect.gen(function* () {
-       if (binding === undefined || binding.mode === "cloud") return undefined;
-       const allowed =
-@@ -165,4 +168,22 @@
-         status,
-       };
-+    });
-+  const execution = (input: { readonly id: AccountId; readonly owner: OwnerId }) =>
-+    read(input.id, input.owner).pipe(Effect.flatMap(projectExecution));
-+  const executions = (input: {
-+    readonly owner: OwnerId;
-+    readonly accounts: readonly AccountId[];
-+  }) =>
-+    Effect.gen(function* () {
-+      const bindings = new Map(
-+        (yield* readMany(input.accounts, input.owner)).map((binding) => [binding.account, binding]),
-+      );
-+      return new Map(
-+        yield* Effect.forEach(input.accounts, (account) =>
-+          projectExecution(bindings.get(account)).pipe(
-+            Effect.map((execution) => [account, execution] as const),
-+          ),
-+        ),
-+      );
-     });
-   const requireCloudCall = (input: {
-@@ -228,4 +249,4 @@
-       }
-     });
--  return { operations, execution, requireCloudCall, requireCloud };
-+  return { operations, execution, executions, requireCloudCall, requireCloud };
- };
-diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
---- a/packages/sdk/src/implementation/create.ts
-+++ b/packages/sdk/src/implementation/create.ts
-@@ -647,10 +647,12 @@
-           Effect.gen(function* () {
-             const accounts = yield* accountOperations.list(input);
--            return yield* Effect.forEach(accounts, (account) =>
--              Effect.gen(function* () {
--                const execution = yield* accountTargets.execution(account);
--                return { ...account, ...(execution === undefined ? {} : { execution }) };
--              }),
--            );
-+            const executions = yield* accountTargets.executions({
-+              owner: input.owner,
-+              accounts: accounts.map((account) => account.id),
-+            });
-+            return accounts.map((account) => {
-+              const execution = executions.get(account.id);
-+              return { ...account, ...(execution === undefined ? {} : { execution }) };
-+            });
-           }),
-         remove: (input) =>
 diff --git a/apps/hosted/testing/storage-fault-fixture.ts b/apps/hosted/testing/storage-fault-fixture.ts
+index b869c1b..75ec162 100644
 --- a/apps/hosted/testing/storage-fault-fixture.ts
 +++ b/apps/hosted/testing/storage-fault-fixture.ts
-@@ -43,4 +43,5 @@
+@@ -67,6 +67,7 @@ export const storageFaultFixture = Effect.sync(() => {
+       identity: number;
        placement: number;
        maximumParameters: number;
 +      targets: number;
      }
    >();
-@@ -61,4 +62,5 @@
+   const transformer: Statement.Transformer = (statement, sql, _fiber, span) =>
+@@ -85,12 +86,14 @@ export const storageFaultFixture = Effect.sync(() => {
+                 identity: 0,
                  placement: 0,
                  maximumParameters: 0,
 +                targets: 0,
                };
                count.statements++;
-@@ -67,4 +69,5 @@
+               count.maximumParameters = Math.max(count.maximumParameters, parameters.length);
+               if (/executor_account_acquisitions/iu.test(text)) count.acquisition++;
                if (/executor_account_identities/iu.test(text)) count.identity++;
                if (/hosted_account_access/iu.test(text)) count.placement++;
 +              if (/executor_account_targets/iu.test(text)) count.targets++;
                counts.set(parent.spanId, count);
              }
+             break;
 diff --git a/e2e/support/account-target-sdk-source.ts b/e2e/support/account-target-sdk-source.ts
+index 3f31cd9..9f93343 100644
 --- a/e2e/support/account-target-sdk-source.ts
 +++ b/e2e/support/account-target-sdk-source.ts
-@@ -59,4 +59,6 @@
+@@ -58,6 +58,8 @@ Runtime.runMain(Effect.scoped(Effect.gen(function* () {
+     route("bind",Schema.Struct({account:AccountId,revision:Schema.Number,enabled:Schema.Boolean}),value=>executor[AccountTargetsHost].save({...value,owner,target})),
      route("clear",Schema.Struct({account:AccountId,revision:Schema.Number}),value=>executor[AccountTargetsHost].clear({...value,owner}).pipe(Effect.as(null))),
      route("read",Schema.Struct({account:AccountId}),value=>executor.accounts.get({...value,owner})),
 +    route("list",Schema.Null,()=>executor.accounts.list({owner})),
 +    route("empty",Schema.Null,()=>executor.accounts.list({owner:OwnerId.make("empty-target-owner")})),
      route("call",ToolInputs.call,value=>executor.tools.call(value)),
      route("call-unhosted",ToolInputs.call,value=>withoutMachineHost.tools.call(value)),
-diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
---- a/e2e/tests/account-targets.spec.ts
-+++ b/e2e/tests/account-targets.spec.ts
-@@ -17,4 +17,23 @@
-           Schema.Struct({ app: Schema.String, local: Schema.String, cloud: Schema.String }),
-         )(setup.body);
-+        const listed = Effect.gen(function* () {
-+          const response = yield* sdk.request("list", null);
-+          expect(response.status).toBe(200);
-+          return yield* Schema.decodeUnknownEffect(
-+            Schema.Array(
-+              Schema.Struct({
-+                id: Schema.String,
-+                execution: Schema.optionalKey(
-+                  Schema.Struct({
-+                    kind: Schema.Literal("device"),
-+                    device: Schema.String,
-+                    status: Schema.String,
-+                  }),
-+                ),
-+              }),
-+            ),
-+          )(response.body);
-+        });
-+        expect((yield* sdk.request("empty", null)).body).toEqual([]);
-         const call = (account: string, kind = "query") =>
-           sdk.request("call", {
-@@ -38,4 +57,11 @@
-           execution: { kind: "device", device: "fixture-device", status: "online" },
-         });
-+        const online = yield* listed;
-+        expect(online.find((account) => account.id === ids.local)?.execution).toMatchObject({
-+          kind: "device",
-+          device: "fixture-device",
-+          status: "online",
-+        });
-+        expect(online.find((account) => account.id === ids.cloud)?.execution).toBeUndefined();
-         // An online target is metadata, not an installed device execution path.
-         const unavailable = yield* call(ids.local);
-@@ -56,4 +82,7 @@
-           execution: { status: "offline" },
-         });
-+        expect(
-+          (yield* listed).find((account) => account.id === ids.local)?.execution,
-+        ).toMatchObject({ status: "offline" });
-         expect((yield* call(ids.cloud)).body).toMatchObject({ value: { ran: "cloud" } });
-         yield* sdk.request("status", "unavailable");
-@@ -63,4 +92,7 @@
-         yield* sdk.request("allowed", false);
-         expect((yield* call(ids.local)).status).toBe(409);
-+        expect(
-+          (yield* listed).find((account) => account.id === ids.local)?.execution,
-+        ).toMatchObject({ status: "unavailable" });
-         yield* sdk.request("allowed", true);
-         yield* sdk.restart;
-@@ -74,7 +106,13 @@
-         ).toBe(200);
-         expect((yield* call(ids.local)).status).toBe(409);
-+        expect(
-+          (yield* listed).find((account) => account.id === ids.local)?.execution,
-+        ).toMatchObject({ status: "disabled" });
-         expect((yield* sdk.request("clear", { account: ids.local, revision: 1 })).status).toBe(409);
-         expect((yield* sdk.request("clear", { account: ids.local, revision: 2 })).status).toBe(200);
-         expect((yield* call(ids.local)).body).toMatchObject({ value: { ran: "cloud" } });
-+        expect(
-+          (yield* listed).find((account) => account.id === ids.local)?.execution,
-+        ).toBeUndefined();
-         expect(
-           (yield* sdk.request("bind", { account: ids.local, revision: 0, enabled: true })).status,
+     route("status",Schema.Literals(["online","offline","unavailable"]),value=>Effect.sync(()=>{status=value;return null;})),
 diff --git a/e2e/tests/account-target-list-budget.spec.ts b/e2e/tests/account-target-list-budget.spec.ts
 new file mode 100644
+index 0000000..105b1b0
 --- /dev/null
 +++ b/e2e/tests/account-target-list-budget.spec.ts
 @@ -0,0 +1,199 @@
@@ -398,3 +243,186 @@ new file mode 100644
 +    ),
 +  );
 +});
+diff --git a/e2e/tests/account-targets.spec.ts b/e2e/tests/account-targets.spec.ts
+index 718c5e3..ccc5f45 100644
+--- a/e2e/tests/account-targets.spec.ts
++++ b/e2e/tests/account-targets.spec.ts
+@@ -16,6 +16,25 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         const ids = yield* Schema.decodeUnknownEffect(
+           Schema.Struct({ app: Schema.String, local: Schema.String, cloud: Schema.String }),
+         )(setup.body);
++        const listed = Effect.gen(function* () {
++          const response = yield* sdk.request("list", null);
++          expect(response.status).toBe(200);
++          return yield* Schema.decodeUnknownEffect(
++            Schema.Array(
++              Schema.Struct({
++                id: Schema.String,
++                execution: Schema.optionalKey(
++                  Schema.Struct({
++                    kind: Schema.Literal("device"),
++                    device: Schema.String,
++                    status: Schema.String,
++                  }),
++                ),
++              }),
++            ),
++          )(response.body);
++        });
++        expect((yield* sdk.request("empty", null)).body).toEqual([]);
+         const call = (account: string, kind = "query") =>
+           sdk.request("call", {
+             app: ids.app,
+@@ -37,6 +56,13 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
+           execution: { kind: "device", device: "fixture-device", status: "online" },
+         });
++        const online = yield* listed;
++        expect(online.find((account) => account.id === ids.local)?.execution).toMatchObject({
++          kind: "device",
++          device: "fixture-device",
++          status: "online",
++        });
++        expect(online.find((account) => account.id === ids.cloud)?.execution).toBeUndefined();
+         // An online target is metadata, not an installed device execution path.
+         const unavailable = yield* call(ids.local);
+         expect(unavailable.status).toBe(409);
+@@ -55,6 +81,9 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         expect((yield* sdk.request("read", { account: ids.local })).body).toMatchObject({
+           execution: { status: "offline" },
+         });
++        expect(
++          (yield* listed).find((account) => account.id === ids.local)?.execution,
++        ).toMatchObject({ status: "offline" });
+         expect((yield* call(ids.cloud)).body).toMatchObject({ value: { ran: "cloud" } });
+         yield* sdk.request("status", "unavailable");
+         expect((yield* call(ids.local)).status).toBe(409);
+@@ -62,6 +91,9 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+         expect((yield* call(ids.local, "mutation")).status).toBe(409);
+         yield* sdk.request("allowed", false);
+         expect((yield* call(ids.local)).status).toBe(409);
++        expect(
++          (yield* listed).find((account) => account.id === ids.local)?.execution,
++        ).toMatchObject({ status: "unavailable" });
+         yield* sdk.request("allowed", true);
+         yield* sdk.restart;
+         yield* sdk.request("setup", null);
+@@ -73,9 +105,15 @@ layer(TestLive, { excludeTestServices: true })("Account execution targets", (it)
+           (yield* sdk.request("bind", { account: ids.local, revision: 1, enabled: false })).status,
+         ).toBe(200);
+         expect((yield* call(ids.local)).status).toBe(409);
++        expect(
++          (yield* listed).find((account) => account.id === ids.local)?.execution,
++        ).toMatchObject({ status: "disabled" });
+         expect((yield* sdk.request("clear", { account: ids.local, revision: 1 })).status).toBe(409);
+         expect((yield* sdk.request("clear", { account: ids.local, revision: 2 })).status).toBe(200);
+         expect((yield* call(ids.local)).body).toMatchObject({ value: { ran: "cloud" } });
++        expect(
++          (yield* listed).find((account) => account.id === ids.local)?.execution,
++        ).toBeUndefined();
+         expect(
+           (yield* sdk.request("bind", { account: ids.local, revision: 0, enabled: true })).status,
+         ).toBe(409);
+diff --git a/packages/sdk/src/implementation/account-targets.ts b/packages/sdk/src/implementation/account-targets.ts
+index 9e738a1..2a5616c 100644
+--- a/packages/sdk/src/implementation/account-targets.ts
++++ b/packages/sdk/src/implementation/account-targets.ts
+@@ -15,15 +15,20 @@ import { decodeAccountTarget, type AccountTargetRead } from "./account-target-re
+ 
+ /** Saves target metadata and refuses bound accounts before any cloud credential resolution. */
+ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined) => {
+-  const read = (account: AccountId, owner: OwnerId) =>
++  const readMany = (accounts: readonly AccountId[], owner: OwnerId) =>
+     Effect.gen(function* () {
+-      const row = yield* query(() =>
+-        db.findFirst("accountTargets", {
+-          where: (b) => b.and(b("account", "=", account), b("owner", "=", owner)),
++      if (accounts.length === 0) return [];
++      const rows = yield* query(() =>
++        db.findMany("accountTargets", {
++          where: (b) => b.and(b("account", "in", accounts), b("owner", "=", owner)),
+         }),
+       );
+-      return yield* decodeAccountTarget(row);
++      return (yield* Effect.forEach(rows, decodeAccountTarget)).filter(
++        (binding) => binding !== undefined,
++      );
+     });
++  const read = (account: AccountId, owner: OwnerId) =>
++    readMany([account], owner).pipe(Effect.map((rows) => rows[0]));
+   const authorize = (binding: AccountTargetBinding, managing: boolean) =>
+     Effect.gen(function* () {
+       if (host === undefined || !(yield* host.authorize({ ...binding, managing })))
+@@ -144,12 +149,10 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+         );
+       }),
+   };
+-  const execution = (input: {
+-    readonly id: AccountId;
+-    readonly owner: OwnerId;
+-  }): Effect.Effect<AccountExecution | undefined, StorageError> =>
++  const projectExecution = (
++    binding: AccountTargetBinding | undefined,
++  ): Effect.Effect<AccountExecution | undefined, StorageError> =>
+     Effect.gen(function* () {
+-      const binding = yield* read(input.id, input.owner);
+       if (binding === undefined || binding.mode === "cloud") return undefined;
+       const allowed =
+         host !== undefined && (yield* host.authorize({ ...binding, managing: false }));
+@@ -165,6 +168,24 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+         status,
+       };
+     });
++  const execution = (input: { readonly id: AccountId; readonly owner: OwnerId }) =>
++    read(input.id, input.owner).pipe(Effect.flatMap(projectExecution));
++  const executions = (input: {
++    readonly owner: OwnerId;
++    readonly accounts: readonly AccountId[];
++  }) =>
++    Effect.gen(function* () {
++      const bindings = new Map(
++        (yield* readMany(input.accounts, input.owner)).map((binding) => [binding.account, binding]),
++      );
++      return new Map(
++        yield* Effect.forEach(input.accounts, (account) =>
++          projectExecution(bindings.get(account)).pipe(
++            Effect.map((execution) => [account, execution] as const),
++          ),
++        ),
++      );
++    });
+   const requireCloudCall = (input: {
+     readonly accounts: readonly {
+       readonly id: AccountId;
+@@ -227,5 +248,5 @@ export const makeAccountTargets = (db: Query, host: MachineAccounts | undefined)
+         if (binding !== undefined && binding.mode === "device") return yield* new StorageError();
+       }
+     });
+-  return { operations, execution, requireCloudCall, requireCloud };
++  return { operations, execution, executions, requireCloudCall, requireCloud };
+ };
+diff --git a/packages/sdk/src/implementation/create.ts b/packages/sdk/src/implementation/create.ts
+index cf9e110..f22a7a1 100644
+--- a/packages/sdk/src/implementation/create.ts
++++ b/packages/sdk/src/implementation/create.ts
+@@ -665,12 +665,14 @@ export const createExecutor = (
+         list: (input) =>
+           Effect.gen(function* () {
+             const accounts = yield* accountOperations.list(input);
+-            return yield* Effect.forEach(accounts, (account) =>
+-              Effect.gen(function* () {
+-                const execution = yield* accountTargets.execution(account);
+-                return { ...account, ...(execution === undefined ? {} : { execution }) };
+-              }),
+-            );
++            const executions = yield* accountTargets.executions({
++              owner: input.owner,
++              accounts: accounts.map((account) => account.id),
++            });
++            return accounts.map((account) => {
++              const execution = executions.get(account.id);
++              return { ...account, ...(execution === undefined ? {} : { execution }) };
++            });
+           }),
+         remove: (input) =>
+           Effect.gen(function* () {

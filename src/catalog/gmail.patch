@@ -55,7 +55,7 @@
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.140"
-+    "apps": "0.0.1-beta.104-basalt.15"
++    "apps": "0.0.1-beta.104-basalt.16"
    }
  }
 --- a/tools/gmail.ts

@@ -1,0 +1,25 @@
+{
+  "scenarios": {
+    "mcpListingInputs": {
+      "fixtures": "actors",
+      "title": "MCP execute lists tools again for a new version, link change or credential, never across callers or after revoked access",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "Shared execute path; covered on self-host"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Hosted version API scenario"
+        }
+      }
+    }
+  },
+  "runs": {
+    "mcpListingInputs": ["declared:self-host"]
+  },
+  "inputs": [".upstream/packages/apps/**", ".upstream/packages/sdk/**"]
+}

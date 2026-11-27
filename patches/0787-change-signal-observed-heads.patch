@@ -1,0 +1,122 @@
+diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
+index 8a2c42e..a472f58 100644
+--- a/apps/hosted/web/src/contracts/change-signal.ts
++++ b/apps/hosted/web/src/contracts/change-signal.ts
+@@ -123,6 +123,35 @@ const currentHeads = (
+   return pending;
+ };
+ 
++/**
++ * Views reading through one feed. Any view's read is authoritative for the others, so a view
++ * whose accepted data a sibling's read proves behind reads again; otherwise a view confirmed at
++ * the handshake keeps stale data with no warning when a hint is missed. Only settled views are
++ * asked, so failed views keep their bounded recovery and moving heads cannot ping-pong reads.
++ * The feed already tracks every watch's heads and should own this; it lives here because the
++ * feed ships in the provenance-pinned framework bundle.
++ */
++type Sibling = {
++  readonly topics: readonly string[];
++  /** The accepted receipt while the view shows accepted data and is not reading. */
++  readonly settled: () => ChangeReceipt | undefined;
++  readonly request: () => void;
++};
++const siblings = new WeakMap<Registry, Map<string, Set<Sibling>>>();
++/**
++ * Whether `receipt` holds a newer revision of a head that `held` covers for these topics. One feed
++ * serves one set of server-scoped resources, so a resource `held` lacks is not one it missed.
++ * Revisions are decimal strings, compared the way app-data's `newerRevision` does.
++ */
++const provesBehind = (receipt: ChangeReceipt, held: ChangeReceipt, topics: readonly string[]) =>
++  receipt.revisions.some((hint) => {
++    if (!topics.includes(hint.topic)) return false;
++    const seen = held.revisions.find(
++      (other) => other.topic === hint.topic && other.resource === hint.resource,
++    );
++    return seen !== undefined && BigInt(hint.revision) > BigInt(seen.revision);
++  });
++
+ /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
+ const changeRetained =
+   (
+@@ -181,6 +210,19 @@ const changeRetained =
+         let ended = false;
+         let subscribed = false;
+         let resolveBody: ((value: AsyncResult.AsyncResult<A, E>) => void) | undefined;
++        let reading = false;
++        /** The last read could not be accepted; its own bounded recovery owns the next one. */
++        let unaccepted = false;
++        const sibling: Sibling = {
++          topics,
++          settled: () => (ended || reading || unaccepted ? undefined : held?.receipt),
++          request: () => watch?.request(),
++        };
++        let siblingViews = siblings.get(registry)?.get(base);
++        const others = () =>
++          [...(siblingViews ?? [])].filter(
++            (other) => other !== sibling && other.topics.some((topic) => topics.includes(topic)),
++          );
+         const publish = (value: Value) => {
+           shown = value;
+           get.setSelf(value);
+@@ -222,11 +264,20 @@ const changeRetained =
+               : result;
+           held = { result: retained, receipt };
+           get.set(cache, held);
++          unaccepted = false;
+           publish(retained);
++          for (const other of others()) {
++            const settled = other.settled();
++            if (settled === undefined) continue;
++            if (provesBehind(receipt, settled, other.topics)) other.request();
++            // A sibling that settled newer heads while this read was in flight did not ask this one.
++            else if (provesBehind(settled, receipt, topics)) sibling.request();
++          }
+         };
+         const fenced = async () => {
+           if (ended) return;
+           publish(AsyncResult.waiting(shown));
++          reading = true;
+           try {
+             if (watch !== undefined) {
+               await watch.read(body, (result, _version, receipt) => accept(result, receipt));
+@@ -263,6 +314,12 @@ const changeRetained =
+                 previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
+               }),
+             );
++            unaccepted = true;
++            // Heads moved under this read, so settled siblings sharing these topics may be stale.
++            if (error instanceof ChangeReadRetry && error.reason === "moving")
++              for (const other of others()) if (other.settled() !== undefined) other.request();
++          } finally {
++            reading = false;
+           }
+         };
+         const watch =
+@@ -272,13 +329,26 @@ const changeRetained =
+                 topics: watched,
+                 ...(held === undefined ? {} : { accepted: held.receipt }),
+                 confirmed: () => {
+-                  if (!ended && held !== undefined) publish(held.result);
++                  if (ended || held === undefined) return;
++                  unaccepted = false;
++                  publish(held.result);
+                 },
+                 refresh: fenced,
+                 revoked,
+               });
++        if (watch !== undefined) {
++          let scoped = siblings.get(registry);
++          if (scoped === undefined) {
++            scoped = new Map();
++            siblings.set(registry, scoped);
++          }
++          siblingViews = scoped.get(base) ?? new Set();
++          scoped.set(base, siblingViews);
++          siblingViews.add(sibling);
++        }
+         get.subscribe(requests, () => (watch === undefined ? void fenced() : watch.request()));
+         get.addFinalizer(() => {
++          siblingViews?.delete(sibling);
+           ended = true;
+           watch?.stop();
+           resolveBody?.(AsyncResult.initial());

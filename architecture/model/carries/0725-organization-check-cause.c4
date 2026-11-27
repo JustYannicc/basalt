@@ -1,7 +1,7 @@
 model {
   extend basalt.toolsGateway {
     metadata {
-      constraint "Creating an organization fails closed on the account check. An account whose email is not verified is refused with a status and message that say to verify it, because retrying cannot help; a v1 lookup or store that does not answer stays the retryable 503. Every refusal and failed check records its reason on the request's span and in the log, never the email, account or token, so each reason can be counted."
+      constraint "Creating an organization fails closed on the account check. An account whose email is not verified is refused with a status and message that say to verify it, because retrying cannot help; a v1 lookup or store that does not answer stays the retryable 503. Every refusal and failed check records its reason on the request's span and in the log, never the email, account or token, so each reason can be counted. The check runs in the cloud auth core, where the organization-creation hook lives."
     }
   }
 }

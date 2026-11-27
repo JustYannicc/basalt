@@ -145,8 +145,9 @@ test(
         "select value from private_executor_settings where key = 'version'",
       );
       assert.ok(original);
+      // The storage gate admits the released prelude or later, so step back to the prelude.
       await fixture.query(
-        "update private_executor_settings set value = '4.0.1' where key = 'version'",
+        "update private_executor_settings set value = '4.0.29' where key = 'version'",
       );
       await fixture.query(`create function reject_fixture_upgrade() returns event_trigger language plpgsql as $$
       begin raise exception using errcode = 'P0001', message = 'SYNTHETIC_DRIVER_SECRET',
@@ -157,7 +158,7 @@ test(
       const failed = await migrate(fixtureUrl.toString());
       assert.equal(failed.status, 1);
       assert.match(failed.stderr, /migrate the executor tables/);
-      assert.match(failed.stderr, /executor version 4\.0\.2/);
+      assert.match(failed.stderr, /executor version 4\.0\.30/);
       assert.match(failed.stderr, /StorageMigrationFailed.*MigrationError.*SqlError/);
       assert.match(failed.stderr, /SQLSTATE P0001/);
       assert.doesNotMatch(
@@ -167,7 +168,7 @@ test(
       assert.equal(
         (await fixture.query("select value from private_executor_settings where key = 'version'"))
           .rows[0].value,
-        "4.0.1",
+        "4.0.29",
       );
       await fixture.query("drop event trigger reject_fixture_upgrade");
       await fixture.query("update private_executor_settings set value = $1 where key = 'version'", [

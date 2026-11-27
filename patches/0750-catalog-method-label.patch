@@ -1,7 +1,8 @@
 diff --git a/packages/catalog/src/contracts/connection-guidance.ts b/packages/catalog/src/contracts/connection-guidance.ts
+index d25c529bc..14b56ee6b 100644
 --- a/packages/catalog/src/contracts/connection-guidance.ts
 +++ b/packages/catalog/src/contracts/connection-guidance.ts
-@@ -22,6 +22,8 @@
+@@ -22,6 +22,8 @@ export type CredentialGuidance = typeof CredentialGuidance.Type;
  export const CatalogConnectionGuidance = Schema.Struct({
    requirement: Schema.NonEmptyString,
    method: Schema.NonEmptyString,
@@ -11,9 +12,10 @@ diff --git a/packages/catalog/src/contracts/connection-guidance.ts b/packages/ca
    signIn: Schema.optionalKey(
      Schema.Struct({
 diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/packages/ui/src/implementation/dashboard/account-form.tsx
+index f6b814d31..5590c0ba2 100644
 --- a/packages/ui/src/implementation/dashboard/account-form.tsx
 +++ b/packages/ui/src/implementation/dashboard/account-form.tsx
-@@ -93,7 +93,11 @@
+@@ -103,7 +103,11 @@ export function AccountForm<A, E>({
    const methods = Object.entries(provider.definition.auth)
      .filter(([, method]) => method.type !== "secrets" || method.provisioned !== true)
      .sort(([, a], [, b]) => Number(b.type === "oauth2") - Number(a.type === "oauth2"));
@@ -27,9 +29,10 @@ diff --git a/packages/ui/src/implementation/dashboard/account-form.tsx b/package
    const firstOpen = methods.find(([name]) => blocked(name) === undefined)?.[0];
    const [method, setMethod] = useState(
 diff --git a/packages/ui/src/implementation/dashboard/method-labels.ts b/packages/ui/src/implementation/dashboard/method-labels.ts
+index 4d21ccede..40b2b680e 100644
 --- a/packages/ui/src/implementation/dashboard/method-labels.ts
 +++ b/packages/ui/src/implementation/dashboard/method-labels.ts
-@@ -22,18 +22,23 @@
+@@ -22,18 +22,23 @@ export const methodVariant = (name: string) => {
      .join(" ");
  };
  
@@ -57,16 +60,3 @@ diff --git a/packages/ui/src/implementation/dashboard/method-labels.ts b/package
        ] as const,
    );
    const count = (labels: ReadonlyArray<readonly [string, string]>, label: string) =>
-diff --git a/packages/ui/src/implementation/dashboard/oauth-fields.tsx b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
---- a/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-+++ b/packages/ui/src/implementation/dashboard/oauth-fields.tsx
-@@ -422,7 +422,8 @@
-                 `No OAuth client is registered for ${providerName}, and ${brand.name} doesn’t provide one.`}
-             </p>
-           )}
--          {manual && !connectionGuide?.oauthClient && (
-+          {/* A client-credentials guide keeps the catalog's sentence on why there is no sign-in. */}
-+          {manual && (!connectionGuide?.oauthClient || (machine && deferred !== undefined)) && (
-             <p className="text-[13px] leading-5 text-pretty text-muted-foreground">{guidance}</p>
-           )}
-           {unavailable !== undefined && (

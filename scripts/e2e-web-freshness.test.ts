@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdtempSync,
@@ -13,6 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import ts from "./architecture/typescript.ts";
 
 const upstream = fileURLToPath(new URL("../.upstream/", import.meta.url));
 const steps = {
@@ -95,11 +97,29 @@ appendFileSync('built.log', step + '\\n');
     "scripts/e2e-npm-packages.ts",
   ])
     write(path, "\n");
-  for (const name of ["e2e-prepare.ts", "e2e-check-web.ts"]) {
-    const source = join(upstream, "scripts", name);
-    if (existsSync(source)) cpSync(source, join(root, "scripts", name));
+  const scripts = new Set(["scripts/e2e-prepare.ts", "scripts/e2e-check-web.ts"]);
+  for (const script of scripts) {
+    const source = join(upstream, script);
+    mkdirSync(dirname(join(root, script)), { recursive: true });
+    cpSync(source, join(root, script));
+    for (const { fileName } of ts.preProcessFile(readFileSync(source, "utf8")).importedFiles)
+      if (fileName.startsWith(".")) scripts.add(join(dirname(script), fileName));
   }
-  const environment = { PATH: process.env.PATH, EXECUTOR_E2E_CACHE: join(root, "cache") };
+  write(
+    "collector-bun.mjs",
+    `#!/usr/bin/env node
+if (process.argv[2] === '--version') { console.log('1.4.4'); process.exit(0); }
+if (process.argv[2] !== 'packages/telemetry/scripts/build-motel.ts') throw new Error('Unexpected collector command');
+process.argv = [process.execPath, 'build.mjs', 'telemetry:build', 'packages/telemetry/dist/motel/index.js'];
+await import('./build.mjs');
+`,
+  );
+  chmodSync(join(root, "collector-bun.mjs"), 0o755);
+  const environment = {
+    PATH: process.env.PATH,
+    EXECUTOR_E2E_CACHE: join(root, "cache"),
+    EXECUTOR_MOTEL_BUN: join(root, "collector-bun.mjs"),
+  };
   const git = (args: string[]) => {
     const result = spawnSync("git", args, { cwd: root, env: environment, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);

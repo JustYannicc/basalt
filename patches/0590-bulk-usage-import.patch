@@ -1,8 +1,7 @@
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
-index ec2dd21..6df288a 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -71,6 +71,10 @@ import {
+@@ -71,6 +71,10 @@
    poolOrganizationReadPath,
    readPoolOrganization,
  } from "@executor-js/hosted-server/pool-organization";
@@ -13,7 +12,7 @@ index ec2dd21..6df288a 100644
  import { Billing } from "./contracts/billing.ts";
  import { BillingMeter } from "./contracts/billing-meter.ts";
  import { billingBindings } from "./infrastructure/billing.ts";
-@@ -709,6 +713,9 @@ export default Api.make(
+@@ -747,6 +751,9 @@
        HttpRouter.add("POST", poolOrganizationReadPath, readPoolOrganization).pipe(
          HttpRouter.provideRequest(executor),
        ),
@@ -22,7 +21,7 @@ index ec2dd21..6df288a 100644
 +      ),
        HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
        HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
-       HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+       // Starting an import reads the allow table (`writes.ts`) from the product database.
 diff --git a/apps/hosted/self-host/src/implementation/routes.ts b/apps/hosted/self-host/src/implementation/routes.ts
 index adb1d5f..6614328 100644
 --- a/apps/hosted/self-host/src/implementation/routes.ts

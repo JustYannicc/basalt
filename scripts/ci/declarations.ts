@@ -157,7 +157,12 @@ export function readDeclarations(root = repository, { inputs: checkInputs = true
         const fixture =
           source.fixture === undefined
             ? undefined
-            : choice(source.fixture, ["google-routes", "pool-setup", "statement-batch"] as const);
+            : choice(source.fixture, [
+                "google-routes",
+                "pool-setup",
+                "published-frameworks",
+                "statement-batch",
+              ] as const);
         return [file, { scenarios, runs, config, inherited, inputs, fixture }];
       }),
   );

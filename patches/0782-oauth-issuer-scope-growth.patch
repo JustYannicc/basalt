@@ -1,7 +1,8 @@
 diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oauth.ts
+index 5a44da02b..b415daa66 100644
 --- a/packages/sdk/src/contracts/oauth.ts
 +++ b/packages/sdk/src/contracts/oauth.ts
-@@ -1612,6 +1612,8 @@ const reusableGrant = {
+@@ -1756,6 +1756,8 @@ const reusableGrant = {
    requestedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
    /** Unknown on legacy grants and when the service did not confirm its granted scopes. */
    grantedScopes: Schema.optionalKey(Schema.Array(Schema.String)),
@@ -11,6 +12,7 @@ diff --git a/packages/sdk/src/contracts/oauth.ts b/packages/sdk/src/contracts/oa
  /** Private renewal context; machine grants retain scopes and exchange client credentials again. */
  export const OAuthGrant = /* @__PURE__ */ (() =>
 diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/src/implementation/account-sign-in.ts
+index 2c8b424d1..b475856ff 100644
 --- a/packages/sdk/src/implementation/account-sign-in.ts
 +++ b/packages/sdk/src/implementation/account-sign-in.ts
 @@ -5,6 +5,7 @@ import type { Provider } from "../contracts/provider.ts";
@@ -35,9 +37,10 @@ diff --git a/packages/sdk/src/implementation/account-sign-in.ts b/packages/sdk/s
        return { state: "reconnect", reason: "permissions" } as const;
      return { state: "saved", reconnectAt } as const;
 diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index aa8cec15a..355f22b0a 100644
 --- a/packages/sdk/src/implementation/oauth.ts
 +++ b/packages/sdk/src/implementation/oauth.ts
-@@ -113,6 +113,11 @@ import {
+@@ -116,6 +116,11 @@ import {
  } from "../contracts/shared.ts";
  import { StoredAccount, type Credentials } from "../contracts/storage.ts";
  import { type AccountCredential, invocationAccount } from "./provider.ts";
@@ -47,9 +50,9 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
 +  WholeListScopeIssuers,
 +} from "./provider-oauth-scopes.ts";
  import { intersectCredentialHosts } from "./credential-handles.ts";
- import { query, transaction, type Query } from "./database.ts";
+ import { inOrder, query, transaction, type Query } from "./database.ts";
  import {
-@@ -2776,6 +2781,7 @@ export const makeOAuth = (
+@@ -2913,6 +2918,7 @@ export const makeOAuth = (
        const oauthClient = isFirstPartyAttempt(attempt)
          ? undefined
          : (savedClient?.row.id ?? holding?.id ?? attempt.storedClient?.id);
@@ -57,7 +60,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
        /** The grant for the account's credential generation it starts. */
        const decodedGrantOf = (generation: number) =>
          decode(
-@@ -2786,6 +2792,9 @@ export const makeOAuth = (
+@@ -2923,6 +2929,9 @@ export const makeOAuth = (
                  ...issued,
                  server: attempt.server,
                  client: attempt.client,
@@ -67,7 +70,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
                  ...(oauthClient === undefined ? {} : { oauthClient }),
                  ...(attempt.resource === undefined ? {} : { resource: attempt.resource }),
                  ...(attempt.tokenRequestFormat === undefined
-@@ -3119,7 +3128,7 @@ export const makeOAuth = (
+@@ -3259,7 +3268,7 @@ export const makeOAuth = (
              grant.grantedScopes === undefined ||
              missingOAuthScopes(
                method.identity?.issuer,
@@ -77,6 +80,7 @@ diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/impleme
                options?.accountFamilies ?? (yield* AccountFamilyConfiguration).recipes,
              ).length > 0
 diff --git a/packages/sdk/src/implementation/provider-oauth-scopes.ts b/packages/sdk/src/implementation/provider-oauth-scopes.ts
+index 492e1504d..8343fcefd 100644
 --- a/packages/sdk/src/implementation/provider-oauth-scopes.ts
 +++ b/packages/sdk/src/implementation/provider-oauth-scopes.ts
 @@ -1,8 +1,11 @@

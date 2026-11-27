@@ -29,65 +29,71 @@ const base = Target.of({
 const target = Target.of({ ...base, scenarioId: "scenario-owned" });
 
 for (const settled of [false, true])
-  test(`management setup dispatches before its ${settled ? "settled" : "linked"} readiness wait`, async () => {
-    const requests: { method: string; path: string }[] = [];
-    let dispatched = false;
-    const actor: Session = {
-      cookies: Effect.succeed(Redacted.make([])),
-      send: () => Effect.die("unexpected direct actor request"),
-    };
-    const clients = SessionClients.of({
-      session: () => Effect.succeed(actor),
-      request: (_actor, method, path) =>
+  for (const pool of [false, true])
+    test(`management setup dispatches before its ${settled ? "settled" : "linked"} readiness wait with pool=${pool}`, async () => {
+      const requests: { method: string; path: string }[] = [];
+      let dispatched = false;
+      const actor: Session = {
+        cookies: Effect.succeed(Redacted.make([])),
+        send: () => Effect.die("unexpected direct actor request"),
+      };
+      const clients = SessionClients.of({
+        session: () => Effect.succeed(actor),
+        request: (_actor, method, path) =>
+          Effect.sync(() => {
+            requests.push({ method, path });
+            if (method === "POST" && path === "/api/onboarding/prepare") {
+              dispatched = true;
+              return { status: 200, body: { status: "ready" } };
+            }
+            return {
+              status: 200,
+              body:
+                path === "/api/auth/get-session"
+                  ? { user: { id: "user" } }
+                  : {
+                      apps: [{ id: "app", slug: "executor", name: "Executor" }],
+                      links: [{ app: "app", account: "account" }],
+                      accounts: [],
+                    },
+            };
+          }),
+      });
+      const fixtureCalls: string[] = [];
+      const http = HttpClient.make((request) =>
         Effect.sync(() => {
-          requests.push({ method, path });
-          if (method === "POST" && path === "/api/onboarding/prepare") {
-            dispatched = true;
-            return { status: 200, body: { status: "ready" } };
-          }
-          return {
-            status: 200,
-            body:
-              path === "/api/auth/get-session"
-                ? { user: { id: "user" } }
-                : {
-                    apps: [{ id: "app", slug: "executor", name: "Executor" }],
-                    links: [{ app: "app", account: "account" }],
-                    accounts: [],
-                  },
-          };
+          assert.equal(
+            dispatched,
+            true,
+            "readiness cannot finish before provisioning is dispatched",
+          );
+          fixtureCalls.push(request.url);
+          assert.equal(request.body._tag, "Uint8Array");
+          if (request.body._tag === "Uint8Array")
+            assert.deepEqual(JSON.parse(new TextDecoder().decode(request.body.body)), {
+              id: "scenario-owned",
+              user: "user",
+              settled,
+              pool,
+            });
+          return HttpClientResponse.fromWeb(request, Response.json({ ready: true }));
         }),
+      );
+      const result = await Effect.runPromise(
+        prepareManagementApp(actor, "organization", target, undefined, settled, pool).pipe(
+          Effect.provideService(Target, base),
+          Effect.provideService(SessionClients, clients),
+          Effect.provideService(HttpClient.HttpClient, http),
+        ),
+      );
+      assert.equal(result.account, "account");
+      assert.deepEqual(fixtureCalls, ["http://127.0.0.1:1234/management-provisioned"]);
+      assert.deepEqual(requests, [
+        { method: "POST", path: "/api/onboarding/prepare" },
+        { method: "GET", path: "/api/auth/get-session" },
+        { method: "GET", path: "/api/organizations/organization/inventory" },
+      ]);
     });
-    const fixtureCalls: string[] = [];
-    const http = HttpClient.make((request) =>
-      Effect.sync(() => {
-        assert.equal(dispatched, true, "readiness cannot finish before provisioning is dispatched");
-        fixtureCalls.push(request.url);
-        assert.equal(request.body._tag, "Uint8Array");
-        if (request.body._tag === "Uint8Array")
-          assert.deepEqual(JSON.parse(new TextDecoder().decode(request.body.body)), {
-            id: "scenario-owned",
-            user: "user",
-            settled,
-          });
-        return HttpClientResponse.fromWeb(request, Response.json({ ready: true }));
-      }),
-    );
-    const result = await Effect.runPromise(
-      prepareManagementApp(actor, "organization", target, undefined, settled).pipe(
-        Effect.provideService(Target, base),
-        Effect.provideService(SessionClients, clients),
-        Effect.provideService(HttpClient.HttpClient, http),
-      ),
-    );
-    assert.equal(result.account, "account");
-    assert.deepEqual(fixtureCalls, ["http://127.0.0.1:1234/management-provisioned"]);
-    assert.deepEqual(requests, [
-      { method: "POST", path: "/api/onboarding/prepare" },
-      { method: "GET", path: "/api/auth/get-session" },
-      { method: "GET", path: "/api/organizations/organization/inventory" },
-    ]);
-  });
 
 const organization = "organization-7f3a";
 const reads = [

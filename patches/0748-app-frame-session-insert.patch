@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/apps/hosted/server/src/implementation/account-change-schema.ts
+index c0566ea02..18d55a603 100644
 --- a/apps/hosted/server/src/implementation/account-change-schema.ts
 +++ b/apps/hosted/server/src/implementation/account-change-schema.ts
-@@ -2,10 +2,12 @@
+@@ -2,10 +2,12 @@ import { Effect } from "effect";
  import { SqlClient } from "effect/sql";
  import { migrateDeferredChanges } from "./deferred-change-schema.ts";
  
@@ -17,7 +18,7 @@ diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/ap
    yield* sql`create or replace function hosted_account_changed() returns trigger language plpgsql as $$
      declare previous jsonb; following jsonb; item jsonb; target_scope text; topic text;
        reference text; ignored text[]; identity jsonb; notified text[] := '{}'; candidate text;
-@@ -62,6 +64,8 @@
+@@ -62,6 +64,8 @@ export const migrateAccountChanges = Effect.gen(function* () {
            notified := array_append(notified, target_scope);
            foreach topic in array string_to_array(TG_ARGV[1], ',') loop
              if topic = 'observations' and TG_TABLE_NAME = 'executor_accounts' and TG_OP = 'INSERT' then continue; end if;
@@ -26,7 +27,7 @@ diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/ap
              if topic = 'observations' and TG_TABLE_NAME = 'hosted_app_account_links'
                and not exists (select 1 from executor_account_observations where account = item ->> 'account' and source = item ->> 'app') then continue; end if;
              if topic = 'membership' and TG_TABLE_NAME = 'hosted_account_access' and TG_OP = 'INSERT'
-@@ -85,65 +89,80 @@
+@@ -85,65 +89,80 @@ export const migrateAccountChanges = Effect.gen(function* () {
        if TG_OP = 'DELETE' then return OLD; end if;
        return NEW;
      end $$`;
@@ -91,7 +92,7 @@ diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/ap
 -      `create or replace trigger hosted_committed_change after insert or update or delete on "${table}"
 -        for each row execute function hosted_account_changed('${mode}', '${topics}', '${field}', '${ignored}')`,
 -    );
- });
++});
 +
 +/** Per table: scope mode, topics, the column naming the scope, and columns whose writes are ignored. */
 +export const accountChangeTriggers = [
@@ -167,11 +168,12 @@ diff --git a/apps/hosted/server/src/implementation/account-change-schema.ts b/ap
 +  yield* migrateDeferredChanges;
 +  yield* installAccountChangeFunction;
 +  for (const trigger of accountChangeTriggers) yield* sql.unsafe(accountChangeTrigger(trigger));
-+});
+ });
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index 993cc26a9..2cf7dc59e 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -24,7 +24,7 @@
+@@ -26,7 +26,7 @@ import { migrateContributedDepartures } from "./contributed-departure-schema.ts"
  import { migrateAccountRechecks } from "./account-recheck-schema.ts";
  import { migrateAccountObservations } from "./account-observation-schema.ts";
  import { migrateChangeRevisions } from "./change-revision-schema.ts";
@@ -180,21 +182,21 @@ diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/s
  import { migrateAccountTrafficChanges } from "./account-traffic-change-schema.ts";
  import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
  
-@@ -141,7 +141,7 @@
+@@ -149,7 +149,7 @@ export const migrateProductSteps = (
      Effect.mapError(migrationFailed("product")),
    );
  
--const hostedProductMigrations = migrateProductSteps("private_hosted_migrations", {
-+export const hostedProductMigrations = migrateProductSteps("private_hosted_migrations", {
-   "1_baseline": Effect.gen(function* () {
-     yield* migrateGroups;
-     yield* migrateResourceAccess;
-@@ -183,6 +183,8 @@
-   "20_account_changes": migrateAccountChanges,
-   "21_change_journal_prepare": prepareChangeJournal,
-   "23_account_traffic_changes": migrateAccountTrafficChanges,
-+  // Step 20 ran once; its existing triggers call the reinstalled body.
-+  "24_app_session_inserts": installAccountChangeFunction,
- });
- 
- /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
+-const hostedProductMigrations = migrateProductSteps(
++export const hostedProductMigrations = migrateProductSteps(
+   "private_hosted_migrations",
+   {
+     "1_baseline": Effect.gen(function* () {
+@@ -193,6 +193,8 @@ const hostedProductMigrations = migrateProductSteps(
+     "20_account_changes": migrateAccountChanges,
+     "21_change_journal_prepare": prepareChangeJournal,
+     "23_account_traffic_changes": migrateAccountTrafficChanges,
++    // Step 20 ran once; its existing triggers call the reinstalled body.
++    "24_app_session_inserts": installAccountChangeFunction,
+   },
+   ["22_change_journal_activate"],
+ );

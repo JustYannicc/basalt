@@ -1,0 +1,479 @@
+diff --git a/apps/hosted/web/src/contracts/accounts.ts b/apps/hosted/web/src/contracts/accounts.ts
+--- a/apps/hosted/web/src/contracts/accounts.ts
++++ b/apps/hosted/web/src/contracts/accounts.ts
+@@ -20,11 +20,12 @@
+ import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutations";
+ import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
+ import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";
++import type { RevealGroupCheck } from "@executor-js/ui/dashboard/account-sign-in-checks";
+ import { HostedClient } from "./api.ts";
+ import { inventoryAtom } from "./organization.ts";
+ import { toolsAtom } from "./apps.ts";
+ import { accountObservationsAtom } from "./account-observations.ts";
+-import { refreshSavedAccountRows } from "./account-projection.ts";
++import { refreshSavedAccountRows, settleSavedAccountRows } from "./account-projection.ts";
+ 
+ class AccountKey extends Data.Class<{
+   readonly organization: OrganizationReference;
+@@ -50,34 +51,37 @@
+ /** Run the checks of the apps this member can use and show the results where accounts are listed. */
+ const runCheck = (get: Atom.FnContext, key: AccountKey) =>
+   Effect.flatMap(HostedClient, (client) => client.accounts.check({ params: key })).pipe(
+-    Effect.tap((health) => Effect.sync(() => acknowledgeChecks(get, key.organization, [health]))),
++    Effect.tap((health) => acknowledgeChecks(get, key.organization, [health])),
+   );
+ /** Show recorded checks where accounts are listed; the lists reload once for any number. */
+ const acknowledgeChecks = (
+   get: Atom.FnContext,
+   organization: OrganizationReference,
+   checked: readonly AccountHealth[],
+-) => {
+-  if (checked.length === 0) return;
+-  const health = new Map(checked.map((entry) => [entry.account, entry]));
+-  for (const entry of checked) {
+-    const key = { organization, account: entry.account };
+-    acknowledge(get, accountAtom(key), (data) => ({ ...data, health: entry }));
+-    // An app's check can also report usage, which the row then shows.
+-    get.refresh(accountObservationsAtom(key));
+-  }
+-  // The account list reads the resource directory; reload it for the recorded results.
+-  get.refresh(resourceDirectoryAtom(organization));
+-  get.refresh(resourceDirectoryAtom(organization, "managed"));
+-  refreshSavedAccountRows(get, organization);
+-  acknowledge(get, inventoryAtom(organization), (data) => ({
+-    ...data,
+-    accounts: data.accounts.map((current) => {
+-      const recorded = health.get(current.id);
+-      return recorded === undefined ? current : { ...current, health: recorded };
+-    }),
+-  }));
+-};
++) =>
++  Effect.suspend(() => {
++    if (checked.length === 0) return Effect.void;
++    const settled = settleSavedAccountRows(get, organization);
++    const health = new Map(checked.map((entry) => [entry.account, entry]));
++    for (const entry of checked) {
++      const key = { organization, account: entry.account };
++      acknowledge(get, accountAtom(key), (data) => ({ ...data, health: entry }));
++      // An app's check can also report usage, which the row then shows.
++      get.refresh(accountObservationsAtom(key));
++    }
++    // The account list reads the resource directory; reload it for the recorded results.
++    get.refresh(resourceDirectoryAtom(organization));
++    get.refresh(resourceDirectoryAtom(organization, "managed"));
++    refreshSavedAccountRows(get, organization);
++    acknowledge(get, inventoryAtom(organization), (data) => ({
++      ...data,
++      accounts: data.accounts.map((current) => {
++        const recorded = health.get(current.id);
++        return recorded === undefined ? current : { ...current, health: recorded };
++      }),
++    }));
++    return settled;
++  });
+ 
+ const checkAccount = Atom.family((key: AccountKey) =>
+   HostedClient.runtime.fn((_: void, get) => runCheck(get, key)),
+@@ -92,20 +96,19 @@
+   readonly accounts: readonly AccountId[];
+ }> {}
+ const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
+-  HostedClient.runtime.fn((_: void, get) =>
++  HostedClient.runtime.fn((reveal: RevealGroupCheck, get) =>
+     Effect.flatMap(HostedClient, (client) =>
+       client.accounts.checkGroup({
+         params: { organization: key.organization },
+         payload: { accounts: key.accounts },
+       }),
+     ).pipe(
++      Effect.tap((results) => Effect.sync(() => reveal(results))),
+       Effect.tap((results) =>
+-        Effect.sync(() =>
+-          acknowledgeChecks(
+-            get,
+-            key.organization,
+-            results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
+-          ),
++        acknowledgeChecks(
++          get,
++          key.organization,
++          results.flatMap((result) => (result.status === "checked" ? [result.health] : [])),
+         ),
+       ),
+     ),
+diff --git a/apps/hosted/web/src/contracts/account-projection.ts b/apps/hosted/web/src/contracts/account-projection.ts
+--- a/apps/hosted/web/src/contracts/account-projection.ts
++++ b/apps/hosted/web/src/contracts/account-projection.ts
+@@ -1,3 +1,4 @@
++import { settleObserved } from "@executor-js/ui/contracts/observed-result";
+ import { hydrated } from "@executor-js/ui/contracts/http";
+ import { changeProtected } from "./change-signal.ts";
+ import { Data, Effect } from "effect";
+@@ -52,3 +53,7 @@
+       .accounts({ params: { organization }, query: {} })
+       .pipe(Effect.tap(() => Effect.sync(() => refreshSavedAccountRows(get, organization)))),
+   );
++
++/** A mounted account view must accept its refresh before the completed check stops showing pending. */
++export const settleSavedAccountRows = (get: Atom.FnContext, organization: OrganizationReference) =>
++  settleObserved(get.registry, accounts(new OrganizationKey({ organization })));
+diff --git a/packages/ui/src/contracts/observed-result.ts b/packages/ui/src/contracts/observed-result.ts
+new file mode 100644
+--- /dev/null
++++ b/packages/ui/src/contracts/observed-result.ts
+@@ -0,0 +1,45 @@
++/** Join a view's in-flight result without activating a closed view's retained query. */
++import { Effect } from "effect";
++import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
++
++const observed = (
++  node: AtomRegistry.Node<unknown> | undefined,
++  visited = new Set<object>(),
++): boolean => {
++  if (node === undefined || visited.has(node)) return false;
++  visited.add(node);
++  return node.listeners.size > 0 || [...node.children].some((child) => observed(child, visited));
++};
++
++/** Retained derived nodes are not observers; only a live listener justifies joining the read. */
++export const settleObserved = <A, E>(
++  registry: AtomRegistry.AtomRegistry,
++  query: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
++) => {
++  const key = Atom.isSerializable(query) ? query[Atom.SerializableTypeId].key : query;
++  if (!observed(registry.getNodes().get(key))) return Effect.void;
++  const previous = registry.get(query);
++  return Effect.callback<void, E>((resume) => {
++    let done = false;
++    let cancel = () => {};
++    const complete = (result: Effect.Effect<void, E>) => {
++      if (done) return;
++      done = true;
++      cancel();
++      resume(result);
++    };
++    const changed = (result: AsyncResult.AsyncResult<A, E>) => {
++      if (result === previous || result.waiting) return;
++      if (AsyncResult.isFailure(result)) complete(Effect.failCause(result.cause));
++      else if (AsyncResult.isSuccess(result)) complete(Effect.void);
++    };
++    cancel = registry.subscribe(query, changed);
++    if (done) cancel();
++    changed(registry.get(query));
++    // Effect.callback runs its returned cleanup only on interruption.
++    return Effect.sync(() => {
++      done = true;
++      cancel();
++    });
++  });
++};
+diff --git a/packages/ui/src/implementation/dashboard/account-row.tsx b/packages/ui/src/implementation/dashboard/account-row.tsx
+--- a/packages/ui/src/implementation/dashboard/account-row.tsx
++++ b/packages/ui/src/implementation/dashboard/account-row.tsx
+@@ -3,7 +3,7 @@
+  * account, then full-width bands such as usage. The row renders from `AccountRowInput`, which maps
+  * one field to one field onto the saved account list's rows, so a page swaps only its adapter.
+  */
+-import type { AccountAppHealth, AccountId, AppId } from "@executor-js/sdk";
++import type { AccountAppHealth, AccountGroupCheckResult, AccountId, AppId } from "@executor-js/sdk";
+ import {
+   createContext,
+   useContext,
+@@ -171,6 +171,9 @@
+   readonly setUsage: (usage: AccountRowUsage | undefined) => void;
+   readonly check: AccountRowCheck | undefined;
+   readonly setCheck: (check: AccountRowCheck | undefined) => void;
++  /** The row's last group check answer, kept when its refused sign-in leaves the group. */
++  readonly groupCheck: readonly AccountGroupCheckResult[] | undefined;
++  readonly setGroupCheck: (results: readonly AccountGroupCheckResult[] | undefined) => void;
+   /** Row content that only Details shows, such as requested access or the description. */
+   readonly extra: boolean;
+   readonly setExtra: (present: boolean) => void;
+@@ -189,6 +192,7 @@
+   const [details, setDetails] = useState(false);
+   const [usage, setUsage] = useState<AccountRowUsage>();
+   const [check, setCheck] = useState<AccountRowCheck>();
++  const [groupCheck, setGroupCheck] = useState<readonly AccountGroupCheckResult[]>();
+   const [extra, setExtra] = useState(false);
+   const [identity, setIdentity] = useState<AccountRowMenuAction>();
+   const value = useMemo(
+@@ -201,12 +205,14 @@
+       setUsage,
+       check,
+       setCheck,
++      groupCheck,
++      setGroupCheck,
+       extra,
+       setExtra,
+       identity,
+       setIdentity,
+     }),
+-    [menu, details, usage, check, extra, identity],
++    [menu, details, usage, check, groupCheck, extra, identity],
+   );
+   return <AccountRowContext.Provider value={value}>{children}</AccountRowContext.Provider>;
+ }
+diff --git a/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
+--- a/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
++++ b/packages/ui/src/implementation/dashboard/account-sign-in-checks.tsx
+@@ -29,10 +29,15 @@
+   { status: "failed" }
+ >["error"];
+ 
++/** Receives the host's answer as soon as it arrives, before the listed accounts settle. */
++export type RevealGroupCheck = (results: readonly AccountGroupCheckResult[]) => void;
++
+ /** A grouped row's one check of every sign-in, through the host's own group action. */
+ export interface AccountGroupCheck<E> {
+   readonly signIns: readonly AccountSignIn[];
+-  readonly check: () => Promise<Exit.Exit<readonly AccountGroupCheckResult[], E>>;
++  readonly check: (
++    reveal: RevealGroupCheck,
++  ) => Promise<Exit.Exit<readonly AccountGroupCheckResult[], E>>;
+   /** The host's own failure for a sign-in it could not check, shown with its other failures. */
+   readonly failure: (error: AccountGroupCheckFailure) => E;
+ }
+@@ -48,11 +53,11 @@
+   children,
+ }: Omit<AccountGroupCheck<E>, "check"> & {
+   /** The host's group check of exactly these sign-ins. */
+-  readonly check: Atom.AtomResultFn<void, readonly AccountGroupCheckResult[], E>;
++  readonly check: Atom.AtomResultFn<RevealGroupCheck, readonly AccountGroupCheckResult[], E>;
+   readonly children: (group: AccountGroupCheck<E>) => ReactNode;
+ }) {
+   const run = useAtomSet(check, { mode: "promiseExit" });
+-  return children({ signIns, check: () => run(), failure });
++  return children({ signIns, check: (reveal) => run(reveal), failure });
+ }
+ 
+ const noCheck = "No app that uses these sign-ins defines a check.";
+@@ -101,20 +106,27 @@
+ ): SignInChecksState<E> | undefined {
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+-  const [outcome, setOutcome] = useState<readonly AccountGroupCheckResult[]>();
+-  const [failure, setFailure] = useState<Cause.Cause<E>>();
++  const row = useAccountRow();
++  const [ownOutcome, setOwnOutcome] = useState<readonly AccountGroupCheckResult[]>();
++  // The row keeps the answer when its reload turns the group into one sign-in.
++  const kept = row === undefined ? ownOutcome : row.groupCheck;
++  const setOutcome = row === undefined ? setOwnOutcome : row.setGroupCheck;
++  const outcome = group !== undefined && sameSignIns(kept, group.signIns) ? kept : undefined;
++  const failed = outcome?.find((result) => result.status === "failed");
++  const failure =
++    failed === undefined || group === undefined
++      ? undefined
++      : Cause.fail(group.failure(failed.error));
+   const run = async () => {
+     if (pending || group === undefined) return;
+     setPending(true);
+     setError(undefined);
+     setOutcome(undefined);
+-    setFailure(undefined);
+-    const exit = await group.check();
++    // The host's answer shows at once; only pending waits for the reloaded list to settle.
++    const exit = await group.check(setOutcome);
+     setPending(false);
+     if (Exit.isFailure(exit)) return setError(exit.cause);
+     setOutcome(exit.value);
+-    const failed = exit.value.find((result) => result.status === "failed");
+-    if (failed !== undefined) setFailure(Cause.fail(group.failure(failed.error)));
+   };
+   // The row menu keeps one stable callback that always runs the latest check.
+   const latest = useRef(run);
+@@ -123,7 +135,7 @@
+   });
+   const grouped = group !== undefined;
+   const disabledReason = group?.signIns.some(checkable) === true ? undefined : noCheck;
+-  const setCheck = useAccountRow()?.setCheck;
++  const setCheck = row?.setCheck;
+   useEffect(() => {
+     if (setCheck === undefined) return;
+     setCheck(grouped ? { run: () => void latest.current(), pending, disabledReason } : undefined);
+@@ -134,9 +146,50 @@
+     : { signIns: group.signIns, pending, error, outcome, failure, disabledReason, run };
+ }
+ 
++/** Whether a kept answer covers exactly this group's sign-ins, so a regrouped row starts clean. */
++const sameSignIns = (
++  outcome: readonly AccountGroupCheckResult[] | undefined,
++  signIns: readonly AccountSignIn[],
++) =>
++  outcome !== undefined &&
++  outcome.length === signIns.length &&
++  signIns.every((signIn) => outcome.some((result) => result.account === signIn.account.id));
++
+ /** Whether the last check left a sign-in unchecked, which the collapsed row also says. */
+ export const partialOutcome = <E,>(state: SignInChecksState<E> | undefined) =>
+-  state?.outcome?.some((result) => result.status !== "checked") === true;
++  partialResults(state?.outcome);
++
++/** Whether a group check answer left a sign-in unchecked. */
++export const partialResults = (outcome: readonly AccountGroupCheckResult[] | undefined) =>
++  outcome?.some((result) => result.status !== "checked") === true;
++
++/** The answer's sentence, with any failure detail under it. */
++function OutcomeStatus({
++  outcome,
++  children,
++}: {
++  readonly outcome: readonly AccountGroupCheckResult[];
++  readonly children?: ReactNode;
++}) {
++  const checked = outcome.filter((result) => result.status === "checked").length;
++  return (
++    <div role="status" className="grid min-w-0 gap-0.75" data-sign-in-check-outcome>
++      <p className="text-muted-foreground">{outcomeText(checked, outcome.length - checked)}</p>
++      {children}
++    </div>
++  );
++}
++
++/** A partial answer the row kept after its group became a single sign-in. */
++export function RetainedSignInCheckOutcome({
++  outcome,
++}: {
++  readonly outcome: readonly AccountGroupCheckResult[] | undefined;
++}) {
++  return outcome !== undefined && partialResults(outcome) ? (
++    <OutcomeStatus outcome={outcome} />
++  ) : null;
++}
+ 
+ /**
+  * What the last group check did: how many sign-ins it checked and the first failure. A sign-in the
+@@ -153,15 +206,12 @@
+   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
+ }) {
+   const { outcome, failure, error } = state;
+-  const checked = outcome?.filter((result) => result.status === "checked").length ?? 0;
+-  const unchecked = (outcome?.length ?? 0) - checked;
+   return (
+     <>
+-      {outcome !== undefined && (unchecked > 0 || !quiet) && (
+-        <div role="status" className="grid min-w-0 gap-0.75" data-sign-in-check-outcome>
+-          <p className="text-muted-foreground">{outcomeText(checked, unchecked)}</p>
++      {outcome !== undefined && (partialResults(outcome) || !quiet) && (
++        <OutcomeStatus outcome={outcome}>
+           {failure && <Failure cause={failure} layout="compact" />}
+-        </div>
++        </OutcomeStatus>
+       )}
+       {error && <Failure cause={error} layout="compact" />}
+     </>
+diff --git a/packages/ui/src/implementation/dashboard/account-observations.tsx b/packages/ui/src/implementation/dashboard/account-observations.tsx
+--- a/packages/ui/src/implementation/dashboard/account-observations.tsx
++++ b/packages/ui/src/implementation/dashboard/account-observations.tsx
+@@ -39,6 +39,8 @@
+   SignInCheckOutcome,
+   SignInChecks,
+   partialOutcome,
++  partialResults,
++  RetainedSignInCheckOutcome,
+   useSignInChecks,
+   type AccountGroupCheck,
+ } from "./account-sign-in-checks.tsx";
+@@ -194,6 +196,7 @@
+     checks?.pending !== true &&
+     checks?.error === undefined &&
+     !partialOutcome(checks) &&
++    !(checks === undefined && partialResults(row?.groupCheck)) &&
+     !AsyncResult.isFailure(result)
+   )
+     return null;
+@@ -246,13 +249,17 @@
+             </p>
+           )}
+           {!open && error && <Failure cause={error} layout="compact" />}
+-          {!open && checks?.pending === true && (
++          {/* A partial answer replaces this line while the reloaded list settles. */}
++          {!open && checks?.pending === true && !partialOutcome(checks) && (
+             <p role="status" className="text-muted-foreground">
+               Checking sign-ins…
+             </p>
+           )}
+           {!open && checks !== undefined && (
+             <SignInCheckOutcome state={checks} quiet Failure={Failure} />
++          )}
++          {!open && checks === undefined && (
++            <RetainedSignInCheckOutcome outcome={row?.groupCheck} />
+           )}
+           {!open && AsyncResult.isFailure(result) && (
+             <Failure
+@@ -303,6 +310,9 @@
+             <AccountHealthLine account={account} {...health} Failure={Failure} />
+           )}
+           {compact && checks !== undefined && <SignInChecks state={checks} Failure={Failure} />}
++          {compact && checks === undefined && (
++            <RetainedSignInCheckOutcome outcome={row?.groupCheck} />
++          )}
+           {compact && fact(false)}
+           {fact(true)}
+           <UsageCreditReports
+diff --git a/packages/ui/src/implementation/dashboard/account-health-line.tsx b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+--- a/packages/ui/src/implementation/dashboard/account-health-line.tsx
++++ b/packages/ui/src/implementation/dashboard/account-health-line.tsx
+@@ -13,6 +13,7 @@
+   renewalFailure,
+ } from "../../contracts/account-check-recovery.ts";
+ import { describeAccountCheck, describeCheckResult, driverCanCheck } from "./account-health.tsx";
++import { useAccountRow } from "./account-row.tsx";
+ import { useDashboard } from "./context.tsx";
+ 
+ const severity: readonly AccountCheckStatus[] = [
+@@ -61,6 +62,7 @@
+ }) {
+   const brand = useProductBrand();
+   const { AppLink } = useDashboard();
++  const row = useAccountRow();
+   const [pending, setPending] = useState(false);
+   const [error, setError] = useState<Cause.Cause<E>>();
+   const entries = (account.health?.apps ?? []).filter((entry) =>
+@@ -96,6 +98,8 @@
+     if (pending || check === undefined) return;
+     setPending(true);
+     setError(undefined);
++    // A new check of this sign-in supersedes the row's earlier group answer.
++    row?.setGroupCheck(undefined);
+     const exit = await check();
+     setPending(false);
+     if (Exit.isFailure(exit)) setError(exit.cause);
+diff --git a/packages/ui/src/implementation/dashboard/accounts-client.tsx b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+--- a/packages/ui/src/implementation/dashboard/accounts-client.tsx
++++ b/packages/ui/src/implementation/dashboard/accounts-client.tsx
+@@ -300,7 +300,7 @@
+               );
+ 
+               return (
+-                <AccountRowProvider key={account.id}>
++                <AccountRowProvider key={account.identity?.id ?? account.id}>
+                   <div
+                     className={cn(
+                       accountRowGrid(false, requests),
+diff --git a/apps/local/web/src/contracts/accounts.ts b/apps/local/web/src/contracts/accounts.ts
+--- a/apps/local/web/src/contracts/accounts.ts
++++ b/apps/local/web/src/contracts/accounts.ts
+@@ -13,6 +13,7 @@
+ import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
+ import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
+ import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";
++import type { RevealGroupCheck } from "@executor-js/ui/dashboard/account-sign-in-checks";
+ import { DashboardClient, liveQueryAtom, overviewAtom, toolsAtom } from "./api.ts";
+ import { accountObservationsAtom } from "./account-observations.ts";
+ 
+@@ -86,12 +87,13 @@
+ };
+ class AccountGroupKey extends Data.Class<{ readonly accounts: readonly AccountId[] }> {}
+ const checkAccountGroup = Atom.family((key: AccountGroupKey) =>
+-  DashboardClient.runtime.fn((_: void, get) =>
++  DashboardClient.runtime.fn((reveal: RevealGroupCheck, get) =>
+     Effect.flatMap(DashboardClient, (client) =>
+       client.dashboard.checkAccountGroup({
+         payload: { accounts: key.accounts },
+       }),
+     ).pipe(
++      Effect.tap((results) => Effect.sync(() => reveal(results))),
+       Effect.tap((results) =>
+         Effect.sync(() =>
+           acknowledgeChecks(

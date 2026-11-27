@@ -1,7 +1,7 @@
 {
   "identity": "alchemy-location-free-source-maps",
   "file": "0707-alchemy-location-free-source-maps.patch",
-  "content_sha256": "e2cc453ec657aee9e4c4b75332ef4dd36884c01cb4dcad7d9d71e353c3361749",
+  "content_sha256": "69390d4a9558041e5c1fcc45270497c00a860e15b45997d962dbdaf8eba2a1fa",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

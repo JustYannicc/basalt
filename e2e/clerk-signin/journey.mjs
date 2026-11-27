@@ -4,7 +4,7 @@ import { Browser } from "../../.upstream/e2e/support/browser.ts";
 import { Target } from "../../.upstream/e2e/support/platform.ts";
 import { scenarioEvidence, Telemetry } from "../../.upstream/e2e/support/evidence.ts";
 import { RecordingFocus } from "../../.upstream/e2e/support/recording-focus.ts";
-import { managementBrowser } from "../management-signin/browser.mjs";
+import { managementBrowser, assertCredentialDescription } from "../management-signin/browser.mjs";
 import { verifyOnboardingRecovery } from "./onboarding-recovery.mjs";
 
 export const clerkJourney = ({
@@ -88,6 +88,11 @@ export const clerkJourney = ({
         await dialog.getByLabel("Secret key", { exact: true }).count(),
         1,
         "The Clerk key field must name the required key",
+      );
+      await assertCredentialDescription(
+        page,
+        "Secret key",
+        "Starts with sk_test_ for Development or sk_live_ for Production.",
       );
       assert.equal(
         await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),

@@ -76,7 +76,7 @@ const signedIn = (hidden?: string): Backend => {
 };
 
 const run = (program: Program, backend: Backend) =>
-  Effect.runPromise(program(backend, defaultMcpLimits, Effect.never, executionProgress()));
+  Effect.runPromise(program(backend, defaultMcpLimits, Effect.never, executionProgress(undefined)));
 
 /** Asserts the answer names the section and gives its description, as the agent reads it. */
 const explains = (answer = "") => {

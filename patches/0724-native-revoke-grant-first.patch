@@ -1,15 +1,16 @@
 diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
+index 16e0b42d1..321b244c0 100644
 --- a/apps/hosted/cloud/src/infrastructure/auth.ts
 +++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -36,6 +36,7 @@ import {
-   ApiAuthentication,
-   apiBearerAccess,
+@@ -13,6 +13,7 @@ import {
+   callerSpanAttributes,
    grantExpiry,
+   usageFailure,
 +  nativeCleanups,
-   authEndpointTemplates,
  } from "@executor-js/hosted-server";
- import { routeTemplates } from "@executor-js/telemetry";
-@@ -407,6 +408,8 @@ export const cloudAuth = (
+ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
+ import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
+@@ -207,6 +208,8 @@ export const cloudAuth = (
        appSessions,
        // Background jobs only: grant expiry runs from the data step and the daily cron.
        agentGrants: grantExpiry((run) => nativeCall((instance) => run(instance.api))),
@@ -19,9 +20,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/sr
        origin: settings.url,
        resourceOrigins: settings.resourceOrigins,
 diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
+index 2900839ef..c27e73eed 100644
 --- a/apps/hosted/cloud/src/infrastructure/background-jobs.ts
 +++ b/apps/hosted/cloud/src/infrastructure/background-jobs.ts
-@@ -29,6 +29,7 @@ export const BackgroundJob = Schema.Literals([
+@@ -30,6 +30,7 @@ export const BackgroundJob = Schema.Literals([
    "workflow-reconcile",
    "billing-reconcile",
    "agent-grant-expiry",
@@ -30,24 +32,29 @@ diff --git a/apps/hosted/cloud/src/infrastructure/background-jobs.ts b/apps/host
    "pool-migration-inventory",
    "personal-data-reporting",
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 410837608..d608aad34 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -482,6 +482,14 @@ export default Api.make(
-       Effect.scoped,
-       Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+@@ -510,6 +510,18 @@ export default Api.make(
+       Effect.as(jobCompleted),
+       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
      );
 +    // A revoked device's grant is already dead; its pool cleanup is retried until the pool answers.
 +    const nativeDeviceCleanups = auth.nativeCleanups.retry.pipe(
 +      Effect.provide(executor),
 +      reportErrors,
 +      Effect.scoped,
-+      Effect.catch(() => Effect.logWarning("Native device cleanup retry failed")),
-+      Effect.asVoid,
++      Effect.as(jobCompleted),
++      Effect.catch((error) =>
++        Effect.logWarning("Native device cleanup retry failed").pipe(
++          Effect.as(jobFailedWith(Cause.fail(error))),
++        ),
++      ),
 +    );
      // Removes abandoned account connections daily when EXECUTOR_ACCOUNT_CONNECTION_RETENTION is true.
      const connectionRetention = whenConnectionRetentionEnabled(
        Effect.gen(function* () {
-@@ -519,6 +527,7 @@ export default Api.make(
+@@ -554,6 +566,7 @@ export default Api.make(
        "schedule-wake",
        "site-assets",
        "account-health-rechecks",
@@ -55,7 +62,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
      );
      yield* jobs.schedule(
        "*/5 * * * *",
-@@ -564,6 +573,7 @@ export default Api.make(
+@@ -599,6 +612,7 @@ export default Api.make(
        "workflow-reconcile": workflowReconcile,
        "billing-reconcile": billingReconcile,
        "agent-grant-expiry": agentGrantExpiry,
@@ -64,9 +71,10 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
        "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
        "personal-data-reporting": personalDataReporting,
 diff --git a/apps/hosted/self-host/src/auth.ts b/apps/hosted/self-host/src/auth.ts
+index a4246f474..4f1e30899 100644
 --- a/apps/hosted/self-host/src/auth.ts
 +++ b/apps/hosted/self-host/src/auth.ts
-@@ -23,6 +23,7 @@ import {
+@@ -24,6 +24,7 @@ import {
    resolveOrganizationReference,
    deleteOrganizationRecords,
    grantExpiry,
@@ -74,7 +82,7 @@ diff --git a/apps/hosted/self-host/src/auth.ts b/apps/hosted/self-host/src/auth.
    authEndpointTemplates,
  } from "@executor-js/hosted-server";
  import { routeTemplates } from "@executor-js/telemetry";
-@@ -157,6 +158,9 @@ export const selfHostAuth = Effect.gen(function* () {
+@@ -158,6 +159,9 @@ export const selfHostAuth = Effect.gen(function* () {
      agentGrants: grantExpiry((run) =>
        Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
      ),
@@ -85,9 +93,10 @@ diff --git a/apps/hosted/self-host/src/auth.ts b/apps/hosted/self-host/src/auth.
      handler,
    };
 diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/apps/hosted/self-host/src/implementation/executor-services.ts
+index d445eb051..ef76bd78a 100644
 --- a/apps/hosted/self-host/src/implementation/executor-services.ts
 +++ b/apps/hosted/self-host/src/implementation/executor-services.ts
-@@ -195,6 +195,13 @@ export const selfHostExecutorServices = <E, R>(
+@@ -203,6 +203,13 @@ export const selfHostExecutorServices = <E, R>(
            Effect.repeat(Schedule.spaced("1 day")),
          ),
        );
@@ -102,6 +111,7 @@ diff --git a/apps/hosted/self-host/src/implementation/executor-services.ts b/app
        yield* whenConnectionRetentionEnabled(
          Effect.forkScoped(
 diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/hosted/server/src/implementation/native-grant-host.ts
+index 281c93f2b..66f0b4803 100644
 --- a/apps/hosted/server/src/implementation/native-grant-host.ts
 +++ b/apps/hosted/server/src/implementation/native-grant-host.ts
 @@ -55,9 +55,10 @@ const control = <A>(
@@ -155,9 +165,10 @@ diff --git a/apps/hosted/server/src/implementation/native-grant-host.ts b/apps/h
    };
  };
 diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
+index 031bb18e3..867a351ce 100644
 --- a/apps/hosted/server/src/index.ts
 +++ b/apps/hosted/server/src/index.ts
-@@ -89,7 +89,13 @@ export {
+@@ -112,7 +112,13 @@ export {
    type GrantObservers,
    type RefreshRejection,
  } from "./implementation/mcp-oauth.ts";
@@ -173,6 +184,7 @@ diff --git a/apps/hosted/server/src/index.ts b/apps/hosted/server/src/index.ts
  export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
  export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
 diff --git a/packages/mcp-auth/src/implementation/native-access-memory.ts b/packages/mcp-auth/src/implementation/native-access-memory.ts
+index 36388fc69..ba008a71a 100644
 --- a/packages/mcp-auth/src/implementation/native-access-memory.ts
 +++ b/packages/mcp-auth/src/implementation/native-access-memory.ts
 @@ -4,8 +4,8 @@ import { authCall } from "./auth-call.ts";
@@ -234,6 +246,7 @@ diff --git a/packages/mcp-auth/src/implementation/native-access-memory.ts b/pack
  };
  
 diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mcp-auth/src/implementation/native-grants.ts
+index 0d567312d..1a517e924 100644
 --- a/packages/mcp-auth/src/implementation/native-grants.ts
 +++ b/packages/mcp-auth/src/implementation/native-grants.ts
 @@ -50,11 +50,54 @@ export interface NativeGrantHost {
@@ -587,9 +600,10 @@ diff --git a/packages/mcp-auth/src/implementation/native-grants.ts b/packages/mc
      beforeRefresh: (ctx: GenericEndpointContext) =>
        Effect.gen(function* () {
 diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/src/implementation/oauth.ts
+index d5f9245bc..01ebc97de 100644
 --- a/packages/mcp-auth/src/implementation/oauth.ts
 +++ b/packages/mcp-auth/src/implementation/oauth.ts
-@@ -512,9 +512,14 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -513,9 +513,14 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
        yield* settings.checkResource(context, row.userId, row.resource);
        return yield* project(context, row, target);
      });
@@ -605,7 +619,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        yield* authCall(() =>
          ctx.context.adapter.update({
            model: "mcpGrant",
-@@ -522,10 +527,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -523,10 +528,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
            update: { revoked: true },
          }),
        );
@@ -619,7 +633,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
      });
    /** New grants and tokens for a revoked connection fail; its grants lose their tokens now. */
    const revokeConnection = (ctx: GenericEndpointContext, row: typeof ConnectionRecord.Type) =>
-@@ -1212,7 +1220,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1213,7 +1221,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
              ? Promise.reject(new APIError("NOT_FOUND"))
              : runAuth(
                  Effect.gen(function* () {
@@ -629,7 +643,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
                    yield* revoke(ctx, access.id);
                    return { revoked: true };
                  }),
-@@ -1231,6 +1240,24 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1232,6 +1241,24 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                  ),
                ),
        ),
@@ -654,7 +668,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        getMcpGrantAccess: createAuthEndpoint(
          "/mcp/grant-access",
          { method: "GET", requireHeaders: true, metadata: { SERVER_ONLY: true } },
-@@ -1626,6 +1653,31 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1628,6 +1655,31 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
              }),
            ),
        ),
@@ -686,7 +700,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
        revokeMcpGrant: createAuthEndpoint(
          "/mcp/grants/revoke",
          { method: "POST", requireHeaders: true },
-@@ -1647,8 +1699,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
+@@ -1649,8 +1701,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
                    Option.isSome(existing) &&
                    existing.value.userId === userId &&
                    existing.value.revoked
@@ -700,7 +714,7 @@ diff --git a/packages/mcp-auth/src/implementation/oauth.ts b/packages/mcp-auth/s
                }
                const row = yield* get(ctx, id);
                if (row.userId !== userId) return yield* Effect.fail(new APIError("FORBIDDEN"));
-@@ -1821,3 +1877,32 @@ export const grantExpiry = (
+@@ -1810,3 +1866,32 @@ export const grantExpiry = (
      ),
  });
  export type GrantExpiry = ReturnType<typeof grantExpiry>;

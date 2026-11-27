@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/database-pool-fixture.ts
+index bf716af..481761b 100644
 --- a/apps/hosted/testing/database-pool-fixture.ts
 +++ b/apps/hosted/testing/database-pool-fixture.ts
-@@ -497,8 +497,8 @@
+@@ -528,8 +528,8 @@ const command = Command.make("database-pool-fixture", {
                      ? lost.value.map((exit) =>
                          Exit.isSuccess(exit)
                            ? "ok"
@@ -13,9 +14,10 @@ diff --git a/apps/hosted/testing/database-pool-fixture.ts b/apps/hosted/testing/
                              ? "could not connect"
                              : String(exit.cause),
 diff --git a/e2e/sdk/contracts.ts b/e2e/sdk/contracts.ts
+index f14e5e2..2c74acd 100644
 --- a/e2e/sdk/contracts.ts
 +++ b/e2e/sdk/contracts.ts
-@@ -40,6 +40,12 @@
+@@ -40,6 +40,12 @@ export const FixtureControl = Schema.Struct({
      }),
    ),
    token: Schema.RedactedFromValue(Schema.NonEmptyString),
@@ -29,9 +31,10 @@ diff --git a/e2e/sdk/contracts.ts b/e2e/sdk/contracts.ts
  /** A synthetic identity and its private, expiring browser session. */
  export const FixtureActor = Schema.Struct({
 diff --git a/e2e/sdk/fixtures.ts b/e2e/sdk/fixtures.ts
+index 3fd0ce9..f2cd542 100644
 --- a/e2e/sdk/fixtures.ts
 +++ b/e2e/sdk/fixtures.ts
-@@ -126,4 +126,15 @@
+@@ -126,4 +126,15 @@ export const startFixtureControl = (
  
  /** Encode only the generated local capability for a private process boundary. */
  export const fixtureControlEnvironment = (control: typeof FixtureControl.Type) =>
@@ -49,9 +52,10 @@ diff --git a/e2e/sdk/fixtures.ts b/e2e/sdk/fixtures.ts
 +        }),
 +  });
 diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
+index 866177e..7e6e360 100644
 --- a/e2e/support/cloud-environment.ts
 +++ b/e2e/support/cloud-environment.ts
-@@ -711,7 +711,13 @@
+@@ -728,7 +728,13 @@ export const startCloudEnvironment = (input: {
      const originalListener = prebootBinding === undefined ? apiListener : yield* cloudListener;
      let serverScope = yield* launch(originalListener);
      if (prebootBinding !== undefined) yield* apiListener.set(originalListener.url);
@@ -67,9 +71,10 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
        origin: input.origin,
        stage: "local",
 diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-control.ts
+index 0ae8181..55ff517 100644
 --- a/e2e/support/cloud-runtime-control.ts
 +++ b/e2e/support/cloud-runtime-control.ts
-@@ -97,5 +97,5 @@
+@@ -97,5 +97,5 @@ export const cloudRuntimeControl = <A, E>(
      );
      const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
      if (!("port" in server.address)) return yield* Effect.die("Cloud runtime control requires TCP");
@@ -77,9 +82,10 @@ diff --git a/e2e/support/cloud-runtime-control.ts b/e2e/support/cloud-runtime-co
 +    return { ...fixtures, origin: `http://127.0.0.1:${server.address.port}` };
    });
 diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-connection-query.spec.ts
+index 2e218b6..5fc468a 100644
 --- a/e2e/tests/account-connection-query.spec.ts
 +++ b/e2e/tests/account-connection-query.spec.ts
-@@ -76,6 +76,8 @@
+@@ -76,6 +76,8 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
          );
          let created = 0;
@@ -88,7 +94,7 @@ diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-conn
          let connectionReads = 0;
          yield* browser.use("Observe account connection requests", (page) =>
            page.route(/\/connections(?:\/[^/]+)?$/, (route) => {
-@@ -108,17 +110,31 @@
+@@ -108,17 +110,31 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
          let dropped = false;
          let committed: unknown;
          yield* browser.use("Lose the first save response after the server commits", (page) =>
@@ -131,7 +137,7 @@ diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-conn
          );
          yield* browser.use("Submit the credentials once", (page) =>
            page.getByRole("button", { name: "Connect account", exact: true }).click(),
-@@ -147,12 +163,11 @@
+@@ -147,12 +163,11 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
          const read = yield* holdQuery(paths, "continue", { allRequests: true });
          const saved = yield* browser.use("Save credentials through the account form", (page) =>
            Promise.all([
@@ -146,7 +152,7 @@ diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-conn
              ),
              page.getByRole("button", { name: "Connect account", exact: true }).click(),
            ]).then(([response]) =>
-@@ -219,7 +234,7 @@
+@@ -219,7 +234,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
          yield* browser.use("The new account appears on the same app", (page) =>
            accountChoices(page, "Connection fixture", { includeHidden: true })
              .getByRole("radio", {
@@ -156,9 +162,10 @@ diff --git a/e2e/tests/account-connection-query.spec.ts b/e2e/tests/account-conn
                checked: true,
                includeHidden: true,
 diff --git a/e2e/tests/cloud-mcp-session-routing.spec.ts b/e2e/tests/cloud-mcp-session-routing.spec.ts
+index 6582a5f..9e40e89 100644
 --- a/e2e/tests/cloud-mcp-session-routing.spec.ts
 +++ b/e2e/tests/cloud-mcp-session-routing.spec.ts
-@@ -10,7 +10,7 @@
+@@ -11,7 +11,7 @@
   */
  import { createHmac, randomBytes, randomUUID } from "node:crypto";
  import { expect, layer } from "@effect/vitest";
@@ -167,19 +174,19 @@ diff --git a/e2e/tests/cloud-mcp-session-routing.spec.ts b/e2e/tests/cloud-mcp-s
  import { HttpClient, HttpClientRequest } from "effect/http";
  import { Actors } from "../support/actors.ts";
  import { Api, body } from "../support/api.ts";
-@@ -32,11 +32,6 @@
- const signedId =
+@@ -34,11 +34,6 @@ const signedId =
    /^([0-9a-f]{64})\.([A-Za-z0-9_-]{43})\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
  const sessionNotFound = "Session not found";
--
+ 
 -/** The key Alchemy minted for one logical id, read from this local Cloud's state. */
 -const RandomState = Schema.Struct({
 -  attr: Schema.Struct({ text: Schema.Struct({ __redacted__: Schema.String }) }),
 -});
- 
+-
  /** The mac a session object makes over its id and the protocol's session id. */
  const mac = (key: string, objectId: string, sessionId: string) =>
-@@ -58,7 +53,6 @@
+   createHmac("sha256", Buffer.from(key, "hex"))
+@@ -59,7 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
              telemetry = yield* Telemetry,
              target = yield* Target,
              oauth = yield* McpOAuth,
@@ -187,9 +194,9 @@ diff --git a/e2e/tests/cloud-mcp-session-routing.spec.ts b/e2e/tests/cloud-mcp-s
              http = yield* HttpClient.HttpClient;
            const organization = actors.organization.id;
  
-@@ -229,22 +223,12 @@
-             objectAnswered(list) &&
-             list.some((span) => span.operationName === "mcp.session.forward");
+@@ -250,22 +244,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
+                 list.some((parent) => parent.spanId === span.parentSpanId),
+             );
  
 -          /** A key Alchemy minted for this local Cloud, read from its state. */
 -          const state = yield* fs
@@ -200,22 +207,22 @@ diff --git a/e2e/tests/cloud-mcp-session-routing.spec.ts b/e2e/tests/cloud-mcp-s
 -                  Schema.fromJsonString(Schema.Struct({ directory: Schema.String })),
 -                ),
 -              ),
+-            );
+-          const minted = (id: string) =>
+-            fs.readFileString(`${state.directory}/${id}.json`).pipe(
+-              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RandomState))),
+-              Effect.map((resource) => resource.attr.text.__redacted__),
 +          const signingKeys = target.fixtures?.mcpSessionKeys;
 +          if (signingKeys === undefined)
 +            return yield* Effect.die(
 +              new Error("The managed Cloud fixture did not provide MCP session signing keys"),
              );
--          const minted = (id: string) =>
--            fs.readFileString(`${state.directory}/${id}.json`).pipe(
--              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RandomState))),
--              Effect.map((resource) => resource.attr.text.__redacted__),
--            );
 -          const currentKey = minted("McpSessionKeyA");
 +          const currentKey = Redacted.value(signingKeys.current);
  
            const owner = yield* createKey(actors.owner, "Session routing owner");
            const member = yield* createKey(actors.member, "Session routing member");
-@@ -432,8 +416,8 @@
+@@ -571,8 +555,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
            yield* evidence.step(
              "An id signed with the previous key still verifies, and one with an unknown key does not",
              Effect.gen(function* () {
@@ -226,7 +233,7 @@ diff --git a/e2e/tests/cloud-mcp-session-routing.spec.ts b/e2e/tests/cloud-mcp-s
                expect(
                  mac(current, victim.objectId, victim.sessionId),
                  "The current key signed the session's id",
-@@ -494,7 +478,7 @@
+@@ -633,7 +617,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                // in memory or in its storage. Sessions that outlive an eviction are covered by
                // cloud-mcp-session-restore.spec.ts.
                const forgotten = randomUUID();
@@ -236,9 +243,10 @@ diff --git a/e2e/tests/cloud-mcp-session-routing.spec.ts b/e2e/tests/cloud-mcp-s
                notFound(answer);
                const trace = yield* spans(answer.traceId, objectAnswered);
 diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spec.ts
+index 07818b4..afeece5 100644
 --- a/e2e/tests/grouped-accounts.spec.ts
 +++ b/e2e/tests/grouped-accounts.spec.ts
-@@ -187,6 +187,12 @@
+@@ -187,6 +187,12 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
          // links it in Personal's place.
          // The dashboard may address the organization by slug, so match the path from the app on.
          const workLink = `/apps/${app.id}/accounts/user/service/${work}`;
@@ -251,7 +259,7 @@ diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spe
          const replaced = yield* browser.use("Link Work in place of Personal", (page) =>
            Promise.all([
              page.waitForResponse(
-@@ -202,12 +208,6 @@
+@@ -202,12 +208,6 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
          );
          expect(replaced).toBe(200);
          expect(yield* linkedAccountIds(actors.owner, path)).toEqual([work]);
@@ -264,7 +272,7 @@ diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spe
          yield* browser.use("Open tools after replacing", (page) =>
            page
              .getByRole("navigation", { name: "App navigation" })
-@@ -222,7 +222,7 @@
+@@ -222,7 +222,7 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
          ).toBe(0);
          yield* held.release;
          yield* browser.use("The new catalog's failure is visible", (page) =>
@@ -274,9 +282,10 @@ diff --git a/e2e/tests/grouped-accounts.spec.ts b/e2e/tests/grouped-accounts.spe
          yield* browser.use("Retry Work", (page) =>
            page.getByRole("button", { name: "Try again", exact: true }).click(),
 diff --git a/e2e/tests/local-account-naming.spec.ts b/e2e/tests/local-account-naming.spec.ts
+index 594b8ad..1ccaf03 100644
 --- a/e2e/tests/local-account-naming.spec.ts
 +++ b/e2e/tests/local-account-naming.spec.ts
-@@ -282,7 +282,7 @@
+@@ -282,7 +282,7 @@ export default defineApp({ user: { accounts: { service: service.many() } } }, as
                )
                .then(() => page.getByRole("menuitem").allTextContents()),
            ),
@@ -286,9 +295,10 @@ diff --git a/e2e/tests/local-account-naming.spec.ts b/e2e/tests/local-account-na
          yield* browser.use("Close the other account's menu", (page) =>
            page.keyboard.press("Escape"),
 diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
+index 3e5b67b..7c3ae22 100644
 --- a/e2e/tests/mcp-server.spec.ts
 +++ b/e2e/tests/mcp-server.spec.ts
-@@ -257,6 +257,7 @@
+@@ -257,6 +257,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
              );
              expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
                "app-callback",
@@ -297,9 +307,10 @@ diff --git a/e2e/tests/mcp-server.spec.ts b/e2e/tests/mcp-server.spec.ts
                "call",
                "describe",
 diff --git a/e2e/tests/oauth-connect-storyboard.spec.ts b/e2e/tests/oauth-connect-storyboard.spec.ts
+index e2bb407..3815040 100644
 --- a/e2e/tests/oauth-connect-storyboard.spec.ts
 +++ b/e2e/tests/oauth-connect-storyboard.spec.ts
-@@ -171,6 +171,11 @@
+@@ -171,6 +171,11 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
          yield* ready("Connect new account");
          yield* capture("Account-entry");
          yield* click("Connect new account");
@@ -311,7 +322,7 @@ diff --git a/e2e/tests/oauth-connect-storyboard.spec.ts b/e2e/tests/oauth-connec
          expect(
            yield* browser.use("The connection form does not ask for an account name", (page) =>
              page.getByRole("dialog").getByLabel("Account name", { exact: true }).count(),
-@@ -706,8 +711,10 @@
+@@ -706,8 +711,10 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
          expect(afterClose.count).toBe(0);
          expect(afterClose.url.pathname).toBe(appPath);
          expect(afterClose.url.searchParams.get("view")).toBe("accounts");

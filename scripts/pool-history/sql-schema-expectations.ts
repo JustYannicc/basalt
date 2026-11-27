@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "../architecture/typescript.ts";
+import { cloudMigrationRegistry } from "./cloud-migration-registry.ts";
 import { BarrierRefusal } from "../pool-fleet/refusal.ts";
 import {
   validateSqlExpectations,
@@ -38,8 +39,14 @@ function properties(node: ts.Node | undefined) {
 }
 
 /** Product journals split each source key into its numeric ID and suffix. */
-export function parseProductMigrationMarkers(source: string, journal: string): string[] {
-  const calls: ts.CallExpression[] = [];
+export function parseProductMigrationMarkers(
+  source: string,
+  journal: string,
+  cloudRunnerSource?: string,
+): string[] {
+  const file = parse(source);
+  const registries: ts.Expression[] = [];
+  const operatorKeys: string[] = [];
   const visit = (node: ts.Node) => {
     if (
       ts.isCallExpression(node) &&
@@ -48,25 +55,48 @@ export function parseProductMigrationMarkers(source: string, journal: string): s
     ) {
       const name = node.arguments[0];
       if (!name || !ts.isStringLiteral(name)) refuse("unsupported product migration journal");
-      if (name.text === journal) calls.push(node);
+      if (name.text === journal) {
+        if (node.arguments.length !== 2 && node.arguments.length !== 3)
+          refuse(`expected two or three migration arguments for ${journal}`);
+        const operators = node.arguments[2];
+        if (operators) {
+          if (!ts.isArrayLiteralExpression(operators))
+            refuse(`expected literal operator migration list for ${journal}`);
+          for (const entry of operators.elements) {
+            if (!ts.isStringLiteral(entry) || !/^[1-9][0-9]*_[a-z0-9_]+$/.test(entry.text))
+              refuse(`invalid operator migration key for ${journal}`);
+            operatorKeys.push(entry.text);
+          }
+        }
+        registries.push(node.arguments[1]!);
+      }
     }
     ts.forEachChild(node, visit);
   };
-  visit(parse(source));
-  if (calls.length !== 1 || calls[0]!.arguments.length !== 2)
-    refuse(`expected one migrateProductSteps call for ${journal}`);
+  visit(file);
+  if (journal === "private_cloud_migrations") {
+    const delegated = cloudMigrationRegistry(
+      file,
+      cloudRunnerSource === undefined ? undefined : parse(cloudRunnerSource),
+    );
+    if (delegated) registries.push(delegated);
+  }
+  if (registries.length !== 1) refuse(`expected one migrateProductSteps call for ${journal}`);
   const ids = new Set<number>();
-  const markers = [...properties(calls[0]!.arguments[1]).keys()].map((key) => {
+  const marker = (key: string) => {
     const match = /^(\d+)_([a-zA-Z0-9_.-]+)$/.exec(key);
     if (!match) refuse(`invalid product migration key ${key}`);
     const id = Number(match[1]);
     if (!Number.isSafeInteger(id) || id < 1 || id > 2147483647 || ids.has(id))
       refuse(`invalid or duplicate product migration ID ${match[1]}`);
     ids.add(id);
-    const marker = `${id}_${match[2]}`;
-    if (marker.length > 160) refuse("product migration key too long");
-    return { id, marker };
-  });
+    const value = `${id}_${match[2]}`;
+    if (value.length > 160) refuse("product migration key too long");
+    return { id, marker: value };
+  };
+  const markers = [...properties(registries[0]).keys()].map(marker);
+  // Operator IDs share the journal but must never become required startup steps.
+  operatorKeys.forEach(marker);
   if (!markers.length) refuse(`empty product migration registry ${journal}`);
   return markers.sort((left, right) => left.id - right.id).map((entry) => entry.marker);
 }
@@ -161,7 +191,7 @@ export async function loadSqlSchemaExpectations(
 ): Promise<SqlSchemaExpectation[]> {
   if (!Number.isSafeInteger(homeVersion) || homeVersion < 1)
     refuse("invalid candidate Home version");
-  const [hosted, cloud, registrySource, sdk, registry, history] = await Promise.all([
+  const [hosted, cloud, registrySource, sdk, registry, history, cloudRunner] = await Promise.all([
     readFile(
       resolve(root, ".upstream/apps/hosted/server/src/implementation/migrations.ts"),
       "utf8",
@@ -174,6 +204,10 @@ export async function loadSqlSchemaExpectations(
     import("../../.upstream/packages/sdk/src/implementation/storage-migrations.ts"),
     import("../../.upstream/packages/app-registry/src/implementation/storage-runtime.ts"),
     import("../../src/pool/model-history/schema.ts"),
+    readFile(
+      resolve(root, ".upstream/apps/hosted/cloud/src/implementation/cloud-migration-runner.ts"),
+      "utf8",
+    ),
   ]);
   const sdkVersions = versions(sdk.storageSchemas);
   const registryVersion = versions([registry.registrySchema])[0]!;
@@ -216,7 +250,7 @@ export async function loadSqlSchemaExpectations(
       database: "tools",
       journal: "private_cloud_migrations",
       kind: "markers",
-      expected: parseProductMigrationMarkers(cloud, "private_cloud_migrations"),
+      expected: parseProductMigrationMarkers(cloud, "private_cloud_migrations", cloudRunner),
     },
     {
       namespace: "sdk",

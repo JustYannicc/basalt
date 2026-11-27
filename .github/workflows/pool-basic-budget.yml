@@ -57,6 +57,13 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - name: Install the pinned Motel collector
+        uses: ./.github/actions/setup-bun
+        # Composite steps inherit this env; the action itself takes no export input.
+        env:
+          BUN_EXPORT_AS: EXECUTOR_MOTEL_BUN
+        with:
+          bun-version: 1.4.4
       - name: Verify native amd64 and frozen source
         working-directory: .probe-source
         run: |

@@ -19,7 +19,7 @@
     },
     "accountObservationProtocol18": {
       "fixtures": "actors",
-      "title": "protocol 18 refuses observations before dispatch while retaining health and tool calls",
+      "title": "protocol 18 bundles are refused at deploy because no approved release speaks protocol 18",
       "targets": {
         "self-host": {
           "status": "scheduled"

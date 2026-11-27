@@ -1,4 +1,5 @@
 diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/server/src/contracts/pool-defaults.ts
+index cf197e7fe..cbee3d297 100644
 --- a/apps/hosted/server/src/contracts/pool-defaults.ts
 +++ b/apps/hosted/server/src/contracts/pool-defaults.ts
 @@ -17,6 +17,13 @@ export const PoolBundleTarget = Context.Reference<string | undefined>("hosted/Po
@@ -16,6 +17,7 @@ diff --git a/apps/hosted/server/src/contracts/pool-defaults.ts b/apps/hosted/ser
  export interface PoolWorkerRelease {
    readonly revision: string;
 diff --git a/apps/hosted/server/src/implementation/pool-account-recovery.ts b/apps/hosted/server/src/implementation/pool-account-recovery.ts
+index 16513c2e0..caf9eda75 100644
 --- a/apps/hosted/server/src/implementation/pool-account-recovery.ts
 +++ b/apps/hosted/server/src/implementation/pool-account-recovery.ts
 @@ -2,7 +2,7 @@ import { StorageError } from "@executor-js/sdk/core";
@@ -46,6 +48,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-account-recovery.ts b/ap
          yield* sql`insert into hosted_provisioning (kind, organization_id, user_id, available_at)
            values ('member', ${organization}, ${owner}, now())`;
 diff --git a/apps/hosted/server/src/implementation/pools.ts b/apps/hosted/server/src/implementation/pools.ts
+index ef65db3f9..d65420001 100644
 --- a/apps/hosted/server/src/implementation/pools.ts
 +++ b/apps/hosted/server/src/implementation/pools.ts
 @@ -3,11 +3,10 @@ import { Config, Effect, Option, Schema } from "effect";
@@ -131,12 +134,13 @@ diff --git a/apps/hosted/server/src/implementation/pools.ts b/apps/hosted/server
      Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
    );
 diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted/server/src/implementation/provisioning.ts
+index cc7ca44b6..5a15b3672 100644
 --- a/apps/hosted/server/src/implementation/provisioning.ts
 +++ b/apps/hosted/server/src/implementation/provisioning.ts
-@@ -2,9 +2,11 @@
- import { StorageError } from "@executor-js/sdk/core";
+@@ -3,9 +3,11 @@ import { StorageError } from "@executor-js/sdk/core";
  import { Effect, Exit, Schedule, Schema } from "effect";
  import { SqlClient } from "effect/sql";
+ import { traceFailure } from "@executor-js/telemetry/failed-span";
 +import { AccessLifecycle } from "../contracts/access-lifecycle.ts";
  import {
    PoolBundleTarget,
@@ -145,7 +149,7 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
    poolBundleJobPrefix,
    poolRotationJobPrefix,
  } from "../contracts/pool-defaults.ts";
-@@ -192,6 +194,39 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
+@@ -193,6 +195,39 @@ const installTeam = (organization: OrganizationId, requireVerifiedEmail: boolean
        );
    });
  
@@ -185,7 +189,7 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
  /** Execute one committed event. Membership is read live and checked again by defaults under its lock. */
  export const provision = (id: string, services: ProvisioningServices) =>
    attempt(id, "background", undefined, (job) =>
-@@ -206,6 +241,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
+@@ -207,6 +242,7 @@ export const provision = (id: string, services: ProvisioningServices) =>
          case "domain":
            return yield* services.domain;
          case "member": {
@@ -194,6 +198,7 @@ diff --git a/apps/hosted/server/src/implementation/provisioning.ts b/apps/hosted
            const rotationOnly = job.id.startsWith(poolRotationJobPrefix);
            const catalogOnly = job.id.startsWith(catalogAppJobPrefix);
 diff --git a/e2e/support/pool-creation-backend.ts b/e2e/support/pool-creation-backend.ts
+index c14b8f740..a92354ed2 100644
 --- a/e2e/support/pool-creation-backend.ts
 +++ b/e2e/support/pool-creation-backend.ts
 @@ -17,6 +17,20 @@ const Audience = Schema.Struct({
@@ -239,6 +244,7 @@ diff --git a/e2e/support/pool-creation-backend.ts b/e2e/support/pool-creation-ba
        Effect.sync(() => {
          available = value;
 diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.spec.ts
+index 2f9af66a8..716121881 100644
 --- a/e2e/tests/catalog-instances.spec.ts
 +++ b/e2e/tests/catalog-instances.spec.ts
 @@ -178,7 +178,26 @@ layer(HostedLive, { excludeTestServices: true })("Catalog instances", (it) => {
@@ -278,6 +284,7 @@ diff --git a/e2e/tests/catalog-instances.spec.ts b/e2e/tests/catalog-instances.s
          expect(retried.payload).toEqual(failed.payload);
          expect(retried.status).toBe(200);
 diff --git a/e2e/tests/pool-creation.spec.ts b/e2e/tests/pool-creation.spec.ts
+index 49e8c1cbe..20046d21b 100644
 --- a/e2e/tests/pool-creation.spec.ts
 +++ b/e2e/tests/pool-creation.spec.ts
 @@ -199,15 +199,14 @@ layer(RuntimeLive, { excludeTestServices: true })("Pool creation", (it) => {

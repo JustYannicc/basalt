@@ -17,7 +17,7 @@ import { bundlePoolApp } from "./pool-app-bundle.ts";
 import { prepareTestPlans } from "./ci/declarations.ts";
 import { prepareE2e } from "./ci/prepare-e2e.ts";
 
-function verifyFixture(declaredPlans: boolean) {
+function verifyFixture(declaredPlans: boolean, replacement = false) {
   const root = mkdtempSync(join(tmpdir(), "connectors-source-test-"));
   const upstream = join(root, ".upstream");
   const write = (path: string, content: string) => {
@@ -72,6 +72,19 @@ function verifyFixture(declaredPlans: boolean) {
     }
     git(upstream, "add", "-N", ".");
     write("patches/0001-example.patch", git(upstream, "diff") + "\n");
+    const requiredContent = replacement
+      ? "export const required = 'replacement';\n"
+      : "export const required = true;\n";
+    if (replacement) {
+      write(requiredSource, requiredContent);
+      write(
+        "patches/0002-replacement.patch",
+        "diff --git a/packages/required.ts b/packages/required.ts\n" +
+          "new file mode 100644\n--- /dev/null\n+++ b/packages/required.ts\n" +
+          "@@ -0,0 +1 @@\n+" +
+          requiredContent,
+      );
+    }
     git(upstream, "reset", "--mixed", pin);
     const native = "export const nativeControlPrefix = 'sbn1';\n";
     for (const [path, content] of Object.entries({
@@ -179,7 +192,9 @@ function verifyFixture(declaredPlans: boolean) {
 
     assert.deepEqual(verifyConnectorsSource(root), {
       commit: pin,
-      patches: ["0001-example.patch"],
+      patches: replacement
+        ? ["0001-example.patch", "0002-replacement.patch"]
+        : ["0001-example.patch"],
     });
     write(sharedText, "export const source = 'unreviewed renderer';\n");
     bundlePoolApp(root, upstream);
@@ -196,7 +211,7 @@ function verifyFixture(declaredPlans: boolean) {
     }
     rmSync(join(root, requiredSource));
     assert.throws(() => verifyConnectorsSource(root));
-    write(requiredSource, "export const required = true;\n");
+    write(requiredSource, requiredContent);
     if (declaredPlans) {
       write(".upstream/e2e/tests/tool-policy-draft.spec.ts", "export {};\n");
       assert.throws(() => verifyConnectorsSource(root));
@@ -248,3 +263,6 @@ function verifyFixture(declaredPlans: boolean) {
 for (const declaredPlans of [false, true])
   test(`connector source verification preserves strict source checks${declaredPlans ? " after retiring a carried test" : ""}`, () =>
     verifyFixture(declaredPlans));
+
+test("connector source verification preserves replacement additions and subsequent tamper refusals", () =>
+  verifyFixture(false, true));

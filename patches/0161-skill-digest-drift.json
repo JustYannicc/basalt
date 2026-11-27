@@ -1,7 +1,7 @@
 {
   "identity": "basalt-skill-digest-drift",
   "file": "0161-skill-digest-drift.patch",
-  "content_sha256": "daf239431a6b46da4dfe4232e62817252c0503ffc5ee932ccb8edf8dc0911361",
+  "content_sha256": "90aca21d26229bfe57509a139fb0879f01f4603580eefd48a56ff421a9e939a3",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

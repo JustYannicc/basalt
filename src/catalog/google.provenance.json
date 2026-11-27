@@ -3,9 +3,9 @@
   "publishedUrl": "https://catalog.executor.sh/apps/google.json",
   "snapshotCaptured": "2026-11-18",
   "publishedSha256": "70b95e26477209b49e4ab75dab3fe190df9e841ce849ff9a7633dbd9ce8a1d4a",
-  "carriedSha256": "e79aa6d295a46effb78abff5b98b5f495ac2da1e3a12138126950383b9cf3a7f",
-  "patchSha256": "f68acb91bdb86ccc8be7911e13df1c15e18703fd3fbf2d489247038271cfca98",
-  "appsVersion": "0.0.1-beta.104-basalt.15",
+  "carriedSha256": "d4fe5726a7e58afcbd020aa1d74be1cd75ed85b5a6cc334a435ff5775a4073dc",
+  "patchSha256": "12732fed17c373360c84b8ee8d708ea51023d318a9739126599d2aaef06010dd",
+  "appsVersion": "0.0.1-beta.104-basalt.16",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "The Gmail tools take attachments, large messages use Gmail's resumable upload, and scheduled send runs as an editable workflow over drafts; product mutations name their approval and fetch types come from the host; publication not claimed"

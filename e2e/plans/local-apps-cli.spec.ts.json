@@ -1,0 +1,24 @@
+{
+  "scenarios": {
+    "localAppsCliRelease": {
+      "title": "apps CLI prints the host's apps release, requires --files, and deploys the documented two-file app; the local Executor app pins the same release",
+      "targets": {
+        "local": {
+          "status": "scheduled"
+        },
+        "self-host": {
+          "status": "not-applicable",
+          "reason": "The CLI's hosted path needs a browser OAuth login; local uses an API key."
+        },
+        "cloud": {
+          "status": "not-applicable",
+          "reason": "The CLI's hosted path needs a browser OAuth login; local uses an API key."
+        }
+      }
+    }
+  },
+  "runs": {
+    "localAppsCliRelease": ["declared:local"]
+  },
+  "inputs": [".upstream/packages/apps/**", ".upstream/packages/sdk/**"]
+}

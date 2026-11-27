@@ -150,7 +150,9 @@ test(
         Effect.gen(function* () {
           yield* migrateChangeRevisions;
           yield* migrateDeferredChanges;
+          // The lineage check needs every recorded step registered, as a real step list has.
           yield* migrateProductSteps("private_hosted_migrations", {
+            "20_account_changes": Effect.void,
             "21_change_journal_prepare": prepareChangeJournal,
           });
         }),

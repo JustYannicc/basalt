@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+index 059f8e4..8507f87 100644
 --- a/apps/hosted/cloud/src/main.ts
 +++ b/apps/hosted/cloud/src/main.ts
-@@ -61,6 +61,10 @@
+@@ -61,6 +61,10 @@ import {
    poolMembershipReadPath,
    readNativePoolMembership,
  } from "@executor-js/hosted-server/pool-membership";
@@ -12,7 +13,7 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
  import { Billing } from "./contracts/billing.ts";
  import { BillingMeter } from "./contracts/billing-meter.ts";
  import { billingBindings } from "./infrastructure/billing.ts";
-@@ -660,6 +664,9 @@
+@@ -686,6 +690,9 @@ export default Api.make(
        HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
          HttpRouter.provideRequest(executor),
        ),
@@ -21,8 +22,9 @@ diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
 +      ),
        HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
        HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
-       HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start),
+       // Starting an import reads the allow table (`writes.ts`) from the product database.
 diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
+index 599386f..5d8141a 100644
 --- a/apps/hosted/server/package.json
 +++ b/apps/hosted/server/package.json
 @@ -42,6 +42,7 @@
@@ -35,6 +37,7 @@ diff --git a/apps/hosted/server/package.json b/apps/hosted/server/package.json
      "./pool-usage": "./src/contracts/pool-usage.ts",
 diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
 new file mode 100644
+index 0000000..b6065cc
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/pool-organization.ts
 @@ -0,0 +1,39 @@
@@ -78,9 +81,10 @@ new file mode 100644
 +  });
 +}).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 503 }))));
 diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
+index 73c8b5b..e4e1158 100644
 --- a/e2e/check-boundary.ts
 +++ b/e2e/check-boundary.ts
-@@ -150,7 +150,10 @@
+@@ -165,7 +165,10 @@ const check = Effect.gen(function* () {
            // This adapter starts the complete fork Worker at its HTTP entry. These are
            // runtime SDKs; application source imports remain forbidden in every E2E file.
            if (
@@ -94,6 +98,7 @@ diff --git a/e2e/check-boundary.ts b/e2e/check-boundary.ts
              return;
 diff --git a/e2e/support/pool-worker-runtime.ts b/e2e/support/pool-worker-runtime.ts
 new file mode 100644
+index 0000000..a578f1e
 --- /dev/null
 +++ b/e2e/support/pool-worker-runtime.ts
 @@ -0,0 +1,129 @@
@@ -228,6 +233,7 @@ new file mode 100644
 +  });
 diff --git a/e2e/tests/deleted-org-pool-token.spec.ts b/e2e/tests/deleted-org-pool-token.spec.ts
 new file mode 100644
+index 0000000..3e7d5eb
 --- /dev/null
 +++ b/e2e/tests/deleted-org-pool-token.spec.ts
 @@ -0,0 +1,273 @@

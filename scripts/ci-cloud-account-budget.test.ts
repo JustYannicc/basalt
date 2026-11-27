@@ -28,6 +28,9 @@ const groups = {
       "cloudMcpObjectPool",
       "cloudMcpSessionRouting",
       "connectedAgents",
+      "credentialHostsRefused",
+      "credentialHostsRefusedData",
+      "credentialManagedCloud",
       "groupedAccounts",
       "hostedAppAccountsManagerBrowser",
       "hostedAppAccountsMemberBrowser",
@@ -76,7 +79,7 @@ const groups = {
   },
 };
 
-test("all 45 Cloud account scenarios keep one owner and their original isolated command", () => {
+test("all 48 Cloud account scenarios keep one owner and their original isolated command", () => {
   const declarations = readDeclarations();
   const all = new Set<string>();
   for (const [name, { job, scenarios }] of Object.entries(groups)) {
@@ -110,7 +113,7 @@ test("all 45 Cloud account scenarios keep one owner and their original isolated 
       },
     ]);
   }
-  assert.equal(all.size, 45);
+  assert.equal(all.size, 48);
 });
 
 test("both jobs prepare separately and retain evidence inside unchanged deadlines", () => {

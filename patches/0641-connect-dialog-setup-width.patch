@@ -1,0 +1,343 @@
+diff --git a/packages/ui/src/implementation/dashboard/scoped-connections.tsx b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+--- a/packages/ui/src/implementation/dashboard/scoped-connections.tsx
++++ b/packages/ui/src/implementation/dashboard/scoped-connections.tsx
+@@ -260,7 +260,8 @@ function ConnectDialog({
+ }) {
+   return (
+     <Dialog open={target !== undefined} onOpenChange={(open) => !open && onClose()}>
+-      <DialogContent className="sm:max-w-xl">
++      {/* Wide enough on a desktop for every setup method in one row; phones keep the scrolling strip. */}
++      <DialogContent className="sm:max-w-2xl">
+         <DialogHeader>
+           <DialogTitle>Connect {target?.name}</DialogTitle>
+           <DialogDescription>
+diff --git a/e2e/tests/pool-setup-connect.spec.ts b/e2e/tests/pool-setup-connect.spec.ts
+--- a/e2e/tests/pool-setup-connect.spec.ts
++++ b/e2e/tests/pool-setup-connect.spec.ts
+@@ -169,6 +169,26 @@ const settled = (element: Element) =>
+ const guide = (page: Page, name: string) => page.getByRole("article", { name: `${name} setup` });
+ const rows = (page: Page) =>
+   page.getByRole("region", { name: "Connected agents" }).getByRole("listitem");
++/** The same rows behind the open dialog: the modal hides them from the accessibility tree only. */
++const rowsBehind = (page: Page) =>
++  page
++    .getByRole("region", { name: "Connected agents", includeHidden: true })
++    .getByRole("listitem", { includeHidden: true });
++
++/** The assistant guides live in Full access's Connect dialog; the computers stay on the page. */
++const fullAccess = (page: Page) => page.getByRole("dialog", { name: "Connect Full access" });
++const openFullAccess = (page: Page) =>
++  page
++    .getByRole("listitem", { name: "Full access" })
++    .getByRole("button", { name: "Connect", exact: true })
++    .click()
++    .then(() => fullAccess(page).waitFor());
++/**
++ * The dialog is modal, so the page's computers are managed with it closed. Its title loses the
++ * connection's name as it starts to close, so wait for the dialog itself to leave.
++ */
++const closeFullAccess = (page: Page) =>
++  page.keyboard.press("Escape").then(() => page.getByRole("dialog").waitFor({ state: "detached" }));
+ 
+ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) => {
+   it.effect(scenarios.poolSetupConnect.title, (context) =>
+@@ -194,6 +214,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Open Connect", (page) =>
+           page.goto(`/org/${actors.organization.slug}/connect`),
+         );
++        yield* browser.use("Open Full access's Connect dialog", openFullAccess);
+         expect(
+           yield* browser.use("Claude's capture shows the deployment's name", (page) =>
+             guide(page, "Claude").getByRole("img").getAttribute("src"),
+@@ -271,6 +292,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         );
+         yield* browser.checkpoint("Codex: one-click setup");
+ 
++        yield* browser.use("Close the dialog to reach the computers", closeFullAccess);
+         yield* browser.use("Computers join the connected agents", (page) =>
+           rows(page).filter({ hasText: "Work laptop" }).filter({ hasText: "Team pool" }).waitFor(),
+         );
+@@ -353,6 +375,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Open Connect", (page) =>
+           page.goto(`/org/${actors.organization.slug}/connect`),
+         );
++        yield* browser.use("Open Full access's Connect dialog", openFullAccess);
+         yield* browser.use("Choose Claude Desktop", (page) =>
+           page.getByRole("button", { name: "Claude Desktop", exact: true }).click(),
+         );
+@@ -524,6 +547,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         );
+         const failedDesktop = (page: Page) =>
+           rows(page).filter({ hasText: "Claude Desktop" }).filter({ hasText: "Team pool" }).first();
++        yield* browser.use("Close the dialog to reach Connected agents", closeFullAccess);
+         yield* browser.use("Manage the failed Desktop attempt", (page) =>
+           failedDesktop(page)
+             .getByRole("button", { name: /Manage/ })
+@@ -538,6 +562,10 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("The failed Desktop attempt leaves the list", (page) =>
+           failedDesktop(page).waitFor({ state: "detached" }),
+         );
++        yield* browser.use("Reopen Full access's Connect dialog", openFullAccess);
++        yield* browser.use("Choose Claude Desktop again", (page) =>
++          page.getByRole("button", { name: "Claude Desktop", exact: true }).click(),
++        );
+         const recovered = yield* download();
+         expect(recovered.name).toBe("claude-desktop-config.json");
+         expect(service.calls.filter((call) => call.path === "links")).toHaveLength(3);
+@@ -563,6 +591,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+ 
+         service.listPools([]);
+         yield* browser.use("Reload Connect with no pool", (page) => page.reload());
++        yield* browser.use("Open Full access's Connect dialog with no pool", openFullAccess);
+         yield* browser.use("Open the pool endpoint with no pool", (page) =>
+           page.getByRole("tab", { name: "Pool endpoint" }).click(),
+         );
+@@ -577,6 +606,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         service.listPools([{ id: "own", name: "Own pool", mine: true, label: "Own pool · Team" }]);
+         const release = service.holdList();
+         yield* browser.use("Reload Connect with one pool", (page) => page.reload());
++        yield* browser.use("Open Full access's Connect dialog with one pool", openFullAccess);
+         yield* browser.use("Open the pool endpoint again", (page) =>
+           page.getByRole("tab", { name: "Pool endpoint" }).click(),
+         );
+@@ -627,6 +657,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         yield* browser.use("Open Connect", (page) =>
+           page.goto(`/org/${actors.organization.slug}/connect`),
+         );
++        yield* browser.use("Open Full access's Connect dialog", openFullAccess);
+         const strip = (page: Page) => page.getByRole("tablist", { name: "Setup method" });
+         yield* browser.use("The setup methods load", (page) => strip(page).waitFor());
+         const names = yield* browser.use("Read the setup methods", (page) =>
+@@ -634,18 +665,26 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         );
+         expect(names).toEqual(expect.arrayContaining(["Personal access token", "Pool endpoint"]));
+         // The page scrolls in <main>, so the document alone can look fine while the page pans sideways.
++        // The strip sits in the dialog, which scrolls in its own box above that page.
+         const layout = (step: string) =>
+           browser.use(step, (page) =>
+             strip(page).evaluate((list) => {
+-              const main = list.closest("main");
++              const main = document.querySelector("main");
++              const dialog = list.closest("[role='dialog']");
+               const tab = list.querySelector("[data-state='active']")?.getBoundingClientRect();
+               const bounds = list.getBoundingClientRect();
++              const box = dialog?.getBoundingClientRect();
+               return {
+                 viewport: innerWidth,
+                 document: document.documentElement.scrollWidth,
+                 mainClient: main?.clientWidth ?? 0,
+                 mainScroll: main?.scrollWidth ?? Number.POSITIVE_INFINITY,
+                 mainLeft: main?.scrollLeft ?? 0,
++                dialogClient: dialog?.clientWidth ?? 0,
++                dialogScroll: dialog?.scrollWidth ?? Number.POSITIVE_INFINITY,
++                dialogLeft: dialog?.scrollLeft ?? 0,
++                dialogBoxLeft: box?.left ?? Number.NEGATIVE_INFINITY,
++                dialogBoxRight: box?.right ?? Number.POSITIVE_INFINITY,
+                 stripLeft: bounds.left,
+                 stripRight: bounds.right,
+                 stripClient: list.clientWidth,
+@@ -677,6 +716,10 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+             expect(measured.document, detail).toBeLessThanOrEqual(measured.viewport);
+             expect(measured.mainScroll, detail).toBeLessThanOrEqual(measured.mainClient);
+             expect(measured.mainLeft, detail).toBe(0);
++            expect(measured.dialogScroll, detail).toBeLessThanOrEqual(measured.dialogClient);
++            expect(measured.dialogLeft, detail).toBe(0);
++            expect(measured.dialogBoxLeft, detail).toBeGreaterThanOrEqual(0);
++            expect(measured.dialogBoxRight, detail).toBeLessThanOrEqual(measured.viewport);
+             expect(measured.tabLeft, detail).toBeGreaterThanOrEqual(measured.stripLeft - 1);
+             expect(measured.tabRight, detail).toBeLessThanOrEqual(measured.stripRight + 1);
+             // Wider than its column, the strip must scroll for touch and mouse, not just clip.
+@@ -716,26 +759,35 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         );
+         const picker = (page: Page) =>
+           guide(page, "Claude Code").getByRole("combobox", { name: "Pool for models" });
+-        const chooseClaudeCode = browser.use("Choose Claude Code", (page) =>
+-          page
+-            .getByRole("button", { name: "Claude Code", exact: true })
+-            .click()
+-            .then(() => picker(page).waitFor()),
+-        );
++        const openGuide = browser.use("Open Full access's Connect dialog", openFullAccess);
++        const closeGuide = browser.use("Close the dialog to see the computers", closeFullAccess);
++        const chooseClaudeCode = Effect.gen(function* () {
++          yield* openGuide;
++          yield* browser.use("Choose Claude Code", (page) =>
++            page
++              .getByRole("button", { name: "Claude Code", exact: true })
++              .click()
++              .then(() => picker(page).waitFor()),
++          );
++        });
+         const chosenPool = (phase: string) =>
+           browser.use(`${phase}: the pool picker`, (page) =>
+             Promise.all([picker(page).innerText(), picker(page).isEnabled()]).then(
+               ([label, enabled]) => ({ label: label.trim(), enabled }),
+             ),
+           );
+-        const computerRows = (phase: string, name: string) =>
++        const computerRows = (phase: string, name: string, list = rows) =>
+           browser.use(`${phase}: ${name} on the team pool`, (page) =>
+-            rows(page).filter({ hasText: name }).filter({ hasText: "Team pool" }).count(),
++            list(page).filter({ hasText: name }).filter({ hasText: "Team pool" }).count(),
+           );
++        // Callers close the dialog first, so leaving is a plain navigation away from Connect.
++        // Any modal still open hides the page, so only leaving the DOM proves Connect closed.
+         const leaveConnect = Effect.gen(function* () {
+           yield* openInApp("Open the apps list", `/org/${actors.organization.slug}/apps`);
+           yield* browser.use("Connect has closed", (page) =>
+-            guide(page, "Claude Code").waitFor({ state: "detached" }),
++            page
++              .getByRole("region", { name: "Connected agents", includeHidden: true })
++              .waitFor({ state: "detached" }),
+           );
+         });
+ 
+@@ -753,6 +805,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         const firstReads = setupReads;
+         expect(firstReads, "The counter sees the first visit's setup reads").toBeGreaterThan(0);
+ 
++        yield* closeGuide;
+         yield* leaveConnect;
+         // Long enough for Connect's views to close, within the retained value's freshness.
+         yield* browser.use("Leave Connect for a few seconds", (page) => page.clock.runFor(5_000));
+@@ -766,6 +819,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+               label: "Team pool",
+               enabled: true,
+             });
++            yield* closeGuide;
+             expect(yield* computerRows("Quick return", "Work laptop")).toBe(1);
+             expect(setupReads, "A fresh retained setup is not read again").toBe(firstReads);
+             yield* browser.checkpoint("Connect on a quick return");
+@@ -779,7 +833,8 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         );
+         yield* Effect.scoped(
+           Effect.gen(function* () {
+-            const refresh = yield* holdQuery(setupRead, "continue");
++            // The page and the dialog each read their stale setup, so the hold covers both.
++            const refresh = yield* holdQuery(setupRead, "continue", { allRequests: true });
+             yield* openInApp("Return to Connect with its refresh held", connect);
+             yield* refresh.requested;
+             yield* chooseClaudeCode;
+@@ -787,6 +842,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+               label: "Team pool",
+               enabled: true,
+             });
++            yield* closeGuide;
+             expect(yield* computerRows("Background refresh", "Work laptop")).toBe(1);
+             yield* browser.checkpoint("Connect while a background refresh is held");
+             yield* refresh.release;
+@@ -799,15 +855,18 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+           }),
+         );
+         expect(yield* computerRows("Refreshed", "Work laptop")).toBe(0);
++        yield* chooseClaudeCode;
+         expect(yield* chosenPool("Refreshed")).toEqual({ label: "Team pool", enabled: true });
+ 
++        yield* closeGuide;
+         yield* leaveConnect;
+         yield* browser.use("Leave Connect until its setup is stale again", (page) =>
+           page.clock.runFor(31_000),
+         );
+         yield* Effect.scoped(
+           Effect.gen(function* () {
+-            const failed = yield* holdQuery(setupRead, "fail");
++            // Both the page's read and the dialog's own read fail; the dialog explains it.
++            const failed = yield* holdQuery(setupRead, "fail", { allRequests: true });
+             yield* openInApp("Return to Connect with its refresh failing", connect);
+             yield* failed.requested;
+             yield* chooseClaudeCode;
+@@ -817,7 +876,16 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+                 .getByText("Setup couldn't be reached. Try again.", { exact: true })
+                 .waitFor(),
+             );
++            yield* closeGuide;
+             expect(yield* computerRows("Failed refresh", "Studio laptop")).toBe(1);
++            // Reopened, the dialog reads again and fails again, so the focus refresh below clears
++            // a failure this dialog saw.
++            yield* chooseClaudeCode;
++            yield* browser.use("The reopened dialog explains the failed refresh", (page) =>
++              guide(page, "Claude Code")
++                .getByText("Setup couldn't be reached. Try again.", { exact: true })
++                .waitFor(),
++            );
+             expect(yield* chosenPool("Failed refresh")).toEqual({
+               label: "Team pool",
+               enabled: true,
+@@ -830,16 +898,16 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+         service.renameElsewhere("existing", "Lab laptop");
+         yield* Effect.scoped(
+           Effect.gen(function* () {
+-            const focused = yield* holdQuery(setupRead, "continue");
++            const focused = yield* holdQuery(setupRead, "continue", { allRequests: true });
+             yield* refreshVisiblePage;
+             yield* focused.requested;
+-            expect(yield* computerRows("Focus refresh", "Studio laptop")).toBe(1);
++            expect(yield* computerRows("Focus refresh", "Studio laptop", rowsBehind)).toBe(1);
+             yield* focused.release;
+             yield* browser.use("The focus refresh shows the rename", (page) =>
+-              rows(page)
++              rowsBehind(page)
+                 .filter({ hasText: "Lab laptop" })
+                 .filter({ hasText: "Team pool" })
+-                .waitFor(),
++                .waitFor({ state: "attached" }),
+             );
+           }),
+         );
+@@ -849,6 +917,10 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+             .waitFor({ state: "hidden" }),
+         );
+         expect(yield* chosenPool("Focus refresh")).toEqual({ label: "Team pool", enabled: true });
++        yield* closeGuide;
++        yield* browser.use("The page shows the focus refresh's rename", (page) =>
++          rows(page).filter({ hasText: "Lab laptop" }).filter({ hasText: "Team pool" }).waitFor(),
++        );
+ 
+         // And a visible page reconciles on its own, as the dashboard's other reads do.
+         service.renameElsewhere("existing", "Desk laptop");
+@@ -909,6 +981,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+           label: "Team pool",
+           enabled: true,
+         });
++        yield* closeGuide;
+         yield* refreshVisiblePage;
+         yield* browser.use("The current page reconciles the completed mutation", (page) =>
+           rows(page)
+@@ -924,7 +997,8 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+             const older = yield* holdQuery(computers, "continue");
+             yield* refreshVisiblePage;
+             yield* older.requested;
+-            yield* browser.use("Refuse the next computer read", (page) =>
++            // The page's read after the rename is refused, and so is the dialog's own first read.
++            yield* browser.use("Refuse the next computer reads", (page) =>
+               page.route(
+                 (url) => computers.test(url.pathname),
+                 (route) =>
+@@ -933,7 +1007,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+                     contentType: "application/json",
+                     body: JSON.stringify({ error: "Setup access refused." }),
+                   }),
+-                { times: 1 },
++                { times: 2 },
+               ),
+             );
+             yield* browser.use("Open the computer menu while the earlier read waits", (page) =>
+@@ -951,6 +1025,10 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+             yield* browser.use("The refused read clears the computer list", (page) =>
+               rows(page).filter({ hasText: "Leaving laptop" }).waitFor({ state: "detached" }),
+             );
++            yield* openGuide;
++            yield* browser.use("Choose Claude Code with setup refused", (page) =>
++              page.getByRole("button", { name: "Claude Code", exact: true }).click(),
++            );
+             // A refused read offers no pool at all: no picker, and no stand-in pool name.
+             yield* browser.use("Refused read: the pool says it is unavailable", (page) =>
+               guide(page, "Claude Code").getByText("Pool unavailable", { exact: true }).waitFor(),
+@@ -987,6 +1065,7 @@ layer(HostedLive, { excludeTestServices: true })("Pool setup on Connect", (it) =
+                 picker(page).count(),
+               ),
+             ).toBe(0);
++            yield* closeGuide;
+             expect(yield* computerRows("Late response after refusal", "Denied laptop")).toBe(0);
+             yield* browser.checkpoint("A late response cannot restore refused setup data");
+           }),

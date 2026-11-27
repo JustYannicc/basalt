@@ -11,11 +11,6 @@
       "upstream": null,
       "owner": null
     },
-    "0138-auth-security-hardening": {
-      "packages": ["@better-auth/core", "better-auth"],
-      "upstream": null,
-      "owner": null
-    },
     "0170-container-image-drift": {
       "packages": ["alchemy"],
       "upstream": null,
@@ -45,6 +40,11 @@
       "packages": ["alchemy"],
       "upstream": null,
       "owner": null
+    },
+    "0378-dashboard-render-lifetime-diagnostics": {
+      "packages": ["alchemy"],
+      "upstream": "https://github.com/alchemy-run/alchemy/issues/3780",
+      "owner": "release owner"
     },
     "0381-alchemy-patch-source-map": {
       "packages": ["alchemy"],

@@ -1,7 +1,22 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+index ca44192c2..ccea5972c 100644
+--- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
++++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
+@@ -195,6 +195,9 @@ export const workerBuild = (
+   worker === "compiler"
+     ? { output: { plugins: [uploadedModules(worker)] } }
+     : {
++        // Api's import graph runs close to Cloudflare's startup CPU limit. Importing it on the first
++        // event keeps the global scope small; the Durable Object and Workflow bridges are unchanged.
++        ...(worker === "api" ? { lazyEntrypoint: true } : {}),
+         input: {
+           resolve: {
+             alias: {
 diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80.patch
+index 66c6e29bf..9bc54085e 100644
 --- a/patches/alchemy@2.0.0-beta.80.patch
 +++ b/patches/alchemy@2.0.0-beta.80.patch
-@@ -7757,3 +7757,200 @@ index 741f7ce..ff8ccc8 100644
+@@ -7987,3 +7987,200 @@ index 741f7ce..ff8ccc8 100644
   }
   declare const WorkerUploadHook_base: Context.ServiceClass<WorkerUploadHook, "alchemy/Cloudflare/Workers/WorkerUploadHook", {
     readonly capture: (upload: PreparedWorkerUpload) => Effect.Effect<Worker["Attributes"], unknown>;
@@ -202,16 +217,3 @@ diff --git a/patches/alchemy@2.0.0-beta.80.patch b/patches/alchemy@2.0.0-beta.80
 + }) => (importPath: string) => string;
 + /**
 +  * The default source provider: bundle `props.main` with rolldown.
-diff --git a/apps/hosted/cloud/src/infrastructure/worker-build.ts b/apps/hosted/cloud/src/infrastructure/worker-build.ts
---- a/apps/hosted/cloud/src/infrastructure/worker-build.ts
-+++ b/apps/hosted/cloud/src/infrastructure/worker-build.ts
-@@ -164,6 +164,9 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
-   worker === "compiler"
-     ? { output: { plugins: [uploadedModules(worker)] } }
-     : {
-+        // Api's import graph runs close to Cloudflare's startup CPU limit. Importing it on the first
-+        // event keeps the global scope small; the Durable Object and Workflow bridges are unchanged.
-+        ...(worker === "api" ? { lazyEntrypoint: true } : {}),
-         ...(worker === "oauth-wire"
-           ? {}
-           : {

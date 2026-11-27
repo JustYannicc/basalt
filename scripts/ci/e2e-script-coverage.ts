@@ -8,6 +8,8 @@ import {
   shellCommands,
   commandWords,
   executedPaths,
+  executedArgv,
+  delegatedCommand,
   type Workflow,
 } from "./e2e-workflow.ts";
 
@@ -58,8 +60,21 @@ export function scriptCoverage(root: string, workflow: Workflow) {
       commands.push(
         ...shellCommands(body).map((command) => ({ job: commands[i]!.job, command, cwd })),
       );
-    for (const argument of executedPaths(command)) {
-      const path = relative(root, resolve(root, cwd, argument));
+    const paths = executedPaths(command).map((argument) => ({ argument, cwd }));
+    // The published-framework wrapper runs its delegated command from the upstream checkout.
+    if (
+      paths.some(
+        ({ argument }) =>
+          resolve(root, cwd, argument) === resolve(root, "scripts/ci/with-published-frameworks.ts"),
+      )
+    ) {
+      const [runner, ...argv] = delegatedCommand(command);
+      paths.push(
+        ...executedArgv(runner ?? "", argv).map((argument) => ({ argument, cwd: ".upstream" })),
+      );
+    }
+    for (const { argument, cwd: executionDirectory } of paths) {
+      const path = relative(root, resolve(root, executionDirectory, argument));
       if (path.startsWith(".upstream/")) continue;
       if (path.includes("*")) scripts.filter((file) => matchesGlob(file, path)).forEach(visit);
       else visit(path);

@@ -1,0 +1,113 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/app-domains.ts b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+--- a/apps/hosted/cloud/src/infrastructure/app-domains.ts
++++ b/apps/hosted/cloud/src/infrastructure/app-domains.ts
+@@ -59,7 +59,7 @@
+       status: (_team: typeof Team.Type) => Effect.succeed("ready" as const),
+       control: (_operation: "resume" | "drain") =>
+         Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+-      heartbeat: Effect.void,
++      heartbeat: Effect.succeed(jobCompleted),
+     };
+   const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
+   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+--- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -1,6 +1,7 @@
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+ import { Console, Effect, Schema } from "effect";
+ import { createHash, randomUUID } from "node:crypto";
++import { jobCompleted, jobFailedWith } from "../contracts/job-outcome.ts";
+ 
+ // No caller supplies SQL or a selector. JSON projections stop at known identifier leaves.
+ const queries = {
+@@ -97,7 +98,9 @@
+     );
+   }).pipe(
+     Effect.map((report) => ({ ok: true as const, report })),
+-    Effect.catchCause(() => Effect.succeed({ ok: false as const })),
++    Effect.catchCause((cause) =>
++      Effect.succeed({ ok: false as const, outcome: jobFailedWith(cause) }),
++    ),
+   );
+   if (!report.ok) {
+     yield* Console.info(
+@@ -110,7 +113,7 @@
+         migrationGo: false,
+       }),
+     );
+-    return;
++    return report.outcome;
+   }
+   const json = JSON.stringify(report.report);
+   const sha256 = createHash("sha256").update(json).digest("hex");
+@@ -140,4 +143,5 @@
+       migrationGo: false,
+     }),
+   );
++  return jobCompleted;
+ }).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -123,7 +123,13 @@
+   selfBinding,
+   type BackgroundJob,
+ } from "./infrastructure/background-jobs.ts";
+-import { handledJob, jobCompleted, jobFailed, jobFailedWith } from "./contracts/job-outcome.ts";
++import {
++  handledJob,
++  jobCompleted,
++  jobFailed,
++  jobFailedWith,
++  type JobOutcome,
++} from "./contracts/job-outcome.ts";
+ import { cloudEgress } from "./infrastructure/executor.ts";
+ import { withBatchExecution } from "./infrastructure/batch-execution.ts";
+ import { cloudEmulators } from "./infrastructure/emulators.ts";
+@@ -509,6 +515,7 @@
+       reportErrors,
+       Effect.scoped,
+       Effect.tapError(() => Effect.logWarning("Automatic account health rechecks failed")),
++      Effect.as(jobCompleted),
+     );
+     const jobs = yield* cloudBackgroundJobs;
+     yield* jobs.schedule(
+@@ -569,7 +576,7 @@
+       "pool-migration-inventory": reportHostPoolInventory.pipe(Effect.provide(executor)),
+       "personal-data-reporting": personalDataReporting,
+       "account-health-rechecks": accountRechecks,
+-    } satisfies Record<BackgroundJob, unknown>;
++    } satisfies Record<BackgroundJob, Effect.Effect<JobOutcome, unknown, unknown>>;
+ 
+     const egress = yield* cloudEgress;
+     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+@@ -762,8 +769,7 @@
+       ).pipe(HttpRouter.provideRequest(Layer.merge(executor, billing))),
+       jobs.route((job) =>
+         Effect.gen(function* () {
+-          const outcome = yield* backgroundJobs[job];
+-          return outcome ?? jobCompleted;
++          return yield* backgroundJobs[job];
+         }),
+       ),
+       authoringRoutes,
+diff --git a/packages/ui/src/implementation/dashboard/custom-app.tsx b/packages/ui/src/implementation/dashboard/custom-app.tsx
+--- a/packages/ui/src/implementation/dashboard/custom-app.tsx
++++ b/packages/ui/src/implementation/dashboard/custom-app.tsx
+@@ -15,12 +15,12 @@
+  * Add a remote MCP server by URL. Executor confirms whether it needs no sign-in or supports
+  * OAuth; anything else is set up with the user's agent.
+  */
+-export function CustomAppForm<E>({
++export function CustomAppForm<E, A extends AppSummary>({
+   mutation,
+   Failure,
+   onInstalled,
+-}: MutationProps<CustomAppInput, AppSummary, E> & {
+-  readonly onInstalled: (app: AppSummary) => void | Promise<void>;
++}: MutationProps<CustomAppInput, A, E> & {
++  readonly onInstalled: (app: A) => void | Promise<void>;
+ }) {
+   const brand = useProductBrand();
+   const result = useAtomValue(mutation);

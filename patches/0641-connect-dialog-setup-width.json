@@ -1,0 +1,9 @@
+{
+  "identity": "connect-dialog-setup-width",
+  "file": "0641-connect-dialog-setup-width.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false,
+  "content_sha256": "41ee0c6bcc121ff9530085dfc42f9d2a8cdc9071a69dc7f9161f4cc276512aa3"
+}

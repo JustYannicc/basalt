@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "A connection's Connect dialog is wide enough on desktop widths to show every setup method in one row without scrolling, including the deployment's added methods. On phones the dialog keeps the viewport's width, and its setup methods scroll inside their own strip, never the page. Pool setup is reached through Full access's Connect dialog, while the person's computers stay manageable on the Connect page behind it, and the retained pool and computer list survive closing the dialog and leaving Connect."
+    }
+  }
+}

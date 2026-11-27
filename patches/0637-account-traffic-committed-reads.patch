@@ -1,7 +1,8 @@
 diff --git a/apps/hosted/server/src/contracts/account-traffic.ts b/apps/hosted/server/src/contracts/account-traffic.ts
+index 7e3f71f19..a263a5cd9 100644
 --- a/apps/hosted/server/src/contracts/account-traffic.ts
 +++ b/apps/hosted/server/src/contracts/account-traffic.ts
-@@ -10,6 +10,8 @@
+@@ -10,6 +10,8 @@ import {
  
  /** The most accounts one read names; an Accounts list asks for its visible rows at once. */
  export const maxTrafficAccounts = 200;
@@ -12,6 +13,7 @@ diff --git a/apps/hosted/server/src/contracts/account-traffic.ts b/apps/hosted/s
  
 diff --git a/apps/hosted/server/src/implementation/account-traffic-change-schema.ts b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
 new file mode 100644
+index 000000000..f211bb99e
 --- /dev/null
 +++ b/apps/hosted/server/src/implementation/account-traffic-change-schema.ts
 @@ -0,0 +1,28 @@
@@ -44,9 +46,10 @@ new file mode 100644
 +    for each row execute function hosted_account_traffic_changed()`;
 +});
 diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/server/src/implementation/migrations.ts
+index 172d21529..993cc26a9 100644
 --- a/apps/hosted/server/src/implementation/migrations.ts
 +++ b/apps/hosted/server/src/implementation/migrations.ts
-@@ -25,6 +25,7 @@
+@@ -27,6 +27,7 @@ import { migrateAccountRechecks } from "./account-recheck-schema.ts";
  import { migrateAccountObservations } from "./account-observation-schema.ts";
  import { migrateChangeRevisions } from "./change-revision-schema.ts";
  import { migrateAccountChanges } from "./account-change-schema.ts";
@@ -54,15 +57,16 @@ diff --git a/apps/hosted/server/src/implementation/migrations.ts b/apps/hosted/s
  import { prepareChangeJournal, activateChangeJournal } from "./change-journal-schema.ts";
  
  /**
-@@ -181,6 +182,7 @@
-   "19_change_revisions": migrateChangeRevisions,
-   "20_account_changes": migrateAccountChanges,
-   "21_change_journal_prepare": prepareChangeJournal,
-+  "23_account_traffic_changes": migrateAccountTrafficChanges,
- });
- 
- /** Activation is deliberately absent from startup migrations; the operator owns the reader cutover. */
+@@ -191,6 +192,7 @@ const hostedProductMigrations = migrateProductSteps(
+     "19_change_revisions": migrateChangeRevisions,
+     "20_account_changes": migrateAccountChanges,
+     "21_change_journal_prepare": prepareChangeJournal,
++    "23_account_traffic_changes": migrateAccountTrafficChanges,
+   },
+   ["22_change_journal_activate"],
+ );
 diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/apps/hosted/server/src/implementation/organization-changes.ts
+index cef321156..ab2aa1b7c 100644
 --- a/apps/hosted/server/src/implementation/organization-changes.ts
 +++ b/apps/hosted/server/src/implementation/organization-changes.ts
 @@ -1,5 +1,5 @@
@@ -73,7 +77,7 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
  import { Effect, Schema } from "effect";
  import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
  import { Authentication, Unauthorized } from "../contracts/auth.ts";
-@@ -11,6 +11,7 @@
+@@ -11,6 +11,7 @@ import {
    organizationOwner,
  } from "../contracts/organization.ts";
  import { OrganizationTombstones } from "../contracts/organization-removal.ts";
@@ -81,7 +85,7 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
  import { makeChangeJournal } from "./change-revisions.ts";
  import {
    changeHeaders,
-@@ -88,14 +89,25 @@
+@@ -88,14 +89,25 @@ export const makeOrganizationChanges = () => {
      const pools = yield* Schema.decodeUnknownEffect(
        Schema.Array(AppId).check(Schema.isMaxLength(100)),
      )([...new Set(query.getAll("pool"))]);
@@ -110,7 +114,7 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
      // Slugs can move; this stream keeps checking the canonical scope it subscribed to.
      const authorize = Effect.gen(function* () {
        const latest = yield* organizationChangeAuthority(headers, identity.organization);
-@@ -105,7 +117,7 @@
+@@ -105,7 +117,7 @@ export const makeOrganizationChanges = () => {
          latest.session !== identity.session
        )
          return yield* new Unauthorized();
@@ -119,7 +123,7 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
        return latest;
      });
      const fingerprint = yield* changeIdentity([
-@@ -115,7 +127,20 @@
+@@ -115,7 +127,20 @@ export const makeOrganizationChanges = () => {
      ]);
      const sql = yield* Effect.flatten(GroupDatabase);
      const sources = [
@@ -142,9 +146,10 @@ diff --git a/apps/hosted/server/src/implementation/organization-changes.ts b/app
          scope: `pool:${pool}`,
          keys: ["pool-readings", "pool-usage", "pool-samples", "pool-prices"].map((topic) => ({
 diff --git a/apps/hosted/web/src/contracts/accepted-read.ts b/apps/hosted/web/src/contracts/accepted-read.ts
+index 675562083..7ac153e58 100644
 --- a/apps/hosted/web/src/contracts/accepted-read.ts
 +++ b/apps/hosted/web/src/contracts/accepted-read.ts
-@@ -9,11 +9,20 @@
+@@ -9,11 +9,20 @@ export interface AcceptedRead<A, E> {
    readonly hydrated?: true;
  }
  
@@ -167,7 +172,7 @@ diff --git a/apps/hosted/web/src/contracts/accepted-read.ts b/apps/hosted/web/sr
      Atom.setIdleTTL("30 minutes"),
    );
    // Reuse the endpoint's codec, but give the body no independently hydratable atom.
-@@ -23,13 +32,16 @@
+@@ -23,13 +32,16 @@ export const acceptedRead = <A, E>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>
    const retained = Object.assign(cache, {
      [Atom.SerializableTypeId]: {
        key: `hosted:accepted:${codec.key}`,
@@ -189,6 +194,7 @@ diff --git a/apps/hosted/web/src/contracts/accepted-read.ts b/apps/hosted/web/sr
        },
      },
 diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src/contracts/app-accounts.ts
+index 2d28f34ff..5a498d0b6 100644
 --- a/apps/hosted/web/src/contracts/app-accounts.ts
 +++ b/apps/hosted/web/src/contracts/app-accounts.ts
 @@ -4,8 +4,8 @@
@@ -200,9 +206,9 @@ diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src
 +import { changeProtected } from "./change-signal.ts";
 +import { revalidated, refreshedOnFocus } from "@executor-js/ui/contracts/refresh";
  import { acknowledge } from "@executor-js/ui/contracts/mutations";
+ import { withCheckedApps } from "@executor-js/ui/contracts/dashboard";
  import { Data, Effect } from "effect";
- import { Atom } from "effect/reactivity";
-@@ -54,23 +54,13 @@
+@@ -56,23 +56,13 @@ const appLinks = Atom.family((key: AppKey) =>
  );
  const userLinks = Atom.family((key: AppKey) =>
    HostedClient.query("appAccounts", "userList", hydrated({ params: key })).pipe(
@@ -228,7 +234,7 @@ diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src
  /**
   * The accounts linked to the app's own requirements, oldest first per requirement. Anyone who can
   * use the app reads them; only people who can edit it see the identity checks reported.
-@@ -93,7 +83,7 @@
+@@ -95,7 +85,7 @@ export const appMethodsAtom = (key: { organization: OrganizationReference; app:
  
  /** The accounts the caller linked to the app's user requirements and can still use. */
  export const userLinksAtom = (key: { organization: OrganizationReference; app: AppId }) =>
@@ -238,6 +244,7 @@ diff --git a/apps/hosted/web/src/contracts/app-accounts.ts b/apps/hosted/web/src
  const appChoices = Atom.family((key: RequirementKey) =>
    HostedClient.query(
 diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contracts/apps.ts
+index c295c5767..839f5fc28 100644
 --- a/apps/hosted/web/src/contracts/apps.ts
 +++ b/apps/hosted/web/src/contracts/apps.ts
 @@ -1,11 +1,10 @@
@@ -254,7 +261,7 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
  /** Organization-specific app queries and mutations use the shared hosted API. */
  import {
    AppId,
-@@ -88,7 +87,10 @@
+@@ -89,7 +88,10 @@ export const oauthSetupAtom = (key: {
  
  const appQuery = Atom.family(
    (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
@@ -266,7 +273,7 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
  );
  const versionsQuery = Atom.family((key: AppKey) =>
    HostedClient.query("apps", "versions", hydrated({ params: key })).pipe(revalidated),
-@@ -616,10 +618,9 @@
+@@ -619,10 +621,9 @@ export const guidedOAuthFailureAtom = Atom.make<
  
  export { appError } from "./errors.ts";
  
@@ -279,9 +286,10 @@ diff --git a/apps/hosted/web/src/contracts/apps.ts b/apps/hosted/web/src/contrac
  /** Structural keys keep each query stable across React renders. */
  export const appAtom = (key: {
 diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/src/contracts/change-signal.ts
+index ee988374a..8a2c42e35 100644
 --- a/apps/hosted/web/src/contracts/change-signal.ts
 +++ b/apps/hosted/web/src/contracts/change-signal.ts
-@@ -26,9 +26,13 @@
+@@ -26,9 +26,13 @@ const changeBase = (
    organization: OrganizationReference,
    pools: readonly string[] = [],
    suffix = "",
@@ -296,7 +304,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    return `/api/organizations/${encodeURIComponent(target)}/changes${suffix}${query.size ? `?${query}` : ""}`;
  };
  
-@@ -42,8 +46,9 @@
+@@ -42,8 +46,9 @@ const organizationFeed = (
    registry: Registry,
    organization: OrganizationReference,
    pools: readonly string[],
@@ -307,7 +315,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    let scoped = feeds.get(registry);
    if (scoped === undefined) {
      scoped = new Map();
-@@ -54,7 +59,7 @@
+@@ -54,7 +59,7 @@ const organizationFeed = (
    existing?.close();
    const feed = makeChangeFeed({
      stream: base,
@@ -316,7 +324,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    });
    scoped.set(base, feed);
    feed.onStatus(() => {
-@@ -83,8 +88,9 @@
+@@ -83,8 +88,9 @@ const currentHeads = (
    organization: OrganizationReference,
    after: number,
    pools: readonly string[],
@@ -327,7 +335,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    let scoped = reads.get(registry);
    if (scoped === undefined) {
      scoped = new Map();
-@@ -119,7 +125,12 @@
+@@ -119,7 +125,12 @@ const currentHeads = (
  
  /** One accepted body owns its fence through server rendering, hydration and warm navigation. */
  const changeRetained =
@@ -341,7 +349,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
    <A, E extends HostedError>(self: Atom.Atom<AsyncResult.AsyncResult<A, E>>) => {
      type Value = AsyncResult.AsyncResult<A, E | OrganizationForbidden | ChangeRefreshFailed>;
      const { source, cache, document: carriesDocument } = acceptedRead(self);
-@@ -137,26 +148,35 @@
+@@ -137,26 +148,35 @@ const changeRetained =
            retained = new Map();
            retainedReads.set(registry, retained);
          }
@@ -381,7 +389,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
              : AsyncResult.initial(true);
          let ended = false;
          let subscribed = false;
-@@ -185,7 +205,7 @@
+@@ -185,7 +205,7 @@ const changeRetained =
          const revoked = () => {
            ended = true;
            held = undefined;
@@ -390,7 +398,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
            resolveBody?.(AsyncResult.initial());
            resolveBody = undefined;
            publish(AsyncResult.fail(new OrganizationForbidden()));
-@@ -213,7 +233,7 @@
+@@ -213,7 +233,7 @@ const changeRetained =
              } else {
                // The document uses its request-bound fetch; no browser stream or prior identity.
                for (let attempt = 0; attempt < 3; attempt++) {
@@ -399,7 +407,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  if (ended) return;
                  const result = await body();
                  if (ended) return;
-@@ -222,6 +242,7 @@
+@@ -222,6 +242,7 @@ const changeRetained =
                    organization,
                    before.sequence,
                    pools,
@@ -407,7 +415,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  );
                  if (ended) return;
                  if (before.receipt.identity !== after.receipt.identity) return revoked();
-@@ -236,6 +257,7 @@
+@@ -236,6 +257,7 @@ const changeRetained =
              if (ended) return;
              if (error instanceof OrganizationForbidden) return revoked();
              if (error instanceof ChangeReadRetry && error.reason === "hidden") return;
@@ -415,7 +423,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
              publish(
                AsyncResult.fail(new ChangeRefreshFailed(), {
                  previousSuccess: AsyncResult.isSuccess(shown) ? Option.some(shown) : Option.none(),
-@@ -246,7 +268,7 @@
+@@ -246,7 +268,7 @@ const changeRetained =
          const watch =
            typeof window === "undefined"
              ? undefined
@@ -424,7 +432,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
                  topics: watched,
                  ...(held === undefined ? {} : { accepted: held.receipt }),
                  confirmed: () => {
-@@ -277,10 +299,15 @@
+@@ -277,10 +299,15 @@ const changeRetained =
   * retry becomes one fenced read, and an invalidation only clears what is shown.
   */
  export const changeProtected =
@@ -443,6 +451,7 @@ diff --git a/apps/hosted/web/src/contracts/change-signal.ts b/apps/hosted/web/sr
        (get): Value => {
          const result = get(fenced);
 diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/web/src/contracts/connector-traffic.ts
+index 635da7b65..e1fe0c8dc 100644
 --- a/apps/hosted/web/src/contracts/connector-traffic.ts
 +++ b/apps/hosted/web/src/contracts/connector-traffic.ts
 @@ -1,17 +1,20 @@
@@ -471,7 +480,7 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
  
  const hour = 3_600_000;
  
-@@ -31,52 +34,95 @@
+@@ -31,52 +34,95 @@ interface Key {
  const read = ({ organization, accounts }: Key) =>
    Effect.gen(function* () {
      const client = yield* HostedClient;
@@ -558,11 +567,10 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
 +          [],
 +          parsed.accounts,
 +        ),
-       ),
--    ),
-   );
- });
- 
++      ),
++  );
++});
++
 +const traffic = Atom.family((key: string) => {
 +  const parsed = JSON.parse(key) as Key;
 +  const pages = Array.from(
@@ -576,8 +584,9 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
 +            (index + 1) * maxTrafficWatchAccounts,
 +          ),
 +        }),
-+      ),
-+  );
+       ),
+-    ),
+   );
 +  return Atom.readable(
 +    (get) => {
 +      const values: Map<AccountId, ToolCallTraffic>[] = [];
@@ -597,16 +606,17 @@ diff --git a/apps/hosted/web/src/contracts/connector-traffic.ts b/apps/hosted/we
 +      for (const page of pages) refresh(page);
 +    },
 +  ).pipe(Atom.setIdleTTL(0));
-+});
-+
+ });
+ 
  /** Each visible account's counted tool calls; undefined while unread or when the read failed. */
 -export const toolCallTrafficAtom = (key: Key) => traffic(JSON.stringify(key));
 +export const toolCallTrafficAtom = (key: Key) =>
 +  traffic(JSON.stringify({ ...key, accounts: [...new Set(key.accounts)].sort() }));
 diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/hosted/web/src/implementation/pages/app-window.tsx
+index 06a5836a6..bd178290f 100644
 --- a/apps/hosted/web/src/implementation/pages/app-window.tsx
 +++ b/apps/hosted/web/src/implementation/pages/app-window.tsx
-@@ -8,6 +8,7 @@
+@@ -8,6 +8,7 @@ import { AsyncResult } from "effect/reactivity";
  import { liveAppAtom } from "../../contracts/apps.ts";
  import { appAccessAtom } from "../../contracts/resource-access.ts";
  import { useOrganizationRoute } from "../components/organization.tsx";
@@ -614,7 +624,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/host
  import { AppScreen, AppSkeleton } from "./app-screen.tsx";
  
  /**
-@@ -23,6 +24,7 @@
+@@ -23,6 +24,7 @@ export function AppWindowPage({ appId }: { readonly appId: AppId }) {
      app: AsyncResult.isFailure(query.result),
      access: AsyncResult.isFailure(authority.result),
    });
@@ -623,6 +633,7 @@ diff --git a/apps/hosted/web/src/implementation/pages/app-window.tsx b/apps/host
      <main className="flex h-dvh flex-col bg-background">
        {screen === "present" && app !== undefined ? (
 diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-removal-rollback.ts
+index d94bb4ec4..a5738abd9 100644
 --- a/e2e/support/profile-removal-rollback.ts
 +++ b/e2e/support/profile-removal-rollback.ts
 @@ -1,8 +1,14 @@
@@ -642,7 +653,7 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
      { sql: "DROP FUNCTION IF EXISTS hosted_change_revision(text, text, text)" },
      { sql: "DROP FUNCTION IF EXISTS hosted_project_changes(integer)" },
      { sql: "DROP FUNCTION IF EXISTS hosted_account_changed() CASCADE" },
-@@ -14,7 +20,8 @@
+@@ -14,7 +20,8 @@ const beforeHostedAccountChanges = () =>
        sql: `DO $rollback$
          BEGIN
            IF to_regclass('private_hosted_migrations') IS NOT NULL THEN
@@ -652,7 +663,7 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
              IF EXISTS (SELECT 1 FROM private_hosted_migrations WHERE migration_id = 19)
                AND to_regprocedure('hosted_record_change(text,text,text)') IS NOT NULL THEN
                EXECUTE $migration19$
-@@ -78,11 +85,11 @@
+@@ -78,11 +85,11 @@ export const beforeHostedAccountRechecks = () =>
      { sql: "DROP TRIGGER hosted_deployment_changed ON executor_apps" },
      { sql: "DROP FUNCTION hosted_deployment_changed(), hosted_record_change(text, text, text)" },
      { sql: "DROP TABLE hosted_change_pending, hosted_change_heads" },
@@ -667,7 +678,7 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
    ] as const;
  
  /** Remove policy state and its journal row before replaying an earlier hosted migration. */
-@@ -90,7 +97,7 @@
+@@ -90,7 +97,7 @@ export const beforeHostedToolPolicies = () =>
    [
      ...beforeHostedAccountRechecks(),
      { sql: "DROP TABLE hosted_tool_policy_history, hosted_tool_policies" },
@@ -676,7 +687,7 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
    ] as const;
  
  /** Remove Routes' additive state before replaying an earlier hosted migration. */
-@@ -98,7 +105,7 @@
+@@ -98,7 +105,7 @@ export const beforeHostedRoutes = () =>
    [
      ...beforeHostedToolPolicies(),
      { sql: "DROP TABLE basalt_hosted_routes_usage, basalt_hosted_routes_accounts" },
@@ -685,7 +696,7 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
    ] as const;
  
  /** Roll back the model-binding objects and journal together before replaying earlier hosted steps. */
-@@ -106,7 +113,7 @@
+@@ -106,7 +113,7 @@ export const beforeHostedModelBindings = () =>
    [
      ...beforeHostedRoutes(),
      { sql: "DROP TABLE hosted_model_bindings" },
@@ -694,7 +705,7 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
    ] as const;
  
  /**
-@@ -132,7 +139,7 @@
+@@ -132,7 +139,7 @@ export const beforeHostedAccountObservations = () =>
      { sql: "DROP VIEW hosted_contributions" },
      { sql: "DROP TABLE hosted_contributed_departures, hosted_contributed_departure_jobs" },
      { sql: "DROP TABLE hosted_account_observation_access" },
@@ -704,9 +715,10 @@ diff --git a/e2e/support/profile-removal-rollback.ts b/e2e/support/profile-remov
  
  /**
 diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker.spec.ts
+index 5e6f776e6..3573e8e02 100644
 --- a/e2e/tests/app-account-picker.spec.ts
 +++ b/e2e/tests/app-account-picker.spec.ts
-@@ -428,6 +428,7 @@
+@@ -428,6 +428,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
          yield* refresh.requested;
          yield* refresh.release;
          yield* failureShown("Refresh failure is reported", "Unable to complete this request");
@@ -715,9 +727,10 @@ diff --git a/e2e/tests/app-account-picker.spec.ts b/e2e/tests/app-account-picker
  
          const unlinked = yield* browser.use("Retry clearing the second mailbox", (page) =>
 diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigation.spec.ts
+index 04c471a35..83fa31128 100644
 --- a/e2e/tests/app-host-navigation.spec.ts
 +++ b/e2e/tests/app-host-navigation.spec.ts
-@@ -500,29 +500,28 @@
+@@ -500,29 +500,28 @@ layer(HostedLive, { excludeTestServices: true })("App host navigation", (it) =>
            ),
          ).toBe(windowPath);
  
@@ -759,9 +772,10 @@ diff --git a/e2e/tests/app-host-navigation.spec.ts b/e2e/tests/app-host-navigati
      ),
    );
 diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/contributed-departure-observability.spec.ts
+index 7c043d78f..7c7172e60 100644
 --- a/e2e/tests/contributed-departure-observability.spec.ts
 +++ b/e2e/tests/contributed-departure-observability.spec.ts
-@@ -9,7 +9,10 @@
+@@ -9,7 +9,10 @@ import { contributedApp } from "../support/contributed-app.ts";
  import { Evidence } from "../support/evidence.ts";
  import { legacyStorage } from "../support/legacy-storage.ts";
  import { RuntimeLive } from "../support/platform.ts";
@@ -773,7 +787,7 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
  import { serverControl } from "../support/server-control.ts";
  import { scenarios } from "../test-plan.ts";
  
-@@ -143,10 +146,13 @@
+@@ -143,10 +146,13 @@ layer(RuntimeLive, { excludeTestServices: true })("Departure observability", (it
          const account = yield* f.connect(f.actors.member, "app", "shared", "Retained pool account");
          // The previous host stored this job before migration 13 and could not retain its diagnostics.
          yield* legacyStorage([
@@ -788,7 +802,7 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
            {
              sql: "INSERT INTO hosted_contributed_departure_jobs (id, organization_id, user_id, status, attempts, updated_at) VALUES ($1, $2, $3, 'failed', 8, now() - interval '10 minutes')",
              params: [`${f.app.id}-retained`, f.actors.organization.id, f.ids.member],
-@@ -182,13 +188,17 @@
+@@ -182,13 +188,17 @@ layer(RuntimeLive, { excludeTestServices: true })("Departure observability", (it
          yield* serverControl("restart");
          expect(yield* read).toEqual(retained);
          yield* evidence.json("retained-diagnostics-remain-unknown.json", retained);
@@ -808,6 +822,7 @@ diff --git a/e2e/tests/contributed-departure-observability.spec.ts b/e2e/tests/c
          yield* evidence.json("retained-diagnostics-and-recheck-migrations.json", {
            upgraded,
 diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-links.spec.ts
+index 5c15fd08f..4c4c5f802 100644
 --- a/e2e/tests/legacy-profile-links.spec.ts
 +++ b/e2e/tests/legacy-profile-links.spec.ts
 @@ -6,7 +6,7 @@
@@ -819,7 +834,7 @@ diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-l
   * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
   * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
   * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
-@@ -32,7 +32,10 @@
+@@ -32,7 +32,10 @@ import { appsManifest } from "../support/apps-release.ts";
  import { Evidence } from "../support/evidence.ts";
  import { legacyStorage } from "../support/legacy-storage.ts";
  import { managementApp } from "../support/management-app.ts";
@@ -831,11 +846,10 @@ diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-l
  import { serverControl } from "../support/server-control.ts";
  
  const source = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
-@@ -47,29 +50,6 @@
-     })),
+@@ -48,29 +51,6 @@ export default defineApp({ user: { accounts: { primary: service, extras: service
    }),
  }));`;
--
+ 
 -/** The hosted steps a current database has recorded, in order. */
 -const ledger = [
 -  "baseline",
@@ -858,10 +872,11 @@ diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-l
 -  "tool_availability",
 -  "change_revisions",
 -].map((name, index) => ({ migration_id: index + 1, name }));
- 
+-
  const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
  const Tokens = Schema.Struct({ primary: Schema.String, extras: Schema.Array(Schema.String) });
-@@ -237,12 +217,20 @@
+ 
+@@ -237,12 +217,20 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
          yield* evidence.json("fixture.json", fixture);
  
          // The database as step 9 finds it: profiles, no links, ledger through step 8.
@@ -885,7 +900,7 @@ diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-l
            { sql: "DROP TABLE hosted_app_account_links" },
            profile({
              id: `ins_first_${suffix}`,
-@@ -338,7 +326,7 @@
+@@ -338,7 +326,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
            }),
          ]);
          expect(recorded, "later steps are pending before rebuilding step 9").toEqual(
@@ -895,9 +910,10 @@ diff --git a/e2e/tests/legacy-profile-links.spec.ts b/e2e/tests/legacy-profile-l
          expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
          yield* serverControl("start");
 diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profile-schedules.spec.ts
+index 3a76e3b36..2f6a7c0af 100644
 --- a/e2e/tests/legacy-profile-schedules.spec.ts
 +++ b/e2e/tests/legacy-profile-schedules.spec.ts
-@@ -28,6 +28,7 @@
+@@ -28,6 +28,7 @@ import { appsManifest } from "../support/apps-release.ts";
  import { Evidence } from "../support/evidence.ts";
  import { legacyStorage } from "../support/legacy-storage.ts";
  import {
@@ -905,7 +921,7 @@ diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profi
    beforeAppAccounts,
    beforeHostedAccountObservations,
    beforeProfileRemoval,
-@@ -314,7 +315,7 @@
+@@ -314,7 +315,7 @@ const upgradeFixture = (
          { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
          ...beforeAppAccounts(),
          ...beforeHostedAccountObservations(),
@@ -915,9 +931,10 @@ diff --git a/e2e/tests/legacy-profile-schedules.spec.ts b/e2e/tests/legacy-profi
          ...beforeProfileRemoval(),
          ...profileAppCopiesPending("private_hosted"),
 diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-targetless-connections.spec.ts
+index e346b7fc0..d48513869 100644
 --- a/e2e/tests/legacy-targetless-connections.spec.ts
 +++ b/e2e/tests/legacy-targetless-connections.spec.ts
-@@ -14,6 +14,7 @@
+@@ -14,6 +14,7 @@ import { TestLive, withCase, withHostedCase } from "../support/case.ts";
  import { Resource } from "../support/contracts.ts";
  import { legacyStorage } from "../support/legacy-storage.ts";
  import {
@@ -925,7 +942,7 @@ diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-
    beforeAppAccounts,
    beforeHostedAccountObservations,
    beforeProfileRemoval,
-@@ -262,16 +263,14 @@
+@@ -262,16 +263,14 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
            // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
            // idempotently, and none are left to convert.
            ...beforeHostedAccountObservations(),
@@ -946,9 +963,10 @@ diff --git a/e2e/tests/legacy-targetless-connections.spec.ts b/e2e/tests/legacy-
              sql: `INSERT INTO hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
                SELECT $2, organization_id, creator_id, destination, NULL
 diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.spec.ts
+index 99d63bdbc..fc55059bc 100644
 --- a/e2e/tests/navigation-intent.spec.ts
 +++ b/e2e/tests/navigation-intent.spec.ts
-@@ -8,6 +8,7 @@
+@@ -8,6 +8,7 @@ import { Browser } from "../support/browser.ts";
  import { HostedLive, withHostedCase } from "../support/case.ts";
  import { App } from "../support/contracts.ts";
  import { scenarios } from "../test-plan.ts";
@@ -956,7 +974,7 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
  import { appsManifest } from "../support/apps-release.ts";
  
  /** Whether a request reads this app's record, batched with other reads or on its own. */
-@@ -25,8 +26,12 @@
+@@ -25,8 +26,12 @@ const readsApp = (request: Request, app: string) => {
  
  /** Whether a dashboard read batch also asks for this app's tool index. */
  const readsTools = (request: Request, app: string) =>
@@ -971,7 +989,7 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
  
  layer(HostedLive, { excludeTestServices: true })("Navigation intent", (it) => {
    it.effect(scenarios.navigationIntentReads.title, (context) =>
-@@ -36,6 +41,7 @@
+@@ -36,6 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("Navigation intent", (it) => {
          const actors = yield* Actors;
          const api = yield* Api;
          const browser = yield* Browser;
@@ -979,7 +997,7 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
          const prefix = `/api/organizations/${actors.organization.id}`;
          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
            name: `Intent example ${randomUUID().slice(0, 8)}`,
-@@ -67,37 +73,50 @@
+@@ -67,37 +73,50 @@ export default defineApp({}, async () => ({
          yield* browser.use("Open the app list", (page) => page.goto(appsPath));
          yield* browser.use("Wait for the app's link", (page) => link(page).waitFor());
          const reads: Request[] = [];
@@ -1049,6 +1067,7 @@ diff --git a/e2e/tests/navigation-intent.spec.ts b/e2e/tests/navigation-intent.s
      ),
    );
 diff --git a/packages/sdk/src/implementation/account-traffic-store.ts b/packages/sdk/src/implementation/account-traffic-store.ts
+index effa11eae..886e7aefa 100644
 --- a/packages/sdk/src/implementation/account-traffic-store.ts
 +++ b/packages/sdk/src/implementation/account-traffic-store.ts
 @@ -1,7 +1,7 @@

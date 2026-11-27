@@ -1,0 +1,9 @@
+{
+  "identity": "qualified-framework-registry",
+  "file": "0616-qualified-framework-registry.patch",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": true,
+  "content_sha256": "d24d07d8348008d61e1c13ee5bd30423d9357e4e97234b9d8cabed379b469bdc"
+}

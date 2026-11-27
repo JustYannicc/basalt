@@ -21,8 +21,12 @@ test("declared shards pay setup once, then run their planned files within the pl
     assert.equal(job.name, "${{ matrix.shard }}", id);
     assert.equal(job.strategy["fail-fast"], false, id);
     assert.ok([job.needs].flat().includes("select"), id);
+    const preparation = job.steps.findIndex(
+      (step: { run?: string }) => step.run === "npm run prepare:upstream",
+    );
+    assert.ok(preparation > 0, id);
     assert.deepEqual(
-      job.steps.slice(3, 7),
+      job.steps.slice(preparation, preparation + 4),
       [
         { run: "npm run prepare:upstream" },
         {
@@ -83,8 +87,12 @@ test("sign-in jobs prepare the runtime before bounded browser setup and run inde
     assert.ok([job.needs].flat().includes("select"), id);
     assert.equal(job.strategy, undefined, id);
     assert.equal(job["timeout-minutes"], id === "planetscale-sign-in" ? 20 : 10, id);
+    const preparation = job.steps.findIndex(
+      (step: { run?: string }) => step.run === "npm run prepare:upstream",
+    );
+    assert.ok(preparation > 0, id);
     assert.deepEqual(
-      job.steps.slice(3, 6),
+      job.steps.slice(preparation, preparation + 3),
       [
         { run: "npm run prepare:upstream" },
         { run: "bun run --cwd .upstream e2e:prepare" },
@@ -218,16 +226,19 @@ test("account usage has its own required budget without changing its approved pr
 
 test("account acquisition's self-host proof runs in two required jobs with the same setup", () => {
   const declarations = readDeclarations();
-  for (const [id, job, timeout] of [
+  for (const [id, job, timeout, runner] of [
     [
       "account-acquisition:reusable-acquisition-and-retained-account-compatibility",
       "account-acquisition",
       30,
+      "",
     ],
     [
       "account-observations:driver-readings-health-and-observation-compatibility",
       "account-observations",
       25,
+      // Its protocol 17 scenario deploys the wrapper's registered synthetic framework.
+      "node ../scripts/ci/with-published-frameworks.ts -- ",
     ],
   ] as const) {
     assert.equal(declarations.groups[id]!.job, job, id);
@@ -241,7 +252,7 @@ test("account acquisition's self-host proof runs in two required jobs with the s
         .filter((step: { run?: string }) => step.run?.includes("e2e-pattern.ts " + id))
         .map((step: { run: string }) => step.run),
       [
-        `bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts ${id})" --workers 1`,
+        `${runner}bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts ${id})" --workers 1`,
       ],
       id,
     );

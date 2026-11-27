@@ -1,7 +1,7 @@
 {
   "identity": "basalt-tool-search-page-memo",
   "file": "0794-tool-search-page-memo.patch",
-  "content_sha256": "9ebb65f91d82d7cbd93413cab8532b7fad2ccc333cbe8c0e3173a0ce91f8c2e1",
+  "content_sha256": "7da698beb0e99ef2d7462a4582764bce91439c1bf390d7349e8d02746289a872",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": true,

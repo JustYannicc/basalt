@@ -2,11 +2,11 @@
   "package": "@executor.sh/firecrawl",
   "publishedUrl": "https://catalog.executor.sh/apps/firecrawl.json",
   "publishedSha256": "0be68fcd08e0bf43c19405771b86c475a047e00c0160f373be6228310fe85ca5",
-  "carriedSha256": "6bbbdcb62d16e556a2ecb6abff044b14d59efec99def57b28ea709c63b48b6a6",
-  "patchSha256": "bd434d9decf07b0ea2cf1719a7d7298c22b923eb52a10a5ccae6c53a2c73f29d",
+  "carriedSha256": "0171cc432a0e5e7c0cf12eb34be804a54306e26f56875c99255d998c3e5b9ee4",
+  "patchSha256": "41197af87dfe6a71616077253fa5f7efb572b27c2c3d5db0519da8bb37d44c49",
   "license": "Not declared in the published package",
   "contribution": {
     "state": "POST reads classed as queries by operationId, retained as a replayable patch; publication not claimed"
   },
-  "appsVersion": "0.0.1-beta.104-basalt.15"
+  "appsVersion": "0.0.1-beta.104-basalt.16"
 }

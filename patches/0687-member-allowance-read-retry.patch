@@ -1,5 +1,5 @@
 diff --git a/apps/hosted/cloud/src/contracts/billing-meter.ts b/apps/hosted/cloud/src/contracts/billing-meter.ts
-index 3ee5c8b..545d059 100644
+index 3ee5c8b6c..73abb87ff 100644
 --- a/apps/hosted/cloud/src/contracts/billing-meter.ts
 +++ b/apps/hosted/cloud/src/contracts/billing-meter.ts
 @@ -1,14 +1,30 @@
@@ -31,12 +31,12 @@ index 3ee5c8b..545d059 100644
      readonly memberLimit: (
        organization: OrganizationId,
 -    ) => Effect.Effect<number, BillingUnavailable>;
-+    ) => Effect.Effect<number, MemberAllowanceUnavailable>;
++    ) => Effect.Effect<number, MemberAllowanceUnavailable | BillingUnavailable>;
      /** Run by the durable membership job; calls Autumn only when the count changed. */
      readonly syncSeats: (organization: OrganizationId) => Effect.Effect<void, BillingUnavailable>;
      /** Daily repair: seat plans, unconfirmed organizations and changed counts, checked in Autumn. */
 diff --git a/apps/hosted/cloud/src/implementation/autumn-client.ts b/apps/hosted/cloud/src/implementation/autumn-client.ts
-index f042417..4092078 100644
+index 7253183e6..a1a5f302b 100644
 --- a/apps/hosted/cloud/src/implementation/autumn-client.ts
 +++ b/apps/hosted/cloud/src/implementation/autumn-client.ts
 @@ -40,6 +40,13 @@ export const autumnReads = {
@@ -54,26 +54,27 @@ index f042417..4092078 100644
  
  const readRetryDelay = Schedule.exponential("200 millis").pipe(Schedule.jittered);
 diff --git a/apps/hosted/cloud/src/implementation/billing.ts b/apps/hosted/cloud/src/implementation/billing.ts
-index 7b786c6..4ef9c21 100644
+index 5ca73a384..20be9338e 100644
 --- a/apps/hosted/cloud/src/implementation/billing.ts
 +++ b/apps/hosted/cloud/src/implementation/billing.ts
-@@ -11,6 +11,7 @@ import { Cause, Effect, Layer, Option, Schema } from "effect";
+@@ -11,6 +11,7 @@ import { Cause, Effect, Fiber, Layer, Option, Schema } from "effect";
  import { FetchHttpClient, HttpServerRequest } from "effect/http";
  import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
  import { autumnLive, autumnReads } from "./autumn-client.ts";
-+import { active, memberAllowance } from "./member-allowance.ts";
++import { active, allowanceUnlessHeld, memberAllowance } from "./member-allowance.ts";
  import {
    recordSeatPlan,
    recordSeats,
-@@ -26,7 +27,6 @@ import {
+@@ -27,7 +28,7 @@ import {
    BillingPlanUnavailable,
    BillingUnavailable,
  } from "../contracts/billing.ts";
--import { freeMembers } from "../contracts/billing-catalog.ts";
+-import { billingCustomerId, freeMembers } from "../contracts/billing-catalog.ts";
++import { billingCustomerId } from "../contracts/billing-catalog.ts";
  import { ExecutorCloudApi } from "../contracts/api.ts";
  import { billingSettings } from "../infrastructure/billing.ts";
  
-@@ -44,16 +44,6 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
+@@ -45,16 +46,6 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
    }
  }
  
@@ -90,7 +91,7 @@ index 7b786c6..4ef9c21 100644
  /** Resolve the selected Autumn environment once; each invocation owns its client. */
  export const billingLive = Effect.gen(function* () {
    // Resolve during initialization so Alchemy binds every value into the Worker environment.
-@@ -94,10 +84,11 @@ export const billingLive = Effect.gen(function* () {
+@@ -95,10 +86,11 @@ export const billingLive = Effect.gen(function* () {
        const secret = yield* settings.secretKey;
        const server = yield* settings.serverUrl;
        const catalog = yield* settings.catalog;
@@ -104,26 +105,27 @@ index 7b786c6..4ef9c21 100644
      }).pipe(Effect.provide(FetchHttpClient.layer)),
    );
    const use = <A>(call: Effect.Effect<A, AutumnRequestFailed>) =>
-@@ -262,11 +253,13 @@ export const billingLive = Effect.gen(function* () {
+@@ -283,12 +275,13 @@ export const billingLive = Effect.gen(function* () {
+     }).pipe(Effect.withSpan("billing.cancel"));
    const meter = BillingMeter.of({
      memberLimit: (organization) =>
-       Effect.gen(function* () {
+-      Effect.gen(function* () {
 -        const { catalog, value } = yield* customer(organization);
 -        return active(value, [catalog.team, catalog.enterprise])
 -          ? Number.POSITIVE_INFINITY
 -          : freeMembers;
 -      }),
-+        const { catalog, options } = yield* client;
-+        return yield* memberAllowance(
-+          options,
-+          catalog,
-+          `${catalog.namespace}:${organizationOwner(organization)}`,
-+        );
-+      }).pipe(Effect.provide(FetchHttpClient.layer)),
++      allowanceUnlessHeld(
++        hold(organization),
++        Effect.gen(function* () {
++          const { catalog, options } = yield* client;
++          return yield* memberAllowance(options, catalog, billingCustomerId(catalog, organization));
++        }),
++      ).pipe(Effect.provide(FetchHttpClient.layer)),
      syncSeats: (organization) => syncSeats(organization, "changed"),
      reconcileSeats: Effect.gen(function* () {
        const rows = yield* members.use(seatReconcileCandidates);
-@@ -360,7 +353,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
+@@ -382,7 +375,9 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
        )
        .handle("memberLimit", () =>
          Effect.gen(function* () {
@@ -136,10 +138,10 @@ index 7b786c6..4ef9c21 100644
        )
 diff --git a/apps/hosted/cloud/src/implementation/member-allowance.ts b/apps/hosted/cloud/src/implementation/member-allowance.ts
 new file mode 100644
-index 0000000..95eeec7
+index 000000000..7e6087ca2
 --- /dev/null
 +++ b/apps/hosted/cloud/src/implementation/member-allowance.ts
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,85 @@
 +/**
 + * The member allowance invitations and SSO sign-ins are admitted against. An existing customer
 + * is read, never written, so a lost answer can be asked again. Only a customer Autumn says it has
@@ -153,6 +155,7 @@ index 0000000..95eeec7
 +  type AutumnOptions,
 +} from "../contracts/autumn.ts";
 +import { freeMembers, type BillingCatalog } from "../contracts/billing-catalog.ts";
++import { BillingUnavailable } from "../contracts/billing.ts";
 +import { MemberAllowanceUnavailable } from "../contracts/billing-meter.ts";
 +import { autumnLive, autumnReads } from "./autumn-client.ts";
 +
@@ -164,6 +167,20 @@ index 0000000..95eeec7
 +  customer.subscriptions.some(
 +    (subscription) =>
 +      plans.includes(subscription.planId) && ["active", "trialing"].includes(subscription.status),
++  );
++
++/**
++ * A held or returned v1 organization keeps v1's customer until the carry-over ends, so its
++ * allowance fails closed before Autumn is read, as every other billing operation does.
++ */
++export const allowanceUnlessHeld = <A, E, R, E2, R2>(
++  hold: Effect.Effect<string | null, E, R>,
++  allowance: Effect.Effect<A, E2, R2>,
++) =>
++  Effect.flatMap(
++    hold.pipe(Effect.mapError(() => new BillingUnavailable())),
++    (state): Effect.Effect<A, E2 | BillingUnavailable, R2> =>
++      state === null ? allowance : Effect.fail(new BillingUnavailable()),
 +  );
 +
 +/**
@@ -210,11 +227,11 @@ index 0000000..95eeec7
 +    ),
 +    Effect.withSpan("billing.memberAllowance"),
 +  );
-diff --git a/apps/hosted/cloud/src/infrastructure/auth.ts b/apps/hosted/cloud/src/infrastructure/auth.ts
-index 060abd7..3726e21 100644
---- a/apps/hosted/cloud/src/infrastructure/auth.ts
-+++ b/apps/hosted/cloud/src/infrastructure/auth.ts
-@@ -110,9 +110,20 @@ export const cloudAuth = (
+diff --git a/apps/hosted/cloud/src/infrastructure/auth-core.ts b/apps/hosted/cloud/src/infrastructure/auth-core.ts
+index 944c8ecff..96376f5ca 100644
+--- a/apps/hosted/cloud/src/infrastructure/auth-core.ts
++++ b/apps/hosted/cloud/src/infrastructure/auth-core.ts
+@@ -103,9 +103,20 @@ export const cloudAuthCore = (
              Schema.decodeUnknownEffect(OrganizationId)(id).pipe(
                Effect.flatMap(meter.memberLimit),
                Effect.mapError(

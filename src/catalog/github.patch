@@ -113,7 +113,7 @@ diff --git a/package.json b/package.json
    },
    "dependencies": {
 -    "apps": "0.0.1-beta.140",
-+    "apps": "0.0.1-beta.104-basalt.15",
++    "apps": "0.0.1-beta.104-basalt.16",
      "@modelcontextprotocol/sdk": "1.32.1"
    }
  }

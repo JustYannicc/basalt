@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -19,6 +20,9 @@ import { fileURLToPath } from "node:url";
 // Carry 0722: jobs of one Check that name a cache in `$EXECUTOR_E2E_CACHE` build each e2e:prepare
 // step once. These run the carried upstream script against a small fixture workspace.
 const script = fileURLToPath(new URL("../.upstream/scripts/e2e-prepare.ts", import.meta.url));
+const collector = fileURLToPath(
+  new URL("../.upstream/scripts/e2e-collector-bun.ts", import.meta.url),
+);
 const steps = {
   "apps:build": "packages/apps/dist/index.js",
   "telemetry:build": "packages/telemetry/dist/motel/index.js",
@@ -99,6 +103,14 @@ appendFileSync(process.env.BUILD_LOG, step + '\\n');
   ])
     write(path, "\n");
   cpSync(script, join(root, "scripts/e2e-prepare.ts"));
+  cpSync(collector, join(root, "scripts/e2e-collector-bun.ts"));
+  // Stands in for the collector's Bun 1.4.4: it names that version and runs the fake build.
+  const motelBun = join(parent, "motel-bun");
+  writeFileSync(
+    motelBun,
+    `#!/bin/sh\nif [ "$1" = --version ]; then echo 1.4.4; exit 0; fi\nexec node build.mjs telemetry:build ${steps["telemetry:build"]}\n`,
+  );
+  chmodSync(motelBun, 0o755);
   const git = (args: string[]) => {
     const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
     assert.equal(result.status, 0, result.stderr);
@@ -125,6 +137,7 @@ const base = (parent: string, extra: Environment): NodeJS.ProcessEnv => {
     PATH: process.env.PATH,
     HOME: join(parent, "home"),
     BUILD_LOG: join(parent, "built.log"),
+    EXECUTOR_MOTEL_BUN: join(parent, "motel-bun"),
   };
   for (const [name, value] of Object.entries(extra))
     if (value === undefined) delete env[name];

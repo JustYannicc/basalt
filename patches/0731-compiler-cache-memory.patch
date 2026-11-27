@@ -1,9 +1,10 @@
 diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/cloud/src/implementation/app-build.ts
+index db006497d..5c9a8c4e5 100644
 --- a/apps/hosted/cloud/src/implementation/app-build.ts
 +++ b/apps/hosted/cloud/src/implementation/app-build.ts
-@@ -20,14 +20,15 @@ export const compileCloudApp = (
-     // An unused authored dependency must not turn a formerly valid app into a build failure.
-     const prepared = yield* prepareWorkerApp(files, host).pipe(Effect.option);
+@@ -29,14 +29,15 @@ export const compileCloudApp = (
+       ? prepareWorkerApp(files, host).pipe(Effect.option)
+       : prepareWorkerApp(files, host).pipe(Effect.map(Option.some));
      if (Option.isNone(prepared)) return yield* compileWorkerApp(files, host, publicPaths);
 -    const dependencyFiles = prepared.value.filesystem
 -      .list()
@@ -24,6 +25,7 @@ diff --git a/apps/hosted/cloud/src/implementation/app-build.ts b/apps/hosted/clo
        {
          files,
 diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
+index cc74dca83..d14cd6c4e 100644
 --- a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 +++ b/apps/hosted/cloud/src/implementation/compiler-result-cache.ts
 @@ -57,11 +57,41 @@ const Envelope = Schema.fromJsonString(
@@ -85,7 +87,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
  const optional = <A, E, R>(work: Effect.Effect<A, E, R>) =>
    work.pipe(
      Effect.option,
-@@ -94,7 +129,7 @@ export const cachedCompilerResult = <E, R>(
+@@ -95,7 +130,7 @@ export const cachedCompilerResult = <E, R>(
      readonly dependencyFiles: ReadonlyArray<{
        readonly path: string;
        readonly content: string | null;
@@ -94,7 +96,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
      }>;
      readonly onHit?: () => void;
    },
-@@ -110,14 +145,12 @@ export const cachedCompilerResult = <E, R>(
+@@ -118,14 +153,12 @@ export const cachedCompilerResult = <E, R>(
      const key = yield* digest(
        JSON.stringify([
          input.release,
@@ -109,10 +111,10 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
      );
 -    const url = `https://compiler-cache.invalid/v2/${key}`;
 +    const url = `${compilerCacheEntries}${key}`;
-     const hit = yield* optional(
-       attempt(() => cache.value.match(url)).pipe(
-         Effect.flatMap((response) =>
-@@ -146,6 +179,9 @@ export const cachedCompilerResult = <E, R>(
+     if (input.cacheName !== undefined) {
+       const response = yield* attempt(() => cache.value.match(url)).pipe(
+         Effect.timeoutOrElse({
+@@ -179,6 +212,9 @@ export const cachedCompilerResult = <E, R>(
        return hit.value;
      }
      const value = yield* compile;
@@ -123,6 +125,7 @@ diff --git a/apps/hosted/cloud/src/implementation/compiler-result-cache.ts b/app
        Schema.encodeEffect(CachedOutput)(value).pipe(
          Effect.flatMap((payload) =>
 diff --git a/scripts/compiler-cache-proof/storage.ts b/scripts/compiler-cache-proof/storage.ts
+index a7c827348..513659ad4 100644
 --- a/scripts/compiler-cache-proof/storage.ts
 +++ b/scripts/compiler-cache-proof/storage.ts
 @@ -4,6 +4,7 @@ import { join } from "node:path";

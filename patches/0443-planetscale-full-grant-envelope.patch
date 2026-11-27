@@ -1,3 +1,5 @@
+diff --git a/apps/hosted/server/src/implementation/planetscale-oauth.ts b/apps/hosted/server/src/implementation/planetscale-oauth.ts
+index 85956e9..bba18d9 100644
 --- a/apps/hosted/server/src/implementation/planetscale-oauth.ts
 +++ b/apps/hosted/server/src/implementation/planetscale-oauth.ts
 @@ -1,10 +1,6 @@
@@ -12,7 +14,7 @@
  const scopes = [
    "read_user",
    "read_organization",
-@@ -41,6 +37,108 @@
+@@ -41,6 +37,108 @@ const scopes = [
    "organization:read_invoices",
  ];
  
@@ -121,7 +123,7 @@
  // PlanetScale advertises each unprefixed scope as an alias of its resource-prefixed form and may
  // report either one in a grant.
  const scopeImplications = {
-@@ -73,12 +171,6 @@
+@@ -73,12 +171,6 @@ export const planetScaleOAuthClient: FirstPartyOAuthClientDefinition = {
    tokenEndpointAuthMethod: "client_secret_basic",
    requireScopeConfirmation: true,
    defaultScopes: scopes,
@@ -135,37 +137,8 @@
 +  allowedScopes: supportedScopes,
    placement: { hosts: ["api.planetscale.com"] },
  };
---- a/packages/sdk/src/implementation/oauth.ts
-+++ b/packages/sdk/src/implementation/oauth.ts
-@@ -2,7 +2,7 @@
- import { projectOAuthFields as project } from "./oauth-fields.ts";
- import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
- import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
--import { oauthScopeEvidence } from "./oauth-scope-evidence.ts";
-+import { oauthScopeEvidence, oauthScopeExceededEvidence } from "./oauth-scope-evidence.ts";
- import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
- import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
- import type { BackgroundWork } from "../contracts/declarations.ts";
-@@ -2589,6 +2589,19 @@
-       );
-       // The operator's client keeps no grant holding a scope it does not allow.
-       if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
-+        const client = firstPartyClients.get(attempt.firstParty);
-+        if (client !== undefined)
-+          yield* Console.warn(
-+            JSON.stringify({
-+              type: "oauth.scope_exceeded",
-+              client: attempt.firstParty,
-+              ...oauthScopeExceededEvidence(
-+                attempt.requestedScopes ?? [],
-+                normalizeOAuthScopes(tokens.scope, client.server.grantedScopeSeparator) ?? [],
-+                oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
-+              ),
-+            }),
-+          );
-         yield* revokeRefused(attempt.firstParty, attempt.site, {
-           refreshToken: tokens.refresh_token,
-           accessToken: tokens.access_token,
+diff --git a/packages/sdk/src/implementation/oauth-scope-evidence.ts b/packages/sdk/src/implementation/oauth-scope-evidence.ts
+index ba983ea..3c2a9c3 100644
 --- a/packages/sdk/src/implementation/oauth-scope-evidence.ts
 +++ b/packages/sdk/src/implementation/oauth-scope-evidence.ts
 @@ -1,6 +1,6 @@
@@ -176,7 +149,7 @@
  export const oauthScopeEvidence = (
    issuer: string | undefined,
    requested: readonly string[],
-@@ -29,3 +29,30 @@
+@@ -29,3 +29,30 @@ export const oauthScopeEvidence = (
      ),
    };
  };
@@ -207,3 +180,36 @@
 +    ),
 +  };
 +};
+diff --git a/packages/sdk/src/implementation/oauth.ts b/packages/sdk/src/implementation/oauth.ts
+index 263fbf9..597e713 100644
+--- a/packages/sdk/src/implementation/oauth.ts
++++ b/packages/sdk/src/implementation/oauth.ts
+@@ -3,7 +3,7 @@ import { normalizeOAuthScopes, oauthScopeClosure } from "../contracts/oauth-scop
+ import { projectOAuthFields as project } from "./oauth-fields.ts";
+ import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
+ import { missingOAuthScopes, oauthIdentityConsent } from "../contracts/oauth-families.ts";
+-import { oauthScopeEvidence } from "./oauth-scope-evidence.ts";
++import { oauthScopeEvidence, oauthScopeExceededEvidence } from "./oauth-scope-evidence.ts";
+ import { AccountFamilyConfiguration } from "../contracts/account-family-recipes.ts";
+ import { requireAccountConsumerMethod } from "./account-consumer-plan.ts";
+ import type { BackgroundWork } from "../contracts/declarations.ts";
+@@ -2706,6 +2706,19 @@ export const makeOAuth = (
+       );
+       // The operator's client keeps no grant holding a scope it does not allow.
+       if (isFirstPartyAttempt(attempt) && !grantAllowed(attempt.firstParty, tokens.scope)) {
++        const client = firstPartyClients.get(attempt.firstParty);
++        if (client !== undefined)
++          yield* Console.warn(
++            JSON.stringify({
++              type: "oauth.scope_exceeded",
++              client: attempt.firstParty,
++              ...oauthScopeExceededEvidence(
++                attempt.requestedScopes ?? [],
++                normalizeOAuthScopes(tokens.scope, client.server.grantedScopeSeparator) ?? [],
++                oauthScopeClosure(allowedScopes(client), client.server.scopeImplications),
++              ),
++            }),
++          );
+         yield* revokeRefused(attempt.firstParty, attempt.site, {
+           refreshToken: tokens.refresh_token,
+           accessToken: tokens.access_token,

@@ -83,6 +83,7 @@ function backend() {
   }> = [];
   let gate: Promise<void> | undefined;
   let releaseGate: (() => void) | undefined;
+  let nextHold: Promise<void> | undefined;
   const revisions = () =>
     [...heads].map(([topic, revision]) => ({ topic, resource: ORGANIZATION, revision }));
   const fetch = async (url: string, init?: RequestInit) => {
@@ -107,11 +108,19 @@ function backend() {
     }
     assert.equal(pathname, CURRENT);
     state.currentReads++;
+    // A held read answers with the heads it saw when it was sent, like a slow response.
+    const hold = nextHold;
+    nextHold = undefined;
+    const sent = revisions();
+    await hold;
     await gate;
-    return new Response(JSON.stringify({ revisions: revisions(), identity: state.identity }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({ revisions: hold ? sent : revisions(), identity: state.identity }),
+      {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      },
+    );
   };
   const send = (index: number, event: string, data: unknown) => {
     const entry = streams.at(index);
@@ -149,6 +158,14 @@ function backend() {
         release();
       };
       return releaseGate;
+    },
+    /** Holds only the next head read, which then answers with the heads it was sent at. */
+    holdNextCurrent: () => {
+      let release!: () => void;
+      nextHold = new Promise((resolve) => {
+        release = resolve;
+      });
+      return () => release();
     },
     /** Ends every open stream and held head read, so a failed case leaves nothing running. */
     closeAll: () => {
@@ -463,6 +480,165 @@ test("remounting confirms retained heads without fetching the body again", async
   assert.equal(second.current().value, "accepted");
   assert.equal(src.loads.length, count, "unchanged authorized heads reuse the accepted body");
   second.stop();
+});
+
+/** A view confirmed at a handshake without reading, beside a sibling view on the same feed. */
+async function confirmedBesideSibling(t: TestContext) {
+  const { server, flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const held = source();
+  const heldAtom = changeProtected(ORGANIZATION, ["accounts"])(held.atom);
+  const first = mount(registry, heldAtom);
+  await flush();
+  server.handshake();
+  await flush();
+  held.loads.at(-1)!.resolve("held-1");
+  await flush();
+  first.stop();
+  await flush();
+  t.mock.timers.tick(1_000);
+  await flush();
+  const view = mount(registry, heldAtom);
+  await flush();
+  server.handshake();
+  await flush();
+  assert.equal(view.current().value, "held-1");
+  assert.equal(held.loads.length, 1, "the confirmed view owes no read");
+  // A view on another topic of the same feed, which no accounts revision concerns.
+  const unrelated = source();
+  const unrelatedView = mount(
+    registry,
+    changeProtected(ORGANIZATION, ["observations"])(unrelated.atom),
+  );
+  await flush();
+  unrelated.loads.at(-1)!.resolve("unrelated-1");
+  await flush();
+  assert.equal(unrelatedView.current().value, "unrelated-1");
+  // The commit's hint is missed; only a sibling's own head reads can see it.
+  server.heads.set("accounts", "2");
+  const sibling = source();
+  const siblingView = mount(registry, changeProtected(ORGANIZATION, ["accounts"])(sibling.atom));
+  await flush();
+  return { t, server, flush, held, view, sibling, siblingView, unrelated, unrelatedView };
+}
+
+test("a confirmed view reads again when a sibling's accepted read proves a missed hint", async (t) => {
+  const { flush, held, view, sibling, siblingView, unrelated, unrelatedView } =
+    await confirmedBesideSibling(t);
+  sibling.loads.at(-1)!.resolve("sibling-2");
+  await flush();
+  assert.equal(siblingView.current().value, "sibling-2");
+  assert.equal(held.loads.length, 2, "the stale view reads once for the head it missed");
+  held.loads.at(-1)!.resolve("held-2");
+  await flush();
+  assert.equal(view.current().value, "held-2");
+  assert.equal(view.current().waiting, false);
+  assert.equal(held.loads.length, 2, "covered heads read nothing more");
+  assert.equal(sibling.loads.length, 1, "the sibling is not asked back");
+  assert.equal(unrelated.loads.length, 1, "a view on other topics is never asked");
+  view.stop();
+  siblingView.stop();
+  unrelatedView.stop();
+});
+
+test("a sibling's moving-head failure fails a confirmed view closed, and settled heads recover it", async (t) => {
+  const { server, flush, held, view, sibling, siblingView, unrelated, unrelatedView } =
+    await confirmedBesideSibling(t);
+  let revision = 2;
+  const resolved = new Set<unknown>();
+  const pending = () => [...sibling.loads, ...held.loads].filter((load) => !resolved.has(load));
+  // Heads move under every attempt of every read, so nothing can be accepted.
+  for (let round = 0; pending().length > 0; round++) {
+    assert.ok(round < 20, "reads stop once every view has failed");
+    for (const load of pending()) {
+      resolved.add(load);
+      server.heads.set("accounts", String(++revision));
+      load.resolve(`moving-${revision}`);
+      await flush();
+    }
+  }
+  assert.equal(errorTag(siblingView.current()), "ChangeRefreshFailed");
+  const shown = view.current();
+  assert.equal(shown._tag, "Failure");
+  assert.equal(errorTag(shown), "ChangeRefreshFailed", "the stale view says it is unconfirmed");
+  assert.equal(shown.previousSuccess?.value?.value, "held-1");
+  // Each read makes at most three attempts, and a failed view is never asked again.
+  assert.ok(sibling.loads.length <= 3, String(sibling.loads.length));
+  assert.ok(held.loads.length - 1 <= 3, String(held.loads.length));
+  assert.equal(unrelated.loads.length, 1, "a view on other topics is never asked");
+  assert.ok(
+    !bodies(view.values).some((body) => String(body).startsWith("moving")),
+    "no unaccepted body is ever published",
+  );
+
+  // Heads settle; each failed view's own first reconfirm accepts current data.
+  t.mock.timers.tick(1_000);
+  await flush();
+  for (const load of pending()) {
+    resolved.add(load);
+    load.resolve(`settled-${revision}`);
+    await flush();
+  }
+  assert.equal(pending().length, 0, "recovery needs no further read");
+  assert.equal(view.current()._tag, "Success");
+  assert.equal(view.current().value, `settled-${revision}`);
+  assert.equal(view.current().waiting, false);
+  assert.equal(siblingView.current().value, `settled-${revision}`);
+  assert.equal(siblingView.current().waiting, false);
+  view.stop();
+  siblingView.stop();
+  unrelatedView.stop();
+});
+
+test("without a stream fence, a view that accepts heads older than a sibling settled mid-read reads once more", async (t) => {
+  const { server, flush, mount } = setup(t);
+  const registry = AtomRegistry.make();
+  const first = source();
+  const second = source();
+  const firstAtom = changeProtected(ORGANIZATION, ["accounts"])(first.atom);
+  const secondAtom = changeProtected(ORGANIZATION, ["accounts"])(second.atom);
+  const firstView = mount(registry, firstAtom);
+  const secondView = mount(registry, secondAtom);
+  await flush();
+  server.handshake();
+  await flush();
+  first.loads.at(-1)!.resolve("first-1");
+  second.loads.at(-1)!.resolve("second-1");
+  await flush();
+  assert.equal(firstView.current().value, "first-1");
+  assert.equal(secondView.current().value, "second-1");
+  // A lost stream leaves no connection fence, so a slow read may accept heads older than a
+  // sibling's until the reconnect, which this test never reaches.
+  server.closeAll();
+  await flush();
+
+  // Both views start a read on heads 1; an acknowledgement asks for a read and keeps what is shown.
+  registry.set(firstAtom, (current: string) => current);
+  registry.set(secondAtom, (current: string) => current);
+  await flush();
+  // The first view's after-read is sent on heads 1 but answers late.
+  const release = server.holdNextCurrent();
+  first.loads.at(-1)!.resolve("first-1b");
+  await flush();
+  // A missed commit; the second view's own reads see it and accept while the first still reads.
+  server.heads.set("accounts", "2");
+  for (let round = 0; secondView.current().value !== "second-2"; round++) {
+    assert.ok(round < 5, "the second view settles on the new head");
+    second.loads.at(-1)!.resolve("second-2");
+    await flush();
+  }
+  const reads = first.loads.length;
+  release();
+  await flush();
+  assert.equal(firstView.current().value, "first-1b", "its own read was consistent on heads 1");
+  assert.equal(first.loads.length, reads + 1, "it reads once more for the head the sibling saw");
+  first.loads.at(-1)!.resolve("first-2");
+  await flush();
+  assert.equal(firstView.current().value, "first-2");
+  assert.equal(firstView.current().waiting, false);
+  assert.equal(first.loads.length, reads + 1, "covered heads read nothing more");
+  firstView.stop();
+  secondView.stop();
 });
 
 test("a changed head during a short unmount cannot reaccept the old raw body", async (t) => {

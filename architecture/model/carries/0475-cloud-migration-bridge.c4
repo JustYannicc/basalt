@@ -1,0 +1,7 @@
+model {
+  extend basalt.deployment {
+    metadata {
+      constraint "Cloud journal IDs 8, 9 and 10 preserve production receipts, database identity and tool policies; upstream operations 8 through 13 append as 14 through 19. Hosted IDs 1 through 18 keep their meanings. Before guardMigration or any numbered migration, the migration command reads the public.private_executor_settings version row: a database without it is fresh, and a single normalized version of at least the 4.0.29 prelude is admitted, so a retry of the same release migrates again idempotently. An older, duplicated, unnormalized or unreadable marker refuses before any DDL. The gate takes no release policy, candidate or evidence input, so it runs the same under any release path, preview or self-host. Every new hosted or Cloud step is numbered above every released one, and released steps keep their numbers. Product SQL rollback, independent Better Auth commits, source-write frontiers and post-commit provisioning retain their existing boundaries. Recorded column types, nullability and defaults must match the owning operation before and after the bridge. A matching journal and column name cannot conceal changed physical metadata; every refusal names the field and expected and observed values. Metadata reads touch only registered Cloud tables and indexes, preserving unrelated auth-lock boundaries. Default expressions compare exactly, and index normalization preserves quoted literal bytes and case."
+    }
+  }
+}

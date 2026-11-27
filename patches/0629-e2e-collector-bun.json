@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-e2e-collector-bun",
+  "file": "0629-e2e-collector-bun.patch",
+  "content_sha256": "332f9737b5d9e640dabadf2214cc2041e05ccc290ce0586f218f956e850239c4",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

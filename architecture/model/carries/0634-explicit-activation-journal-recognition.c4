@@ -1,0 +1,7 @@
+model {
+  extend basalt.toolsGateway {
+    metadata {
+      constraint "Startup validates the exact committed journal names and required preparation sequence. Explicit activation 22 is recognized after preparation 21 but is never scheduled by startup. Both prepared and activated journals remain valid; unknown operations, changed names and missing required predecessors refuse before migration writes."
+    }
+  }
+}

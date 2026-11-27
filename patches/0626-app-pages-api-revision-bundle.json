@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-app-pages-api-revision-bundle",
+  "file": "0626-app-pages-api-revision-bundle.patch",
+  "content_sha256": "6372059d45e3e2ae5b906f94c8fcb8e31508997fd423fea6caabd011715874fb",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}

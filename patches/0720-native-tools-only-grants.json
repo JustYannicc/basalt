@@ -1,7 +1,7 @@
 {
   "identity": "basalt-native-tools-only-grants",
   "file": "0720-native-tools-only-grants.patch",
-  "content_sha256": "2653cd28963c04398de858d9dd659abf2ac50b98157936d434d7deb0f05a8113",
+  "content_sha256": "7d3734acd58c88922da5d8973f8ff6d998216ec43a1f840a0438751a42d2e714",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

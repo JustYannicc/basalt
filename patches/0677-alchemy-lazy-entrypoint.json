@@ -1,7 +1,7 @@
 {
   "identity": "alchemy-lazy-entrypoint",
   "file": "0677-alchemy-lazy-entrypoint.patch",
-  "content_sha256": "5b5e0c9db70732c466d6fb2bde70a1244ee7c86115213ccdc7fff79584f42e1a",
+  "content_sha256": "e97f6c05f2b2099b9b990bc74f45f0b2dd0017c63e0436b708da5e63e13b7b7b",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
