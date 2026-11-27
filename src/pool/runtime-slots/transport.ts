@@ -76,6 +76,7 @@ const StillCheck = Schema.Struct({
   }),
   connections: Schema.NullOr(Count),
 });
+const isAttestation = Schema.is(Schema.Struct({ attested: Schema.Boolean }));
 /** Convert remote remaining duration at dispatch, never a remote monotonic timestamp. */
 export class BoundSlotDriver implements SlotDriver {
   private endpoint: (target: SlotTarget) => RuntimeStub;
@@ -193,6 +194,14 @@ export class BoundSlotDriver implements SlotDriver {
   }
   async witness(target: SlotTarget) {
     return (await this.call(target, "witness", { target }, AbortSignal.timeout(2_000))).json();
+  }
+  /** Whether the slot's record holds its start's attestation; a fenced slot still answers. */
+  async attested(target: SlotTarget, signal: AbortSignal) {
+    const answer: unknown = await (
+      await this.call(target, "attestation", { target }, signal)
+    ).json();
+    if (!isAttestation(answer)) throw new SlotRefused("uncertain");
+    return answer.attested;
   }
   async stopRefusing(identity: SlotIdentity, refusingSince: number, signal: AbortSignal) {
     const response = await this.call(
@@ -380,14 +389,20 @@ export async function runtimeRequest(
           ? await endpoint.abortStartup(intent, request.signal)
           : await endpoint.inspectStartupAbort(intent),
       );
-    } else if (action === "/witness" || action === "/recovery-witness") {
+    } else if (
+      action === "/witness" ||
+      action === "/recovery-witness" ||
+      action === "/attestation"
+    ) {
       const { target } = runtimeInput(() =>
         Schema.decodeUnknownSync(Schema.Struct({ target: SlotTarget }))(value),
       );
       return Response.json(
         await (action === "/recovery-witness"
           ? endpoint.recoveryWitness(target)
-          : endpoint.witness(target)),
+          : action === "/attestation"
+            ? endpoint.attested(target)
+            : endpoint.witness(target)),
       );
     } else if (action === "/ready") {
       const input = runtimeInput(() =>

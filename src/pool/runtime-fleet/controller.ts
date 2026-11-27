@@ -27,6 +27,7 @@ import {
   quarantineReportMs,
   startingBoundMs,
   upkeepCadenceMs,
+  type FirstStart,
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
@@ -164,6 +165,8 @@ export interface FleetCell {
    * be proven at all.
    */
   abandon?(target: SlotTarget, stop?: boolean): Promise<boolean>;
+  /** How far the cell's first start got, by reads that never fence, stop, start or renew it. */
+  firstStart?(target: SlotTarget): Promise<FirstStart>;
 }
 interface Dependencies {
   state: RuntimeFleetState;
@@ -610,6 +613,18 @@ export class RuntimeFleet {
       leases: checked?.leases ?? null,
       connections: checked?.connections ?? null,
     };
+  }
+  /**
+   * For the fleet inspect, how far a quarantined start without an identity got: undefined for any
+   * other row, and null when its cell can't say, as from an endpoint on older code.
+   */
+  async firstStart(row: FleetRow): Promise<FirstStart | null | undefined> {
+    if (row.phase !== "quarantined" || row.identity) return undefined;
+    try {
+      return (await this.cell(row.target).firstStart?.(row.target)) ?? null;
+    } catch {
+      return null;
+    }
   }
   async recoverPrimary() {
     const failure = this.primaryFailure;

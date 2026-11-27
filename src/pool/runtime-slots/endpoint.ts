@@ -496,6 +496,18 @@ export class RuntimeEndpoint {
       await this.store.put(proof.target, { ...record, attestation: proof });
     });
   }
+  /**
+   * Whether this slot's record holds its start's attestation, read from the record itself, so a
+   * fenced slot still answers. For the fleet inspect: it never fences, stops, starts or renews.
+   */
+  async attested(target: SlotTarget) {
+    this.bound(target);
+    const record = await this.store.retained(target.slotId);
+    return {
+      attested:
+        record?.attestation !== undefined && sameTarget(record.authorization.target, target),
+    };
+  }
   async ready(identity: SlotIdentity, fingerprint: string, imageInput: string) {
     const { record } = await this.store.read(identity);
     if (!record.attestation) throw new Error("Unattested active runtime");

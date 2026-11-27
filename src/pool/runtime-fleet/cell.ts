@@ -14,7 +14,7 @@ import type { RuntimeProviderReader, RuntimeProviderTarget } from "../runtime-pr
 import type { NativeMembershipPolicy } from "../membership-contract.ts";
 import type { FleetCell } from "./controller.ts";
 import type { FleetAdmission } from "./admission.ts";
-import { cellHealthReadMs, startingBoundMs } from "./phase-bounds.ts";
+import { cellHealthReadMs, startingBoundMs, type FirstStart } from "./phase-bounds.ts";
 
 interface Dependencies {
   handoff: RuntimeHandoff;
@@ -116,6 +116,16 @@ export class FleetHandoffCell implements FleetCell {
   }
   selected() {
     return this.deps.handoff.selected();
+  }
+  /**
+   * How far this cell's first start got, by reads alone; an unreadable one throws. Its intent is
+   * marked selected in the selection's own commit, and reads so even once that selection is fenced.
+   */
+  async firstStart(target: SlotTarget): Promise<FirstStart> {
+    if ((await this.deps.handoff.slots.firstStart.inspect())?.selected === true) return "activated";
+    return (await this.deps.driver.attested(target, AbortSignal.timeout(2_000)))
+      ? "attested"
+      : "neither";
   }
   forward(request: Request, port: 8317, pool: string | undefined, beforeDispatch: () => void) {
     return this.deps.handoff.forward(
