@@ -95,8 +95,9 @@ const markerOf = (run: string, call: CallRecord, attempt: Pick<Attempt, "attempt
  * Per send: late when the mock passed on its first content, measured from the driver's own send,
  * or waited between frames, more than the bar past the profile. That wait is a lower bound of the
  * driver's, which reads a frame only after the mock passed it on. A send the driver saw as a 200
- * needs a 200 record. Any other send gets no say from the mock: its call already fails as failed or
- * retried.
+ * needs a 200 record, and one that brought the driver content needs a record that carried content:
+ * a record cut before any content vouches for no content, but its wait still counts. Any other
+ * send gets no say from the mock: its call already fails as failed or retried.
  */
 export function mockView(
   run: string,
@@ -110,7 +111,10 @@ export function mockView(
     const answers = (sends.get(markerOf(run, call, attempt)) ?? []).filter(
       (send) => send.status === 200,
     );
+    const carried = answers.filter((send) => send.firstContentAt !== undefined);
     if (attempt.status === 200 && answers.length === 0) return "missing";
+    if (attempt.status === 200 && attempt.firstContentMs !== undefined && carried.length === 0)
+      return "missing";
     for (const send of answers) {
       const firstMs = (send.firstContentAt ?? send.endedAt) - attempt.startedAt;
       if (Math.max(firstMs, send.stallMs ?? 0) > kind.ttfbProfileMs + delayBarMs) view = "late";

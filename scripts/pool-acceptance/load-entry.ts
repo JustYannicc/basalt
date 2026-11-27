@@ -21,6 +21,16 @@ import { killTime, parseLoadShape } from "./load-shape.ts";
 import { mockWitness } from "./load-witness.ts";
 import { AcceptanceFailure, isAcceptancePool } from "./types.ts";
 
+/** Writes one JSON line per item, each its own write. */
+function writeLines(path: string, items: readonly unknown[]) {
+  const file = openSync(path, "w");
+  try {
+    for (const item of items) writeSync(file, line(item));
+  } finally {
+    closeSync(file);
+  }
+}
+
 /** The coordinator's literal GO, as the fleet lane checks it (.github/workflows/pool-fleet.yml). */
 export const goPattern = /^coordinator-20[0-9]{2}-[A-Za-z0-9-]{1,96}$/u;
 // A marker is written once the kill is answered, which can be after the last call ends.
@@ -180,9 +190,10 @@ export async function runLoadFromEnvironment(
     join(directory, "in-flight.jsonl"),
     run.calls.flatMap((call) => (call.inFlight ? [line(call)] : [])).join(""),
   );
-  // Each call as both witnesses judged it, and the mock's own records they were judged on.
-  writeFileSync(join(directory, "judged.jsonl"), run.calls.map(line).join(""));
-  writeFileSync(join(directory, "witness.jsonl"), (run.sends ?? []).map(line).join(""));
+  // Each call as both witnesses judged it, and the mock's own records they were judged on, a line
+  // at a time: a run of a million calls is past the longest string one join may build.
+  writeLines(join(directory, "judged.jsonl"), run.calls);
+  writeLines(join(directory, "witness.jsonl"), run.sends ?? []);
   writeFileSync(
     join(directory, "run.json"),
     `${JSON.stringify({ shape, killAt: run.killAt, verdict: run.verdict }, null, 2)}\n`,

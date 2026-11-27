@@ -65,6 +65,41 @@ test("a call the driver saw in time and the mock sent late is a disagreement, an
   }
 });
 
+test("a 200 record cut before any content vouches for nothing, though its wait still counts", async () => {
+  const empty = (send: MockSend, by = 0): MockSend => ({
+    ...send,
+    end: "cut",
+    firstContentAt: undefined,
+    stallMs: undefined,
+    endedAt: send.headersAt + by,
+  });
+  // The only record the mock has carried no content: the driver's content came from no send it saw.
+  const alone = await load([streamed({ says: (send) => [empty(send)] })], 1);
+  assert.deepEqual(alone.run.calls[0]!.classes, ["mock_missing"]);
+  assert.equal(alone.run.verdict.passed, false);
+  // A try cut late, beside the send that carried the content in time: the mock says late.
+  const beside = await load([streamed({ says: (send) => [empty(send, late), send] })], 1);
+  assert.deepEqual(beside.run.calls[0]!.classes, ["witnesses_disagree"]);
+});
+
+test("only the mock's 200 answers judge a call, and every one of them does", async () => {
+  const later = (send: MockSend): MockSend => ({
+    ...send,
+    firstContentAt: send.firstContentAt! + late,
+    endedAt: send.endedAt + late,
+  });
+  // A late refusal beside the answer in time: the refusal gets no say.
+  const refused = await load(
+    [streamed({ says: (send) => [{ ...later(send), status: 429 }, send] })],
+    1,
+  );
+  assert.deepEqual(refused.run.calls[0]!.classes, []);
+  assert.equal(refused.run.verdict.passed, true);
+  // A second answer, late: the first one in time does not speak for it.
+  const second = await load([streamed({ says: (send) => [send, later(send)] })], 1);
+  assert.deepEqual(second.run.calls[0]!.classes, ["witnesses_disagree"]);
+});
+
 test("a 200 the mock has no record of is mock_missing, and fails the run", async () => {
   const { run, lines } = await load([streamed({ says: () => [] })], 1);
   assert.deepEqual(run.calls[0]!.classes, ["mock_missing"]);
