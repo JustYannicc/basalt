@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-gateway-fresh-connections",
+  "file": "0812-pool-gateway-fresh-connections.patch",
+  "content_sha256": "6dc069c5100760194bcf5134b4afeafd57476f119944cb9761006ada2dd38650",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
