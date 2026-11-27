@@ -1,4 +1,5 @@
 import { usageCredits, retainedUsageCredits } from "./usage-credits.ts";
+import { routeSafeMessage } from "./route-refusal.ts";
 import { resetObservation } from "./reset-observation.ts";
 import type { Account, UsageWindow } from "../../apps/pool/contract.ts";
 import { quotaWindowSeconds } from "./quota-period.ts";
@@ -44,7 +45,7 @@ export function accountsView(
             : row.status === "error"
               ? "error"
               : "active",
-        message: text(row.status_message),
+        message: routeSafeMessage(text(row.status_message)),
         // At equal lengths put Home's main account allowance last, so capacity uses it.
         windows: [...windows]
           .sort(

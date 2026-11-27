@@ -34,3 +34,7 @@ clients/mobile/dist-ios/
 clients/mobile/dist-android/
 
 scripts/scale-test/sources.generated.ts
+
+# Python bytecode from local test runs.
+__pycache__/
+*.pyc
