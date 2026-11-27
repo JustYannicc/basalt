@@ -9,10 +9,22 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
     throw new StageError("The emulated upstream needs the deploy credentials");
   const stage = stageCloudflare({ accountId, token, prefix, fetcher });
 
+  /**
+   * Every prefixed resource. A repository whose list is empty holds nothing the registry can still
+   * find; one holding only entries the registry keeps (kept-entries.mjs), read again now, is set
+   * apart under `kept`, which neither `empty` nor `describe` counts.
+   */
   async function inventory() {
     const [workers, repositories] = await Promise.all([stage.inventory(), stage.images()]);
-    // A repository whose tags are all gone holds nothing the registry can still find.
-    return { ...workers, images: repositories.filter((row) => row.tags.length) };
+    const images = [];
+    const kept = [];
+    for (const row of repositories) {
+      if (!row.tags.length) continue;
+      const types = await stage.keptEntries(row);
+      if (types) kept.push({ name: row.name, types, image: row });
+      else images.push(row);
+    }
+    return { ...workers, images, kept };
   }
   /** Names only, never ids or values: these lines go to the public log. */
   const describe = (resources) =>
@@ -24,17 +36,22 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
       ),
       ...resources.images.map((row) => `registry repository ${row.name} (${row.tags.length} tags)`),
     ].join(", ");
-  const empty = (resources) => Object.values(resources).every((rows) => rows.length === 0);
+  const empty = (resources) =>
+    Object.entries(resources).every(([kind, rows]) => kind === "kept" || rows.length === 0);
 
   /** Deletes every prefixed resource, then refuses unless a fresh inventory finds none. */
   async function destroy() {
     const before = await inventory();
     const failures = [];
+    const records = [];
     const attempt = async (label, operation) => {
       try {
-        await operation();
+        return await operation();
       } catch (error) {
         failures.push(`${label}: ${publicMessage(error)}`);
+        if (error !== null && typeof error === "object" && Object.hasOwn(error, "record"))
+          records.push(error.record);
+        return undefined;
       }
     };
     for (const app of before.applications)
@@ -42,14 +59,24 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
     // Deleting a Worker deletes the Durable Object namespaces it owns.
     for (const script of before.scripts)
       await attempt(`Worker ${script.id}`, () => stage.remove("scripts", script));
-    for (const image of before.images)
-      await attempt(`registry repository ${image.name}`, () => stage.removeImage(image));
-    const after = await inventory();
-    if (!empty(after))
-      throw new StageError(
-        `Emulated upstream resources remain after teardown: ${describe(after)}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
+    const keptNow = [];
+    for (const image of [...before.images, ...before.kept.map((row) => row.image)]) {
+      const kept = await attempt(`registry repository ${image.name}`, () =>
+        stage.removeImage(image),
       );
-    return { before, failures };
+      if (kept) keptNow.push(...kept);
+    }
+    const after = await inventory();
+    // A refused registry delete fails the teardown even when a read leaves nothing but kept types:
+    // only a refusal of a kept class makes an entry the registry's.
+    if (!empty(after) || records.length) {
+      const error = new StageError(
+        `Emulated upstream resources remain after teardown: ${describe(after) || "only entries whose delete was refused"}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
+      );
+      if (records.length) error.record = Object.freeze({ teardown: Object.freeze(records) });
+      throw error;
+    }
+    return { before, failures, kept: keptNow, keptAfter: after.kept };
   }
 
   /** The Worker's DELETE_BY lease in epoch milliseconds, or undefined when it has none. */

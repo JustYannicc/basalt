@@ -7,6 +7,7 @@
 // registry list with a further page throws, so a wrong template or a missing permission never reads
 // as an empty account. Refusals carry only the operation, the status, the error codes and known
 // field names; remote messages and pointers may hold secrets. Nothing here sends a request.
+import { typeOfManifest } from "./kept-entries.mjs";
 
 export const DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const FIELDS = [
@@ -223,12 +224,24 @@ export function manifestOf(answer) {
     : [];
   if (!children.every((child) => typeof child === "string" && DIGEST.test(child)))
     throw fail("A registry index names a manifest without a digest");
-  return { digest: answer.digest, children };
+  return { digest: answer.digest, children, type: typeOfManifest(answer.data) };
 }
 
 /** Whether a manifest delete removed it; one already gone counts as removed. */
 export function deletedOf(answer) {
-  if (!answer.ok && answer.status !== 404)
-    throw fail(`Registry manifest delete failed (HTTP ${answer.status})`);
+  if (!answer.ok && answer.status !== 404) {
+    const errors = ownField(answer.data, "errors");
+    const codes = [
+      ownField(answer.data, "code"),
+      ...(Array.isArray(errors) ? errors : []).map((entry) => ownField(entry, "code")),
+    ];
+    const error = fail(`Registry manifest delete failed (HTTP ${answer.status})`);
+    // Closed facts only: the status, and whether the registry named its one kept code.
+    error.refusal = Object.freeze({
+      status: answer.status,
+      singleton: codes.includes("SINGLETON_ARTIFACT_EXISTS"),
+    });
+    throw error;
+  }
   return answer.ok;
 }

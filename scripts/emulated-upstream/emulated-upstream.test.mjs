@@ -22,6 +22,7 @@ import {
   refusalBody,
   script,
 } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { IMAGE_TYPES, KEPT_TYPES } from "../stage-cloudflare/kept-entries.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 /** A container that listens only after `listenAfter` health probes, and can be stopped. */
@@ -685,6 +686,139 @@ test("a destroy of a deployed stage whose image has a long tag list ends with no
     ),
     lines.join("\n"),
   );
+});
+
+// The registry as run 46020606930 read it: five entries a page whatever `n` asks, a next link of
+// the page's last entry, digest entries first, then the tags.
+const chainType = "application/vnd.cloudchamber.btrfs-chain.v1";
+const chain = `sha256:${"c".repeat(64)}`;
+// The fake account's own image: its index, and the platform manifest the index names.
+const ownIndex = `sha256:${"a".repeat(64)}`;
+const ownPlatform = `sha256:${"b".repeat(64)}`;
+const singleton = { status: 409, code: "SINGLETON_ARTIFACT_EXISTS" };
+const cloudflareStage = (cloudflare, tags = ["h1", "h2", "cache.v1", "h3", "h4", "h5", "h6"]) =>
+  fakeAccount({
+    live: {
+      applications: [application({ id: "a1", name: `${prefix}-mock` })],
+      scripts: [script(`${prefix}-gateway`)],
+      namespaces: [namespace({ id: "n1", className: "Mock", script: `${prefix}-gateway` })],
+    },
+    tags: { [`acct/${prefix}-mock`]: tags },
+    cloudflare: { pageSize: 5, ...cloudflare },
+  });
+const destroyOn = async (fake) => {
+  const lines = [];
+  const saved = {};
+  await emulatedStage({
+    api: account(fake.fetcher),
+    key: "k".repeat(43),
+    fetcher: fake.fetcher,
+    summary: (line) => lines.push(line),
+    save: (name, value) => (saved[name] = value),
+    deployEntry: () => {},
+  }).destroy();
+  return { lines, saved };
+};
+const nothingLeft = `- after teardown: no container application, Worker, Durable Object namespace or tagged image named ${prefix}-*`;
+
+test("a destroy reads the registry's list of digest entries and tags, however it ends, and leaves nothing", async () => {
+  for (const shape of [
+    { emptyEnd: true },
+    { emptyEnd: false },
+    { emptyEnd: true, order: "lexical" },
+    { emptyEnd: false, order: "lexical" },
+  ]) {
+    const fake = cloudflareStage(shape);
+    const { lines, saved } = await destroyOn(fake);
+    assert.ok(lines.includes(nothingLeft), `${JSON.stringify(shape)}\n${lines.join("\n")}`);
+    assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
+    assert.deepEqual(fake.live.tags[`acct/${prefix}-mock`], []);
+    assert.deepEqual(saved.teardown.kept, []);
+  }
+});
+
+test("the registry's own artifact, refused as the registry keeps it, is reported kept, and a deploy is not refused", async () => {
+  for (const [refuse, refused] of [
+    [singleton, "409 SINGLETON_ARTIFACT_EXISTS"],
+    [{ status: 403 }, "403"],
+  ]) {
+    const fake = cloudflareStage({
+      emptyEnd: true,
+      artifacts: [{ digest: chain, type: chainType, refuse }],
+    });
+    const { lines, saved } = await destroyOn(fake);
+    assert.ok(!lines.includes(nothingLeft), lines.join("\n"));
+    assert.ok(
+      lines.includes(
+        `- after teardown: no container application, Worker, Durable Object namespace or tag named ${prefix}-* remains; 1 entry is kept by the registry: 1 × ${chainType}, delete refused ${refused}`,
+      ),
+      lines.join("\n"),
+    );
+    assert.deepEqual(saved.teardown.kept, [{ type: chainType, class: refused }]);
+    // The deploy's guard reads the repository again and finds only what the registry keeps.
+    const found = await account(fake.fetcher).inventory();
+    assert.equal(account(fake.fetcher).empty(found), true);
+    assert.deepEqual(
+      found.kept.map((row) => row.types),
+      [[chainType]],
+    );
+  }
+});
+
+test("anything else the registry refuses fails the destroy closed, with a record of closed facts", async () => {
+  const cases = {
+    "a kept type refused with another status": {
+      artifacts: [{ digest: chain, type: chainType, refuse: { status: 500 } }],
+    },
+    "a type not on the list": {
+      artifacts: [{ digest: chain, type: "application/vnd.example.thing", refuse: singleton }],
+    },
+    "a manifest that cannot be read": {
+      artifacts: [{ digest: chain, type: chainType, refuse: singleton, read: 500 }],
+    },
+    "the stage's own platform manifest": { refuse: { [ownPlatform]: { status: 403 } } },
+    "the stage's own index, refused as an artifact would be": { refuse: { [ownIndex]: singleton } },
+    "a kept artifact beside a refused image": {
+      artifacts: [{ digest: chain, type: chainType, refuse: singleton }],
+      refuse: { [ownPlatform]: { status: 403 } },
+    },
+  };
+  for (const [name, cloudflare] of Object.entries(cases)) {
+    const fake = cloudflareStage({ emptyEnd: true, ...cloudflare });
+    const error = await destroyOn(fake).then(
+      () => assert.fail(`${name}: the destroy succeeded`),
+      (caught) => caught,
+    );
+    assert.match(error.message, /^Emulated upstream resources remain after teardown: /u, name);
+    const [deletes] = error.record.teardown;
+    assert.ok(deletes.registryDeletes.refused.length > 0, name);
+    for (const refused of deletes.registryDeletes.refused) {
+      assert.ok([...KEPT_TYPES, ...IMAGE_TYPES, "unread", "other"].includes(refused.type), name);
+      assert.doesNotMatch(JSON.stringify(refused), /sha256|example|acct/u, name);
+    }
+    // An entry beside a refused image is never the registry's: no tag may be left by then.
+    if (name === "a kept artifact beside a refused image")
+      assert.deepEqual(deletes.registryDeletes.kept, [], name);
+  }
+});
+
+test("a colon entry that is not a sha256 digest still stops the read closed, and says it looked like one", async () => {
+  for (const [entry, digestShaped] of [
+    [`sha256:${"A".repeat(64)}`, true],
+    [`sha256:${"a".repeat(63)}`, true],
+    [`sha512:${"a".repeat(128)}`, true],
+    ["latest:v1/x", false],
+  ]) {
+    const fake = cloudflareStage({ emptyEnd: true }, ["h1", entry]);
+    const error = await destroyOn(fake).then(
+      () => assert.fail(`${entry}: the destroy succeeded`),
+      (caught) => caught,
+    );
+    assert.match(error.message, /answered a tag it cannot name/u, entry);
+    assert.equal(error.record.tagRead.tag.digestShaped, digestShaped, entry);
+    // The read stopped before any delete.
+    assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 2, entry);
+  }
 });
 
 test("a container the platform stops while starting fails with the platform's own reason", async () => {

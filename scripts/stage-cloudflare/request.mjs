@@ -461,9 +461,12 @@ export function stageRequests(options) {
 
   /** Every tag of one repository, recorded on its entry (tag-pages.mjs reads the pages). */
   async function readTags(planned, headers) {
-    return (planned.entry.tags = await readTagPages(planned.url, (url) =>
+    const entries = await readTagPages(planned.url, (url) =>
       exchange(url, "GET", "registry tags", headers),
-    ));
+    );
+    // A digest entry is addressed only as a manifest of this repository, as a digest read is.
+    for (const entry of entries) if (DIGEST.test(entry)) planned.entry.digests.add(entry);
+    return (planned.entry.tags = entries);
   }
 
   /** What a registry answer gives the caller: only the stage's own repositories, and their parts. */
