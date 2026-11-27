@@ -105,7 +105,12 @@ const ON_RESOURCE = table({
   rollout: table({ method: "POST", below: "/rollouts", absent: false, body: true }),
   delete: table({ method: "DELETE", below: "", absent: false, body: false }),
 });
-const PERMISSIONS = table({ pull: Object.freeze(["pull"]), push: Object.freeze(["pull", "push"]) });
+/**
+ * One registry credential a run, for every registry request it sends: the list that names an entry
+ * and the read that answers 404 for it are then answered to the same credential, so the list is
+ * the read's positive control (registry.mjs).
+ */
+const PERMISSIONS = table({ push: Object.freeze(["pull", "push"]) });
 const REQUEST_FIELDS = Object.freeze(["kind", "operation", "target", "reference", "body"]);
 const OPTIONS = Object.freeze([
   "accountId",
@@ -133,7 +138,9 @@ const STEP = table({
 });
 const step = (fields) => table({ ...STEP, ...fields });
 
-const refuse = (message) => fail(`Refused: ${message}`);
+/** A request this module did not send: no answer of the registry or the API stands behind it. */
+const unsent = (error) => Object.assign(error, { sent: false });
+const refuse = (message) => unsent(fail(`Refused: ${message}`));
 
 /** A path segment that is `.` or `..`, written plainly or percent-encoded. */
 const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
@@ -273,7 +280,7 @@ export function stageRequests(options) {
     // A request that might outlast the run's deadline is not started: a run ends between requests,
     // never in one, so a job's own time limit never cuts a delete.
     if (deadline !== undefined && now() + REQUEST_TIMEOUT_MS > deadline)
-      throw fail(`${method} ${label} was not sent: the run's time budget is spent`);
+      throw unsent(fail(`${method} ${label} was not sent: the run's time budget is spent`));
     const init = Object.create(null);
     init.method = method;
     init.headers = headers;
@@ -366,11 +373,11 @@ export function stageRequests(options) {
     if (kind === "images") {
       const registry = `https://${REGISTRY}/v2`;
       if (operation === "list")
-        return step({ registry: "pull", url: `${registry}/_catalog?n=10000` });
+        return step({ registry: "push", url: `${registry}/_catalog?n=10000` });
       const entry = recorded(kind, target);
       const repository = `${registry}/${encodeURIComponent(accountId)}/${encodeURIComponent(entry.id)}`;
       if (operation === "tags")
-        return step({ registry: "pull", entry, url: `${repository}/tags/list?n=${TAG_PAGE}` });
+        return step({ registry: "push", entry, url: `${repository}/tags/list?n=${TAG_PAGE}` });
       const tag =
         typeof reference === "string" && entry.tags.includes(reference) && TAG.test(reference);
       const digest =

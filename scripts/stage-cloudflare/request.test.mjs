@@ -87,8 +87,7 @@ const EXPORTS = {
     recordedConfiguration: "copies a listed configuration it is handed; sends nothing",
   },
   "registry.mjs": {
-    registryOperations:
-      "holds only a send; covered through images, removeImage and keptEntries below",
+    registryOperations: "holds only a send; covered through images, removeImage and standing below",
   },
   "ownership.mjs": {
     STAGE_PREFIXES: "a constant: the registered prefixes",
@@ -424,9 +423,9 @@ const OPERATIONS = {
     hostile: (ctx) => targets(ctx, (kind, target) => ctx.api.removeImage(target), ["images"]),
     legit: (ctx) => ctx.api.removeImage(ctx.rows.images),
   },
-  keptEntries: {
-    hostile: (ctx) => targets(ctx, (kind, target) => ctx.api.keptEntries(target), ["images"]),
-    legit: (ctx) => ctx.api.keptEntries(ctx.rows.images),
+  standing: {
+    hostile: (ctx) => targets(ctx, (kind, target) => ctx.api.standing(target), ["images"]),
+    legit: (ctx) => ctx.api.standing(ctx.rows.images),
   },
   subdomain: {
     hostile: (ctx) => withArguments(ctx, (...given) => ctx.api.subdomain(...given)),

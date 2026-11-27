@@ -413,7 +413,8 @@ const productionBeside = () =>
       [`other/${prefix}-mock`]: ["x1"],
     },
   });
-const account = (fetcher) => emulatedAccount({ accountId: "acct", token: "t", prefix, fetcher });
+const account = (fetcher, options = {}) =>
+  emulatedAccount({ accountId: "acct", token: "t", prefix, fetcher, wait: noWait, ...options });
 
 test("the inventory and the destroy touch only what carries the stage's prefix, then prove it gone", async () => {
   const { live, calls, fetcher } = productionBeside();
@@ -1005,8 +1006,26 @@ test("the deploy's guard ignores a repository only when every entry is the regis
       [],
       false,
     ],
-    "a tag beside the registry's artifact": [
+    "an image's tag beside the registry's artifact": [
+      { artifacts: [{ digest: chain, type: chainType }] },
+      ["h1"],
+      true,
+    ],
+    // The list names the tag, and its read by that tag answers 404 to the same credential.
+    "a listed tag with no manifest behind it, beside the registry's artifact": [
       { own: false, artifacts: [{ digest: chain, type: chainType }] },
+      ["h1"],
+      false,
+    ],
+    "a listed tag whose read fails another way, beside the registry's artifact": [
+      {
+        own: false,
+        tagged: { h1: other },
+        artifacts: [
+          { digest: chain, type: chainType },
+          { digest: other, body: imageManifest(), read: 503 },
+        ],
+      },
       ["h1"],
       true,
     ],
@@ -1065,6 +1084,150 @@ test("the deploy's guard ignores a repository only when every entry is the regis
     );
     if (!refused) assert.equal(error?.message, "past the guard", name);
   }
+});
+
+// The registry as a destroy on 27-11 left it: two tags and three digest entries its list names, and
+// no manifest behind any of them.
+const ghosts = ["e", "f", "9"].map((hex) => `sha256:${hex.repeat(64)}`);
+const listedOnly = (extra = {}) =>
+  cloudflareStage({ emptyEnd: true, own: false, ghosts, ...extra }, ["h1", "h2"]);
+const control =
+  "the repository's tag list, answered to the run's one registry credential, named each entry";
+const registryCalls = (fake, method) =>
+  fake.calls.filter((call) => call.host === "registry.cloudflare.com" && call.method === method);
+
+test("entries the list names with no manifest behind them end the destroy green, counted, and pass the deploy's guard", async () => {
+  const fake = listedOnly();
+  const { lines, saved } = await destroyOn(fake);
+  assert.ok(lines.includes(nothingLeft), lines.join("\n"));
+  assert.ok(
+    lines.includes(
+      "- listed without a manifest: 2 tags and 3 digest entries the registry's list still names, each read 404 by its own reference to the credential that list answered to",
+    ),
+    lines.join("\n"),
+  );
+  const facts = { tags: 2, digests: 3, read: { ok: 0, absent: 5, other: 0 }, control };
+  assert.deepEqual(saved.teardown.listedWithoutManifest, [facts]);
+  assert.deepEqual(saved.teardown.record.reads.at(-1).repositories, [{ ...facts, placed: "gone" }]);
+  // Nothing stands behind the list, so no registry delete is sent.
+  assert.equal(registryCalls(fake, "DELETE").length, 0);
+  // The deploy's guard reads every entry again in its own run and sets the repository apart the
+  // same way; it reads no record of an earlier run.
+  const api = account(fake.fetcher);
+  const found = await api.inventory();
+  assert.equal(api.empty(found), true);
+  assert.deepEqual(found.facts, [{ ...facts, placed: "gone" }]);
+  for (const line of [...lines, JSON.stringify(saved)])
+    assert.doesNotMatch(line, /sha256|acct\/|h1|h2/u, line);
+});
+
+test("every registry request of a run goes to its one credential, so the list is its reads' control", async () => {
+  const fake = listedOnly();
+  await destroyOn(fake);
+  const sent = fake.calls.filter((call) => call.host === "registry.cloudflare.com");
+  assert.ok(sent.length > 5, String(sent.length));
+  assert.equal(new Set(sent.map((call) => call.authorization)).size, 1);
+  assert.ok(sent[0].authorization);
+  const minted = fake.calls.filter((call) => call.path.endsWith("/credentials"));
+  assert.equal(minted.length, 1);
+  assert.deepEqual(JSON.parse(minted[0].body).permissions, ["pull", "push"]);
+});
+
+test("a read by reference that fails another way is never absence: the destroy fails closed with its record", async () => {
+  for (const status of [500, 503]) {
+    const fake = listedOnly({
+      ghosts: [],
+      tagged: { h1: chain, h2: chain },
+      // Accepted, yet still listed, and its reads fail: it may be there.
+      artifacts: [{ digest: chain, body: imageManifest(), read: status, refuse: { stays: true } }],
+    });
+    const waits = [];
+    const error = await account(fake.fetcher, { wait: async (ms) => void waits.push(ms) })
+      .destroy()
+      .then(
+        () => assert.fail("the destroy succeeded"),
+        (caught) => caught,
+      );
+    assert.match(
+      error.message,
+      /^Emulated upstream resources remain after teardown: registry repository /u,
+    );
+    // The tag's read failed in the delete pass too, so that pass failed and no read is retried.
+    assert.equal(error.record.failedDeletes, 1, String(status));
+    assert.equal(error.record.reads.length, 1, String(status));
+    assert.deepEqual(waits, []);
+    assert.deepEqual(error.record.reads.at(-1).repositories[0].read, {
+      ok: 0,
+      absent: 0,
+      other: 3,
+    });
+    assert.equal(error.record.readBackCut, false);
+  }
+});
+
+test("deletes the registry accepts and collects a little later: the read-back waits for them and ends green", async () => {
+  const fake = cloudflareStage({ emptyEnd: true, collectAfter: 3 });
+  const waits = [];
+  const { record } = await account(fake.fetcher, {
+    wait: async (ms) => void waits.push(ms),
+  }).destroy();
+  // Each read-back reads the list's first page twice, so the third such page is the second read.
+  assert.equal(record.reads.length, 2);
+  assert.deepEqual(waits, [20_000]);
+  assert.deepEqual(record.registryDeletes[0].delete, { accepted: 2, absent: 0, refused: 0 });
+  assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
+  assert.deepEqual(record.reads.at(-1).repositories, []);
+});
+
+test("deletes accepted and never collected fail the destroy closed after its retries, with every read in the record", async () => {
+  const fake = cloudflareStage({ emptyEnd: true, collectAfter: 1_000 });
+  const error = await account(fake.fetcher)
+    .destroy()
+    .then(
+      () => assert.fail("the destroy succeeded"),
+      (caught) => caught,
+    );
+  assert.match(
+    error.message,
+    /remain after teardown: registry repository .* \(7 tags, 2 digest entries\)$/u,
+  );
+  assert.equal(error.record.reads.length, 7);
+  assert.equal(error.record.failedDeletes, 0);
+  assert.deepEqual(error.record.registryDeletes[0].delete, { accepted: 2, absent: 0, refused: 0 });
+  assert.deepEqual(error.record.reads.at(-1).repositories[0].read, { ok: 9, absent: 0, other: 0 });
+});
+
+test("a read-back the budget cuts between its reads stops as unread, never as a read that failed", async () => {
+  const fake = cloudflareStage({ emptyEnd: true, collectAfter: 1_000 });
+  const start = Date.UTC(2026, 10, 27, 20);
+  const deadline = start + 15 * 60_000;
+  let clock = start;
+  let deleted = false;
+  let readBack = false;
+  let jumped = false;
+  // After the deletes, the read-back's first read by reference leaves no room for the next one.
+  const fetcher = async (url, init) => {
+    const { hostname, pathname } = new URL(url);
+    if (hostname === "registry.cloudflare.com" && init?.method === "DELETE") deleted = true;
+    if (deleted && pathname === "/v2/_catalog") readBack = true;
+    const answer = await fake.fetcher(url, init);
+    if (readBack && !jumped && pathname.includes("/manifests/")) {
+      jumped = true;
+      clock = deadline - 20_000;
+    }
+    return answer;
+  };
+  const error = await account(fetcher, { deadline, now: () => clock })
+    .destroy()
+    .then(
+      () => assert.fail("the destroy succeeded"),
+      (caught) => caught,
+    );
+  assert.match(
+    error.message,
+    /^Emulated upstream teardown could not read back what remains: .*time budget is spent/u,
+  );
+  assert.equal(error.record.readBack, "not-completed");
 });
 
 test("a colon entry that is not a sha256 digest still stops the read closed, and says it looked like one", async () => {

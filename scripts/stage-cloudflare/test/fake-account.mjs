@@ -55,7 +55,9 @@ export function fakeAccount({
    * with `emptyEnd`, a last page that is empty and still links on; `linkForm` picks how the link is
    * written (see below). `artifacts` are manifests the
    * registry made itself: `{ digest, type, refuse?: { status, code? }, read?: status }`. `refuse`
-   * maps a digest to the refusal its delete answers.
+   * maps a digest to the refusal its delete answers. `ghosts` are digest entries the list names
+   * with no manifest behind them (with `own: false`, the tags are too). `collectAfter: n` keeps an
+   * accepted delete's manifest listed and readable until n more first pages of the list are read.
    */
   cloudflare,
 } = {}) {
@@ -110,11 +112,15 @@ export function fakeAccount({
     ),
   };
   const calls = [];
+  // Accepted deletes the registry has not collected yet, and how many first pages it has served.
+  const pending = [];
+  let firstPages = 0;
   const fetcher = async (url, options = {}) => {
     const { hostname, pathname, searchParams } = new URL(url);
     const method = options.method ?? "GET";
     const mode = options.redirect ?? "follow";
     const call = { method, host: hostname, path: pathname, url: String(url), redirect: mode };
+    if (options.headers?.Authorization) call.authorization = options.headers.Authorization;
     if (typeof options.body === "string") call.body = options.body;
     calls.push(call);
     const redirect = redirects[`${method} ${url}`];
@@ -171,11 +177,19 @@ export function fakeAccount({
     if (listing && cloudflare) {
       const name = decodeURIComponent(listing[1]);
       if (!(name in live.tags)) return json({}, { status: 404 });
-      const digests = [...live.manifests[name].keys()].sort();
+      const last = searchParams.get("last");
+      if (last === null || last === "") {
+        firstPages += 1;
+        for (const due of pending.filter((row) => row.name === name && row.at <= firstPages)) {
+          pending.splice(pending.indexOf(due), 1);
+          live.manifests[name].delete(due.digest);
+          if (due.digest === DIGEST) live.tags[name] = [];
+        }
+      }
+      const digests = [...live.manifests[name].keys(), ...(cloudflare.ghosts ?? [])].sort();
       const named = [...live.tags[name]].sort();
       const entries =
         cloudflare.order === "lexical" ? [...digests, ...named].sort() : [...digests, ...named];
-      const last = searchParams.get("last");
       const after =
         last === null || last === "" ? entries : entries.slice(entries.indexOf(last) + 1);
       const page = after.slice(0, cloudflare.pageSize ?? 5);
@@ -262,6 +276,11 @@ export function fakeAccount({
           { errors: refusal.code ? [{ code: refusal.code, message: "refused" }] : [] },
           { status: refusal.status },
         );
+      if (cloudflare.collectAfter !== undefined) {
+        if (!pending.some((row) => row.name === name && row.digest === digest))
+          pending.push({ name, digest, at: firstPages + cloudflare.collectAfter });
+        return new Response(null, init({ status: 202 }));
+      }
       manifests.delete(digest);
       if (digest === DIGEST) live.tags[name] = [];
       return new Response(null, init({ status: 202 }));
