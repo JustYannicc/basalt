@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
+import { digest } from "../../src/pool/backend-users.ts";
 import {
   sweepCheckIds,
+  sweepCheckLimitMs,
   sweepIdsPerSession,
+  sweepLateCommits,
   sweepReachIds,
 } from "../../src/pool/model-history/capture-sweep.ts";
+import { homeHistorySource } from "../../src/pool/model-history/home.ts";
 import { HistoryTimeoutFailure } from "../../src/pool/model-history/series-deadline.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { historyBatchSize } from "../../src/pool/model-history/store.ts";
@@ -333,3 +337,65 @@ test(
       assert.equal(await captured(db), 350);
     }),
 );
+
+test("rows history lacks across one session's checks share its one batch, and the rest come next session", () =>
+  fixture(async ({ db }) => {
+    await homeRows(db, 1, 100);
+    await homeRows(db, 251, 2100);
+    await homeRows(db, 2201, 4000);
+    assert.equal((await captureHomeRequests(db)).state, "active");
+    // The pages passed 150 ids in the first check's part of the range and 100 in the second's.
+    await homeRows(db, 101, 250);
+    await homeRows(db, 2101, 2200);
+    const read = await sessions(db, [0, 0, 0, 0]);
+    assert.deepEqual(
+      read.map((session) => session.inserted),
+      [0, 200, 50, 0],
+      JSON.stringify(read),
+    );
+    assert.equal(total(read), 4000, `every id checked once: ${JSON.stringify(read)}`);
+    assert.equal(await captured(db), 4000);
+  }));
+
+test("a session's checks stop at its budget, each under what is left of it", () =>
+  fixture(async ({ db }) => {
+    const rows = 4 * sweepCheckIds;
+    await sessions(db, [rows, 0]);
+    const source = await digest(homeHistorySource);
+    // Each check takes 1.1 s of the session's clock; the third is cut at the limit it was given.
+    for (const cutThird of [false, true]) {
+      const clock = { at: 0 };
+      const limits: string[] = [];
+      let checks = 0;
+      const timed: HistoryDatabase = {
+        query: async (text, values) => {
+          if (text.startsWith("SELECT set_config('statement_timeout'"))
+            limits.push(String(values![0]));
+          if (text.startsWith("WITH s AS MATERIALIZED")) {
+            clock.at += 1_100;
+            if (cutThird && ++checks === 3) {
+              await db.query("SELECT 1/0").catch(() => {});
+              throw cancelled();
+            }
+          }
+          return db.query(text, values);
+        },
+      };
+      await db.query("BEGIN");
+      const swept = await sweepLateCommits(
+        timed,
+        source,
+        { sweepId: "0", sweepUpper: String(rows), forward: String(rows), backfillUpper: "0" },
+        () => clock.at,
+      );
+      await db.query("ROLLBACK");
+      assert.deepEqual(limits, [`${sweepCheckLimitMs}ms`, "1900ms", "800ms"]);
+      assert.deepEqual(
+        [swept.checked, swept.sweepId, swept.deferred],
+        cutThird
+          ? [2 * sweepCheckIds, String(2 * sweepCheckIds), false]
+          : [3 * sweepCheckIds, String(3 * sweepCheckIds), false],
+        "a cut under what the budget left is the budget's end, not a slow check",
+      );
+    }
+  }));

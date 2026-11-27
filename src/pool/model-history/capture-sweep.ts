@@ -66,9 +66,10 @@ const checkRead = `WITH s AS MATERIALIZED (
 const larger = (a: bigint, b: bigint) => (a > b ? a : b);
 
 /**
- * One check of (from, upper] under its own savepoint and limit; "cut" when Postgres cancelled it at
- * that limit. The check reads only: rolling back to its savepoint afterwards undoes nothing but its
- * own limit, so the session's own is back either way.
+ * One check of (from, upper] under its own limit, inside the session's sweep savepoint; "cut" when
+ * Postgres cancelled it at that limit. The check reads only: rolling back to the savepoint afterwards
+ * undoes nothing but its limit, so the session's own is back either way, and the savepoint stays for
+ * the next check.
  */
 async function checkOnce(
   db: HistoryDatabase,
@@ -77,7 +78,6 @@ async function checkOnce(
   missingCap: number,
   limitMs: number,
 ) {
-  await db.query("SAVEPOINT late_commit_check");
   let row: Record<string, unknown> | undefined;
   let cut = false;
   try {
@@ -96,7 +96,6 @@ async function checkOnce(
     cut = true;
   }
   await db.query("ROLLBACK TO SAVEPOINT late_commit_check");
-  await db.query("RELEASE SAVEPOINT late_commit_check");
   if (cut) return "cut" as const;
   if (!Array.isArray(row?.missing)) return invalidHistory();
   const missing = row.missing.map(String);
@@ -115,7 +114,8 @@ async function checkOnce(
 
 /**
  * This session's sweep inside capture's first transaction: the Home rows history lacks, read in
- * full, the ids it checked, whether a check ran out its limit, and the cursor's sweep fields to store.
+ * full, the ids it checked, whether a check ran out its full limit, and the cursor's sweep fields to
+ * store.
  */
 export async function sweepLateCommits(
   db: HistoryDatabase,
@@ -141,19 +141,22 @@ export async function sweepLateCommits(
     checked = 0,
     deferred = false,
     finished = false;
+  await db.query("SAVEPOINT late_commit_check");
   for (let check = 0; check < checksPerSession && missing.length < historyBatchSize; check++) {
     const left = Math.floor(sweepCheckBudgetMs - (now() - started));
     if (left < sweepCheckFloorMs) break;
+    const limitMs = Math.min(sweepCheckLimitMs, left);
     const result = await checkOnce(
       db,
       source,
       { from, upper },
       historyBatchSize - missing.length,
-      Math.min(sweepCheckLimitMs, left),
+      limitMs,
     );
-    // Past its limit: the rest of the range stays as it was, neither skipped nor finished.
+    // Past its limit: the rest of the range stays as it was, neither skipped nor finished. Only a
+    // cut at the full limit is a slow check; one under what the budget left is the budget's end.
     if (result === "cut") {
-      deferred = true;
+      deferred = limitMs === sweepCheckLimitMs;
       break;
     }
     missing.push(...result.missing);
@@ -164,6 +167,7 @@ export async function sweepLateCommits(
       break;
     }
   }
+  await db.query("RELEASE SAVEPOINT late_commit_check");
   const read = missing.length
     ? (
         await db.query(`${homeHistorySelect} WHERE u.id = ANY($1::bigint[]) ORDER BY u.id`, [
