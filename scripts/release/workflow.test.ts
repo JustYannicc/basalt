@@ -603,6 +603,7 @@ test("a repair's fqn reaches the entry only through the environment, checked bef
   assert.equal(parsed.jobs.release.env.FQN, "${{ inputs.fqn }}");
   // Every use is a quoted shell variable; no expression puts the value into a script.
   assert.doesNotMatch(workflow, /(?<!")\$\{?FQN\b/u);
+  assert.doesNotMatch(workflow, /env\.FQN/u);
   for (const name of repairSteps)
     assert.doesNotMatch(parsedSteps.find((entry) => entry.name === name)!.run!, /\$\{\{/u, name);
   // The checkout must come first (the secrets guard), and the check straight after it.
@@ -612,8 +613,9 @@ test("a repair's fqn reaches the entry only through the environment, checked bef
 });
 
 test("the repair check refuses an empty or malformed fqn, and an apply without a coordinator GO", () => {
-  const check = (FQN: string, PLAN_DIGEST_INPUT = "", GO_INPUT = "") =>
-    runStep(repairSteps[0]!, { FQN, PLAN_DIGEST_INPUT, GO_INPUT });
+  const sha = "a".repeat(40);
+  const check = (FQN: string, PLAN_DIGEST_INPUT = "", GO_INPUT = "", CANDIDATE_INPUT = sha) =>
+    runStep(repairSteps[0]!, { FQN, PLAN_DIGEST_INPUT, GO_INPUT, CANDIDATE_INPUT });
   for (const value of [
     "",
     "a b",
@@ -629,6 +631,12 @@ test("the repair check refuses an empty or malformed fqn, and an apply without a
     "é",
     "::error::x",
     "x".repeat(129),
+    // A segment a URL path would normalise into another row.
+    "PoolContainer/../x",
+    "a/./b",
+    "a/..",
+    "a//b",
+    "a/",
   ]) {
     const result = check(value);
     assert.equal(result.status, 1, JSON.stringify(value));
@@ -643,9 +651,18 @@ test("the repair check refuses an empty or malformed fqn, and an apply without a
   assert.equal(check("RouteGateway", "digest", "yes").status, 1);
   assert.equal(check("RouteGateway", "digest", go).status, 0);
   assert.equal(check("RouteGateway", "", "").status, 0, "a plan needs no GO beyond the hold's");
-  // In the form the hold step takes it.
-  const pattern = (name: string) => /grep -Eq '([^']+)'/u.exec(step(name))?.[1];
-  assert.equal(pattern(repairSteps[0]!), pattern("Respect the release hold"));
+  // The GO is one line: junk on another line never passes beside a valid one.
+  assert.equal(check("RouteGateway", "digest", `junk\n${go}`).status, 1);
+  assert.equal(check("RouteGateway", "digest", `${go}\njunk`).status, 1);
+  // The apply runs the commit that planned it: it names the candidate, never main's head by default.
+  const unnamed = check("RouteGateway", "digest", go, "");
+  assert.equal(unnamed.status, 1);
+  assert.match(unnamed.stdout, /names the candidate its plan ran on/u);
+  assert.equal(check("RouteGateway", "", "", "").status, 0, "a plan may run on main's head");
+  // In the form the hold step takes it: the same opening pattern.
+  const opening = /\^coordinator-20\[0-9\]\{2\}-\[0-9\]\{2\}-\[0-9\]\{2\}T/u;
+  assert.match(step(repairSteps[0]!), opening);
+  assert.match(step("Respect the release hold"), opening);
 });
 
 test("a repair is a step of the release job: its production lock, environment and candidate", () => {

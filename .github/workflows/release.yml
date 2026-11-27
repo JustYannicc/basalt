@@ -182,6 +182,7 @@ jobs:
         if: env.MODE == 'repair'
         env:
           LC_ALL: C
+          CANDIDATE_INPUT: ${{ inputs.candidate }}
         run: |
           if [ -z "$FQN" ]; then
             echo "::error::A repair needs the fqn input: the container row a stopped apply left holding a placeholder."
@@ -189,15 +190,27 @@ jobs:
           fi
           # Matched against the whole value, newlines included; a leading dash would read as a flag.
           plain='^[A-Za-z0-9_][A-Za-z0-9_./-]{0,127}$'
-          if ! [[ "$FQN" =~ $plain ]]; then
-            echo "::error::fqn is not a plain row name: a letter, digit or _, then letters, digits and _ . / -, at most 128 characters."
+          # No empty, `.` or `..` segment: a State backend that puts the fqn in a URL path would
+          # normalise one into another stack's or stage's row.
+          segment='(^|/)\.{1,2}(/|$)|//|/$'
+          if ! [[ "$FQN" =~ $plain ]] || [[ "$FQN" =~ $segment ]]; then
+            echo "::error::fqn is not a plain row name: a letter, digit or _, then letters, digits and _ . / -, at most 128 characters, with no empty, . or .. segment."
             exit 1
           fi
-          # A repair apply writes production State, so it carries the GO whether or not the hold is set,
-          # in the form the hold step takes.
-          if [ -n "$PLAN_DIGEST_INPUT" ] && ! printf '%s' "$GO_INPUT" | grep -Eq '^coordinator-20[0-9]{2}-[0-9]{2}-[0-9]{2}T'; then
-            echo "::error::A repair apply writes production State: it needs a coordinator GO in the go input."
-            exit 1
+          if [ -n "$PLAN_DIGEST_INPUT" ]; then
+            # A repair apply writes production State, so it carries the GO whether or not the hold is
+            # set, in the form the hold step takes, on one line.
+            go='^coordinator-20[0-9]{2}-[0-9]{2}-[0-9]{2}T[^[:cntrl:]]*$'
+            if ! [[ "$GO_INPUT" =~ $go ]]; then
+              echo "::error::A repair apply writes production State: it needs a coordinator GO in the go input, on one line."
+              exit 1
+            fi
+            # The digest covers the plan's facts, not the code that writes the row: the apply runs the
+            # commit that planned it, named, never whatever main's head is by then.
+            if [ -z "$CANDIDATE_INPUT" ]; then
+              echo "::error::A repair apply names the candidate its plan ran on: pass the same candidate the plan's summary names."
+              exit 1
+            fi
           fi
       - name: Respect the release hold
         env:
