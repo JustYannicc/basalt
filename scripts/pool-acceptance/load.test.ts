@@ -207,8 +207,8 @@ test("the shape ramps in steps, rotates its mix by weight and carries each kind'
   else assert.throws(() => parseLoadShape(unstreamed), /non-streamed/u);
 });
 
-test("an answer the pass rule cannot read fails its call, stops the run and still leaves every artifact", async () => {
-  // `data: null` makes the shapes' verdict throw on a null frame.
+test("an answer the pass rule reads as an error fails its call, stops the run and still leaves every artifact", async () => {
+  // The shapes read a frame that is not a JSON object, such as `data: null`, as an error event.
   const frames = streams["/v1/chat/completions"]!("OK");
   frames.splice(1, 0, "data: null\n\n");
   const pool = await stage([streamed({ body: frames.join("") }), streamed()]);
@@ -238,13 +238,13 @@ test("an answer the pass rule cannot read fails its call, stops the run and stil
     const failed = calls.filter((call) => !call.pass);
     assert.equal(failed.length, 1);
     assert.deepEqual(failed[0].classes, ["failed"]);
-    assert.equal(failed[0].attempts[0].verdict.reason, "verdict threw");
+    assert.equal(failed[0].attempts[0].verdict.reason, "error event");
     const run = JSON.parse(await readFile(join(directory, "run.json"), "utf8"));
     assert.equal(run.verdict.passed, false);
     assert.equal(run.verdict.firstFailure, failed[0].call);
     assert.match(
       await readFile(join(directory, "summary.txt"), "utf8"),
-      /^load stopped_by call=\d+ kind=chat-short classes=failed attempts=1 status=200 end=complete reason=verdict_threw$/mu,
+      /^load stopped_by call=\d+ kind=chat-short classes=failed attempts=1 status=200 end=complete reason=error_event$/mu,
     );
   } finally {
     pool.close();

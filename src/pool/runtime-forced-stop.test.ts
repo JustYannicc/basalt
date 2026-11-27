@@ -15,7 +15,7 @@ import {
   unservingBoundMs,
 } from "./runtime-slots/forced-restart-timing.ts";
 import { poolLifecycle } from "./lifecycle.ts";
-import { policyHealthLeaseMs } from "./runtime-health.ts";
+import { policyHealthLeaseMs, readRuntimeLiveness } from "./runtime-health.ts";
 import { SlotRefused, type SlotIdentity } from "./runtime-slots/contract.ts";
 import { RuntimeActivity } from "./runtime-slots/activity.ts";
 import type { TransactionStorage } from "./runtime-slots/storage.ts";
@@ -209,6 +209,92 @@ test("a boot that answers ready in time is never stopped, and one that answers l
     else await assert.rejects(result, (error) => error instanceof SlotRefused, name);
     assert.deepEqual(signals, stops ? [15] : [], name);
   }
+});
+
+/** The liveness read over a readiness port that answers `status` with `body`. */
+const answering =
+  (status: 200 | 503, body: Record<string, unknown>) =>
+  (_identity: SlotIdentity, signal: AbortSignal) =>
+    readRuntimeLiveness(
+      {
+        fetch: async () =>
+          Response.json({ boot_id: selected.bootId, started_at: "started", ...body }, { status }),
+      },
+      "synthetic-management",
+      signal,
+    );
+const stuckStart = { identity: selected, authorization: { kind: "start" } };
+const draining = (error: unknown) => error instanceof SlotRefused && error.reason === "draining";
+
+test("a stop waits while the readiness answer it reads reports a refresh in flight", async (context) => {
+  const cases: [string, 200 | 503, number][] = [
+    ["a refusal reporting one", 503, 1],
+    ["a late ready answer reporting two", 200, 2],
+  ];
+  for (const [name, status, count] of cases) {
+    const { stop, signals } = stopper(
+      context,
+      stuckStart,
+      async () => ({}),
+      undefined,
+      answering(status, { refresh_in_flight: count }),
+    );
+    await assert.rejects(
+      stop.stop(selected, Date.now() - aliveRefusingMs, AbortSignal.timeout(5_000)),
+      draining,
+      name,
+    );
+    assert.deepEqual(signals, [], name);
+  }
+});
+
+test("a stop goes ahead when the answer reports no refresh in flight or no usable count", async (context) => {
+  const cases: [string, 200 | 503, Record<string, unknown>][] = [
+    ["none in flight", 503, { refresh_in_flight: 0 }],
+    ["an image that reports no count", 503, {}],
+    ["a late ready answer without a count", 200, {}],
+    ["a negative count", 503, { refresh_in_flight: -1 }],
+    ["a fraction", 503, { refresh_in_flight: 1.5 }],
+    ["text", 503, { refresh_in_flight: "1" }],
+    ["a flag", 503, { refresh_in_flight: true }],
+    ["past a safe integer", 503, { refresh_in_flight: 2 ** 60 }],
+  ];
+  for (const [name, status, body] of cases) {
+    const { stop, signals } = stopper(
+      context,
+      stuckStart,
+      async () => ({}),
+      undefined,
+      answering(status, body),
+    );
+    const result = await stop.stop(
+      selected,
+      Date.now() - aliveRefusingMs,
+      AbortSignal.timeout(5_000),
+    );
+    assert.deepEqual(result, { stopped: true, hard: false }, name);
+    assert.deepEqual(signals, [15], name);
+  }
+});
+
+test("a refresh that never ends holds a stop for one stop grace from its first wait, then not", async (context) => {
+  let now = Date.now();
+  context.mock.method(Date, "now", () => now);
+  const { stop, signals } = stopper(
+    context,
+    stuckStart,
+    async () => ({}),
+    undefined,
+    answering(503, { refresh_in_flight: 1 }),
+  );
+  const attempt = () => stop.stop(selected, now - aliveRefusingMs, AbortSignal.timeout(5_000));
+  await assert.rejects(attempt(), draining, "the first answer starts the wait");
+  now += forcedStopGraceMs - 1;
+  await assert.rejects(attempt(), draining, "still inside one stop grace");
+  assert.deepEqual(signals, []);
+  now += 1;
+  assert.deepEqual(await attempt(), { stopped: true, hard: false });
+  assert.deepEqual(signals, [15], "SIGTERM still gives Home its drain");
 });
 
 test("a caller that gives up during the liveness read stops nothing", async (context) => {

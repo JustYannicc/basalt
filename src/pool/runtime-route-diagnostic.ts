@@ -75,7 +75,7 @@ const reasonHeader = "X-Signalbox-Runtime-Failure-Reason";
 const causeHeader = "X-Signalbox-Runtime-Failure-Cause";
 // The readiness answer's signals as the sender decoded them; the receiver decodes them again.
 const readyHeader = "X-Signalbox-Runtime-Failure-Ready";
-// Every closed value together fits in 257 characters; anything much longer was never ours.
+// Every closed value together fits in 462 characters; anything much longer was never ours.
 const readyHeaderLength = 1_024;
 // Preserve exception identity and existing refusal/replay handling; only closed metadata crosses the binding.
 const observed = new WeakMap<object, RuntimeRouteDiagnostic>();

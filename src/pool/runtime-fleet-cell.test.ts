@@ -280,7 +280,9 @@ test("a never-served start is abandoned only once its instance stayed absent thr
   const f = await fixture();
   context.after(f.cleanup);
   context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  await f.cell.start(f.target);
+  // Its activation is refused: a start that activated is admitted instead, never abandoned.
+  f.transport.refuse["/attest"] = "uncertain";
+  await assert.rejects(f.cell.start(f.target));
   assert.equal(await f.cell.abandon(f.target), false, "a listed instance is running");
   // The container exits on its own, and the provider keeps listing it as inactive.
   await f.ctx.container!.destroy();
@@ -342,4 +344,56 @@ test("a start already in flight when the fence lands is still covered by the abs
   assert.equal(await replaced.abandon(f.target), false, "the wait starts once the fence held");
   context.mock.timers.tick(startingBoundMs);
   assert.equal(await replaced.abandon(f.target), true);
+});
+
+test("a cell's retire read and absence wait only on a sibling the ledger doesn't count", async (context) => {
+  context.mock.method(console, "info", () => {});
+  const f = await fixture();
+  context.after(f.cleanup);
+  const selected = await f.cell.start(f.target);
+  assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
+  f.sibling("provisioning");
+  await assert.rejects(
+    f.cell.retire(selected, async () => {}),
+    /provider observation refused/,
+  );
+  assert.equal(f.calls.destroy, 0, "an uncounted start holds the release before it begins");
+  f.sibling("provisioning", true);
+  assert.equal(await f.cell.retire(selected, async () => {}), true, "a counted one holds nothing");
+  assert.equal(f.calls.destroy, 1);
+  f.sibling("stopping");
+  assert.equal(await f.cell.retired(selected), false, "an uncounted stop holds the absence");
+  f.sibling("stopping", true);
+  assert.equal(await f.cell.retired(selected), true);
+});
+
+test("a crashed cell's absence waits only on a sibling the ledger doesn't count", async (context) => {
+  context.mock.method(console, "info", () => {});
+  const f = await fixture();
+  context.after(f.cleanup);
+  const selected = await f.cell.start(f.target);
+  await f.ctx.container!.destroy();
+  f.sibling("stopping");
+  assert.equal(await f.cell.failed(selected, 0), false);
+  f.sibling("stopping", true);
+  assert.equal(await f.cell.failed(selected, 0), true);
+});
+
+test("an abandoned start's absence wait runs only while no sibling the ledger doesn't count may start", async (context) => {
+  context.mock.method(console, "info", () => {});
+  const f = await fixture();
+  context.after(f.cleanup);
+  context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  // Its activation is refused: a start that activated is admitted instead, never abandoned.
+  f.transport.refuse["/attest"] = "uncertain";
+  await assert.rejects(f.cell.start(f.target));
+  await f.ctx.container!.destroy();
+  f.sibling("provisioning");
+  assert.equal(await f.cell.abandon(f.target), false);
+  context.mock.timers.tick(startingBoundMs);
+  assert.equal(await f.cell.abandon(f.target), false, "every read was refused, so no wait ran");
+  f.sibling("provisioning", true);
+  assert.equal(await f.cell.abandon(f.target), false, "the wait starts with the first absent read");
+  context.mock.timers.tick(startingBoundMs);
+  assert.equal(await f.cell.abandon(f.target), true);
 });

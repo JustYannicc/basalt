@@ -190,7 +190,7 @@ const program = Effect.gen(function* () {
       diagnostics,
       directory,
     });
-    yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
+    yield* accountTrafficPrivacyProof({ h, database, browser, check, diagnostics, directory });
     return {
       complete: true,
       accountsProved: true,
@@ -967,7 +967,7 @@ const program = Effect.gen(function* () {
     diagnostics.pool = { proved: true, widths: [1280, 390], engine: h.fixture.scoped.engine };
   }
   yield* accountTrafficProof({ h, database, browser, pool, saved, check, diagnostics, directory });
-  yield* accountTrafficPrivacyProof({ h, browser, check, diagnostics, directory });
+  yield* accountTrafficPrivacyProof({ h, database, browser, check, diagnostics, directory });
   check("browser has no uncaught product error", (diagnostics.pageErrors ??= []), []);
   return {
     complete: !accountsOnly,
@@ -990,6 +990,7 @@ try {
       complete: report.complete,
       accountsProved: true,
       poolProved: report.poolProved,
+      notProved: report.diagnostics.notProved ?? [],
       directory,
     }),
   );

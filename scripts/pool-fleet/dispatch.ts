@@ -4,7 +4,7 @@ import { Effect, Option, Result, Schema } from "effect";
 import type { PoolAccess } from "../pool-acceptance/types.ts";
 import type { ModelAuth, PoolAcceptanceClient } from "../pool-acceptance/client.ts";
 import { dependenciesFromEnvironment, dispatchInput } from "./environment.ts";
-import { rootServes, runFleetAcceptance } from "./accept.ts";
+import { quotaRefused, rootServes, runFleetAcceptance } from "./accept.ts";
 import { poolWorkerName, type CloudflareAccess } from "./cloudflare.ts";
 import {
   inspectController,
@@ -31,10 +31,12 @@ import {
   configureFleet,
   configureOperationId,
   disableFleet,
+  handoverLeft,
   retireRow,
   step,
   untilSettled,
   waitForReadyCell,
+  type SettleWait,
 } from "./operations.ts";
 
 export const modes = [
@@ -48,7 +50,8 @@ export const modes = [
   "retire-check",
 ] as const;
 type Mode = (typeof modes)[number];
-const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
+/** A coordinator GO; the release re-commits the fleet only under one (`scripts/release/fleet-recommit.ts`). */
+export const goPattern = /^coordinator-20\d\d-[A-Za-z0-9-]{1,96}$/u;
 
 export interface DispatchInput {
   mode: string;
@@ -58,6 +61,8 @@ export interface DispatchInput {
   key?: string;
   /** configure-and-accept only: the growth target to configure, 1 to 100,000. */
   targetActive?: string;
+  /** configure-and-accept from a release only: a fleet that is off stays off, and nothing is sent. */
+  enabledOnly?: boolean;
   ref: string;
   event: string;
 }
@@ -121,6 +126,13 @@ const recoverySummary = (value: unknown) =>
         step: refusal.step === undefined ? null : word(refusal.step),
         class: word(refusal.class),
         provider: refusal.provider === undefined ? null : word(refusal.provider),
+        read: typeof refusal.read === "string" ? word(refusal.read) : null,
+        status:
+          refusal.status !== undefined && Number.isSafeInteger(refusal.status)
+            ? refusal.status
+            : null,
+        field: refusal.field === undefined ? null : word(refusal.field),
+        state: refusal.state === undefined ? null : word(refusal.state),
       })),
     })),
   );
@@ -131,8 +143,10 @@ const readySummary = (value: unknown) => {
     ? {
         lastLapse: ready.lastLapse ?? null,
         lastFlip: ready.lastFlip ?? null,
+        lastStall: ready.lastStall ?? null,
         lapses: ready.lapses ?? null,
         flips: ready.flips ?? null,
+        stalls: ready.stalls ?? null,
       }
     : null;
 };
@@ -280,25 +294,55 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     const worker = yield* poolWorkerName(deps.cloudflare);
     const access = deps.controller(worker);
     const evidence: Record<string, unknown> = { controllerCode: access.code };
+    // inspect and retire-check send nothing, so their probe waits out the controller's code handover
+    // too, but only for what's left of it since the PoolWorker's latest deployment: the lane holds
+    // the release lock, and a wait no handover can end would only hold it. Unread waits for nothing.
+    const readOnly = mode === "inspect" || mode === "retire-check";
+    const window = readOnly ? yield* handoverLeft(deps.cloudflare, worker, deps.now) : undefined;
     // configure-and-accept may run right after a deploy: every read before its send shares one wait
     // for the controller's code handover.
     const settle = { clock: { sleep: deps.sleep, now: deps.now }, from: deps.now() };
+    const probeSettle =
+      mode === "configure-and-accept"
+        ? settle
+        : typeof window === "number" && window > 0
+          ? { ...settle, boundMs: window * 1000 }
+          : undefined;
+    const waits: SettleWait[] = [];
     // Signing uses this checkout's generated code (git HEAD at prepare time); say so when it is stale.
     const probe = yield* Effect.result(
-      mode === "configure-and-accept"
+      probeSettle
         ? untilSettled(
-            settle,
+            probeSettle,
             access,
             step("probe", () => inspectController(access)).pipe(Effect.map((value) => ({ value }))),
+            readOnly ? (wait) => waits.push(wait) : undefined,
           )
         : call(() => inspectController(access)),
     );
-    if (Result.isFailure(probe))
-      return yield* Effect.fail(
-        /slot_identity/u.test(describeError(probe.failure))
-          ? codeMismatch(access, false)
-          : probe.failure,
+    if (readOnly && (waits.length || Result.isFailure(probe))) {
+      const probeWait = {
+        window,
+        seconds: Math.round((deps.now() - settle.from) / 1000),
+        reads: waits.length + 1,
+        for: waits,
+      };
+      evidence.probeWait = probeWait;
+      deps.log(
+        `probe_wait window=${window} seconds=${probeWait.seconds} reads=${probeWait.reads} for=${waits.join(",")}`,
       );
+    }
+    // Once the probe logged its wait, every failure of the run keeps it.
+    const keepingWait = <A, E>(work: Effect.Effect<A, E>) =>
+      "probeWait" in evidence
+        ? work.pipe(Effect.mapError((failure) => ({ cause: describeError(failure), evidence })))
+        : work;
+    if (Result.isFailure(probe)) {
+      const failure = /slot_identity/u.test(describeError(probe.failure))
+        ? codeMismatch(access)
+        : probe.failure;
+      return yield* keepingWait(Effect.fail(failure));
+    }
     const read = () =>
       Effect.gen(function* () {
         const view = yield* call(() => inspectController(access));
@@ -348,7 +392,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
             ? "full"
             : "device-only (no dedicated acceptance pool)";
       deps.log(`acceptance=${acceptance}`);
-      return { ...evidence, acceptance, ...(yield* read()) };
+      return { ...evidence, acceptance, ...(yield* keepingWait(read())) };
     }
     if (mode === "disable") return { ...evidence, disable: yield* disableFleet(access, input.go) };
     if (mode === "retire-row") {
@@ -362,7 +406,7 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
       return { ...evidence, before, retired, warning, after: named((yield* read()).fleet) };
     }
     if (mode === "retire-check") {
-      const check = yield* checkRetireRow(access, input.key ?? "");
+      const check = yield* keepingWait(checkRetireRow(access, input.key ?? ""));
       deps.log(
         check.wouldProceed
           ? "retire-row would proceed"
@@ -450,9 +494,11 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
           sending: () => {
             touched = true;
           },
+          ...(input.enabledOnly ? { enabledOnly: true } : {}),
         });
-        touched = true;
         evidence.configure = configured;
+        if (configured.status === "fleet-disabled" || configured.status === "fleet-absent") return;
+        touched = true;
         evidence.ready = yield* waitForReadyCell({
           controller: access,
           demand: () => acceptance.client.modelCatalog(acceptance.credential),
@@ -468,6 +514,20 @@ const program = (input: DispatchInput, deps: DispatchDependencies) =>
     if (!touched) {
       deps.log(`configure_and_accept status=failed before any send; the fleet is as it was`);
       return yield* Effect.fail({ cause, rollback: { skipped: "nothing-sent" }, evidence });
+    }
+    // Every acceptance model refused for funding: Home's decision from the pool's accounts, which a
+    // cell answers as the root would, so the permission stays in force, unproven, and the run fails
+    // loudly. A `model_cooldown` refusal can be the cell's own node and disables, as a cell that
+    // fails to serve does (accept.ts).
+    if (attempt.failure instanceof FleetLaneRefused && attempt.failure.reason === quotaRefused) {
+      deps.log(
+        `configure_and_accept status=unproven; every acceptance model was refused for funding`,
+      );
+      return yield* Effect.fail({
+        cause,
+        rollback: { skipped: "quota-refused: the permission stays in force, unproven" },
+        evidence,
+      });
     }
     deps.log(`configure_and_accept status=failed; disabling the fleet`);
     const rollback = yield* Effect.result(
@@ -504,8 +564,12 @@ export async function runPoolFleet(input: DispatchInput, deps: DispatchDependenc
       secrets,
     );
   const failure = outcome.failure;
+  // A configure failure carries its rollback and evidence; a probe that waited, its evidence.
   const detail =
-    failure !== null && typeof failure === "object" && "cause" in failure && "rollback" in failure
+    failure !== null &&
+    typeof failure === "object" &&
+    "cause" in failure &&
+    ("rollback" in failure || "evidence" in failure)
       ? failure
       : { cause: describeError(failure) };
   return redact({ mode: input.mode, go: input.go, startedAt, ok: false, ...detail }, secrets);

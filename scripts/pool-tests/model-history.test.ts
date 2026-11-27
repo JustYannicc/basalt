@@ -104,7 +104,9 @@ test("request history backfills explicitly, survives restarts and late commits, 
     await add(db, randomUUID());
     await captureHomeRequests(db);
     await late.query("COMMIT");
-    // Another connection models the next process; only the database cursor carries progress.
+    // Another connection models the next process; only the database cursor carries progress. The
+    // sweep checks the ids one session's pages passed two sessions later.
+    await captureHomeRequests(late);
     await captureHomeRequests(late);
     assert.equal(
       (await db.query("SELECT count(*)::text AS n FROM basalt_model_requests")).rows[0].n,
@@ -200,7 +202,7 @@ test("request history backfills explicitly, survives restarts and late commits, 
         )
       ).rows[0].n,
       "1",
-      "a fixed sweep horizon wraps despite sustained traffic above its page rate",
+      "the sweep checks the ids the pages passed despite sustained traffic above its page rate",
     );
   } finally {
     await late.query("ROLLBACK").catch(() => {});

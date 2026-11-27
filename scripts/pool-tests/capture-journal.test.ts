@@ -6,7 +6,7 @@ import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/i
 import { backendUserName } from "../../src/pool/backend-users.ts";
 import { activateHomeBackfill, planHomeBackfill } from "../../src/pool/model-history/activation.ts";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
-import { historyBatchSize, historyForwardPages } from "../../src/pool/model-history/store.ts";
+import { historyBatchSize } from "../../src/pool/model-history/store.ts";
 import {
   deliverPoolHistoryChanges,
   readPoolHistoryChanges,
@@ -127,20 +127,30 @@ function recorded(db: HistoryDatabase, before?: (sql: string) => void) {
   return { wrapper, statements };
 }
 
-test("one capture run takes exactly the forward bound the reliability objective allows", () =>
+test("a capture session takes every forward page until Home is drained, five statements a page", () =>
   fixture(async (db) => {
-    const run = historyForwardPages * historyBatchSize;
+    const backlog = 3 * historyBatchSize + 50;
     await addUsage(db, 1);
     await activateHomeBackfill(db, await planHomeBackfill(db));
     await db.query(
       `INSERT INTO usage(id,timestamp,request_id,api_key)
       SELECT n,'2026-01-01T00:00:00Z','attempt-' || n,$1 FROM generate_series(2,$2::int) n`,
-      [fingerprint, run + 2],
+      [fingerprint, backlog + 1],
     );
-    await captureHomeRequests(db);
-    assert.equal((await durable(db)).cursor[0]?.forward_id, String(1 + run));
-    await captureHomeRequests(db);
-    assert.equal((await durable(db)).cursor[0]?.forward_id, String(run + 2));
+    const { wrapper, statements } = recorded(db);
+    const result = await captureHomeRequests(wrapper);
+    assert.equal(result.state === "active" && result.caughtUp, true);
+    assert.equal(result.state === "active" && result.pages, 4);
+    assert.equal(result.state === "active" && result.fresh, backlog);
+    assert.equal((await durable(db)).cursor[0]?.forward_id, String(backlog + 1));
+    // Each page is its own transaction: BEGIN, its limits, the locked read, the write with the
+    // cursor, COMMIT. The limits have their own statement so that they cover the read.
+    const pages = statements.slice(statements.indexOf("COMMIT") + 1);
+    const projection = pages.indexOf("BEGIN ISOLATION LEVEL READ COMMITTED");
+    assert.deepEqual(
+      pages.slice(0, projection).map((sql) => sql.split(" ")[0]),
+      Array.from({ length: 4 }, () => ["BEGIN", "SELECT", "WITH", "WITH", "COMMIT"]).flat(),
+    );
   }));
 
 test("activated journal leaves unchanged inactive capture at five statements", () =>
@@ -197,8 +207,8 @@ test("capture commits history and cursor before projection failure and a fresh c
         backfill_upper: "1",
         backfill_id: "1",
         backfill_complete: true,
-        sweep_id: "0",
-        sweep_upper: "0",
+        sweep_id: "1",
+        sweep_upper: "1",
       },
     ]);
     assert.deepEqual(await queueState(db), {

@@ -5,9 +5,12 @@ import { boxIsUp, githubObserver, waveSlowdown } from "./box-router.ts";
 
 // box-watch, in a Check's first attempt that routed jobs to the box: once every box job select
 // named has started, it is done. A job queued for the box can't move to GitHub's runners, so if the
-// box is down, or holds a job past the latest start that still ends by the Check's floor, it writes
-// a verdict and the run is cancelled; box-rerun.yml then re-runs the stuck jobs on GitHub's runners.
-// It fails open: when GitHub can't be read it never cancels.
+// box is down, or holds a job past its latest start (one that still ends by the Check's floor, or for
+// a job waiting out a saturated hosted queue, that queue's wait), it writes a verdict and the run is
+// cancelled; box-rerun.yml then re-runs the stuck jobs on GitHub's runners.
+// So does a box job GitHub ended as cancelled before any runner took it while the rest of the run
+// goes on: a job handed to a runner in the seconds it went offline waits for it, and GitHub
+// cancels it after about 13 minutes. It fails open: when GitHub can't be read it never cancels.
 
 /** The box may show no healthy heartbeat this long, after box-watch's own probe, before it is down. */
 export const downMinutes = 5;
@@ -17,6 +20,9 @@ export const holdingMinutes = 5;
 export const watchMinutes = 40;
 const minute = 60_000;
 const notStarted = new Set(["queued", "waiting", "pending", "requested"]);
+/** A job no runner has taken: queued, or shown in progress before GitHub names its runner. */
+const waiting = (job: WatchedJob) =>
+  notStarted.has(job.status) || (job.status === "in_progress" && job.ran === false);
 
 export type WatchedJob = {
   id: number;
@@ -25,6 +31,12 @@ export type WatchedJob = {
   onBox: boolean;
   /** When GitHub queued the job, once its needs were met; missing, select's end stands in. */
   createdAt?: number;
+  /** GitHub ended it as cancelled with no runner: it never started anywhere. */
+  lost?: boolean;
+  /** It ended as cancelled, with or without a runner. */
+  cancelled?: boolean;
+  /** GitHub names the runner that took it; read only when listed, so a fixture may leave it out. */
+  ran?: boolean;
 };
 export type Verdict = {
   run: number;
@@ -36,7 +48,11 @@ export type Verdict = {
   cutOff: number[];
   at: string;
 };
-export type Planned = { minutes: number; wave: 1 | 2 };
+/**
+ * A box job's plan from select. `by`: it waits on the box because the hosted queue was saturated,
+ * and must start within the minutes a hosted runner was then taking to start a job.
+ */
+export type Planned = { minutes: number; wave: 1 | 2; by?: number };
 export type WatchInput = {
   jobs: readonly WatchedJob[];
   /** The box jobs select named, by job name, with their planned hosted minutes and wave. */
@@ -54,18 +70,37 @@ export type WatchInput = {
 };
 
 /**
- * The minute after select by which a box job must have started: as long as it still ends by the
- * floor at the keep rule's pace, plus the margin. Past it the job fails the pass rule anyway, so
- * running it on GitHub's runners is the faster way to end the Check.
+ * The minute after it was queued by which a box job must have started: as long as it still ends by
+ * the floor at the keep rule's pace, plus the margin. Past it the job fails the pass rule anyway, so
+ * running it on GitHub's runners is the faster way to end the Check. A job that waits on the box
+ * for a saturated hosted queue must start no later than a hosted runner would have, plus the margin.
  */
-export const latestStart = ({ minutes }: Planned, floorMinutes: number) =>
-  Math.max(0, floorMinutes - minutes * waveSlowdown) + holdingMinutes;
+export const latestStart = ({ minutes, by }: Planned, floorMinutes: number) =>
+  Math.max(0, floorMinutes - minutes * waveSlowdown, by ?? 0) + holdingMinutes;
 
 /** The job name GitHub shows for a box_jobs id: a declared shard's own, a leg as `job (leg)`. */
 export const jobName = (id: string) => {
   const [job, leg] = id.split(":");
   return leg === undefined ? job! : `${job} (${leg})`;
 };
+
+/** A job as box-watch reads it from GitHub's job list. */
+export function watchedJob(job: Record<string, unknown>, label: string): WatchedJob {
+  const cancelled = job.status === "completed" && job.conclusion === "cancelled";
+  return {
+    id: Number(job.id),
+    name: String(job.name),
+    status: String(job.status),
+    onBox:
+      Array.isArray(job.labels) &&
+      job.labels.some((value) => String(value).toLowerCase() === label),
+    createdAt: Date.parse(String(job.created_at ?? "")) || undefined,
+    // GitHub reports a job no runner took as runner "" (id 0); a cancelled job that ran has one.
+    lost: cancelled && !job.runner_name,
+    cancelled,
+    ran: !!job.runner_name,
+  };
+}
 
 export function watchDecision(
   input: WatchInput,
@@ -74,16 +109,46 @@ export function watchDecision(
   const names = Object.keys(input.planned);
   // A box job not listed yet still waits for its own needs; box-watch waits for it too.
   const missing = names.filter((name) => !listed.has(name));
+  // Queued box jobs: the ones a verdict may name, since box-rerun accepts only jobs no runner
+  // took. One GitHub shows in progress before naming its runner keeps box-watch from finishing,
+  // but a verdict never names it: it may have been taken, and the lost rule catches it if not.
   const stuck = names
     .map((name) => listed.get(name))
     .filter((job): job is WatchedJob => !!job && job.onBox && notStarted.has(job.status));
-  if (!missing.length && !stuck.length) return { action: "done" };
+  const unseated = names
+    .map((name) => listed.get(name))
+    .filter((job): job is WatchedJob => !!job && job.onBox && waiting(job));
+  // A cancel of the whole run cancels every job that hadn't ended, box or not; a lost box job is
+  // one GitHub cancelled alone, while no other job was cancelled with it.
+  const lost = names
+    .map((name) => listed.get(name))
+    .filter((job): job is WatchedJob => !!job && job.onBox && !!job.lost);
+  const runCancelled = input.jobs.some((job) => job.cancelled && !job.onBox);
+  if (lost.length && !runCancelled)
+    return {
+      action: "cancel",
+      verdict: {
+        run: input.run,
+        attempt: input.attempt,
+        reason: "held-past-deadline",
+        // Only the lost jobs: box-rerun re-runs every cancelled job anyway, and a queued one the
+        // listing shows here may have started since, which would void the verdict.
+        stuck: lost.map((job) => job.id),
+        cutOff: input.jobs
+          .filter((job) => job.status === "in_progress" && job.name !== input.self)
+          .map((job) => job.id),
+        at: new Date(Math.floor(input.now / 1000) * 1000).toISOString(),
+      },
+    };
+  if (!missing.length && !unseated.length) return { action: "done" };
   // Each job's deadline counts from when it was queued: a busy GitHub queue for the jobs it needs
   // delays it, the floor and the Check alike. A second-wave job held behind this Check's own running
   // box jobs waits by design; a first-wave one should have started at once, so its deadline holds.
   const working = input.jobs.some((job) => job.onBox && job.status === "in_progress");
   const late = stuck.filter((job) => {
     const planned = input.planned[job.name]!;
+    // Behind this Check's own running box jobs a second wave waits by design, a saturated queue's
+    // too: cancelling the run then would restart every job it is running.
     if (working && planned.wave === 2) return false;
     const queued = job.createdAt ?? input.selectedAt;
     const waited = (input.now - queued) / minute;
@@ -151,6 +216,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   };
   const started = Date.now();
   let failingSince: number | undefined;
+  // Whether the cancel decided is for a box job GitHub ended with no runner.
+  let lastLost = false;
   let notUpSince: number | undefined;
   let probedAt = 0;
   const say = (line: string) => {
@@ -170,18 +237,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const selectedAt = Date.parse(
         String(jobs.find((job) => job.name === "select")?.completed_at ?? ""),
       );
-      const watched = jobs.map((job) => ({
-        id: Number(job.id),
-        name: String(job.name),
-        status: String(job.status),
-        onBox:
-          Array.isArray(job.labels) &&
-          job.labels.some((value) => String(value).toLowerCase() === label),
-        createdAt: Date.parse(String(job.created_at ?? "")) || undefined,
-      }));
-      const stuck = watched.some(
-        (job) => job.name in planned && job.onBox && notStarted.has(job.status),
-      );
+      const watched = jobs.map((job) => watchedJob(job, label));
+      const stuck = watched.some((job) => job.name in planned && job.onBox && waiting(job));
       // The box's health is read only while one of its jobs waits. A stale heartbeat may only mean
       // no Check started lately, so box-watch dispatches its own and counts the box down only when
       // that probe brings back no healthy heartbeat; one it can't read is unknown, never down.
@@ -221,6 +278,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         attempt,
         self: "box-watch",
       });
+      lastLost =
+        decision.action === "cancel" &&
+        decision.verdict.stuck.some((id) => watched.find((job) => job.id === id)?.lost);
       failingSince = undefined;
     } catch (error) {
       // GitHub answering badly is no reason to cancel anything: retry, then give up quietly.
@@ -243,7 +303,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       const why =
         verdict.reason === "box-down"
           ? `the box has shown no healthy heartbeat for ${downMinutes} minutes, even after box-watch dispatched one`
-          : "the box still held one past the latest start that ends by the Check's floor";
+          : lastLost
+            ? "GitHub cancelled one that no runner ever took, as it does with a job handed to a runner that went offline"
+            : "the box still held one past its latest start";
       say(
         `box-watch: ${verdict.stuck.length} box jobs never started, because ${why}; cancelling this run so box-rerun.yml runs them on GitHub's runners.`,
       );

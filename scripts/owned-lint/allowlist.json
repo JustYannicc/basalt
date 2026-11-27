@@ -111,6 +111,12 @@
       "reason": "Decodes Basalt's own stop receipt."
     }
   },
+  "landmines-testing/no-flake-masking": {
+    "scripts/import-cpamp-bulk.test.ts": {
+      "count": 1,
+      "reason": "The real hold of more than 30 s is the proof for carry 0655; a shorter hold would prove a constant."
+    }
+  },
   "landmines-testing/no-test-doubles": {
     "scripts/release/wire-guard-domain.test.ts": {
       "count": 2,
