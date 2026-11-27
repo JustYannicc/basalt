@@ -1,7 +1,7 @@
 diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 --- a/e2e/support/autumn-emulator.ts
 +++ b/e2e/support/autumn-emulator.ts
-@@ -1,80 +1,149 @@
+@@ -1,80 +1,196 @@
  /**
 - * The Autumn billing emulator a local Cloud runs beside itself when CI provides one, so billing
 - * never waits on a shared outside service. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI;
@@ -11,8 +11,12 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 + * and WorkOS. `BASALT_E2E_AUTUMN_EMULATOR` names the `emulate` CLI; without it, every service uses
 + * the hosted emulator exactly as before.
   */
+-import { Effect, FileSystem, Schedule, Stream } from "effect";
++import { mkdirSync, rmSync } from "node:fs";
 +import { createServer } from "node:net";
- import { Effect, FileSystem, Schedule, Stream } from "effect";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { Effect, Exit, FileSystem, Schedule, Scope, Stream } from "effect";
  import { HttpClient } from "effect/http";
  import { ChildProcess, ChildProcessSpawner } from "effect/process";
  import { outputLines } from "./alchemy-dev-output.ts";
@@ -27,12 +31,32 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 - * `undefined` when this run uses the hosted one. emulate has no host option, so it listens on every
 - * interface; only its address is loopback. Its output goes to `autumn-emulator.log`; closing the
 - * scope stops the process this started.
-+ * Ports come from below every OS's ephemeral range (Linux starts at 32768, macOS at 49152). The
-+ * Cloud and its tools take ephemeral ports they probe and bind later, so a block taken from that
-+ * range can be claimed by one of them between this check and emulate's bind.
++ * Emulator ports are given out so no other process in the stack can be handed one, rather than
++ * probed and hoped for. emulate builds each service with its port and base URL before it binds,
++ * so it can neither bind port 0 and report it nor take over a held socket. Instead:
++ *
++ * - Every other port in a local stack comes from the OS's ephemeral range: the Cloud's own ports
++ *   are probed there and bound later, and its runtime and Docker bind port 0. Emulator ports come
++ *   from below that range, which the OS never hands out on its own.
++ * - Concurrent starts on one machine reserve each port by creating its entry exclusively, and
++ *   release it when their scope closes, so two starts never take the same port.
++ *
++ * A port that is still not free when checked belongs to something outside the stack; the start
++ * moves to another block, and a bind that then fails is reported, never retried.
   */
 -export const localAutumnEmulator = (directory: string) =>
 +const blockRange = { from: 20_000, to: 32_000 } as const;
++const reservations = join(tmpdir(), "basalt-emulator-ports");
++
++/** The lowest port the OS hands out on its own, where it says so (Linux). */
++const ephemeralFloor = Effect.gen(function* () {
++  const fs = yield* FileSystem.FileSystem;
++  const range = yield* fs
++    .readFileString("/proc/sys/net/ipv4/ip_local_port_range")
++    .pipe(Effect.orElseSucceed(() => ""));
++  const low = Number(range.trim().split(/\s+/u)[0]);
++  return Number.isInteger(low) && low > 0 ? low : undefined;
++});
 +
 +/** Whether `port` can be bound on every interface, as emulate binds it. */
 +const freeEverywhere = (port: number) =>
@@ -45,26 +69,50 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 +      }),
 +  );
 +
-+/** `count` consecutive ports, each free on every interface when checked. */
-+const freeBlock = (count: number) =>
++/** Reserve `port` for the caller's scope; `false` when another start holds it. */
++const reserve = (port: number) =>
++  Effect.acquireRelease(
++    Effect.sync(() => {
++      try {
++        mkdirSync(join(reservations, String(port)), { recursive: false });
++        return true;
++      } catch {
++        return false;
++      }
++    }),
++    (held) =>
++      held
++        ? Effect.sync(() => rmSync(join(reservations, String(port)), { recursive: true, force: true }))
++        : Effect.void,
++  );
++
++/** `count` consecutive ports reserved for the caller's scope, each free on every interface. */
++const reservedBlock = (count: number) =>
 +  Effect.gen(function* () {
++    const floor = yield* ephemeralFloor;
++    if (floor !== undefined && floor < blockRange.to)
++      return yield* new CloudStartFailed({
++        operation: `The OS hands out ports from ${floor}, inside the emulators' block`,
++      });
++    mkdirSync(reservations, { recursive: true });
 +    for (let tries = 0; tries < 50; tries++) {
 +      const first =
 +        blockRange.from + Math.floor(Math.random() * (blockRange.to - blockRange.from - count));
-+      let free = true;
-+      for (let port = first; free && port < first + count; port++)
-+        free = yield* freeEverywhere(port);
-+      if (free) return first;
++      // A block is held only whole: a partly reserved one is released before the next try.
++      const block = yield* Scope.make();
++      let held = true;
++      for (let port = first; held && port < first + count; port++)
++        held = (yield* reserve(port).pipe(Scope.provide(block))) && (yield* freeEverywhere(port));
++      if (held) {
++        yield* Effect.addFinalizer((exit) => Scope.close(block, exit));
++        return first;
++      }
++      yield* Scope.close(block, Exit.void);
 +    }
 +    return yield* new CloudStartFailed({
 +      operation: "No run of free ports for the local emulators",
 +    });
 +  });
-+
-+/** A start can still lose a port it checked to another process; it moves to a fresh block. */
-+const startAttempts = 3;
-+const exited = (name: string) => (error: CloudStartFailed) =>
-+  error.operation.startsWith(`The local ${name} exited`);
 +
 +/** The service a control plane's manifest names, or `undefined` for any other answer. */
 +const manifestId = (text: string) => {
@@ -104,7 +152,7 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
      yield* fs.makeDirectory(cwd, { recursive: true, mode: 0o700 });
 -    const log = `${directory}/autumn-emulator.log`;
 +    const log = `${directory}/${name}.log`;
-+    // Each attempt marks where it starts, so a retried start reads as such in the kept log.
++    // The kept log names the ports each start was given, so a failed bind can be traced.
 +    yield* fs.writeFileString(log, `[start] ${args.join(" ")}\n`, { flag: "a", mode: 0o600 });
      // This Node, not the first `node` on PATH: a harness may put a shim there that exports its own
      // secrets before it execs Node.
@@ -193,7 +241,7 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
              }),
            ),
          ),
-@@ -85,10 +154,62 @@ export const localAutumnEmulator = (directory: string) =>
+@@ -85,10 +201,58 @@ export const localAutumnEmulator = (directory: string) =>
          orElse: () =>
            Effect.fail(
              new CloudStartFailed({
@@ -203,7 +251,6 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
            ),
        }),
      );
--    return origin;
 +  });
 +
 +/**
@@ -214,19 +261,17 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 +  Effect.gen(function* () {
 +    const entry = process.env.BASALT_E2E_AUTUMN_EMULATOR;
 +    if (entry === undefined || entry === "") return undefined;
-+    return yield* Effect.gen(function* () {
-+      const port = yield* freeBlock(1);
-+      const origin = `http://127.0.0.1:${port}`;
-+      yield* runEmulate(
-+        directory,
-+        entry,
-+        "autumn-emulator",
-+        ["--service", "autumn", "--port", String(port), "--base-url", origin],
-+        [{ service: "autumn", origin }],
-+      );
-+      return origin;
-+    }).pipe(Effect.retry({ times: startAttempts - 1, while: exited("autumn-emulator") }));
-+  });
++    const port = yield* reservedBlock(1);
++    const origin = `http://127.0.0.1:${port}`;
++    yield* runEmulate(
++      directory,
++      entry,
++      "autumn-emulator",
++      ["--service", "autumn", "--port", String(port), "--base-url", origin],
++      [{ service: "autumn", origin }],
++    );
+     return origin;
+   });
 +
 +/** The sign-in, mail, company and WorkOS stand-ins, in the order emulate assigns their ports. */
 +export const localServiceNames = ["google", "github", "resend", "context", "workos"] as const;
@@ -243,21 +288,19 @@ diff --git a/e2e/support/autumn-emulator.ts b/e2e/support/autumn-emulator.ts
 +  Effect.gen(function* () {
 +    const entry = process.env.BASALT_E2E_AUTUMN_EMULATOR;
 +    if (entry === undefined || entry === "") return undefined;
-+    return yield* Effect.gen(function* () {
-+      const first = yield* freeBlock(localServiceNames.length);
-+      const origins = localServiceNames.map((_, index) => `http://localhost:${first + index}`);
-+      yield* runEmulate(
-+        directory,
-+        entry,
-+        "service-emulators",
-+        ["--service", localServiceNames.join(","), "--port", String(first)],
-+        localServiceNames.map((service, index) => ({ service, origin: origins[index]! })),
-+      );
-+      return Object.fromEntries(
-+        localServiceNames.map((service, index) => [service, origins[index]!]),
-+      ) as LocalServices;
-+    }).pipe(Effect.retry({ times: startAttempts - 1, while: exited("service-emulators") }));
-   });
++    const first = yield* reservedBlock(localServiceNames.length);
++    const origins = localServiceNames.map((_, index) => `http://localhost:${first + index}`);
++    yield* runEmulate(
++      directory,
++      entry,
++      "service-emulators",
++      ["--service", localServiceNames.join(","), "--port", String(first)],
++      localServiceNames.map((service, index) => ({ service, origin: origins[index]! })),
++    );
++    return Object.fromEntries(
++      localServiceNames.map((service, index) => [service, origins[index]!]),
++    ) as LocalServices;
++  });
 diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
 --- a/e2e/support/emulators.ts
 +++ b/e2e/support/emulators.ts
@@ -420,3 +463,38 @@ diff --git a/e2e/support/cloud-environment.ts b/e2e/support/cloud-environment.ts
          : Redacted.make(
              EmulatorFixture.make({
                version: 4,
+diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
+--- a/e2e/tests/cloud-sso.spec.ts
++++ b/e2e/tests/cloud-sso.spec.ts
+@@ -5,6 +5,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
+ import { Actors, freshOwnerSession } from "../support/actors.ts";
+ import { Api, body } from "../support/api.ts";
+ import { Browser } from "../support/browser.ts";
++import { Evidence } from "../support/evidence.ts";
+ import { Target } from "../support/platform.ts";
+ import { ssoFixture } from "../support/sso.ts";
+ import { scenarios } from "../test-plan.ts";
+@@ -374,8 +375,21 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
+           "/api/auth/sso/register",
+           { ...base, issuer: fixture.publicIssuer },
+         );
+-        expect(publicRegistration.status).toBe(200);
+-        expect(JSON.stringify(publicRegistration.body)).not.toContain("synthetic-sso-secret");
++        // A local Cloud's Google stand-in runs on loopback, so this stack has no public issuer:
++        // the stand-in is refused like any private one, and the public case is proved elsewhere.
++        if (["localhost", "127.0.0.1"].includes(new URL(fixture.publicIssuer).hostname)) {
++          expect(publicRegistration.status).toBe(400);
++          const unproved = {
++            proof: "A public issuer registers",
++            reason: "no public issuer in the local stack: the Google stand-in runs on loopback",
++            provedBy: "scripts/upstream-tests/sso-public-issuer.test.ts",
++          };
++          console.log(`Not proved: ${JSON.stringify(unproved)}`);
++          yield* (yield* Evidence).json("not-proved.json", [unproved]);
++        } else {
++          expect(publicRegistration.status).toBe(200);
++          expect(JSON.stringify(publicRegistration.body)).not.toContain("synthetic-sso-secret");
++        }
+         expect(
+           (yield* api.request(anonymous, "POST", "/api/auth/sign-in/social", {
+             provider: "google",

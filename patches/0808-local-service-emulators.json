@@ -1,7 +1,7 @@
 {
   "identity": "basalt-local-service-emulators",
   "file": "0808-local-service-emulators.patch",
-  "content_sha256": "c86dc586d87934bf4203aa9739b96473856dd533f55b55a3251dff6f73d8f91a",
+  "content_sha256": "c69d102915c89824dc2d46e3fe6638831610de4af8b4b909ebc56fd4cd9006d7",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,

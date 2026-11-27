@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,6 +91,10 @@ test("local Clouds started together each get their own stand-ins", async () => {
     );
     const origins = started.flatMap(([billing, local]) => [billing!, ...Object.values(local!)]);
     assert.equal(new Set(origins.map((origin) => new URL(origin).port)).size, origins.length);
+    // Closing the scope gave every reserved port back.
+    const reserved = join(tmpdir(), "basalt-emulator-ports");
+    for (const origin of origins)
+      assert.equal(existsSync(join(reserved, new URL(origin).port)), false, origin);
   } finally {
     for (const directory of directories) rmSync(directory, { recursive: true, force: true });
   }
