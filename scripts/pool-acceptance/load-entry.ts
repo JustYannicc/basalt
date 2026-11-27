@@ -18,6 +18,7 @@ import {
   type LoadRun,
 } from "./load.ts";
 import { killTime, parseLoadShape } from "./load-shape.ts";
+import { mockWitness } from "./load-witness.ts";
 import { AcceptanceFailure, isAcceptancePool } from "./types.ts";
 
 /** The coordinator's literal GO, as the fleet lane checks it (.github/workflows/pool-fleet.yml). */
@@ -60,13 +61,39 @@ function killSource(env: NodeJS.ProcessEnv) {
   return { read, waitMs: markerWaitMs };
 }
 
+/**
+ * The mock's own record of the run's sends: the stage Worker's origin and its key. Both are
+ * required, so a run never relies on the driver's clock alone. Neither value reaches any line.
+ */
+function witnessSource(env: NodeJS.ProcessEnv, fetcher?: typeof fetch) {
+  const origin = given(env, "POOL_LOAD_WITNESS_ORIGIN");
+  const key = given(env, "POOL_LOAD_WITNESS_KEY");
+  if (origin === undefined || key === undefined)
+    throw new AcceptanceFailure(
+      "Load mode needs POOL_LOAD_WITNESS_ORIGIN and POOL_LOAD_WITNESS_KEY: the mock's own send record is the run's second witness",
+    );
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    throw new AcceptanceFailure("POOL_LOAD_WITNESS_ORIGIN must be an origin");
+  }
+  // A plain-HTTP origin is only for a mock on this machine, as the tests run one.
+  const local = url.protocol === "http:" && url.hostname === "127.0.0.1";
+  if ((url.protocol !== "https:" && !local) || url.pathname !== "/" || url.search || url.username)
+    throw new AcceptanceFailure("POOL_LOAD_WITNESS_ORIGIN must be an https origin with no path");
+  return mockWitness({ origin: url.origin, key, fetch: fetcher });
+}
+
 const line = (value: unknown) => `${JSON.stringify(value)}\n`;
 
 /**
- * The load mode: refuses on a missing GO, a bad shape or kill input, or a device outside an
- * acceptance pool before any credential is read. Each call goes to `calls.jsonl` as it ends; the
- * calls a kill moved into its own class go to `in-flight.jsonl`, the verdict to `run.json` and the
- * public summary to `summary.txt`, all written however the run ends, a `stop` included: then no
+ * The load mode: refuses on a missing GO, a bad shape, kill or witness input, or a device outside
+ * an acceptance pool before any credential is read. Each call goes to `calls.jsonl` as it ends, by
+ * the driver's own measure; each call as both witnesses judged it to `judged.jsonl`, the mock's
+ * records to `witness.jsonl`, the calls a kill moved into its own class to `in-flight.jsonl`, the
+ * verdict to `run.json` and the public summary to `summary.txt`, all written however the run ends,
+ * a `stop` included: then no
  * call starts, calls in flight get `stopWaitMs` to end, and the run is reported as failed with
  * whatever ended. Says whether the run passed.
  */
@@ -74,12 +101,17 @@ export async function runLoadFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   client: PoolAcceptanceClient = new PoolAcceptanceClient(),
   log: (text: string) => void = console.log,
-  { stop, stopWaitMs = defaultStopWaitMs }: { stop?: AbortSignal; stopWaitMs?: number } = {},
+  {
+    stop,
+    stopWaitMs = defaultStopWaitMs,
+    witnessFetch,
+  }: { stop?: AbortSignal; stopWaitMs?: number; witnessFetch?: typeof fetch } = {},
 ): Promise<boolean> {
   if (!goPattern.test(env.POOL_LOAD_GO ?? ""))
     throw new AcceptanceFailure("Load mode needs a go input matching ^coordinator-20YY-");
   const shape = parseLoadShape(env.POOL_LOAD_SHAPE);
   const kill = killSource(env);
+  const witness = witnessSource(env, witnessFetch);
   let credential;
   try {
     // Load spends the accounts of the device's pool, so it runs only in a pool made for acceptance.
@@ -107,6 +139,7 @@ export async function runLoadFromEnvironment(
     kill: kill?.read,
     killWaitMs: kill?.waitMs,
     stop,
+    witness,
     ended: (call) => {
       ended.push(call);
       // A call that outlives a stop's wait ends after the record closed: it is not written.
@@ -147,6 +180,9 @@ export async function runLoadFromEnvironment(
     join(directory, "in-flight.jsonl"),
     run.calls.flatMap((call) => (call.inFlight ? [line(call)] : [])).join(""),
   );
+  // Each call as both witnesses judged it, and the mock's own records they were judged on.
+  writeFileSync(join(directory, "judged.jsonl"), run.calls.map(line).join(""));
+  writeFileSync(join(directory, "witness.jsonl"), (run.sends ?? []).map(line).join(""));
   writeFileSync(
     join(directory, "run.json"),
     `${JSON.stringify({ shape, killAt: run.killAt, verdict: run.verdict }, null, 2)}\n`,

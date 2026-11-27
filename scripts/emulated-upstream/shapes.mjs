@@ -2,7 +2,7 @@
 // `attempt`), so a check that passes here is a call the driver would pass. Stricter where the mock
 // must be exact: every shape reports usage, ends on its own and counts the whole way. A call with
 // `stream: false` is judged by the same rule on its one JSON answer.
-import { LONG_COUNT, longPrompt, shortPrompt } from "./prompts.ts";
+import { LONG_COUNT, longPrompt, markedPrompt, shortPrompt } from "./prompts.ts";
 
 const MAX_TOKENS = 16;
 const LONG_TOKENS = 4_000;
@@ -14,8 +14,9 @@ export const paths = {
   messages: "/v1/messages",
 };
 
-export function requestBody(shape, long, { stream = true } = {}) {
-  const prompt = long ? longPrompt : shortPrompt;
+/** One call's body; a load send's `marker` rides at the end of its prompt. */
+export function requestBody(shape, long, { stream = true, marker } = {}) {
+  const prompt = markedPrompt(long ? longPrompt : shortPrompt, marker);
   const limit = long ? LONG_TOKENS : MAX_TOKENS;
   const model = "emulated-check";
   if (shape === "responses") return { model, max_output_tokens: limit, stream, input: prompt };

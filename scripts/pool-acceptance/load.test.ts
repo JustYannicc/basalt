@@ -100,8 +100,24 @@ test("the load mode refuses before any credential or call without a GO or outsid
           POOL_ACCEPTANCE_DEVICE: JSON.stringify({ ...device, pool: "app_people" }),
           POOL_APP_SIGNING_KEY: deviceEnv.POOL_APP_SIGNING_KEY,
           POOL_LOAD_GO: go,
+          ...pool.witnessEnv,
         },
         /dedicated acceptance-<run> pool/u,
+      ],
+      // The mock's record is the run's second witness: no run starts on the driver's clock alone.
+      [{ ...deviceEnv, POOL_LOAD_GO: go }, /POOL_LOAD_WITNESS_ORIGIN and POOL_LOAD_WITNESS_KEY/u],
+      [
+        { ...deviceEnv, ...pool.witnessEnv, POOL_LOAD_GO: go, POOL_LOAD_WITNESS_KEY: "" },
+        /POOL_LOAD_WITNESS_ORIGIN and POOL_LOAD_WITNESS_KEY/u,
+      ],
+      [
+        {
+          ...deviceEnv,
+          ...pool.witnessEnv,
+          POOL_LOAD_GO: go,
+          POOL_LOAD_WITNESS_ORIGIN: "http://mock.example",
+        },
+        /https origin with no path/u,
       ],
       [{ ...deviceEnv, POOL_LOAD_GO: go, POOL_LOAD_SHAPE: '{"calls":0}' }, /calls/u],
     ] as const)
@@ -123,6 +139,7 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
     const passed = await runLoadFromEnvironment(
       {
         ...deviceEnv,
+        ...pool.witnessEnv,
         POOL_LOAD_GO: go,
         // A dispatch's empty input arms no kill.
         POOL_LOAD_KILL_AT: "",
@@ -160,6 +177,11 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
     assert.deepEqual(summary.trim().split("\n"), logged);
     assert.match(summary, /^load status=passed calls=6 passes=6 attempts=6$/mu);
     assert.match(summary, /^load boots distinct=1 answers=6$/mu);
+    assert.match(summary, /^load witness=read sends=6$/mu);
+    const witness = (await readFile(join(directory, "witness.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(witness.length, 6);
+    for (const secret of [pool.origin, pool.witnessEnv.POOL_LOAD_WITNESS_KEY])
+      assert.ok(!summary.includes(secret) && !logged.join("\n").includes(secret));
     assert.doesNotMatch(summary, /^load restart/mu);
     for (const id of [
       boot,
@@ -217,6 +239,7 @@ test("an answer the pass rule reads as an error fails its call, stops the run an
     const passed = await runLoadFromEnvironment(
       {
         ...deviceEnv,
+        ...pool.witnessEnv,
         POOL_LOAD_GO: go,
         POOL_LOAD_OUTPUT_DIRECTORY: directory,
         POOL_LOAD_SHAPE: JSON.stringify({
@@ -298,6 +321,7 @@ test("a run passes only with its own loop lag measured and under the limit, and 
     pass: true,
   };
   const unarmed = { armed: false, at: undefined };
+  const read = { read: true, sends: 1 };
   const shape = parseLoadShape(
     JSON.stringify({ concurrency: 1, durationMinutes: 1, mix: [{ shape: "chat", weight: 1 }] }),
   );
@@ -307,13 +331,15 @@ test("a run passes only with its own loop lag measured and under the limit, and 
         // The summary reads a passing call's sends; this one only carries the verdict's lag.
         calls: [],
         killAt: undefined,
-        verdict: verdictOf([call], undefined, unarmed, undefined, lag),
+        verdict: verdictOf([call], undefined, unarmed, undefined, lag, read),
       },
       shape,
     ).find((line) => line.startsWith("load io_lag"));
-  assert.equal(verdictOf([call], undefined, unarmed, undefined, 12).passed, true);
+  assert.equal(verdictOf([call], undefined, unarmed, undefined, 12, read).passed, true);
+  // Calls the mock's record was never read for are not in time, whatever their own classes say.
+  assert.equal(verdictOf([call], undefined, unarmed, undefined, 12).passed, false);
   assert.equal(lines(12), `load io_lag_max_ms=12 limit_ms=${ioLagLimitMs}`);
-  assert.equal(verdictOf([call], undefined, unarmed, undefined, ioLagLimitMs).passed, false);
+  assert.equal(verdictOf([call], undefined, unarmed, undefined, ioLagLimitMs, read).passed, false);
   assert.equal(
     lines(ioLagLimitMs),
     `load io_lag_max_ms=${ioLagLimitMs} limit_ms=${ioLagLimitMs} timings_not_trusted`,

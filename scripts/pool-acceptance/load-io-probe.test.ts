@@ -59,6 +59,35 @@ test("two blocks with no socket poll between them are measured as one wait", asy
   }
 });
 
+test("two blocks with a socket poll between them that reads the probe's byte first are measured as one wait", async () => {
+  // A6: block 1 runs in the check phase right after a probe read, so the next byte is written and
+  // read only after it. Block 2 runs in that next poll, right after the probe's own read callback
+  // (a nextTick from inside it), where another socket's callback would hold an answer back. That
+  // answer waited through both, from the write before block 1 to the read after block 2.
+  let reads = 0;
+  let armed = false;
+  let done!: () => void;
+  const finished = new Promise<void>((resolve) => (done = resolve));
+  const fromRead = () => new Error().stack?.includes("received") === true;
+  const probe = await startIoProbe(() => {
+    const at = performance.now();
+    if (armed && fromRead()) {
+      reads += 1;
+      if (reads === 1) setImmediate(() => busy(1_600));
+      if (reads === 2)
+        process.nextTick(() => {
+          busy(1_600);
+          done();
+        });
+    }
+    return at;
+  });
+  armed = true;
+  await finished;
+  const lag = await probe.stop();
+  assert.ok((lag ?? 0) >= 3_200, String(lag));
+});
+
 test("a block that starts when no probe byte is waiting is still measured", async () => {
   // The probe resolves right after a poll read its first byte; the check phase that follows runs
   // before the next write, so nothing of the probe is out when this block starts.
@@ -96,6 +125,7 @@ test("a healthy run at the highest concurrency keeps its wait far under the limi
     credential: acceptanceCredential(deviceEnv),
     shape,
     clock,
+    witness: pool.witness,
   });
   assert.equal(run.calls.length, 5_000);
   assert.equal(run.verdict.passes, 5_000);

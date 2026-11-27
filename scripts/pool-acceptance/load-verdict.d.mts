@@ -1,4 +1,5 @@
-export type Shape = "chat" | "responses" | "messages";
+export type { Shape } from "../emulated-upstream/frames.ts";
+import type { Shape } from "../emulated-upstream/frames.ts";
 
 export interface VerdictKind {
   readonly shape: Shape;
@@ -15,5 +16,5 @@ export interface Verdict {
 
 export declare const paths: Readonly<Record<Shape, string>>;
 export declare const judgesUnstreamed: boolean;
-export declare function callBody(kind: VerdictKind): Record<string, unknown>;
+export declare function callBody(kind: VerdictKind, marker?: string): Record<string, unknown>;
 export declare function callVerdict(kind: VerdictKind, text: string): Verdict;

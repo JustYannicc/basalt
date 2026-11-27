@@ -11,9 +11,9 @@ export { paths };
  */
 export const judgesUnstreamed = requestBody("chat", false, { stream: false }).stream === false;
 
-/** One kind's body: the shapes' own, under the kind's model. */
-export function callBody(kind) {
-  const body = requestBody(kind.shape, kind.prompt === "long", { stream: kind.stream });
+/** One kind's body: the shapes' own, under the kind's model, with the send's marker when given. */
+export function callBody(kind, marker) {
+  const body = requestBody(kind.shape, kind.prompt === "long", { stream: kind.stream, marker });
   body.model = kind.model;
   return body;
 }

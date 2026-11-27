@@ -1,21 +1,36 @@
 import { servedClean, type Attempt, type CallRecord } from "./load-call.ts";
 import { delayBarMs, type LoadKind } from "./load-shape.ts";
+import type { WitnessRead } from "./load-witness.ts";
 
 /**
  * What the zero bar counts. failed: the last send was not a 200 with a terminal event and exact
  * content. retried: more than one send, even if the last passed. delayed: a send's first content,
  * or a wait between its frames after that, came more than 30 s past its profile's time to first
- * token. missing_boot: an answer without the pool's boot header.
- * in_flight_cut: in flight at the kill time and not clean, in place of those four.
+ * token, by the driver's measure and by the mock's record both. witnesses_disagree: one of the two
+ * says late and the other in time. mock_missing: a 200 the mock has no record of, or no record read
+ * at all. missing_boot: an answer without the pool's boot header. in_flight_cut: in flight at the
+ * kill time and not clean, in place of the others but the two witness classes.
  */
-export type LoadClass = "failed" | "retried" | "delayed" | "missing_boot" | "in_flight_cut";
+export type LoadClass =
+  | "failed"
+  | "retried"
+  | "delayed"
+  | "witnesses_disagree"
+  | "mock_missing"
+  | "missing_boot"
+  | "in_flight_cut";
 export const loadClasses: readonly LoadClass[] = [
   "failed",
   "retried",
   "delayed",
+  "witnesses_disagree",
+  "mock_missing",
   "missing_boot",
   "in_flight_cut",
 ];
+/** Every counted outcome: the calls' classes, and the mock's records of sends the driver never made. */
+export type LoadOutcome = LoadClass | "driver_missing";
+export const loadOutcomes: readonly LoadOutcome[] = [...loadClasses, "driver_missing"];
 
 /**
  * How long a send waited for its answer. A 200 waited for its first content, and for all of it
@@ -31,7 +46,10 @@ export const contentWaitMs = (attempt: Attempt) =>
 export const delayed = (attempt: Attempt, kind: LoadKind) =>
   Math.max(contentWaitMs(attempt), attempt.stallMs ?? 0) > kind.ttfbProfileMs + delayBarMs;
 
-/** The bar's classes for one call on its own. No class at all is the only pass. */
+/**
+ * The driver's own classes for one call. No class at all is a pass so far; the mock's record is read
+ * after the run, and only both witnesses together decide a call's timing (load-witness.ts).
+ */
 export function barClasses(call: CallRecord, kind: LoadKind): LoadClass[] {
   const classes: LoadClass[] = [];
   if (!servedClean(call.attempts.at(-1)!)) classes.push("failed");
@@ -105,7 +123,7 @@ export interface LoadVerdict {
   readonly calls: number;
   readonly passes: number;
   readonly attempts: number;
-  readonly counts: Readonly<Record<LoadClass, number>>;
+  readonly counts: Readonly<Record<LoadOutcome, number>>;
   /** The call whose end stopped the run: the first non-pass to finish. */
   readonly firstFailure: number | undefined;
   /** Answers per distinct boot, largest first; the boots themselves stay in the artifact. */
@@ -115,6 +133,8 @@ export interface LoadVerdict {
   readonly error: string | undefined;
   /** The longest an answer could have waited on the driver's own loop; undefined when unmeasured. */
   readonly ioLagMaxMs: number | undefined;
+  /** The mock's own records of the run's sends; unread fails the run. */
+  readonly witness: WitnessRead;
 }
 
 /**
@@ -171,11 +191,13 @@ export function verdictOf(
   kill: { armed: boolean; at: number | undefined },
   error?: string,
   ioLagMaxMs?: number,
+  witness: WitnessRead & { readonly driverMissing?: number } = { read: false, sends: 0 },
 ): LoadVerdict {
-  const counts = Object.fromEntries(loadClasses.map((name) => [name, 0])) as Record<
-    LoadClass,
+  const counts = Object.fromEntries(loadOutcomes.map((name) => [name, 0])) as Record<
+    LoadOutcome,
     number
   >;
+  counts.driver_missing = witness.driverMissing ?? 0;
   const served = new Map<string, number>();
   let passes = 0;
   let attempts = 0;
@@ -194,7 +216,9 @@ export function verdictOf(
       passes === calls.length &&
       (restart?.passed ?? true) &&
       ioLagMaxMs !== undefined &&
-      ioLagMaxMs < ioLagLimitMs,
+      ioLagMaxMs < ioLagLimitMs &&
+      witness.read &&
+      counts.driver_missing === 0,
     calls: calls.length,
     passes,
     attempts,
@@ -204,5 +228,6 @@ export function verdictOf(
     restart,
     error,
     ioLagMaxMs,
+    witness: { read: witness.read, sends: witness.sends },
   };
 }

@@ -34,6 +34,7 @@ test("a redirect is the send's own answer: never followed, the call fails and th
     const passed = await runLoadFromEnvironment(
       {
         ...deviceEnv,
+        ...pool.witnessEnv,
         POOL_LOAD_GO: go,
         POOL_LOAD_OUTPUT_DIRECTORY: directory,
         POOL_LOAD_SHAPE: JSON.stringify({ calls: 1, mix: [{ shape: "chat", weight: 1 }] }),

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { readRefusal, type ModelCredential, type PoolAcceptanceClient } from "./client.ts";
+import { sendMarker } from "../emulated-upstream/prompts.ts";
 import { callBody, callVerdict, paths, type Verdict } from "./load-verdict.mjs";
 import type { LoadKind } from "./load-shape.ts";
 import { readStream } from "./load-stream.ts";
@@ -19,6 +20,8 @@ export interface CallContext {
   readonly clock: Clock;
   readonly maxAttempts: number;
   readonly attemptTimeoutMs: number;
+  /** The run's id in every send's marker, which the mock records each answer under. */
+  readonly run: string;
 }
 
 /**
@@ -116,7 +119,7 @@ export async function sendAttempt(
           // Not sampled: the pool logs the trace id on every call's wide event but exports no trace.
           traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-00`,
         },
-        body: JSON.stringify(callBody(kind)),
+        body: JSON.stringify(callBody(kind, sendMarker(context.run, traceId, attempt))),
         // A followed redirect would hide a send and carry the device assertion to its target, which
         // may be another origin. The 3xx is this send's answer: a status, so the call fails.
         redirect: "manual",

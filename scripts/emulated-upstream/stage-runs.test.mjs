@@ -212,7 +212,7 @@ test("a check passes only when every part does, and names each part that failed"
       profiles: { control: [{ step: "read", status: 200 }], calls: [], failure: "it stopped" },
     }),
     [
-      "7 of 8 calls without the right key ran",
+      "9 of 10 calls without the right key ran",
       "the mock itself did not refuse a call without the right key",
       "5 of 6 streams ran",
       "0 of 3 non-streamed calls ran",

@@ -52,6 +52,9 @@ test("a call cut at the kill counts as an in-flight cut even when its resend suc
   assert.equal(seen.length, 2, "the cut send and its one resend");
   assert.equal(run.verdict.counts.in_flight_cut, 1);
   assert.equal(run.verdict.counts.failed, 0);
+  // The mock recorded the resend too, and the driver knows it as its own send.
+  assert.equal(run.verdict.witness.sends, 2);
+  assert.equal(run.verdict.counts.driver_missing, 0);
   // The resend is no evidence of a new boot: only the run's own sends are.
   assert.deepEqual(run.verdict.restart, {
     kill: "seen",

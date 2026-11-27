@@ -12,6 +12,9 @@ import {
   RETRY_AFTER_SECONDS,
 } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
+import { sendMarker } from "./prompts.ts";
+import { durableSends, sendsPage, sendsPath } from "./sends.ts";
+import { memorySendStorage } from "./test/memory-sends.ts";
 import { paths, requestBody, verdict } from "./shapes.mjs";
 import { chaos429Body } from "./test/aimock-shapes.mjs";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
@@ -193,6 +196,7 @@ test("the key gate refuses every route without the right key before anything ans
     `/a${paths.chat}`,
     profileControlPath,
     refusalPath,
+    sendsPath,
   ];
   const wrong = [
     {},
@@ -226,4 +230,101 @@ test("the key gate refuses every route without the right key before anything ans
       200,
     );
   assert.deepEqual(forwarded, [profileControlPath, profileControlPath]);
+});
+
+const run = "0123456789abcdef";
+const marker = sendMarker(run, "ab".repeat(16), 1);
+const markedCall = (path, { shape = "messages", long = false } = {}) =>
+  new Request(`${origin}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify(requestBody(shape, long, { marker })),
+  });
+/** The mock's Durable Object as the stage runs it, with its send record in memory. */
+function recordingMock(aimock) {
+  const storage = memorySendStorage();
+  const answer = mockCalls({
+    key,
+    store: memoryStore(),
+    start: async () => aimock.port,
+    sends: durableSends(storage, () => aimock.clock.ms),
+    now: () => aimock.clock.ms,
+  });
+  return { storage, answer };
+}
+
+test("a marked call is answered as before and recorded as the mock passed it on; an unmarked one is not", async () => {
+  const aimock = fakeAimock({ key, clock: { ms: 1_000 }, longMs: 60_000 });
+  const { storage, answer } = recordingMock(aimock);
+  for (const shape of Object.keys(paths)) {
+    const marked = await answer(markedCall(`/a${paths[shape]}`, { shape }));
+    assert.equal(verdict(shape, false, await marked.text()).pass, true, shape);
+  }
+  await (await answer(modelCall(`/a${paths.chat}`, { shape: "chat" }))).text();
+  const long = await answer(markedCall(`/b${paths.chat}`, { shape: "chat", long: true }));
+  assert.equal(verdict("chat", true, await long.text()).pass, true);
+  const rows = [...storage.rows.values()];
+  assert.equal(rows.length, 4, "every marked call and no unmarked one");
+  for (const row of rows) {
+    assert.equal(row.marker, marker);
+    assert.equal(row.status, 200);
+    assert.equal(row.end, "complete");
+    assert.ok(row.firstContentAt !== undefined && row.firstContentAt <= row.endedAt);
+  }
+  assert.deepEqual(
+    rows.map((row) => row.path),
+    [paths.chat, paths.responses, paths.messages, paths.chat],
+  );
+  // The fake's long stream moves the clock before it answers, so the record shows the wait.
+  assert.equal(rows[3].firstContentAt - rows[3].receivedAt, 60_000);
+  assert.ok([...storage.rows.keys()].every((name) => name.startsWith(`send:${run}:`)));
+});
+
+test("a marked answer whose reader stops is recorded as cut", async () => {
+  const aimock = fakeAimock({ key });
+  const { storage, answer } = recordingMock(aimock);
+  const marked = await answer(markedCall(`/a${paths.messages}`));
+  await marked.body.cancel();
+  const [row] = storage.rows.values();
+  assert.equal(row.end, "cut");
+});
+
+test("a run's records are read back in pages, and only with a run and cursor the route gave", async () => {
+  const storage = memorySendStorage();
+  let ms = 0;
+  const sends = durableSends(storage, () => ++ms);
+  const send = (index) => ({
+    marker: sendMarker(run, "cd".repeat(16), (index % 900) + 1),
+    path: paths.chat,
+    status: 200,
+    receivedAt: index,
+    headersAt: index,
+    firstContentAt: index,
+    endedAt: index,
+    end: "complete",
+  });
+  for (let index = 0; index < sendsPage + 1; index++) await sends.save(run, send(index));
+  await sends.save("fedcba9876543210", send(0));
+  const answer = mockCalls({
+    key,
+    store: memoryStore(),
+    start: async () => assert.fail("reading the record starts no mock"),
+    sends,
+  });
+  const read = (query, init) =>
+    answer(
+      new Request(`${origin}${sendsPath}${query}`, {
+        headers: { authorization: `Bearer ${key}` },
+        ...init,
+      }),
+    );
+  const first = await (await read(`?run=${run}`)).json();
+  assert.equal(first.sends.length, sendsPage);
+  assert.equal(typeof first.next, "string");
+  const second = await (await read(`?run=${run}&after=${first.next}`)).json();
+  assert.deepEqual(second.sends, [send(sendsPage)]);
+  assert.equal(second.next, undefined);
+  for (const query of ["", "?run=XYZ", `?run=${run}&after=../x`, `?run=${run}0`])
+    assert.equal((await read(query)).status, 400, query);
+  assert.equal((await read(`?run=${run}`, { method: "PUT" })).status, 405);
 });

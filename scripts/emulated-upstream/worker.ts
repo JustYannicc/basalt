@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { calm, chaosFrom, gate, mockCalls, type Chaos } from "./gateway.ts";
 import { mockStarter, port } from "./mock-start.ts";
+import { durableSends } from "./sends.ts";
 
 interface Environment {
   Mock: DurableObjectNamespace<Mock>;
@@ -17,6 +18,7 @@ export class Mock extends DurableObject<Environment> {
   fetch(request: Request): Promise<Response> {
     this.answer ??= mockCalls({
       key: this.env.MOCK_KEY,
+      sends: durableSends(this.ctx.storage),
       store: {
         read: () =>
           (this.chaos ??= this.ctx.storage

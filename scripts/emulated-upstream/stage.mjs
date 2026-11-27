@@ -4,6 +4,7 @@
 import { emulatedAccount } from "./cloudflare.mjs";
 import { plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
+import { sendsPath } from "./sends.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { isCloudflareApiError } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
@@ -40,8 +41,14 @@ export function teardownDeadline(env, at) {
 export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
-/** Every route the Worker refuses without the right key, profile b's control included. */
-export const keyedRoutes = ["/v1/models", "/a/v1/models", "/b/v1/models", profileControlPath];
+/** Every route the Worker refuses without the right key, profile b's control and the send record included. */
+export const keyedRoutes = [
+  "/v1/models",
+  "/a/v1/models",
+  "/b/v1/models",
+  profileControlPath,
+  sendsPath,
+];
 const refusedCount = keyedRoutes.length * 2;
 
 const counts = (resources) =>

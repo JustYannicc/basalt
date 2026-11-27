@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import type { ModelCredential, PoolAcceptanceClient } from "./client.ts";
 import {
   sendAttempt,
@@ -13,6 +14,7 @@ import {
   delayed,
   judge,
   loadClasses,
+  loadOutcomes,
   ioLagLimitMs,
   verdictOf,
   type JudgedCall,
@@ -22,6 +24,7 @@ import {
 import { kindRotation, workerStartMs, type LoadShape } from "./load-shape.ts";
 
 import { startIoProbe } from "./load-io-probe.ts";
+import { byMarker, driverMissing, witnessed, type MockSend, type Witness } from "./load-witness.ts";
 
 /** A call as it ended, judged by the bar alone; a kill time can still move it to its own class. */
 export type EndedCall = CallRecord & {
@@ -42,12 +45,16 @@ export interface LoadInput {
   /** Aborted from outside (a signal): no call starts after it, and the run cannot pass. */
   readonly stop?: AbortSignal;
   readonly clock?: Clock;
+  /** The mock's own record of its sends. Without one, or unread, no call is in time. */
+  readonly witness?: Witness;
 }
 
 export interface LoadRun {
   readonly calls: readonly JudgedCall[];
   readonly killAt: number | undefined;
   readonly verdict: LoadVerdict;
+  /** What the mock recorded of this run's sends, when it was read. */
+  readonly sends?: readonly MockSend[];
 }
 
 export const systemClock: Clock = {
@@ -84,7 +91,9 @@ export const stopKind = (signal: AbortSignal) =>
 export async function runLoad(input: LoadInput): Promise<LoadRun> {
   const { shape } = input;
   const clock = input.clock ?? systemClock;
+  const run = randomBytes(8).toString("hex");
   const context: CallContext = {
+    run,
     client: input.client,
     credential: input.credential,
     clock,
@@ -145,11 +154,11 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
     await clock.sleep(500);
     killAt = input.kill();
   }
-  const calls = records
+  const judged = records
     .sort((a, b) => a.call - b.call)
     .map((record) => judge(record, kinds.get(record.kind)!, killAt));
   await Promise.all(
-    calls
+    judged
       .filter((call) => call.inFlight && !call.pass && !signalled())
       .map(async (call) => {
         const kind = kinds.get(call.kind)!;
@@ -165,17 +174,30 @@ export async function runLoad(input: LoadInput): Promise<LoadRun> {
       }),
   );
   const ioLagMaxMs = await probe.stop();
+  // Read once every send has ended, outside the probe's measure: the mock records an answer as its
+  // body ends, which is before the driver read that end.
+  const sends = await input.witness?.read(run).catch(() => undefined);
+  const marked = sends && byMarker(sends);
+  const calls = judged.map((call) =>
+    witnessed(call, kinds.get(call.kind)!, run, marked, loadClasses),
+  );
   input.stop?.removeEventListener("abort", stopped);
   if (signalled()) error ??= stopKind(input.stop!);
   return {
     calls,
     killAt,
+    sends,
     verdict: verdictOf(
       calls,
       firstFailure,
       { armed: input.kill !== undefined, at: killAt },
       error,
       ioLagMaxMs,
+      {
+        read: sends !== undefined,
+        sends: sends?.length ?? 0,
+        driverMissing: marked ? driverMissing(run, calls, marked) : 0,
+      },
     ),
   };
 }
@@ -190,7 +212,10 @@ export function summaryLines(run: LoadRun, shape: LoadShape): string[] {
   const { verdict } = run;
   const lines = [
     `load status=${verdict.passed ? "passed" : "failed"} calls=${verdict.calls} passes=${verdict.passes} attempts=${verdict.attempts}`,
-    `load classes ${loadClasses.map((name) => `${name}=${verdict.counts[name]}`).join(" ")}`,
+    `load classes ${loadOutcomes.map((name) => `${name}=${verdict.counts[name]}`).join(" ")}`,
+    verdict.witness.read
+      ? `load witness=read sends=${verdict.witness.sends}`
+      : "load witness=unread",
   ];
   if (verdict.error) lines.push(`load error=${verdict.error}`);
   const lag = verdict.ioLagMaxMs;

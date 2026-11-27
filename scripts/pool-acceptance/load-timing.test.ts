@@ -4,7 +4,7 @@ import { acceptanceCredential } from "../release/acceptance-device.ts";
 import type { Attempt } from "./load-call.ts";
 import { contentWaitMs, delayed, ioLagLimitMs } from "./load-classes.ts";
 import { parseLoadShape } from "./load-shape.ts";
-import { frameTimer } from "./load-stream.ts";
+import { frameTimer } from "../emulated-upstream/frames.ts";
 import type { Shape } from "./load-verdict.mjs";
 import { runLoad, summaryLines } from "./load.ts";
 import {
@@ -53,6 +53,7 @@ async function paced(shape: Shape, steps: readonly Step[]) {
     credential: acceptanceCredential(deviceEnv),
     shape: loadShape,
     clock,
+    witness: pool.witness,
   });
   assert.equal(pool.seen.length, 1);
   const [call] = run.calls;
@@ -267,6 +268,7 @@ async function blockedRun(overMs: number) {
     credential: acceptanceCredential(deviceEnv),
     shape: loadShape,
     clock,
+    witness: pool.witness,
   });
   return { run, lines: summaryLines(run, loadShape).join("\n") };
 }

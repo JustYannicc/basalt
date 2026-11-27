@@ -15,6 +15,7 @@ async function stopped(second: (stop: AbortController) => Answer, stopWaitMs?: n
     const passed = await runLoadFromEnvironment(
       {
         ...deviceEnv,
+        ...pool.witnessEnv,
         POOL_LOAD_GO: go,
         POOL_LOAD_OUTPUT_DIRECTORY: directory,
         POOL_LOAD_SHAPE: JSON.stringify({

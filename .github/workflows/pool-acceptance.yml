@@ -130,6 +130,10 @@ jobs:
           POOL_LOAD_SHAPE: ${{ inputs.load }}
           POOL_LOAD_KILL_AT: ${{ inputs.kill_at }}
           POOL_LOAD_OUTPUT_DIRECTORY: ${{ runner.temp }}/pool-load
+          # The emulated upstream's own record of when it sent each answer: every call's second
+          # witness. The run refuses to start without it.
+          POOL_LOAD_WITNESS_ORIGIN: ${{ secrets.EMULATED_UPSTREAM_ORIGIN }}
+          POOL_LOAD_WITNESS_KEY: ${{ secrets.EMULATED_UPSTREAM_KEY }}
       - name: Publish the public summary
         if: always()
         env:
@@ -138,7 +142,8 @@ jobs:
           if [ -f "$SUMMARY" ]; then
             { echo '```'; cat "$SUMMARY"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
-      # Every call record: boots, request and trace ids, statuses and timings. No body text.
+      # Every call record and the mock's send records: boots, request and trace ids, statuses and
+      # timings. No body text.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
