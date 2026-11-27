@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check streams each shape; destroy removes it
+        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check calls each shape streamed and whole, and through both account profiles; destroy removes it
         required: true
         type: choice
         options: [deploy, check, destroy]

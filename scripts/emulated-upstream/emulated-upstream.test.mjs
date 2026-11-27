@@ -12,8 +12,9 @@ import {
 import { mockRefusal, mockStarter } from "./mock-start.ts";
 import { countingText, fixtures, fixturesFile, fixturesText } from "./fixtures.mjs";
 import { LONG_COUNT, longMatch, longPrompt, shortPrompt } from "./prompts.ts";
-import { verdict } from "./shapes.mjs";
+import { paths, requestBody, verdict } from "./shapes.mjs";
 import { emulatedStage } from "./stage.mjs";
+import { chaos429Body, streamOf, wholeOf } from "./test/aimock-shapes.mjs";
 import {
   application,
   envelope,
@@ -202,6 +203,125 @@ test("usage over the reserve is refused", () => {
     verdict("responses", false, responses("OK", undefined, { input_tokens: 501, output_tokens: 2 }))
       .reason,
     "usage over the reserve",
+  );
+});
+
+test("the bodies the load driver sends stream as before; stream: false drops only the stream's options", () => {
+  const model = "emulated-check";
+  const short = [{ role: "user", content: shortPrompt }];
+  const same = (actual, expected) => assert.equal(JSON.stringify(actual), JSON.stringify(expected));
+  same(requestBody("chat", false), {
+    model,
+    max_tokens: 16,
+    stream: true,
+    stream_options: { include_usage: true },
+    messages: short,
+  });
+  same(requestBody("responses", true), {
+    model,
+    max_output_tokens: 4000,
+    stream: true,
+    input: longPrompt,
+  });
+  same(requestBody("messages", false), { model, max_tokens: 16, stream: true, messages: short });
+  for (const shape of Object.keys(paths))
+    same(requestBody(shape, false, { stream: true }), requestBody(shape, false));
+  same(requestBody("chat", false, { stream: false }), {
+    model,
+    max_tokens: 16,
+    stream: false,
+    messages: short,
+  });
+  same(requestBody("responses", false, { stream: false }), {
+    model,
+    max_output_tokens: 16,
+    stream: false,
+    input: shortPrompt,
+  });
+  same(requestBody("messages", true, { stream: false }), {
+    model,
+    max_tokens: 4000,
+    stream: false,
+    messages: [{ role: "user", content: longPrompt }],
+  });
+});
+
+test("aimock's recorded streams still pass the stream rule, with or without the option", () => {
+  for (const shape of Object.keys(paths)) {
+    const stream = streamOf(shape, "OK");
+    assert.deepEqual(verdict(shape, false, stream), {
+      pass: true,
+      reason: undefined,
+      input: 11,
+      output: 2,
+    });
+    assert.deepEqual(
+      verdict(shape, false, stream, { stream: true }),
+      verdict(shape, false, stream),
+    );
+    assert.equal(verdict(shape, false, streamOf(shape, "NO")).reason, "content not exact", shape);
+  }
+});
+
+test("a call with stream: false passes only on its one answer's end, usage and exact content", () => {
+  const whole = (shape, long, text) => verdict(shape, long, text, { stream: false });
+  const edited = (shape, change) => {
+    const body = JSON.parse(wholeOf(shape, "OK"));
+    change(body);
+    return JSON.stringify(body);
+  };
+  for (const shape of Object.keys(paths)) {
+    assert.deepEqual(whole(shape, false, wholeOf(shape, "OK")), {
+      pass: true,
+      reason: undefined,
+      input: 11,
+      output: 2,
+    });
+    assert.equal(whole(shape, false, wholeOf(shape, "NO")).reason, "content not exact", shape);
+    assert.equal(whole(shape, false, wholeOf(shape, " OK\n")).pass, true, shape);
+    assert.equal(
+      whole(shape, false, wholeOf(shape, "OK", { output: 17 })).reason,
+      "usage over the reserve",
+      shape,
+    );
+    assert.equal(
+      whole(shape, true, wholeOf(shape, countingText, { input: 22, output: 3000 })).pass,
+      true,
+      shape,
+    );
+    assert.equal(whole(shape, true, wholeOf(shape, "OK")).reason, "content not exact", shape);
+    assert.equal(
+      whole(
+        shape,
+        false,
+        edited(shape, (body) => delete body.usage),
+      ).reason,
+      "usage missing",
+      shape,
+    );
+    // aimock's chaos 429 is no answer, a stream is not a whole answer, and the reverse.
+    assert.equal(whole(shape, false, chaos429Body).reason, "no terminal event", shape);
+    assert.equal(whole(shape, false, streamOf(shape, "OK")).reason, "not a JSON answer", shape);
+    assert.equal(whole(shape, false, "").reason, "not a JSON answer", shape);
+    assert.equal(verdict(shape, false, wholeOf(shape, "OK")).reason, "no terminal event", shape);
+  }
+  // Each shape's own unfinished end is not an answer.
+  for (const [shape, change] of [
+    ["chat", (body) => (body.choices[0].finish_reason = "length")],
+    ["chat", (body) => (body.object = "chat.completion.chunk")],
+    ["responses", (body) => (body.status = "incomplete")],
+    ["messages", (body) => (body.stop_reason = "stop_sequence")],
+    ["messages", (body) => (body.type = "error")],
+  ])
+    assert.equal(whole(shape, false, edited(shape, change)).reason, "no terminal event", shape);
+  // An error beside a finished answer still fails it.
+  assert.equal(
+    whole(
+      "chat",
+      false,
+      edited("chat", (body) => (body.error = { type: "server_error" })),
+    ).reason,
+    "error event",
   );
 });
 
@@ -398,6 +518,31 @@ test("a missing Worker reads as no lease; any other refusal of its settings thro
   );
   // The lease is read only from the stage's own Worker.
   await assert.rejects(account(fetcher).lease("basalt-production-poolworker"), /^Error: Refused/u);
+});
+
+test("a frame a provider's SDK treats as an error fails the verdict in every shape", () => {
+  for (const shape of ["chat", "messages", "responses"]) {
+    const clean = streamOf(shape, "OK");
+    assert.equal(verdict(shape, false, clean).pass, true, shape);
+    // Each is inserted before the stream's first frame, so the rest of the answer stays clean.
+    const before = (line) => `${line}\n\n${clean}`;
+    for (const [what, line] of [
+      ["error frame without the optional space", `data:${chaos429Body}`],
+      ["frame that is not JSON", "data: {not json"],
+      ["null frame", "data: null"],
+      ["array frame", "data: []"],
+    ])
+      assert.equal(verdict(shape, false, before(line)).reason, "error event", `${shape}: ${what}`);
+  }
+});
+
+test("an answer whose content is not text fails instead of throwing", () => {
+  const answer = JSON.parse(wholeOf("chat", "OK"));
+  answer.choices[0].message.content = { text: "OK" };
+  assert.equal(
+    verdict("chat", false, JSON.stringify(answer), { stream: false }).reason,
+    "content not exact",
+  );
 });
 
 test("a failed entry names its cause from a closed set, and never its message", () => {
