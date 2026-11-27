@@ -136,16 +136,23 @@ async function alchemyWorkerName() {
     ) => EffectModule.Effect<string, never, unknown>;
   };
 }
+export type WorkerNameLoader = typeof alchemyWorkerName;
 
 /**
  * The names Alchemy gives an unnamed resource under the rehearsal stack and this stage, from the
- * row's own id and instance: each provider's length limit and case (64, 63), and an unnamed
- * Worker's, as Alchemy's own `createWorkerName` gives it. A name cut to its limit keeps only a hash
- * of the stack, stage, id and instance, so only this row's own cut name matches.
+ * row's own id and instance: each provider's length limit and case (64, 63), and for a
+ * `Cloudflare.Worker` row also the name Alchemy's own `createWorkerName` gives it (54). A name cut
+ * to its limit keeps only a hash of the stack, stage, id and instance, so only this row's own cut
+ * name matches. A Worker row whose loader fails throws, so the proof, and the retire, stop there.
  */
-export async function derivedNames(id: string, instanceId: string, stage: string) {
+export async function derivedNames(
+  id: string,
+  instanceId: string,
+  stage: string,
+  type: string,
+  loadWorkerName: WorkerNameLoader = alchemyWorkerName,
+) {
   const { createPhysicalName } = await import("alchemy/PhysicalName");
-  const { createWorkerName } = await alchemyWorkerName();
   const { StackContext } = await import("alchemy/StackContext");
   const { Stage } = await import("alchemy/Stage");
   const { InstanceId } = await import("alchemy/InstanceId");
@@ -164,7 +171,10 @@ export async function derivedNames(id: string, instanceId: string, stage: string
       const name = await run(createPhysicalName({ id, instanceId, maxLength, lowercase }));
       names.push(name, name.toLowerCase());
     }
-  names.push(await run(createWorkerName(id, undefined)));
+  if (type === "Cloudflare.Worker") {
+    const { createWorkerName } = await loadWorkerName();
+    names.push(await run(createWorkerName(id, undefined)));
+  }
   return names;
 }
 
@@ -185,6 +195,7 @@ export async function ownershipRefusal(
   stage: string,
   stageDatabase: string,
   production: ReadonlySet<string>,
+  { loadWorkerName }: { loadWorkerName?: WorkerNameLoader } = {},
 ): Promise<Refusal | undefined> {
   const slug = stage.slice("test-".length);
   const token = new RegExp(`(?:^|-)${stage}(?:-|$)`, "u");
@@ -231,7 +242,8 @@ export async function ownershipRefusal(
       if (ownHost(named)) continue;
       const id = typeof value.logicalId === "string" ? value.logicalId : "";
       const instanceId = typeof value.instanceId === "string" ? value.instanceId : "";
-      derived ??= id && instanceId ? await derivedNames(id, instanceId, stage) : [];
+      derived ??=
+        id && instanceId ? await derivedNames(id, instanceId, stage, type, loadWorkerName) : [];
       if (!derived.includes(named)) return foreign;
     }
     if (Array.isArray(attr.routes))

@@ -1,5 +1,0 @@
-{
-  "branch": "",
-  "policy": "",
-  "note": "Set branch and policy in the commit that labels stage-release-<lane> or stage-redrelease-<lane>; an empty branch refuses, so a stray label does nothing."
-}

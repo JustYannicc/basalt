@@ -229,7 +229,7 @@ test("an unnamed Worker cut to its 54 limit proves only as derived for its own i
   const api = (name: string) => row("Cloudflare.Worker", { workerName: name }, "Api");
   const ownApi = await workerName("Api", stage, instance);
   assert.equal(ownApi.length, 54);
-  assert.ok((await derivedNames("Api", instance, stage)).includes(ownApi));
+  assert.ok((await derivedNames("Api", instance, stage, "Cloudflare.Worker")).includes(ownApi));
   assert.equal(await ownershipRefusal([...whole, api(ownApi)], stage, own, production), undefined);
   for (const [why, name] of [
     ["derived for another stage", await workerName("Api", "test-rehearsal-9999", instance)],
@@ -251,6 +251,43 @@ test("an unnamed Worker cut to its 54 limit proves only as derived for its own i
       production,
     ),
   );
+});
+
+// Computed once with the installed Alchemy (2.0.0-beta.80): its own `createWorkerName("Api",
+// undefined)` under stack basalt-rehearsal, this stage and this instance.
+const pinnedApi = "basalt-rehearsal-api-test-rehed34q3xdnvov2xk5lvov2xk5l";
+
+test("an unnamed Worker's 54-limit name is the one Alchemy gave it, pinned", async () => {
+  assert.equal(pinnedApi.length, 54);
+  assert.equal(await workerName("Api", stage, instance), pinnedApi);
+  assert.ok((await derivedNames("Api", instance, stage, "Cloudflare.Worker")).includes(pinnedApi));
+  const api = row("Cloudflare.Worker", { workerName: pinnedApi }, "Api");
+  assert.equal(await ownershipRefusal([...whole, api], stage, own, production), undefined);
+});
+
+test("only a Worker row loads Alchemy's Worker name, and a failed load proves nothing", async () => {
+  let loads = 0;
+  const loadWorkerName = async (): Promise<never> => {
+    loads += 1;
+    throw new Error("WorkerName.js is not there");
+  };
+  // The container's and the Hyperdrive config's cut names prove from their 64/63 variants alone.
+  assert.equal(
+    await ownershipRefusal(whole, stage, own, production, { loadWorkerName }),
+    undefined,
+  );
+  assert.deepEqual(
+    await derivedNames("PoolContainer", instance, stage, "Cloudflare.Container", loadWorkerName),
+    await derivedNames("PoolContainer", instance, stage, "Cloudflare.Container"),
+  );
+  assert.equal(loads, 0);
+  // A Worker row whose name needs the load throws; the proof rethrows it, so no stage is taken.
+  const api = row("Cloudflare.Worker", { workerName: pinnedApi }, "Api");
+  await assert.rejects(
+    ownershipRefusal([...whole, api], stage, own, production, { loadWorkerName }),
+    /WorkerName\.js is not there/u,
+  );
+  assert.equal(loads, 1);
 });
 
 // A database-only stage as its stack records it: the stack's output row, then its database.
