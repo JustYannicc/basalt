@@ -160,26 +160,22 @@ test(
   },
 );
 
-test(
-  "a Home that always reports a refresh in flight is stopped one stop grace after the first wait",
-  { timeout: 20_000 },
-  async (context) => {
-    const { f, advance, stopPaths } = await root(context);
-    refuseCurrentBoot(f, () => 1);
-    await pass(f);
-    advance(unservingBoundMs);
-    await pass(f);
-    assert.deepEqual(f.old.calls.signals, [], "the first stop waits on the refresh");
-    advance(forcedStopGraceMs - 2_000);
-    await pass(f);
-    assert.deepEqual(f.old.calls.signals, [], "still inside one stop grace");
-    advance(2_000);
-    await pass(f);
-    assert.deepEqual(f.old.calls.signals, [15], "past the grace the stop goes ahead");
-    assert.deepEqual(stopPaths(), ["graceful_exit"]);
-    assert.equal(await serves(f), true);
-  },
-);
+test("a Home that always reports a refresh in flight is stopped one stop grace after the first wait", async (context) => {
+  const { f, advance, stopPaths } = await root(context);
+  refuseCurrentBoot(f, () => 1);
+  await pass(f);
+  advance(unservingBoundMs);
+  await pass(f);
+  assert.deepEqual(f.old.calls.signals, [], "the first stop waits on the refresh");
+  advance(forcedStopGraceMs - 2_000);
+  await pass(f);
+  assert.deepEqual(f.old.calls.signals, [], "still inside one stop grace");
+  advance(2_000);
+  await pass(f);
+  assert.deepEqual(f.old.calls.signals, [15], "past the grace the stop goes ahead");
+  assert.deepEqual(stopPaths(), ["graceful_exit"]);
+  assert.equal(await serves(f), true);
+});
 
 test(
   "a SIGTERM that doesn't stop the container within its grace ends in a recorded hard stop",

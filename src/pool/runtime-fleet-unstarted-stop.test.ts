@@ -6,7 +6,6 @@ import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
 import { RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { startingBoundMs, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
 import { forcedStopGraceMs } from "./runtime-slots/forced-restart-timing.ts";
-import { runtimeStopTiming } from "./runtime-slots/forced-stop.ts";
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
 import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
 import { runtimeRequest } from "./runtime-slots/transport.ts";
@@ -35,13 +34,9 @@ async function stuckFleet(
   const warn = context.mock.method(console, "warn", () => {});
   context.mock.method(console, "info", () => {});
   context.mock.method(console, "error", () => {});
-  context.mock.method(
-    runtimeStopTiming,
-    "stopGrace",
-    options.grace ?? (async () => context.mock.timers.tick(forcedStopGraceMs)),
-  );
   const f = await fleetCellFixture();
   context.after(f.cleanup);
+  f.timing.stopGrace = options.grace ?? (async () => context.mock.timers.tick(forcedStopGraceMs));
   const state = new RuntimeFleetState(f.storage, 1, () => Date.now());
   const pending: Promise<unknown>[] = [];
   let drawn = 0;
@@ -384,35 +379,20 @@ test("a replaced endpoint leaves a stop still inside its grace to run", async (c
 test("an endpoint on older code that doesn't know the stop fails closed and is asked again", async (context) => {
   const s = await stuckFleet(context);
   await quarantinedStart(s);
-  const current = s.f.stub.fetch;
-  const old = (answer: (request: Request, body: { target: unknown }) => Promise<Response>) => {
-    s.f.stub.fetch = async (request: Request) => {
-      if (new URL(request.url).pathname !== "/abandon-start") return current(request);
-      return answer(request, await request.json());
-    };
-  };
   // Older code decodes the fence alone and never sees the stop.
-  old((request, { target }) =>
-    current(
-      new Request(request.url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ target }),
-      }),
-    ),
-  );
+  s.f.transport.older = "fence";
   let row = await s.pass();
   assert.equal(row?.phase, "quarantined");
   assert.equal(await s.fenced(), true);
   assert.deepEqual(s.f.calls.signals, [], "a fence alone stops nothing");
-  // Older code still that answers the action as not found.
-  old(async () => new Response(null, { status: 404 }));
+  // Older code still, which answers the action as not found.
+  s.f.transport.older = "missing";
   assert.equal(await s.f.cell.abandon(s.f.target, true), false, "a refusal is no failed pass");
   row = await s.pass();
   assert.equal(row?.phase, "quarantined");
   assert.deepEqual(s.f.calls.signals, []);
   // The endpoint runs the new code: the stop goes out on the next pass, once.
-  s.f.stub.fetch = current;
+  s.f.transport.older = undefined;
   await s.pass();
   assert.deepEqual(s.f.calls.signals, [15]);
   await s.pass();

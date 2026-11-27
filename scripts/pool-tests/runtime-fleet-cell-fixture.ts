@@ -9,6 +9,7 @@ import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "../../src/pool/runtime-provider/settings.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
+import { runtimeStopTiming } from "../../src/pool/runtime-slots/forced-stop.ts";
 
 export async function fleetCellFixture(
   staleFailure: "flagged" | "plain" | "overloaded" | "non-error" | "http" = "flagged",
@@ -91,7 +92,19 @@ export async function fleetCellFixture(
     modelStubs,
     // A control path the endpoint refuses, answered as its own refusals are.
     refuse: {} as Record<string, SlotRefused["reason"]>,
+    /**
+     * An endpoint still on older code, as for minutes after a release: `fence` decodes
+     * `/abandon-start` as the fence alone, as code before its stop flag did; `missing` answers it as
+     * an action that code doesn't know.
+     */
+    older: undefined as "fence" | "missing" | undefined,
   };
+  /**
+   * The stop's grace, on whatever clock the test moves. The handoff fixture runs a zero one; a test
+   * that holds or spends a grace sets this instead of replacing the production timing.
+   */
+  const timing = { stopGrace: async () => {} };
+  runtimeStopTiming.stopGrace = () => timing.stopGrace();
   const makeCell = () =>
     boundFleetCell({
       ctx: root,
@@ -124,10 +137,25 @@ export async function fleetCellFixture(
               if (staleFailure === "overloaded") Object.assign(error, { overloaded: true });
               throw error;
             }
-            const refused = transport.refuse[new URL(request.url).pathname];
+            const path = new URL(request.url).pathname;
+            const refused = transport.refuse[path];
             if (refused) {
               await request.text();
               return runtimeErrorResponse(new SlotRefused(refused), "endpoint");
+            }
+            if (transport.older && path === "/abandon-start") {
+              if (transport.older === "missing") {
+                await request.text();
+                return new Response(null, { status: 404 });
+              }
+              const { target } = (await request.json()) as { target: unknown };
+              return runtime.stub.fetch(
+                new Request(request.url, {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ target }),
+                }),
+              );
             }
             if (request.headers.has("X-Signalbox-Runtime-Identity"))
               transport.modelStubs.push(stub);
@@ -144,6 +172,7 @@ export async function fleetCellFixture(
     cell,
     storage,
     transport,
+    timing,
     secret: (value: string | null) => {
       credential = value;
     },
