@@ -46,6 +46,8 @@ export function fakeAccount({
   workersSubdomain = "acct-sub",
   // The registry's own page size for a tag list: a page holds at most this many tags, whatever `n`.
   tagPageSize = Infinity,
+  // How the registry pages a tag list: OCI's `last`, or its own opaque `cursor` that ignores `last`.
+  tagCursor = "last",
 } = {}) {
   const live = {
     applications: [],
@@ -120,17 +122,24 @@ export function fakeAccount({
       // OCI distribution paging: tags in lexical order, up to `n` after `last`, and a `next` link
       // while more remain.
       const sorted = [...live.tags[name]].sort();
-      const last = searchParams.get("last");
-      const after = last === null ? sorted : sorted.filter((tag) => tag > last);
       const size = Math.min(Number(searchParams.get("n") ?? Infinity), tagPageSize);
+      const opaque = tagCursor === "opaque";
+      const last = searchParams.get("last");
+      const offset = opaque
+        ? Number(Buffer.from(searchParams.get("cursor") ?? "MA", "base64url").toString())
+        : 0;
+      const after = opaque
+        ? sorted.slice(offset)
+        : last === null
+          ? sorted
+          : sorted.filter((tag) => tag > last);
       const page = after.slice(0, size);
       const more = after.length > page.length;
+      const query = opaque
+        ? `cursor=${Buffer.from(String(offset + page.length)).toString("base64url")}`
+        : `n=${page.length}&last=${encodeURIComponent(page.at(-1))}`;
       return json(tagList(name, sorted.length ? page : null), {
-        headers: more
-          ? {
-              link: `</v2/${listing[1]}/tags/list?n=${page.length}&last=${encodeURIComponent(page.at(-1))}>; rel="next"`,
-            }
-          : {},
+        headers: more ? { link: `</v2/${listing[1]}/tags/list?${query}>; rel="next"` } : {},
       });
     }
     const manifest = /^\/v2\/(.+)\/manifests\/(.+)$/u.exec(pathname);
