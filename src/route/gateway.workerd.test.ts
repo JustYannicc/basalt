@@ -17,6 +17,10 @@ import { RouteGateway as Gateway, routeAcquisition } from './src/route/gateway.w
 import { PoolRoutePeer } from './src/route/pool-peer.worker.ts';
 import { FakeGateway } from './src/route/test/gateway.ts';
 const fakes = [];
+// Every console.error line this isolate writes, so a refusal's log line is read back exactly.
+const lines = [];
+const error = console.error;
+console.error = (...args) => { lines.push(args.join(' ')); error(...args); };
 const routed = (env) => ({ ...env, RouteGateway: env.WITHOUT_GATEWAY ? undefined : { jurisdiction: () => env.Gateways },
   PoolContainer: { jurisdiction: () => env.Controllers } });
 export class Gateways extends Gateway {
@@ -33,6 +37,7 @@ export class BarePeer extends PoolRoutePeer { constructor(ctx, env) { super(ctx,
 export default { async fetch(request, env, ctx) {
   const url = new URL(request.url);
   if (url.pathname === '/route/v1/acquisitions') return routeAcquisition(request, routed(env));
+  if (url.pathname === '/logs') return Response.json(lines.splice(0));
   if (url.pathname === '/approve') { fakes.at(-1).approve(); return new Response('ok'); }
   if (url.pathname === '/crash') { fakes.at(-1).crash(); return new Response('ok'); }
   if (url.pathname === '/starts') return Response.json(fakes.at(-1).starts);
@@ -53,6 +58,12 @@ export default { async fetch(request, env, ctx) {
   return new Response(null, { status: 404 });
 } };
 `;
+
+const outbound = { count: 0 };
+const refusals = async (mf: Miniflare) =>
+  ((await (await mf.dispatchFetch("http://fixture/logs")).json()) as string[]).filter((line) =>
+    line.startsWith("POOL_ROUTE_TUNNEL_REFUSED"),
+  );
 
 async function start() {
   const bundle = await build({
@@ -82,7 +93,11 @@ async function start() {
         Controllers: { className: "Controllers", useSQLite: true },
       },
       bindings: { POOL_APP_SIGNING_KEY: "a".repeat(64) },
-      outboundService: () => new Response(null, { status: 403 }),
+      // Counted: no step of a route, refused or served, may reach anything outside workerd.
+      outboundService: () => {
+        outbound.count += 1;
+        return new Response(null, { status: 403 });
+      },
     }),
   );
 }
@@ -198,6 +213,12 @@ test("real workerd: signed acquisitions drive the gateway and the pool peer tunn
       ).status,
       403,
     );
+    // One line per refusal, its reason code only: no route, owner or pool in it.
+    assert.deepEqual(await refusals(mf), [
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_not_permitted"}',
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_request_invalid"}',
+    ]);
     // Everything but the private tunnel waits for slice 2.
     assert.equal((await mf.dispatchFetch("http://fixture/direct")).status, 501);
     assert.equal((await mf.dispatchFetch("http://fixture/tunnel-post")).status, 501);
@@ -205,6 +226,11 @@ test("real workerd: signed acquisitions drive the gateway and the pool peer tunn
     const broken = await open(mf, `/peer/${brokenRoute}`);
     const reset = await broken.closed;
     assert.deepEqual([reset.code, reset.reason], [1013, "route_gateway_unavailable"]);
+    assert.deepEqual(await refusals(mf), [
+      'POOL_ROUTE_TUNNEL_REFUSED {"reason":"route_gateway_unavailable"}',
+    ]);
+    // A refused route never went direct: nothing left workerd at any step.
+    assert.equal(outbound.count, 0);
 
     // A restarted container gets the sealed identity back without a new approval.
     await mf.dispatchFetch("http://fixture/crash");
