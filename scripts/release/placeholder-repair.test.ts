@@ -734,18 +734,23 @@ test("every held row is reserved, not only the first or the repaired one", async
 
 test("a reserved row known by id alone stops an adopt, never a forget", async () => {
   // A legacy root: its id may be stale, so the live application under the name may be its own.
-  const rows = () => ({
-    RouteGateway: placeholder(),
-    PoolWorker: worker,
-    PoolContainer: { attr: { applicationId: "stale-root" } },
-  });
-  const drifted = { status: "drifted" as const, actual: live(), account: ACCOUNT };
-  const adopt = await commandRun(rows(), drifted, undefined);
-  assert.ok(Exit.isFailure(adopt.planned));
-  assert.match((Cause.squash(adopt.planned.cause) as RepairRefused).why, /by id alone/u);
-  assert.deepEqual(adopt.writes, []);
-  const forget = await commandRun(rows(), { status: "missing", account: ACCOUNT }, undefined);
-  assert.deepEqual(forget.writes, ["delete basalt/test-route-scratch-1/RouteGateway"]);
+  for (const attr of [
+    { applicationId: "stale-root" },
+    { applicationId: "stale-root", applicationName: "" },
+  ]) {
+    const rows = () => ({
+      RouteGateway: placeholder(),
+      PoolWorker: worker,
+      PoolContainer: { attr },
+    });
+    const drifted = { status: "drifted" as const, actual: live(), account: ACCOUNT };
+    const adopt = await commandRun(rows(), drifted, undefined);
+    assert.ok(Exit.isFailure(adopt.planned), JSON.stringify(attr));
+    assert.match((Cause.squash(adopt.planned.cause) as RepairRefused).why, /by id alone/u);
+    assert.deepEqual(adopt.writes, []);
+    const forget = await commandRun(rows(), { status: "missing", account: ACCOUNT }, undefined);
+    assert.deepEqual(forget.writes, ["delete basalt/test-route-scratch-1/RouteGateway"]);
+  }
 });
 
 test("the stage's rows are read and written under the stack's key, each by its own fqn", async () => {
