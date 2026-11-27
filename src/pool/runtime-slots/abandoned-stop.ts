@@ -20,8 +20,9 @@ export class RuntimeAbandonedStop {
   private ctx: ControllerState;
   private store: RuntimeWitnessStore;
   private role: "legacy" | "runtime";
-  // One run per object, so a stop never repeats on every pass.
-  private ran = false;
+  // Set only while this object's run is under way, so a pass never starts a second one beside it.
+  // A run that failed clears it: a later pass past the grace finishes the stop with `destroy()`.
+  private stopping = false;
   constructor(ctx: ControllerState, store: RuntimeWitnessStore, role: "legacy" | "runtime") {
     this.ctx = ctx;
     this.store = store;
@@ -29,7 +30,7 @@ export class RuntimeAbandonedStop {
   }
   async stop(target: SlotTarget) {
     const container = this.ctx.container!;
-    if (this.ran || !container.running) return;
+    if (this.stopping || !container.running) return;
     // The root's endpoint owns the root's own container, which this path never stops.
     if (this.role !== "runtime") return;
     const record = await this.store.retained(target.slotId);
@@ -43,7 +44,6 @@ export class RuntimeAbandonedStop {
     // A stop already sent is never sent again; inside its grace it is still under way.
     if (sentAt !== undefined && Date.now() - sentAt < forcedStopGraceMs) return;
     if (sentAt === undefined) await this.store.stopSent(target, Date.now());
-    this.ran = true;
     await markStopSent(this.ctx);
     const graceful = typeof container.signal === "function";
     this.run(
@@ -62,18 +62,20 @@ export class RuntimeAbandonedStop {
     );
   }
   private run(target: SlotTarget, stop: () => Promise<StopPath>) {
+    this.stopping = true;
     const work = stop().then(
       (path) => path,
       (): StopPath => "stop_failed",
     );
     this.ctx.waitUntil(
-      work.then((path) =>
+      work.then((path) => {
+        this.stopping = false;
         console.warn("POOL_RUNTIME_ABANDONED_STOP", {
           slot: target.slotId,
           ordinal: target.homePeerOrdinal ?? null,
           path,
-        }),
-      ),
+        });
+      }),
     );
   }
 }

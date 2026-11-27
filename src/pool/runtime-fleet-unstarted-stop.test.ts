@@ -433,6 +433,41 @@ test("a replaced endpoint leaves a stop still inside its grace to run", async (c
   await s.f.settle();
 });
 
+test("a stop whose destroy failed is finished by a later pass of the same endpoint, never signalled again", async (context) => {
+  const s = await stuckFleet(context);
+  await quarantinedStart(s);
+  const quarantinedAt = (await s.row())!.phaseAt!;
+  let failures = 1;
+  s.f.hooks.destroy = () => {
+    if (failures-- > 0) throw new Error("synthetic destroy failure");
+  };
+  await s.pass();
+  assert.deepEqual(s.stops(), ["stop_failed"]);
+  assert.deepEqual(s.f.calls.signals, [15]);
+  assert.equal(s.f.ctx.container.running, true, "the failed destroy left it running");
+  // The same endpoint object, past the grace the failed run already spent.
+  await s.pass();
+  assert.deepEqual(
+    s.stops(),
+    ["stop_failed", "destroy_after_grace"],
+    "the same object never retried the stop",
+  );
+  assert.deepEqual(s.f.calls.signals, [15], "the retry signalled again");
+  assert.equal(s.f.calls.destroy, 1);
+  assert.equal(s.f.ctx.container.running, false);
+  let row;
+  while ((row = await s.pass()) !== undefined) {
+    assert.equal(row.phase, "quarantined");
+    assert.ok(
+      Date.now() - quarantinedAt <= forcedStopGraceMs + startingBoundMs + 3 * upkeepCadenceMs,
+      "the place wasn't reclaimed within the stop grace and the absence bound",
+    );
+  }
+  assert.deepEqual(s.f.calls.signals, [15]);
+  assert.equal(s.f.calls.destroy, 1);
+  assert.deepEqual(s.stops(), ["stop_failed", "destroy_after_grace"]);
+});
+
 test("an endpoint on older code that doesn't know the stop fails closed and is asked again", async (context) => {
   const s = await stuckFleet(context);
   await quarantinedStart(s);

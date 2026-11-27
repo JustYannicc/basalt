@@ -152,8 +152,10 @@ export class FleetHandoffCell implements FleetCell {
     // A start or activation still returning here owns the instance.
     if (this.starting || this.activating > 0) return this.present();
     // A start that activated proved itself: its controller admits it, so it is never fenced here.
-    // Only a start or activation tracked above commits one, so none lands between this read and
-    // the fence.
+    // A selection can still commit after this read, from another isolate's activation or one this
+    // cell observes later. The endpoint keeps that safe: it fences in its serialized section, then
+    // refuses every later attestation and read and never stops an attested start. A late admission
+    // also needs a health read, which a fenced endpoint refuses.
     if (await this.activated()) return this.present();
     // The endpoint is fenced first, so it refuses every later admission and start for this slot and
     // the wait below covers every start that could ever run, a replaced isolate's included. With
