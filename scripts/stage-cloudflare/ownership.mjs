@@ -60,6 +60,7 @@ export const RELEASE_FIRST_WORDS = Object.freeze([
   "publicsite",
   "release",
   "router",
+  "routegateway",
   "runtime",
   "sql",
   "synthetic",
