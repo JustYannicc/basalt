@@ -11,7 +11,7 @@ index 000000000..3f9687a83
 +export const highlighter = Effect.fail(new HighlightUnavailable({}));
 diff --git a/apps/hosted/cloud/web/server-highlight.ts b/apps/hosted/cloud/web/server-highlight.ts
 new file mode 100644
-index 000000000..9871a7ff9
+index 000000000..1277787f8
 --- /dev/null
 +++ b/apps/hosted/cloud/web/server-highlight.ts
 @@ -0,0 +1,35 @@
@@ -23,12 +23,12 @@ index 000000000..9871a7ff9
 +
 +/**
 + * Keep Shiki out of the server build, which the dashboard Worker uploads and compiles on every
-+ * cold start. With the real engine the server render waits for it and sends colored tokens, but
-+ * highlighted tokens are not carried to the browser, whose first render is plain: hydration then
-+ * mismatched and React rendered the block again in the browser. With the stub the server sends
-+ * the same plain code the browser first renders, and the browser colors it once its engine loads.
-+ * Only built Workers swap; a dev server still highlights on the server. The build fails if the
-+ * engine is no longer swapped, so a moved import cannot quietly bring Shiki back.
++ * cold start. With the real engine the server render waits for it and sends colored tokens, which
++ * hydration keeps because each line holds the same text. With the stub the server sends plain
++ * code, so a page load shows its code blocks plain until the browser's engine loads and colors
++ * them; views opened later in the same page find the engine loaded. Only built Workers swap; a
++ * dev server still highlights on the server. The build fails if the engine is no longer swapped,
++ * so a moved import cannot quietly bring Shiki back.
 + */
 +export const serverHighlight = (): Plugin => {
 +  let swapped = false;
