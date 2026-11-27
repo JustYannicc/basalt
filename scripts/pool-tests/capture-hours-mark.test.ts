@@ -141,7 +141,7 @@ test("the late-commit sweep makes the hour it fills count again", async () => {
       at(3, 10 * minute),
       c.fingerprint,
     ]);
-    await f.db.query("UPDATE basalt_model_history_cursor SET sweep_id=0");
+    await f.db.query("UPDATE basalt_model_history_cursor SET sweep_id=0, sweep_upper=forward_id");
     const swept = await captureHomeRequests(f.db);
     assert.ok(swept.state === "active");
     assert.equal(swept.fresh, 0);
