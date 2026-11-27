@@ -30,8 +30,7 @@ export const chunkSources =
       throw new Error(
         `The dashboard upload record names ${path}, which the site build no longer has; rebuild the Workers`,
       );
-    if (existsSync(`${chunk}.map`))
-      return JSON.parse(readFileSync(`${chunk}.map`, "utf8")).sources;
+    if (existsSync(`${chunk}.map`)) return JSON.parse(readFileSync(`${chunk}.map`, "utf8")).sources;
     if (maplessChunk.test(path)) return [];
     throw new Error(`${path} has no source map, so the dashboard check cannot see inside it`);
   };
