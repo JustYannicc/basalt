@@ -493,40 +493,58 @@ test("a teardown spends at most its budget on stage requests, and stops between 
 });
 
 test("a teardown out of time during its deletes keeps everything it gathered", async () => {
-  const fake = fakeAccount({
-    live: {
-      applications: [application({ id: "a1", name: `${prefix}-mock` })],
-      scripts: [script(`${prefix}-gateway`)],
-    },
-    tags: { [`acct/${prefix}-mock`]: ["h1"] },
-    cloudflare: { pageSize: 5, emptyEnd: true },
-  });
-  let clock = NOW;
-  // Forty seconds a request: the budget runs out among the deletes, before the read back.
-  const slow = async (url, init) => {
-    clock += 40_000;
-    return fake.fetcher(url, init);
-  };
-  const printed = [];
-  const saved = {};
-  const code = await main(
-    { ...dispatch, EMULATED_MODE: "destroy" },
-    {
-      fetcher: slow,
-      now: () => clock,
-      error: (line) => printed.push(line),
-      summary: (line) => printed.push(line),
-      save: (name, value) => (saved[name] = value),
-      deployEntry: () => {},
-    },
-  );
-  assert.equal(code, 1);
-  assert.match(
-    printed[0],
-    /^Emulated upstream teardown could not read back what remains: .*time budget is spent/u,
-  );
-  assert.equal(saved["stopped-destroy"].readBack, "not-completed");
-  assert.ok(Array.isArray(saved["stopped-destroy"].teardown));
+  // Forty seconds a request: every delete is sent, then the read back runs out. Fifty: the
+  // repository's own delete runs out too, and the line names it.
+  for (const [step, failedDeletes] of [
+    [40_000, 0],
+    [50_000, 1],
+  ]) {
+    const fake = fakeAccount({
+      live: {
+        applications: [application({ id: "a1", name: `${prefix}-mock` })],
+        scripts: [script(`${prefix}-gateway`)],
+      },
+      tags: { [`acct/${prefix}-mock`]: ["h1"] },
+      cloudflare: { pageSize: 5, emptyEnd: true },
+    });
+    let clock = NOW;
+    const slow = async (url, init) => {
+      clock += step;
+      return fake.fetcher(url, init);
+    };
+    const printed = [];
+    const saved = {};
+    const code = await main(
+      { ...dispatch, EMULATED_MODE: "destroy" },
+      {
+        fetcher: slow,
+        now: () => clock,
+        error: (line) => printed.push(line),
+        summary: (line) => printed.push(line),
+        save: (name, value) => (saved[name] = value),
+        deployEntry: () => {},
+      },
+    );
+    assert.equal(code, 1, String(step));
+    assert.match(
+      printed[0],
+      /^Emulated upstream teardown could not read back what remains: .*time budget is spent/u,
+    );
+    assert.equal(
+      /; failed: registry repository /u.test(printed[0]),
+      failedDeletes > 0,
+      String(step),
+    );
+    assert.deepEqual(saved["stopped-destroy"], {
+      teardown: [],
+      readBack: "not-completed",
+      found: { applications: 1, namespaces: 0, scripts: 1, images: 1, kept: 0 },
+      failedDeletes,
+    });
+    // The app and the Worker went first, inside the budget.
+    assert.equal(fake.live.applications.length, 0, String(step));
+    assert.equal(fake.live.scripts.length, 0, String(step));
+  }
 });
 
 test("a teardown's deadline is its budget or its job's limit less a reserve, whichever is first", () => {
@@ -557,9 +575,54 @@ test("each teardown job states its own limit, and the budget with its reserve fi
     const body = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z]+:\n/u)[0];
     const limit = Number(/\n    timeout-minutes: (\d+)/u.exec(body)?.[1]);
     assert.equal(Number(/EMULATED_JOB_LIMIT_MINUTES: (\d+)/u.exec(body)?.[1]), limit, job);
-    assert.match(body, /EMULATED_JOB_STARTED_MS=\$\(date \+%s%3N\)/u, job);
+    // The start is noted second, before anything that could take time.
+    const steps = body.split("\n      - ").slice(1);
+    assert.match(
+      steps[1],
+      /^name: Note when the job started\n {8}run: echo "EMULATED_JOB_STARTED_MS=\$\(date \+%s%3N\)" >> "\$GITHUB_ENV"/u,
+      job,
+    );
     assert.ok(teardownBudgetMs + jobReserveMs + 60_000 <= limit * 60_000, job);
   }
+  // After the longest toolchain and mode, the teardown after a failed deploy still has ten minutes
+  // before the job's reserve, with five minutes allowed for setup.
+  const emulated = workflow.split("\n  emulated:\n")[1].split(/\n  [a-z]+:\n/u)[0];
+  const stepLimits = [...emulated.matchAll(/\n {8}timeout-minutes: (\d+)/gu)].map((match) =>
+    Number(match[1]),
+  );
+  const jobLimit = Number(/\n    timeout-minutes: (\d+)/u.exec(emulated)?.[1]);
+  assert.deepEqual(stepLimits, [25, 45]);
+  assert.ok((jobLimit - 5 - 25 - 45) * 60_000 - jobReserveMs >= 10 * 60_000);
+  // The reserve covers saving the record and uploading the artifact.
+  assert.ok(jobReserveMs >= 2 * 60_000);
+});
+
+test("a teardown whose job has no time left sends nothing, and says so", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: { pageSize: 5 },
+  });
+  const printed = [];
+  const code = await main(
+    {
+      ...dispatch,
+      EMULATED_MODE: "destroy",
+      // 89 of the job's 90 minutes are gone: less than its reserve is left.
+      EMULATED_JOB_STARTED_MS: String(NOW - 89 * 60_000),
+      EMULATED_JOB_LIMIT_MINUTES: "90",
+    },
+    {
+      fetcher: fake.fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.equal(fake.calls.length, 0);
+  assert.match(printed.join("\n"), /time budget is spent/u);
 });
 
 test("an expiry spends at most its budget too", async () => {

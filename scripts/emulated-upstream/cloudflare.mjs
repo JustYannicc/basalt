@@ -93,9 +93,14 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch, dea
       const failed = new StageError(
         `Emulated upstream teardown could not read back what remains: ${publicMessage(error)}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
       );
+      // Closed counts only: what the teardown found to remove, and how many of its deletes failed.
       failed.record = Object.freeze({
         teardown: Object.freeze(records),
         readBack: "not-completed",
+        found: Object.freeze(
+          Object.fromEntries(Object.entries(before).map(([kind, rows]) => [kind, rows.length])),
+        ),
+        failedDeletes: failures.length,
       });
       throw failed;
     }

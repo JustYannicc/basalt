@@ -37,7 +37,9 @@ jobs:
       group: emulated-upstream
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Setup (a few minutes), the toolchain (at most 25), the mode (at most 45) and then the teardown
+    # after a failed deploy, which still finds at least 14 minutes before the job ends.
+    timeout-minutes: 90
     # The key lives only in this environment, which the coordinator fills; deploy and check read it.
     environment: emulated-upstream
     env:
@@ -46,7 +48,7 @@ jobs:
       EMULATED_GO: ${{ inputs.go }}
       EMULATED_OUTPUT: .local/emulated-upstream
       # The job's own limit, as timeout-minutes above: a teardown's requests end before it.
-      EMULATED_JOB_LIMIT_MINUTES: 60
+      EMULATED_JOB_LIMIT_MINUTES: 90
     steps:
       # Expressions compare case-insensitively, so a branch named MAIN would pass the job's condition.
       - name: Refuse every ref but main
@@ -74,7 +76,9 @@ jobs:
         run: |
           .upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/emulated-upstream/tsconfig.stack.json
           .upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/emulated-upstream/tsconfig.worker.json
+      # A mode that runs long is stopped while the teardown after it still has its time.
       - name: Execute the mode
+        timeout-minutes: 45
         run: node scripts/emulated-upstream/run.mjs
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
