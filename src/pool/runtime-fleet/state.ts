@@ -116,8 +116,9 @@ const tier = (placement: FleetPlacement | undefined, place: DistanceClass, activ
 };
 
 /**
- * A start its bound quarantined before it had an identity. One that activates later proved itself,
- * so it is still admitted; nothing else leaves quarantine for ready.
+ * A start its bound quarantined before it had an identity. One that activates later and then
+ * answers its health read proved itself, so it is still admitted; nothing else leaves quarantine
+ * for ready.
  */
 export function unprovenStart(row: Row) {
   return row.phase === "quarantined" && row.reason === "start_unproven" && !row.identity;

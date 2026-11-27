@@ -456,11 +456,15 @@ export class RuntimeFleet {
       (!["warming", "uncertain"].includes(row.phase) && !late) ||
       (row.identity && !sameIdentity(row.identity, identity))
     )
-      return;
-    const database = await cell
-      .healthy?.(identity)
-      .then((value) => value ?? undefined)
-      .catch(() => undefined);
+      return false;
+    const health = await cell.healthy?.(identity).then(
+      (database) => ({ database: database ?? undefined }),
+      () => undefined,
+    );
+    // A late start's selection can commit after another isolate fenced its slot, and a fenced
+    // endpoint refuses every read, so only a good read here proves it can take a call.
+    if (late && !health) return false;
+    const database = health?.database;
     const draw = (await this.deps.state.placementDraws()) + 1;
     const place = distanceClass(database);
     // A replacement keeps the demand that reserved it, so it serves wherever it landed.
@@ -484,14 +488,15 @@ export class RuntimeFleet {
                     : "redraw";
     // Only once the admission's own write has committed: a failed write leaves the episode open.
     if (decision === "redraw") {
-      if (!(await this.deps.state.redraw(identity, database))) return;
+      if (!(await this.deps.state.redraw(identity, database))) return false;
       this.refusals.started(identity.slotId);
       logPlacement(identity, database, decision, draw);
-      return;
+      return true;
     }
     await this.deps.state.ready(identity, database);
     this.refusals.started(identity.slotId);
     logPlacement(identity, database, decision, draw);
+    return true;
   }
   /**
    * A far cell within `neededFarMs` serves at once when the fleet needs it now. Beside a serving
@@ -1077,11 +1082,11 @@ export class RuntimeFleet {
       logQuarantine("held", row, age);
     }
     if (!row.identity) {
-      // A start that activated after its bound fired proved itself, so it serves after all.
+      // A start that activated after its bound fired serves after all, once it answers its read.
       const proven = await cell.selected().catch(() => undefined);
-      if (proven && sameTarget(proven, row.target)) {
+      if (proven && sameTarget(proven, row.target) && (await this.admit(cell, proven))) {
         this.reported.delete(row.target.slotId);
-        return this.admit(cell, proven);
+        return;
       }
     }
     // Only a start that never activated has its container stopped; one with an identity activated

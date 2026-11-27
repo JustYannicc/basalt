@@ -326,6 +326,63 @@ test("a start that activates after its bound fired is admitted and serves, never
   assert.equal(await s.fenced(), false);
 });
 
+test("a start whose selection commits after a replaced controller fenced its slot is never made ready", async (context) => {
+  const s = await stuckFleet(context);
+  await s.state.reserve(s.f.target);
+  await s.state.dispatch(s.f.target);
+  // The old isolate's activation attests, and its last health read is past the endpoint's check
+  // when it is held.
+  const boot = gate();
+  const proof = gate();
+  let attested = false;
+  let readsAfterAttest = 0;
+  let holdNext = false;
+  const original = s.f.stub.fetch;
+  s.f.stub.fetch = async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/attest") attested = true;
+    else if (attested && path === "/health" && ++readsAfterAttest === 2) holdNext = true;
+    return original(request);
+  };
+  let booted = false;
+  s.f.hooks.health = async () => {
+    if (!booted) {
+      booted = true;
+      boot.reached();
+      await boot.opened;
+      return;
+    }
+    if (!holdNext) return;
+    holdNext = false;
+    proof.reached();
+    await proof.opened;
+  };
+  const starting = s.f.cell.start(s.f.target);
+  // Its container takes almost the whole start bound to boot.
+  await boot.arrived;
+  assert.equal((await s.pass(startingBoundMs - 5_000))?.phase, "warming");
+  boot.open();
+  await proof.arrived;
+  assert.equal((await s.pass(5_000))?.phase, "quarantined", "the bound fired");
+  // A replaced controller fences the slot while that read is held.
+  s.replaceController();
+  assert.equal((await s.pass())?.phase, "quarantined");
+  assert.equal(await s.fenced(), true);
+  // The old isolate's selection commits behind the fence.
+  proof.open();
+  assert.equal((await starting).bootId, s.f.identity().bootId);
+  for (let index = 0; index < 3; index++) {
+    const row = await s.pass();
+    assert.notEqual(row?.phase, "ready", "a fenced cell was admitted ready");
+    assert.equal(row?.phase, "quarantined");
+    assert.equal(row?.reason, "start_unproven");
+    assert.equal(row?.identity, undefined);
+  }
+  await assert.rejects(s.forward(), /the root takes no call here/u);
+  assert.deepEqual(s.f.transport.modelStubs, [], "a call was routed to the fenced cell");
+  assert.equal(await s.fenced(), true);
+});
+
 test("the stop is sent once per row, through repeated passes, a replaced controller and a replaced endpoint", async (context) => {
   let releaseGrace!: () => void;
   const grace = new Promise<void>((resolve) => (releaseGrace = resolve));
