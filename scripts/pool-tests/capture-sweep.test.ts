@@ -142,3 +142,38 @@ test("a range longer than one session's checks goes on where the last session st
     );
     assert.equal(await captured(db), ids);
   }));
+
+test("after an activation over existing rows, the sweep reads none the backfill owns and still catches late rows above them", () =>
+  fixture(async ({ db }) => {
+    const backfill = 1_000;
+    await homeRows(db, 1, backfill);
+    // As activation over existing rows leaves it: the backfill still to run below the cursor.
+    await db.query(
+      `UPDATE basalt_model_history_cursor SET forward_id=$1, backfill_upper=$1, backfill_id=0,
+      backfill_complete=false, sweep_id=0, sweep_upper=0`,
+      [backfill],
+    );
+    let owned = 0;
+    const counted: HistoryDatabase = {
+      query: async (text, values) => {
+        const result = await db.query(text, values);
+        if (text.includes("WHERE u.id = ANY"))
+          owned += result.rows.filter((row) => Number(row.source_id) <= backfill).length;
+        return result;
+      },
+    };
+    let next = backfill + 1;
+    for (let session = 0; session < 9; session++) {
+      const gap = next + 150;
+      if (session < 6) {
+        await homeRows(db, next, gap - 1);
+        await homeRows(db, gap + 1, next + 299);
+        next += 300;
+      }
+      assert.equal((await captureHomeRequests(counted)).state, "active");
+      // The id the pages just passed commits now.
+      if (session < 6) await homeRows(db, gap, gap);
+    }
+    assert.equal(owned, 0, "the sweep read rows the backfill owns");
+    assert.equal(await captured(db), next - 1, "every row, the late ones included");
+  }));
