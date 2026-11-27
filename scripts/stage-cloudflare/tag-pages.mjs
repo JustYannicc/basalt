@@ -4,107 +4,61 @@
 // Cloudflare's registry lists one `sha256:<hex>` entry for every manifest besides the tags; such an
 // entry is a digest reference, held to the stage's own digest rule, and never read as a tag.
 import { DIGEST, fail, tagPageOf } from "./answers.mjs";
+import { linkShape, nextLinkOf, queryPairsOf, shapeOf } from "./link-header.mjs";
 
+export { shapeOf };
 /** A registry tag (OCI distribution): no separator, and no leading dot, so never a dot segment. */
 export const TAG = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/u;
-export const MAX_TAG_PAGES = 100;
+/** A page size registries answer in pages of 5 still reaches 5,000 entries within the limit. */
+export const MAX_TAG_PAGES = 1000;
+/** How many entries a page the stage builds itself asks for. */
+const TAG_PAGE = 1000;
 /** A parameter of the registry's next link the stage will send back: a plain name, a plain value. */
 const CURSOR_NAME = /^[A-Za-z_]{1,32}$/u;
 const CURSOR_VALUE = /^[A-Za-z0-9._~+/=:-]{1,1024}$/u;
 const MAX_CURSOR_PARAMS = 4;
 /** OCI's digest grammar, only to record whether a refused entry looked like one. */
 const DIGEST_SHAPE = /^[a-z0-9]+(?:[+._-][a-z0-9]+)*:[a-zA-Z0-9=_-]+$/u;
-/** Parameter names a record may name; any other is recorded as `other`. */
-const KNOWN_PARAMS = new Set(["n", "last", "cursor", "page", "next", "marker", "token"]);
-const CLASSES = [
-  ["upper", /[A-Z]/u],
-  ["lower", /[a-z]/u],
-  ["digit", /[0-9]/u],
-  ["dot", /\./u],
-  ["dash", /-/u],
-  ["underscore", /_/u],
-  ["colon", /:/u],
-  ["slash", /\//u],
-  ["plus", /\+/u],
-  ["equals", /=/u],
-  ["tilde", /~/u],
-  ["percent", /%/u],
-  ["space", /\s/u],
-  ["other", /[^A-Za-z0-9._:/+=~%\s-]/u],
-];
 
-/** What a string is made of, never what it says: its length, its classes and its first one. */
-export const shapeOf = (text) =>
-  Object.freeze({
-    length: text.length,
-    classes: CLASSES.filter(([, pattern]) => pattern.test(text)).map(([name]) => name),
-    first: CLASSES.find(([, pattern]) => pattern.test(text.charAt(0)))?.[0] ?? "none",
-  });
-
-/** A link's query as name and value pairs, decoded as written: a `+` stays a `+`. */
-function queryPairs(search) {
-  const pairs = [];
-  for (const part of search.slice(1).split("&")) {
-    if (!part) continue;
-    const at = part.indexOf("=");
-    try {
-      pairs.push(
-        at < 0
-          ? [decodeURIComponent(part), ""]
-          : [decodeURIComponent(part.slice(0, at)), decodeURIComponent(part.slice(at + 1))],
-      );
-    } catch {
-      return undefined;
-    }
-  }
-  return pairs;
+/**
+ * The cursor the registry's next link carries, as name and value pairs: the last value of each
+ * name in its target's query, so a query the registry appended twice reads as its latest. Undefined
+ * when the header has no next link the stage can take apart, the target holds a fragment, or a part
+ * does not decode.
+ */
+function linkCursor(header) {
+  const link = nextLinkOf(header);
+  if (link === undefined || link.target.includes("#")) return undefined;
+  const pairs = queryPairsOf(link.target);
+  return pairs === undefined ? undefined : [...new Map(pairs)];
 }
 
 /**
- * The next page's URL: the stage's own host and path, with only the parameters of the registry's
- * next link, each re-encoded, so no cursor value can reach the host or the path. No URL when the
- * link has no target the stage can read, does not parse, has a fragment, or carries anything but a
- * few plain cursor values.
+ * The next page's URL, always the stage's own host and path. It carries the registry's own cursor
+ * when its next link holds a few plain cursor values, each re-encoded, so no value can reach the
+ * host or the path. Otherwise it is the distribution spec's own paging, `n` and `last` set to the
+ * page's last entry: the link is a hint, and no form of it can stop the read by itself. The record
+ * says which was used and the header's shape.
  */
-export function cursorOf(target, first) {
-  if (target === undefined) return { facts: Object.freeze({ target: "unreadable" }) };
-  const base = new URL(first);
-  let parsed;
-  try {
-    parsed = new URL(target, base);
-  } catch {
-    return { facts: Object.freeze({ target: "present", parses: false }) };
-  }
-  const pairs = queryPairs(parsed.search);
-  const params = pairs ?? [];
-  const plainParam = ([name, value]) => CURSOR_NAME.test(name) && CURSOR_VALUE.test(value);
-  const facts = Object.freeze({
-    target: "present",
-    parses: true,
-    host: parsed.host === base.host ? "same" : "other",
-    path: parsed.pathname === base.pathname ? "same" : "other",
-    fragment: parsed.hash !== "",
-    decodes: pairs !== undefined,
-    paramCount: params.length,
-    params: params.slice(0, 8).map(([name, value]) =>
-      Object.freeze({
-        name: KNOWN_PARAMS.has(name) ? name : "other",
-        plainName: CURSOR_NAME.test(name),
-        plainValue: CURSOR_VALUE.test(value),
-        value: shapeOf(value),
-      }),
-    ),
-  });
+export function cursorOf(header, first, lastEntry) {
+  const base = `${new URL(first).origin}${new URL(first).pathname}`;
+  const shape = linkShape(header, first);
+  const params = linkCursor(header);
   const plain =
-    pairs !== undefined &&
-    parsed.hash === "" &&
+    params !== undefined &&
     params.length >= 1 &&
     params.length <= MAX_CURSOR_PARAMS &&
-    new Set(params.map(([name]) => name)).size === params.length &&
-    params.every(plainParam);
-  if (!plain) return { facts };
-  const query = params.map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
-  return { facts, url: `${base.origin}${base.pathname}?${query}` };
+    params.every(([name, value]) => CURSOR_NAME.test(name) && CURSOR_VALUE.test(value)) &&
+    params.some(([name]) => name !== "n");
+  if (plain) {
+    const query = params.map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
+    return { facts: Object.freeze({ cursor: "link", header: shape }), url: `${base}?${query}` };
+  }
+  if (lastEntry === undefined) return { facts: Object.freeze({ cursor: "none", header: shape }) };
+  return {
+    facts: Object.freeze({ cursor: "spec", header: shape }),
+    url: `${base}?n=${TAG_PAGE}&last=${encodeURIComponent(lastEntry)}`,
+  };
 }
 
 /** Which of the stage's own failures a later page met; its message is the stage's, never remote. */
@@ -190,30 +144,20 @@ export async function readTagPages(first, fetchPage) {
     for (const tag of found) seen.add(tag);
     firstPage ??= found;
     if (!answer.next) return Object.freeze(tags);
-    const cursor = cursorOf(answer.target, first);
+    const cursor = cursorOf(answer.link, first, found.at(-1));
     pages.at(-1).link = cursor.facts;
-    // An empty page ends the list when its link leads nowhere new: every cursor value empty, or the
-    // very query just sent. An empty page whose link carries a fresh cursor could hide the rest.
+    // An empty page ends the list: the distribution spec has a registry fill every page unless
+    // fewer entries remain. Only a link that offers a fresh cursor the stage could follow, one that
+    // is neither empty (`n` is a page size, not a cursor) nor the query just sent, could mean more:
+    // that stops the read instead of ending it.
     if (!found.length) {
-      let pairs;
-      try {
-        pairs =
-          answer.target === undefined
-            ? undefined
-            : queryPairs(new URL(answer.target, first).search);
-      } catch {
-        pairs = undefined;
-      }
-      // `n` is a page size, not a cursor.
-      if (
-        pairs !== undefined &&
-        (pairs.every(([name, value]) => name === "n" || value === "") || cursor.url === url)
-      )
-        return Object.freeze(tags);
+      const fresh =
+        cursor.facts.cursor === "link" &&
+        cursor.url !== url &&
+        !linkCursor(answer.link).every(([name, value]) => name === "n" || value === "");
+      if (!fresh) return Object.freeze(tags);
       throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
     }
-    if (cursor.url === undefined)
-      throw stop("link-not-plain", "A registry tag list's next link is not plain cursor values");
     url = cursor.url;
   }
   throw stop("page-limit", `A registry tag list exceeded its page limit of ${MAX_TAG_PAGES}`);
