@@ -16,13 +16,7 @@ import {
   type SlotIdentity,
   type SlotTarget,
 } from "../runtime-slots/contract.ts";
-import {
-  FleetRefused,
-  RuntimeFleetState,
-  unprovenStart,
-  type FleetRow,
-  type PrimaryRoute,
-} from "./state.ts";
+import { FleetRefused, RuntimeFleetState, type FleetRow, type PrimaryRoute } from "./state.ts";
 import {
   cellHealthReadMs,
   countStillMs,
@@ -71,7 +65,6 @@ type PlacementDecision =
   | "admit_alone"
   | "admit_after_limit"
   | "admit_replacement"
-  | "admit_late"
   | "admit_needed"
   | "redraw";
 
@@ -448,55 +441,46 @@ export class RuntimeFleet {
     const row = (await this.deps.state.inspect()).find(
       (value) => value.target.slotId === identity.slotId,
     );
-    // A start whose activation completed after its bound quarantined it is admitted late.
-    const late = row !== undefined && unprovenStart(row);
-    // Growth and upkeep can both observe one start; only the first admits it.
+    // Growth and upkeep can both observe one start; only the first admits it. A start its bound
+    // quarantined is never admitted, however late it activates.
     if (
       !row ||
-      (!["warming", "uncertain"].includes(row.phase) && !late) ||
+      !["warming", "uncertain"].includes(row.phase) ||
       (row.identity && !sameIdentity(row.identity, identity))
     )
-      return false;
-    const health = await cell.healthy?.(identity).then(
-      (database) => ({ database: database ?? undefined }),
-      () => undefined,
-    );
-    // A late start's selection can commit after another isolate fenced its slot, and a fenced
-    // endpoint refuses every read, so only a good read here proves it can take a call.
-    if (late && !health) return false;
-    const database = health?.database;
+      return;
+    const database = await cell
+      .healthy?.(identity)
+      .then((value) => value ?? undefined)
+      .catch(() => undefined);
     const draw = (await this.deps.state.placementDraws()) + 1;
     const place = distanceClass(database);
     // A replacement keeps the demand that reserved it, so it serves wherever it landed.
     const replacing = row.replaces !== undefined || row.replacement === true;
-    // A late start already spent a whole start bound, so it serves wherever it landed too.
     const decision: PlacementDecision =
       place === "near"
         ? "admit"
         : place === "unknown"
           ? "admit_unknown"
-          : late
-            ? "admit_late"
-            : replacing
-              ? "admit_replacement"
-              : draw >= placementDraws
-                ? "admit_after_limit"
-                : !(await this.othersServing(identity))
-                  ? "admit_alone"
-                  : (await this.neededNow(identity, database))
-                    ? "admit_needed"
-                    : "redraw";
+          : replacing
+            ? "admit_replacement"
+            : draw >= placementDraws
+              ? "admit_after_limit"
+              : !(await this.othersServing(identity))
+                ? "admit_alone"
+                : (await this.neededNow(identity, database))
+                  ? "admit_needed"
+                  : "redraw";
     // Only once the admission's own write has committed: a failed write leaves the episode open.
     if (decision === "redraw") {
-      if (!(await this.deps.state.redraw(identity, database))) return false;
+      if (!(await this.deps.state.redraw(identity, database))) return;
       this.refusals.started(identity.slotId);
       logPlacement(identity, database, decision, draw);
-      return true;
+      return;
     }
     await this.deps.state.ready(identity, database);
     this.refusals.started(identity.slotId);
     logPlacement(identity, database, decision, draw);
-    return true;
   }
   /**
    * A far cell within `neededFarMs` serves at once when the fleet needs it now. Beside a serving
@@ -1080,14 +1064,6 @@ export class RuntimeFleet {
     if (reports > (this.reported.get(row.target.slotId) ?? 0)) {
       this.reported.set(row.target.slotId, reports);
       logQuarantine("held", row, age);
-    }
-    if (!row.identity) {
-      // A start that activated after its bound fired serves after all, once it answers its read.
-      const proven = await cell.selected().catch(() => undefined);
-      if (proven && sameTarget(proven, row.target) && (await this.admit(cell, proven))) {
-        this.reported.delete(row.target.slotId);
-        return;
-      }
     }
     // Only a start that never activated has its container stopped; one with an identity activated
     // and keeps the failure path.
