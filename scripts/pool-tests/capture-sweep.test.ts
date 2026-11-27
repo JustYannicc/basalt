@@ -4,7 +4,7 @@ import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
 import { sweepIdsPerSession, sweepReachIds } from "../../src/pool/model-history/capture-sweep.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { historyBatchSize } from "../../src/pool/model-history/store.ts";
-import { addHome, captured, fixture } from "./capture-fixture.ts";
+import { addHome, admin, captured, fixture } from "./capture-fixture.ts";
 
 /** One capture session after each entry's Home rows arrive: what its sweep and pages did. */
 async function sessions(db: HistoryDatabase, arrivals: readonly number[]) {
@@ -177,3 +177,92 @@ test("after an activation over existing rows, the sweep reads none the backfill 
     assert.equal(owned, 0, "the sweep read rows the backfill owns");
     assert.equal(await captured(db), next - 1, "every row, the late ones included");
   }));
+
+/** The cursor's sweep fields. */
+const sweepFields = async (db: HistoryDatabase) =>
+  (
+    await db.query(
+      "SELECT sweep_id::text AS id, sweep_upper::text AS upper FROM basalt_model_history_cursor",
+    )
+  ).rows[0];
+
+/**
+ * Sessions through `db`, with the sweep's check made to run out its limit when `cut` says so: as
+ * Postgres does, the statement fails and leaves the transaction aborted. Records the session's
+ * statement limit where it stores its cursor.
+ */
+function cutChecks(
+  db: HistoryDatabase,
+  cut: () => boolean,
+  limits: string[] = [],
+): HistoryDatabase {
+  return {
+    query: async (text, values) => {
+      if (text.startsWith("WITH s AS MATERIALIZED") && cut()) {
+        await db.query("SELECT 1/0").catch(() => {});
+        throw Object.assign(new Error("canceling statement due to statement timeout"), {
+          code: "57014",
+          severity: "ERROR",
+        });
+      }
+      if (text.includes("UPDATE basalt_model_history_cursor SET sweep_id"))
+        limits.push(
+          String(
+            (await db.query("SELECT current_setting('statement_timeout') AS limit")).rows[0]!.limit,
+          ),
+        );
+      return db.query(text, values);
+    },
+  };
+}
+
+test("a check cut short costs only that session's sweep: its pages land, and the range is checked next session", () =>
+  fixture(async ({ db }) => {
+    await sessions(db, [300, 0]);
+    const pending = await sweepFields(db);
+    assert.deepEqual(pending, { id: "0", upper: "300" });
+    // Rows the cut session's own page must still capture.
+    await addHome(db, 50);
+    const cut = await captureHomeRequests(cutChecks(db, () => true));
+    assert.ok(cut.state === "active");
+    assert.equal(cut.fresh, 50, "the forward page landed");
+    assert.equal(cut.swept, 0);
+    assert.equal(cut.sweepDeferred, true);
+    assert.equal(await captured(db), 350);
+    assert.deepEqual(await sweepFields(db), pending, "the range is neither skipped nor finished");
+    const limits: string[] = [];
+    const after = [];
+    for (let session = 0; session < 3; session++) {
+      const result = await captureHomeRequests(cutChecks(db, () => false, limits));
+      assert.ok(result.state === "active");
+      after.push(result.swept);
+    }
+    assert.deepEqual(after, [300, 50, 0], "every id checked once after the cut");
+    assert.ok(
+      limits.every((limit) => limit === "5s"),
+      `the session's own limit is back after its check: ${JSON.stringify(limits)}`,
+    );
+  }));
+
+test(
+  "a check Postgres cancels at its own limit leaves the session's pages to land",
+  { skip: admin ? false : "needs real Postgres for a real statement timeout" },
+  () =>
+    fixture(async ({ db }) => {
+      await sessions(db, [300, 0]);
+      await addHome(db, 50);
+      const slow: HistoryDatabase = {
+        query: (text, values) =>
+          text.startsWith("WITH s AS MATERIALIZED")
+            ? db.query("SELECT pg_sleep(4)")
+            : db.query(text, values),
+      };
+      const started = performance.now();
+      const cut = await captureHomeRequests(slow);
+      assert.ok(cut.state === "active");
+      assert.equal(cut.fresh, 50);
+      assert.equal(cut.sweepDeferred, true);
+      assert.ok(performance.now() - started < 4_000, "the check stopped at its own limit");
+      assert.equal(await captured(db), 350);
+    }),
+);

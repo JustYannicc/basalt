@@ -4,6 +4,7 @@ import { captureError } from "../telemetry/sentry.ts";
 import type { SentryEnv } from "../telemetry/sentry-target.ts";
 import { withHistoryDatabase } from "./model-history/database.ts";
 import { recordGatewayRefusal } from "./model-history/gateway.ts";
+import { reliabilityFailure } from "./model-history/reliability-read-failure.ts";
 import { modelKeyScope } from "./key-scope.ts";
 import type { ProtectionRefusal } from "./runtime-protection.ts";
 import type { HomeDatabasePoolObservation } from "./home-database-pool.ts";
@@ -89,7 +90,9 @@ export function gatewayUnavailable(
               requestedModel: model,
             }),
           );
-      })().catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1")),
+      })().catch((error: unknown) =>
+        console.error("POOL_MODEL_HISTORY_FAILURE count=1", reliabilityFailure(error)),
+      ),
     );
   return Response.json(
     {

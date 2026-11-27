@@ -2,9 +2,16 @@ import { homeHistorySelect } from "./home.ts";
 import { invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
 import { historyBatchSize } from "./store.ts";
+import { postgresCode } from "./usage-rollup-apply.ts";
 
 /** The most Home ids one session's sweep checks against history. */
-export const sweepIdsPerSession = 10_000;
+export const sweepIdsPerSession = 2_000;
+/**
+ * How long the check may run. It runs inside capture's first transaction, before any forward page,
+ * so one past this limit is rolled back to its savepoint: that session's sweep waits for the next
+ * session, and its pages still land.
+ */
+export const sweepCheckLimitMs = 2_000;
 /**
  * How far behind the forward cursor the sweep reaches. An id further back is not a late commit any
  * more; a row that commits that late shows as uncaptured in its hour's count instead.
@@ -68,16 +75,35 @@ export async function sweepLateCommits(db: HistoryDatabase, source: string, curs
     sweepId: String(larger(through, lower)),
     sweepUpper: cursor.forward,
   });
-  if (upper <= lower) return { rows: [], checked: 0, ...done(upper) };
-  const row = (
-    await db.query(checkRead, [
-      String(lower),
-      String(upper),
-      sweepIdsPerSession,
-      historyBatchSize,
-      source,
-    ])
-  ).rows[0];
+  if (upper <= lower) return { rows: [], checked: 0, deferred: false, ...done(upper) };
+  // The check reads only: rolling back to its savepoint after it undoes nothing but its own limit.
+  await db.query("SAVEPOINT late_commit_check");
+  let row: Record<string, unknown> | undefined;
+  try {
+    await db.query("SELECT set_config('statement_timeout',$1,true)", [`${sweepCheckLimitMs}ms`]);
+    row = (
+      await db.query(checkRead, [
+        String(lower),
+        String(upper),
+        sweepIdsPerSession,
+        historyBatchSize,
+        source,
+      ])
+    ).rows[0];
+  } catch (error) {
+    if (postgresCode(error) !== "57014") throw error;
+  }
+  await db.query("ROLLBACK TO SAVEPOINT late_commit_check");
+  await db.query("RELEASE SAVEPOINT late_commit_check");
+  // Past its limit: the range stays as it was, neither skipped nor finished, for the next session.
+  if (!row)
+    return {
+      rows: [],
+      checked: 0,
+      deferred: true,
+      sweepId: cursor.sweepId,
+      sweepUpper: cursor.sweepUpper,
+    };
   if (!Array.isArray(row?.missing)) return invalidHistory();
   const missing = row.missing.map(String);
   const capped = missing.length >= historyBatchSize;
@@ -106,6 +132,7 @@ export async function sweepLateCommits(db: HistoryDatabase, source: string, curs
   return {
     rows,
     checked,
+    deferred: false,
     ...(finished ? done(upper) : { sweepId: String(through), sweepUpper: cursor.sweepUpper }),
   };
 }

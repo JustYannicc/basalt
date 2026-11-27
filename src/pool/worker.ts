@@ -151,6 +151,7 @@ import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
+import { reliabilityFailure } from "./model-history/reliability-read-failure.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { controllerInstanceEnded, fetchController } from "./controller-reset.ts";
 import { detachFromCaller, followsCaller } from "./caller-signal.ts";
@@ -850,7 +851,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           runModelHistoryPass(this.modelHistoryPass(), progress),
         ),
       )
-      .catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1"))
+      // The reliability line's closed words: a failure kind and an SQLSTATE, never a message.
+      .catch((error: unknown) =>
+        console.error("POOL_MODEL_HISTORY_FAILURE count=1", reliabilityFailure(error)),
+      )
       .finally(() => {
         if (this.modelHistoryTask === work) this.modelHistoryTask = undefined;
       });

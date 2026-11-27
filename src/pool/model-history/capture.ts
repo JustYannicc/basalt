@@ -29,6 +29,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
   let inserted = 0,
     swept = 0,
     sweptRead = 0,
+    sweepDeferred = false,
     backfilled = 0,
     old: string,
     complete: boolean,
@@ -121,6 +122,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     for (const batch of batches) inserted += await insertRequests(db, batch, true, false, true);
     swept = late.checked;
     sweptRead = late.rows.length;
+    sweepDeferred = late.deferred;
     // The forward cursor and the capture time are the pages' own; this moves the backfill and sweep.
     await db.query(
       `UPDATE basalt_model_history_cursor SET sweep_id=$2,backfill_id=$3,
@@ -155,6 +157,7 @@ export async function captureHomeRequests(db: HistoryDatabase, options: CaptureO
     pages,
     fresh,
     swept,
+    sweepDeferred,
     caughtUp,
     through: forward,
     backfillThrough: old,
