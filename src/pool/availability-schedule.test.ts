@@ -68,13 +68,25 @@ test("the privacy assertion rejects private values and status sentinels in neste
   }
 });
 
+/** The run's one closed line: target kind, verdict, which side failed, Sentry's acceptance. */
+function ranLines(t: TestContext) {
+  const info = t.mock.method(console, "info", () => {});
+  return () =>
+    info.mock.calls
+      .filter((call) => call.arguments[0] === "POOL_PROBE_RAN")
+      .map((call) => call.arguments[1]);
+}
+
 test("disabled monitoring opens no connection and invokes no probe", async (t) => {
   t.mock.method(globalThis, "fetch", async () => {
     assert.fail("disabled monitoring sent a request");
   });
+  const ran = ranLines(t);
   await runAvailabilityProbe({}, async () => {
     assert.fail("disabled probe ran");
   });
+  // A Worker with no target still says it ran, so its quiet minutes don't read as a stopped cron.
+  assert.deepEqual(ran(), [{ target: "unset", verdict: "skipped", failed: "none", sentry: "no" }]);
 });
 
 test("healthy monitoring sends paired check-ins with one identity, the first defining the monitor", async (t) => {
@@ -83,10 +95,13 @@ test("healthy monitoring sends paired check-ins with one identity, the first def
     messages.push(unpack(init));
     return new Response(null, { status: 202 });
   });
+  const ran = ranLines(t);
   await runAvailabilityProbe(env, async (pool) => {
     assert.equal(pool, "fixture-pool");
     return { ok: true, failures: [] };
   });
+  // The healthy minute's positive signal, with no target id in it.
+  assert.deepEqual(ran(), [{ target: "pool", verdict: "ok", failed: "none", sentry: "yes" }]);
   assert.deepEqual(
     messages.map((message) => [message.type, message.payload.status]),
     [
@@ -114,6 +129,7 @@ test("the first rejected installation produces an error check-in and fixed guard
     messages.push(unpack(init));
     return new Response(null, { status: 202 });
   });
+  const ran = ranLines(t);
   await runAvailabilityProbe(env, async () => ({
     ok: false,
     failures: [{ guard: "native_policy_install", reason: "response_status", backendStatus: 400 }],
@@ -122,6 +138,9 @@ test("the first rejected installation produces an error check-in and fixed guard
     messages.map((message) => message.payload.status ?? message.type),
     ["in_progress", "error", "event"],
   );
+  assert.deepEqual(ran(), [
+    { target: "pool", verdict: "failing", failed: "availability", sentry: "yes" },
+  ]);
   const event = messages.find((message) => message.type === "event")!.payload;
   assert.equal(event.tags.guard, "native_policy_install");
   assert.equal(event.tags.reason, "response_status");
@@ -148,6 +167,7 @@ test("a failed RPC is reported without its private exception or target", async (
 test("alert delivery refusal fails the scheduled run even when the pool is healthy", async (t) => {
   let probes = 0;
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
+  const ran = ranLines(t);
   await assert.rejects(
     runAvailabilityProbe(env, async () => {
       probes++;
@@ -156,6 +176,8 @@ test("alert delivery refusal fails the scheduled run even when the pool is healt
     /alert delivery failed/,
   );
   assert.equal(probes, 1);
+  // Written before the run fails, so a refused check-in on a healthy minute still reads as healthy.
+  assert.deepEqual(ran(), [{ target: "pool", verdict: "ok", failed: "none", sentry: "no" }]);
 });
 
 test("monitor error text and fields reject unbounded or private diagnostic input", async (t) => {
@@ -245,12 +267,22 @@ test("a failed reliability read logs its closed cause and still reports collecti
   });
   const errors = t.mock.method(console, "error", () => {});
   t.mock.method(console, "warn", () => {});
+  const ran = ranLines(t);
   await runAvailabilityProbe(
     env,
     async () => ({ ok: true, failures: [] }),
     async () => {
       throw new Error("Model request history is disabled");
     },
+  );
+  // Failing on the reliability side alone: the line says so, and the check-in stays ok.
+  assert.deepEqual(ran(), [
+    { target: "pool", verdict: "failing", failed: "reliability", sentry: "yes" },
+  ]);
+  assert.equal(
+    messages.find((item) => item.type === "check_in" && item.payload.status !== "in_progress")
+      ?.payload.status,
+    "ok",
   );
   assert.deepEqual(
     errors.mock.calls

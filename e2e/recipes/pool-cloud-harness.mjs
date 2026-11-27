@@ -14,6 +14,12 @@ import { root } from "./harness.mjs";
 import { cloudLocks } from "../../.upstream/e2e/support/cloud-locks.ts";
 import { redactLogText } from "../../src/feedback/logs.ts";
 import { startPoolFixture } from "./pool-fixture.mjs";
+import { poolFixtureSigningKey } from "../../.upstream/e2e/support/cloud-pool-gateway.ts";
+import {
+  provisioningHistory,
+  provisioningJobs,
+  repositoryFailures,
+} from "./provisioning-diagnostics.mjs";
 
 const quote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
 
@@ -41,7 +47,9 @@ const localPoolSetup = async (
       ["apps/hosted/cloud/src/infrastructure/product-services.ts", "poolKey"],
     ].map(async ([path, key]) => ({ path, key, bytes: await readFile(join(upstream, path)) })),
   );
-  const signingKey = randomBytes(32).toString("hex");
+  // The stack's own pool gateway answers the pool Worker's release with this key's version, and
+  // pool bundle and token rollouts wait until it matches the server's key. One key, as in production.
+  const signingKey = poolFixtureSigningKey;
   const catalog = resetOptions
     ? await Promise.all(
         catalogProviders.map(async (lab) =>
@@ -143,47 +151,50 @@ export const poolCloudHarness = (
     // Capture before actor and environment finalizers remove the failed runtime.
     let lastApps;
     let organization;
+    // Written on every run, so how often a provisioning attempt fails or waits can be compared
+    // between green and red runs. The raw Cloud log is kept only when the run failed.
     if (resets)
       yield* Effect.addFinalizer((exit) =>
-        Exit.isFailure(exit)
-          ? Effect.gen(function* () {
-              const diagnostics = { runtimeDirectory: target.directory, apps: lastApps };
-              yield* Effect.scoped(
-                Effect.gen(function* () {
-                  const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
-                  diagnostics.provisioning = yield* database.run({
-                    sql: `select kind, status, attempts, available_at, updated_at from hosted_provisioning
-                    where organization_id = $1 order by kind, updated_at limit 50`,
-                    params: [organization ?? ""],
-                  });
-                }),
-              ).pipe(
-                Effect.timeout("3 seconds"),
-                Effect.catchCause(() =>
-                  Effect.sync(() => {
-                    diagnostics.provisioningUnavailable = true;
-                  }),
-                ),
+        Effect.gen(function* () {
+          const failed = Exit.isFailure(exit);
+          const diagnostics = {
+            runtimeDirectory: target.directory,
+            outcome: failed ? "failed" : "passed",
+            apps: lastApps,
+          };
+          const log = yield* Effect.promise(() =>
+            readFile(join(target.directory, "cloud.log"), "utf8").catch(() => undefined),
+          );
+          if (log === undefined) diagnostics.cloudLogUnavailable = true;
+          else diagnostics.repositoryFailures = repositoryFailures(log);
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const database = yield* cloudLocks.pipe(Effect.provideService(Target, target));
+              const jobs = yield* provisioningJobs(database, organization ?? "");
+              diagnostics.provisioning = provisioningHistory(jobs, log ?? "");
+            }),
+          ).pipe(
+            Effect.timeout("3 seconds"),
+            Effect.catchCause(() =>
+              Effect.sync(() => {
+                diagnostics.provisioningUnavailable = true;
+              }),
+            ),
+          );
+          yield* Effect.promise(async () => {
+            if (failed && log !== undefined)
+              await writeFile(
+                join(directory, "runtime-cloud.log"),
+                redactLogText(log).slice(-2 * 1024 * 1024),
+                { mode: 0o600 },
               );
-              yield* Effect.promise(async () => {
-                try {
-                  const log = await readFile(join(target.directory, "cloud.log"), "utf8");
-                  await writeFile(
-                    join(directory, "runtime-cloud.log"),
-                    redactLogText(log).slice(-2 * 1024 * 1024),
-                    { mode: 0o600 },
-                  );
-                } catch {
-                  diagnostics.cloudLogUnavailable = true;
-                }
-                await writeFile(
-                  join(directory, "runtime-diagnostics.json"),
-                  JSON.stringify(diagnostics, null, 2) + "\n",
-                  { mode: 0o600 },
-                );
-              });
-            }).pipe(Effect.catchCause(() => Effect.logWarning("Reset diagnostic retention failed")))
-          : Effect.void,
+            await writeFile(
+              join(directory, "runtime-diagnostics.json"),
+              JSON.stringify(diagnostics, null, 2) + "\n",
+              { mode: 0o600 },
+            );
+          });
+        }).pipe(Effect.catchCause(() => Effect.logWarning("Reset diagnostic retention failed"))),
       );
 
     const raw = (role, method, path, input, headers) =>
