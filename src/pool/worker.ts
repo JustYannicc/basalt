@@ -152,6 +152,7 @@ import type { BulkUsageImport } from "./model-history/bulk-do.worker.ts";
 import { routeBulkImport } from "./model-history/bulk-http.ts";
 import { bulkImportPath } from "./model-history/bulk-contract.ts";
 import { readReliabilityInSession } from "./model-history/reliability-session.ts";
+import { reliabilityFailure } from "./model-history/reliability-read-failure.ts";
 import { capturedReliability, recordReliability } from "./reliability-cadence.ts";
 import { controllerInstanceEnded, fetchController } from "./controller-reset.ts";
 import { detachFromCaller, followsCaller } from "./caller-signal.ts";
@@ -851,7 +852,10 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           runModelHistoryPass(this.modelHistoryPass(), progress),
         ),
       )
-      .catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1"))
+      // The reliability line's closed words: a failure kind and, for a database error, its SQLSTATE.
+      .catch((error: unknown) =>
+        console.error("POOL_MODEL_HISTORY_FAILURE count=1", reliabilityFailure(error)),
+      )
       .finally(() => {
         if (this.modelHistoryTask === work) this.modelHistoryTask = undefined;
       });
@@ -871,7 +875,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const target = this.env.POOL_AVAILABILITY_TARGET;
     const stopped = () => this.handover.draining;
     return {
-      session: (work) => withHistoryDatabase(connection, work),
+      // Its timeouts keep their own reason, so the failure line can name it.
+      session: (work) => withHistoryDatabase(connection, work, { timeoutFailure: "history" }),
       publish: (changes) =>
         publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
       ...(validProbeTarget(target)
