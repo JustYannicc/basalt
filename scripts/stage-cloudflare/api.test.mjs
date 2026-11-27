@@ -301,7 +301,139 @@ test("a tag list is read page after page until the registry offers no next page"
     lists.map((params) => params.get("last")),
     [null, "h1", "h3"],
   );
-  assert.ok(lists.every((params) => params.get("n") === "1000"));
+  // The first page asks for its own size; each later one sends back the registry's link parameters.
+  assert.deepEqual(
+    lists.map((params) => params.get("n")),
+    ["1000", "2", "2"],
+  );
+});
+
+test("a registry that pages by its own cursor is read to the end", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: longTagList },
+    tagPageSize: 2,
+    tagCursor: "opaque",
+  });
+  const [image] = await stage(fake.fetcher).images();
+  assert.deepEqual([...image.tags].sort(), [...longTagList].sort());
+  const lists = fake.calls.filter((call) => call.path.endsWith("/tags/list"));
+  assert.deepEqual(
+    lists.map((call) => new URL(call.url).searchParams.get("cursor")),
+    [null, "Mg", "NA"],
+  );
+});
+
+/** A registry whose tag lists answer `pages` in turn: `[tags, link?, status?]` each. */
+const scripted = (pages) => {
+  const fake = paged();
+  const sent = [];
+  let index = 0;
+  const fetcher = async (url, init) => {
+    if (!new URL(url).pathname.endsWith("/tags/list")) return fake.fetcher(url, init);
+    sent.push(url);
+    const [tags, link, status = 200] = pages[Math.min(index++, pages.length - 1)];
+    return Response.json(
+      { name: `acct/${prefix}-mock`, tags },
+      { status, headers: link === undefined ? {} : { link } },
+    );
+  };
+  return { fetcher, sent };
+};
+const stopOf = async (pages) => {
+  const { fetcher, sent } = scripted(pages);
+  const error = await stage(fetcher)
+    .images()
+    .then(
+      () => assert.fail("the read did not stop"),
+      (caught) => caught,
+    );
+  return { error, record: error.record?.tagRead, sent };
+};
+const next = (query) => `</v2/acct/${prefix}-mock/tags/list?${query}>; rel="next"`;
+
+test("a tag already listed and a tag it cannot name are two stops, each with its page and count", async () => {
+  // A registry that ignores the cursor answers its first page again.
+  const again = await stopOf([[["h1", "h2"], next("n=2&last=h2")]]);
+  assert.equal(
+    again.error.message,
+    "A registry tag list answered a tag it had already listed (page 2, after 2 tags)",
+  );
+  assert.equal(again.record.rule, "already-listed");
+  assert.equal(again.record.where, "earlier-page");
+  assert.equal(again.record.sameAsFirstPage, true);
+  assert.deepEqual(
+    again.record.pages.map(({ status, tags, next: more }) => [status, tags, more]),
+    [
+      [200, 2, true],
+      [200, 2, true],
+    ],
+  );
+  const twice = await stopOf([[["h1", "h1"]]]);
+  assert.equal(twice.record.where, "same-page");
+  assert.equal(twice.record.sameAsFirstPage, false);
+
+  const unnamed = await stopOf([[["h1", "h2"], next("last=h2")], [["sha256:Ab1"]]]);
+  assert.equal(
+    unnamed.error.message,
+    "A registry tag list answered a tag it cannot name (page 2, after 2 tags)",
+  );
+  assert.deepEqual(unnamed.record.tag, {
+    length: 10,
+    classes: ["upper", "lower", "digit", "colon"],
+    first: "lower",
+  });
+  // Closed facts only: no tag, cursor value or URL reaches the record.
+  assert.doesNotMatch(JSON.stringify(unnamed.record), /h1|h2|sha256|Ab1|acct|https?:|\/v2/u);
+});
+
+test("a next link gives only its parameters; host and path stay the stage's own", async () => {
+  const { sent, record } = await stopOf([
+    [["h1"], '<https://elsewhere.example/v2/other/repo/tags/list?last=h1&n=1>; REL="Next"'],
+    [["h2"], "<../../x?last=..%2F..%2Fy>; rel=next"],
+    [["h3"], next("last=h3")],
+    [["h1"]],
+  ]);
+  const own = new URL(sent[0]);
+  for (const url of sent.map((each) => new URL(each))) {
+    assert.equal(url.host, own.host);
+    assert.equal(url.pathname, own.pathname);
+  }
+  // A value that looks like a path stays a query value.
+  assert.equal(new URL(sent[2]).searchParams.get("last"), "../../y");
+  assert.equal(record.pages[0].link.host, "other");
+  assert.equal(record.pages[0].link.path, "other");
+  assert.equal(record.pages[1].link.path, "other");
+});
+
+test("a next link that is not a few plain cursor values stops the read", async () => {
+  for (const link of [
+    "<?last=a%20b>; rel=next",
+    "<?last=a&last=b>; rel=next",
+    "<?a=1&b=2&c=3&d=4&e=5>; rel=next",
+    "</v2/x/tags/list>; rel=next",
+    "<http://[bad>; rel=next",
+    'rel="next"',
+  ]) {
+    const { error, record } = await stopOf([[["h1"], link]]);
+    assert.equal(
+      error.message,
+      "A registry tag list's next link is not plain cursor values (page 1, after 1 tag)",
+      link,
+    );
+    assert.equal(record.rule, "link-not-plain");
+  }
+});
+
+test("a 404 on a later page stops the read instead of ending the list", async () => {
+  const { error, record } = await stopOf([
+    [["h1"], next("last=h1")],
+    [[], undefined, 404],
+  ]);
+  assert.equal(
+    error.message,
+    "A registry tag list's later page answered 404 (page 2, after 1 tag)",
+  );
+  assert.equal(record.rule, "gone-on-later-page");
 });
 
 test("a stage's image with a long tag list is deleted, dotted tags included", async () => {
@@ -322,9 +454,9 @@ test("a tag list that repeats a tag, names one outside the grammar or never ends
           next ? { headers: { link: '</v2/x/tags/list?n=1&last=h1>; rel="next"' } } : {},
         )
       : fake.fetcher(url, init);
-  await assert.rejects(stage(page(["h1", "h1"], false)).images(), /already listed or cannot name/u);
-  await assert.rejects(stage(page(["../x"], false)).images(), /already listed or cannot name/u);
+  await assert.rejects(stage(page(["h1", "h1"], false)).images(), /had already listed/u);
+  await assert.rejects(stage(page(["../x"], false)).images(), /cannot name/u);
   await assert.rejects(stage(page([], true)).images(), /another page after an empty one/u);
   // The same page offered forever repeats its tags on the second read.
-  await assert.rejects(stage(page(["h1"], true)).images(), /already listed or cannot name/u);
+  await assert.rejects(stage(page(["h1"], true)).images(), /had already listed \(page 2/u);
 });

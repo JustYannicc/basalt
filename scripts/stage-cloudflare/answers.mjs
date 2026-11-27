@@ -146,9 +146,29 @@ export function credentialsOf(data) {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
 }
 
+/** Whether a Link header offers a next page; relation types are case-insensitive (RFC 8288). */
+const offersNext = (link) => /\brel\s*=\s*"?[^";,]*\bnext\b/iu.test(link);
+
+/**
+ * The target of a Link header's `rel="next"` entry, as the registry wrote it; undefined when there
+ * is none it can read. Only its parameters are ever used, never its host or path.
+ */
+function nextTargetOf(link) {
+  for (const [, target, params] of link.matchAll(/<([^<>]*)>((?:\s*;[^;,]*)*)/gu))
+    for (const param of params.split(";")) {
+      const [name, value = ""] = param.split("=");
+      if (
+        name.trim().toLowerCase() === "rel" &&
+        value.trim().replace(/^"|"$/gu, "").toLowerCase().split(/\s+/u).includes("next")
+      )
+        return target;
+    }
+  return undefined;
+}
+
 // A registry list that says it has another page could hide one of the stage's repositories or tags.
 function singlePage(answer, listing) {
-  if (/rel="?next"?/u.test(answer.link))
+  if (offersNext(answer.link))
     throw fail(`The registry ${listing} has more than one page; the check reads only one`);
 }
 
@@ -165,18 +185,18 @@ export function catalogOf(answer) {
 }
 
 /**
- * One page of the tags a repository holds, and whether the registry says another follows; no tags
- * and no next page when it is gone.
+ * One page of the tags a repository holds, whether the registry offers another, and that offer's
+ * link target; `gone` when the repository is not there.
  */
 export function tagPageOf(answer) {
-  if (answer.status === 404) return { tags: [], next: false };
+  if (answer.status === 404) return { gone: true, tags: [], next: false, target: undefined };
   if (!answer.ok) throw fail(`Registry tag list failed (HTTP ${answer.status})`);
   if (answer.data === undefined) throw fail("A registry tag list answered without its tags");
   // A repository whose tags are all deleted answers `tags: null`.
   const tags = ownField(answer.data, "tags") ?? [];
   if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string"))
     throw fail("A registry tag list answered without its tags");
-  return { tags, next: /rel="?next"?/u.test(answer.link) };
+  return { gone: false, tags, next: offersNext(answer.link), target: nextTargetOf(answer.link) };
 }
 
 /** The digest a manifest read names, and the manifests an index names; undefined once it is gone. */
