@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { cf, list, inventory, assertAbsent, pg, publicInventory } from "./api.mjs";
+import { account, inventory, assertAbsent, pg, publicInventory } from "./api.mjs";
 import { scenarios } from "./scenarios.mjs";
 import { stageClient, stageOrigin } from "./stage-client.mjs";
 import {
@@ -98,7 +98,7 @@ async function request(path, body, method = body === undefined ? "GET" : "POST")
   return response.status === 204 ? null : response.json();
 }
 async function settings() {
-  const data = await cf(`workers/scripts/${worker}/settings`);
+  const data = await account().settings(worker);
   if (!data) throw new Error("Deploy scale-180 first");
   const bindings = data.result.bindings;
   const value = (name) => bindings.find((row) => row.name === name)?.text;
@@ -245,21 +245,22 @@ async function job(spec) {
 }
 async function resize(size) {
   if (!sizes.includes(size)) throw new Error("Unsupported test instance size");
-  const app = (await inventory()).applications.find((row) => row.name === `${prefix}-pool`);
+  const cloud = account();
+  const app = (await inventory(cloud)).applications.find((row) => row.name === `${prefix}-pool`);
   if (!app?.configuration?.image?.endsWith(imageDigest))
     throw new Error("Isolated pool image differs from the frozen target");
   if (app.configuration.instance_type === size) return;
   const configuration = { ...app.configuration, instance_type: size };
-  await cf(`containers/applications/${app.id}`, "PATCH", { max_instances: 1, configuration });
+  await cloud.patch("applications", app, { max_instances: 1, configuration });
   // Use the same immediate rollout as the pinned Alchemy container provider.
-  await cf(`containers/applications/${app.id}/rollouts`, "POST", {
+  await cloud.rollout("applications", app, {
     description: "Scale test instance size update",
     strategy: "rolling",
     kind: "full_auto",
     step_percentage: 100,
     target_configuration: configuration,
   });
-  const observed = await cf(`containers/applications/${app.id}`);
+  const observed = await cloud.read("applications", app);
   if (observed?.result?.configuration?.instance_type !== size)
     throw new Error("Test instance size readback differs");
 }
@@ -270,7 +271,8 @@ async function destroy() {
       Number.isFinite(jobStarted) ? jobStarted + 90 * 60_000 : Infinity,
     ),
   );
-  const before = await inventory();
+  const cloud = account();
+  const before = await inventory(cloud);
   save("teardown-before", publicInventory(before));
   if (Object.values(before).every((rows) => rows.length === 0)) {
     save("teardown", {
@@ -282,7 +284,7 @@ async function destroy() {
   }
   const expectedDeadline = process.env.SCALE_EXPECT_DEADLINE;
   if (expectedDeadline) {
-    const settings = await cf(`workers/scripts/${worker}/settings`);
+    const settings = await cloud.settings(worker);
     const observed = settings?.result?.bindings?.find((row) => row.name === "TEST_DEADLINE")?.text;
     if (observed && observed !== expectedDeadline) {
       save("expiry-skipped", { reason: "A different lease owns the stage" });
@@ -299,15 +301,15 @@ async function destroy() {
     }
   };
   for (const app of before.applications)
-    await remove("container", () => cf(`containers/applications/${app.id}`, "DELETE"));
+    await remove("container", () => cloud.remove("applications", app));
   for (const script of before.scripts)
-    await remove("worker", () => cf(`workers/scripts/${script.id}?force=true`, "DELETE"));
+    await remove("worker", () => cloud.remove("scripts", script));
   for (const drive of before.drives)
-    await remove("hyperdrive", () => cf(`hyperdrive/configs/${drive.id}`, "DELETE"));
+    await remove("hyperdrive", () => cloud.remove("drives", drive));
   for (const certificate of before.certificates)
-    await remove("certificate", () => cf(`mtls_certificates/${certificate.id}`, "DELETE"));
+    await remove("certificate", () => cloud.remove("certificates", certificate));
   if (before.database.length) await remove("database", () => pg("DELETE"));
-  const after = await inventory();
+  const after = await inventory(cloud);
   save("teardown", {
     at: new Date().toISOString(),
     cleanupErrors,
@@ -318,14 +320,11 @@ async function destroy() {
 try {
   if (process.env.SCALE_MODE === "destroy") await destroy();
   else if (process.env.SCALE_MODE === "deploy") {
-    assertAbsent(await inventory());
-    const applications = await list("containers/applications");
-    const matches = applications
-      .map((row) => row.configuration?.image)
-      .filter((value) => value?.endsWith(imageDigest));
-    const repository = applications
-      .map((row) => row.configuration?.image)
-      .find((value) => value?.includes("/basalt-poolcontainer-production-"));
+    const cloud = account();
+    assertAbsent(await inventory(cloud));
+    const images = await cloud.imageReferences();
+    const matches = images.filter((value) => value.endsWith(imageDigest));
+    const repository = images.find((value) => value.includes("/basalt-poolcontainer-production-"));
     image =
       matches[0] ??
       (repository
@@ -333,7 +332,7 @@ try {
         : undefined);
     if (!image)
       throw new Error("Frozen pool image repository is unavailable in this Cloudflare account");
-    const subdomain = (await cf("workers/subdomain"))?.result?.subdomain;
+    const subdomain = await cloud.subdomain();
     origin = stageOrigin(subdomain);
     deadline = Date.now() + 2 * 60 * 60_000;
     save("lease", {
