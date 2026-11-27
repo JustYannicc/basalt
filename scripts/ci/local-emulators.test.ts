@@ -13,7 +13,7 @@ import {
 } from "../../.upstream/e2e/support/autumn-emulator.ts";
 import { createEmulatorFixture } from "../../.upstream/e2e/support/emulators.ts";
 
-// Runs only where CI built the emulate CLI (`setup-autumn-emulator`), and fails without it.
+// Runs only where CI built the emulate CLI (`setup-service-emulators`), and fails without it.
 const entry = process.env.BASALT_E2E_AUTUMN_EMULATOR;
 
 const listening = (origin: string) =>
