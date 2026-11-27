@@ -46,8 +46,8 @@ export const rerunOnly = "github.run_attempt > 1";
 export const onlyOnRerun = (condition: unknown) =>
   typeof condition === "string" &&
   (condition === rerunOnly || condition.startsWith(rerunOnly + " && "));
-// The fast lane runs the steps for every lane; it selects no e2e config, so it skips what the
-// full and affected lanes add.
+// The fast lane runs the steps for every lane, and skips what only the full lane (or an
+// affected lane that reaches a config) adds.
 const everyLane = "steps.lane.outputs.full_suite != 'true'";
 const otherLanes = new Map([
   [fullOnly, "full lane only"],
@@ -95,6 +95,13 @@ export function fastPlan(document: unknown, context: FastContext) {
         )
           throw new Error("Fast artifact uploads need a name and path");
         skipped.push({ name: step.name, reason: "artifact upload requires GitHub Actions" });
+        continue;
+      }
+      // Locally no base records are restored, so the floor check reports the growth as unknown.
+      // The cache runs only in GitHub Actions, whatever its condition.
+      if (step.uses === "./.github/actions/worker-upload-base") {
+        if (typeof step.name !== "string") throw new Error("Fast cache steps need a name");
+        skipped.push({ name: step.name, reason: "the Worker size cache requires GitHub Actions" });
         continue;
       }
       const skip = typeof step.if === "string" ? otherLanes.get(step.if) : undefined;

@@ -9,7 +9,7 @@ export const stillRefusedMs = 30_000;
 /**
  * Why growth was refused, as closed values only, never message text: the runtime's step, reason
  * and cause when the error carries them, a local refusal's own reason, and the error's class. A
- * provider refusal adds the read it refused and its own reason, with any status, pin or state.
+ * provider refusal adds the read it refused and its own reason, with any status or pin.
  */
 function growthRefusal(error: unknown) {
   const diagnostic = runtimeRouteDiagnostic(error);
@@ -122,7 +122,6 @@ export class GrowthRefusals {
       reason: latest.reason,
       ...(latest.status === undefined ? {} : { status: latest.status }),
       ...(latest.field === undefined ? {} : { field: latest.field }),
-      ...(latest.state === undefined ? {} : { state: latest.state }),
     };
   }
 }

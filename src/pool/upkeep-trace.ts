@@ -12,7 +12,7 @@ import type { RuntimeReadPhase, RuntimeReadSteps } from "./runtime-read-trace.ts
  */
 interface Passes {
   alarm: "alarm";
-  home: "home" | "home_shared" | "home_database_pool";
+  home: "home" | "home_shared" | "home_database_pool" | "model_history" | "model_history_shared";
   fleet: "upkeep" | "drain" | "supervise";
   endpoint: "warm" | "drain_queue";
 }
@@ -32,7 +32,6 @@ type Phase =
   | "overview_prices"
   | "usage"
   | "accounts"
-  | "model_history"
   | "snapshot"
   | "reserved"
   | "warming"

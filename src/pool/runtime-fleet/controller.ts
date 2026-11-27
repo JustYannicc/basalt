@@ -377,6 +377,33 @@ export class RuntimeFleet {
     );
   }
   /**
+   * A start at its bound. One its cell proves was never sent leaves as never started, its recent
+   * end saying so: refusals before any send, such as the provider's while it rolls out an image,
+   * held it to the bound, and nothing can be running. The proof is deferStart's: no start under
+   * way and no first-start intent, then the endpoint fenced with the intent still absent. A start
+   * the cell can't prove, a sent one included, keeps the start_unproven quarantine.
+   */
+  private async startBound(cell: FleetCell, row: FleetRow, now: number) {
+    const unsent =
+      !row.identity &&
+      (await cell.unsent?.().catch(() => false)) === true &&
+      ((await cell.abandon?.(row.target).catch(() => false)) ?? false);
+    if (!unsent) return this.exceed(row, "start_unproven");
+    const failure = { path: "start" as const, rule: "unsent" as const, reads: [] };
+    if (!(await this.deps.state.retireUnstarted(row.target, failure))) return;
+    this.cells.delete(row.target.slotId);
+    this.atCapacity = false;
+    boundedLog(
+      "POOL_FLEET_START_UNSENT",
+      {
+        slot: row.target.slotId,
+        ordinal: row.target.homePeerOrdinal ?? null,
+        heldMs: inPhaseFor(row, now),
+      },
+      console.info,
+    );
+  }
+  /**
    * The endpoint answered this start with a refusal before its first-start intent was written, so
    * nothing reached a container and a fresh slot does all a retry could. A local failure before
    * any send, such as an absent provider secret, carries no remote diagnostic and retries the same
@@ -990,12 +1017,12 @@ export class RuntimeFleet {
         this.cells.delete(row.target.slotId);
         return;
       }
-      if (pastBound(row, now)) return this.exceed(row, "start_unproven");
+      if (pastBound(row, now)) return this.startBound(cell, row, now);
       return this.start(row.target);
     }
     if (row.phase === "warming" || row.phase === "uncertain") {
       // Past its bound a start is no longer observed: it holds its place until abandon() proves it.
-      if (pastBound(row, now)) return this.exceed(row, "start_unproven");
+      if (pastBound(row, now)) return this.startBound(cell, row, now);
       const began = performance.now();
       let observed;
       try {

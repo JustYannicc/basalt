@@ -29,7 +29,7 @@ import {
   manifestOf,
   ownField,
   ownString,
-  tagsOf,
+  tagPageOf,
 } from "./answers.mjs";
 import { checkedBody, recordedConfiguration } from "./bodies.mjs";
 import { isProductionName, stageOwnership } from "./ownership.mjs";
@@ -38,6 +38,11 @@ const API = "https://api.cloudflare.com/client/v4";
 const REGISTRY = "registry.cloudflare.com";
 /** What an id or a name may be when it goes into a URL: no separator, dot, escape, query or space. */
 const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/u;
+/** A registry tag (OCI distribution): no separator, and no leading dot, so never a dot segment. */
+const TAG = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/u;
+/** How many tags one tag-list page asks for, and how many pages a repository may take. */
+const TAG_PAGE = 1000;
+const MAX_TAG_PAGES = 100;
 const MANIFEST_TYPES = [
   "application/vnd.oci.image.index.v1+json",
   "application/vnd.oci.image.manifest.v1+json",
@@ -343,9 +348,9 @@ export function stageRequests(options) {
       const entry = recorded(kind, target);
       const repository = `${registry}/${encodeURIComponent(accountId)}/${encodeURIComponent(entry.id)}`;
       if (operation === "tags")
-        return step({ registry: "pull", entry, url: `${repository}/tags/list` });
+        return step({ registry: "pull", entry, url: `${repository}/tags/list?n=${TAG_PAGE}` });
       const tag =
-        typeof reference === "string" && entry.tags.includes(reference) && SEGMENT.test(reference);
+        typeof reference === "string" && entry.tags.includes(reference) && TAG.test(reference);
       const digest =
         typeof reference === "string" && entry.digests.has(reference) && DIGEST.test(reference);
       if (operation === "manifest") {
@@ -403,6 +408,7 @@ export function stageRequests(options) {
       const headers = Object.create(null);
       headers.Authorization = await authorization(planned.registry);
       if (planned.accept) headers.Accept = planned.accept;
+      if (operation === "tags") return readTags(planned, headers);
       const answered = await exchange(
         planned.url,
         planned.method,
@@ -456,6 +462,31 @@ export function stageRequests(options) {
     throw fail("Cloudflare inventory exceeded pagination limit");
   }
 
+  /**
+   * Every tag of one repository, page after page as the registry offers them (OCI distribution's
+   * `n` and `last`). The next page's URL is built here from the last tag of the page before, never
+   * taken from the registry's link, and a page that repeats or offers a tag outside the tag grammar
+   * stops the read.
+   */
+  async function readTags(planned, headers) {
+    const tags = [];
+    let url = planned.url;
+    for (let page = 1; page <= MAX_TAG_PAGES; page++) {
+      const { tags: found, next } = tagPageOf(await exchange(url, "GET", "registry tags", headers));
+      if (
+        !found.every(
+          (tag, index) => TAG.test(tag) && !tags.includes(tag) && found.indexOf(tag) === index,
+        )
+      )
+        throw fail("A registry tag list answered a tag it had already listed or cannot name");
+      tags.push(...found);
+      if (!next) return (planned.entry.tags = Object.freeze(tags));
+      if (!found.length) throw fail("A registry tag list offered another page after an empty one");
+      url = `${planned.url}&last=${encodeURIComponent(found.at(-1))}`;
+    }
+    throw fail("A registry tag list exceeded its page limit");
+  }
+
   /** What a registry answer gives the caller: only the stage's own repositories, and their parts. */
   function registryAnswer(operation, planned, reference, answered) {
     if (operation === "list")
@@ -465,7 +496,7 @@ export function stageRequests(options) {
           ([owner, name, ...nested]) => owner === accountId && !nested.length && ownedName(name),
         )
         .map(([, name]) => record("images", { name }));
-    if (operation === "tags") return (planned.entry.tags = Object.freeze([...tagsOf(answered)]));
+    if (operation === "tags") throw fail("Refused: a tag list is read page by page");
     if (operation === "deleteManifest") {
       const deleted = deletedOf(answered);
       planned.entry.digests.delete(reference);
