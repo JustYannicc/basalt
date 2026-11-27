@@ -46,7 +46,9 @@ export function frameText(shape: Shape, line: string) {
 }
 
 /** Whether one line is the stream's own terminal event, the frame a client stops reading at. */
-export function isTerminal(shape: Shape, line: string) {
+export function isTerminal(shape: Shape, text: string) {
+  // A line cut between its CR and LF is the same line.
+  const line = text.endsWith("\r") ? text.slice(0, -1) : text;
   if (!line.startsWith("data:")) return false;
   const data = line.slice(line.startsWith("data: ") ? 6 : 5);
   if (shape === "chat") return data === "[DONE]";
@@ -100,6 +102,10 @@ export function frameTimer(shape: Shape) {
     /** When the stream's terminal event's line completed; undefined until it has. */
     get terminalMs() {
       return terminalMs;
+    },
+    /** Whether the line still without its line ending is the stream's terminal event. */
+    pendingTerminal() {
+      return terminalMs === undefined && isTerminal(shape, pending);
     },
   };
 }

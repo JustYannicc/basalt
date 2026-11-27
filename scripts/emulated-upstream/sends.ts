@@ -21,6 +21,11 @@ export interface MockSend {
 
 /** Every route the mock answers is keyed (gateway.ts); this one reads a run's records back. */
 export const sendsPath = "/_emulated/sends";
+/**
+ * The recorder's version, on every page it answers. A driver reads records only from this
+ * recorder: one that ends a record at the stream's terminal event (frames.ts `terminalMs`).
+ */
+export const recorderVersion = "terminal-v1";
 export const sendsPage = 1_000;
 const runPattern = /^[0-9a-f]{16}$/u;
 const cursorPattern = /^\d{15}-\d{9}$/u;
@@ -110,12 +115,16 @@ export function recorded(
   const timer = shape && streamed ? frameTimer(shape) : undefined;
   const decoder = new TextDecoder();
   let saved = false;
+  // When the last bytes arrived: a terminal event on a last line with no line ending ended then.
+  let lastAt: number | undefined;
   const finish = (cut: boolean) => {
     if (saved) return;
     saved = true;
     // A reader that stops once the stream's terminal event reached it, as the pool does, has had
     // the whole answer: the record ends there, complete. A cut before it stays a cut.
-    const endedAt = (cut ? timer?.terminalMs : undefined) ?? now();
+    const endedAt =
+      (cut ? (timer?.terminalMs ?? (timer?.pendingTerminal() ? lastAt : undefined)) : undefined) ??
+      now();
     // The last line counts though it had no line ending, so a terminal event in it counts too.
     timer?.end(endedAt);
     const end: MockSend["end"] = cut && timer?.terminalMs === undefined ? "cut" : "complete";
@@ -153,7 +162,8 @@ export function recorded(
           controller.close();
           return;
         }
-        timer?.observe(decoder.decode(part.value, { stream: true }), now());
+        lastAt = now();
+        timer?.observe(decoder.decode(part.value, { stream: true }), lastAt);
         controller.enqueue(part.value);
       },
       cancel(reason) {
@@ -190,5 +200,5 @@ export async function sendsControl(request: Request, store: SendStore): Promise<
       },
       { status: 400 },
     );
-  return Response.json(await store.list(run, after));
+  return Response.json({ recorder: recorderVersion, ...(await store.list(run, after)) });
 }

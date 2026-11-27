@@ -1,7 +1,7 @@
 // The load proof's second witness: the mock's own record of when it sent each answer. A call is in
 // time only when the driver's measure and the mock's record both say so.
 import { sendMarker } from "../emulated-upstream/prompts.ts";
-import { sendsPath, type MockSend } from "../emulated-upstream/sends.ts";
+import { recorderVersion, sendsPath, type MockSend } from "../emulated-upstream/sends.ts";
 import type { Attempt, CallRecord } from "./load-call.ts";
 import type { JudgedCall, LoadClass } from "./load-classes.ts";
 import { delayBarMs, type LoadKind } from "./load-shape.ts";
@@ -70,7 +70,13 @@ export function mockWitness({
             await response.body?.cancel();
             return undefined;
           }
-          const body = (await response.json()) as { sends?: unknown; next?: unknown };
+          const body = (await response.json()) as {
+            recorder?: unknown;
+            sends?: unknown;
+            next?: unknown;
+          };
+          // Records only from the recorder this driver judges by: an older stage reads as unread.
+          if (body.recorder !== recorderVersion) return undefined;
           if (!Array.isArray(body.sends) || !body.sends.every(isSend)) return undefined;
           sends.push(...body.sends);
           if (body.next === undefined) return sends;

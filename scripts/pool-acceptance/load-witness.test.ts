@@ -4,6 +4,7 @@ import { acceptanceCredential } from "../release/acceptance-device.ts";
 import { loadOutcomes } from "./load-classes.ts";
 import { runLoad, summaryLines } from "./load.ts";
 import { mockWitness, type MockSend } from "./load-witness.ts";
+import { recorderVersion } from "../emulated-upstream/sends.ts";
 import { chatOnly, deviceEnv, load, stage, streamed, testClock } from "./test/load-fixtures.ts";
 import { witnessKey } from "./test/fake-mock.ts";
 
@@ -176,8 +177,17 @@ test("a record that cannot be read, or not all of it, fails every call as mock_m
   const unreadable: Record<string, (fetched: typeof fetch) => typeof fetch> = {
     "a refused page": () => async () => new Response("{}", { status: 503 }),
     "a record of the wrong shape": () => async () =>
-      Response.json({ sends: [{ marker: "lw", status: "200" }] }),
-    "a cursor that is not text": () => async () => Response.json({ sends: [], next: 7 }),
+      Response.json({ recorder: recorderVersion, sends: [{ marker: "lw", status: "200" }] }),
+    "a cursor that is not text": () => async () =>
+      Response.json({ recorder: recorderVersion, sends: [], next: 7 }),
+    // A stage deployed before the recorder ended records at the terminal event, or an older one.
+    "whole records from another recorder": (fetched) => async (url, init) => {
+      const { recorder: _recorder, ...body } = (await (await fetched(url, init)).json()) as Record<
+        string,
+        unknown
+      >;
+      return Response.json({ ...body, recorder: _recorder === undefined ? undefined : "v0" });
+    },
     "a transport failure": () => async () => {
       throw new TypeError("fetch failed");
     },

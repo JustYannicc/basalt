@@ -412,3 +412,130 @@ test("a reader that stops at the stream's terminal event had the whole answer; o
   );
   assert.equal(unterminated.end, "complete");
 });
+
+/**
+ * One recorded stream sent as `chunks`, read by a client that cancels once it has read
+ * `stopAfter` chunks; "ERROR" makes the upstream body fail at that point instead.
+ */
+async function readChunks(path, chunks, stopAfter) {
+  const encoder = new TextEncoder();
+  let clock = 1_000;
+  const arrived = [];
+  const answer = new Response(
+    new ReadableStream(
+      {
+        pull(controller) {
+          const next = chunks.shift();
+          if (next === undefined) return controller.close();
+          clock += 100;
+          if (next === "ERROR") return controller.error(new Error("upstream broke off"));
+          arrived.push(clock);
+          controller.enqueue(encoder.encode(next));
+        },
+      },
+      { highWaterMark: 0 },
+    ),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+  const saved = [];
+  const response = recorded(answer, {
+    marker: "m",
+    path,
+    receivedAt: 1_000,
+    now: () => clock,
+    save: (send) => saved.push(send),
+  });
+  const reader = response.body.getReader();
+  for (let read = 0; ;) {
+    let part;
+    try {
+      part = await reader.read();
+    } catch {
+      break;
+    }
+    if (part.done) break;
+    if (++read === stopAfter) {
+      clock += 5_000;
+      await reader.cancel();
+      break;
+    }
+  }
+  return { send: saved[0], arrived };
+}
+
+test("the terminal event is read from whole lines, however the stream is cut into chunks", async () => {
+  const chat = "/v1/chat/completions";
+  const content = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n';
+  // Split inside the terminal: complete once its line is whole, at that line's time.
+  const split = await readChunks(chat, [content, "data: [DO", "NE]\n\n", ": more\n\n"], 3);
+  assert.equal(split.send.end, "complete");
+  assert.equal(split.send.endedAt, split.arrived[2]);
+  // Stopped on the terminal's first half: it never reached the reader whole.
+  const half = await readChunks(chat, [content, "data: [DO", "NE]\n\n"], 2);
+  assert.equal(half.send.end, "cut");
+  // A chunk that looks like the terminal on its own is not one while its line goes on.
+  const goesOn = await readChunks(chat, [content, "data: [DONE]", "x\n\n", ": more\n\n"], 3);
+  assert.equal(goesOn.send.end, "cut");
+  // A JSON frame split mid-key.
+  const messages = await readChunks(
+    "/v1/messages",
+    [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'data: {"ty',
+      'pe":"message_stop"}\n\n',
+      ": more\n\n",
+    ],
+    3,
+  );
+  assert.equal(messages.send.end, "complete");
+  // CRLF, cut between the CR and the LF, and read whole.
+  const crlf = [content.replace(/\n/gu, "\r\n"), "data: [DONE]\r", "\n\r\n", ": more\r\n"];
+  assert.equal((await readChunks(chat, [...crlf], 2)).send.end, "complete");
+  assert.equal((await readChunks(chat, [...crlf], 3)).send.end, "complete");
+  // The terminal's last byte alone, and an unterminated terminal line: ended when it arrived.
+  const lastByte = await readChunks(chat, [content, "data: [DONE", "]", "\n\n", ": more\n\n"], 4);
+  assert.equal(lastByte.send.end, "complete");
+  const unterminated = await readChunks(chat, [content, "data: [DONE", "]", ": more\n\n"], 3);
+  assert.equal(unterminated.send.end, "complete");
+  assert.equal(unterminated.send.endedAt, unterminated.arrived[2]);
+  // No space after `data:` is the same frame.
+  const tight = await readChunks(
+    "/v1/messages",
+    [
+      'data:{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}\n\n',
+      'data:{"type":"message_stop"}\n\n',
+      ": more\n\n",
+    ],
+    2,
+  );
+  assert.equal(tight.send.end, "complete");
+  // An upstream that breaks off after the terminal had sent the whole answer.
+  const broke = await readChunks(chat, [content, "data: [DONE]\n\n", "ERROR"], 0);
+  assert.equal(broke.send.end, "complete");
+});
+
+test("the terminal's words inside content are content, never the end", async () => {
+  const inChat = await readChunks(
+    "/v1/chat/completions",
+    ['data: {"choices":[{"delta":{"content":"data: [DONE]"}}]}\n\n', ": more\n\n"],
+    1,
+  );
+  assert.equal(inChat.send.end, "cut");
+  const inMessages = await readChunks(
+    "/v1/messages",
+    [
+      'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"{\\"type\\":\\"message_stop\\"}"}}\n\n',
+      ": more\n\n",
+    ],
+    1,
+  );
+  assert.equal(inMessages.send.end, "cut");
+});
+
+test("every page of the record names its recorder", async () => {
+  const store = durableSends(memorySendStorage(), () => 1);
+  const answer = await (
+    await import("./sends.ts")
+  ).sendsControl(new Request(`https://x${sendsPath}?run=${"a".repeat(16)}`), store);
+  assert.equal((await answer.json()).recorder, "terminal-v1");
+});
