@@ -508,3 +508,19 @@ new file mode 100644
 +    const before = yield* fs.readFileString(target).pipe(Effect.orElseSucceed(() => ""));
 +    yield* fs.writeFileString(target, `${before}// changed\n`);
 +  });
+diff --git a/e2e/tests/prepare-cache.spec.ts b/e2e/tests/prepare-cache.spec.ts
+--- a/e2e/tests/prepare-cache.spec.ts
++++ b/e2e/tests/prepare-cache.spec.ts
+@@ -78,7 +78,11 @@
+     Effect.gen(function* () {
+       const fs = yield* FileSystem.FileSystem;
+       const input = yield* repository;
+-      for (const options of [{ env: { CI: "true" } }, { args: ["--no-cache"] }]) {
++      // CI uses a cache only when EXECUTOR_E2E_CACHE names one; the fixture names one by default.
++      for (const options of [
++        { env: { CI: "true", EXECUTOR_E2E_CACHE: "" } },
++        { args: ["--no-cache"] },
++      ]) {
+         const run = yield* prepare(input, options);
+         expect(run.exitCode).toBe(0);
+         expect(run.ran).toEqual(steps);
