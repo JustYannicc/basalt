@@ -316,3 +316,39 @@ test("a stage's Workers are only the names its Worker rows record, both generati
     ["w-new", "w-old"],
   );
 });
+
+test("a stage may upload only the shared public trust root, byte for byte, and never owns or changes an mTLS certificate", async () => {
+  const { readFileSync } = await import("node:fs");
+  const root = readFileSync(
+    new URL("../../.upstream/apps/hosted/cloud/certificates/isrg-root-x1.pem", import.meta.url),
+    "utf8",
+  );
+  const post = (body: unknown) => verdict("POST", `${CF}/mtls_certificates`, body);
+  // (a) the exact body
+  assert.equal(post({ ca: true, certificates: root, name: "stage-ca" }), "allow");
+  // (b) one byte different
+  const flipped = root.replace("M", "N");
+  assert.notEqual(flipped, root);
+  assert.equal(post({ ca: true, certificates: flipped }), "refuse");
+  assert.equal(post({ ca: true, certificates: `${root}\n` }), "refuse");
+  // (c) a leaf certificate
+  assert.equal(post({ ca: false, certificates: root }), "refuse");
+  assert.equal(post(undefined), "refuse");
+  // (d) the returned id is never the stage's: its rows add no identity, and no write of it passes,
+  // whether the run deploys or tears down.
+  const shared = [
+    {
+      resourceType: "Cloudflare.MtlsCertificate.MtlsCertificate",
+      attr: { id: "cert-1", name: "n" },
+    },
+  ];
+  assert.deepEqual(ownIdentities(shared), []);
+  for (const isOwned of [() => false, () => true])
+    for (const method of ["DELETE", "PUT", "PATCH", "POST"])
+      assert.equal(
+        stageWriteVerdict(scope, isOwned, method, new URL(`${CF}/mtls_certificates/cert-1`), {})
+          .kind,
+        "refuse",
+        method,
+      );
+});
