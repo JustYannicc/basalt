@@ -881,8 +881,10 @@ test("anything else the registry refuses fails the destroy closed, with a record
     if (name === "the stage's own platform manifest")
       assert.match(error.message, /\(0 tags, 1 digest entries\)/u, name);
     if (name === "a kept-type delete accepted yet still listed") {
-      // Nothing was refused, so nothing is proven kept: the read after is what fails it.
+      // Nothing was refused, so nothing is proven kept: the read after is what fails it, after
+      // waiting for the registry to collect it.
       assert.match(error.message, /not proven kept in this run/u, name);
+      assert.equal(error.record.reads.length, 7, name);
       continue;
     }
     const [deletes] = error.record.teardown;
@@ -1083,6 +1085,8 @@ test("the deploy's guard ignores a repository only when every entry is the regis
       `${name}: ${error?.message}`,
     );
     if (!refused) assert.equal(error?.message, "past the guard", name);
+    // The refusal says what the guard read, in counts.
+    else assert.equal(error.record.found.images, 1, name);
   }
 });
 
@@ -1092,7 +1096,7 @@ const ghosts = ["e", "f", "9"].map((hex) => `sha256:${hex.repeat(64)}`);
 const listedOnly = (extra = {}) =>
   cloudflareStage({ emptyEnd: true, own: false, ghosts, ...extra }, ["h1", "h2"]);
 const control =
-  "the repository's tag list, answered to the run's one registry credential, named each entry";
+  "the repository's tag list, answered to the run's pull credential, named each entry";
 const registryCalls = (fake, method) =>
   fake.calls.filter((call) => call.host === "registry.cloudflare.com" && call.method === method);
 
@@ -1108,9 +1112,19 @@ test("entries the list names with no manifest behind them end the destroy green,
   );
   const facts = { tags: 2, digests: 3, read: { ok: 0, absent: 5, other: 0 }, control };
   assert.deepEqual(saved.teardown.listedWithoutManifest, [facts]);
+  assert.deepEqual(saved.teardown.record.foundRepositories, [{ ...facts, placed: "gone" }]);
   assert.deepEqual(saved.teardown.record.reads.at(-1).repositories, [{ ...facts, placed: "gone" }]);
-  // Nothing stands behind the list, so no registry delete is sent.
-  assert.equal(registryCalls(fake, "DELETE").length, 0);
+  // A read can miss what a delete reaches, so each digest entry is still deleted; all three
+  // answered 404, and the two tags have no digest to delete by.
+  assert.equal(registryCalls(fake, "DELETE").length, 3);
+  assert.deepEqual(saved.teardown.record.registryDeletes, [
+    {
+      tags: 2,
+      digests: 3,
+      tagRead: { ok: 0, absent: 2 },
+      delete: { accepted: 0, absent: 3, refused: 0 },
+    },
+  ]);
   // The deploy's guard reads every entry again in its own run and sets the repository apart the
   // same way; it reads no record of an earlier run.
   const api = account(fake.fetcher);
@@ -1121,16 +1135,71 @@ test("entries the list names with no manifest behind them end the destroy green,
     assert.doesNotMatch(line, /sha256|acct\/|h1|h2/u, line);
 });
 
-test("every registry request of a run goes to its one credential, so the list is its reads' control", async () => {
+test("a manifest a read misses but its delete reaches is deleted, never set apart", async () => {
+  const missed = `sha256:${"d".repeat(64)}`;
+  // Its tag and its digest both read 404, yet the manifest is there for a delete.
+  const fake = listedOnly({
+    ghosts: [],
+    tagged: { h1: missed, h2: missed },
+    artifacts: [{ digest: missed, body: imageManifest(), read: 404 }],
+  });
+  const { lines } = await destroyOn(fake);
+  assert.ok(lines.includes(nothingLeft), lines.join("\n"));
+  assert.equal(registryCalls(fake, "DELETE").length, 1);
+  assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
+});
+
+test("a read addresses a digest as its delete does, and takes any stored type", async () => {
+  const thing = `sha256:${"d".repeat(64)}`;
+  const fake = cloudflareStage({
+    emptyEnd: true,
+    // Served only to a read that accepts its type, which is on no list.
+    artifacts: [
+      {
+        digest: thing,
+        type: "application/vnd.example.thing",
+        acceptOnly: "application/vnd.example.thing",
+      },
+    ],
+  });
+  const found = await account(fake.fetcher).inventory();
+  assert.deepEqual(found.facts[0].read, { ok: 10, absent: 0, other: 0 });
+  const reads = registryCalls(fake, "GET").filter((call) =>
+    call.path.includes("/manifests/sha256"),
+  );
+  assert.ok(reads.length > 0);
+  for (const call of reads) assert.doesNotMatch(call.url, /%3A/u, call.url);
+});
+
+test("every read of a run goes to its one pull credential, so the list is its reads' control, and only deletes push", async () => {
   const fake = listedOnly();
   await destroyOn(fake);
-  const sent = fake.calls.filter((call) => call.host === "registry.cloudflare.com");
-  assert.ok(sent.length > 5, String(sent.length));
-  assert.equal(new Set(sent.map((call) => call.authorization)).size, 1);
-  assert.ok(sent[0].authorization);
+  const reads = registryCalls(fake, "GET");
+  const deletes = registryCalls(fake, "DELETE");
+  assert.ok(reads.length > 5 && deletes.length > 0, `${reads.length} ${deletes.length}`);
+  const [pull] = new Set(reads.map((call) => call.authorization));
+  assert.deepEqual(new Set(reads.map((call) => call.authorization)), new Set([pull]));
+  assert.equal(Buffer.from(pull.replace(/^Basic /u, ""), "base64").toString(), "<pull>:<secret>");
+  const [push] = new Set(deletes.map((call) => call.authorization));
+  assert.deepEqual(new Set(deletes.map((call) => call.authorization)), new Set([push]));
+  assert.equal(
+    Buffer.from(push.replace(/^Basic /u, ""), "base64").toString(),
+    "<pull+push>:<secret>",
+  );
   const minted = fake.calls.filter((call) => call.path.endsWith("/credentials"));
-  assert.equal(minted.length, 1);
-  assert.deepEqual(JSON.parse(minted[0].body).permissions, ["pull", "push"]);
+  assert.deepEqual(
+    minted.map((call) => JSON.parse(call.body).permissions),
+    [["pull"], ["pull", "push"]],
+  );
+  // The deploy's guard, an inventory alone, never holds a push credential.
+  const guard = listedOnly();
+  await account(guard.fetcher).inventory();
+  assert.deepEqual(
+    guard.calls
+      .filter((call) => call.path.endsWith("/credentials"))
+      .map((call) => JSON.parse(call.body).permissions),
+    [["pull"]],
+  );
 });
 
 test("a read by reference that fails another way is never absence: the destroy fails closed with its record", async () => {
@@ -1228,6 +1297,7 @@ test("a read-back the budget cuts between its reads stops as unread, never as a 
     /^Emulated upstream teardown could not read back what remains: .*time budget is spent/u,
   );
   assert.equal(error.record.readBack, "not-completed");
+  assert.equal(error.record.readBackCut, true);
 });
 
 test("a colon entry that is not a sha256 digest still stops the read closed, and says it looked like one", async () => {

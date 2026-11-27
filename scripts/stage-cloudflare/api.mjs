@@ -5,9 +5,9 @@
 // read, change or delete a resource the release stack or another stage owns.
 import { registryOperations } from "./registry.mjs";
 import { fail, isCloudflareApiError } from "./answers.mjs";
-import { stageRequests } from "./request.mjs";
+import { REQUEST_TIMEOUT_MS, stageRequests } from "./request.mjs";
 
-export { isCloudflareApiError };
+export { isCloudflareApiError, REQUEST_TIMEOUT_MS };
 export const WORKER_KINDS = Object.freeze(["applications", "namespaces", "scripts"]);
 
 /** An operation that takes no argument, refusing any it is handed. */

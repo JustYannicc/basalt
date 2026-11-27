@@ -1,7 +1,7 @@
 // Which entries of a stage's own registry repository the registry keeps after the stage deletes it.
 // An entry is kept by the registry only when all of these hold: it is a digest entry, its manifest
 // read by digest has a type on `KEPT_TYPES`, its delete was refused with one of `KEPT_REFUSALS`, and
-// no tag is left in the repository. Anything else fails closed: a tag, a manifest that cannot be
+// no tag of the repository reads as a manifest. Anything else fails closed: a tag, a manifest that cannot be
 // read, an image manifest or index of either family (the stage's own image, or a permission
 // problem), any other type, status or code.
 

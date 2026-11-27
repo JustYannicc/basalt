@@ -60,8 +60,10 @@ const EXPORTS = {
     stageCloudflare: "the stage API, every key of which is covered below",
     isCloudflareApiError: "a predicate over errors; sends nothing",
     WORKER_KINDS: "a constant",
+    REQUEST_TIMEOUT_MS: "a constant: what one request may take",
   },
   "request.mjs": {
+    REQUEST_TIMEOUT_MS: "a constant: what one request may take",
     stageRequests:
       "the choke point, built from a registered prefix only; every kind and operation is covered below",
     KINDS: "the declared kinds and operations",

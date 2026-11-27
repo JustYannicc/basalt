@@ -1,15 +1,13 @@
 // What the emulated stage has in the account, found and removed through the shared stage API by its
 // name prefix: container applications, Workers, the Durable Object namespaces those Workers own,
 // and the registry images its deploy pushed.
-import { stageCloudflare } from "../stage-cloudflare/api.mjs";
+import { REQUEST_TIMEOUT_MS, stageCloudflare } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
 
 /** How long a teardown waits before it reads again what an accepted delete left listed. */
 export const readBackPauseMs = 20_000;
 /** How many more read-backs a teardown makes after its first, all inside its budget. */
 export const readBackRetries = 6;
-/** What one stage request may take (request.mjs): a read-back starts only when one still fits. */
-const requestMs = 30_000;
 
 export function emulatedAccount({
   accountId,
@@ -117,9 +115,15 @@ export function emulatedAccount({
     for (const script of before.scripts)
       await attempt(`Worker ${script.id}`, () => stage.remove("scripts", script));
     // What each repository's delete pass returned in this run: the entries it found kept. A
-    // repository set apart as gone has nothing behind its list to delete.
+    // repository whose reads all answered 404 is deleted too: a read can miss a manifest a delete
+    // still reaches, and a delete answered 404 counts as absent, so only its pass returning in this
+    // run lets the read after set it apart.
     const keptBy = new Map();
-    for (const image of [...before.images, ...before.kept.map((row) => row.image)]) {
+    for (const image of [
+      ...before.images,
+      ...before.kept.map((row) => row.image),
+      ...before.gone.map((row) => row.image),
+    ]) {
       const removed = await attempt(`registry repository ${image.name}`, () =>
         stage.removeImage(image),
       );
@@ -136,6 +140,8 @@ export function emulatedAccount({
         const refused = proven(row);
         return !row.entries.every((entry) => refused.has(entry.digest));
       });
+    // A repository set apart as gone whose delete pass did not return in this run still counts.
+    const unremovedOf = (found) => found.gone.filter((row) => !keptBy.has(row.name));
     const fact = (extra) =>
       Object.freeze({
         found: counted(before),
@@ -154,9 +160,10 @@ export function emulatedAccount({
       for (;;) {
         after = await inventory();
         reads.push(Object.freeze({ found: counted(after), repositories: after.facts }));
-        const settled = empty(after) && unprovenOf(after).length === 0;
+        const settled =
+          empty(after) && unprovenOf(after).length === 0 && unremovedOf(after).length === 0;
         if (settled || failures.length || reads.length > readBackRetries) break;
-        if (deadline !== undefined && now() + readBackPauseMs + requestMs > deadline) {
+        if (deadline !== undefined && now() + readBackPauseMs + REQUEST_TIMEOUT_MS > deadline) {
           cut = true;
           break;
         }
@@ -174,6 +181,7 @@ export function emulatedAccount({
         teardown: Object.freeze(records),
         readBack: "not-completed",
         reads: Object.freeze(reads),
+        readBackCut: error !== null && typeof error === "object" && error.budget === true,
       });
       throw failed;
     }
@@ -188,14 +196,15 @@ export function emulatedAccount({
           }),
         }),
       );
+    const unremoved = unremovedOf(after);
     const record = fact({
       teardown: Object.freeze(records),
       reads: Object.freeze(reads),
       readBackCut: cut,
     });
-    if (!empty(after) || records.length) {
+    if (!empty(after) || records.length || unremoved.length) {
       const error = new StageError(
-        `Emulated upstream resources remain after teardown: ${[describe(after), ...unproven.map((row) => `registry repository ${row.name} (${row.types.length} entries of a kept type, not proven kept in this run)`)].filter(Boolean).join(", ") || "only entries whose delete was refused"}${failures.length ? `; failed: ${failures.join("; ")}` : ""}${cut ? "; the read after was cut by the run's time budget" : ""}`,
+        `Emulated upstream resources remain after teardown: ${[describe(after), ...unproven.map((row) => `registry repository ${row.name} (${row.types.length} entries of a kept type, not proven kept in this run)`), ...unremoved.map((row) => `registry repository ${row.name} (listed without a manifest, no delete pass in this run)`)].filter(Boolean).join(", ") || "only entries whose delete was refused"}${failures.length ? `; failed: ${failures.join("; ")}` : ""}${cut ? "; the read after was cut by the run's time budget" : ""}`,
       );
       error.record = record;
       throw error;

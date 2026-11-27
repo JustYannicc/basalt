@@ -197,7 +197,7 @@ export function registryOperations(send) {
           other: entries.filter((row) => row.read === "other").length,
         }),
         control:
-          "the repository's tag list, answered to the run's one registry credential, named each entry",
+          "the repository's tag list, answered to the run's pull credential, named each entry",
       }),
     });
   }

@@ -142,8 +142,14 @@ export function fakeAccount({
     if (!pathname.startsWith(prefix)) return json({}, { status: 404 });
     const rest = pathname.slice(prefix.length);
     if (rest === "workers/subdomain") return json(subdomain(workersSubdomain));
-    if (rest === "containers/registries/registry.cloudflare.com/credentials")
-      return json(registryCredentials());
+    if (rest === "containers/registries/registry.cloudflare.com/credentials") {
+      // A credential names what it was minted for, so a test can tell which one a request carried.
+      const asked = typeof options.body === "string" ? JSON.parse(options.body).permissions : [];
+      return json({
+        ...registryCredentials(),
+        result: { username: `<${asked.join("+")}>`, password: "<secret>" },
+      });
+    }
     const settingsOf = /^workers\/scripts\/([^/]+)\/settings$/u.exec(rest);
     if (settingsOf) {
       const name = decodeURIComponent(settingsOf[1]);
@@ -287,7 +293,8 @@ export function fakeAccount({
     }
     if (found.read) return json({}, { status: found.read });
     // A registry that serves an artifact only to a read that accepts its own type.
-    if (found.acceptOnly && !accept.split(/,\s*/u).includes(found.acceptOnly))
+    const accepted = accept.split(/,\s*/u);
+    if (found.acceptOnly && !accepted.includes("*/*") && !accepted.includes(found.acceptOnly))
       return json({}, { status: 406 });
     return json(found.body, { headers: { "docker-content-digest": digest } });
   }
