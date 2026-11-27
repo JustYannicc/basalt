@@ -2,7 +2,7 @@
 // stage's fetch. Raw provider output never reaches logs: only the release entry's own public lines
 // and this stage's counts and names.
 import { emulatedAccount } from "./cloudflare.mjs";
-import { profileControlPath } from "./gateway.ts";
+import { plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
@@ -13,6 +13,9 @@ import { isMode, leaseHours, prefix, refusal as guardRefusal, stage, worker } fr
 export const LONG_MIN_MS = 30_000;
 const shortest = (long) => (long ? LONG_MIN_MS : 0);
 export const paced = (long, ms) => ms >= shortest(long);
+/** How long a deploy waits for the platform to start the mock, and how often it asks. */
+export const mockWaitBoundMs = 120_000;
+export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
 /** Every route the Worker refuses without the right key, profile b's control included. */
@@ -58,6 +61,7 @@ export function emulatedStage({
   key,
   fetcher = fetch,
   now = Date.now,
+  wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   summary,
   save,
   deployEntry,
@@ -152,7 +156,7 @@ export function emulatedStage({
   const streamed = (base, shape, long) =>
     model(base, shape, { kind: long ? "long" : "short", long, atLeastMs: shortest(long) });
 
-  async function check() {
+  async function leased() {
     const deleteBy = await api.lease(worker);
     if (deleteBy === undefined)
       throw new StageError(
@@ -162,6 +166,11 @@ export function emulatedStage({
       throw new StageError(
         `The emulated upstream's lease ended at ${new Date(deleteBy).toISOString()}; run destroy, or let the hourly expiry remove it`,
       );
+    return deleteBy;
+  }
+
+  async function check() {
+    const deleteBy = await leased();
     const base = await origin();
     // The Worker refuses these itself, before the container starts. Profile b's control gets a PUT
     // of no faults, so a gate that let one through could only calm b, never break a run.
@@ -270,6 +279,51 @@ export function emulatedStage({
     return "destroyed";
   }
 
+  /**
+   * After a deploy, the platform can take a while to hand the mock's Durable Object a container
+   * instance. Waits for the mock to answer, a try every `mockWaitPauseMs` for at most
+   * `mockWaitBoundMs`, and fails with the first reason it was given when that is plain words, or
+   * its status otherwise.
+   */
+  async function waitForMock() {
+    // A deploy that left no Worker says so now, not as a timeout.
+    await leased();
+    const base = await origin();
+    const started = now();
+    let firstCause;
+    for (;;) {
+      const answer = await call(
+        base,
+        "mock start",
+        "/health",
+        {
+          headers: { authorization: `Bearer ${key}` },
+          // A try gets only what is left of the bound, so the wait never outlasts it.
+          signal: AbortSignal.timeout(Math.max(1, mockWaitBoundMs - (now() - started))),
+        },
+        (response) => (response.ok ? response.body?.cancel() : response.json().catch(() => ({}))),
+      ).catch((error) => ({ status: undefined, ok: false, failed: publicMessage(error) }));
+      if (answer.ok) {
+        summary(
+          `- the mock answered ${Math.round((now() - started) / 1_000)} s after the deploy (bound ${mockWaitBoundMs / 1_000} s)`,
+        );
+        return;
+      }
+      // The Worker's reason is printed only when it is plain words; anything else is its status.
+      firstCause ??=
+        answer.failed ??
+        (answer.status === 503 && answer.body?.error?.type === "mock_unavailable"
+          ? plainReason(answer.body.error.message)
+          : undefined) ??
+        `HTTP ${answer.status}`;
+      if (now() - started + mockWaitPauseMs >= mockWaitBoundMs)
+        throw new StageError(
+          `The mock did not answer within ${mockWaitBoundMs / 1_000} s of the deploy: ${firstCause}`,
+        );
+      await wait(mockWaitPauseMs);
+    }
+  }
+
   async function deploy() {
     const existing = await api.inventory();
     if (!api.empty(existing))
@@ -280,6 +334,7 @@ export function emulatedStage({
     // From here on a failed or cancelled run tears down what it may have created.
     save("deploy-started", { stage, deleteBy: new Date(deleteBy).toISOString() });
     deployEntry(deleteBy);
+    await waitForMock();
     await check();
   }
 

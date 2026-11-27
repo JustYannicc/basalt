@@ -30,6 +30,8 @@ export function fakeAimock({ key, clock = { ms: 0 }, longMs = 60_000, chaos = tr
         [...request.headers].filter(([name]) => name.startsWith("x-aimock-chaos-")),
       );
       calls.push(call);
+      // aimock's health route answers before its key check, as mock-start.ts relies on.
+      if (pathname === "/health") return new Response(null, { status: 200 });
       const given =
         /^Bearer (.+)$/u.exec(header("authorization") ?? "")?.[1] ?? header("x-api-key");
       if (given !== key)
