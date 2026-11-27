@@ -22,6 +22,7 @@ import {
   readSuspect,
   type FleetFailureRead,
 } from "../../src/pool/runtime-fleet/failure-record.ts";
+import { firstStarts } from "../../src/pool/runtime-fleet/phase-bounds.ts";
 import { decodeReadySignals } from "../../src/pool/runtime-ready-signals.ts";
 import { RecoveryRecord } from "../../src/pool/runtime-slots/recovery-record.ts";
 import { describeError, FleetLaneRefused, redact, refuse } from "./errors.ts";
@@ -216,6 +217,9 @@ const fleetSummary = (fleet: Awaited<ReturnType<typeof inspectFleet>>) => ({
     inPhaseMs: row.inPhaseMs ?? null,
     applicationId: row.target.applicationId,
     boot: row.identity ? shortHash(row.identity.bootId) : null,
+    // How far a quarantined start without a boot got; null for any other row, a controller on
+    // older code, a read that failed or a value this lane doesn't know.
+    firstStart: firstStarts.find((known) => known === row.firstStart) ?? null,
     // Its reads since the last good one were not good: it takes no new call meanwhile.
     suspect: suspectSummary(row.suspect),
     failure: failureSummary(row.failure),

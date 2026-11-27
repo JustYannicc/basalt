@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { RuntimeFleetConfiguration } from "../../../src/pool/runtime-fleet/configuration.ts";
-import { RuntimeFleetState } from "../../../src/pool/runtime-fleet/state.ts";
+import { RuntimeFleetState, type FleetRow } from "../../../src/pool/runtime-fleet/state.ts";
 import { RuntimeProviderReader } from "../../../src/pool/runtime-provider/read.ts";
 import { observeBoundProvider } from "../../../src/pool/runtime-provider/observation.ts";
 import { handleRuntimeHandoff, type HandoffFleet } from "../../../src/pool/runtime-slots/http.ts";
@@ -87,6 +87,11 @@ export interface HarnessOptions {
   captureHours?: unknown;
   /** What the controller's inspect reports as the root's last recovery. */
   lastRecovery?: unknown;
+  /**
+   * Fields the fleet inspect adds to a row, as production's adds a quarantined start's first start;
+   * without it the rows carry none, as from a controller on older code.
+   */
+  inspectedRow?: (row: FleetRow) => Record<string, unknown>;
   /** While true, the controller still holds blue's image input from before the settings' deploy. */
   bindingsLag?: () => boolean;
   /**
@@ -285,7 +290,10 @@ export async function harness(options: HarnessOptions = {}) {
         permission,
         // As production's fleet inspect reports it (src/pool/runtime-fleet/production.ts).
         ...configuration.standing(operationId ? await configuration.inspect() : permission),
-        resources: await state.inspect(),
+        resources: (await state.inspect()).map((row) => ({
+          ...row,
+          ...options.inspectedRow?.(row),
+        })),
         bindings: currentBindings(),
         recentEnds: await state.recentEnds(),
       };
