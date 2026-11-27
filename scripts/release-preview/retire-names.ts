@@ -9,29 +9,45 @@ import type { Effect as EffectModule } from "effect";
 type Named = EffectModule.Effect<string, never, unknown>;
 
 // Alchemy's package exports no subpath for its name helpers, so each is loaded from beside the
-// `PhysicalName` module its exports resolve to: the same installed build, the same tags.
-const beside = (file: string) => new URL(file, import.meta.resolve("alchemy/PhysicalName")).href;
-const helper = async <F>(file: string, name: string): Promise<F> => {
-  const found = ((await import(beside(file))) as Record<string, unknown>)[name];
+// `PhysicalName` module its exports resolve to: the same installed build, the same tags. Each
+// import names its file literally, so the architecture check knows the module it loads.
+const pick = <F>(module: Record<string, unknown>, file: string, name: string): F => {
+  const found = module[name];
   if (typeof found !== "function") throw new Error(`Alchemy's ${file} exports no ${name}`);
   return found as F;
 };
 
 /** The loaders of each provider's own name helper; a test swaps one for a failing one. */
 export const alchemyNamers = {
-  worker: () =>
-    helper<(id: string, name: undefined) => Named>(
-      "./Cloudflare/Workers/WorkerName.js",
+  worker: async () =>
+    pick<(id: string, name: undefined) => Named>(
+      await import(
+        new URL("./Cloudflare/Workers/WorkerName.js", import.meta.resolve("alchemy/PhysicalName"))
+          .href
+      ),
+      "WorkerName.js",
       "createWorkerName",
     ),
-  container: () =>
-    helper<(id: string, name: undefined) => Named>(
-      "./Cloudflare/Containers/ContainerBundle.js",
+  container: async () =>
+    pick<(id: string, name: undefined) => Named>(
+      await import(
+        new URL(
+          "./Cloudflare/Containers/ContainerBundle.js",
+          import.meta.resolve("alchemy/PhysicalName"),
+        ).href
+      ),
+      "ContainerBundle.js",
       "createContainerApplicationName",
     ),
-  workflow: () =>
-    helper<(scriptName: string, className: string) => Named>(
-      "./Cloudflare/Workflows/WorkflowName.js",
+  workflow: async () =>
+    pick<(scriptName: string, className: string) => Named>(
+      await import(
+        new URL(
+          "./Cloudflare/Workflows/WorkflowName.js",
+          import.meta.resolve("alchemy/PhysicalName"),
+        ).href
+      ),
+      "WorkflowName.js",
       "generateWorkflowName",
     ),
 };
