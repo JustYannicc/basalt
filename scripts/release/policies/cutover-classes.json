@@ -12,7 +12,8 @@
         "PublicSiteWaitlist",
         "PoolObservationSecrets",
         "PoolProviderObservationToken",
-        "ArtifactsCredentials"
+        "ArtifactsCredentials",
+        "RouteGateway"
       ],
       "types": [
         "Cloudflare.Hyperdrive",
@@ -30,6 +31,7 @@
     },
     "poolWorker": "PoolWorker",
     "artifactsCredentials": "ArtifactsCredentials",
+    "attachmentOnly": ["RouteGateway"],
     "allow": [
       {
         "fqn": "PoolWorker",
@@ -54,6 +56,7 @@
     "PoolBackendBudgetRuntimeReady"
   ],
   "wire": {
+    "heldApplications": ["RouteGateway"],
     "sqliteClasses": {
       "PoolWorker": [
         "PoolRuntimeBlue",

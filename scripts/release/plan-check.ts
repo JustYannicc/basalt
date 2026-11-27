@@ -88,6 +88,14 @@ export const PlanPolicy = Schema.Struct({
   }),
   poolWorker: exactFqn,
   artifactsCredentials: exactFqn,
+  /**
+   * `cutover-classes` only: containers besides the root whose row may plan an update that is only
+   * its Worker attachment, not known while the pool Worker updates for the class change. Admitted
+   * on the root's terms (`attachmentWaitsOnWorker`) and with no prop changes; the policy's wire
+   * guard holds the application (`wire.heldApplications`), so a write the plan cannot show, such
+   * as a new image, is refused at the wire.
+   */
+  attachmentOnly: Schema.optional(Schema.Array(exactFqn)),
   /** `cutover-classes` only: every non-noop node, with its action. */
   allow: Schema.Array(
     Schema.Struct({
@@ -465,6 +473,78 @@ function workerViolations(node: Node, policy: PlanPolicy): PlanViolation[] {
 }
 
 /**
+ * Whether a container's only pending change is its Worker attachment, not known yet while the pool
+ * Worker updates: what it resolves to is already recorded, the same on both rows, and the Worker
+ * still hosts the class. The apply then reads the application and attaches nothing new.
+ */
+export function attachmentWaitsOnWorker(
+  node: Node,
+  poolWorker: string,
+  worker: { readonly node: Node | undefined; readonly clean: boolean },
+): boolean {
+  const props: Record<string, unknown> = record(node.resource.Props) ? node.resource.Props : {};
+  const pending = bindingChanges(node).filter((binding) => binding.action !== "noop");
+  const className = props.className;
+  const [binding] = pending;
+  if (pending.length !== 1 || !binding || binding.action !== "update") return false;
+  // Not known yet, and waiting on the pool Worker alone.
+  if (isResolved(binding.data)) return false;
+  const upstream = Object.keys(Output.upstreamAny(binding.data));
+  if (upstream.length !== 1 || upstream[0] !== poolWorker) return false;
+  const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
+  // The provider writes exactly the namespace here. A comparison stops at data holding an
+  // unknown, so any value beside it, on either row, could differ unseen.
+  const onlyNamespace = (data: unknown) =>
+    record(data) &&
+    Object.keys(data).join() === "durableObjects" &&
+    record(data.durableObjects) &&
+    Object.keys(data.durableObjects).join() === "namespaceId";
+  if (!onlyNamespace(binding.data) || !onlyNamespace(recordedData)) return false;
+  // What it will resolve to is already recorded, the same on both rows: a namespace id is
+  // permanent for a Worker and a class, so the Worker's update cannot move it.
+  const attached =
+    record(recordedData) && record(recordedData.durableObjects)
+      ? recordedData.durableObjects.namespaceId
+      : undefined;
+  if (typeof attached !== "string" || attached.length === 0) return false;
+  const rootAttr = (recorded(node) as { attr?: { durableObjects?: { namespaceId?: unknown } } })
+    ?.attr;
+  if (rootAttr?.durableObjects?.namespaceId !== attached) return false;
+  const workerNode = worker.node;
+  if (!workerNode || typeof className !== "string") return false;
+  const workerAttr = (
+    recorded(workerNode) as { attr?: { durableObjectNamespaces?: Record<string, unknown> } }
+  )?.attr;
+  if (workerAttr?.durableObjectNamespaces?.[className] !== attached) return false;
+  // The pool Worker updates, nothing its own rules refuse, and still hosts the class itself.
+  return (
+    workerNode.action === "update" &&
+    worker.clean &&
+    bindingChanges(workerNode).some(
+      (entry) =>
+        entry.action !== "delete" &&
+        wire(entry.data).some(
+          (bound) =>
+            durable(bound) && bound.className === className && bound.scriptName === undefined,
+        ),
+    )
+  );
+}
+
+/**
+ * Whether a container's declared props are its recorded ones. A build context is an absolute path
+ * in this checkout; the recorded one may sit in the checkout of the release that declared it, as
+ * an entry file may (sameEntryFile).
+ */
+export function sameDeclaration(recordedProps: unknown, declaredProps: unknown): boolean {
+  const { context: recordedContext, ...kept } = record(recordedProps) ? recordedProps : {};
+  const { context: declaredContext, ...declared } = record(declaredProps) ? declaredProps : {};
+  const sameContext =
+    declaredContext === recordedContext || sameEntryFile(recordedContext, declaredContext);
+  return sameContext && propChanges(kept, declared).length === 0;
+}
+
+/**
  * Whether the root's planned update is one the apply settles with reads only, explained by one or
  * both of: the image hash the old release layer recorded (a pinned declaration hashes the reference
  * instead), and an attachment the plan cannot know while the pool Worker updates.
@@ -488,53 +568,6 @@ export function rootUpdateSettles(
     referenceHash !== undefined &&
     recordedHash !== referenceHash;
   const pending = bindingChanges(node).filter((binding) => binding.action !== "noop");
-  const className = props.className;
-  const attachmentWaitsOnWorker = () => {
-    const [binding] = pending;
-    if (pending.length !== 1 || !binding || binding.action !== "update") return false;
-    // Not known yet, and waiting on the pool Worker alone.
-    if (isResolved(binding.data)) return false;
-    const upstream = Object.keys(Output.upstreamAny(binding.data));
-    if (upstream.length !== 1 || upstream[0] !== policy.poolWorker) return false;
-    const recordedData = recordedBindings(node).find((entry) => entry.sid === binding.sid)?.data;
-    // The provider writes exactly the namespace here. A comparison stops at data holding an
-    // unknown, so any value beside it, on either row, could differ unseen.
-    const onlyNamespace = (data: unknown) =>
-      record(data) &&
-      Object.keys(data).join() === "durableObjects" &&
-      record(data.durableObjects) &&
-      Object.keys(data.durableObjects).join() === "namespaceId";
-    if (!onlyNamespace(binding.data) || !onlyNamespace(recordedData)) return false;
-    // What it will resolve to is already recorded, the same on both rows: a namespace id is
-    // permanent for a Worker and a class, so the Worker's update cannot move it.
-    const attached =
-      record(recordedData) && record(recordedData.durableObjects)
-        ? recordedData.durableObjects.namespaceId
-        : undefined;
-    if (typeof attached !== "string" || attached.length === 0) return false;
-    const rootAttr = (recorded(node) as { attr?: { durableObjects?: { namespaceId?: unknown } } })
-      ?.attr;
-    if (rootAttr?.durableObjects?.namespaceId !== attached) return false;
-    const workerNode = worker.node;
-    if (!workerNode || typeof className !== "string") return false;
-    const workerAttr = (
-      recorded(workerNode) as { attr?: { durableObjectNamespaces?: Record<string, unknown> } }
-    )?.attr;
-    if (workerAttr?.durableObjectNamespaces?.[className] !== attached) return false;
-    // The pool Worker updates, nothing its own rules refuse, and still hosts the class itself.
-    return (
-      workerNode.action === "update" &&
-      worker.clean &&
-      bindingChanges(workerNode).some(
-        (entry) =>
-          entry.action !== "delete" &&
-          wire(entry.data).some(
-            (bound) =>
-              durable(bound) && bound.className === className && bound.scriptName === undefined,
-          ),
-      )
-    );
-  };
   return (
     node.action === "update" &&
     propChanges(before, props).length === 0 &&
@@ -543,7 +576,8 @@ export function rootUpdateSettles(
     (hashDiffers || pending.length > 0) &&
     (!hashDiffers || policy.poolContainer.recordedHashOnly === true) &&
     (pending.length === 0 ||
-      (policy.poolContainer.workerAttachment === true && attachmentWaitsOnWorker()))
+      (policy.poolContainer.workerAttachment === true &&
+        attachmentWaitsOnWorker(node, policy.poolWorker, worker)))
   );
 }
 
@@ -747,6 +781,21 @@ export const checkPlan = (
       );
       const rootSettled =
         !!rootNode && rootUpdateSettles(rootNode, policy, referenceHash, workerContext);
+      const attachedOnly = (fqn: string) => {
+        const node = nodes.find((candidate) => candidate.resource.FQN === fqn);
+        if (!node || policy.attachmentOnly?.includes(fqn) !== true) return false;
+        const props: Record<string, unknown> = record(node.resource.Props)
+          ? node.resource.Props
+          : {};
+        return (
+          node.resource.Type === "Cloudflare.Container" &&
+          // A settled row only: an update of a `replaced` one also collects older generations.
+          (node.state?.status === "created" || node.state?.status === "updated") &&
+          node.action === "update" &&
+          sameDeclaration(recorded(node)?.props, props) &&
+          attachmentWaitsOnWorker(node, policy.poolWorker, workerContext)
+        );
+      };
       // A root recorded by id but not by name makes the wire guard refuse every container
       // application write of the run, so a plan that writes one would pass here and stop at its
       // first write. A root not recorded yet is the guard's own case: it requires none there.
@@ -776,6 +825,28 @@ export const checkPlan = (
         });
       for (const node of nodes) {
         const at = { fqn: node.resource.FQN, type: node.resource.Type, action: node.action };
+        // A stopped apply leaves a new container's row holding precreate's local id: the Worker that
+        // binds it uploaded, or not, and its create reached Cloudflare, or not, and State cannot
+        // tell which. Planned again, Alchemy reads the row's attachment appearing as a replace, or
+        // promotes it with an update, or adopts whatever carries its name. Only the create that has
+        // not happened yet is the row's own; the placeholder repair settles the rest first.
+        const placeholder = (node.state as { attr?: { applicationId?: unknown } } | undefined)?.attr
+          ?.applicationId;
+        if (
+          node.resource.Type === "Cloudflare.Container" &&
+          typeof placeholder === "string" &&
+          placeholder.startsWith("dev:") &&
+          node.state?.providerMode !== "local" &&
+          node.action !== "create" &&
+          node.action !== "noop"
+        )
+          violations.push({
+            ...at,
+            rule: "container-placeholder-not-created",
+            change: [`attr.applicationId: ${placeholder.slice(0, 4)}… (a local placeholder)`],
+            why: "A stopped apply left this row before its application was created, and State cannot tell whether the create reached Cloudflare; planning it again can replace or adopt a live application.",
+            fix: "Run the placeholder repair (deploy.ts repair) for this fqn, then plan the release again.",
+          });
         const destroys =
           node.action === "delete" || node.action === "orphaned" || node.action === "replace";
         const reviewed = policy.removals.some(
@@ -1233,7 +1304,8 @@ export const checkPlan = (
           if (
             change.fqn === policy.artifactsCredentials ||
             allowed?.action === change.action ||
-            (change.fqn === policy.poolContainer.fqn && rootSettled)
+            (change.fqn === policy.poolContainer.fqn && rootSettled) ||
+            attachedOnly(change.fqn)
           )
             continue;
           outside(

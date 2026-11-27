@@ -12,7 +12,8 @@
         "PublicSiteWaitlist",
         "PoolObservationSecrets",
         "PoolProviderObservationToken",
-        "ArtifactsCredentials"
+        "ArtifactsCredentials",
+        "RouteGateway"
       ],
       "types": [
         "Cloudflare.Hyperdrive",

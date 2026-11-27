@@ -14,7 +14,13 @@ import type { Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import * as Containers from "@distilled.cloud/cloudflare/containers";
 import * as Retry from "@distilled.cloud/cloudflare/Retry";
 import { install, WireRefused, type WireGuardConfig } from "./wire-guard.ts";
-import { ACCOUNT, applicationBody, credentials } from "./test/wire-guard-fixture.ts";
+import {
+  ACCOUNT,
+  applicationBody,
+  applicationRead,
+  credentials,
+} from "./test/wire-guard-fixture.ts";
+import { NoRootRecorded, readOnlyRun, wireConfigFor, wireHolds } from "./wire-config.ts";
 
 const RECORDED = "11111111-1111-4111-8111-111111111111";
 // The root's live id when State's is stale: what Alchemy then finds by name in the list.
@@ -25,7 +31,16 @@ const envelope = (result: unknown) =>
   JSON.stringify({ success: true, errors: [], messages: [], result });
 
 /** Answers the list with the root, a create with the root, a read of RECORDED as Cloudflare's not-found. */
-const startServer = async (answers: { create?: unknown; redirectRead?: boolean } = {}) => {
+const startServer = async (
+  answers: {
+    create?: unknown;
+    redirectRead?: boolean;
+    /** The account's list; by default the root alone. */
+    list?: unknown[];
+    /** Reads answered by id. */
+    reads?: Record<string, unknown>;
+  } = {},
+) => {
   const received: string[] = [];
   const server = createServer(async (request, response) => {
     for await (const _ of request);
@@ -33,7 +48,11 @@ const startServer = async (answers: { create?: unknown; redirectRead?: boolean }
     received.push(`${request.method} ${path}`);
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && path.endsWith("/containers/applications"))
-      return response.end(envelope([root]));
+      return response.end(envelope(answers.list ?? [root]));
+    const read = Object.entries(answers.reads ?? {}).find(([id]) =>
+      path.endsWith(`/applications/${id}`),
+    );
+    if (request.method === "GET" && read) return response.end(envelope(read[1]));
     if (request.method === "POST" && path.endsWith("/containers/applications"))
       return response.end(envelope(answers.create ?? root));
     if (request.method === "GET" && path.endsWith(`/applications/${RECORDED}`)) {
@@ -168,6 +187,273 @@ test("a root held by id but not by name: the application the provider finds by n
   refusalOf(run.exit.value.patch);
   refusalOf(run.exit.value.rollout);
   assert.deepEqual(run.writes, []);
+});
+
+test("a held application never stands in for the root's name", async (t) => {
+  // The policy's held gateway has a name; the root, known by id alone, still has none. Knowing the
+  // root takes the root's own pair, so the provider still never patches it by name.
+  const run = await guarded(
+    t,
+    {
+      rootApplications: [RECORDED],
+      rootApplicationNames: [],
+      rootRequired: true,
+      heldApplications: [{ id: "held-application", name: "held-name" }],
+    },
+    () =>
+      Effect.gen(function* () {
+        yield* Effect.exit(
+          Containers.getContainerApplication({ accountId: ACCOUNT, applicationId: RECORDED }),
+        );
+        const apps = yield* Containers.listContainerApplications({ accountId: ACCOUNT });
+        const found = apps.find((app) => app.name === NAME);
+        assert.ok(found);
+        return yield* patchAndRollout(found.id);
+      }),
+  );
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  refusalOf(run.exit.value.patch);
+  refusalOf(run.exit.value.rollout);
+  assert.deepEqual(run.writes, []);
+});
+
+test("a held application is never written, and one held without a name holds every application", async (t) => {
+  const root = { rootApplications: [RECORDED], rootApplicationNames: [NAME], rootRequired: true };
+  const held = await guarded(
+    t,
+    { ...root, heldApplications: [{ id: "held-application", name: "held-name" }] },
+    () => patchAndRollout("held-application"),
+  );
+  assert.ok(Exit.isSuccess(held.exit));
+  refusalOf(held.exit.value.patch);
+  refusalOf(held.exit.value.rollout);
+  assert.deepEqual(held.writes, []);
+  // Recorded by id alone, it could be found by name under another id: nothing is written.
+  const unnamed = await guarded(
+    t,
+    { ...root, heldApplications: [{ id: "held-application" }] },
+    () => patchAndRollout("another-application"),
+  );
+  assert.ok(Exit.isSuccess(unnamed.exit));
+  refusalOf(unnamed.exit.value.patch);
+  refusalOf(unnamed.exit.value.rollout);
+  assert.deepEqual(unnamed.writes, []);
+});
+
+const GATEWAY = "basalt-production-route-gateway";
+const GATEWAY_LIVE = "33333333-3333-4333-8333-333333333333";
+const gateway = { ...applicationBody(GATEWAY_LIVE), name: GATEWAY };
+/** Finds the gateway in the account's list by name, as the provider does, then patches it. */
+const findGatewayAndPatch = () =>
+  Effect.gen(function* () {
+    const apps = yield* Containers.listContainerApplications({ accountId: ACCOUNT });
+    const found = apps.find((app) => app.name.toLowerCase() === GATEWAY);
+    assert.ok(found);
+    return yield* patchAndRollout(found.id);
+  });
+
+test("the entry's holds keep a held name out of the root's, and the guard holds both", async (t) => {
+  // What deploy.ts builds: the root as its row records it, the policy's held rows beside it.
+  const unnamedRoot = wireHolds({ id: RECORDED }, [{ id: "stale-gateway", name: GATEWAY }]);
+  assert.deepEqual(unnamedRoot, {
+    rootApplications: [RECORDED],
+    rootApplicationNames: [],
+    heldApplications: [{ id: "stale-gateway", name: GATEWAY }],
+  });
+  // The root known by id alone still refuses every container write, the held name notwithstanding.
+  const blind = await guarded(t, { ...unnamedRoot, rootRequired: true }, () =>
+    patchAndRollout("any-application"),
+  );
+  assert.ok(Exit.isSuccess(blind.exit));
+  refusalOf(blind.exit.value.patch);
+  assert.deepEqual(blind.writes, []);
+  // With the root named, the held gateway is held by the name the account answers.
+  const named = wireHolds({ id: RECORDED, name: NAME }, [
+    { id: "stale-gateway", name: GATEWAY },
+    undefined,
+  ]);
+  const run = await guarded(t, { ...named, rootRequired: true }, findGatewayAndPatch, {
+    list: [root, gateway],
+  });
+  assert.ok(
+    Exit.isSuccess(run.exit),
+    String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+  );
+  refusalOf(run.exit.value.patch);
+  refusalOf(run.exit.value.rollout);
+  assert.deepEqual(run.writes, []);
+});
+
+test("a held name is held on a stage with no root recorded, and in any case", async (t) => {
+  for (const held of [
+    { id: "stale-gateway", name: GATEWAY },
+    { id: "stale-gateway", name: GATEWAY.toUpperCase() },
+  ]) {
+    const run = await guarded(t, { heldApplications: [held] }, findGatewayAndPatch, {
+      list: [{ ...gateway, name: GATEWAY.toUpperCase() }],
+    });
+    assert.ok(
+      Exit.isSuccess(run.exit),
+      String(Exit.isFailure(run.exit) && Cause.squash(run.exit.cause)),
+    );
+    refusalOf(run.exit.value.patch);
+    assert.deepEqual(run.writes, [], held.name);
+  }
+  // Cloudflare's ids are not case sensitive: a held id and a request in another case are the same.
+  const lettered = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  for (const [held, sent] of [
+    [lettered, lettered.toUpperCase()],
+    [lettered.toUpperCase(), lettered],
+  ]) {
+    const byId = await guarded(t, { heldApplications: [{ id: held!, name: GATEWAY }] }, () =>
+      patchAndRollout(sent!),
+    );
+    assert.ok(Exit.isSuccess(byId.exit));
+    refusalOf(byId.exit.value.patch);
+    assert.deepEqual(byId.writes, [], `${held} / ${sent}`);
+  }
+});
+
+test("an unattached application is not deleted while its read names a held application", async (t) => {
+  const idle = {
+    ...applicationRead({ attached: false, active: 0 }).result,
+    id: GATEWAY_LIVE,
+    name: GATEWAY,
+  };
+  const remove = () =>
+    Effect.exit(
+      Containers.deleteContainerApplication({ accountId: ACCOUNT, applicationId: GATEWAY_LIVE }),
+    );
+  const held = await guarded(
+    t,
+    {
+      rootApplications: [RECORDED],
+      rootApplicationNames: [NAME],
+      heldApplications: [{ id: "stale-gateway", name: GATEWAY }],
+    },
+    remove,
+    { reads: { [GATEWAY_LIVE]: idle } },
+  );
+  assert.ok(Exit.isSuccess(held.exit));
+  refusalOf(held.exit.value);
+  assert.deepEqual(held.writes, []);
+  // The read's name in another case than the held one is the same application.
+  const shouted = await guarded(
+    t,
+    {
+      rootApplications: [RECORDED],
+      rootApplicationNames: [NAME],
+      heldApplications: [{ id: "stale-gateway", name: GATEWAY }],
+    },
+    remove,
+    { reads: { [GATEWAY_LIVE]: { ...idle, name: GATEWAY.toUpperCase() } } },
+  );
+  assert.ok(Exit.isSuccess(shouted.exit));
+  refusalOf(shouted.exit.value);
+  assert.deepEqual(shouted.writes, []);
+  // The same delete of an application nobody holds goes through: the refusal is the name's.
+  const other = await guarded(
+    t,
+    {
+      rootApplications: [RECORDED],
+      rootApplicationNames: [NAME],
+      heldApplications: [{ id: "stale-gateway", name: "another" }],
+    },
+    remove,
+    { reads: { [GATEWAY_LIVE]: idle } },
+  );
+  assert.ok(Exit.isSuccess(other.exit));
+  assert.deepEqual(other.writes, [
+    `DELETE /accounts/${ACCOUNT}/containers/applications/${GATEWAY_LIVE}`,
+  ]);
+});
+
+test("the run's holds come from the policy's rows, and an unnamed root still refuses every write", async (t) => {
+  const rows: Record<string, { id: string; name?: string }> = {
+    PoolContainer: { id: RECORDED },
+    RouteGateway: { id: "stale-gateway", name: GATEWAY },
+  };
+  const read = (fqn: string) => Effect.succeed(rows[fqn]);
+  const holds = await Effect.runPromise(
+    wireConfigFor({
+      stage: "production",
+      policy: { rootFqn: "PoolContainer", held: ["RouteGateway"] },
+      recorded: read,
+    }),
+  );
+  assert.deepEqual(holds, {
+    rootApplications: [RECORDED],
+    rootApplicationNames: [],
+    heldApplications: [{ id: "stale-gateway", name: GATEWAY }],
+    rootRequired: true,
+    unnamedRoot: true,
+  });
+  const { unnamedRoot: _unnamed, ...config } = holds;
+  const run = await guarded(t, config, () => patchAndRollout("any-application"));
+  assert.ok(Exit.isSuccess(run.exit));
+  refusalOf(run.exit.value.patch);
+  assert.deepEqual(run.writes, []);
+  // A named root, and the gateway held by the name its row records.
+  rows.PoolContainer = { id: RECORDED, name: NAME };
+  const named = await Effect.runPromise(
+    wireConfigFor({
+      stage: "production",
+      policy: { rootFqn: "PoolContainer", held: ["RouteGateway"] },
+      recorded: read,
+    }),
+  );
+  const { unnamedRoot: _n, ...namedConfig } = named;
+  const gatewayRun = await guarded(t, namedConfig, findGatewayAndPatch, { list: [root, gateway] });
+  assert.ok(Exit.isSuccess(gatewayRun.exit));
+  refusalOf(gatewayRun.exit.value.patch);
+  assert.deepEqual(gatewayRun.writes, []);
+  // Production keeps the root from the first request on, recorded or not, policy or not.
+  const bare = await Effect.runPromise(
+    wireConfigFor({
+      stage: "production",
+      policy: undefined,
+      recorded: () => Effect.undefined,
+    }),
+  );
+  assert.equal(bare.rootRequired, true);
+  // A stage that records its root under a policy keeps it as production does.
+  const rehearsal = await Effect.runPromise(
+    wireConfigFor({
+      stage: "test-rehearsal-1",
+      policy: { rootFqn: "PoolContainer", held: [] },
+      recorded: read,
+    }),
+  );
+  assert.equal(rehearsal.rootRequired, true);
+  // Production under a policy that records no root stops; a preview without one holds nothing.
+  const none = await Effect.runPromiseExit(
+    wireConfigFor({ stage: "production", policy: { rootFqn: "Absent", held: [] }, recorded: read }),
+  );
+  assert.ok(Exit.isFailure(none) && Cause.squash(none.cause) instanceof NoRootRecorded);
+  assert.deepEqual(
+    await Effect.runPromise(
+      wireConfigFor({ stage: "test-preview", policy: undefined, recorded: read }),
+    ),
+    {
+      rootApplications: [],
+      rootApplicationNames: [],
+      heldApplications: [],
+      rootRequired: false,
+      unnamedRoot: false,
+    },
+  );
+});
+
+test("only a production command that writes nothing runs read-only, a repair without its digest included", () => {
+  for (const command of ["plan", "preflight", "snapshot", "serving"])
+    assert.equal(readOnlyRun("production", command, undefined), true, command);
+  assert.equal(readOnlyRun("production", "repair", undefined), true);
+  assert.equal(readOnlyRun("production", "repair", "f".repeat(64)), false);
+  assert.equal(readOnlyRun("production", "apply", "f".repeat(64)), false);
+  assert.equal(readOnlyRun("test-route-scratch-1", "repair", undefined), false);
 });
 
 test("a production run that has not pushed the root refuses every container application write", async (t) => {

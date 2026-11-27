@@ -26,6 +26,12 @@ export const ReleasePolicy = Schema.Struct({
     expectLiveModule: Schema.optional(Schema.Array(Schema.String)),
     /** FQNs admitted as code-only changes: their uploads keep the serving version's bindings. */
     fixedBindings: Schema.optional(Schema.Array(Schema.String)),
+    /**
+     * FQNs of container applications no request of the run may change, as the root is held: the
+     * guard refuses every write to the application their State rows record, by id and by name. A
+     * row not recorded yet holds nothing.
+     */
+    heldApplications: Schema.optional(Schema.Array(Schema.String)),
   }),
   /**
    * A release that declares the root will restart, because its own code restarts a runtime that
@@ -58,10 +64,28 @@ export const ReleasePolicy = Schema.Struct({
   env: Schema.Struct({
     POOL_FLEET_BUILD: Schema.optional(Schema.Literal("true")),
     POOL_FLEET_CLASSES: Schema.optional(Schema.Literal("absent")),
+    // The declare release says `declared`; `absent` is the opt-out (route-gateway-class.ts).
+    ROUTE_GATEWAY_CLASS: Schema.optional(Schema.Literals(["declared", "absent"])),
   }),
 });
 export type ReleasePolicy = typeof ReleasePolicy.Type;
 
-export const decodeReleasePolicy = Schema.decodeUnknownSync(ReleasePolicy, {
+const decodePolicyFile = Schema.decodeUnknownSync(ReleasePolicy, {
   onExcessProperty: "error",
 });
+
+/**
+ * A policy file, decoded whole. A container admitted for an attachment-only update must also be
+ * held at the wire: the plan cannot show a new image, so only the hold refuses one.
+ */
+export function decodeReleasePolicy(input: unknown): ReleasePolicy {
+  const policy = decodePolicyFile(input);
+  const unheld = (policy.check.attachmentOnly ?? []).filter(
+    (fqn) => !policy.wire.heldApplications?.includes(fqn),
+  );
+  if (unheld.length)
+    throw new Error(
+      `check.attachmentOnly names ${unheld.join(", ")} without wire.heldApplications: hold every container admitted for its attachment alone.`,
+    );
+  return policy;
+}

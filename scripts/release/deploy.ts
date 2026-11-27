@@ -13,6 +13,8 @@
  *   bun scripts/release/deploy.ts backup   --stage production --name <backup name>
  *   bun scripts/release/deploy.ts snapshot --stage <s> --out <file>
  *   bun scripts/release/deploy.ts compare  --before <file> --after <file>
+ *   bun scripts/release/deploy.ts repair   --stage <s> --fqn <container fqn> [--plan-digest <sha256>]
+ *     (a placeholder row a stopped apply left: plans the repair read-only, or applies the reviewed one)
  */
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -28,6 +30,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
+import { readOnlyRun, stageRowsOf, wireConfigFor, wireHolds } from "./wire-config.ts";
 import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -460,7 +463,7 @@ const include: string[] = values.include?.length ? values.include : [...(policy?
 if (stage === "production" && !policy && ["plan", "apply"].includes(command))
   throw new Error("Production plans and applies only under a policy");
 
-const { Effect, Logger } = await import("effect");
+const { Data, Effect, Logger } = await import("effect");
 const { Redacted } = await import("effect");
 const WireGuard = await import("./wire-guard.ts");
 const { checkPlan, decodePlanPolicy, planDigest } = await import("./plan-check.ts");
@@ -481,6 +484,7 @@ const { liveMainModuleSha256 } = await import("./live-module.ts");
 const { servingBindingShapes } = await import("./fixed-bindings.ts");
 const { rootPinMismatch, setRootPin } = await import("./root-pin.ts");
 const { rollbackTo, servingVersion } = await import("./worker-version.ts");
+const { routeGatewayClassFor, routeGatewayRecorded } = await import("./route-gateway-class.ts");
 const liveModules: { fqn: string; digest: string }[] = [];
 const database = await import("./database-safety.ts");
 
@@ -536,15 +540,14 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
+          heldApplications: [] as ReturnType<typeof wireHolds>["heldApplications"],
           // Production keeps the root from the first request on: until both its id and its name
           // are pushed below, no container application write leaves.
           rootRequired: stage === "production",
           deletable,
           stage: undefined as StageScope | undefined,
           // Reads of production send nothing but reads; the guard refuses anything else.
-          readOnly:
-            stage === "production" &&
-            ["plan", "preflight", "snapshot", "serving"].includes(command),
+          readOnly: readOnlyRun(stage, command, values["plan-digest"]),
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
@@ -604,27 +607,24 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               script,
             });
           }
-          // Every reviewed release, and every production command, leaves the root application as
-          // recorded; previews roll it freely. A stage under a policy keeps its root by the same
-          // rules once its State row records one, so a rehearsal runs them as production does.
-          const rootFqn =
-            policy?.check?.poolContainer.fqn ??
-            (stage === "production" ? "PoolContainer" : undefined);
-          if (rootFqn) {
-            const root = yield* recordedApplication(rootFqn);
-            if (root) {
-              wire.rootApplications.push(root.id);
-              wire.rootRequired = true;
-              if (root.name) wire.rootApplicationNames.push(root.name);
-              else
-                yield* Effect.promise(() =>
-                  summary(
-                    "Warning: the root's State row records no application name, so every container application write in this run is refused.",
-                  ),
-                );
-            } else if (stage === "production" && policy?.check)
-              return yield* Effect.die(new Error("No root application recorded on production"));
-          }
+          // The run's holds: the root by its own pair, the policy's held rows beside it.
+          const records = yield* stageState.pipe(Effect.orDie);
+          const holds = yield* wireConfigFor({
+            stage,
+            policy: policy?.check && {
+              rootFqn: policy.check.poolContainer.fqn,
+              held: policy.wire.heldApplications ?? [],
+            },
+            recorded: records.application,
+          }).pipe(Effect.orDie);
+          const { unnamedRoot, ...applied } = holds;
+          Object.freeze(Object.assign(wire, applied));
+          if (unnamedRoot)
+            yield* Effect.promise(() =>
+              summary(
+                "Warning: the root's State row records no application name, so every container application write in this run is refused.",
+              ),
+            );
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
             effect.pipe(Effect.provideService(Alchemist.Progress, reporter)) as Fx.Effect<
@@ -648,6 +648,11 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
 
 const target = { entrypoint: scaleStack ? config : resolve(root, config), stage };
 let loadedStackName: string | undefined;
+/** The stack's entry module could not be imported to read its name; the release stops. */
+class StackImportFailed extends Data.TaggedError("StackImportFailed")<{
+  readonly cause: unknown;
+}> {}
+
 /**
  * The stack's own name, as its module declares it, loaded by Alchemy's own stack loader (the one
  * `Stack.plan` uses): production deploys `basalt`, a rehearsal stage deploys under its own stack
@@ -664,7 +669,7 @@ const stackName = () =>
     >;
     loadedStackName = stack.stackName;
     return stack.stackName;
-  });
+  }).pipe(Effect.mapError((cause) => new StackImportFailed({ cause })));
 /** A Worker's live script name, from its State row (names carry the stage, policies name FQNs). */
 const scriptName = (fqn: string) =>
   Effect.gen(function* () {
@@ -681,22 +686,35 @@ const scriptName = (fqn: string) =>
     return script as string;
   });
 
-/** The container application a State row records, if the row exists yet. */
-const recordedApplication = (fqn: string) =>
-  Effect.gen(function* () {
-    const state = yield* Alchemist.State.store({
-      backend: "configured",
-      ...target,
-    } as never) as unknown as Fx.Effect<StateService, unknown, never>;
-    const row = (yield* state.get({ stack: yield* stackName(), stage, fqn })) as
-      | { attr?: { applicationId?: unknown; applicationName?: unknown } }
-      | undefined;
-    const id = row?.attr?.applicationId;
-    const name = row?.attr?.applicationName;
-    return typeof id === "string" && id
-      ? { id, name: typeof name === "string" && name ? name : undefined }
-      : undefined;
-  });
+/** A State row the entry needed could not be read; the release stops, naming only the FQN. */
+class StateReadFailed extends Data.TaggedError("StateReadFailed")<{
+  readonly fqn: string;
+  readonly cause: unknown;
+}> {}
+
+interface RecordedRow {
+  attr?: {
+    applicationId?: unknown;
+    applicationName?: unknown;
+    durableObjectNamespaces?: Record<string, unknown>;
+  };
+  old?: RecordedRow;
+}
+/** The stage's State rows under this stack's key (wire-config.ts). */
+const stageState = Effect.gen(function* () {
+  const state = yield* Alchemist.State.store({
+    backend: "configured",
+    ...target,
+  } as never) as unknown as Fx.Effect<StateService, unknown, never>;
+  return stageRowsOf(state, yield* stackName(), stage);
+}).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: "(State store)", cause })));
+/** One resource's State row in this stage, if it exists yet. */
+const recordedRow = (fqn: string) =>
+  stageState.pipe(
+    Effect.flatMap((rows) => rows.row(fqn)),
+    Effect.map((row) => row as RecordedRow | undefined),
+    Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
+  );
 
 const planOf = (operation: "deploy" | "destroy") =>
   Alchemist.Stack.plan({
@@ -724,6 +742,26 @@ try {
   // The root pin's full reference carries the account, so it exists only in this process.
   setRootPin(process.env);
   if (command === "plan" || command === "apply" || command === "deploy") {
+    // First session: whether this stage already hosts the route gateway's class, read before the
+    // stack reads its switch. Alchemy's session copies the environment when it opens, so the value
+    // is set between two runs, as scripts/production.ts sets the fleet's. A policy's own value wins
+    // (route-gateway-class.ts), and the entry sets it whatever the job's environment held.
+    const poolWorker = policy?.check?.poolWorker ?? "PoolWorker";
+    const recorded = await run(
+      recordedRow(poolWorker).pipe(
+        Effect.map((pool) =>
+          routeGatewayRecorded(
+            [pool, pool?.old].flatMap((row) =>
+              Object.keys(row?.attr?.durableObjectNamespaces ?? {}),
+            ),
+          ),
+        ),
+      ),
+    );
+    process.env.ROUTE_GATEWAY_CLASS = routeGatewayClassFor(
+      policy?.env.ROUTE_GATEWAY_CLASS,
+      recorded,
+    );
     const result = await run(
       Effect.gen(function* () {
         // The store's contract version is pinned: a different one means a deliberate upgrade first.
@@ -875,6 +913,38 @@ try {
       values["verify-only"]
         ? `Checked stage ${stage}: none of its container applications or tagged registry images remain. ${TEARDOWN_NOT_CHECKED}`
         : `Tore down stage ${stage}: ${result.applications.length} container applications and ${result.manifests} registry manifests in ${result.repositories.length} repositories deleted; none tagged remain. ${TEARDOWN_NOT_CHECKED}`,
+    );
+  } else if (command === "repair") {
+    // A container row a stopped apply left holding a local placeholder (placeholder-repair.ts):
+    // without a digest the run only plans the repair; with one it applies exactly that repair.
+    const repair = await import("./placeholder-repair.ts");
+    const fqn = values.fqn ?? "";
+    if (!fqn) throw new Error("A repair names the container's row with --fqn");
+    const digest = values["plan-digest"];
+    const result = await run(
+      Effect.gen(function* () {
+        const records = yield* stageState;
+        return yield* repair.repairCommand({
+          fqn,
+          digest,
+          policy: policy && {
+            worker: policy.check.poolWorker,
+            root: policy.check.poolContainer.fqn,
+            held: policy.wire.heldApplications ?? [],
+          },
+          stage: records,
+          stackState,
+          runnerLocal: runnerLocalStateVersion,
+          open: Effect.suspend(() => Session.open(target as never)).pipe(
+            Effect.mapError((cause) => new StateReadFailed({ fqn, cause })),
+          ),
+        });
+      }),
+    );
+    // Names and the account stay in the private record; the summary says what and what next.
+    await keepPrivate("repair", result.sealed);
+    await summary(
+      `${digest ? "Repaired" : "Planned the repair of"} ${fqn}: ${result.plan.action === "forget" ? "forget the placeholder row (no application exists under its name)" : "adopt the live application under its name"}; digest \`${repair.repairDigest(result.plan)}\`. Next: ${repair.nextRelease(result.plan)}.`,
     );
   } else if (command === "backup") {
     if (stage !== "production") throw new Error("Backups are taken of production only");

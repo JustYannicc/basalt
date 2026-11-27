@@ -68,7 +68,7 @@
     "scripts/release/live-module.test.ts": 2,
     "scripts/release/root-settle-check.test.ts": 5,
     "scripts/release/stage-teardown.test.ts": 4,
-    "scripts/release/test/plan-fixture.ts": 4,
+    "scripts/release/test/plan-fixture.ts": 3,
     "scripts/release/test/wire-guard-fixture.ts": 3,
     "scripts/release/wire-guard-root-holes.test.ts": 1,
     "scripts/release/wire-guard.test.ts": 3,

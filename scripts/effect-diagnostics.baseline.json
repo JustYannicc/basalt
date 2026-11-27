@@ -5,7 +5,7 @@
     "scripts/pool-fleet/operations.ts": 11,
     "scripts/pool-tests/gemini.test.ts": 3,
     "scripts/production.ts": 5,
-    "scripts/release/deploy.ts": 32,
+    "scripts/release/deploy.ts": 27,
     "scripts/release/legacy-records.ts": 1,
     "scripts/release/root-settle-check.test.ts": 1,
     "scripts/release/root-settle-check.ts": 1,
