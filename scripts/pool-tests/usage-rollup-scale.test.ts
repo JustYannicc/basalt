@@ -297,7 +297,7 @@ async function scaleCase(shape: Shape) {
         }
       await f.db.query("ROLLBACK");
     }
-    // The coverage statement names the rollup only on the rollup path.
+    // The statement after the targets names the rollup only on the rollup path.
     assert.ok(
       statements[3]!.text.includes("basalt_model_usage_hourly"),
       "the read used the rollup",

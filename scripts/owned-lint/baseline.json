@@ -20,7 +20,6 @@
     "scripts/release/wire-guard.ts": 1,
     "scripts/release/worker-version.ts": 1,
     "scripts/runtime-recovery/inventory.ts": 1,
-    "scripts/scale-test/api.mjs": 1,
     "scripts/state-store-upgrade/cloudflare.ts": 1
   },
   "basalt/no-discarded-child-output": {
