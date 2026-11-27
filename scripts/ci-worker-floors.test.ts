@@ -14,6 +14,7 @@ const action = parse(
   readFileSync(join(root, ".github/actions/worker-upload-base/action.yml"), "utf8"),
 );
 type Step = {
+  id?: string;
   name?: string;
   run?: string;
   uses?: string;
@@ -43,10 +44,13 @@ test("every Check's fast job builds the Workers and fails one left under its flo
   const save = index(
     (step) => step.uses === "./.github/actions/worker-upload-base" && step.with?.mode === "save",
   );
-  // main keeps its sizes even when its own floor check fails, so later changes have a base.
-  assert.ok(generated < restore && restore < build && build < save && save < floors);
+  // The floor check reads the base before save overwrites that path with this commit's sizes.
+  assert.ok(generated < restore && restore < build && build < floors && floors < save);
   // Every lane runs them: a pull request's fast lane is the only Check it gets before its batch.
-  for (const step of [restore, build, floors, save]) assert.equal(steps[step]!.if, undefined);
+  for (const step of [restore, build, floors]) assert.equal(steps[step]!.if, undefined);
+  // main keeps its sizes even when its own floor check fails, so later changes have a base.
+  assert.equal(steps[build]!.id, "worker-build");
+  assert.equal(steps[save]!.if, "${{ !cancelled() && steps.worker-build.outcome == 'success' }}");
   assert.equal(steps[restore]!.with!.base, "${{ steps.comparison.outputs.base_sha }}");
 });
 

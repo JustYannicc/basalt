@@ -42,7 +42,9 @@
   "inputs": [
     ".upstream/apps/hosted/cloud/web/server-highlight.ts",
     ".upstream/apps/hosted/cloud/web/vite.config.ts",
+    ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
     ".upstream/packages/ui/src/contracts/highlight.ts",
+    ".upstream/packages/ui/src/implementation/dashboard/app-skills.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/code.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/markdown.tsx",
     ".upstream/packages/ui/src/implementation/dashboard/skill-content.tsx",
