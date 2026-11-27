@@ -54,7 +54,9 @@ export function cursorOf(header, first, lastEntry) {
     const query = params.map(([name, value]) => `${name}=${encodeURIComponent(value)}`).join("&");
     return { facts: Object.freeze({ cursor: "link", header: shape }), url: `${base}?${query}` };
   }
-  if (lastEntry === undefined) return { facts: Object.freeze({ cursor: "none", header: shape }) };
+  // The spec's cursor is an entry this read already accepted: a tag or an exact digest, nothing else.
+  if (lastEntry === undefined || !(TAG.test(lastEntry) || DIGEST.test(lastEntry)))
+    return { facts: Object.freeze({ cursor: "none", header: shape }) };
   return {
     facts: Object.freeze({ cursor: "spec", header: shape }),
     url: `${base}?n=${TAG_PAGE}&last=${encodeURIComponent(lastEntry)}`,
@@ -67,6 +69,7 @@ const causeOf = (error) => {
   if (message.includes("could not be sent")) return "unsent";
   if (message.includes("answered a redirect")) return "redirect";
   if (message.includes("without its tags")) return "no-tags";
+  if (message.includes("time budget is spent")) return "out-of-time";
   return "other";
 };
 
@@ -113,9 +116,14 @@ export async function readTagPages(first, fetchPage) {
     } catch (error) {
       if (page === 1 || Object.hasOwn(error, "record")) throw error;
       pages.push({ status: "unread", tags: 0, next: false });
-      throw stop("later-page-failed", "A registry tag list's later page could not be read", {
-        cause: causeOf(error),
-      });
+      const cause = causeOf(error);
+      throw stop(
+        "later-page-failed",
+        cause === "out-of-time"
+          ? "A registry tag list was not read to its end: the run's time budget is spent"
+          : "A registry tag list's later page could not be read",
+        { cause },
+      );
     }
     if (answer.gone) {
       if (page === 1) return Object.freeze([]);
@@ -158,6 +166,13 @@ export async function readTagPages(first, fetchPage) {
       if (!fresh) return Object.freeze(tags);
       throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
     }
+    if (cursor.url === undefined)
+      throw stop("no-cursor", "A registry tag list's last entry cannot carry the next page", {
+        entry: Object.freeze({
+          ...shapeOf(found.at(-1)),
+          digestShaped: DIGEST_SHAPE.test(found.at(-1)),
+        }),
+      });
     url = cursor.url;
   }
   throw stop("page-limit", `A registry tag list exceeded its page limit of ${MAX_TAG_PAGES}`);

@@ -11,6 +11,7 @@ import {
   refusalBody,
   script,
 } from "./test/cloudflare-shapes.mjs";
+import { cursorOf } from "./tag-pages.mjs";
 import { fakeAccount } from "./test/fake-account.mjs";
 
 const prefix = "basalt-emulated-upstream";
@@ -462,6 +463,41 @@ test("a link's record says its shape and never its text", async () => {
     },
   );
   assert.doesNotMatch(JSON.stringify(record), /registry|acct|sha256|aaaa|https?:/u);
+});
+
+test("no request starts once a full request timeout no longer fits before the run's deadline", async () => {
+  const fake = paged();
+  let clock = 0;
+  // Each request takes 10 s of the run. One starts only while a whole 30 s timeout still fits before
+  // the 60 s deadline: at 0, 10, 20 and 30 s, so four.
+  const timed = async (url, init) => {
+    clock += 10_000;
+    return fake.fetcher(url, init);
+  };
+  const api = stage(timed, { deadline: 60_000, now: () => clock });
+  const error = await api.images().then(
+    () => assert.fail("the read finished"),
+    (caught) => caught,
+  );
+  assert.match(error.message, /was not read to its end: the run's time budget is spent \(page 3/u);
+  assert.equal(error.record.tagRead.cause, "out-of-time");
+  // The run's last request started with a whole request timeout still to spare.
+  assert.equal(fake.calls.length, 4);
+  assert.ok(clock <= 60_000);
+  const spent = paged();
+  await assert.rejects(
+    stage(spent.fetcher, { deadline: 0, now: () => 0 }).images(),
+    /was not sent: the run's time budget is spent/u,
+  );
+  assert.equal(spent.calls.length, 0);
+});
+
+test("the spec's cursor is only ever an entry the read accepted", () => {
+  const first = `https://registry.cloudflare.com/v2/acct/${prefix}-mock/tags/list?n=1000`;
+  for (const entry of ["h1", `sha256:${"a".repeat(64)}`])
+    assert.equal(cursorOf("", first, entry).facts.cursor, "spec", entry);
+  for (const entry of ["../x", "a/b", `sha256:${"A".repeat(64)}`, "x?y", "#", undefined])
+    assert.deepEqual(cursorOf("", first, entry).url, undefined, String(entry));
 });
 
 test("a later page that fails, cannot be sent or answers without its tags stops with its page and record", async () => {

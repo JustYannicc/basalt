@@ -16,6 +16,11 @@ const shortest = (long) => (long ? LONG_MIN_MS : 0);
 export const paced = (long, ms) => ms >= shortest(long);
 /** How long a deploy waits for the platform to start the mock, and how often it asks. */
 export const mockWaitBoundMs = 120_000;
+/**
+ * The longest a destroy or an expiry may spend on stage requests. Every request ends within it
+ * (request.mjs), and it is under the expiry job's 20-minute limit with its setup steps.
+ */
+export const teardownBudgetMs = 15 * 60_000;
 export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
@@ -371,6 +376,10 @@ export async function main(env, { fetcher = fetch, now = Date.now, error = conso
       token: env.CLOUDFLARE_API_TOKEN,
       prefix,
       fetcher,
+      // A teardown's stage requests all end within its budget, so the job's limit never cuts one.
+      ...(mode === "destroy" || mode === "expire"
+        ? { deadline: now() + teardownBudgetMs, now }
+        : {}),
     });
     await emulatedStage({ api, key: env.EMULATED_UPSTREAM_KEY, fetcher, now, ...io })[mode]();
     return 0;

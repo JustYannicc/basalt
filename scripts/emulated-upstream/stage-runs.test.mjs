@@ -7,7 +7,15 @@ import { activeDispatches } from "./dispatch-busy.mjs";
 import { gate, mockCalls, plainReason } from "./gateway.ts";
 import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
-import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import {
+  checkFailures,
+  emulatedStage,
+  keyedRoutes,
+  LONG_MIN_MS,
+  main,
+  paced,
+  teardownBudgetMs,
+} from "./stage.mjs";
 import { prefix } from "./settings.ts";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
 import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
@@ -444,6 +452,41 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
     ],
   });
   for (const line of printed) assert.doesNotMatch(line, /sha256|acct\//u, line);
+});
+
+test("a teardown spends at most its budget on stage requests, and stops between them", async () => {
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1", "h2", "h3"] },
+    cloudflare: { pageSize: 1, emptyEnd: true },
+  });
+  let clock = NOW;
+  const started = [];
+  // A registry that takes four minutes a request: the 15-minute budget fits three of them.
+  const slow = async (url, init) => {
+    started.push(clock);
+    clock += 4 * 60_000;
+    return fake.fetcher(url, init);
+  };
+  const printed = [];
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher: slow,
+      now: () => clock,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: () => {},
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.match(printed.join("\n"), /time budget is spent/u);
+  // Every request started with a whole 30-second timeout still inside the budget.
+  assert.ok(
+    started.every((at) => at + 30_000 <= NOW + teardownBudgetMs),
+    started.join(","),
+  );
+  assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
 });
 
 test("a refused guard prints only its token", async () => {

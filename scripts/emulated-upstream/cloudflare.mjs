@@ -4,10 +4,16 @@
 import { stageCloudflare } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
 
-export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
+export function emulatedAccount({ accountId, token, prefix, fetcher = fetch, deadline, now }) {
   if (!accountId || !token)
     throw new StageError("The emulated upstream needs the deploy credentials");
-  const stage = stageCloudflare({ accountId, token, prefix, fetcher });
+  const stage = stageCloudflare({
+    accountId,
+    token,
+    prefix,
+    fetcher,
+    ...(deadline === undefined ? {} : { deadline, now }),
+  });
 
   /**
    * Every prefixed resource. A repository whose list is empty holds nothing the registry can still
