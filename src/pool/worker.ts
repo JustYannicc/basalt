@@ -855,12 +855,11 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
       this.ctx.waitUntil(trace.pass("model_history_shared", async () => {}));
       return;
     }
-    const work = trace
-      .pass("model_history", () =>
-        reportWhenDue(this.ctx.storage, "model-history", (progress) =>
-          runModelHistoryPass(this.modelHistoryPass(), progress),
-        ),
-      )
+    // Opened only once the pass is due, as home_database_pool's: a Home pass with nothing to run
+    // writes no history line.
+    const work = reportWhenDue(this.ctx.storage, "model-history", (progress) =>
+      trace.pass("model_history", () => runModelHistoryPass(this.modelHistoryPass(), progress)),
+    )
       .catch(() => console.error("POOL_MODEL_HISTORY_FAILURE count=1"))
       .finally(() => {
         if (this.modelHistoryTask === work) this.modelHistoryTask = undefined;

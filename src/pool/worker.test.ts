@@ -1952,8 +1952,18 @@ test("two model-history passes never overlap, and the next starts once the first
         (call.arguments[1] as { phase?: string; outcome?: string }).phase === phase &&
         (call.arguments[1] as { phase?: string; outcome?: string }).outcome === outcome,
     ).length;
-  // A pass's own line, whatever its outcome: `ended`, or `error` for one cut short.
-  const passes = (phase: string) => traced(phase, "ended") + traced(phase, "error");
+  // A pass's own line, whatever its outcome: `ended`, or `error` for one cut short. Only a pass line
+  // carries `phases`, so a phase's error line under the same name never counts as one.
+  const passes = (phase: string) =>
+    trace.mock.calls.filter((call) => {
+      const line = call.arguments[1] as { phase?: string; outcome?: string; phases?: unknown };
+      return (
+        call.arguments[0] === "POOL_RUNTIME_UPKEEP" &&
+        line.phase === phase &&
+        (line.outcome === "ended" || line.outcome === "error") &&
+        line.phases !== undefined
+      );
+    }).length;
   const controller = await slowHistoryController(t);
   try {
     await controller.home();
@@ -1973,6 +1983,11 @@ test("two model-history passes never overlap, and the next starts once the first
     // second is still in flight.
     assert.equal(passes("model_history"), 1);
     assert.equal(traced("model_history_shared", "ended"), 1);
+    assert.equal(controller.accepted(), 2);
+    await controller.drop();
+    // Not due again: a Home pass with no history to run writes no history line.
+    await controller.home();
+    assert.equal(passes("model_history"), 2);
     assert.equal(controller.accepted(), 2);
   } finally {
     await controller.release();
