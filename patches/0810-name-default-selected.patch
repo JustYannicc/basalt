@@ -1,7 +1,7 @@
 diff --git a/packages/ui/src/implementation/components/input.tsx b/packages/ui/src/implementation/components/input.tsx
 --- a/packages/ui/src/implementation/components/input.tsx
 +++ b/packages/ui/src/implementation/components/input.tsx
-@@ -3,16 +3,52 @@ import * as React from "react";
+@@ -3,16 +3,61 @@ import * as React from "react";
  import { DisabledTooltip } from "./disabled-tooltip.tsx";
  import { cn } from "../lib/utils.ts";
  
@@ -13,11 +13,17 @@ diff --git a/packages/ui/src/implementation/components/input.tsx b/packages/ui/s
 + * such as a default name that arrives after a prompt opens, is selected, so what they type next
 + * replaces it instead of landing after it.
 + */
++// A modifier alone, such as Shift for a capital letter, places nothing in the field.
++const modifiers = new Set(["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "Fn", "OS"]);
++
  function Input({
    className,
    type,
    disabledReason,
 +  ref,
++  onFocusCapture,
++  onInputCapture,
++  onKeyDownCapture,
    ...props
  }: React.ComponentProps<"input"> & { readonly disabledReason?: string | undefined }) {
 +  const element = React.useRef<HTMLInputElement | null>(null);
@@ -43,14 +49,17 @@ diff --git a/packages/ui/src/implementation/components/input.tsx b/packages/ui/s
      // oxlint-disable-next-line react/forbid-elements
      <input
 +      ref={attach}
-+      onFocusCapture={() => {
++      onFocusCapture={(event) => {
 +        touched.current = false;
++        onFocusCapture?.(event);
 +      }}
-+      onInputCapture={() => {
++      onInputCapture={(event) => {
 +        touched.current = true;
++        onInputCapture?.(event);
 +      }}
-+      onKeyDownCapture={() => {
-+        touched.current = true;
++      onKeyDownCapture={(event) => {
++        if (!modifiers.has(event.key)) touched.current = true;
++        onKeyDownCapture?.(event);
 +      }}
        type={type}
        data-slot="input"

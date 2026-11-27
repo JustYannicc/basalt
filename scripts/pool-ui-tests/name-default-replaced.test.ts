@@ -47,20 +47,30 @@ function Prompt() {
 }
 function Suggesting() {
   const [value, setValue] = useState("");
+  window.write = setValue;
   return (
-    <Input
-      aria-label="Suggesting"
-      value={value}
-      onChange={(event) => setValue(event.target.value)}
-      onKeyDown={(event) => { if (event.key === "Enter") setValue("suggested"); }}
-    />
+    <>
+      <Input
+        aria-label="Suggesting"
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => { if (event.key === "Enter") setValue("suggested"); }}
+      />
+      <button type="button">Elsewhere</button>
+    </>
   );
 }
+function Preset() {
+  const [value, setValue] = useState("Preset name");
+  return <Input aria-label="Preset" autoFocus value={value} onChange={(event) => setValue(event.target.value)} />;
+}
 const prompt = document.getElementById("prompt");
-createRoot(prompt).render(window.SHOW === "prompt" ? <Prompt /> : <Suggesting />);
+createRoot(prompt).render(
+  window.SHOW === "prompt" ? <Prompt /> : window.SHOW === "preset" ? <Preset /> : <Suggesting />,
+);
 `;
 
-const withPage = (show: "prompt" | "suggesting", run: (page: Page) => Promise<void>) =>
+const withPage = (show: "prompt" | "suggesting" | "preset", run: (page: Page) => Promise<void>) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.flatMap(launchBrowser({ headless: true, slowMo: 0 }), (browser) =>
@@ -147,4 +157,53 @@ test("a value the person's own key put in the field is typed after, not replaced
     await shows(page, "suggested");
     await page.keyboard.insertText("!");
     assert.equal(await input.inputValue(), "suggested!");
+  }));
+
+test("holding Shift for a capital letter does not keep the arriving default", () =>
+  withPage("prompt", async (page) => {
+    await field(page).waitFor();
+    await page.keyboard.down("Shift");
+    await page.evaluate(() => (window as unknown as { arrive: () => void }).arrive());
+    await shows(page, "Gmail account");
+    await page.keyboard.insertText("Recovery account");
+    await page.keyboard.up("Shift");
+    assert.equal(await field(page).inputValue(), "Recovery account");
+  }));
+
+// Whether a value is selected, read from the field itself.
+const selected = (page: Page, name: string) =>
+  page
+    .getByRole("textbox", { name, exact: true })
+    .evaluate((input: HTMLInputElement) => [input.selectionStart, input.selectionEnd]);
+const write = (page: Page, value: string) =>
+  page.evaluate((next) => (window as unknown as { write: (v: string) => void }).write(next), value);
+
+test("a field's first value is not selected", () =>
+  withPage("preset", async (page) => {
+    const input = page.getByRole("textbox", { name: "Preset", exact: true });
+    await input.waitFor();
+    await focused(page);
+    const [start, end] = await selected(page, "Preset");
+    assert.equal(start, end);
+  }));
+
+test("a value written while the field has no focus is not selected", () =>
+  withPage("suggesting", async (page) => {
+    await page.getByRole("button", { name: "Elsewhere" }).focus();
+    await write(page, "written");
+    await shows(page, "written");
+    assert.deepEqual(await selected(page, "Suggesting"), [7, 7]);
+  }));
+
+test("focusing the field again makes a later written value replaceable", () =>
+  withPage("suggesting", async (page) => {
+    const input = page.getByRole("textbox", { name: "Suggesting", exact: true });
+    await input.focus();
+    await page.keyboard.insertText("typed");
+    await page.getByRole("button", { name: "Elsewhere" }).focus();
+    await input.focus();
+    await write(page, "written");
+    await shows(page, "written");
+    await page.keyboard.insertText("mine");
+    assert.equal(await input.inputValue(), "mine");
   }));
