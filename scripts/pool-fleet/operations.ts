@@ -9,6 +9,7 @@ import { countStillMs, retiringBoundMs } from "../../src/pool/runtime-fleet/phas
 import { providerDigest } from "../../src/pool/runtime-provider/canonical.ts";
 import {
   containerApplication,
+  latestDeploymentAt,
   requireBinding,
   workerPlainBindings,
   type CloudflareAccess,
@@ -85,14 +86,33 @@ export interface LaneClock {
 export interface Settle {
   clock: LaneClock;
   from: number;
+  /** The bound when less than the whole window is left: whole seconds, in ms, as refusals print it. */
+  boundMs?: number;
 }
 export type Settled<A> = { value: A } | { lagging: FleetLaneRefused };
+/** Why a read didn't settle and the next one waits: old code, a read lost on the way, or lagging bindings. */
+export type SettleWait = "old_code" | "read_lost" | "bindings_lag";
+
+/**
+ * The whole seconds left of the controller's code handover window since the PoolWorker's latest
+ * deployment, or `unread` when that time can't be read. Past the window no handover is pending, so
+ * a wait could only hold the release lock the lane shares.
+ */
+export const handoverLeft = (cloudflare: CloudflareAccess, worker: string, now: () => number) =>
+  latestDeploymentAt(cloudflare, worker).pipe(
+    Effect.map((at) =>
+      Math.ceil(
+        Math.min(controllerSettleMs, Math.max(0, controllerSettleMs - (now() - at))) / 1000,
+      ),
+    ),
+    Effect.orElseSucceed(() => "unread" as const),
+  );
 
 /** A read the controller refused as slot_identity: it runs other code than this checkout signs for. */
-export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
+export const codeMismatch = (access: ControllerAccess, waitedMs?: number) =>
   refuse(
     "controller-code-mismatch",
-    `The controller refused reads signed for candidate ${access.code.candidate}${waited ? ` for ${controllerSettleMs / 1000} s` : ""}; the live PoolWorker runs code built from another commit.`,
+    `The controller refused reads signed for candidate ${access.code.candidate}${waitedMs === undefined ? "" : ` for ${waitedMs / 1000} s`}; the live PoolWorker runs code built from another commit.`,
     "Dispatch from the main commit the last release deployed, or release main first.",
   );
 
@@ -101,35 +121,46 @@ export const codeMismatch = (access: ControllerAccess, waited: boolean) =>
  * read lost on the way, a controller still on its old code (it refuses the new code's signature as
  * slot_identity) and lagging bindings wait. A typed refusal and any other Worker answer stand at
  * once. Past the window, a lost read refuses as controller-not-ready, old code as
- * controller-code-mismatch, and lagging bindings keep their own refusal.
+ * controller-code-mismatch, and lagging bindings keep their own refusal. `onWait` hears why before
+ * each wait, so every wait follows one read and one more read ends it. The bound is checked after
+ * each read, before its wait: no wait begins once it has passed, so the last read can start up to
+ * one poll after it, and a wait can end up to one poll plus one read past it.
  */
 export const untilSettled = <A, E = unknown>(
   settle: Settle,
   access: ControllerAccess,
   read: Effect.Effect<Settled<A>, E>,
+  onWait?: (wait: SettleWait) => void,
 ) =>
   Effect.gen(function* () {
+    const boundMs = settle.boundMs ?? controllerSettleMs;
+    // A clock that never moves still ends the wait after the reads its bound allows.
+    const boundReads = Math.ceil(boundMs / settlePollMs) + 1;
     for (let reads = 1; ; reads++) {
       const outcome = yield* Effect.result(read);
       let lagging: FleetLaneRefused;
+      let wait: SettleWait;
       if (Result.isSuccess(outcome)) {
         if ("value" in outcome.success) return outcome.success.value;
         lagging = outcome.success.lagging;
+        wait = "bindings_lag";
       } else {
         const failure = outcome.failure;
         const answer = workerAnswer(failure);
         if (failure instanceof FleetLaneRefused || (answer && answer !== "slot_identity"))
           return yield* Effect.fail(failure);
+        wait = answer ? "old_code" : "read_lost";
         lagging = answer
-          ? codeMismatch(access, true)
+          ? codeMismatch(access, boundMs)
           : refuse(
               "controller-not-ready",
-              `${describeError(failure)}, still after ${controllerSettleMs / 1000} s; nothing was sent.`,
+              `${describeError(failure)}, still after ${boundMs / 1000} s; nothing was sent.`,
               "Read the PoolWorker logs for the controller's code handover, then rerun with the same GO.",
             );
       }
-      if (settle.clock.now() - settle.from >= controllerSettleMs || reads >= settleReads)
+      if (settle.clock.now() - settle.from >= boundMs || reads >= boundReads)
         return yield* Effect.fail(lagging);
+      onWait?.(wait);
       yield* Effect.promise(() => settle.clock.sleep(settlePollMs));
     }
   });

@@ -68,6 +68,7 @@ export function workerAnswer(error: unknown): string | undefined {
 const published = new Set([
   "handoff.command.action",
   "handoff.response.http",
+  "handoff.response.origin",
   "handoff.response.step",
   "handoff.response.reason",
   "handoff.response.code",
