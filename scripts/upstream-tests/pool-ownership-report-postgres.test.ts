@@ -29,11 +29,10 @@ const tables = [
   "create table organization (id text primary key, metadata text)",
   "create table executor_apps (id text primary key, owner text, copied_from json)",
 ];
-const poolCopy = JSON.stringify({
-  reference: "https://example.invalid/pool",
-  name: "basalt-pool",
-  commit: null,
-});
+const source = "https://github.com/JustYannicc/basalt/tree/main/apps/pool";
+// The catalog's copy and a person's default pool: the same source under two names.
+const poolCopy = JSON.stringify({ reference: source, name: "basalt-pool", commit: null });
+const defaultPool = JSON.stringify({ reference: source, name: "Basalt pool", commit: null });
 const record = (...apps: string[]) =>
   JSON.stringify({
     secret: "never-in-a-line",
@@ -93,13 +92,13 @@ async function inventoryLines(schema: string) {
   return lines.map((line) => JSON.parse(line) as Record<string, unknown>);
 }
 
-/** The inventory's own lines, without what changes every run: its id, its snapshot, and the hash over it. */
+/** The inventory's own lines, without what changes every run: its id, its snapshot, and the hash and size over it. */
 const inventoryOnly = (
   lines: ReadonlyArray<Record<string, unknown>>,
 ): Array<Record<string, unknown>> =>
   lines
     .filter((line) => line.inventory === "host-v1")
-    .map(({ run: _run, sha256: _sha256, data, ...line }) => ({
+    .map(({ run: _run, sha256: _sha256, bytes: _bytes, data, ...line }) => ({
       ...line,
       data:
         typeof data === "string" ? JSON.parse(data.replace(/"snapshot":"[^"]*",/u, "")) : undefined,
@@ -111,7 +110,8 @@ test("the population report counts every pair a pool token can name by the check
   await withInventoryDatabase(async ({ admin }) => {
     for (const [id, metadata] of [
       ["org_a", record("app_a")],
-      ["org_b", record("app_gone")],
+      // A record may name anything: it is classified as it stands, never validated.
+      ["org_b", record("app_gone", "acceptance-pool")],
       ["org_c", record("app_c")],
       ["org_x", "{}"],
       ["org_d", "{}"],
@@ -124,11 +124,12 @@ test("the population report counts every pair a pool token can name by the check
       // Pool apps no record names, found by their copy origin.
       ["app_p", "organization:org_d", poolCopy],
       ["app_q", "organization:org_gone", poolCopy],
+      ["app_r", "organization:org_d", defaultPool],
       // Not a pool app and recorded by nobody: outside the population.
       [
         "app_other",
         "organization:org_a",
-        JSON.stringify({ reference: "x", name: "other", commit: null }),
+        JSON.stringify({ reference: "x", name: "basalt-pool", commit: null }),
       ],
     ])
       await admin.query("insert into executor_apps values ($1, $2, $3)", [id, owner, copied]);
@@ -136,17 +137,17 @@ test("the population report counts every pair a pool token can name by the check
     const [line] = ownership(lines);
     assert.ok(line, "the report wrote no line");
     assert.equal(line.complete, true);
-    assert.equal(line.pairs, 6);
+    assert.equal(line.pairs, 8);
     assert.deepEqual(line.counts, {
       owned: 1,
       "organization-missing": 1,
-      "deleted-pool": 1,
-      "cleared-association": 0,
+      "deleted-pool": 2,
       "foreign-owner": 1,
-      "no-record": 2,
-      "other-organization": 0,
+      "no-record": 3,
       "invalid-metadata": 0,
     });
+    // No read of the database can show these two; the line says so instead of counting 0.
+    assert.deepEqual(line.notObservable, ["cleared-association", "other-organization"]);
     assert.deepEqual(
       new Set(
         (line.refusing as Array<{ pool: string; shape: string }>).map(
@@ -155,9 +156,11 @@ test("the population report counts every pair a pool token can name by the check
       ),
       new Set([
         "app_gone deleted-pool",
+        "acceptance-pool deleted-pool",
         "app_c foreign-owner",
         "app_c no-record",
         "app_p no-record",
+        "app_r no-record",
       ]),
     );
     assert.equal(line.refusingOmitted, 0);
@@ -197,13 +200,25 @@ test("a report statement cancelled behind a lock leaves the inventory exactly as
 
 test("above its row cap, or when the inventory itself fails, the report still writes an incomplete line", async () => {
   await withInventoryDatabase(async ({ admin, schema }) => {
-    // 1,001 pool apps: the report's cap, while the inventory, which reads no apps, completes.
-    await admin.query("insert into organization values ('org_a', '{}')");
-    for (let index = 0; index < 1_001; index++)
+    // A record without an app names no pair.
+    await admin.query("insert into organization values ('org_a', $1)", [
+      JSON.stringify({ basaltPools: { person: { membership: "executor-links-v1" } } }),
+    ]);
+    // Exactly 1,000 pool apps the organization owns and records nowhere: complete, 50 listed.
+    for (let index = 0; index < 1_000; index++)
       await admin.query("insert into executor_apps values ($1, 'organization:org_a', $2)", [
         `app_${index}`,
         poolCopy,
       ]);
+    const [full] = ownership(await inventoryLines(schema));
+    assert.deepEqual(
+      [full.complete, full.pairs, (full.refusing as unknown[]).length, full.refusingOmitted],
+      [true, 1_000, 50, 950],
+    );
+    // One more is the report's cap, while the inventory, which reads no apps, completes.
+    await admin.query("insert into executor_apps values ('app_1000', 'organization:org_a', $1)", [
+      poolCopy,
+    ]);
     const capped = await inventoryLines(schema);
     assert.equal(inventoryOnly(capped).at(-1)?.complete, true);
     const [line] = ownership(capped);
