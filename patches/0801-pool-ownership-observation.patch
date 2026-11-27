@@ -31,7 +31,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  
  export const poolOrganizationReadPath = "/api/internal/pool-organization";
  const Read = Schema.Struct({
-@@ -14,6 +17,113 @@ const Read = Schema.Struct({
+@@ -14,6 +17,136 @@ const Read = Schema.Struct({
    expiresAt: Schema.Finite,
  });
  
@@ -43,63 +43,75 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +  | "other-organization"
 +  | "invalid-metadata";
 +const Facts = Schema.Array(
-+  Schema.Struct({ metadata: Schema.NullOr(Schema.String), owner: Schema.NullOr(Schema.String) }),
++  Schema.Struct({
++    metadata: Schema.NullOr(Schema.String),
++    valid: Schema.NullOr(Schema.Boolean),
++    owner: Schema.NullOr(Schema.String),
++  }),
 +);
++
++/** How long the database lets one observation read run or wait for a lock before it ends it. */
++const readBound = "250ms";
++/**
++ * One read in its own read-only transaction that the database ends after `readBound`, whether or
++ * not a cancel ever reaches it, so a cut read never keeps its connection while a lock is held. The
++ * settings last only for the transaction, and its first statement sets all three.
++ */
++const boundedRead = <A, E, R>(sql: SqlClient.SqlClient, read: Effect.Effect<A, E, R>) =>
++  sql.withTransaction(
++    sql`select set_config('transaction_read_only', 'on', true),
++      set_config('statement_timeout', ${readBound}, true),
++      set_config('lock_timeout', ${readBound}, true)`.pipe(Effect.andThen(read)),
++  );
 +const Metadata = Schema.fromJsonString(Schema.Unknown);
 +const isRecord = (value: unknown): value is Record<string, unknown> =>
 +  typeof value === "object" && value !== null && !Array.isArray(value);
 +
-+// The database's JSON type refuses an escaped NUL and a surrogate that is not one half of a pair,
-+// so the ownership rule's own read fails on such metadata on every request.
-+const jsonbRefuses = (text: string) =>
-+  /\\u0000/iu.test(text) ||
-+  /\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})/.test(text) ||
-+  /(?<!\\u[dD][89abAB][0-9a-fA-F]{2})\\u[dD][c-fC-F][0-9a-fA-F]{2}/.test(text) ||
-+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
-+
 +/** The pools an organization records, read as the ownership rule reads them; undefined where it fails. */
 +const recordedPools = (metadata: string | null) => {
 +  if (metadata === null) return {};
-+  if (jsonbRefuses(metadata)) return undefined;
 +  const parsed = Schema.decodeUnknownOption(Metadata)(metadata);
 +  if (Option.isNone(parsed)) return undefined;
 +  if (!isRecord(parsed.value) || parsed.value.basaltPools === undefined) return {};
 +  return isRecord(parsed.value.basaltPools) ? parsed.value.basaltPools : undefined;
 +};
 +
++/** What the shape of a refusal is read from: the organization's records and the pool's owner. */
++const factsOf = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
++  // Whether the database's JSON type takes the metadata is the database's own answer.
++  sql`select o.metadata, pg_input_is_valid(o.metadata, 'jsonb') as valid,
++      (select app.owner from executor_apps app where app.id = ${pool}) as owner
++    from organization o where o.id = ${organization}`.pipe(
++    Effect.flatMap(Schema.decodeUnknownEffect(Facts)),
++    Effect.map(([facts]) => facts),
++  );
++
 +/** Why the ownership rule would refuse an existing organization; undefined when nothing says why. */
-+const refusal = (
-+  sql: SqlClient.SqlClient,
++const shapeOf = (
++  facts: (typeof Facts.Type)[number] | undefined,
 +  organization: OrganizationId,
 +  pool: AppId,
 +  ruleFailed: boolean,
-+) =>
-+  Effect.gen(function* () {
-+    const [facts] = yield* sql`select o.metadata,
-+        (select app.owner from executor_apps app where app.id = ${pool}) as owner
-+      from organization o where o.id = ${organization}`.pipe(
-+      Effect.flatMap(Schema.decodeUnknownEffect(Facts)),
-+    );
-+    if (facts === undefined) return undefined;
-+    const pools = recordedPools(facts.metadata);
-+    if (pools === undefined) return "invalid-metadata" satisfies Refusal;
-+    // A transient failure of the rule's read says nothing about ownership.
-+    if (ruleFailed) return undefined;
-+    const recorded = Object.values(pools).some((record) => isRecord(record) && record.app === pool);
-+    const ours = facts.owner === organizationOwner(organization);
-+    const shape: Refusal | undefined = recorded
-+      ? facts.owner === null
-+        ? "deleted-pool"
-+        : ours
-+          ? undefined
-+          : "foreign-owner"
-+      : facts.owner === null
-+        ? "cleared-association"
-+        : ours
-+          ? "no-record"
-+          : "other-organization";
-+    return shape;
-+  });
++): Refusal | undefined => {
++  if (facts === undefined) return undefined;
++  const pools = facts.valid === false ? undefined : recordedPools(facts.metadata);
++  if (pools === undefined) return "invalid-metadata";
++  // A transient failure of the rule's read says nothing about ownership.
++  if (ruleFailed) return undefined;
++  const recorded = Object.values(pools).some((record) => isRecord(record) && record.app === pool);
++  const ours = facts.owner === organizationOwner(organization);
++  return recorded
++    ? facts.owner === null
++      ? "deleted-pool"
++      : ours
++        ? undefined
++        : "foreign-owner"
++    : facts.owner === null
++      ? "cleared-association"
++      : ours
++        ? "no-record"
++        : "other-organization";
++};
 +
 +/** The longest the observation may hold an answer back; past it the answer goes unobserved. */
 +const observationBoundMs = 300;
@@ -114,7 +126,8 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 + * The ownership rule answers nothing yet: it only reports, once per read, an existing organization it
 + * would refuse, so live pools prove the rule before it decides. Nothing it does can change the answer.
 + * It is awaited at most `observationBoundMs`; a read still running then is interrupted in the
-+ * background, so a database that is slow to cancel never holds the answer.
++ * background, so a database that is slow to cancel never holds the answer, and each read is ended by
++ * the database itself after `readBound`, so none keeps its connection.
 + */
 +const observeOwnership = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
 +  Effect.gen(function* () {
@@ -127,16 +140,26 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +
 +const observation = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
 +  Effect.gen(function* () {
-+    const owns = yield* Effect.exit(
-+      organizationOwnsPool(organization, pool).pipe(
-+        Effect.provideService(SqlClient.SqlClient, sql),
-+      ),
++    // The rule and, when it refuses, what says why, in one bounded transaction.
++    const first = yield* Effect.exit(
++      boundedRead(
++        sql,
++        Effect.gen(function* () {
++          if (yield* organizationOwnsPool(organization, pool)) return { owns: true as const };
++          return { owns: false as const, facts: yield* factsOf(sql, organization, pool) };
++        }),
++      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
 +    );
-+    if (Exit.isSuccess(owns) && owns.value) return;
-+    const shape = yield* refusal(sql, organization, pool, Exit.isFailure(owns));
++    if (Exit.isSuccess(first) && first.value.owns) return;
++    // A failed read ends its transaction, so what says why is read again in a new one.
++    const ruleFailed = Exit.isFailure(first);
++    const facts = Exit.isSuccess(first)
++      ? first.value.facts
++      : yield* boundedRead(sql, factsOf(sql, organization, pool));
++    const shape = shapeOf(facts, organization, pool, ruleFailed);
 +    if (shape !== undefined)
 +      yield* Effect.logWarning("Pool organization would be refused", { pool, organization, shape });
-+    else if (Exit.isFailure(owns)) yield* notObserved(organization, pool, "read-failed");
++    else if (ruleFailed) yield* notObserved(organization, pool, "read-failed");
 +    // The rule refused, but the read after it found ownership or no organization: a write landed
 +    // between the two, so this read cannot say why.
 +    else yield* notObserved(organization, pool, "changed");
@@ -145,7 +168,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -32,6 +142,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -32,6 +165,7 @@ export const readPoolOrganization = Effect.gen(function* () {
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;
    const rows = yield* sql`select id from organization where id = ${value.organization}`;
