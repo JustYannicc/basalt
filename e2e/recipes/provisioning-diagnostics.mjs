@@ -164,13 +164,32 @@ const blockAt = (lines, index) => {
   return record.join("\n");
 };
 
-/** A sweep's per-app failure, reduced to the error class from a closed list and the app's kind. */
+// A source failure's reason, the SDK's closed list (`SourceError` in its source contract).
+const sourceReasons = new Set([
+  "not-found",
+  "conflict",
+  "invalid-source",
+  "git",
+  "storage",
+  "limit",
+  "protected",
+]);
+
+/**
+ * A sweep's per-app failure, reduced to the error class from a closed list, a source failure's
+ * reason when it is one of that list's words, and the app's kind.
+ */
 const sweepFailure = (record) => {
   const cause = field(record, "cause");
+  const reason = field(record, "reason");
   const entry = field(record, "entry");
+  const named = cause !== undefined && sweepCauses.has(cause) ? cause : "other";
   return {
     message: sweepMessage,
-    cause: cause !== undefined && sweepCauses.has(cause) ? cause : "other",
+    cause: named,
+    ...(named === "SourceError" && reason !== undefined && sourceReasons.has(reason)
+      ? { reason }
+      : {}),
     ...(entry !== undefined && appKind.test(entry) ? { app: entry } : {}),
   };
 };

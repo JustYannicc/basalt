@@ -4,7 +4,7 @@ import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/i
 import { digest } from "../../src/pool/backend-users.ts";
 import { migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
-import { historyMemoryOwnerFixture } from "./history-fixture.ts";
+import { historyMemoryOwnerFixture, homeMetadataFixture } from "./history-fixture.ts";
 
 // Shaped like the production pool: imported history far larger than the terminal evidence.
 const olderRows = 100_000,
@@ -60,7 +60,7 @@ test(
     try {
       await historyMemoryOwnerFixture(db);
       await migrateModelHistory(db);
-      await db.query("CREATE TABLE usage (id bigint PRIMARY KEY)");
+      await homeMetadataFixture(db);
       const now = Date.parse("2026-11-18T12:00:00Z"),
         at = new Date(now).toISOString();
       const pool = (await digest("fixture")).slice(0, 16);
@@ -180,7 +180,7 @@ test("a Home row is matched to its evidence only by its exact canonical id, and 
     try {
       await historyMemoryOwnerFixture(db);
       await migrateModelHistory(db);
-      await db.query("CREATE TABLE usage (id bigint PRIMARY KEY)");
+      await homeMetadataFixture(db);
       const pool = (await digest("fixture")).slice(0, 16);
       const home = await digest("home-local-v1");
       const person = await digest("fixture-person");
