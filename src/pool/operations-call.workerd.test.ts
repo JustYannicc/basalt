@@ -10,7 +10,7 @@ import { poolWorkerCompatibility } from "./worker-compatibility.ts";
 // entrypoint's did after the controller-reset release.
 const fixture = `
 import { DurableObject } from "cloudflare:workers";
-import { throughController } from "./src/pool/operations-call.ts";
+import { poolOperationsAnswered, throughController } from "./src/pool/operations-call.ts";
 export class Controller extends DurableObject {
   async runtimeHandoff(request) {
     return new Response(await request.text());
@@ -27,7 +27,12 @@ export default {
       () => controller.runtimeHandoff(passed),
       (marker, line) => lines.push(marker + " " + line),
     );
-    return Response.json({ status: response.status, body: await response.text(), lines });
+    return Response.json({
+      status: response.status,
+      body: await response.text(),
+      lines,
+      pool: poolOperationsAnswered(response),
+    });
   },
 };
 `;
@@ -71,9 +76,12 @@ test(
         status: number;
         body: string;
         lines: string[];
+        pool: boolean;
       };
       assert.equal(failed.status, 500);
       assert.equal(failed.body, "");
+      // The lane tells this 500 from one a proxy on the bridge built only by the pool's mark.
+      assert.equal(failed.pool, true);
       assert.equal(failed.lines.length, 1);
       const [marker, fields] = failed.lines[0]!.split(" ", 2) as [string, string];
       assert.equal(marker, "POOL_OPERATIONS_CALL_FAILED");
@@ -94,9 +102,10 @@ test(
         remote: null,
         durableObjectReset: null,
       });
-      // The same call without the signal reaches the controller, and writes nothing.
+      // The same call without the signal reaches the controller, writes nothing, and its answer
+      // from the object keeps its body and gains the mark.
       const answered = await (await mf.dispatchFetch("http://pool/")).json();
-      assert.deepEqual(answered, { status: 200, body: "answered", lines: [] });
+      assert.deepEqual(answered, { status: 200, body: "answered", lines: [], pool: true });
     } finally {
       await mf.dispose();
     }
