@@ -7,9 +7,13 @@ import { device } from "./test/vault.ts";
 
 const sha256 = (data: Uint8Array) => createHash("sha256").update(data).digest("hex");
 const partBytes = 1024 * 1024;
-/** A deterministic, incompressible-looking ~15 MB file that differs per version. */
+/**
+ * A deterministic, incompressible-looking file that differs per version: three full upload parts
+ * and a short last one, so every part boundary and the pack-size check below are exercised. A
+ * larger file only repeats the same parts and reads, and the test's runtime is its volume.
+ */
 const pdf = (version: number) => {
-  const bytes = new Uint8Array(15 * 1000 * 1000);
+  const bytes = new Uint8Array(3 * partBytes + 4096);
   let state = 0x9e3779b9 ^ version;
   for (let i = 0; i < bytes.length; i++) {
     state ^= state << 13;
@@ -21,7 +25,7 @@ const pdf = (version: number) => {
   return bytes;
 };
 
-test("a 15 MB PDF replaced twice restores version 1 byte for byte", async () => {
+test("a multi-part PDF replaced twice restores version 1 byte for byte", async () => {
   const server = await backend();
   const vault = await device(server);
   try {

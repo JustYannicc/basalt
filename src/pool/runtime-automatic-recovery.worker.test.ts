@@ -6,7 +6,6 @@ import { fleetWorkerFixture } from "../../scripts/pool-tests/runtime-fleet-worke
 
 test(
   "selected runtime recovery restarts stopped compute without an operator",
-  { timeout: 10_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
@@ -33,7 +32,6 @@ test(
 
 test(
   "idle selected crash is repaired before a later request and survives controller reconstruction",
-  { timeout: 10_000 },
   async (context) => {
     let now = Date.now();
     context.mock.method(Date, "now", () => now);
@@ -62,7 +60,6 @@ test(
 
 test(
   "concurrent reads and undispatched model calls cross selected stop without client errors or duplicate execution",
-  { timeout: 15_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
@@ -106,7 +103,6 @@ test(
 
 test(
   "a lost restart reply joins its persisted launch after reconstruction",
-  { timeout: 10_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
     context.after(f.cleanup);
@@ -140,7 +136,6 @@ test(
 
 test(
   "an accepted interrupted call is not replayed and receives native HTTP retry advice",
-  { timeout: 10_000 },
   async (context) => {
     const errors = context.mock.method(console, "error", () => {});
     const f = await fleetWorkerFixture();
@@ -188,7 +183,6 @@ test(
 
 test(
   "recent traffic retains one warm sibling across reconstruction and retires it after the grace",
-  { timeout: 15_000 },
   async (context) => {
     let now = Date.now();
     context.mock.method(Date, "now", () => now);
@@ -225,7 +219,6 @@ test(
 
 test(
   "a healthy warm sibling serves while selected cold readiness is blocked",
-  { timeout: 15_000 },
   async (context) => {
     const f = await fleetWorkerFixture();
     const entered = deferred(),
@@ -275,7 +268,6 @@ test(
 
 test(
   "periodic supervision replaces a stopped sibling without a discovering model request",
-  { timeout: 15_000 },
   async (context) => {
     let now = Date.now();
     context.mock.method(Date, "now", () => now);
@@ -332,7 +324,6 @@ test(
 
 test(
   "the controller inspect shows the root's last recovery: detected, ready, its rounds and the failed round's refusal",
-  { timeout: 20_000 },
   async (context) => {
     for (const level of ["info", "warn", "error"] as const)
       context.mock.method(console, level, () => {});
@@ -389,7 +380,6 @@ test(
 
 test(
   "a root that refuses once and then serves again with no restart ends its recovery on the healthy pass",
-  { timeout: 20_000 },
   async (context) => {
     for (const level of ["info", "warn", "error"] as const)
       context.mock.method(console, level, () => {});

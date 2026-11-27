@@ -11,7 +11,6 @@ import { nativeFixture } from "./native-fixture.ts";
 
 test(
   "health detects idle network loss, keeps deliberate disconnect distinct and recovers without replay",
-  { timeout: 20000 },
   async () => {
     const remote = await nativeFixture();
     const home = await mkdtemp(join(tmpdir(), "client-health-"));
