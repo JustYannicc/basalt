@@ -25,7 +25,7 @@ import { State } from "alchemy/State/State";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { apiTokenCredentials, Credentials } from "@distilled.cloud/cloudflare/Credentials";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
-import { provideFreshArtifactStore } from "alchemy/Artifacts";
+import { ArtifactStore, createArtifactStore, provideFreshArtifactStore } from "alchemy/Artifacts";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Context, Effect, Layer, Redacted } from "effect";
@@ -909,6 +909,8 @@ export interface PlanInput {
 export async function makePlan(context: TestContext, input: PlanInput = {}) {
   const api = await cloudflare(context, input.shadow === true);
   const memory = await Effect.runPromise(InMemoryService());
+  // What the plan's providers computed while they diffed, such as each Worker's bundle.
+  const artifacts = createArtifactStore();
   for (const [fqn, value] of Object.entries(input.rows ?? {}))
     await Effect.runPromise(memory.set({ ...scope, fqn, value }));
   const stack = Stack(
@@ -953,7 +955,10 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
           }
           if (input.destroy) return yield* Plan.destroy({ name: scope.stack, stage: scope.stage });
           return yield* Plan.make(compiled, input.include ? { include: input.include } : {});
-        }).pipe(Effect.provideService(State, Context.get(compiled.services, State))),
+        }).pipe(
+          Effect.provideService(State, Context.get(compiled.services, State)),
+          Effect.provideService(ArtifactStore, artifacts),
+        ),
       { stage: scope.stage },
     ).pipe(
       provideFreshArtifactStore,
@@ -973,5 +978,5 @@ export async function makePlan(context: TestContext, input: PlanInput = {}) {
       ),
     ),
   );
-  return { plan, requests: api.requests, rows };
+  return { plan, requests: api.requests, rows, artifacts };
 }

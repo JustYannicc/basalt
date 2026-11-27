@@ -807,7 +807,21 @@ try {
             }
           })();
           yield* Effect.promise(() => summary(line));
-          return { snapshot, digest, planned: changedRows(snapshot) };
+          const planned = changedRows(snapshot);
+          // Why the rows plan, past their names, from what the plan already holds; only printed.
+          const { planReasonLines } = yield* Effect.promise(() => import("./row-reasons.ts"));
+          const reasons = yield* Effect.promise(() =>
+            planReasonLines({
+              snapshot: snapshot as never,
+              rows: planned,
+              root,
+              candidate: process.env.BASALT_RELEASE_CANDIDATE || "HEAD",
+            }),
+          );
+          yield* Effect.promise(() =>
+            summary(["Why the rows plan:", ...reasons.map((reason) => `- ${reason}`)].join("\n")),
+          );
+          return { snapshot, digest, planned };
         }
         if (command === "apply" && values["plan-digest"] !== digest)
           return yield* Effect.die(

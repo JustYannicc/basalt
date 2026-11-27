@@ -415,6 +415,19 @@ async function main() {
         forward: forward.map(({ fqn }) => fqn),
       };
       yield* print(`Plan digest: ${planDigest(reading)}`);
+      // Why the rows plan, past their names: read after the digest from what the plan holds, and
+      // only printed, so nothing above or the deploy's comparison depends on it.
+      const { planReasonLines } = yield* Effect.promise(() => import("./release/row-reasons.ts"));
+      for (const line of yield* Effect.promise(() =>
+        planReasonLines({
+          snapshot: snapshot as never,
+          rows: changed as never,
+          // The checkout: `root` here is the root container's row.
+          root: fileURLToPath(new URL("../", import.meta.url)),
+          candidate,
+        }),
+      ))
+        yield* print(`- why: ${line}`);
       const serving: { fqn: string; script: string; version: string }[] = [];
       if (mode === "plan") return { serving, applied: false, creating: created.length > 0, rebind };
       // Nothing has been written yet: the backup, the re-points and the apply all come after this.
