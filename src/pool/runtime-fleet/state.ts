@@ -347,6 +347,7 @@ export class RuntimeFleetState {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
     return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
+      // A quarantined row never becomes ready, so a start admitted after its bound fired is refused.
       if (
         !["warming", "uncertain", "ready"].includes(row.phase) ||
         (row.identity && !sameIdentity(row.identity, identity))

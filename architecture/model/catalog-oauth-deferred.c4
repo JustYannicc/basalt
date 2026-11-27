@@ -1,0 +1,7 @@
+model {
+  extend basalt.catalog {
+    metadata {
+      constraint "An OAuth method the published catalog newly lists gets a deferred review until someone verifies one-click sign-in for it. A deferred decision only replaces the generic connect guidance with a sentence saying sign-in is not verified yet and that the person can connect with their own OAuth app; it never hides the method or blocks a connection."
+    }
+  }
+}

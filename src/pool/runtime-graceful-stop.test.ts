@@ -160,12 +160,13 @@ test("a stop still running past its grace is reported stuck, not stopping", asyn
 });
 
 test("a fleet cell's retire call that times out while its stop runs is pending, not failed", async (context) => {
+  // Held before the fixture exists, which leaves a grace a test set first in place.
+  const graceOver = heldGrace(context);
   const f = await fleetCellFixture();
   context.after(f.cleanup);
   const selected = await f.cell.start(f.target);
   assert.deepEqual(await f.cell.drain(selected), { active: 0, known: true });
   const sigterm = drainingHome(f);
-  const graceOver = heldGrace(context);
   const fetch = f.stub.fetch.bind(f.stub);
   // As in production, the call's own budget runs out after SIGTERM while the endpoint keeps stopping.
   f.stub.fetch = async (request: Request) => {
@@ -175,7 +176,7 @@ test("a fleet cell's retire call that times out while its stop runs is pending, 
     throw new Error("caller budget ran out");
   };
   assert.equal(await f.cell.retire(selected, async () => {}), false);
-  assert.equal(f.calls.destroy, 0);
+  assert.equal(f.calls.destroy, 0, "the stop never waited on the grace the test held");
   graceOver();
   await f.settle();
   assert.equal(await f.cell.retired(selected), true);

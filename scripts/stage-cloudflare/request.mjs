@@ -29,25 +29,28 @@ import {
   manifestOf,
   ownField,
   ownString,
-  tagPageOf,
 } from "./answers.mjs";
 import { checkedBody, recordedConfiguration } from "./bodies.mjs";
 import { isProductionName, stageOwnership } from "./ownership.mjs";
+import { KEPT_TYPES } from "./kept-entries.mjs";
+import { readTagPages, TAG } from "./tag-pages.mjs";
 
 const API = "https://api.cloudflare.com/client/v4";
 const REGISTRY = "registry.cloudflare.com";
 /** What an id or a name may be when it goes into a URL: no separator, dot, escape, query or space. */
 const SEGMENT = /^[A-Za-z0-9_-]{1,128}$/u;
-/** A registry tag (OCI distribution): no separator, and no leading dot, so never a dot segment. */
-const TAG = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/u;
-/** How many tags one tag-list page asks for, and how many pages a repository may take. */
+/** How many tags the first tag-list page asks for; later pages follow the registry's next link. */
 const TAG_PAGE = 1000;
-const MAX_TAG_PAGES = 100;
 const MANIFEST_TYPES = [
   "application/vnd.oci.image.index.v1+json",
   "application/vnd.oci.image.manifest.v1+json",
   "application/vnd.docker.distribution.manifest.list.v2+json",
   "application/vnd.docker.distribution.manifest.v2+json",
+  // So a registry that serves its own artifacts under their own type still answers the read.
+  ...KEPT_TYPES,
+  // Any other stored type is still served, never answered 404 for want of a type the read named;
+  // its type then reads as one off the list (kept-entries.mjs).
+  "*/*",
 ].join(", ");
 const MAX_PAGES = 100;
 
@@ -105,9 +108,27 @@ const ON_RESOURCE = table({
   rollout: table({ method: "POST", below: "/rollouts", absent: false, body: true }),
   delete: table({ method: "DELETE", below: "", absent: false, body: false }),
 });
+/**
+ * Two registry credentials a run, each minted only when first needed. Every read (the catalog, a
+ * tag list, a manifest) goes to the pull credential, so the list that names an entry and the read
+ * that answers 404 for it are answered to the same credential: the list is the read's positive
+ * control (registry.mjs). Only a delete goes to the push credential, so a run that only reads
+ * never holds one.
+ */
 const PERMISSIONS = table({ pull: Object.freeze(["pull"]), push: Object.freeze(["pull", "push"]) });
 const REQUEST_FIELDS = Object.freeze(["kind", "operation", "target", "reference", "body"]);
-const OPTIONS = Object.freeze(["accountId", "token", "prefix", "owns", "fetcher", "signal"]);
+const OPTIONS = Object.freeze([
+  "accountId",
+  "token",
+  "prefix",
+  "owns",
+  "fetcher",
+  "signal",
+  "deadline",
+  "now",
+]);
+/** The longest one request may take: its own abort deadline. */
+export const REQUEST_TIMEOUT_MS = 30_000;
 /** Every field a step has, each set here, so none is ever looked up anywhere else. */
 const STEP = table({
   label: "",
@@ -122,7 +143,9 @@ const STEP = table({
 });
 const step = (fields) => table({ ...STEP, ...fields });
 
-const refuse = (message) => fail(`Refused: ${message}`);
+/** A request this module did not send: no answer of the registry or the API stands behind it. */
+const unsent = (error) => Object.assign(error, { sent: false });
+const refuse = (message) => unsent(fail(`Refused: ${message}`));
 
 /** A path segment that is `.` or `..`, written plainly or percent-encoded. */
 const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
@@ -174,16 +197,23 @@ function ownFields(value, allowed, what) {
 /**
  * The choke point for one stage of one account: `{ send, owned, prefix }`. `prefix` is the stage's
  * registered prefix and `owns`, when given, narrows it (ownership.mjs); construction throws on
- * either refusal. `signal` gives each call its deadline. `send(request)` takes
+ * either refusal. `signal` gives each call its deadline. `deadline`, an epoch time in
+ * milliseconds read against `now`, bounds the whole run: no request starts unless a full request
+ * timeout still fits before it, so every request ends by the deadline. `send(request)` takes
  * `{ kind, operation, target?, reference?, body? }`.
  */
 export function stageRequests(options) {
   const given = ownFields(options, OPTIONS, "stage");
   const { accountId, token, prefix, owns } = given;
   const fetcher = given.fetcher === undefined ? fetch : given.fetcher;
-  const signal = given.signal === undefined ? () => AbortSignal.timeout(30_000) : given.signal;
-  if (typeof fetcher !== "function" || typeof signal !== "function")
-    throw refuse("the fetcher and the signal are functions");
+  const signal =
+    given.signal === undefined ? () => AbortSignal.timeout(REQUEST_TIMEOUT_MS) : given.signal;
+  const now = given.now === undefined ? Date.now : given.now;
+  const { deadline } = given;
+  if (typeof fetcher !== "function" || typeof signal !== "function" || typeof now !== "function")
+    throw refuse("the fetcher, the signal and the clock are functions");
+  if (deadline !== undefined && !Number.isSafeInteger(deadline))
+    throw refuse("the deadline is an epoch time in milliseconds");
   if (typeof accountId !== "string" || !SEGMENT.test(accountId))
     throw refuse("the account id is not one a URL can hold as it is");
   let owned;
@@ -252,6 +282,13 @@ export function stageRequests(options) {
    */
   async function exchange(url, method, label, headers, body) {
     unchangedWhenParsed(url);
+    // A request that might outlast the run's deadline is not started: a run ends between requests,
+    // never in one, so a job's own time limit never cuts a delete.
+    if (deadline !== undefined && now() + REQUEST_TIMEOUT_MS > deadline)
+      throw Object.assign(
+        unsent(fail(`${method} ${label} was not sent: the run's time budget is spent`)),
+        { budget: true },
+      );
     const init = Object.create(null);
     init.method = method;
     init.headers = headers;
@@ -267,8 +304,9 @@ export function stageRequests(options) {
     }
     const answer = await answerOf(response);
     if (answer.status < 200 || (answer.status >= 300 && answer.status <= 399))
-      throw refuse(
-        `${method} ${label} answered a redirect (HTTP ${answer.status}); a stage request is never redirected`,
+      // Sent, and answered: refused, but never marked unsent.
+      throw fail(
+        `Refused: ${method} ${label} answered a redirect (HTTP ${answer.status}); a stage request is never redirected`,
       );
     return answer;
   }
@@ -357,9 +395,11 @@ export function stageRequests(options) {
         if (!tag && !digest)
           throw refuse("the manifest is not one this stage found in its own repository");
         return step({
-          registry: "push",
+          registry: "pull",
           entry,
-          url: `${repository}/manifests/${encodeURIComponent(reference)}`,
+          // A digest goes as written, as its delete does (DIGEST allows only sha256:<hex>), so the
+          // read and the delete address the manifest the same way.
+          url: `${repository}/manifests/${digest ? reference : encodeURIComponent(reference)}`,
           accept: MANIFEST_TYPES,
         });
       }
@@ -462,29 +502,14 @@ export function stageRequests(options) {
     throw fail("Cloudflare inventory exceeded pagination limit");
   }
 
-  /**
-   * Every tag of one repository, page after page as the registry offers them (OCI distribution's
-   * `n` and `last`). The next page's URL is built here from the last tag of the page before, never
-   * taken from the registry's link, and a page that repeats or offers a tag outside the tag grammar
-   * stops the read.
-   */
+  /** Every tag of one repository, recorded on its entry (tag-pages.mjs reads the pages). */
   async function readTags(planned, headers) {
-    const tags = [];
-    let url = planned.url;
-    for (let page = 1; page <= MAX_TAG_PAGES; page++) {
-      const { tags: found, next } = tagPageOf(await exchange(url, "GET", "registry tags", headers));
-      if (
-        !found.every(
-          (tag, index) => TAG.test(tag) && !tags.includes(tag) && found.indexOf(tag) === index,
-        )
-      )
-        throw fail("A registry tag list answered a tag it had already listed or cannot name");
-      tags.push(...found);
-      if (!next) return (planned.entry.tags = Object.freeze(tags));
-      if (!found.length) throw fail("A registry tag list offered another page after an empty one");
-      url = `${planned.url}&last=${encodeURIComponent(found.at(-1))}`;
-    }
-    throw fail("A registry tag list exceeded its page limit");
+    const entries = await readTagPages(planned.url, (url) =>
+      exchange(url, "GET", "registry tags", headers),
+    );
+    // A digest entry is addressed only as a manifest of this repository, as a digest read is.
+    for (const entry of entries) if (DIGEST.test(entry)) planned.entry.digests.add(entry);
+    return (planned.entry.tags = entries);
   }
 
   /** What a registry answer gives the caller: only the stage's own repositories, and their parts. */
