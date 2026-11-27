@@ -285,11 +285,13 @@ const providerLine = (cause?: ProviderCause) =>
     : ("provider observation: reads" as const);
 type ProviderLine = ReturnType<typeof providerLine>;
 const providerLines = new Set<string>([providerLine(), ...providerCauses.map(providerLine)]);
-// The handoff's refusal for a command naming other controller code, or one it cannot decode.
-const identityRefusal = runtimeFailureCode({
-  runtimeStep: "endpoint_route",
-  runtimeReason: "slot_identity",
-});
+// The handoff's refusal for a command naming other controller code, or one it cannot decode. A
+// controller on code from before controller_code refuses the first as identity too.
+const identityRefusals = new Set<string>(
+  (["slot_controller_code", "slot_identity"] as const).map((runtimeReason) =>
+    runtimeFailureCode({ runtimeStep: "endpoint_route", runtimeReason }),
+  ),
+);
 
 const uncheckedRestart = [
   "selection_unavailable",
@@ -327,7 +329,7 @@ async function providerRead(
     return (
       providerObservationCause(cause) ??
       (cause instanceof ControllerRefused
-        ? cause.reason === identityRefusal
+        ? identityRefusals.has(cause.reason)
           ? "controller_identity"
           : "controller_refused"
         : cause instanceof DispatchRefusal

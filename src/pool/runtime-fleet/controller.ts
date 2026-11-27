@@ -92,11 +92,15 @@ export interface CellCount {
   known: boolean;
   stillMs?: number;
 }
-/** The endpoint refused a start for identity, at its admission or its request boundary. */
+/**
+ * The endpoint refused a start for identity or for its controller code, at its admission or its
+ * request boundary. An endpoint on older code says identity for both.
+ */
 const deploymentRefused = (error: unknown) => {
   const diagnostic = runtimeRouteDiagnostic(error);
   return (
-    diagnostic?.runtimeReason === "slot_identity" &&
+    (diagnostic?.runtimeReason === "slot_identity" ||
+      diagnostic?.runtimeReason === "slot_controller_code") &&
     (diagnostic.runtimeStep === "endpoint_route" || diagnostic.runtimeStep === "endpoint_admission")
   );
 };
@@ -347,15 +351,15 @@ export class RuntimeFleet {
     }
   }
   /**
-   * A fresh slot's start the endpoint refused for identity before its first-start intent was
-   * written. For a fresh slot that refusal is about the endpoint's own deployment or the signed
-   * start itself (its application binding, controller code, runtime configuration, signing key or
-   * the start's freshness), never about the slot, so another fresh slot fares no better until both
-   * run one release, as while this controller still runs an upload a rollback re-pointed away from:
-   * the release never told it, and objects created since run the re-pointed one. The slot leaves as
-   * never started once its cell proves nothing ran, its recent end saying why, with no quarantine,
-   * and growth waits at least until the next pass instead of drawing again at once. A cell that
-   * can't prove it keeps today's quarantine.
+   * A fresh slot's start the endpoint refused for identity or its controller code before its
+   * first-start intent was written. For a fresh slot that refusal is about the endpoint's own
+   * deployment or the signed start itself (its application binding, controller code, runtime
+   * configuration, signing key or the start's freshness), never about the slot, so another fresh
+   * slot fares no better until both run one release, as while this controller still runs an upload
+   * a rollback re-pointed away from: the release never told it, and objects created since run the
+   * re-pointed one. The slot leaves as never started once its cell proves nothing ran, its recent
+   * end saying why, with no quarantine, and growth waits at least until the next pass instead of
+   * drawing again at once. A cell that can't prove it keeps today's quarantine.
    */
   private async deferStart(cell: FleetCell, target: SlotTarget, error: unknown, began: number) {
     const read = failureRead(

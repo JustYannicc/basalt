@@ -18,7 +18,9 @@ const dispatch = (mode: string, extra: Partial<DispatchInput> = {}): DispatchInp
   ...extra,
 });
 /** The Worker's own 409 while the controller still runs the previous code: the new signature is refused. */
-const oldCode = () => runtimeErrorResponse(new SlotRefused("identity"), "handoff");
+const oldCode = () => runtimeErrorResponse(new SlotRefused("controller_code"), "handoff");
+/** The same refusal from a controller on code from before its own reason, which said identity. */
+const olderCode = () => runtimeErrorResponse(new SlotRefused("identity"), "handoff");
 const cause = (result: Awaited<ReturnType<typeof runPoolFleet>>) =>
   String("cause" in result ? result.cause : "");
 const reads = new Set(["inspect", "fleet-inspect", "fleet-retire-check"]);
@@ -72,6 +74,21 @@ test("inspect waits while the controller still refuses the new code, then reads,
   }
 });
 
+test("a controller on code from before controller_code, which refuses the new signature as identity, is waited for as old code too", async () => {
+  const { lines, fixture, run } = await lane((clock) => ({
+    handoffFailure: () => (clock.at - clock.start < 20_000 ? olderCode() : undefined),
+  }));
+  try {
+    const result = await run(dispatch("inspect", { go: "" }));
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.deepEqual(waitLines(lines), [
+      "probe_wait window=330 seconds=20 reads=3 for=old_code,old_code",
+    ]);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("a read lost on the way and old code are told apart, in the order they were waited for", async () => {
   const { lines, fixture, run } = await lane((clock) => ({
     handoffFailure: () =>
@@ -97,6 +114,11 @@ test("a read-only probe whose controller never takes the code fails at the bound
     for (const [failure, refusal, waited] of [
       [
         oldCode,
+        /^controller-code-mismatch: The controller refused reads signed for candidate c{40} for 330 s; /u,
+        "old_code",
+      ],
+      [
+        olderCode,
         /^controller-code-mismatch: The controller refused reads signed for candidate c{40} for 330 s; /u,
         "old_code",
       ],

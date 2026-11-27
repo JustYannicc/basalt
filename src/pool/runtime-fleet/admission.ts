@@ -63,8 +63,9 @@ export class FleetAdmission {
         }),
       )(await handoff.witness(target));
       witness = observed.witness;
+      if (!sameControllerCode(observed.controllerCode, code))
+        throw new SlotRefused("controller_code");
       if (
-        !sameControllerCode(observed.controllerCode, code) ||
         witness.operationId !== operationId ||
         witness.manifestDigest !== manifestDigest ||
         witness.configurationFingerprint !== fingerprint ||

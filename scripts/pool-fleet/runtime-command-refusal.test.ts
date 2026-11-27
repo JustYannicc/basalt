@@ -6,6 +6,8 @@ import { sendRuntimeCommand } from "./runtime-command-rpc.ts";
 import { throughController } from "../../src/pool/operations-call.ts";
 import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error.ts";
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
+import { runtimeHandoffCommandPrefix } from "../../src/pool/runtime-slots/handoff-command.ts";
+import { signEnvelope } from "../../src/pool/token.ts";
 import {
   handleRuntimeHandoff,
   logRuntimeCommandRefusal,
@@ -63,6 +65,38 @@ test("a 409 with a known runtime reason reaches failure.json", async (t) => {
     ],
     ["adopt", "endpoint_route", "slot_draining", "runtime_endpoint_route_slot_draining"],
   );
+});
+
+test("a command signed for other controller code is refused as controller_code, in the lane's evidence and the pool's line", async (t) => {
+  const lines: string[] = [];
+  t.mock.method(console, "warn", (line: string) => {
+    lines.push(line);
+  });
+  const handoff = { databasePool: () => null } as unknown as Parameters<
+    typeof handleRuntimeHandoff
+  >[1];
+  // The controller runs a release this lane's checkout wasn't built from.
+  const live = { candidate: "1".repeat(40), workerInput: "2".repeat(64) };
+  const { fields } = await refusedEvidence(t, async () =>
+    handleRuntimeHandoff(
+      new Request("http://pool/handoff", {
+        method: "POST",
+        body: JSON.stringify({
+          envelope: await signEnvelope("e".repeat(64), runtimeHandoffCommandPrefix, adopt),
+        }),
+      }),
+      handoff,
+      live,
+      "e".repeat(64),
+    ),
+  );
+  assert.deepEqual(
+    [fields["handoff.response.reason"], fields["handoff.response.code"]],
+    ["slot_controller_code", "runtime_endpoint_route_slot_controller_code"],
+  );
+  assert.deepEqual(lines, [
+    `POOL_RUNTIME_COMMAND_REFUSED {"action":"adopt","candidate":"${candidate}","operationId":null,"status":409,"step":"endpoint_route","reason":"slot_controller_code"}`,
+  ]);
 });
 
 test("a 500 the bridge built reads unmarked, and either 500 the pool gives reads pool", async (t) => {

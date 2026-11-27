@@ -244,7 +244,8 @@ export class RuntimeEndpoint {
       await openEnvelope(this.env.POOL_DEPLOYMENT_KEY ?? "", runtimeAttestationFormat, envelope),
     );
     this.bound(proof.target);
-    if (!sameControllerCode(proof.controllerCode, this.code)) throw new SlotRefused("identity");
+    if (!sameControllerCode(proof.controllerCode, this.code))
+      throw new SlotRefused("controller_code");
     return proof;
   }
   admit(envelope: string) {
