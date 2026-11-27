@@ -1,0 +1,72 @@
+{
+  "scenarios": {
+    "dashboardHydrationKeepsServerMarkup": {
+      "fixtures": "actors",
+      "title": "An app's server-rendered skills stay the server's markup after hydration at desktop width",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members to share an app's skills with."
+        }
+      }
+    },
+    "dashboardHydrationKeepsServerMarkupMobile": {
+      "fixtures": "actors",
+      "title": "An app's server-rendered skills stay the server's markup after hydration at phone width",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members to share an app's skills with."
+        }
+      }
+    },
+    "dashboardHydrationKeepsServerMarkupSafari": {
+      "fixtures": "actors",
+      "title": "An app's server-rendered skills stay the server's markup after hydration in Safari at phone width",
+      "targets": {
+        "self-host": {
+          "status": "scheduled"
+        },
+        "cloud": {
+          "status": "scheduled"
+        },
+        "local": {
+          "status": "not-applicable",
+          "reason": "Local has no organization members to share an app's skills with."
+        }
+      }
+    }
+  },
+  "runs": {
+    "dashboardHydrationKeepsServerMarkup": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "dashboardHydrationKeepsServerMarkupMobile": [
+      "declared:self-host",
+      "declared:cloud"
+    ],
+    "dashboardHydrationKeepsServerMarkupSafari": [
+      "declared:self-host",
+      "declared:cloud"
+    ]
+  },
+  "inputs": [
+    ".upstream/apps/hosted/web/src/contracts/change-signal.ts",
+    ".upstream/apps/hosted/web/src/contracts/accepted-read.ts",
+    ".upstream/packages/dashboard-start/src/implementation/registry.tsx",
+    ".upstream/packages/ui/src/implementation/dashboard/app-skills.tsx"
+  ]
+}
