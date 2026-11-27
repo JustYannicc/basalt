@@ -6,6 +6,8 @@ type ReportingOutcome = "success" | "failure" | "partial" | "incomplete";
 export interface ReportingProgress {
   rows: number | null;
   outcome?: ReportingOutcome;
+  /** Where a job's time and rows went, as whole non-negative numbers; any other value is dropped. */
+  split?: Record<string, number>;
 }
 interface ReportingEvent {
   job: ReportingJob;
@@ -13,7 +15,10 @@ interface ReportingEvent {
   durationMs: number;
   rows: number | null;
   outcome: ReportingOutcome;
+  split?: Record<string, number>;
 }
+
+const count = (value: number) => Number.isSafeInteger(value) && value >= 0;
 
 /** Claim before I/O so eviction and failed reads cannot restart five-second report polling. */
 export async function reportWhenDue(
@@ -46,8 +51,15 @@ export async function reportWhenDue(
         job: name,
         state: "ran",
         durationMs: Number.isFinite(elapsed) ? Math.max(0, Math.round(elapsed)) : 0,
-        rows: Number.isSafeInteger(progress.rows) && progress.rows! >= 0 ? progress.rows : null,
+        rows: progress.rows !== null && count(progress.rows) ? progress.rows : null,
         outcome: progress.outcome ?? "success",
+        ...(progress.split
+          ? {
+              split: Object.fromEntries(
+                Object.entries(progress.split).filter(([, value]) => count(value)),
+              ),
+            }
+          : {}),
       });
     } catch {
       /* Telemetry must not change a reporting result. */
