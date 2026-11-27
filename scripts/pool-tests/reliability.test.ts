@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/index.js";
-import { digest } from "../../src/pool/backend-users.ts";
+import { backendUserName, digest } from "../../src/pool/backend-users.ts";
 import {
   historySchemaVersion,
   historyTerminalIntegrityVersion,
@@ -17,9 +17,9 @@ import {
   terminalCollectionReady,
 } from "../../src/pool/model-history/reliability.ts";
 import { reference, timestamp } from "../../src/pool/model-history/record.ts";
-import { historyMemoryOwnerFixture } from "./history-fixture.ts";
+import { historyMemoryOwnerFixture, homeMetadataFixture } from "./history-fixture.ts";
 import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
-import { historyBatchSize, historyForwardPages } from "../../src/pool/model-history/store.ts";
+import { readCaptureLag } from "../../src/pool/model-history/capture-lag.ts";
 import { summaryIncidents } from "../../src/pool/model-history/summary-incidents.ts";
 import { handleTrafficOperation } from "../../src/pool/model-history/traffic.ts";
 import {
@@ -85,6 +85,36 @@ async function insertTerminal(
   await recordTerminalFinish(db, requestId, { outcome, status, bytes: 123, at });
 }
 
+/** A Home user of `pool` whose key has the fingerprint `keyId` names. */
+async function homeUser(db: HistoryDatabase, keyId: number, pool: string) {
+  await db.query('INSERT INTO "user" VALUES ($1,$2)', [
+    keyId,
+    await backendUserName("person", pool),
+  ]);
+  await db.query("INSERT INTO api_key VALUES ($1,$2,$1,NULL)", [
+    keyId,
+    `sha256:${String(keyId).padStart(64, "0")}`,
+  ]);
+}
+
+/** Home usage rows [from, to] on one key, started at `at` and finished `latency` ms later. */
+async function homeUsage(
+  db: HistoryDatabase,
+  row: { from: number; to: number; key: number; at: string; latency?: number | null },
+) {
+  await db.query(
+    `INSERT INTO usage(id,timestamp,request_id,api_key,latency_ms)
+    SELECT n,$3::timestamptz,'attempt-' || n,$4,$5 FROM generate_series($1::int,$2::int) n`,
+    [
+      row.from,
+      row.to,
+      row.at,
+      `sha256:${String(row.key).padStart(64, "0")}`,
+      row.latency === undefined ? 1_000 : row.latency,
+    ],
+  );
+}
+
 async function fixture(work: (db: HistoryDatabase) => Promise<void>) {
   const database = new PGlite();
   const db: HistoryDatabase = {
@@ -96,7 +126,7 @@ async function fixture(work: (db: HistoryDatabase) => Promise<void>) {
   try {
     await historyMemoryOwnerFixture(db);
     await migrateModelHistory(db);
-    await db.query("CREATE TABLE usage (id bigint PRIMARY KEY)");
+    await homeMetadataFixture(db);
     await work(db);
   } finally {
     await database.close();
@@ -356,7 +386,7 @@ test("proof failures stay visible separately while unknown traffic counts toward
 
 test("terminal evidence overlays one Home attempt and replaces its fallback without rewriting raw usage", async () => {
   await fixture(async (db) => {
-    await db.query("INSERT INTO usage VALUES (1),(2)");
+    await db.query("INSERT INTO usage(id,timestamp) VALUES (1,now()),(2,now())");
     const usageBefore = (await db.query("SELECT id FROM usage ORDER BY id")).rows;
     const first = randomUUID();
     await insertHomeAttempt(db, {
@@ -680,13 +710,6 @@ test("a terminal start pending for ten minutes makes the SLO explicitly pending"
 
 test("the history operator exposes v7 as a self-creating additive step from v4", async () => {
   await fixture(async (db) => {
-    await db.query("ALTER TABLE usage ADD COLUMN timestamp timestamptz");
-    await db.query(
-      "CREATE TABLE home_data_migration (name text PRIMARY KEY,completed boolean NOT NULL)",
-    );
-    await db.query(
-      "INSERT INTO home_data_migration VALUES ('diagnostics_metadata_only_v1_1_6',true)",
-    );
     const current = await modelHistorySchemaPlan(db);
     assert.equal(current.version, historySchemaVersion);
     assert.equal(current.applied, true);
@@ -763,22 +786,32 @@ test("the 1h and 24h SLO uses exact real counts, detects stale and lagging captu
     assert.equal(separated.state, "ok");
     assert.equal(separated.hour.real.requests, 100);
     assert.equal(separated.hour.proof.failed, 1);
-    const run = historyForwardPages * historyBatchSize;
-    await db.query("INSERT INTO usage VALUES (1)");
+    await homeUser(db, 1, "fixture");
+    await homeUser(db, 2, "app_other");
+    // Another pool's long backlog, all of it overdue, says nothing about this pool's counts.
+    await homeUsage(db, { from: 1, to: 1_000, key: 2, at: "2026-11-12T02:00:00Z" });
+    await homeUsage(db, { from: 1_001, to: 1_001, key: 1, at: "2026-11-12T02:59:00Z" });
     const due = await readPoolReliabilitySlo(db, "fixture", now);
     assert.equal(due.state, "ok", "a request since the last capture is not yet due");
     assert.equal(due.reason, undefined);
-    await db.query("INSERT INTO usage SELECT n FROM generate_series(2, $1::int) n", [run]);
-    assert.equal(
-      (await readPoolReliabilitySlo(db, "fixture", now)).state,
-      "ok",
-      "one capture run takes the whole backlog",
-    );
-    await db.query("INSERT INTO usage VALUES ($1)", [run + 1]);
+    assert.deepEqual(due.pending, {
+      requests: 1,
+      oldestAt: "2026-11-12T02:59:00.000000000Z",
+      complete: true,
+    });
+    const other = await readPoolReliabilitySlo(db, "app_other", now);
+    assert.equal(other.state, "unavailable");
+    assert.equal(other.reason, "capture_lagging");
+    assert.equal(other.pending?.requests, 1_000);
+    await db.query("UPDATE basalt_model_history_cursor SET forward_id=1001");
+    await homeUsage(db, { from: 1_002, to: 1_002, key: 1, at: "2026-11-12T02:50:00Z" });
+    await homeUsage(db, { from: 1_003, to: 1_003, key: 1, at: "2026-11-12T02:59:30Z" });
     const lagging = await readPoolReliabilitySlo(db, "fixture", now);
     assert.equal(lagging.state, "unavailable");
     assert.equal(lagging.reason, "capture_lagging");
-    await db.query("UPDATE basalt_model_history_cursor SET forward_id=1");
+    assert.equal(lagging.pending?.oldestAt, "2026-11-12T02:50:00.000000000Z");
+    assert.equal((await readPoolReliabilitySlo(db, "app_other", now)).state, "no_traffic");
+    await db.query("UPDATE basalt_model_history_cursor SET forward_id=1003");
     assert.equal((await readPoolReliabilitySlo(db, "fixture", now)).state, "ok");
     const stale = await readPoolReliabilitySlo(db, "fixture", now + 600_001);
     assert.equal(stale.state, "unavailable");
@@ -856,5 +889,53 @@ test("terminal collection readiness stays bound to v7 while v8 completion is ind
       historyTerminalIntegrityVersion,
     ]);
     assert.equal(await terminalCollectionReady(db), false);
+  });
+});
+
+test("capture lag: a request without a measured latency is overdue only behind a later row known to be", async () => {
+  await fixture(async (db) => {
+    const captured = "2026-11-12T03:00:00.000Z";
+    await homeUser(db, 1, "fixture");
+    await homeUser(db, 2, "app_other");
+    // Started an hour ago, finish unknown: Home may have written either row a moment ago.
+    await homeUsage(db, { from: 1, to: 1, key: 1, at: "2026-11-12T02:00:00Z", latency: -1 });
+    await homeUsage(db, { from: 2, to: 2, key: 1, at: "2026-11-12T02:00:00Z", latency: null });
+    assert.deepEqual(await readCaptureLag(db, "fixture", "0", captured), {
+      lagging: false,
+      pending: 2,
+      oldestAt: "2026-11-12T02:00:00.000000000Z",
+      complete: true,
+    });
+    // A later row, of another pool, finished long before the capture: both were written before it.
+    await homeUsage(db, { from: 3, to: 3, key: 2, at: "2026-11-12T02:10:00Z" });
+    assert.equal((await readCaptureLag(db, "fixture", "0", captured)).lagging, true);
+    assert.equal((await readCaptureLag(db, "fixture", "2", captured)).lagging, false);
+  });
+});
+
+test("capture lag: a full read that stops inside overdue rows proves no pool is captured", async () => {
+  await fixture(async (db) => {
+    const captured = "2026-11-12T03:00:00.000Z";
+    await homeUser(db, 1, "fixture");
+    await homeUser(db, 2, "app_other");
+    await homeUsage(db, { from: 1, to: 20, key: 2, at: "2026-11-12T02:00:00Z" });
+    await homeUsage(db, { from: 21, to: 21, key: 1, at: "2026-11-12T02:00:00Z" });
+    assert.deepEqual(await readCaptureLag(db, "fixture", "0", captured, 10), {
+      lagging: true,
+      pending: 0,
+      oldestAt: null,
+      complete: false,
+    });
+    // A read whose last row is not overdue: every row past it was written later still.
+    await db.query("UPDATE usage SET timestamp='2026-11-12T02:59:00Z' WHERE id > 5");
+    assert.deepEqual(await readCaptureLag(db, "fixture", "0", captured, 10), {
+      lagging: false,
+      pending: 0,
+      oldestAt: null,
+      complete: false,
+    });
+    // Rows Home could not time say nothing: the read may still stop inside the overdue rows.
+    await db.query("UPDATE usage SET latency_ms=-1 WHERE id > 5");
+    assert.equal((await readCaptureLag(db, "fixture", "0", captured, 10)).lagging, true);
   });
 });

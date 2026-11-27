@@ -164,17 +164,19 @@ export function catalogOf(answer) {
   return repositories;
 }
 
-/** The tags one repository holds; none when it is gone. */
-export function tagsOf(answer) {
-  if (answer.status === 404) return [];
+/**
+ * One page of the tags a repository holds, and whether the registry says another follows; no tags
+ * and no next page when it is gone.
+ */
+export function tagPageOf(answer) {
+  if (answer.status === 404) return { tags: [], next: false };
   if (!answer.ok) throw fail(`Registry tag list failed (HTTP ${answer.status})`);
-  singlePage(answer, "tag list");
   if (answer.data === undefined) throw fail("A registry tag list answered without its tags");
   // A repository whose tags are all deleted answers `tags: null`.
   const tags = ownField(answer.data, "tags") ?? [];
   if (!Array.isArray(tags) || !tags.every((tag) => typeof tag === "string"))
     throw fail("A registry tag list answered without its tags");
-  return tags;
+  return { tags, next: /rel="?next"?/u.test(answer.link) };
 }
 
 /** The digest a manifest read names, and the manifests an index names; undefined once it is gone. */
