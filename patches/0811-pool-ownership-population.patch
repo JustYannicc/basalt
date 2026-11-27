@@ -1,0 +1,240 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+--- a/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
++++ b/apps/hosted/cloud/src/infrastructure/pool-inventory.ts
+@@ -1,6 +1,11 @@
+ import { GroupDatabase } from "@executor-js/hosted-server/groups";
+-import { Console, Effect, Schema } from "effect";
++import { Console, Effect, Exit, Schema } from "effect";
+ import { createHash, randomUUID } from "node:crypto";
++import {
++  poolOwnershipLine,
++  readPoolPopulation,
++  type PopulationFacts,
++} from "./pool-ownership-report.ts";
+ 
+ // No caller supplies SQL or a selector. JSON projections stop at known identifier leaves.
+ const queries = {
+@@ -61,6 +66,8 @@ class InventoryUnavailable extends Schema.TaggedError<InventoryUnavailable>()(
+ /** A separate internal job never initializes the SDK or enters mutating data steps. */
+ export const reportHostPoolInventory = Effect.gen(function* () {
+   const run = randomUUID();
++  // The pool ownership report reads in this same snapshot, after the inventory's own reads.
++  let population: Exit.Exit<PopulationFacts, unknown> | undefined;
+   const report = yield* Effect.gen(function* () {
+     const sql = yield* Effect.flatten(GroupDatabase);
+     return yield* sql.withTransaction(
+@@ -92,6 +99,7 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+         const report = { snapshot: identity[0].snapshot, sections };
+         if (Buffer.byteLength(JSON.stringify(report)) > 120_000)
+           return yield* new InventoryUnavailable();
++        population = yield* Effect.exit(readPoolPopulation(sql));
+         return report;
+       }),
+     );
+@@ -110,6 +118,7 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+         migrationGo: false,
+       }),
+     );
++    yield* Console.info(poolOwnershipLine(undefined, run, undefined));
+     return;
+   }
+   const json = JSON.stringify(report.report);
+@@ -140,4 +149,5 @@ export const reportHostPoolInventory = Effect.gen(function* () {
+       migrationGo: false,
+     }),
+   );
++  yield* Console.info(poolOwnershipLine(population, run, report.report.snapshot));
+ }).pipe(Effect.withTracerEnabled(false));
+diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
+new file mode 100644
+--- /dev/null
++++ b/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
+@@ -0,0 +1,157 @@
++import { AppId } from "@executor-js/sdk/core";
++import { OrganizationId } from "@executor-js/hosted-server/organization";
++import { Facts, type Refusal, shapeOf } from "@executor-js/hosted-server/pool-organization";
++import { Effect, Exit, Schema } from "effect";
++import type { SqlClient } from "effect/sql";
++
++/**
++ * The pool ownership population, read inside the hourly inventory's read-only transaction: every
++ * pair a pool token can name. That is each record in an organization's `basaltPools`, each recorded
++ * app with the organization that owns it, and each pool app (a copy of the `basalt-pool` package)
++ * with its owner, recorded or not. Per pair it reads the facts the ownership check's shape read
++ * takes; the check's own `shapeOf` classifies them, so the rule is never written twice. Each cast is
++ * guarded, so no row's content can fail the statement.
++ */
++const populationQuery = `with records as (
++    select o.id as organization, entry.value ->> 'app' as pool
++    from organization o
++    cross join lateral jsonb_each(case when pg_input_is_valid(o.metadata, 'jsonb')
++      then case when jsonb_typeof(o.metadata::jsonb -> 'basaltPools') = 'object'
++        then o.metadata::jsonb -> 'basaltPools' else '{}'::jsonb end
++      else '{}'::jsonb end) entry
++  ), owned as (
++    select substr(a.owner, length('organization:') + 1) as organization, a.id as pool
++    from executor_apps a
++    where a.owner like 'organization:%'
++      and (a.id in (select pool from records)
++        or case when pg_input_is_valid(a.copied_from::text, 'jsonb')
++          then a.copied_from::text::jsonb ->> 'name' = 'basalt-pool' else false end)
++  ), pairs as (
++    select organization, pool from records where pool is not null
++    union
++    select organization, pool from owned
++  )
++  select pairs.organization, pairs.pool, o.metadata,
++    pg_input_is_valid(o.metadata, 'jsonb') as valid,
++    (select app.owner from executor_apps app where app.id = pairs.pool) as owner,
++    o.id is not null as present
++  from pairs left join organization o on o.id = pairs.organization
++  order by pairs.organization, pairs.pool
++  limit 1001`;
++
++const invalidMetadataQuery = `select count(*)::int as n from organization
++  where metadata is not null and not pg_input_is_valid(metadata, 'jsonb')`;
++
++const Pairs = Schema.Array(
++  Schema.Struct({
++    organization: Schema.String,
++    pool: Schema.String,
++    metadata: Schema.NullOr(Schema.String),
++    valid: Schema.NullOr(Schema.Boolean),
++    owner: Schema.NullOr(Schema.String),
++    present: Schema.Boolean,
++  }),
++);
++const Count = Schema.Array(Schema.Struct({ n: Schema.Int }));
++
++/** The facts the report is made from, as read in the inventory's transaction. */
++export interface PopulationFacts {
++  readonly pairs: typeof Pairs.Type;
++  readonly invalidMetadataOrganizations: number;
++}
++
++/**
++ * The population read, in a savepoint of the caller's transaction: a statement that fails or is
++ * cancelled rolls back to it alone, so the inventory's own reads and outcome stand as they are.
++ */
++export const readPoolPopulation = (sql: SqlClient.SqlClient) =>
++  sql.withTransaction(
++    Effect.gen(function* () {
++      const pairs = yield* sql
++        .unsafe(populationQuery)
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pairs)));
++      const [count] = yield* sql
++        .unsafe(invalidMetadataQuery)
++        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Count)));
++      return { pairs, invalidMetadataOrganizations: count?.n ?? 0 } satisfies PopulationFacts;
++    }),
++  );
++
++/** The most pool ids one line carries; the rest are counted. */
++const listed = 50;
++/** The most pairs one read covers; above it the line says it is incomplete and lists nothing. */
++const covered = 1_000;
++
++/**
++ * The report's one line. It is always written, after the inventory's own lines: `complete: false`
++ * with a reason whenever the read could not cover every pair, so a missing line and an incomplete
++ * one never look alike. Pool ids only, never organization metadata.
++ */
++export function poolOwnershipLine(
++  read: Exit.Exit<PopulationFacts, unknown> | undefined,
++  run: string,
++  snapshot: string | undefined,
++) {
++  const head = { inventory: "pool-ownership-v1", run, snapshot: snapshot ?? null };
++  if (read === undefined)
++    return JSON.stringify({
++      ...head,
++      complete: false,
++      reason: "inventory_failed",
++      migrationGo: false,
++    });
++  if (Exit.isFailure(read))
++    return JSON.stringify({ ...head, complete: false, reason: "query_failed", migrationGo: false });
++  const { pairs, invalidMetadataOrganizations } = read.value;
++  if (pairs.length > covered)
++    return JSON.stringify({
++      ...head,
++      complete: false,
++      reason: "row_cap",
++      pairs: pairs.length,
++      migrationGo: false,
++    });
++  const counts: Record<"owned" | "organization-missing" | Refusal, number> = {
++    owned: 0,
++    "organization-missing": 0,
++    "deleted-pool": 0,
++    "cleared-association": 0,
++    "foreign-owner": 0,
++    "no-record": 0,
++    "other-organization": 0,
++    "invalid-metadata": 0,
++  };
++  const refusing: Array<{ pool: string; shape: Refusal }> = [];
++  for (const pair of pairs) {
++    if (!pair.present) {
++      counts["organization-missing"] += 1;
++      continue;
++    }
++    const shape = shapeOf(
++      {
++        metadata: pair.metadata,
++        valid: pair.valid,
++        owner: pair.owner,
++      } satisfies (typeof Facts.Type)[number],
++      OrganizationId.make(pair.organization),
++      AppId.make(pair.pool),
++      false,
++    );
++    if (shape === undefined) counts.owned += 1;
++    else {
++      counts[shape] += 1;
++      refusing.push({ pool: pair.pool, shape });
++    }
++  }
++  return JSON.stringify({
++    ...head,
++    complete: true,
++    covers: ["records", "pool-app-copies"],
++    pairs: pairs.length,
++    counts,
++    invalidMetadataOrganizations,
++    refusing: refusing.slice(0, listed),
++    refusingOmitted: Math.max(0, refusing.length - listed),
++    migrationGo: false,
++  });
++}
+diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
+--- a/apps/hosted/server/src/implementation/pool-organization.ts
++++ b/apps/hosted/server/src/implementation/pool-organization.ts
+@@ -17,14 +17,16 @@ const Read = Schema.Struct({
+   expiresAt: Schema.Finite,
+ });
+ 
+-type Refusal =
++/** Why the ownership rule would refuse an existing organization: the shapes the observation names. */
++export type Refusal =
+   | "deleted-pool"
+   | "cleared-association"
+   | "foreign-owner"
+   | "no-record"
+   | "other-organization"
+   | "invalid-metadata";
+-const Facts = Schema.Array(
++/** What a shape is read from, per pair: the organization's metadata, whether it is JSON, the app's owner. */
++export const Facts = Schema.Array(
+   Schema.Struct({
+     metadata: Schema.NullOr(Schema.String),
+     valid: Schema.NullOr(Schema.Boolean),
+@@ -79,7 +81,7 @@ const factsOf = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: A
+   );
+ 
+ /** Why the ownership rule would refuse an existing organization; undefined when nothing says why. */
+-const shapeOf = (
++export const shapeOf = (
+   facts: (typeof Facts.Type)[number] | undefined,
+   organization: OrganizationId,
+   pool: AppId,

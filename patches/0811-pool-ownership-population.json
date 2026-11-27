@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-pool-ownership-population",
+  "file": "0811-pool-ownership-population.patch",
+  "content_sha256": "8d221ea4cbf5c186bb23b66a12d17dbfd5828d52079c6e0c90855f32b7b3fef6",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
