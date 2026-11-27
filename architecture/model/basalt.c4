@@ -42,6 +42,7 @@ model {
         code "scripts/cpa-update.py|scripts/cpa-pipeline-guard.py|scripts/releases|scripts/release-credentials|scripts/release-preview|scripts/release-merge|.github/workflows/cpa-updates.yml|.github/workflows/releases.yml|.github/workflows/release-preview.yml|.github/workflows/release-rehearsal.yml|.github/workflows/stage-rehearsal.yml|.github/workflows/release-rehearsal-handoff.yml|.github/workflows/release-cleanup.yml|.github/workflows/release-merge.yml|.github/workflows/release-manual.yml|.github/workflows/release-main.yml|.github/workflows/release-rollback.yml|.github/workflows/release-credentials.yml|.github/workflows/state-store-upgrade.yml"
         bindings "bridge.service=basalt.modelGateway"
         endpointHosts "pool-operations"
+        libraries "alchemy"
       }
     }
 
