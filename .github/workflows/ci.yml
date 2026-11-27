@@ -2718,7 +2718,7 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
-      - name: Prove committed change locks, account source read contention and the shared organization lock on PostgreSQL
+      - name: Prove committed change locks and account source read contention on PostgreSQL
         if: matrix.shard == 'compatibility'
         timeout-minutes: 10
         env:
