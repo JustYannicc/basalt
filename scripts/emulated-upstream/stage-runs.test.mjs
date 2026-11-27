@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { inspect } from "node:util";
 import { test } from "node:test";
-import { activeDispatches } from "./dispatch-busy.mjs";
+import { activeDispatches, busyFor } from "./dispatch-busy.mjs";
 import { gate, mockCalls, plainReason } from "./gateway.ts";
 import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
@@ -579,20 +579,27 @@ test("each teardown job states its own limit, and the budget with its reserve fi
     const steps = body.split("\n      - ").slice(1);
     assert.match(
       steps[1],
-      /^name: Note when the job started\n {8}run: echo "EMULATED_JOB_STARTED_MS=\$\(date \+%s%3N\)" >> "\$GITHUB_ENV"/u,
+      /^name: Note when the job started\n(?: {8}timeout-minutes: \d+\n)? {8}run: echo "EMULATED_JOB_STARTED_MS=\$\(date \+%s%3N\)" >> "\$GITHUB_ENV"/u,
       job,
     );
     assert.ok(teardownBudgetMs + jobReserveMs + 60_000 <= limit * 60_000, job);
   }
-  // After the longest toolchain and mode, the teardown after a failed deploy still has ten minutes
-  // before the job's reserve, with five minutes allowed for setup.
+  // Every step up to and including the mode has its own limit, and after the longest of each the
+  // teardown after a failed deploy still has ten minutes before the job's reserve.
   const emulated = workflow.split("\n  emulated:\n")[1].split(/\n  [a-z]+:\n/u)[0];
-  const stepLimits = [...emulated.matchAll(/\n {8}timeout-minutes: (\d+)/gu)].map((match) =>
-    Number(match[1]),
-  );
   const jobLimit = Number(/\n    timeout-minutes: (\d+)/u.exec(emulated)?.[1]);
-  assert.deepEqual(stepLimits, [25, 45]);
-  assert.ok((jobLimit - 5 - 25 - 45) * 60_000 - jobReserveMs >= 10 * 60_000);
+  const steps = emulated.split("\n      - ").slice(1);
+  const mode = steps.findIndex((step) => step.startsWith("name: Execute the mode\n"));
+  assert.ok(mode > 0);
+  let before = 0;
+  for (const step of steps.slice(0, mode + 1)) {
+    const limit = /\n {8}timeout-minutes: (\d+)/u.exec(step);
+    assert.ok(limit, `a step without its own limit: ${step.split("\n")[0]}`);
+    before += Number(limit[1]) * 60_000;
+  }
+  assert.ok(jobLimit * 60_000 - before - jobReserveMs >= 10 * 60_000, String(before));
+  // The expiry's busy window covers a dispatch that waits one job and then runs one.
+  assert.ok(busyFor >= 2 * jobLimit * 60_000 + 30 * 60_000);
   // The reserve covers saving the record and uploading the artifact.
   assert.ok(jobReserveMs >= 2 * 60_000);
 });

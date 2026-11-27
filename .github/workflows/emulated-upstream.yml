@@ -37,9 +37,10 @@ jobs:
       group: emulated-upstream
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    # Setup (a few minutes), the toolchain (at most 25), the mode (at most 45) and then the teardown
-    # after a failed deploy, which still finds at least 14 minutes before the job ends.
-    timeout-minutes: 90
+    # Every step before the mode has its own limit (15 minutes in all, with the toolchain's 25), and
+    # the mode at most 45: the teardown after a failed deploy still finds 12 of its own minutes before
+    # the job's reserve. scripts/emulated-upstream/stage-runs.test.mjs checks this sum.
+    timeout-minutes: 100
     # The key lives only in this environment, which the coordinator fills; deploy and check read it.
     environment: emulated-upstream
     env:
@@ -48,23 +49,29 @@ jobs:
       EMULATED_GO: ${{ inputs.go }}
       EMULATED_OUTPUT: .local/emulated-upstream
       # The job's own limit, as timeout-minutes above: a teardown's requests end before it.
-      EMULATED_JOB_LIMIT_MINUTES: 90
+      EMULATED_JOB_LIMIT_MINUTES: 100
     steps:
       # Expressions compare case-insensitively, so a branch named MAIN would pass the job's condition.
       - name: Refuse every ref but main
+        timeout-minutes: 1
         run: test "$GITHUB_REF" = refs/heads/main
       - name: Note when the job started
+        timeout-minutes: 1
         run: echo "EMULATED_JOB_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
+        timeout-minutes: 3
         with:
           persist-credentials: false
       - uses: actions/setup-node@v4
+        timeout-minutes: 3
         with:
           node-version: 24.18.0
       - name: Refuse a wrong stage, mode or go before loading credentials
+        timeout-minutes: 1
         run: node scripts/emulated-upstream/guard.ts
       - uses: oven-sh/setup-bun@v2
         if: inputs.mode == 'deploy'
+        timeout-minutes: 3
         with:
           bun-version: 1.4.2
       - name: Prepare the deployment toolchain
@@ -73,6 +80,7 @@ jobs:
         run: npm run prepare:upstream
       - name: Check the stage's stack and Worker
         if: inputs.mode == 'deploy'
+        timeout-minutes: 3
         run: |
           .upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/emulated-upstream/tsconfig.stack.json
           .upstream/node_modules/.bin/tsc-rs --noEmit -p scripts/emulated-upstream/tsconfig.worker.json
