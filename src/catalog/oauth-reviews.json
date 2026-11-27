@@ -4853,7 +4853,7 @@
           "kind": "automatic",
           "protocol": "cimd",
           "metadata": "https://vercel.com/.well-known/oauth-authorization-server",
-          "metadataSha256": "930d42443e3c1075b7fb53f9983e117d83c46e751365373fd7638c324cc4d4b6"
+          "metadataSha256": "f0f4dbdac6196a5bfc65f1e2a44013b606bafa4dddc4eda0530560423cbde68c"
         }
       }
     },
