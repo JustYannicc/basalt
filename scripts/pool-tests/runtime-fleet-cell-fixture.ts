@@ -109,6 +109,8 @@ export async function fleetCellFixture(
      * an action that code doesn't know.
      */
     older: undefined as "fence" | "missing" | undefined,
+    /** Whether each `/abandon-start` the cell sent asked for the stop, in the order sent. */
+    abandons: [] as boolean[],
   };
   /**
    * The stop's grace, on whatever clock the test moves. The handoff fixture runs a zero one; a test
@@ -149,6 +151,10 @@ export async function fleetCellFixture(
               throw error;
             }
             const path = new URL(request.url).pathname;
+            if (path === "/abandon-start")
+              transport.abandons.push(
+                ((await request.clone().json()) as { stop?: unknown }).stop === true,
+              );
             const refused = transport.refuse[path];
             if (refused) {
               await request.text();

@@ -1,19 +1,25 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { handoffRuntime } from "../../scripts/pool-tests/runtime-handoff-fixture.ts";
-import { runtimeGrant } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
+import {
+  joinedRuntimeProof,
+  runtimeGrant,
+} from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
+import { isLaunchAuthorization } from "./runtime-slots/admission-proof.ts";
 import { slotSelectionKey } from "./runtime-slots/storage.ts";
+import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
 
 /**
- * A slot started on an endpoint of `role` from a grant of `kind`, its container running, then
- * fenced by an abandon that asks for the stop. Only a fleet cell's own endpoint, a runtime
- * object, holds an initial start with a home peer ordinal.
+ * A slot started on an endpoint of `role` from a grant of `kind`, its container running and, when
+ * `attested`, its start attested, then fenced by an abandon that asks for the stop. Only a fleet
+ * cell's own endpoint, a runtime object, holds an initial start with a home peer ordinal.
  */
 async function abandoned(
   context: TestContext,
   role: "legacy" | "runtime",
   kind: "initial-start" | "start",
+  attested = false,
 ) {
   context.mock.method(console, "warn", () => {});
   const target = {
@@ -59,9 +65,14 @@ async function abandoned(
       active: { target: root, identity: root, fenced: false },
     });
   }
-  await f.endpoint.admit((await runtimeGrant(f, controller, kind)).envelope);
+  const grant = await runtimeGrant(f, controller, kind);
+  await f.endpoint.admit(grant.envelope);
   await f.endpoint.start(target, AbortSignal.timeout(5_000));
   assert.equal(f.ctx.container.running, true);
+  if (attested) {
+    assert.ok(isLaunchAuthorization(grant.proof));
+    await f.endpoint.attest((await joinedRuntimeProof(f, controller, grant.proof)).envelope);
+  }
   const answer = await f.endpoint.abandonStart(target, true);
   await f.settle();
   return { f, answer };
@@ -90,4 +101,15 @@ test("a fleet cell's first start that never attested is stopped gracefully", asy
   const { f } = await abandoned(context, "runtime", "initial-start");
   assert.deepEqual(f.calls.signals, [15]);
   assert.equal(f.ctx.container.running, false);
+});
+
+test("a fleet cell's first start that attested is fenced but never stopped, though the stop was asked for", async (context) => {
+  // The same start as the one above, which is stopped, except that it attested.
+  const { f, answer } = await abandoned(context, "runtime", "initial-start", true);
+  assert.deepEqual(answer, { stopped: false });
+  const store = new RuntimeWitnessStore(f.ctx.storage, f.env.POOL_DEPLOYMENT_KEY!);
+  assert.equal(await store.abandoned(f.target.slotId), true, "the fence didn't land");
+  assert.deepEqual(f.calls.signals, [], "an attested start was stopped");
+  assert.equal(f.calls.destroy, 0);
+  assert.equal(f.ctx.container.running, true);
 });

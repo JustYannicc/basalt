@@ -5,6 +5,7 @@ import { runtimeFixtureCode } from "../../scripts/pool-tests/runtime-handoff-pro
 import { RuntimeFleet, type FleetCell } from "./runtime-fleet/controller.ts";
 import { FleetRefused, RuntimeFleetState } from "./runtime-fleet/state.ts";
 import { startingBoundMs, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
+import { poolLifecycle } from "./lifecycle.ts";
 import { forcedStopGraceMs } from "./runtime-slots/forced-restart-timing.ts";
 import { RuntimeEndpoint } from "./runtime-slots/endpoint.ts";
 import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
@@ -355,10 +356,10 @@ test("no stop is sent while the cell's own start or activation is still returnin
     assert.equal(await s.fenced(), false);
     attest.open();
     assert.equal((await observing)?.bootId, s.f.identity().bootId);
-    // It activated after its bound fired, so it is neither admitted nor stopped.
+    // It activated after its bound fired, so it is fenced but never admitted or stopped.
     await neverServes(s, "a late start was admitted ready");
-    assert.deepEqual(s.f.calls.signals, []);
-    assert.equal(await s.fenced(), false);
+    assert.equal(await s.fenced(), true, "an activated start's slot was left unfenced");
+    assert.deepEqual(s.f.calls.signals, [], "a cell whose selection committed was stopped");
   });
 });
 
@@ -415,41 +416,73 @@ test("an activated cell is never stopped on this path", async (context) => {
     },
   );
 
-  await context.test("an activated first start is never fenced", async (step) => {
-    const s = await stuckFleet(step);
-    const identity = await s.f.cell.start(s.f.target);
-    assert.equal(await s.f.cell.abandon(s.f.target, true), false);
-    assert.equal(await s.f.replacedCell().abandon(s.f.target, true), false, "nor by a fresh cell");
-    await s.f.settle();
-    assert.equal(await s.fenced(), false, "the activated slot was fenced");
-    assert.deepEqual(s.f.calls.signals, []);
-    await assert.doesNotReject(s.f.cell.healthy(identity), "it no longer answers");
-  });
+  await context.test(
+    "an activated first start is fenced, and its stop is never asked for",
+    async (step) => {
+      const s = await stuckFleet(step);
+      const identity = await s.f.cell.start(s.f.target);
+      assert.equal(await s.f.cell.abandon(s.f.target, true), false);
+      assert.equal(
+        await s.f.replacedCell().abandon(s.f.target, true),
+        false,
+        "nor by a fresh cell",
+      );
+      await s.f.settle();
+      // Its endpoint would refuse the stop for an attested start too; the cell never asks for it.
+      assert.deepEqual(s.f.transport.abandons, [false, false], "the stop was asked for");
+      assert.equal(await s.fenced(), true, "the activated slot was left unfenced");
+      assert.deepEqual(s.f.calls.signals, []);
+      assert.equal(s.f.ctx.container.running, true);
+      await assert.rejects(s.f.cell.healthy(identity), "a fenced endpoint still answered");
+    },
+  );
 });
 
-test("a start that activates after its bound fired is never admitted, fenced or stopped, and frees its place once it ends", async (context) => {
+test("a start that activates after its bound fired is fenced but never admitted or stopped, so its container times out and its place frees", async (context) => {
   const s = await stuckFleet(context);
+  let renewedAt = Date.now();
+  s.f.hooks.keepAlive = async () => {
+    renewedAt = Date.now();
+  };
   // Its activation completes before any quarantined pass, and it answers every read after.
   const identity = await lateStart(s);
   assert.equal((await s.f.cell.selected())?.bootId, identity.bootId, "its selection committed");
   await assert.doesNotReject(s.f.cell.healthy(identity), "it answers its read");
   await neverServes(s, "a late start was admitted ready");
+  const renewals = s.f.calls.keepAlive;
   await heldWhileRunning(s);
-  assert.equal(await s.fenced(), false, "a cell whose selection committed was fenced");
+  // Passes every minute and its endpoint's alarm every five, as while a cell serves, until its
+  // inactivity timeout has run out since its last renewal; past the fence no alarm renews it.
+  let alarms = 0;
+  for (let minute = 1; Date.now() - renewedAt < poolLifecycle.idleTimeoutMs; minute++) {
+    assert.equal(
+      (await s.pass(60_000))?.phase,
+      "quarantined",
+      "a running cell's place was reclaimed",
+    );
+    if (minute % 5 === 0) {
+      await s.f.endpoint.alarm();
+      alarms++;
+    }
+    assert.equal(s.f.calls.keepAlive, renewals, "its endpoint kept renewing its container");
+  }
+  assert.ok(alarms >= 12, "less than an hour of alarms ran");
+  assert.equal(await s.fenced(), true, "a late start's slot was left unfenced");
+  assert.deepEqual(s.f.calls.signals, [], "a cell whose selection committed was stopped");
+  assert.equal(s.f.ctx.container.running, true);
+  // The platform ends it at that timeout.
   await freedOnceEnded(s);
-  assert.equal(await s.fenced(), false);
   assert.deepEqual(await s.state.inspect(), []);
 });
 
-test("a late start that never answers its read is left alone while it runs, and frees its place once it ends", async (context) => {
+test("a late start that never answers its read is fenced but never stopped while it runs, and frees its place once it ends", async (context) => {
   const s = await stuckFleet(context);
   await lateStart(s);
   // Its readiness lapsed with its activation, so no admission read ever answers.
   s.f.hooks.health = async () => unready();
   await heldWhileRunning(s);
-  assert.equal(await s.fenced(), false, "a cell whose selection committed was fenced");
+  assert.equal(await s.fenced(), true, "a late start's slot was left unfenced");
   await freedOnceEnded(s);
-  assert.equal(await s.fenced(), false);
   assert.deepEqual(await s.state.inspect(), []);
 });
 
@@ -570,7 +603,7 @@ test("an admission whose start's bound fires during its read is refused by the l
   );
   assert.equal(s.f.calls.start, 1, "growth started it again");
   assert.deepEqual(s.f.calls.signals, []);
-  assert.equal(await s.fenced(), false, "a cell whose selection committed was fenced");
+  assert.equal(await s.fenced(), true, "an activated start's slot was left unfenced");
 });
 
 test("the stop is sent once per row, through repeated passes, a replaced controller and a replaced endpoint", async (context) => {

@@ -151,18 +151,20 @@ export class FleetHandoffCell implements FleetCell {
     this.abandoned = true;
     // A start or activation still returning here owns the instance.
     if (this.starting || this.activating > 0) return this.present();
-    // A start that activated proved itself to its endpoint, so it is never fenced here. A selection
-    // can still commit after this read, from another isolate's activation or one this cell observes
-    // later. The endpoint keeps that safe: it fences in its serialized section, then refuses every
-    // later attestation and read and never stops an attested start. The ledger never makes a
-    // quarantined row ready, so such a start takes no call; it frees its place once its container
-    // is gone.
-    if (await this.activated())
-      return (await this.ended(target)) ? this.provenAbsent(target, true) : this.present();
+    // A start that activated proved itself to its endpoint, so it is fenced but never asked to stop.
+    // The ledger never makes a quarantined row ready, so it takes no call, and the fence ends its
+    // endpoint's renewals, so its container stops at its inactivity timeout and its place frees
+    // once that container is gone. A selection can still commit after this read, from another
+    // isolate's activation or one this cell observes later. The endpoint keeps that safe: it fences
+    // in its serialized section, then refuses every later attestation and read and never stops an
+    // attested start.
+    const activated = await this.activated();
     // The endpoint is fenced first, so it refuses every later admission and start for this slot and
     // the wait below covers every start that could ever run, a replaced isolate's included. With
     // `stop`, the endpoint then stops a container that a start which never attested left running.
-    const fenced = await this.fence(target, stop);
+    const fenced = await this.fence(target, stop && !activated);
+    if (activated)
+      return (await this.ended(target)) ? this.provenAbsent(target, true) : this.present();
     if (!fenced) return this.present();
     const initial = await this.deps.handoff.slots.firstStart.inspect();
     // The durable first-start intent commits before the compute start is sent, and the endpoint
