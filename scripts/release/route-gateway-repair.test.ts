@@ -122,7 +122,7 @@ const repairOn = (context: TestContext, rows: Rows, applications: Map<string, Fa
       });
       return read.result;
     });
-  return { fqn: "RouteGateway", account: accountId, worker: "PoolWorker", store, observe };
+  return { fqn: "RouteGateway", worker: "PoolWorker", store, observe };
 };
 
 for (const stop of stops)
@@ -372,6 +372,7 @@ test("a declaration is the recorded one only with the same props and the same bu
     { ...props, context: "/elsewhere/basalt/containers/pool" },
     { ...props },
     { ...props, context: here, instanceType: "standard" },
+    { ...props, context: here, image: "registry.cloudflare.com/account/route-gateway@sha256:aa" },
   ])
     assert.equal(
       sameDeclaration(recorded, { ...props, context: here }),

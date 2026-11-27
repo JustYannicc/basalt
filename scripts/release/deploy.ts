@@ -30,7 +30,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
-import { readOnlyRun, type RecordedApplication, wireHolds } from "./wire-config.ts";
+import { readOnlyRun, wireConfigFor, wireHolds } from "./wire-config.ts";
 import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -607,28 +607,23 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
               script,
             });
           }
-          // Every reviewed release, and every production command, leaves the root application as
-          // recorded; previews roll it freely. A stage under a policy keeps its root by the same
-          // rules once its State row records one, so a rehearsal runs them as production does.
-          const rootFqn =
-            policy?.check?.poolContainer.fqn ??
-            (stage === "production" ? "PoolContainer" : undefined);
-          const root = rootFqn ? yield* recordedApplication(rootFqn) : undefined;
-          if (root) {
-            wire.rootRequired = true;
-            if (!root.name)
-              yield* Effect.promise(() =>
-                summary(
-                  "Warning: the root's State row records no application name, so every container application write in this run is refused.",
-                ),
-              );
-          } else if (rootFqn && stage === "production" && policy?.check)
-            return yield* Effect.die(new Error("No root application recorded on production"));
-          // Held as the root is, but apart from it (wire-config.ts).
-          const held: (RecordedApplication | undefined)[] = [];
-          for (const fqn of policy?.wire.heldApplications ?? [])
-            held.push(yield* recordedApplication(fqn));
-          Object.assign(wire, wireHolds(root, held));
+          // The run's holds: the root by its own pair, the policy's held rows beside it.
+          const holds = yield* wireConfigFor({
+            stage,
+            policy: policy?.check && {
+              rootFqn: policy.check.poolContainer.fqn,
+              held: policy.wire.heldApplications ?? [],
+            },
+            recorded: recordedApplication,
+          }).pipe(Effect.orDie);
+          const { unnamedRoot, ...applied } = holds;
+          Object.assign(wire, applied);
+          if (unnamedRoot)
+            yield* Effect.promise(() =>
+              summary(
+                "Warning: the root's State row records no application name, so every container application write in this run is refused.",
+              ),
+            );
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
             effect.pipe(Effect.provideService(Alchemist.Progress, reporter)) as Fx.Effect<
@@ -940,36 +935,22 @@ try {
     const result = await run(
       Effect.gen(function* () {
         const { state, at } = yield* stageState;
-        return yield* repair.runRepair({
+        return yield* repair.repairCommand({
           fqn,
-          account: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
-          worker: policy?.check?.poolWorker ?? "PoolWorker",
           digest,
-          // The repair writes State: the store is held to the contract every release holds it to.
-          contract: {
-            id: state.id,
-            version: state.getVersion(),
-            state: stackState,
-            stage,
-            runnerLocal: runnerLocalStateVersion,
-          },
-          store: {
-            get: (row: string) => state.get({ ...at, fqn: row }),
-            set: (row: string, value: unknown) =>
-              state.set({ ...at, fqn: row, value: value as never }),
-            delete: (row: string) => state.delete({ ...at, fqn: row }),
-          },
-          // What `alchemy drift` observes of the row, read-only: its own provider reads it, and
-          // the container provider reads a placeholder by its application's explicit name.
-          observe: (row: string) =>
-            Effect.gen(function* () {
-              const recorded = yield* state.get({ ...at, fqn: row });
-              if (!recorded) return undefined;
-              const session = yield* Session.open(target as never);
-              return yield* repair
-                .observeRow(row, recorded as never)
-                .pipe(Effect.provide(session.context));
-            }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: row, cause }))),
+          worker: policy?.check?.poolWorker ?? "PoolWorker",
+          // Never adopt for it an application the root's or a held row records.
+          reserved: [
+            policy?.check?.poolContainer.fqn ?? "PoolContainer",
+            ...(policy?.wire.heldApplications ?? []),
+          ],
+          state,
+          at,
+          stackState,
+          runnerLocal: runnerLocalStateVersion,
+          open: Effect.gen(function* () {
+            return yield* Session.open(target as never);
+          }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn, cause }))),
         });
       }),
     );

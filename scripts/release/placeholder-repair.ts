@@ -29,7 +29,8 @@ import { InstanceId } from "alchemy/InstanceId";
 import { findProviderByType } from "alchemy/Provider";
 import { stampedMode } from "alchemy/ProviderMode";
 import type { ResourceState } from "alchemy/State/ResourceState";
-import { Data, Effect, Option } from "effect";
+import { CloudflareEnvironment } from "alchemy/Cloudflare";
+import { type Context, Data, Effect, Option } from "effect";
 import { safeJson } from "./safe-json.ts";
 import { type StackState, stateStoreRefusal } from "./stack-config.ts";
 
@@ -68,10 +69,17 @@ export const observeRow = (
       Effect.provideService(Artifacts, makeScopedArtifacts(store, fqn)),
       Effect.provideService(InstanceId, row.instanceId),
     );
-    if (observed === undefined) return { status: "missing" } satisfies Observation;
+    // The account the read listed: the session's Cloudflare environment, as the provider reads it.
+    const environment = yield* Effect.serviceOption(CloudflareEnvironment);
+    const account = Option.isSome(environment) ? (yield* environment.value).accountId : undefined;
+    if (observed === undefined) return { status: "missing", account } satisfies Observation;
     // A placeholder's attributes never equal a live read (its id is local), and planRepair checks
     // the read's identity itself, so whatever the provider finds is drift from the placeholder.
-    return { status: "drifted", actual: stripUnowned(observed as object) } satisfies Observation;
+    return {
+      status: "drifted",
+      actual: stripUnowned(observed as object),
+      account,
+    } satisfies Observation;
   });
 
 /** The row's provider failed to read it; the repair stops. */
@@ -84,6 +92,8 @@ export class ProviderReadFailed extends Data.TaggedError("ProviderReadFailed")<{
 export interface Observation {
   readonly status: "in-sync" | "drifted" | "missing";
   readonly actual?: unknown;
+  /** The account the read listed, as the session's Cloudflare environment names it. */
+  readonly account?: string | undefined;
 }
 
 export type RepairPlan =
@@ -170,22 +180,22 @@ export function placeholderOf(fqn: string, value: unknown) {
  */
 export function planRepair(input: {
   readonly fqn: string;
-  /** The account this run reads and writes: a row recorded under another is never touched. */
-  readonly account: string;
   readonly row: unknown;
   readonly hostedNamespace: (className: string) => string | undefined;
   readonly observed: Observation | undefined;
+  /** Applications other rows record (the root's, the held ones): never this row's to adopt. */
+  readonly taken?: { readonly ids: ReadonlySet<string>; readonly names: ReadonlySet<string> };
 }): RepairPlan | RepairRefused {
   const placeholder = placeholderOf(input.fqn, input.row);
   if (placeholder instanceof RepairRefused) return placeholder;
   const { id, name, accountId, className } = placeholder;
   const refuse = (why: string) => new RepairRefused({ fqn: input.fqn, why });
-  // The provider reads the run's own account: a row recorded under another would read as missing
-  // there and be forgotten while its application lives on.
-  if (accountId !== input.account)
-    return refuse("its row records another account than this run reads");
   const base = { fqn: input.fqn, placeholder: id, name, accountId };
   if (!input.observed) return refuse("Alchemy's drift read did not read the row");
+  // The provider lists the session's account: a row recorded under another would read as missing
+  // there and be forgotten while its application lives on.
+  if (input.observed.account !== accountId)
+    return refuse("the account Alchemy's read listed is not the one the row records");
   if (input.observed.status === "missing") return { ...base, action: "forget" };
   if (input.observed.status !== "drifted")
     return refuse("Alchemy's drift read found the placeholder in sync with the account");
@@ -213,6 +223,12 @@ export function planRepair(input: {
     return refuse(
       "the application under its name is attached to another namespace than the Worker records",
     );
+  const taken = input.taken;
+  if (
+    taken &&
+    (taken.ids.has(live.applicationId.toLowerCase()) || taken.names.has(name.toLowerCase()))
+  )
+    return refuse("another row records the application under its name");
   return { ...base, action: "adopt", application: live.applicationId, namespace };
 }
 
@@ -269,8 +285,8 @@ export interface RepairStore<E> {
 
 export interface RepairInput<E, L, R> {
   readonly fqn: string;
-  /** The account this run reads and writes (CLOUDFLARE_ACCOUNT_ID). */
-  readonly account: string;
+  /** Rows whose applications the repair never adopts for this one: the root's, the held ones. */
+  readonly reserved?: ReadonlyArray<string>;
   /** The Worker that binds the container: its row records the class's namespace. */
   readonly worker: string;
   readonly store: RepairStore<E>;
@@ -294,9 +310,19 @@ export const readRepair = <E, L, R>(input: RepairInput<E, L, R>) =>
     const observed = yield* input
       .observe(input.fqn)
       .pipe(Effect.mapError(failed("read the account")));
+    const taken = { ids: new Set<string>(), names: new Set<string>() };
+    for (const other of input.reserved ?? []) {
+      if (other === input.fqn) continue;
+      const recorded = (yield* input.store
+        .get(other)
+        .pipe(Effect.mapError(failed("read State")))) as Row | undefined;
+      const { applicationId, applicationName } = recorded?.attr ?? {};
+      if (typeof applicationId === "string") taken.ids.add(applicationId.toLowerCase());
+      if (typeof applicationName === "string") taken.names.add(applicationName.toLowerCase());
+    }
     const plan = planRepair({
       fqn: input.fqn,
-      account: input.account,
+      taken,
       row,
       hostedNamespace: (className) => {
         const id = worker?.attr?.durableObjectNamespaces?.[className];
@@ -387,3 +413,75 @@ export const runRepair = <E, L, R, V>(
       : { plan: (yield* readRepair(input)).plan, before: undefined };
     return { ...record, sealed: safeJson(record, 2) };
   });
+
+/**
+ * The account read for a row in State: the row as State records it, read by its own provider in
+ * the stack's session (`observeRow`). A read that fails is the repair's failure, never "missing".
+ */
+export const observeRecorded =
+  <E, O, C, S>(
+    store: RepairStore<E>,
+    open: Effect.Effect<{ readonly context: Context.Context<C> }, O, S>,
+    observe: typeof observeRow = observeRow,
+  ) =>
+  (fqn: string) =>
+    Effect.gen(function* () {
+      const recorded = yield* store.get(fqn);
+      if (!recorded) return undefined;
+      const session = yield* open;
+      return yield* observe(fqn, recorded as ResourceState).pipe(Effect.provide(session.context));
+    });
+
+/** A stage's State store, as the release entry opens it (Alchemy's StateService). */
+export interface StageStore<E> {
+  readonly id: string;
+  readonly getVersion: () => Effect.Effect<number, E>;
+  readonly get: (key: { stack: string; stage: string; fqn: string }) => Effect.Effect<unknown, E>;
+  readonly set: (key: {
+    stack: string;
+    stage: string;
+    fqn: string;
+    value: never;
+  }) => Effect.Effect<unknown, E>;
+  readonly delete: (key: { stack: string; stage: string; fqn: string }) => Effect.Effect<void, E>;
+}
+
+/**
+ * Everything `deploy.ts repair` does after it opens the stage's store and before it prints: the
+ * store held to the release's contract, the row read through its own provider in the stack's
+ * session, and the repair planned, or applied when the approved digest is given. The record to
+ * seal comes back with it.
+ */
+export const repairCommand = <E, O, C, S>(input: {
+  readonly fqn: string;
+  readonly digest: string | undefined;
+  readonly worker: string;
+  readonly reserved: ReadonlyArray<string>;
+  readonly state: StageStore<E>;
+  readonly at: { readonly stack: string; readonly stage: string };
+  readonly stackState: StackState;
+  readonly runnerLocal: number;
+  readonly open: Effect.Effect<{ readonly context: Context.Context<C> }, O, S>;
+}) => {
+  const { state, at } = input;
+  const store: RepairStore<E> = {
+    get: (fqn) => state.get({ ...at, fqn }),
+    set: (fqn, value) => state.set({ ...at, fqn, value: value as never }),
+    delete: (fqn) => state.delete({ ...at, fqn }),
+  };
+  return runRepair({
+    fqn: input.fqn,
+    worker: input.worker,
+    reserved: input.reserved,
+    digest: input.digest,
+    store,
+    observe: observeRecorded(store, input.open),
+    contract: {
+      id: state.id,
+      version: state.getVersion(),
+      state: input.stackState,
+      stage: at.stage,
+      runnerLocal: input.runnerLocal,
+    },
+  });
+};

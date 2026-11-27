@@ -1,7 +1,8 @@
 /**
  * The parts of a release run's wire guard configuration the entry derives from State and the
- * command (deploy.ts), kept pure so tests hold them to the guard itself.
+ * command (deploy.ts), kept here so tests hold them to the guard itself.
  */
+import { Data, Effect } from "effect";
 
 /** A container application as its State row records it. */
 export interface RecordedApplication {
@@ -39,3 +40,41 @@ export const readOnlyRun = (stage: string, command: string, digest: string | und
   (["plan", "preflight", "snapshot", "serving"].includes(command) ||
     // A repair without the reviewed digest only plans the repair.
     (command === "repair" && !digest));
+
+/** Production under a reviewed policy records no root application: the run stops. */
+export class NoRootRecorded extends Data.TaggedError("NoRootRecorded")<{
+  readonly fqn: string;
+}> {}
+
+/**
+ * The holds of one run, from the policy and the rows State records (`recorded`, by fqn). Every
+ * reviewed release, and every production command, leaves the root application as recorded;
+ * previews roll it freely. A stage under a policy keeps its root by the same rules once its row
+ * records one, so a rehearsal runs them as production does.
+ */
+export const wireConfigFor = <E>(input: {
+  readonly stage: string;
+  readonly policy:
+    | {
+        readonly rootFqn: string;
+        readonly held: ReadonlyArray<string>;
+      }
+    | undefined;
+  readonly recorded: (fqn: string) => Effect.Effect<RecordedApplication | undefined, E>;
+}) =>
+  Effect.gen(function* () {
+    const production = input.stage === "production";
+    const rootFqn = input.policy?.rootFqn ?? (production ? "PoolContainer" : undefined);
+    const root = rootFqn ? yield* input.recorded(rootFqn) : undefined;
+    if (!root && rootFqn && production && input.policy)
+      return yield* new NoRootRecorded({ fqn: rootFqn });
+    const held: (RecordedApplication | undefined)[] = [];
+    for (const fqn of input.policy?.held ?? []) held.push(yield* input.recorded(fqn));
+    return {
+      ...wireHolds(root, held),
+      // Production keeps the root from the first request on; another stage once it records one.
+      rootRequired: production || root !== undefined,
+      // A root known by id alone makes the guard refuse every container write of the run.
+      unnamedRoot: root !== undefined && !root.name,
+    };
+  });

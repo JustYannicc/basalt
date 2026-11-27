@@ -20,7 +20,7 @@ import {
   applicationRead,
   credentials,
 } from "./test/wire-guard-fixture.ts";
-import { readOnlyRun, wireHolds } from "./wire-config.ts";
+import { NoRootRecorded, readOnlyRun, wireConfigFor, wireHolds } from "./wire-config.ts";
 
 const RECORDED = "11111111-1111-4111-8111-111111111111";
 // The root's live id when State's is stale: what Alchemy then finds by name in the list.
@@ -340,6 +340,20 @@ test("an unattached application is not deleted while its read names a held appli
   assert.ok(Exit.isSuccess(held.exit));
   refusalOf(held.exit.value);
   assert.deepEqual(held.writes, []);
+  // The read's name in another case than the held one is the same application.
+  const shouted = await guarded(
+    t,
+    {
+      rootApplications: [RECORDED],
+      rootApplicationNames: [NAME],
+      heldApplications: [{ id: "stale-gateway", name: GATEWAY }],
+    },
+    remove,
+    { reads: { [GATEWAY_LIVE]: { ...idle, name: GATEWAY.toUpperCase() } } },
+  );
+  assert.ok(Exit.isSuccess(shouted.exit));
+  refusalOf(shouted.exit.value);
+  assert.deepEqual(shouted.writes, []);
   // The same delete of an application nobody holds goes through: the refusal is the name's.
   const other = await guarded(
     t,
@@ -355,6 +369,64 @@ test("an unattached application is not deleted while its read names a held appli
   assert.deepEqual(other.writes, [
     `DELETE /accounts/${ACCOUNT}/containers/applications/${GATEWAY_LIVE}`,
   ]);
+});
+
+test("the run's holds come from the policy's rows, and an unnamed root still refuses every write", async (t) => {
+  const rows: Record<string, { id: string; name?: string }> = {
+    PoolContainer: { id: RECORDED },
+    RouteGateway: { id: "stale-gateway", name: GATEWAY },
+  };
+  const read = (fqn: string) => Effect.succeed(rows[fqn]);
+  const holds = await Effect.runPromise(
+    wireConfigFor({
+      stage: "production",
+      policy: { rootFqn: "PoolContainer", held: ["RouteGateway"] },
+      recorded: read,
+    }),
+  );
+  assert.deepEqual(holds, {
+    rootApplications: [RECORDED],
+    rootApplicationNames: [],
+    heldApplications: [{ id: "stale-gateway", name: GATEWAY }],
+    rootRequired: true,
+    unnamedRoot: true,
+  });
+  const { unnamedRoot: _unnamed, ...config } = holds;
+  const run = await guarded(t, config, () => patchAndRollout("any-application"));
+  assert.ok(Exit.isSuccess(run.exit));
+  refusalOf(run.exit.value.patch);
+  assert.deepEqual(run.writes, []);
+  // A named root, and the gateway held by the name its row records.
+  rows.PoolContainer = { id: RECORDED, name: NAME };
+  const named = await Effect.runPromise(
+    wireConfigFor({
+      stage: "production",
+      policy: { rootFqn: "PoolContainer", held: ["RouteGateway"] },
+      recorded: read,
+    }),
+  );
+  const { unnamedRoot: _n, ...namedConfig } = named;
+  const gatewayRun = await guarded(t, namedConfig, findGatewayAndPatch, { list: [root, gateway] });
+  assert.ok(Exit.isSuccess(gatewayRun.exit));
+  refusalOf(gatewayRun.exit.value.patch);
+  assert.deepEqual(gatewayRun.writes, []);
+  // Production under a policy that records no root stops; a preview without one holds nothing.
+  const none = await Effect.runPromiseExit(
+    wireConfigFor({ stage: "production", policy: { rootFqn: "Absent", held: [] }, recorded: read }),
+  );
+  assert.ok(Exit.isFailure(none) && Cause.squash(none.cause) instanceof NoRootRecorded);
+  assert.deepEqual(
+    await Effect.runPromise(
+      wireConfigFor({ stage: "test-preview", policy: undefined, recorded: read }),
+    ),
+    {
+      rootApplications: [],
+      rootApplicationNames: [],
+      heldApplications: [],
+      rootRequired: false,
+      unnamedRoot: false,
+    },
+  );
 });
 
 test("only a production command that writes nothing runs read-only, a repair without its digest included", () => {

@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import type { ResourceState } from "alchemy/State/ResourceState";
-import { Cause, Data, Effect, Exit } from "effect";
+import { Cause, Context, Data, Effect, Exit } from "effect";
+import { CloudflareEnvironment } from "alchemy/Cloudflare";
 import {
   applyRepair,
+  observeRecorded,
+  repairCommand,
   type Observation,
   observeRow,
   planRepair,
@@ -38,8 +42,14 @@ const live = (change: object = {}) => ({
   ...change,
 });
 const hosted = () => "namespace-1";
+/** The read as observeRow reports it: the account it listed beside what it found. */
 const plan = (row: unknown, observed: Observation | undefined, account = ACCOUNT) =>
-  planRepair({ fqn: "RouteGateway", account, row, hostedNamespace: hosted, observed });
+  planRepair({
+    fqn: "RouteGateway",
+    row,
+    hostedNamespace: hosted,
+    observed: observed && { account, ...observed },
+  });
 const why = (result: RepairPlan | RepairRefused) => {
   assert.ok(result instanceof RepairRefused, `planned ${JSON.stringify(result)}`);
   return result.why;
@@ -93,8 +103,15 @@ test("only a finished first create holding a placeholder is repaired, by what th
 });
 
 test("the repair touches only a row of the account it reads, and only an application that is the row's", () => {
-  // The provider reads the run's account; a row of another would read as missing there.
-  assert.match(why(plan(placeholder(), { status: "missing" }, "b".repeat(32))), /another account/u);
+  // The provider lists the session's account; a row of another would read as missing there.
+  assert.match(
+    why(plan(placeholder(), { status: "missing" }, "b".repeat(32))),
+    /not the one the row records/u,
+  );
+  assert.match(
+    why(plan(placeholder(), { status: "missing", account: undefined })),
+    /not the one the row records/u,
+  );
   // Nothing read is never "nothing there".
   assert.match(why(plan(placeholder(), undefined)), /did not read/u);
   assert.match(why(plan(placeholder(), { status: "in-sync" })), /in sync/u);
@@ -109,10 +126,9 @@ test("the repair touches only a row of the account it reads, and only an applica
     why(
       planRepair({
         fqn: "RouteGateway",
-        account: ACCOUNT,
         row: placeholder(),
         hostedNamespace: () => undefined,
-        observed: { status: "drifted", actual: live() },
+        observed: { status: "drifted", actual: live(), account: ACCOUNT },
       }),
     ),
     /records no namespace/u,
@@ -163,7 +179,7 @@ const worker = { attr: { durableObjectNamespaces: { RouteGateway: "namespace-1" 
 const input = (
   store: ReturnType<typeof memory>["store"],
   observe: (fqn: string) => Effect.Effect<Observation | undefined, unknown>,
-) => ({ fqn: "RouteGateway", account: ACCOUNT, worker: "PoolWorker", store, observe });
+) => ({ fqn: "RouteGateway", worker: "PoolWorker", store, observe });
 
 class ReadBroke extends Data.TaggedError("ReadBroke") {}
 
@@ -182,7 +198,7 @@ test("a failed account read stops the repair and writes nothing", async () => {
 test("a row changed after the repair was planned is left alone", async () => {
   const rows: Record<string, unknown> = { RouteGateway: placeholder(), PoolWorker: worker };
   const state = memory(rows);
-  const observe = () => Effect.succeed<Observation>({ status: "missing" });
+  const observe = () => Effect.succeed<Observation>({ status: "missing", account: ACCOUNT });
   const { plan: planned } = await Effect.runPromise(readRepair(input(state.store, observe)));
   // A running apply commits the live row between the plan's reads and the write.
   let reads = 0;
@@ -221,7 +237,9 @@ test("the command holds the store to the release's contract, and seals the row a
     const state = memory({ RouteGateway: placeholder(), PoolWorker: worker });
     const exit = await Effect.runPromiseExit(
       runRepair({
-        ...input(state.store, () => Effect.succeed<Observation>({ status: "missing" })),
+        ...input(state.store, () =>
+          Effect.succeed<Observation>({ status: "missing", account: ACCOUNT }),
+        ),
         digest: undefined,
         contract: contract(7),
       }),
@@ -229,7 +247,7 @@ test("the command holds the store to the release's contract, and seals the row a
     assert.ok(Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof StateStoreRefused);
     assert.deepEqual([state.reads, state.writes], [[], []]);
   }
-  const observe = () => Effect.succeed<Observation>({ status: "missing" });
+  const observe = () => Effect.succeed<Observation>({ status: "missing", account: ACCOUNT });
   // Without a digest the command only plans.
   const rows = { RouteGateway: placeholder(), PoolWorker: worker };
   const state = memory(rows);
@@ -265,7 +283,7 @@ test("the provider's read: a row without one reads nothing, and any failure is t
         withRead(() => Effect.void),
       ),
     ),
-    { status: "missing" },
+    { status: "missing", account: undefined },
   );
   assert.deepEqual(
     await Effect.runPromise(
@@ -275,7 +293,7 @@ test("the provider's read: a row without one reads nothing, and any failure is t
         withRead(() => Effect.succeed(live())),
       ),
     ),
-    { status: "drifted", actual: live() },
+    { status: "drifted", actual: live(), account: undefined },
   );
   // The pin types the read's error `any`: an untagged failure still arrives as the repair's own.
   for (const failure of [new Error("plain"), "a string", null]) {
@@ -291,4 +309,152 @@ test("the provider's read: a row without one reads nothing, and any failure is t
       String(failure),
     );
   }
+});
+
+test("the read reports the account the session's Cloudflare environment lists", async () => {
+  const row = placeholder() as unknown as ResourceState;
+  const read = (() => Effect.succeed({ read: () => Effect.void })) as never;
+  const observed = await Effect.runPromise(
+    observeRow("RouteGateway", row, read).pipe(
+      Effect.provideService(CloudflareEnvironment, Effect.succeed({ accountId: ACCOUNT } as never)),
+    ),
+  );
+  assert.deepEqual(observed, { status: "missing", account: ACCOUNT });
+});
+
+test("the entry's account read never turns a failure into nothing there", async () => {
+  const state = memory({ RouteGateway: placeholder() });
+  const session = Effect.succeed({ context: Context.empty() });
+  // No row: nothing to read, and the session is not opened.
+  assert.equal(
+    await Effect.runPromise(
+      observeRecorded(state.store, Effect.die("never opened"), observeRow)("Absent"),
+    ),
+    undefined,
+  );
+  // A session that will not open, and a provider read that fails: both are the repair's failure.
+  const finds = (() =>
+    Effect.succeed({ status: "missing", account: ACCOUNT })) as unknown as typeof observeRow;
+  const breaks = (() => Effect.fail(new ReadBroke())) as unknown as typeof observeRow;
+  const unopened = await Effect.runPromiseExit(
+    observeRecorded(state.store, Effect.fail(new ReadBroke()), finds)("RouteGateway"),
+  );
+  assert.ok(Exit.isFailure(unopened) && Cause.squash(unopened.cause) instanceof ReadBroke);
+  const failed = await Effect.runPromiseExit(
+    observeRecorded(state.store, session, breaks)("RouteGateway"),
+  );
+  assert.ok(Exit.isFailure(failed) && Cause.squash(failed.cause) instanceof ReadBroke);
+});
+
+test("a row a running apply moved on is never repaired, even with its id unchanged", async () => {
+  // Alchemy's promote of a placeholder commits `updating` with the same instance and attributes.
+  const rows: Record<string, unknown> = { RouteGateway: placeholder(), PoolWorker: worker };
+  const state = memory(rows);
+  const observe = () => Effect.succeed<Observation>({ status: "missing", account: ACCOUNT });
+  const { plan: planned } = await Effect.runPromise(readRepair(input(state.store, observe)));
+  let reads = 0;
+  const racing = {
+    ...state.store,
+    get: (fqn: string) =>
+      Effect.sync(() => {
+        if (fqn === "RouteGateway" && ++reads === 2)
+          rows.RouteGateway = placeholder({ status: "updating" });
+        return structuredClone(rows[fqn]);
+      }),
+  };
+  const exit = await Effect.runPromiseExit(
+    applyRepair({ ...input(racing, observe), digest: repairDigest(planned) }),
+  );
+  assert.ok(Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof RepairRefused);
+  assert.deepEqual(state.writes, []);
+});
+
+test("an application another row records is never adopted for this one", async () => {
+  for (const root of [
+    {
+      attr: { applicationId: "application-1", applicationName: "basalt-production-poolcontainer" },
+    },
+    { attr: { applicationId: "root-live", applicationName: "GATEWAY" } },
+  ]) {
+    const state = memory({ RouteGateway: placeholder(), PoolWorker: worker, PoolContainer: root });
+    const observe = () =>
+      Effect.succeed<Observation>({ status: "drifted", actual: live(), account: ACCOUNT });
+    const exit = await Effect.runPromiseExit(
+      readRepair({ ...input(state.store, observe), reserved: ["PoolContainer", "RouteGateway"] }),
+    );
+    assert.ok(Exit.isFailure(exit), JSON.stringify(root));
+    assert.match((Cause.squash(exit.cause) as RepairRefused).why, /another row records/u);
+  }
+});
+
+test("the command holds the store to the contract before an apply too, and keys State by its stage", async () => {
+  const rows: Record<string, unknown> = { RouteGateway: placeholder(), PoolWorker: worker };
+  const keys: string[] = [];
+  const stageStore = (version: number) => ({
+    id: "http",
+    getVersion: () => Effect.succeed(version),
+    get: (key: { stack: string; stage: string; fqn: string }) =>
+      Effect.sync(
+        () => (
+          keys.push(`get ${key.stack}/${key.stage}/${key.fqn}`),
+          structuredClone(rows[key.fqn])
+        ),
+      ),
+    set: (key: { stack: string; stage: string; fqn: string }) =>
+      Effect.sync(() => void keys.push(`set ${key.fqn}`)),
+    delete: (key: { stack: string; stage: string; fqn: string }) =>
+      Effect.sync(() => {
+        keys.push(`delete ${key.stack}/${key.stage}/${key.fqn}`);
+        delete rows[key.fqn];
+      }),
+  });
+  const command = (version: number, digest: string | undefined) =>
+    repairCommand({
+      fqn: "RouteGateway",
+      digest,
+      worker: "PoolWorker",
+      reserved: ["PoolContainer"],
+      state: stageStore(version),
+      at: { stack: "basalt", stage: "production" },
+      stackState: "shared",
+      runnerLocal: 1,
+      open: Effect.succeed({ context: Context.empty() }),
+    });
+  // The command reads the row and its Worker under the stage's keys. With no provider in the
+  // session the read itself cannot happen, and nothing is written.
+  const planned = await Effect.runPromiseExit(command(8, undefined));
+  assert.ok(Exit.isFailure(planned));
+  assert.deepEqual(keys, [
+    "get basalt/production/RouteGateway",
+    "get basalt/production/PoolWorker",
+    "get basalt/production/RouteGateway",
+  ]);
+  // A store at another contract version refuses an apply before anything is read.
+  keys.length = 0;
+  const exit = await Effect.runPromiseExit(command(7, "f".repeat(64)));
+  assert.ok(Exit.isFailure(exit) && Cause.squash(exit.cause) instanceof StateStoreRefused);
+  assert.deepEqual(keys, []);
+});
+
+test("the entry hands the repair and the holds exactly what the release decided", async () => {
+  // deploy.ts is a script, not a module; what it passes is pinned here, one call each.
+  const entry = (await readFile(new URL("./deploy.ts", import.meta.url), "utf8")).replace(
+    /\s+/gu,
+    " ",
+  );
+  for (const wiring of [
+    'readOnly: readOnlyRun(stage, command, values["plan-digest"])',
+    "const holds = yield* wireConfigFor({ stage, policy: policy?.check && { rootFqn: policy.check.poolContainer.fqn, held: policy.wire.heldApplications ?? [], }, recorded: recordedApplication, }).pipe(Effect.orDie);",
+    "const { unnamedRoot, ...applied } = holds; Object.assign(wire, applied);",
+    'const digest = values["plan-digest"];',
+    'return yield* repair.repairCommand({ fqn, digest, worker: policy?.check?.poolWorker ?? "PoolWorker",',
+    'reserved: [ policy?.check?.poolContainer.fqn ?? "PoolContainer", ...(policy?.wire.heldApplications ?? []), ],',
+    "state, at, stackState, runnerLocal: runnerLocalStateVersion,",
+    'await keepPrivate("repair", result.sealed);',
+  ])
+    assert.ok(entry.includes(wiring), wiring);
+  // One of each: no second path builds the holds or runs a repair.
+  assert.equal(entry.split("wireConfigFor(").length, 2);
+  assert.equal(entry.split("repair.repairCommand(").length, 2);
+  assert.equal(entry.split("wire.rootApplications").length, 1);
 });
