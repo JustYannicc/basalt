@@ -69,6 +69,8 @@ async function check(url: string, schema: string) {
       maxConnections: 2,
       applicationName: application,
       startupParameters: { search_path: schema },
+      // As the cloud's own pool, which sends no named statements.
+      prepare: false,
     }),
   );
   const now = Date.now();
@@ -77,6 +79,12 @@ async function check(url: string, schema: string) {
     organization: person,
     at: now,
     expiresAt: now + 30_000,
+  });
+  const lines: string[] = [];
+  const logger = Logger.make(({ message }) => {
+    const [text, fields] = Array.isArray(message) ? message : [message];
+    const reason = (fields as { reason?: unknown } | undefined)?.reason;
+    lines.push(reason === undefined ? String(text) : `${String(text)}: ${String(reason)}`);
   });
   const started = performance.now();
   const response = await runtime.runPromise(
@@ -99,20 +107,20 @@ async function check(url: string, schema: string) {
           ConfigProvider.ConfigProvider,
           ConfigProvider.fromEnv({ env: { POOL_APP_SIGNING_KEY: signingKey } }),
         ),
-        Effect.provide(Logger.layer([])),
+        Effect.provide(Logger.layer([logger])),
       );
     }),
   );
   const ms = performance.now() - started;
   // The event's cleanup closes its pool after the response, as the Worker's does.
   await runtime.dispose();
-  return { status: response.status, ms };
+  return { status: response.status, ms, lines };
 }
 
-/** Backends of this test's pool still running a statement, or still waiting on a lock. */
-async function busy(admin: pg.Client) {
+/** Backends of this test's pools in any state: running, waiting, idle or aborted in a transaction. */
+async function held(admin: pg.Client) {
   const { rows } = await admin.query(
-    "select count(*)::int as n from pg_stat_activity where application_name = $1 and state = 'active'",
+    "select count(*)::int as n from pg_stat_activity where application_name = $1",
     [application],
   );
   return rows[0].n as number;
@@ -154,10 +162,14 @@ test("an observation read stuck behind a lock ends in the database, so it keeps 
     );
     // Each answer waited at most the observation's 300 ms bound beyond the existing read.
     assert.ok(Math.max(...answers.map((answer) => answer.ms)) < 1_500);
-    // The database ends each stuck read after 250 ms, though no cancel reaches it.
-    const deadline = performance.now() + 1_500;
-    while ((await busy(admin)) > 0 && performance.now() < deadline);
-    assert.equal(await busy(admin), 0, "a cut observation read still holds its connection");
+    // Every read reached the lock and said so, once: not a read that failed for another reason.
+    for (const answer of answers)
+      assert.deepEqual(answer.lines, ["Pool organization ownership not observed: timeout"]);
+    // The database ends each stuck read after 250 ms, though no cancel reaches it, and the read
+    // ends its own transaction: no connection is left running, waiting, or aborted in it.
+    const deadline = performance.now() + 1_000;
+    while ((await held(admin)) > 0 && performance.now() < deadline);
+    assert.equal(await held(admin), 0, "a cut observation read still holds its connection");
     // The next request gets a connection without waiting on the cut ones.
     const next = await ask();
     assert.equal(next.status, 204);
