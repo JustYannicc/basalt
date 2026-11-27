@@ -407,6 +407,45 @@ test("a destroy stopped by the registry's tag list keeps its record of closed fa
   for (const line of printed) assert.doesNotMatch(line, /h1|h2|acct|https?:/u, line);
 });
 
+test("a destroy the registry refuses keeps its record of closed facts before it ends", async () => {
+  // The stage's own platform manifest refused: nothing of the stage's image may read as kept.
+  const fake = fakeAccount({
+    tags: { [`acct/${prefix}-mock`]: ["h1"] },
+    cloudflare: {
+      pageSize: 5,
+      emptyEnd: true,
+      refuse: { [`sha256:${"b".repeat(64)}`]: { status: 403 } },
+    },
+  });
+  const printed = [];
+  const saved = {};
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher: fake.fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: (name, value) => (saved[name] = value),
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  const [deletes] = saved["stopped-destroy"].teardown;
+  assert.deepEqual(deletes.registryDeletes, {
+    kept: [],
+    refused: [
+      {
+        entry: "tag",
+        digestShaped: false,
+        type: "application/vnd.oci.image.index.v1+json",
+        class: "403",
+      },
+    ],
+  });
+  for (const line of printed) assert.doesNotMatch(line, /sha256|acct\//u, line);
+});
+
 test("a refused guard prints only its token", async () => {
   const printed = [];
   const code = await main(
