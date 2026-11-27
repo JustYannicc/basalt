@@ -697,6 +697,8 @@ jobs:
         run: node --test scripts/pool-ui-tests/name-default-replaced.test.ts
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
+      - name: Verify a row menu's opening click chooses none of its items
+        run: node --test scripts/pool-ui-tests/account-row-menu.test.ts
       - name: Verify app query phase diagnostics
         working-directory: .upstream
         run: >-
