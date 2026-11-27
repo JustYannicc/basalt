@@ -74,6 +74,7 @@ export class FleetAdmission {
         throw new SlotRefused("identity");
     }
     const observation = await provider.observe(
+      kind === "initial-attested" ? "attested" : "launch",
       application,
       kind === "initial-attested" ? target.instanceId : undefined,
     );

@@ -445,6 +445,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     this.control = new PoolControl(ctx.storage, {
       nativeMembership: (pool, organization) =>
         readNativeMembership(env.TOOLS_SERVICE, env.POOL_APP_SIGNING_KEY, pool, organization),
+      // The control path's gate ran memberships.ensure just before; its read is the view's too.
+      nativeIdentities: (pool) => this.memberships.identities(pool),
       signingKey: env.POOL_APP_SIGNING_KEY,
       previousSigningKey: env.POOL_APP_SIGNING_KEY_PREVIOUS,
       audience: (pool) => this.computers.audience(pool),

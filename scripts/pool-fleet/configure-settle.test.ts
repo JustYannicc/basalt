@@ -13,7 +13,7 @@ const dispatch = (mode: string): DispatchInput => ({
   ref: "refs/heads/main",
   event: "workflow_dispatch",
 });
-/** A clock the lane's waits move, so a 300 s bound runs in no real time; signed commands stay fresh. */
+/** A clock the lane's waits move, so the handover bound runs in no real time; signed commands stay fresh. */
 const fakeClock = () => {
   const clock = { start: Date.now(), at: Date.now(), sleeps: [] as number[] };
   return {
@@ -44,7 +44,10 @@ test("a controller read that keeps throwing waits out the handover, then refuses
     assert.equal(result.ok, false);
     assert.match(
       cause(result),
-      /^controller-not-ready: Error at step inspect, still after 300 s; nothing was sent\./u,
+      new RegExp(
+        `^controller-not-ready: Error at step inspect, still after ${controllerSettleMs / 1000} s; nothing was sent\\.`,
+        "u",
+      ),
     );
     assert.ok(clock.at - clock.start >= controllerSettleMs);
     assert.ok(clock.sleeps.every((ms) => ms === 10_000));
@@ -74,6 +77,21 @@ test("bindings that lag behind the settings for a while are waited for, and the 
   }
 });
 
+test("bindings the platform hands the controller just after its 300 s reset are still waited for", async () => {
+  const { clock, deps } = fakeClock();
+  const lane = await harness({ bindingsLag: () => clock.at - clock.start < 302_000 });
+  try {
+    const result = await runPoolFleet(dispatch("configure-and-accept"), {
+      ...lane.deps(),
+      ...deps,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal((await lane.configuration.inspect())?.enabled, true);
+  } finally {
+    await lane.close();
+  }
+});
+
 test("bindings that never match refuse at the bound as controller-bindings-differ, with nothing sent", async () => {
   const { clock, deps } = fakeClock();
   const lane = await harness({ bindingsLag: () => true });
@@ -85,7 +103,10 @@ test("bindings that never match refuse at the bound as controller-bindings-diffe
     assert.equal(result.ok, false);
     assert.match(
       cause(result),
-      /^controller-bindings-differ: fleet-inspect bindings still lack blue .* after 300 s/u,
+      new RegExp(
+        `^controller-bindings-differ: fleet-inspect bindings still lack blue .* after ${controllerSettleMs / 1000} s`,
+        "u",
+      ),
     );
     assert.ok(clock.at - clock.start >= controllerSettleMs);
     assert.ok(!lane.actions.includes("fleet-configure"));

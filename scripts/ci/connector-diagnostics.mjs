@@ -1,5 +1,6 @@
 import { parseClosedErrorClass, zohoMcpPhases } from "../connectors-tests/guidance-failure.ts";
 import { compilerDiagnostic } from "../catalog-compat/build-failure.mjs";
+import { revalidatedPageErrors } from "../connectors-tests/page-error.mjs";
 
 const phases = new Set([
   "unknown",
@@ -212,5 +213,8 @@ export function connectorDiagnostic(stage, input, failureFile = false) {
     ...(checks === undefined ? {} : { checks }),
     ...(sources.has(source) && line > 0 ? { location: `${source}:${line}` } : {}),
     ...(stage === "report" && Array.isArray(value.results) && failed ? failedPackages(value) : {}),
+    ...(Array.isArray(value.pageErrors) && value.pageErrors.length
+      ? { pageErrors: revalidatedPageErrors(value.pageErrors) }
+      : {}),
   };
 }

@@ -26,7 +26,7 @@ from .child_signals import (
 )
 from .output import OUTPUT, emit
 from .crash_tail import MAX_INPUT_CHARS, HomeCrashTail
-from .policy_monitor import PolicyHealthMonitor
+from .policy_monitor import FirstReady, PolicyHealthMonitor
 from .pool_contract import (
     ROOT,
     StartupError,
@@ -384,6 +384,7 @@ def main(stop: threading.Event | None = None) -> int:
         )
         ready_server = start_ready_server(readiness)
         policy_monitor = PolicyHealthMonitor(readiness, management_key)
+        first_ready = FirstReady(readiness)
         policy_monitor_thread = threading.Thread(
             target=policy_monitor.run,
             args=(stop,),
@@ -530,8 +531,12 @@ def main(stop: threading.Event | None = None) -> int:
                         raise StartupError("Policy fused during recovery")
                     audit_revision = readiness.service_audit_revision()
                     services_ready = check_services(management_key, node_id)
-                    readiness.set_ready(services_ready, audit_revision=audit_revision)
-                    if services_ready and readiness.snapshot()[0]:
+                    # The process's first ready waits until the supervisor is scheduled on time.
+                    if first_ready.set_ready(
+                        services_ready,
+                        audit_revision=audit_revision,
+                        remaining_s=deadline - time.monotonic(),
+                    ):
                         successful_audit_revision = audit_revision
                         break
                     stop.wait(operation_timeout(0.5))

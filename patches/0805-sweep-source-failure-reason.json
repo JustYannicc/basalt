@@ -1,0 +1,9 @@
+{
+  "identity": "basalt-sweep-source-failure-reason",
+  "file": "0805-sweep-source-failure-reason.patch",
+  "content_sha256": "5f1666058b71fa8966e27485c77651a5432af92ffdba214ab9111a95191668d8",
+  "kind": "overlay",
+  "upstream_pull_request": null,
+  "database_sensitive": false,
+  "workflow_sensitive": false
+}
