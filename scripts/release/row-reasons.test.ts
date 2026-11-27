@@ -233,15 +233,18 @@ test("a vite input counts the changed files in the tree it covers and never name
   const some = await read(changes(...names, "bun.lock", "elsewhere/y.ts"));
   assert.match(
     some,
-    /^Site: planned by the provider's own diff: a vite input, not recomputed here \(State input cccccccccccc\); 4 changed files lie in the tree it covers$/mu,
+    /^Site: planned by the provider's own diff: a real change in its inputs: 4 changed files lie in the tree its input hash covers \(State input cccccccccccc\)$/mu,
   );
   for (const name of [...names, "private-route-name", "release-only-file", tree])
     assert.equal(some.includes(name), false, name);
   assert.match(
     await read(changes("elsewhere/y.ts")),
-    /no changed file lies in the tree it covers$/mu,
+    /: a re-upload with identical inputs: no changed file lies in the tree its input hash covers \(State input cccccccccccc\)$/mu,
   );
-  assert.match(await read(undefined), /the changed files are unknown$/mu);
+  assert.match(
+    await read(undefined),
+    /the changed files are unknown, so whether its inputs changed is not known$/mu,
+  );
 });
 
 test("reading the reasons leaves the plan, its rows and its digest as they were", async (context) => {

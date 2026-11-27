@@ -323,12 +323,11 @@ async function providerDiff(
     // recomputed here: what changed under the tree it covers is what tells a real change apart.
     const count = viteChanges(props.vite.rootDir, recorded.additionalWorkspaces);
     differs.push(
-      `a vite input, not recomputed here (State input ${short(recorded.input)}); ` +
-        (count === undefined
-          ? "the changed files are unknown"
-          : count === 0
-            ? "no changed file lies in the tree it covers"
-            : `${count} changed ${count === 1 ? "file lies" : "files lie"} in the tree it covers`),
+      count === undefined
+        ? `a vite input, not recomputed here (State input ${short(recorded.input)}); the changed files are unknown, so whether its inputs changed is not known`
+        : count === 0
+          ? `a re-upload with identical inputs: no changed file lies in the tree its input hash covers (State input ${short(recorded.input)})`
+          : `a real change in its inputs: ${count} changed ${count === 1 ? "file lies" : "files lie"} in the tree its input hash covers (State input ${short(recorded.input)})`,
     );
   } else if (props.main !== undefined) {
     if (bundle) compare("bundle", bundle.hash);
