@@ -1,6 +1,5 @@
 import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
-import { pathToFileURL } from "node:url";
 import { dotAlchemyDirectory } from "alchemy/AlchemyContext";
 import { ArtifactStore } from "alchemy/Artifacts";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -10,7 +9,6 @@ import { initialCwd } from "alchemy/Util/Node";
 import { Context, Effect, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
-import type { PlatformError } from "effect/PlatformError";
 import {
   changedFiles,
   deployedCommit,
@@ -148,25 +146,6 @@ const bundleSources = (bundle: Bundle, folder: string) =>
         : [];
     });
 
-/** The one function of Alchemy's Vite source read here. */
-interface ViteSource {
-  readonly hashViteInput: (
-    rootDir: string | undefined,
-    memo: unknown,
-    workspaces: Effect.Effect<Iterable<string>>,
-  ) => Effect.Effect<{ readonly hash: string }, PlatformError, Reads>;
-}
-/** Alchemy's Vite source, which its package does not export; its Worker provider loads it lazily too. */
-const loadVite = async () => {
-  // Bun resolves to the package's sources and Node to its build; either may return a path.
-  const resolved = import.meta.resolve("alchemy/Cloudflare");
-  const cloudflare = resolved.startsWith("file:") ? new URL(resolved) : pathToFileURL(resolved);
-  const extension = path.extname(cloudflare.pathname);
-  return (await import(
-    new URL(`./Workers/Sources/Vite${extension}`, cloudflare).href
-  )) as ViteSource;
-};
-
 interface WorkerProps {
   readonly main?: string;
   readonly script?: string;
@@ -217,6 +196,28 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
     ];
   };
 
+  /**
+   * How many changed files lie in a vite Worker's input tree: its root, the workspaces State
+   * records for it, and the root lockfile, which together are what its input hash covers. Only a
+   * count, since those are the release tree's files.
+   */
+  const viteChanges = (rootDir: string | undefined, workspaces: unknown) => {
+    if (!changed) return undefined;
+    const base = path.resolve(initialCwd, rootDir ?? ".");
+    const trees = [".", ...(Array.isArray(workspaces) ? workspaces.map(String) : [])].flatMap(
+      (cwd) => {
+        const dir = path.resolve(base, cwd);
+        // The checkout itself has no path below it: its tree is every changed file.
+        if (!path.relative(input.root, dir)) return [""];
+        const name = repoPath(dir);
+        return name === undefined ? [] : [`${name}/`];
+      },
+    );
+    return [...changed.files].filter(
+      (file) => file === "bun.lock" || trees.some((tree) => file.startsWith(tree)),
+    ).length;
+  };
+
   const workerLines = async (row: ReasonRow, node: AlchemyPlan.Plan["resources"][string]) => {
     const built = input.artifacts?.get(row.fqn)?.get("build");
     const bundle = isBundle(built) ? built : undefined;
@@ -265,7 +266,7 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
       );
     }
     if (row.action === "update" && !row.changedProps.length && !row.bindings.length)
-      lines.push(`${row.fqn}: ${await providerDiff(node, bundle, run)}`);
+      lines.push(`${row.fqn}: ${await providerDiff(node, bundle, run, viteChanges)}`);
     return lines;
   };
 
@@ -301,6 +302,7 @@ async function providerDiff(
   node: AlchemyPlan.Plan["resources"][string],
   bundle: Bundle | undefined,
   run: <A, E>(effect: Effect.Effect<A, E, Reads>) => Promise<A>,
+  viteChanges: (rootDir: string | undefined, workspaces: unknown) => number | undefined,
 ) {
   const props = ("props" in node ? node.props : {}) as WorkerProps;
   const recorded =
@@ -317,19 +319,17 @@ async function providerDiff(
   if (props.script !== undefined)
     return "planned by the provider's own diff; an inline script's hash is not compared here";
   if (props.vite) {
-    const Vite = await loadVite();
-    const workspaces = recorded.additionalWorkspaces;
-    const { value, files } = await run(
-      reading(
-        Vite.hashViteInput(
-          props.vite.rootDir,
-          props.vite.memo,
-          Effect.succeed(Array.isArray(workspaces) ? (workspaces as string[]) : []),
-        ),
-      ),
+    // Its input hash is Alchemy's Vite source, which the package does not export, so it is not
+    // recomputed here: what changed under the tree it covers is what tells a real change apart.
+    const count = viteChanges(props.vite.rootDir, recorded.additionalWorkspaces);
+    differs.push(
+      `a vite input, not recomputed here (State input ${short(recorded.input)}); ` +
+        (count === undefined
+          ? "the changed files are unknown"
+          : count === 0
+            ? "no changed file lies in the tree it covers"
+            : `${count} changed ${count === 1 ? "file lies" : "files lie"} in the tree it covers`),
     );
-    // Counted only: the files are the release tree's, and the log is public.
-    compare("input", value.hash, `, over ${files.length} files`);
   } else if (props.main !== undefined) {
     if (bundle) compare("bundle", bundle.hash);
     else

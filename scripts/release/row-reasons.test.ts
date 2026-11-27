@@ -162,7 +162,7 @@ test("a Worker names the changed files its bundle's source map reaches, or says 
 test("a Worker the provider alone changes names the bundle hash that differs, both shortened", async (context) => {
   const planned = await workerPlan(context);
   const lines = await reasons(planned, undefined);
-  const computed = (planned.artifacts.get("Api")?.get("build") as { hash: string }).hash;
+  const computed = (planned.artifacts.get("Api")!.get("build") as { hash: string }).hash;
   assert.ok(
     lines.includes(
       `Api: planned by the provider's own diff: bundle differs: State ffffffffffff, computed ${computed.slice(0, 12)}`,
@@ -214,34 +214,34 @@ test("an assets hash that differs is named with State's and the declared value, 
   );
 });
 
-test("a vite input hash that differs is counted over its files and never names one", async (context) => {
+test("a vite input counts the changed files in the tree it covers and never names one", async (context) => {
   const tree = mkdtempSync(join(tmpdir(), "row-reasons-vite-"));
   context.after(() => rmSync(tree, { recursive: true, force: true }));
-  const names = ["private-route-name.ts", "nested/release-only-file.ts", "index.html"];
+  const names = ["app/private-route-name.ts", "app/nested/release-only-file.ts", "shared/x.ts"];
   for (const name of names) {
     mkdirSync(dirname(join(tree, name)), { recursive: true });
     writeFileSync(join(tree, name), name);
   }
   const plan = providerOnly(
-    { vite: { rootDir: tree, memo: { include: ["**/*"] } } },
-    { input: "c".repeat(64) },
+    { vite: { rootDir: join(tree, "app"), memo: { include: ["**/*"] } } },
+    { input: "c".repeat(64), additionalWorkspaces: ["../shared"] },
   );
-  const lines = await rowReasons({
-    plan,
-    rows: [row],
-    root,
-    changed: changes(),
-    artifacts: undefined,
-    provide,
-  });
-  const line = lines.find((entry) => entry.startsWith("Site: planned"));
+  const read = async (changed: ChangedFiles | undefined) =>
+    (
+      await rowReasons({ plan, rows: [row], root: tree, changed, artifacts: undefined, provide })
+    ).join("\n");
+  const some = await read(changes(...names, "bun.lock", "elsewhere/y.ts"));
   assert.match(
-    line ?? lines.join("\n"),
-    /^Site: planned by the provider's own diff: input differs: State cccccccccccc, computed [0-9a-f]{12}, over 3 files$/u,
+    some,
+    /^Site: planned by the provider's own diff: a vite input, not recomputed here \(State input cccccccccccc\); 4 changed files lie in the tree it covers$/mu,
   );
-  const printed = lines.join("\n");
   for (const name of [...names, "private-route-name", "release-only-file", tree])
-    assert.equal(printed.includes(name), false, name);
+    assert.equal(some.includes(name), false, name);
+  assert.match(
+    await read(changes("elsewhere/y.ts")),
+    /no changed file lies in the tree it covers$/mu,
+  );
+  assert.match(await read(undefined), /the changed files are unknown$/mu);
 });
 
 test("reading the reasons leaves the plan, its rows and its digest as they were", async (context) => {
