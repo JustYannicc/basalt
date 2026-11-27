@@ -11,6 +11,7 @@ import {
   refusalBody,
   script,
 } from "./test/cloudflare-shapes.mjs";
+import { cursorOf } from "./tag-pages.mjs";
 import { fakeAccount } from "./test/fake-account.mjs";
 
 const prefix = "basalt-emulated-upstream";
@@ -402,28 +403,134 @@ test("a next link gives only its parameters; host and path stay the stage's own"
   }
   // A value that looks like a path stays a query value.
   assert.equal(new URL(sent[2]).searchParams.get("last"), "../../y");
-  assert.equal(record.pages[0].link.host, "other");
-  assert.equal(record.pages[0].link.path, "other");
-  assert.equal(record.pages[1].link.path, "other");
+  assert.equal(record.pages[0].link.header.links[0].host, "other");
+  assert.equal(record.pages[0].link.header.links[0].path, "other");
+  assert.equal(record.pages[1].link.header.links[0].path, "other");
 });
 
-test("a next link that is not a few plain cursor values stops the read", async () => {
+test("a next link the stage cannot take a plain cursor from falls back to the spec's own last", async () => {
   for (const link of [
     "<?last=a%20b>; rel=next",
-    "<?last=a&last=b>; rel=next",
     "<?a=1&b=2&c=3&d=4&e=5>; rel=next",
     "</v2/x/tags/list>; rel=next",
     "<http://[bad>; rel=next",
+    "<?last=h1#x>; rel=next",
     'rel="next"',
   ]) {
-    const { error, record } = await stopOf([[["h1"], link]]);
-    assert.equal(
-      error.message,
-      "A registry tag list's next link is not plain cursor values (page 1, after 1 tag)",
-      link,
-    );
-    assert.equal(record.rule, "link-not-plain");
+    const { fetcher, sent } = scripted([[["h1"], link], [["h2"]]]);
+    const [image] = await stage(fetcher).images();
+    assert.deepEqual([...image.tags], ["h1", "h2"], link);
+    // The stage's own repository, the spec's page size, and the last entry it listed.
+    assert.equal(new URL(sent[1]).search, "?n=1000&last=h1", link);
   }
+});
+
+test("a link's cursor is its last value of each name, so a query appended twice reads as its latest", async () => {
+  const { fetcher, sent } = scripted([
+    [
+      ["h1"],
+      // The request's own query, then the registry's: the cursor it appended is the one that counts.
+      `<https://registry.cloudflare.com/v2/acct/${prefix}-mock/tags/list?n=1000&last=h0?n=1000&last=h1>; rel=next`,
+    ],
+    [["h2"]],
+  ]);
+  await stage(fetcher).images();
+  assert.equal(new URL(sent[1]).search, "?n=1000&last=h1");
+});
+
+test("a link's record says its shape and never its text", async () => {
+  const header = `https://registry.cloudflare.com/v2/acct/${prefix}-mock/tags/list?n=1000?n=1000&last=sha256%3A${"a".repeat(64)}; rel=next`;
+  const { record } = await stopOf([
+    [["h1"], header],
+    [[], next("n=1000&last=h9")],
+  ]);
+  const [link] = record.pages[0].link.header.links;
+  assert.deepEqual(
+    { ...link, params: link.params.map((param) => param.name) },
+    {
+      bracketed: false,
+      scheme: true,
+      leadingSlash: false,
+      questionMarks: 2,
+      fragment: false,
+      host: "same",
+      path: "same",
+      rel: true,
+      relQuoted: false,
+      next: true,
+      decodes: true,
+      params: ["n", "n", "last"],
+    },
+  );
+  assert.doesNotMatch(JSON.stringify(record), /registry|acct|sha256|aaaa|https?:/u);
+});
+
+test("no request starts once a full request timeout no longer fits before the run's deadline", async () => {
+  const fake = paged();
+  let clock = 0;
+  // Each request takes 10 s of the run. One starts only while a whole 30 s timeout still fits before
+  // the 60 s deadline: at 0, 10, 20 and 30 s, so four.
+  const timed = async (url, init) => {
+    clock += 10_000;
+    return fake.fetcher(url, init);
+  };
+  const api = stage(timed, { deadline: 60_000, now: () => clock });
+  const error = await api.images().then(
+    () => assert.fail("the read finished"),
+    (caught) => caught,
+  );
+  assert.match(error.message, /was not read to its end: the run's time budget is spent \(page 3/u);
+  assert.equal(error.record.tagRead.cause, "out-of-time");
+  // The run's last request started with a whole request timeout still to spare.
+  assert.equal(fake.calls.length, 4);
+  assert.ok(clock <= 60_000);
+  const spent = paged();
+  await assert.rejects(
+    stage(spent.fetcher, { deadline: 0, now: () => 0 }).images(),
+    /was not sent: the run's time budget is spent/u,
+  );
+  assert.equal(spent.calls.length, 0);
+});
+
+test("the spec's cursor is only ever an entry the read accepted", () => {
+  const first = `https://registry.cloudflare.com/v2/acct/${prefix}-mock/tags/list?n=1000`;
+  for (const entry of ["h1", `sha256:${"a".repeat(64)}`])
+    assert.equal(cursorOf("", first, entry).facts.cursor, "spec", entry);
+  for (const entry of ["../x", "a/b", `sha256:${"A".repeat(64)}`, "x?y", "#", undefined])
+    assert.deepEqual(cursorOf("", first, entry).url, undefined, String(entry));
+});
+
+test("next links that disagree, or one carrying only a page size, give no cursor: the spec's last decides", async () => {
+  for (const link of [`<?last=zzzz>; rel="next", <?last=h1>; rel="next"`, "<?n=1000>; rel=next"]) {
+    const { fetcher, sent } = scripted([[["h1"], link], [["h2"]]]);
+    const [image] = await stage(fetcher).images();
+    assert.deepEqual([...image.tags], ["h1", "h2"], link);
+    assert.equal(new URL(sent[1]).search, "?n=1000&last=h1", link);
+  }
+});
+
+test("a list longer than the page limit stops closed, and its record stays small", async () => {
+  // One entry a page, each a fresh tag, a next link on every one.
+  let index = 0;
+  const fake = paged();
+  const endless = async (url, init) => {
+    if (!new URL(url).pathname.endsWith("/tags/list")) return fake.fetcher(url, init);
+    index += 1;
+    return Response.json(
+      { tags: [`t${index}`] },
+      { headers: { link: `</v2/acct/${prefix}-mock/tags/list?n=1000&last=t${index}>; rel=next` } },
+    );
+  };
+  const error = await stage(endless)
+    .images()
+    .then(
+      () => assert.fail("the read finished"),
+      (caught) => caught,
+    );
+  assert.match(error.message, /exceeded its page limit of 1000 \(page 1000, after 1000 tags\)/u);
+  assert.equal(error.record.tagRead.pages.length, 40);
+  assert.equal(error.record.tagRead.pagesOmitted, 960);
+  assert.ok(JSON.stringify(error.record).length < 100_000);
 });
 
 test("a later page that fails, cannot be sent or answers without its tags stops with its page and record", async () => {
@@ -438,7 +545,7 @@ test("a later page that fails, cannot be sent or answers without its tags stops 
   assert.equal(failed.record.rule, "later-page-failed");
   assert.equal(failed.record.pages[1].status, 500);
   // What the stage sent back is in the record of the page before.
-  assert.equal(failed.record.pages[0].link.params[0].name, "last");
+  assert.equal(failed.record.pages[0].link.header.links[0].params[0].name, "last");
 
   const fake = paged();
   let lists = 0;
@@ -476,21 +583,26 @@ test("a later page that fails, cannot be sent or answers without its tags stops 
   assert.equal(missing.record.tagRead.cause, "no-tags");
 });
 
-test("a next link is read as written: a plus stays a plus, quoted parameters are skipped, a fragment stops", async () => {
+test("a next link is read as written: a plus stays a plus, quoted parameters and several links are read, a fragment is never sent", async () => {
   const plus = await stopOf([[["h1"], next("cursor=ab+cd")], [["h1"]]]);
   assert.equal(new URL(plus.sent[1]).search, "?cursor=ab%2Bcd");
-  assert.ok(plus.record.pages[0].link.params[0].value.classes.includes("plus"));
-  for (const link of [
-    `<?last=h1>; title="a, b; c"; rel="next"`,
-    "<?last=h1>; rel='next'",
-    '<?last=h1>; rel="prev next"',
+  assert.ok(plus.record.pages[0].link.header.links[0].params[0].value.classes.includes("plus"));
+  for (const [link, search] of [
+    [`<?last=h1>; title="a, b; c"; rel="next"`, "?last=h1"],
+    ['<?last=h1>; rel="prev next"', "?last=h1"],
+    ["<?last=h1>; REL=NEXT", "?last=h1"],
+    [`<?last=h0>; rel="prev", <?last=h1>; rel="next"`, "?last=h1"],
+    // Single quotes are not web linking: no next link is read, so the spec's own last is used.
+    ["<?last=h1>; rel='next'", "?n=1000&last=h1"],
   ]) {
     const { sent } = await stopOf([[["h1"], link], [["h1"]]]);
-    assert.equal(new URL(sent[1]).search, "?last=h1", link);
+    assert.equal(new URL(sent[1]).search, search, link);
   }
-  const fragment = await stopOf([[["h1"], "<?last=h1#x>; rel=next"]]);
-  assert.equal(fragment.record.rule, "link-not-plain");
-  assert.equal(fragment.record.pages[0].link.fragment, true);
+  // A fragment is never sent back: the read falls back to the spec's own last, and says so.
+  const fragment = await stopOf([[["h1"], "<?last=h1#x>; rel=next"], [["h1"]]]);
+  assert.equal(new URL(fragment.sent[1]).search, "?n=1000&last=h1");
+  assert.equal(fragment.record.pages[0].link.cursor, "spec");
+  assert.equal(fragment.record.pages[0].link.header.links[0].fragment, true);
 });
 
 test("an empty page ends the list, with or without a next link", async () => {
@@ -513,13 +625,20 @@ test("an empty page whose link carries a fresh cursor stops the read; one that l
       [["h1"], next("n=1000&last=h1")],
       [[], next("n=1000&last=h5")],
     ],
-    // A link the stage cannot read, or cannot parse, on an empty page leads nowhere it can check.
-    [[[], 'rel="next"']],
-    [[[], "<http://[>; rel=next"]],
   ]) {
     const { error, record } = await stopOf(pages);
     assert.match(error.message, /another page after an empty one/u, JSON.stringify(pages));
     assert.equal(record.rule, "next-after-empty");
+  }
+  // A link no reader can take apart, after an empty page, offers nothing to follow: the list ends.
+  for (const link of ['rel="next"', "<?last=a%zz>; rel=next", "{next}; rel=next ~"]) {
+    const { fetcher, sent } = scripted([
+      [["h1"], next("n=1000&last=h1")],
+      [[], link],
+    ]);
+    const [image] = await stage(fetcher).images();
+    assert.deepEqual([...image.tags], ["h1"], link);
+    assert.equal(sent.length, 2, link);
   }
   // The very query just sent, again: nothing new follows.
   const { fetcher, sent } = scripted([
