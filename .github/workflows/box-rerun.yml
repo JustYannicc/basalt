@@ -3,11 +3,12 @@ name: Box re-run
 # After a Check completes, re-runs its jobs on GitHub's runners when box-watch cancelled it because
 # the self-hosted box took none of its box jobs in time, or when a light job of it waited for the
 # box's light runners and was cancelled before any took it, as light-rescue.yml leaves it
-# (scripts/ci/box-rerun.ts), unless a person made that cancel, or when main's push Check failed
-# only on the light runners. workflow_run always runs this file
-# from the default branch, so no pull request's code runs here; it acts only on box-watch's own
-# verdict for that run and attempt or on that light job's own record, and re-runs no job that
-# failed off the box and light runners; a job that failed or timed out on a light runner is re-run hosted once.
+# (scripts/ci/box-rerun.ts), unless a person made that cancel, or when main's or a batch's push
+# Check failed only on the light runners or its aggregate hung on one. workflow_run always runs
+# this file from the default branch, so no pull request's code runs here; it acts only on
+# box-watch's own verdict for that run and attempt or on that light job's own record, and re-runs
+# no job that failed off the box and light runners; a job that failed or timed out on a light
+# runner is re-run hosted once.
 on:
   workflow_run:
     workflows: [Check]
@@ -17,14 +18,15 @@ permissions: {}
 
 jobs:
   rerun:
-    # Only a first attempt of this repository's own run, cancelled, or failed on main's push (the
-    # light lane's only user): a fork's or a later attempt's cancel is never box-watch's, and a
-    # re-run, being a later attempt, can't start another.
+    # Only a first attempt of this repository's own run, cancelled, or failed on main's or a
+    # batch's push (the light lane's users): a fork's or a later attempt's cancel is never
+    # box-watch's, and a re-run, being a later attempt, can't start another.
     if: >-
       (github.event.workflow_run.conclusion == 'cancelled' ||
       (github.event.workflow_run.conclusion == 'failure' &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main')) &&
+      (github.event.workflow_run.head_branch == 'main' ||
+      startsWith(github.event.workflow_run.head_branch, 'batch/')))) &&
       github.event.workflow_run.run_attempt == 1 &&
       github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
