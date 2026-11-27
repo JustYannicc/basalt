@@ -535,3 +535,73 @@ test("a health read that timed out logs whichever settles first, so only a delib
   rejected.trace.finish(rejected.reason);
   assert.equal(log.mock.callCount(), 2);
 });
+
+test("a slot refusal, whose message says refused, is classed by its own reason and says it", (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  for (const reason of [
+    "identity",
+    "selection",
+    "policy",
+    "unhealthy",
+    "draining",
+    "uncertain",
+  ] as const) {
+    const trace = new EndpointTrace(
+      new Request("http://runtime/warm", { method: "POST" }),
+      "legacy",
+      "cell",
+    );
+    const refusal = new SlotRefused(reason);
+    assert.match(refusal.message, /refused/);
+    trace.finish(refusal);
+    trace.finish(refusal);
+    const fields = JSON.parse(log.mock.calls.at(-1)!.arguments[1]);
+    assert.equal(fields.terminalError.messageClass, reason);
+    assert.equal(fields.terminalError.reason, reason);
+    assert.equal(fields.terminalError.name, "Error");
+  }
+  assert.equal(log.mock.callCount(), 6, "one line per event");
+});
+
+test("a root health read whose lease ran out says how long it took and how much lease was left", async (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const { BoundSlotDriver } = await import("./runtime-slots/transport.ts");
+  const { slotIdentity } = await import("../../scripts/pool-tests/runtime-slots-fixture.ts");
+  const identity = slotIdentity("primary");
+  // The endpoint answered with a live lease that this read's own round trip outlasted.
+  const driver = new BoundSlotDriver(() => ({
+    fetch: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return Response.json({ identity, leaseMs: 40, grantMs: 100 });
+    },
+  }));
+  await assert.rejects(driver.health(identity, AbortSignal.timeout(2_000)), SlotRefused);
+  assert.equal(log.mock.callCount(), 1, "one line per event");
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  // What the run sheet reads stays as it was: the attempt's outcome and status.
+  assert.deepEqual(
+    fields.attempts.map((attempt: { outcome: string; status: number }) => [
+      attempt.outcome,
+      attempt.status,
+    ]),
+    [["response", 200]],
+  );
+  assert.equal(fields.terminalError.messageClass, "unhealthy");
+  assert.equal(fields.terminalError.reason, "unhealthy");
+  assert.ok(fields.terminalError.roundTripMs >= 100);
+  assert.equal(fields.terminalError.leaseLeftMs, 100 - fields.terminalError.roundTripMs);
+  assert.ok(fields.terminalError.leaseLeftMs <= 0);
+});
+
+test("an error that is no slot refusal keeps its class", (context) => {
+  const log = context.mock.method(console, "error", () => {});
+  const trace = new EndpointTrace(
+    new Request("http://runtime/warm", { method: "POST" }),
+    "legacy",
+    "cell",
+  );
+  trace.finish(new Error("socket connection lost"));
+  const fields = JSON.parse(log.mock.calls[0]!.arguments[1]);
+  assert.equal(fields.terminalError.messageClass, "connection_lost");
+  assert.equal("reason" in fields.terminalError, false);
+});
