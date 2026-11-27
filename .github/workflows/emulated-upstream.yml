@@ -133,7 +133,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json') != '' }}
+        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json', '.local/emulated-upstream/stopped-*.json') != '' }}
         with:
           name: emulated-upstream-expiry-${{ github.run_id }}
           path: .local/emulated-upstream

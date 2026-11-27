@@ -5,6 +5,7 @@ import { emulatedAccount } from "./cloudflare.mjs";
 import { plainReason, profileControlPath } from "./gateway.ts";
 import { refusalPath } from "./mock-start.ts";
 import { profileCheck, profileFailures, profileSummary } from "./profile-check.mjs";
+import { isCloudflareApiError } from "../stage-cloudflare/api.mjs";
 import { publicMessage, StageError } from "./public-error.mjs";
 import { paths, requestBody, verdict } from "./shapes.mjs";
 import { isMode, leaseHours, prefix, refusal as guardRefusal, stage, worker } from "./settings.ts";
@@ -363,6 +364,12 @@ export async function main(env, { fetcher = fetch, now = Date.now, error = conso
     return 0;
   } catch (caught) {
     error(publicMessage(caught));
+    // A stop of the account layer can carry a record of closed facts (tag-pages.mjs); it is kept
+    // before the run ends, per mode, so a teardown after a failed deploy keeps the deploy's.
+    if (isCloudflareApiError(caught) && Object.hasOwn(caught, "record")) {
+      io.summary?.(`- stop record: ${JSON.stringify(caught.record)}`);
+      io.save?.(`stopped-${mode}`, caught.record);
+    }
     return 1;
   }
 }
