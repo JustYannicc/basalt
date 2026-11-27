@@ -62,7 +62,7 @@ export const accountTrafficPrivacyProof = ({
     progress.phase = "rollouts";
     // A stack that declares no repository service can't finish a catalog sweep; any other waits.
     const repositoryService = h.services?.repository !== false;
-    yield* bringRolloutsForward(database, organization);
+    yield* bringRolloutsForward(database, organization, { repositoryService });
     yield* untilDeadline(
       Effect.gen(function* () {
         const jobs = yield* provisioningJobs(database, organization);
@@ -77,7 +77,7 @@ export const accountTrafficPrivacyProof = ({
     if (!repositoryService) {
       const unproved = {
         proof: "The organization's rollouts finished",
-        notWaitedFor: "catalog sweeps",
+        notWaitedFor: "catalog sweeps, left at their release delay",
         open: progress.unprovedSweeps,
         reason: "no repository service in the local stack",
         issue: "#2122",

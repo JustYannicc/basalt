@@ -106,6 +106,27 @@ test("a stack without a repository service waits for every rollout but its catal
   assert.deepEqual(ids(openCatalogSweeps(jobs)), [sweep]);
 });
 
+test("a stack without a repository service leaves catalog sweeps at their release delay", async () => {
+  const forward = async (options) => {
+    const sent = [];
+    await bringRolloutsForward({ run: async (query) => sent.push(query) }, "org_1", options);
+    return sent[0].sql;
+  };
+  for (const sql of [await forward(), await forward({ repositoryService: true })])
+    assert.ok(sql.includes("'basalt-catalog-apps:%'"));
+  const without = await forward({ repositoryService: false });
+  assert.ok(!without.includes("basalt-catalog-apps"));
+  for (const prefix of ["basalt-pool-bundle:%", "basalt-pool-token:%"])
+    assert.ok(without.includes(`'${prefix}'`), prefix);
+  // A sweep left fifteen minutes out stays clear of the measurement, so provisioning settles.
+  const sweep = {
+    ...job("basalt-catalog-apps:e781022:2b3c4d5e", "queued", 0),
+    available_at: "2026-11-25T13:10:00.000Z",
+    observed_at: "2026-11-25T12:55:00.000Z",
+  };
+  assert.equal(provisioningSettled([sweep]), true);
+});
+
 test("the change outbox is empty only when no change waits for delivery", async () => {
   const outbox = (count) => ({
     run: (query) => {
