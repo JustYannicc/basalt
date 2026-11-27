@@ -77,7 +77,7 @@ test("healthy passes read the record once, and write only to end an open recover
   assert.equal((await lastRecovery(memory))?.readyAt, 20);
 });
 
-test("a provider refusal's round keeps its read and its own reason, with the status or state behind it", async () => {
+test("a provider refusal's round keeps its read and its own reason, with the status or pin behind it", async () => {
   const memory = new SlotMemory();
   const records = new RecoveryRecords(new RuntimeSlotStorage(memory));
   await records.round(boot("first"), 1_000);
@@ -85,12 +85,9 @@ test("a provider refusal's round keeps its read and its own reason, with the sta
   const limited = new ProviderObservationRefused({ reason: "read_status", status: 429 });
   limited.read = "recovery";
   await records.refused(1, 1_100, limited);
-  const stopping = new ProviderObservationRefused({
-    reason: "sibling_unsettled",
-    state: "stopping",
-  });
-  stopping.read = "recovery";
-  await records.refused(1, 1_200, stopping);
+  const image = new ProviderObservationRefused({ reason: "mismatch", field: "image" });
+  image.read = "recovery";
+  await records.refused(1, 1_200, image);
   const provider = {
     class: "ProviderObservationRefused",
     provider: "provider_observation_refused",
@@ -98,6 +95,29 @@ test("a provider refusal's round keeps its read and its own reason, with the sta
   };
   assert.deepEqual((await lastRecovery(memory))?.refusals, [
     { round: 1, at: 1_100, reason: "read_status", ...provider, status: 429 },
-    { round: 1, at: 1_200, reason: "sibling_unsettled", ...provider, state: "stopping" },
+    { round: 1, at: 1_200, reason: "mismatch", ...provider, field: "image" },
   ]);
+});
+
+test("a record an older Worker wrote for a sibling's refusal still reads with that sibling's state", async () => {
+  const memory = new SlotMemory();
+  const older = {
+    boot: "first",
+    detectedAt: 1_000,
+    readyAt: null,
+    rounds: 1,
+    refusals: [
+      {
+        round: 1,
+        at: 1_200,
+        reason: "sibling_unsettled",
+        class: "ProviderObservationRefused",
+        provider: "provider_observation_refused",
+        read: "recovery",
+        state: "stopping",
+      },
+    ],
+  };
+  await memory.put("runtime-slots-v1:last-recovery", older);
+  assert.deepEqual(await lastRecovery(memory), older);
 });

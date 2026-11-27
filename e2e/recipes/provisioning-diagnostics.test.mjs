@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { inspect } from "node:util";
 import { Effect } from "effect";
 import {
   bringRetriesForward,
@@ -175,4 +176,121 @@ test("each job carries the reason of every attempt the hosted log recorded", () 
   );
   assert.equal(history[0].attempts, 1);
   assert.equal(history[0].updated_at, "2026-11-22T20:47:02.192Z");
+});
+
+test("a catalog sweep's failed app is carried as its error class and app kind, nothing else", () => {
+  const sweep = "basalt-catalog-apps:98f09e9e:eb6d947c-13b1-459e-9adb-7186b2add466";
+  const secret = "app_5ec2e7aa-0000-4000-8000-00000000c0de";
+  const organization = "OrgSentinelPrivate0000000000000000";
+  // The hosted logger's record: the message and its fields, then the attempt's annotations.
+  const record = (fields) => ({
+    message: ["Catalog app update failed; the job will retry", fields],
+    level: "WARN",
+    timestamp: "2026-11-26T14:08:25.909Z",
+    cause: "",
+    annotations: { job: sweep, attempt: 6 },
+    spans: {},
+    fiberId: "#12",
+  });
+  const printed = (value) =>
+    inspect(value, { depth: 6, breakLength: 80 })
+      .split("\n")
+      .map((line) => `[Api] ${line}`);
+  const log = [
+    // As Node prints a long record: over many lines, with the job well after the message.
+    ...printed(
+      record({ app: secret, organization, entry: "executor", cause: "VersionBuildFailed" }),
+    ),
+    // One JSON line.
+    `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "executor", cause: "StorageError" }))}`,
+    // An unlisted cause and an entry that is not a plain name.
+    `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "https://catalog.example/apps/x?token=SECRET", cause: "Error: private message SECRET" }))}`,
+    `[Api] ${JSON.stringify(record({ app: secret, organization, cause: "SomeNewTag" }))}`,
+    // An app removed while the sweep ran.
+    `[Api] ${JSON.stringify(record({ app: secret, organization, entry: "executor", cause: "AppNotFound" }))}`,
+    // Another organization's sweep is not attributed.
+    `[Api] ${JSON.stringify({ ...record({ app: secret, entry: "executor", cause: "SqlError" }), annotations: { job: "basalt-catalog-apps:other:1", attempt: 1 } })}`,
+    `[Api] {"message":["Provisioning step failed",{"job":"${sweep}","reason":"storage"}],"level":"WARN"}`,
+  ].join("\n");
+  assert.ok(
+    printed(record({ app: secret, organization, entry: "executor", cause: "x" })).length > 8,
+  );
+  const [history] = provisioningHistory([job(sweep, "running", 6)], log);
+  assert.deepEqual(history.logged, [
+    { message: "Catalog app update failed", cause: "VersionBuildFailed", app: "executor" },
+    { message: "Catalog app update failed", cause: "StorageError", app: "executor" },
+    { message: "Catalog app update failed", cause: "other" },
+    { message: "Catalog app update failed", cause: "other" },
+    { message: "Catalog app update failed", cause: "AppNotFound", app: "executor" },
+    { message: "Provisioning step failed", reason: "storage" },
+  ]);
+  const published = JSON.stringify(history.logged);
+  for (const sentinel of [
+    secret,
+    organization,
+    "SECRET",
+    "private",
+    "catalog.example",
+    "SomeNewTag",
+    "retry",
+  ])
+    assert.ok(!published.includes(sentinel), sentinel);
+});
+
+test("a sweep line is attributed only by its own record's annotations", () => {
+  const ours = "basalt-catalog-apps:98f09e9e:eb6d947c-13b1-459e-9adb-7186b2add466";
+  const victim = "basalt-catalog-apps:98f09e9e:0d5c1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b";
+  const record = (job, fields) => ({
+    message: ["Catalog app update failed; the job will retry", fields],
+    level: "WARN",
+    annotations: { job, attempt: 2 },
+  });
+  const printed = (worker, value) =>
+    inspect(value, { depth: 6, breakLength: 80 })
+      .split("\n")
+      .map((line) => `[${worker}] ${line}`);
+  const ownLines = printed(
+    "Api",
+    record(ours, { app: "app_1", organization: "org_1", entry: "executor", cause: "BuildBusy" }),
+  );
+  const other = printed(
+    "Pool",
+    record(victim, { app: "app_2", organization: "org_2", entry: "other", cause: "SqlError" }),
+  );
+  const forged = `[Api] ${JSON.stringify(record(ours, { entry: `x job='${victim}'`, cause: "SqlError" }))}`;
+  const log = [
+    // Another Worker's whole record, and then its closing brace alone, inside ours.
+    ...ownLines.slice(0, 3),
+    ...other,
+    "[Pool] }",
+    ...ownLines.slice(3),
+    // A job named inside the message's fields does not move the line to that job.
+    forged,
+    // A line with no block of its own is not read into the record before it.
+    `[Api] {"message":["Provisioning attempt failed",{"job":"${victim}"}],"level":"WARN","annotations":{"job":"${victim}"}}`,
+    "2026-11-26T14:08:25Z [Api]   'Catalog app update failed; the job will retry',",
+    // Unprefixed lines: a closed record of the other job, then a stray message line after it,
+    // and one more than 40 lines below a record's start.
+    ...inspect(record(victim, { entry: "other", cause: "SqlError" }), { breakLength: 40 }).split(
+      "\n",
+    ),
+    "  'Catalog app update failed; the job will retry',",
+    "{",
+    ...Array.from({ length: 41 }, () => "  filler: 1,"),
+    `  annotations: { job: '${victim}' },`,
+    "  'Catalog app update failed; the job will retry',",
+  ].join("\n");
+  const [mine, theirs] = provisioningHistory(
+    [job(ours, "running", 2), job(victim, "running", 1)],
+    log,
+  );
+  assert.deepEqual(mine.logged, [
+    { message: "Catalog app update failed", cause: "BuildBusy", app: "executor" },
+    { message: "Catalog app update failed", cause: "SqlError" },
+  ]);
+  assert.deepEqual(theirs.logged, [
+    { message: "Catalog app update failed", cause: "SqlError", app: "other" },
+    { message: "Provisioning attempt failed" },
+    { message: "Catalog app update failed", cause: "SqlError", app: "other" },
+  ]);
 });
