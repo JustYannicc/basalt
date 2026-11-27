@@ -1,5 +1,5 @@
-name: Set up the local Autumn emulator
-description: Restore or build the pinned Autumn billing emulator that local Cloud runs start on loopback.
+name: Set up the local service emulators
+description: Restore or build the pinned emulator that local Cloud runs start on loopback in place of billing, Google, GitHub, mail, company data and sign-in.
 runs:
   using: composite
   steps:
