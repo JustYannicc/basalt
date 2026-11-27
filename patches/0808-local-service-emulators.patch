@@ -497,7 +497,7 @@ diff --git a/e2e/tests/cloud-sso.spec.ts b/e2e/tests/cloud-sso.spec.ts
 +            reason: "no public issuer in the local stack: the Google stand-in runs on loopback",
 +            provedBy: "scripts/upstream-tests/sso-public-issuer.test.ts",
 +          };
-+          console.log(`Not proved: ${JSON.stringify(unproved)}`);
++          yield* Effect.logInfo(`Not proved: ${JSON.stringify(unproved)}`);
 +          yield* (yield* Evidence).json("not-proved.json", [unproved]);
 +          publicRegistration = yield* api.request(actors.owner, "POST", "/api/auth/sso/register", {
 +            ...base,
