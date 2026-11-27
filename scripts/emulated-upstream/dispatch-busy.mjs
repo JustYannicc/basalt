@@ -5,9 +5,11 @@ import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 /** The dispatched runs not yet completed; a listing without its runs throws. */
-// A dispatch older than its job's 60-minute limit plus queueing can't be using the stage, so a run
-// stuck waiting (an environment approval can wait for days) never holds the expiry past this.
-const busyFor = 3 * 60 * 60_000;
+// A dispatch waits at most one earlier dispatch's 100-minute job, then runs at most its own: one
+// older than that, with an hour to spare, can't be using the stage. So a run stuck waiting (an
+// environment approval can wait for days) never holds the expiry past this.
+// scripts/emulated-upstream/stage-runs.test.mjs checks it against the job's limit.
+export const busyFor = 4 * 60 * 60_000;
 
 /** The dispatched runs on main not yet completed and young enough to matter; a listing without its runs throws. */
 export function activeDispatches(body, now = Date.now()) {

@@ -33,6 +33,8 @@ export class FleetHandoffCell implements FleetCell {
   private deps: Dependencies;
   private retirementAttempts = 0;
   private starting?: { target: SlotTarget; work: Promise<SlotIdentity> };
+  // Activations still returning here, an observed start's included.
+  private activating = 0;
   private absentSince?: number;
   // Set before abandon() first yields and checked before start() does, so the two never overlap.
   private abandoned = false;
@@ -58,12 +60,17 @@ export class FleetHandoffCell implements FleetCell {
     return this.activate(target);
   }
   private async activate(target: SlotTarget) {
-    await this.deps.handoff.activateInitial(
-      await this.deps.admission.envelope(target, "initial-attested"),
-    );
-    const selected = await this.selected();
-    if (!selected || !sameTarget(selected, target)) throw new SlotRefused("identity");
-    return selected;
+    this.activating++;
+    try {
+      await this.deps.handoff.activateInitial(
+        await this.deps.admission.envelope(target, "initial-attested"),
+      );
+      const selected = await this.selected();
+      if (!selected || !sameTarget(selected, target)) throw new SlotRefused("identity");
+      return selected;
+    } finally {
+      this.activating--;
+    }
   }
   async observe(target: SlotTarget, retryUnsent = false) {
     if (this.starting) {
@@ -140,13 +147,24 @@ export class FleetHandoffCell implements FleetCell {
     // Its connection read takes up to 1.5 s before the release itself.
     return this.deps.driver.releaseStill(identity, operationId, AbortSignal.timeout(5_000));
   }
-  async abandon(target: SlotTarget) {
+  async abandon(target: SlotTarget, stop = false) {
     this.abandoned = true;
-    // A start still returning here owns the instance.
-    if (this.starting) return this.present();
+    // A start or activation still returning here owns the instance.
+    if (this.starting || this.activating > 0) return this.present();
+    // A start that activated proved itself to its endpoint, so it is fenced but never asked to stop.
+    // The ledger never makes a quarantined row ready, so it takes no call, and the fence ends its
+    // endpoint's renewals, so its container stops at its inactivity timeout and its place frees
+    // once that container is gone. A selection can still commit after this read, from another
+    // isolate's activation or one this cell observes later. The endpoint keeps that safe: it fences
+    // in its serialized section, then refuses every later attestation and read and never stops an
+    // attested start.
+    const activated = await this.activated();
     // The endpoint is fenced first, so it refuses every later admission and start for this slot and
-    // the wait below covers every start that could ever run, a replaced isolate's included.
-    const fenced = await this.fence(target);
+    // the wait below covers every start that could ever run, a replaced isolate's included. With
+    // `stop`, the endpoint then stops a container that a start which never attested left running.
+    const fenced = await this.fence(target, stop && !activated);
+    if (activated)
+      return (await this.ended(target)) ? this.provenAbsent(target, true) : this.present();
     if (!fenced) return this.present();
     const initial = await this.deps.handoff.slots.firstStart.inspect();
     // The durable first-start intent commits before the compute start is sent, and the endpoint
@@ -155,10 +173,25 @@ export class FleetHandoffCell implements FleetCell {
     if (!sameTarget(initial.target, target)) return false;
     // A destroyed instance stays listed as inactive. That counts as absent only once the fenced
     // endpoint, which can start nothing more, reports its container stopped.
-    const proven = fenced.stopped ? { driverStopped: true as const } : {};
+    return this.provenAbsent(target, fenced.stopped);
+  }
+  /**
+   * Whether an activated start's container has stopped, by a read that neither fences nor stops
+   * it. Nothing can start that boot's container again: its endpoint record holds the boot, so a
+   * start only reads its health, a fleet cell runs no recovery, and this cell starts nothing more.
+   */
+  private async ended(target: SlotTarget) {
+    const selected = await this.selected().catch(() => undefined);
+    if (!selected || !sameTarget(selected, target)) return false;
+    const actual = await this.deps.driver
+      .retirement(selected, AbortSignal.timeout(2_000))
+      .catch(() => undefined);
+    return actual !== undefined && !actual.running && sameIdentity(actual.identity, selected);
+  }
+  private async provenAbsent(target: SlotTarget, driverStopped: boolean) {
     if (
       !(await this.deps.provider.absent(this.deps.application, target.instanceId, undefined, {
-        ...proven,
+        ...(driverStopped ? { driverStopped: true as const } : {}),
         counted: await this.deps.counted(),
       }))
     )
@@ -169,9 +202,18 @@ export class FleetHandoffCell implements FleetCell {
     this.absentSince ??= now;
     return now - this.absentSince >= startingBoundMs;
   }
-  private async fence(target: SlotTarget) {
+  private async activated() {
+    const initial = await this.deps.handoff.slots.firstStart.inspect();
+    if (initial?.selected === true) return true;
+    // A selection that can't be read is still a selection.
+    return this.selected().then(
+      (selected) => selected !== undefined,
+      () => true,
+    );
+  }
+  private async fence(target: SlotTarget, stop: boolean) {
     try {
-      return await this.deps.driver.abandonStart(target, AbortSignal.timeout(2_000));
+      return await this.deps.driver.abandonStart(target, AbortSignal.timeout(2_000), stop);
     } catch {
       return undefined;
     }
