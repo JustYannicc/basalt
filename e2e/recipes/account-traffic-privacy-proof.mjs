@@ -8,6 +8,7 @@ import {
   bringRetriesForward,
   bringRolloutsForward,
   changeOutboxEmpty,
+  openCatalogSweeps,
   openRollouts,
   provisioningJobs,
   provisioningMoved,
@@ -59,17 +60,31 @@ export const accountTrafficPrivacyProof = ({
     // A release queues one delayed rollout per organization. It takes the organization's locks, so
     // it runs now, before the invitation, the held setup lock and the measurement, never inside them.
     progress.phase = "rollouts";
+    // A stack that declares no repository service can't finish a catalog sweep; any other waits.
+    const repositoryService = h.services?.repository !== false;
     yield* bringRolloutsForward(database, organization);
     yield* untilDeadline(
       Effect.gen(function* () {
         const jobs = yield* provisioningJobs(database, organization);
-        progress.rollouts = openRollouts(jobs);
+        progress.rollouts = openRollouts(jobs, { repositoryService });
+        if (!repositoryService) progress.unprovedSweeps = openCatalogSweeps(jobs).length;
         if (progress.rollouts.length === 0) return true;
         yield* h.request("POST", "/api/onboarding/prepare", {});
         return false;
       }),
       () => `The organization's rollouts did not finish: ${JSON.stringify(progress.rollouts)}`,
     );
+    if (!repositoryService) {
+      const unproved = {
+        proof: "The organization's rollouts finished",
+        notWaitedFor: "catalog sweeps",
+        open: progress.unprovedSweeps,
+        reason: "no repository service in the local stack",
+        issue: "#2122",
+      };
+      diagnostics.notProved = [...(diagnostics.notProved ?? []), unproved];
+      console.log(`Not proved: ${JSON.stringify(unproved)}`);
+    }
     progress.phase = "membership";
     if (holdSetup)
       yield* database.hold({

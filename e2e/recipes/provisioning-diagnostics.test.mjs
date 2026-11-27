@@ -6,6 +6,7 @@ import {
   bringRetriesForward,
   bringRolloutsForward,
   changeOutboxEmpty,
+  openCatalogSweeps,
   openRollouts,
   provisioningHistory,
   provisioningMoved,
@@ -83,6 +84,26 @@ test("a proof runs the organization's rollouts first and waits only for those", 
   for (const prefix of ["basalt-pool-bundle:%", "basalt-pool-token:%", "basalt-catalog-apps:%"])
     assert.ok(sent[0].sql.includes(`'${prefix}'`), prefix);
   assert.deepEqual(sent[0].params, ["org_1"]);
+});
+
+test("a stack without a repository service waits for every rollout but its catalog sweeps", () => {
+  const bundle = "basalt-pool-bundle:7518f356:reconcile-3:c5743dcb-d670-4f4a-9ef8-bde58e94dde7";
+  const token = "basalt-pool-token:0123456789abcdef:6f1d2c3b";
+  const sweep = "basalt-catalog-apps:e781022:2b3c4d5e-6f70-4812-9a3b-4c5d6e7f8091";
+  const jobs = [
+    job(bundle, "queued", 0),
+    job(token, "running", 1),
+    job(sweep, "running", 3),
+    job("basalt-catalog-apps:e781022:done", "succeeded", 1),
+    job("member-setup", "running", 1),
+  ];
+  const ids = (list) => list.map(({ id }) => id);
+  // A stack that has a repository service, or says nothing, waits for the sweep too.
+  assert.deepEqual(ids(openRollouts(jobs)), [bundle, token, sweep]);
+  assert.deepEqual(ids(openRollouts(jobs, { repositoryService: true })), [bundle, token, sweep]);
+  // Without one, the sweep is left out, and only the sweep.
+  assert.deepEqual(ids(openRollouts(jobs, { repositoryService: false })), [bundle, token]);
+  assert.deepEqual(ids(openCatalogSweeps(jobs)), [sweep]);
 });
 
 test("the change outbox is empty only when no change waits for delivery", async () => {

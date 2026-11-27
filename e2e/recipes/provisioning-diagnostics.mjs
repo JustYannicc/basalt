@@ -39,7 +39,18 @@ const observedAt = (jobs) =>
     : Date.now();
 
 /** The organization's rollouts still open: they run before a proof starts, never inside it. */
-export const openRollouts = (jobs) => jobs.filter((job) => open(job) && rolloutJob(job));
+/** A release's catalog sweep builds each catalog copy's repository. */
+export const catalogSweep = ({ id }) => id.startsWith("basalt-catalog-apps:");
+/**
+ * The rollouts a proof waits for. A stack without a repository service can never finish a catalog
+ * sweep, so there the sweeps are not waited for; every other stack waits for all of them.
+ */
+export const openRollouts = (jobs, { repositoryService = true } = {}) =>
+  jobs.filter(
+    (job) => open(job) && rolloutJob(job) && (repositoryService || !catalogSweep(job)),
+  );
+/** Catalog sweeps still open, which a stack without a repository service leaves unproved. */
+export const openCatalogSweeps = (jobs) => jobs.filter((job) => open(job) && catalogSweep(job));
 
 /** Run the organization's waiting rollouts now: each is queued once per release, delayed. */
 export const bringRolloutsForward = (database, organization) =>
