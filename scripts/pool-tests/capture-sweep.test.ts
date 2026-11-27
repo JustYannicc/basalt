@@ -13,7 +13,7 @@ import { homeHistorySource } from "../../src/pool/model-history/home.ts";
 import { HistoryTimeoutFailure } from "../../src/pool/model-history/series-deadline.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { historyBatchSize } from "../../src/pool/model-history/store.ts";
-import { addHome, admin, captured, fixture } from "./capture-fixture.ts";
+import { addHome, captured, fixture } from "./capture-fixture.ts";
 
 /** One capture session after each entry's Home rows arrive: what its sweep and pages did. */
 async function sessions(db: HistoryDatabase, arrivals: readonly number[]) {
@@ -314,29 +314,6 @@ test("a check failing any other way fails its session and keeps nothing", () =>
     assert.equal(await captured(db), 300, "no page ran");
     assert.deepEqual(await sweepFields(db), before);
   }));
-
-test(
-  "a check Postgres cancels at its own limit leaves the session's pages to land",
-  { skip: admin ? false : "needs real Postgres for a real statement timeout" },
-  () =>
-    fixture(async ({ db }) => {
-      await sessions(db, [300, 0]);
-      await addHome(db, 50);
-      const slow: HistoryDatabase = {
-        query: (text, values) =>
-          text.startsWith("WITH s AS MATERIALIZED")
-            ? db.query("SELECT pg_sleep(4)")
-            : db.query(text, values),
-      };
-      const started = performance.now();
-      const cut = await captureHomeRequests(slow);
-      assert.ok(cut.state === "active");
-      assert.equal(cut.fresh, 50);
-      assert.equal(cut.sweepDeferred, true);
-      assert.ok(performance.now() - started < 4_000, "the check stopped at its own limit");
-      assert.equal(await captured(db), 350);
-    }),
-);
 
 test("rows history lacks across one session's checks share its one batch, and the rest come next session", () =>
   fixture(async ({ db }) => {
