@@ -74,15 +74,16 @@ diff --git a/e2e/tests/pool-membership-shared-read.spec.ts b/e2e/tests/pool-memb
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/pool-membership-shared-read.spec.ts
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,339 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Clock, Effect, Fiber, Schedule, Schema } from "effect";
-+import { randomUUID } from "node:crypto";
++import { createHmac, randomUUID } from "node:crypto";
 +import { Actors } from "../support/actors.ts";
 +import { Api, body } from "../support/api.ts";
 +import { Browser } from "../support/browser.ts";
 +import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { cloudLocks } from "../support/cloud-locks.ts";
++import { poolFixtureSigningKey } from "../support/cloud-pool-gateway.ts";
 +import { Evidence } from "../support/evidence.ts";
 +import { legacyPoolHome } from "../support/legacy-pool-home.ts";
 +import {
@@ -117,6 +118,8 @@ new file mode 100644
 +const registrations = /select current_database\(\) as database,\s*current_schema\(\) as schema/i;
 +/** Below the pool's membership read timeout (10 s), which a view would otherwise wait out. */
 +const viewCap = 6_000;
++/** How long part 3 polls for each lock state: a held lock is visible in milliseconds. */
++const lockStateCap = 6_000;
 +
 +layer(HostedLive, { excludeTestServices: true })(
 +  "Pool membership reads share the organization lock",
@@ -264,8 +267,10 @@ new file mode 100644
 +          expect(besideMs).toBeLessThan(viewCap);
 +
 +          // 3. A role change, which takes the lock exclusively, still waits for a membership read
-+          //    in flight. Park the read at its first FOR SHARE row lock, after it took the shared
-+          //    lock: this table mode blocks row locks on the accounts table, not plain reads.
++          //    in flight. The test issues the pool's signed read itself, so the read starts when the
++          //    test says, and parks it at its first FOR SHARE row lock, after it took the shared
++          //    lock, by holding this pool's linked accounts FOR UPDATE: only this scenario's rows,
++          //    which the role change never touches.
 +          const admin = yield* body(Viewer, yield* api.request(actors.admin, "GET", "/api/viewer"));
 +          const directory = yield* body(
 +            Members,
@@ -284,59 +289,124 @@ new file mode 100644
 +              role: next,
 +            });
 +          yield* Effect.addFinalizer(() => role("admin").pipe(Effect.asVoid, Effect.orDie));
-+          const rows = yield* cloudLocks;
-+          yield* rows.hold({ sql: "lock table executor_accounts in exclusive mode" });
-+          const waitFor = <A, E, R>(probe: Effect.Effect<A, E, R>, ready: (value: A) => boolean) =>
++          // The request the pool makes for every view and every membership refresh.
++          const membershipRead = Effect.gen(function* () {
++            // A second back, so a server clock slightly behind the test's still accepts it.
++            const at = (yield* Clock.currentTimeMillis) - 1_000;
++            const payload = Buffer.from(
++              JSON.stringify({ pool: pool.id, organization, at, expiresAt: at + 30_000 }),
++            ).toString("base64url");
++            const signature = createHmac("sha256", Buffer.from(poolFixtureSigningKey, "hex"))
++              .update(`sbq1.${payload}`)
++              .digest("base64url");
++            const response = yield* api.request(
++              actors.owner,
++              "POST",
++              "/api/internal/pool-membership",
++              { envelope: `sbq1.${payload}.${signature}` },
++            );
++            return response.status;
++          });
++          const count = (rows: unknown) => Schema.decodeUnknownSync(Count)(rows)[0]!.n;
++          /** Polls until `ready`, for at most the lock-state cap; `false` when the cap ran out. */
++          const within = <A, E, R>(probe: Effect.Effect<A, E, R>, ready: (value: A) => boolean) =>
 +            probe.pipe(
 +              Effect.filterOrFail(ready, () => new Waiting()),
 +              Effect.retry({ while: Schema.is(Waiting), schedule: Schedule.spaced("50 millis") }),
-+              Effect.timeout("4 seconds"),
++              Effect.as(true),
++              Effect.timeoutOption(lockStateCap),
++              Effect.map((done) => done._tag === "Some"),
 +            );
-+          const accessLock = (granted: boolean) =>
++          const organizationLock = `executor-access:${organization}`;
++          // Sessions waiting on a lock at the membership read's accounts row-lock statement, and
++          // those of them that hold this organization's lock shared.
++          const parked = (holdingShared: boolean) =>
 +            locks.run({
-+              // Only this organization's access lock: other scenarios' advisory locks don't count.
-+              sql: `select count(*)::int as n from pg_locks l,
-+                (select hashtextextended($1, 0) as k) key
-+                where l.locktype = 'advisory' and l.granted = $2 and l.objsubid = 1
-+                  and l.classid::bigint = (key.k >> 32) & 4294967295
-+                  and l.objid::bigint = key.k & 4294967295`,
-+              params: [`executor-access:${organization}`, granted],
++              sql: `select count(*)::int as n from pg_stat_activity a
++                where a.wait_event_type = 'Lock' and a.query ~* 'for share of a'
++                  and (not $2 or exists (select 1 from pg_locks l,
++                    (select hashtextextended($1, 0) as k) key
++                    where l.pid = a.pid and l.locktype = 'advisory' and l.granted
++                      and l.mode = 'ShareLock' and l.objsubid = 1
++                      and l.classid::bigint = (key.k >> 32) & 4294967295
++                      and l.objid::bigint = key.k & 4294967295))`,
++              params: [organizationLock, holdingShared],
 +            });
-+          // The parked membership read: one session holds this organization's lock shared and
-+          // waits on a lock at its accounts row-lock statement.
-+          const parked = locks.run({
-+            sql: `select count(*)::int as n from pg_locks l
-+              join pg_stat_activity a on a.pid = l.pid,
++          // Sessions waiting for this organization's lock exclusively: the role change, once it asked.
++          const waitingForOrganization = locks.run({
++            sql: `select count(*)::int as n from pg_locks l,
 +              (select hashtextextended($1, 0) as k) key
-+              where l.locktype = 'advisory' and l.granted and l.mode = 'ShareLock'
++              where l.locktype = 'advisory' and not l.granted and l.mode = 'ExclusiveLock'
 +                and l.objsubid = 1
 +                and l.classid::bigint = (key.k >> 32) & 4294967295
-+                and l.objid::bigint = key.k & 4294967295
-+                and a.wait_event_type = 'Lock' and a.query ~* 'for share of a'`,
-+            params: [`executor-access:${organization}`],
++                and l.objid::bigint = key.k & 4294967295`,
++            params: [organizationLock],
++          });
++          // What every waiting session waits on, so a red run names the statement.
++          const sessions = locks.run({
++            sql: `select a.pid, pg_blocking_pids(a.pid) as blockers, a.state, a.wait_event_type,
++                a.wait_event,
++                left(regexp_replace(a.query, '[[:space:]]+', ' ', 'g'), 300) as query
++              from pg_stat_activity a
++              where a.pid <> pg_backend_pid() and a.wait_event_type is not null
++                and a.state <> 'idle'`,
 +          });
 +          const finished = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 +            Effect.zip(effect, Clock.currentTimeMillis);
-+          const inFlight = yield* Effect.forkChild(finished(view()));
-+          yield* waitFor(parked, (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0);
++          const rows = yield* cloudLocks;
++          yield* rows.hold({
++            sql: `select a.id from hosted_app_account_links l
++              join executor_apps app on app.id = l.app
++              join executor_accounts a on a.id = l.account and a.owner = app.owner
++              where l.app = $1 and l.subject is null for update of a`,
++            params: [pool.id],
++          });
++          const inFlight = yield* Effect.forkChild(finished(membershipRead));
++          const readParked = yield* within(parked(false), (value) => count(value) > 0);
++          if (!readParked)
++            yield* evidence.json("waiting-sessions.json", {
++              step: "parked",
++              read: inFlight.pollUnsafe() ?? "in flight",
++              sessions: yield* sessions,
++            });
++          expect(readParked, "the membership read parks at its accounts row lock").toBe(true);
++          // A parked read holding the shared lock; it waits out the cap only when none does.
++          const holdsShared = yield* within(parked(true), (value) => count(value) > 0);
++          // Another request's exclusive wait on this organization must not pass for the role change's.
++          const waitingBefore = count(yield* waitingForOrganization);
 +          const demotion = yield* Effect.forkChild(finished(role("member")));
-+          const blocked = yield* waitFor(
-+            accessLock(false),
-+            (rows) => Schema.decodeUnknownSync(Count)(rows)[0]!.n > 0,
++          // Either the role change asks for the organization lock and waits, or it finishes: with
++          // no lock held by the read it would pass straight through.
++          const waited = yield* within(
++            Effect.zip(
++              waitingForOrganization,
++              Effect.sync(() => demotion.pollUnsafe()),
++            ),
++            ([waiting, done]) => count(waiting) > waitingBefore || done !== undefined,
 +          );
-+          expect(demotion.pollUnsafe()).toBeUndefined();
++          const demotionWaiting =
++            waited &&
++            demotion.pollUnsafe() === undefined &&
++            count(yield* waitingForOrganization) > waitingBefore;
++          const waitingOn = demotionWaiting ? [] : yield* sessions;
 +          yield* rows.release;
 +          const [answered, readAt] = yield* Fiber.join(inFlight);
 +          const [demoted, demotedAt] = yield* Fiber.join(demotion);
-+          // Evidence only: the read releases its lock before the view's answer travels back, so the
-+          // two finish times are not strictly ordered.
++          // Evidence only: the read releases its lock before its answer travels back, so the two
++          // finish times are not strictly ordered.
 +          yield* evidence.json("writer-waits-for-membership-read.json", {
-+            blocked,
-+            inFlight: answered,
++            holdsShared,
++            demotionWaiting,
++            waitingOn,
++            read: answered,
 +            demotion: demoted.status,
 +            readAt,
 +            demotedAt,
 +          });
++          expect(demotionWaiting, "the role change waits for the membership read in flight").toBe(
++            true,
++          );
++          expect(holdsShared, "the parked read holds the organization lock shared").toBe(true);
 +          expect(answered).toBe(200);
 +          expect(demoted.status).toBe(200);
 +        }),
