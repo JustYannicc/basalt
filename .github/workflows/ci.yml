@@ -906,6 +906,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -951,6 +952,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -1060,6 +1062,7 @@ jobs:
         timeout-minutes: 1
         working-directory: .upstream
         run: node ../scripts/check-e2e-browser.mjs
+      - uses: ./.github/actions/setup-service-emulators
       - name: Verify Google recovery through signed Cloud operations
         timeout-minutes: 6
         env:
@@ -1117,6 +1120,7 @@ jobs:
         timeout-minutes: 1
         working-directory: .upstream
         run: node ../scripts/check-e2e-browser.mjs
+      - uses: ./.github/actions/setup-service-emulators
       - name: Verify saved Google client comparisons
         timeout-minutes: 3
         working-directory: .upstream
@@ -1215,6 +1219,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated recovery test assets
         working-directory: .upstream
@@ -1260,6 +1265,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated SSO test assets
         working-directory: .upstream
@@ -1296,8 +1302,10 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
-      - uses: ./.github/actions/setup-autumn-emulator
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
+      - name: Verify a local Cloud's stand-ins run on loopback beside it
+        run: node --test scripts/ci/local-emulators.test.ts
       - name: Build the isolated production operation test assets
         working-directory: .upstream
         run: bun run e2e:prepare
@@ -1351,6 +1359,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1398,6 +1407,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1453,7 +1463,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
-      - uses: ./.github/actions/setup-autumn-emulator
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated signed migration test assets
         working-directory: .upstream
@@ -1503,6 +1513,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated compiler test assets
         working-directory: .upstream
@@ -1622,6 +1633,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated test assets
         working-directory: .upstream
@@ -1666,6 +1678,8 @@ jobs:
         run: bun run e2e:prepare
       - name: Install the browser engine
         uses: ./.github/actions/setup-browser
+      # The Cloud step's stand-ins; after the setup this job shares with human-in-the-loop.
+      - uses: ./.github/actions/setup-service-emulators
       - name: Verify the app overview stays in place as publishing access settles
         working-directory: .upstream
         run: bun run e2e:self-host --test-name "$(node ../scripts/ci/e2e-pattern.ts access-editor-reads:publishing-layout)" --workers 1
@@ -1700,7 +1714,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
-      - uses: ./.github/actions/setup-autumn-emulator
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -1784,6 +1798,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated reporting test assets
         working-directory: .upstream
@@ -1839,7 +1854,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
-      - uses: ./.github/actions/setup-autumn-emulator
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated Cloud test assets
         working-directory: .upstream
@@ -1927,6 +1942,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build the isolated self-host test assets
         working-directory: .upstream
@@ -2245,6 +2261,7 @@ jobs:
       - uses: ./.github/actions/setup-bun
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
+      - uses: ./.github/actions/setup-service-emulators
       - run: npm run prepare:upstream
       - name: Build isolated test assets
         working-directory: .upstream
