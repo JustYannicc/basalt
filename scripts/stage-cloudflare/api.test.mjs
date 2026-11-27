@@ -381,6 +381,8 @@ test("a tag already listed and a tag it cannot name are two stops, each with its
     length: 10,
     classes: ["upper", "lower", "digit", "colon"],
     first: "lower",
+    // An algorithm word, a colon and an encoding: digest-shaped, though not a sha256 digest.
+    digestShaped: true,
   });
   // Closed facts only: no tag, cursor value or URL reaches the record.
   assert.doesNotMatch(JSON.stringify(unnamed.record), /h1|h2|sha256|Ab1|acct|https?:|\/v2/u);
@@ -489,10 +491,44 @@ test("a next link is read as written: a plus stays a plus, quoted parameters are
   const fragment = await stopOf([[["h1"], "<?last=h1#x>; rel=next"]]);
   assert.equal(fragment.record.rule, "link-not-plain");
   assert.equal(fragment.record.pages[0].link.fragment, true);
-  // An empty page that offers another still records what its link offered.
-  const empty = await stopOf([[[], next("last=h0")]]);
-  assert.equal(empty.record.rule, "next-after-empty");
-  assert.equal(empty.record.pages[0].link.target, "present");
+});
+
+test("an empty page ends the list, with or without a next link", async () => {
+  for (const ending of [
+    [[], `</v2/acct/${prefix}-mock/tags/list?n=1000&last=>; rel="next"`],
+    [[]],
+  ]) {
+    const { fetcher, sent } = scripted([[["h1"], next("n=1000&last=h1")], ending]);
+    const [image] = await stage(fetcher).images();
+    assert.deepEqual([...image.tags], ["h1"]);
+    assert.equal(sent.length, 2);
+  }
+});
+
+test("an empty page whose link carries a fresh cursor stops the read; one that leads nowhere new ends it", async () => {
+  // A fresh cursor after an empty first page, or after an empty page in the middle.
+  for (const pages of [
+    [[[], next("n=1000&last=a")]],
+    [
+      [["h1"], next("n=1000&last=h1")],
+      [[], next("n=1000&last=h5")],
+    ],
+    // A link the stage cannot read, or cannot parse, on an empty page leads nowhere it can check.
+    [[[], 'rel="next"']],
+    [[[], "<http://[>; rel=next"]],
+  ]) {
+    const { error, record } = await stopOf(pages);
+    assert.match(error.message, /another page after an empty one/u, JSON.stringify(pages));
+    assert.equal(record.rule, "next-after-empty");
+  }
+  // The very query just sent, again: nothing new follows.
+  const { fetcher, sent } = scripted([
+    [["h1"], next("n=1000&last=h1")],
+    [[], next("n=1000&last=h1")],
+  ]);
+  const [image] = await stage(fetcher).images();
+  assert.deepEqual([...image.tags], ["h1"]);
+  assert.equal(sent.length, 2);
 });
 
 test("a 404 on a later page stops the read instead of ending the list", async () => {
@@ -527,6 +563,7 @@ test("a tag list that repeats a tag, names one outside the grammar or never ends
       : fake.fetcher(url, init);
   await assert.rejects(stage(page(["h1", "h1"], false)).images(), /had already listed/u);
   await assert.rejects(stage(page(["../x"], false)).images(), /cannot name/u);
+  // An empty page whose link carries a fresh cursor could hide the rest of the list.
   await assert.rejects(stage(page([], true)).images(), /another page after an empty one/u);
   // The same page offered forever repeats its tags on the second read.
   await assert.rejects(stage(page(["h1"], true)).images(), /had already listed \(page 2/u);
