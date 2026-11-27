@@ -6,7 +6,29 @@ import {
 
 export { endpointRequestId, retainEndpointRequestId } from "../runtime-route-diagnostic.ts";
 import { field, object, shape } from "../error-shape.ts";
+import { HealthLeaseElapsed, SlotRefused } from "../runtime-slots/contract.ts";
 export { shape } from "../error-shape.ts";
+
+/**
+ * An error's closed shape for an endpoint line. A slot refusal is classed by its own reason, never
+ * by its message, and says why; an elapsed health lease also says how long the read took and how
+ * much of the lease it counted was left.
+ */
+function endpointShape(error: unknown) {
+  const base = shape(error);
+  if (!(error instanceof SlotRefused)) return base;
+  return {
+    ...base,
+    messageClass: error.reason,
+    reason: error.reason,
+    ...(error instanceof HealthLeaseElapsed
+      ? {
+          roundTripMs: error.roundTripMs,
+          leaseLeftMs: Math.round(error.countedMs - error.roundTripMs),
+        }
+      : {}),
+  };
+}
 
 const actions = [
   "/health",
@@ -35,7 +57,7 @@ interface Attempt {
   status?: number;
   elapsedMs?: number;
   refusal?: ReturnType<typeof runtimeResponseRefusal>;
-  error?: ReturnType<typeof shape>;
+  error?: ReturnType<typeof endpointShape>;
 }
 const elapsed = (started: number) =>
   Math.max(0, Math.min(86_400_000, Math.round(performance.now() - started)));
@@ -125,7 +147,7 @@ export class EndpointTrace {
         stub,
         outcome: "error",
         elapsedMs: elapsed(started),
-        error: shape(error),
+        error: endpointShape(error),
       };
       throw error;
     }
@@ -200,7 +222,7 @@ export class EndpointTrace {
         reconnectRan: this.reconnected,
         reconnectAcquired: this.reconnectAcquired,
         reconnectOutcome: this.reconnectOutcome(),
-        terminalError: result instanceof Response ? null : shape(result),
+        terminalError: result instanceof Response ? null : endpointShape(result),
         signalAborted: this.request.signal.aborted,
         // A send still pending when the caller gave up reports how long it had waited so far.
         attempts: this.attempts.map((attempt, index) =>
