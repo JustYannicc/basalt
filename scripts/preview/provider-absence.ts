@@ -239,12 +239,22 @@ function cloudflareApi(account: string, token: string, origin: string) {
     // the rest. The list says how many domains there are (`result_info.total_count`).
     async listWorkerDomains() {
       const domains: { id: string; hostname: string; service: string }[] = [];
-      for (let page = 1; page <= 10_000; page++) {
+      // A page must be the one asked for and hold only domains not seen yet, and the list's total
+      // and page size must hold still: a repeated or shifted page would let a domain go unread.
+      const seen = new Set<string>();
+      let shape: { total: unknown; perPage: unknown } | undefined;
+      for (let page = 1; page <= 200; page++) {
         const url = new URL(`${origin}/accounts/${encodeURIComponent(account)}/workers/domains`);
         url.searchParams.set("page", String(page));
         const body = await request(url);
         if (!Array.isArray(body.result))
           throw new Error("Cloudflare Worker domain inventory is malformed");
+        const answered =
+          body.result_info === undefined || body.result_info === null
+            ? undefined
+            : record(body.result_info).page;
+        if (answered !== undefined && answered !== page)
+          throw new Error("Cloudflare Worker domain list answered another page than asked");
         for (const raw of body.result) {
           const item = record(raw);
           if (
@@ -258,14 +268,21 @@ function cloudflareApi(account: string, token: string, origin: string) {
             throw new Error(
               "Cloudflare Worker domain readback is missing its ID, name, or service",
             );
+          if (seen.has(item.id))
+            throw new Error("Cloudflare Worker domain list repeated a domain across its pages");
+          seen.add(item.id);
           domains.push({ id: item.id, hostname: item.hostname, service: item.service });
         }
-        const total =
+        const info =
           body.result_info === undefined || body.result_info === null
             ? undefined
-            : record(body.result_info).total_count;
+            : record(body.result_info);
+        const total = info?.total_count;
         if (total !== undefined && (!Number.isSafeInteger(total) || (total as number) < 0))
           throw new Error("Cloudflare Worker domain pagination is malformed");
+        if (shape === undefined) shape = { total, perPage: info?.per_page };
+        else if (shape.total !== total || shape.perPage !== info?.per_page)
+          throw new Error("Cloudflare Worker domain list changed while it was read");
         // Without a total, an empty page ends the list; with one, the list ends when it is read.
         if (total === undefined ? body.result.length === 0 : domains.length >= (total as number))
           return domains;

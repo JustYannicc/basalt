@@ -61,6 +61,7 @@ test("the Workers custom domain list, as Cloudflare answers it with null errors,
   }
 });
 
+// The multi-page result_info below is written for the test: the recorded list is a single page.
 test("the domain list is read to its last page, as its total says", async () => {
   const total = 3;
   const page = (n: number, items: unknown[]) => ({
@@ -77,4 +78,15 @@ test("the domain list is read to its last page, as its total says", async () => 
   // A list that stops before its total proves nothing about the domains it never showed.
   pages = [page(1, [domain(1), domain(2)]), page(2, [])];
   await assert.rejects(readbacks.listWorkerDomains(), /ended before its total/);
+  // A page answered again (the page number ignored) never counts toward the total.
+  pages = [page(1, [domain(1), domain(2)]), page(1, [domain(1), domain(2)])];
+  await assert.rejects(readbacks.listWorkerDomains(), /another page than asked/);
+  pages = [page(1, [domain(1), domain(2)]), page(2, [domain(1), domain(2)])];
+  await assert.rejects(readbacks.listWorkerDomains(), /repeated a domain/);
+  // A total that shrinks between pages (a domain deleted meanwhile) can hide one: refused.
+  pages = [
+    page(1, [domain(1), domain(2)]),
+    { ...workerDomainList([]), result_info: { page: 2, per_page: 2, count: 0, total_count: 2 } },
+  ];
+  await assert.rejects(readbacks.listWorkerDomains(), /changed while it was read/);
 });
