@@ -139,8 +139,8 @@ export function lightHeld(jobs: readonly RerunJob[]) {
 }
 
 /**
- * A failed first attempt of main's push Check is re-run hosted when every job that failed, the
- * aggregate aside, ran on the light runners. The lane is main's alone, and a light runner that
+ * A failed first attempt of main's push Check is re-run hosted when every job that failed or timed
+ * out, the aggregate aside, ran on the light runners. The lane is main's alone, and a light runner that
  * breaks under a job (a tool it lacks, a lost connection) must not leave red the Check every release
  * waits on until someone looks. The aggregate fails whenever a need does, so its own failure
  * counts only when every need passed. A job anywhere else that didn't pass is a real failure: the
@@ -151,11 +151,17 @@ function lightFailure(run: Run, jobs: readonly RerunJob[]): RerunDecision {
   if (run.event !== "push" || run.branch !== "main")
     return { action: "none", why: "only main's push Check uses the light runners" };
   const onLight = (job: RerunJob) => !!job.runnerName && onLightRunners(job.labels);
-  const failed = jobs.filter((job) => job.conclusion === "failure");
-  const needs = failed.filter((job) => !isCheckJob(job.name));
+  // A light job past its timeout-minutes, or whose runner went away, ends cancelled after it took a
+  // runner: on main's Check that is the light runner breaking too (a person's cancel ends the run
+  // cancelled, which never comes here).
+  const broke = (job: RerunJob) =>
+    ["failure", "cancelled", "timed_out"].includes(job.conclusion ?? "");
+  const needs = jobs.filter((job) => !isCheckJob(job.name) && broke(job));
   // With every need passed, an aggregate that failed on a light runner broke there.
-  const light = (needs.length ? needs : failed).filter(onLight);
-  if (!light.length) return { action: "none", why: "no job failed on the light runners" };
+  const aggregate = jobs.filter((job) => isCheckJob(job.name) && job.conclusion === "failure");
+  const light = (needs.length ? needs : aggregate).filter(onLight);
+  if (!light.length)
+    return { action: "none", why: "no job failed or timed out on the light runners" };
   // rerun-failed-jobs re-runs cancelled jobs too, and a job past its timeout reads as cancelled:
   // any job off the light runners that didn't pass is a real failure, kept red for a person.
   const passed = ["success", "skipped", "neutral"];
@@ -266,7 +272,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     say(
       `Box re-run: not re-running, because ${decision.why} (${decision.failed.join(", ")}). ` +
         (run.conclusion === "failure"
-          ? `Jobs that failed on the light runners: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`
+          ? `Jobs that failed or timed out on the light runners: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`
           : `Jobs that never got a runner: ${decision.stuck.join(", ")}; they run on GitHub's runners when the run is re-run.`),
     );
   else {
@@ -283,7 +289,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       await api.call(`/actions/runs/${run.id}/rerun-failed-jobs`, { method: "POST" });
       say(
         run.conclusion === "failure"
-          ? `Box re-run: re-running main's Check on GitHub's runners, because only jobs on the light runners failed (${decision.stuck.length}).`
+          ? `Box re-run: re-running main's Check on GitHub's runners, because only jobs on the light runners failed or timed out (${decision.stuck.length}).`
           : `Box re-run: re-running the jobs the cancel stopped, ${decision.stuck.length} of them jobs that never got a runner, on GitHub's runners.`,
       );
     }
