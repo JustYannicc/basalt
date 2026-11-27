@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { captureHomeRequests } from "../../src/pool/model-history/capture.ts";
-import { sweepIdsPerSession, sweepReachIds } from "../../src/pool/model-history/capture-sweep.ts";
+import {
+  sweepCheckIds,
+  sweepIdsPerSession,
+  sweepReachIds,
+} from "../../src/pool/model-history/capture-sweep.ts";
+import { HistoryTimeoutFailure } from "../../src/pool/model-history/series-deadline.ts";
 import type { HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { historyBatchSize } from "../../src/pool/model-history/store.ts";
 import { addHome, admin, captured, fixture } from "./capture-fixture.ts";
@@ -59,6 +64,20 @@ test("under traffic above a page a session, the sweep keeps up with what the pag
           `session ${index} checked ${session.swept}: ${JSON.stringify(read)}`,
         );
     assert.equal(read.at(-1)!.swept, 0, `idle sessions check nothing: ${JSON.stringify(read)}`);
+  }));
+
+test("traffic above one check's ids a session is kept up with, not left to fall past the reach", () =>
+  fixture(async ({ db }) => {
+    const busy = (sweepCheckIds * 3) / 2;
+    const read = await sessions(db, [busy, busy, busy, busy, busy, 0, 0, 0]);
+    assert.equal(total(read), 5 * busy, `every row checked once: ${JSON.stringify(read)}`);
+    // Each session checks all the pages read two sessions before, so the sweep never falls behind.
+    for (const [index, session] of read.entries())
+      if (index >= 2)
+        assert.ok(
+          session.swept >= read[index - 2]!.fresh,
+          `session ${index} checked ${session.swept}: ${JSON.stringify(read)}`,
+        );
   }));
 
 test("rows that commit below the cursor after the pages passed them are captured, a batch a session", () =>
@@ -186,24 +205,35 @@ const sweepFields = async (db: HistoryDatabase) =>
     )
   ).rows[0];
 
+/** As the driver reports a statement Postgres cancelled at its limit. */
+const cancelled = () =>
+  Object.assign(new Error("canceling statement due to statement timeout"), {
+    code: "57014",
+    severity: "ERROR",
+  });
+/** As a capture session reports it: the timeout's own reason, with the driver's error as cause. */
+const sessionCancelled = () =>
+  Object.assign(new HistoryTimeoutFailure("statement_timeout"), { cause: cancelled() });
+
 /**
- * Sessions through `db`, with the sweep's check made to run out its limit when `cut` says so: as
- * Postgres does, the statement fails and leaves the transaction aborted. Records the session's
- * statement limit where it stores its cursor.
+ * Sessions through `db` whose sweep checks fail as `fail` says, by their place in the session: as
+ * Postgres fails a statement, it leaves the transaction aborted. Records the session's statement
+ * limit where it stores its cursor.
  */
-function cutChecks(
+function failingChecks(
   db: HistoryDatabase,
-  cut: () => boolean,
+  fail: (check: number) => Error | undefined,
   limits: string[] = [],
 ): HistoryDatabase {
+  let checks = 0;
   return {
     query: async (text, values) => {
-      if (text.startsWith("WITH s AS MATERIALIZED") && cut()) {
-        await db.query("SELECT 1/0").catch(() => {});
-        throw Object.assign(new Error("canceling statement due to statement timeout"), {
-          code: "57014",
-          severity: "ERROR",
-        });
+      if (text.startsWith("WITH s AS MATERIALIZED")) {
+        const error = fail(checks++);
+        if (error) {
+          await db.query("SELECT 1/0").catch(() => {});
+          throw error;
+        }
       }
       if (text.includes("UPDATE basalt_model_history_cursor SET sweep_id"))
         limits.push(
@@ -223,25 +253,62 @@ test("a check cut short costs only that session's sweep: its pages land, and the
     assert.deepEqual(pending, { id: "0", upper: "300" });
     // Rows the cut session's own page must still capture.
     await addHome(db, 50);
-    const cut = await captureHomeRequests(cutChecks(db, () => true));
+    const limits: string[] = [];
+    const cut = await captureHomeRequests(failingChecks(db, () => sessionCancelled(), limits));
     assert.ok(cut.state === "active");
     assert.equal(cut.fresh, 50, "the forward page landed");
     assert.equal(cut.swept, 0);
     assert.equal(cut.sweepDeferred, true);
     assert.equal(await captured(db), 350);
     assert.deepEqual(await sweepFields(db), pending, "the range is neither skipped nor finished");
-    const limits: string[] = [];
     const after = [];
     for (let session = 0; session < 3; session++) {
-      const result = await captureHomeRequests(cutChecks(db, () => false, limits));
+      const result = await captureHomeRequests(failingChecks(db, () => undefined, limits));
       assert.ok(result.state === "active");
       after.push(result.swept);
     }
     assert.deepEqual(after, [300, 50, 0], "every id checked once after the cut");
-    assert.ok(
-      limits.every((limit) => limit === "5s"),
-      `the session's own limit is back after its check: ${JSON.stringify(limits)}`,
+    assert.deepEqual(limits, ["5s", "5s", "5s", "5s"], "the session's own limit is back each time");
+  }));
+
+test("a session's later check cut short keeps what its earlier checks did", () =>
+  fixture(async ({ db }) => {
+    const rows = sweepCheckIds + 500;
+    await sessions(db, [rows, 0]);
+    assert.deepEqual(await sweepFields(db), { id: "0", upper: String(rows) });
+    const cut = await captureHomeRequests(
+      failingChecks(db, (check) => (check === 1 ? cancelled() : undefined)),
     );
+    assert.ok(cut.state === "active");
+    assert.equal(cut.swept, sweepCheckIds);
+    assert.equal(cut.sweepDeferred, true);
+    assert.deepEqual(
+      await sweepFields(db),
+      { id: String(sweepCheckIds), upper: String(rows) },
+      "the first check's ids are done; the rest of the range waits",
+    );
+    const after = await sessions(db, [0, 0, 0]);
+    assert.deepEqual(
+      after.map((session) => session.swept),
+      [500, 0, 0],
+    );
+  }));
+
+test("a check failing any other way fails its session and keeps nothing", () =>
+  fixture(async ({ db }) => {
+    await sessions(db, [300, 0]);
+    const before = await sweepFields(db);
+    await addHome(db, 50);
+    const broken = Object.assign(new Error("fixture failure"), {
+      code: "XX000",
+      severity: "ERROR",
+    });
+    await assert.rejects(
+      captureHomeRequests(failingChecks(db, () => broken)),
+      (error) => error === broken,
+    );
+    assert.equal(await captured(db), 300, "no page ran");
+    assert.deepEqual(await sweepFields(db), before);
   }));
 
 test(

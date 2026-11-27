@@ -80,15 +80,19 @@ export function gatewayUnavailable(
         }
         const model = await requestedModel;
         if (caller)
-          await withHistoryDatabase(env.POOL_AUTH_DATABASE?.connectionString, (db) =>
-            recordGatewayRefusal(db, {
-              ...caller,
-              requestId: attemptRequestId,
-              at: new Date().toISOString(),
-              pathname,
-              latencyMs: performance.now() - started,
-              requestedModel: model,
-            }),
+          await withHistoryDatabase(
+            env.POOL_AUTH_DATABASE?.connectionString,
+            (db) =>
+              recordGatewayRefusal(db, {
+                ...caller,
+                requestId: attemptRequestId,
+                at: new Date().toISOString(),
+                pathname,
+                latencyMs: performance.now() - started,
+                requestedModel: model,
+              }),
+            // Its timeouts keep their own reason, so the failure line can name it.
+            { timeoutFailure: "history" },
           );
       })().catch((error: unknown) =>
         console.error("POOL_MODEL_HISTORY_FAILURE count=1", reliabilityFailure(error)),

@@ -851,7 +851,7 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
           runModelHistoryPass(this.modelHistoryPass(), progress),
         ),
       )
-      // The reliability line's closed words: a failure kind and an SQLSTATE, never a message.
+      // The reliability line's closed words: a failure kind and, for a database error, its SQLSTATE.
       .catch((error: unknown) =>
         console.error("POOL_MODEL_HISTORY_FAILURE count=1", reliabilityFailure(error)),
       )
@@ -874,7 +874,8 @@ export class PoolContainer extends DurableObject<PoolEnvironment> {
     const target = this.env.POOL_AVAILABILITY_TARGET;
     const stopped = () => this.handover.draining;
     return {
-      session: (work) => withHistoryDatabase(connection, work),
+      // Its timeouts keep their own reason, so the failure line can name it.
+      session: (work) => withHistoryDatabase(connection, work, { timeoutFailure: "history" }),
       publish: (changes) =>
         publishPoolChanges(this.env.TOOLS_SERVICE, this.env.POOL_APP_SIGNING_KEY, changes),
       ...(validProbeTarget(target)
