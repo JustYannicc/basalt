@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import type { PoolReliability, PoolReliabilitySlo } from "../../apps/pool/reliability-contract.ts";
 import { runAvailabilityProbe } from "./availability-schedule.ts";
+import type { ProbeResult } from "./availability.ts";
 import { describeUndelivered } from "../telemetry/pool-monitor.ts";
 
 // No alert service is configured, so nothing the probe sends is accepted: the verdict must still
 // be readable, and the run's failure must say what went unanswered.
 const env = { POOL_AVAILABILITY_TARGET: "fixture-pool" };
+const ran = (lines: unknown[][]) =>
+  lines.filter(([name]) => name === "POOL_PROBE_RAN").map(([, value]) => value);
 const historyPool = "0123456789abcdef";
 
 const counts = (requests: number, failures: Record<number, number> = {}) => ({
@@ -35,6 +38,8 @@ async function probeRun(
     slo?: PoolReliabilitySlo;
     rollupStuck?: readonly string[] | "unread";
     captureStuck?: readonly string[];
+    target?: string;
+    probe?: () => Promise<ProbeResult>;
   },
 ) {
   const lines: unknown[][] = [];
@@ -43,8 +48,8 @@ async function probeRun(
       lines.push(args);
     });
   const failure = await runAvailabilityProbe(
-    env,
-    async () => ({ ok: true, failures: [] }),
+    options.target === undefined ? env : { POOL_AVAILABILITY_TARGET: options.target },
+    options.probe ?? (async () => ({ ok: true, failures: [] })),
     options.slo ? async () => options.slo! : undefined,
     undefined,
     undefined,
@@ -63,7 +68,7 @@ async function probeRun(
   const verdicts = lines
     .filter(([name]) => name === "POOL_PROBE_VERDICT")
     .map(([, value]) => value);
-  return { verdicts, failure };
+  return { verdicts, failure, ran: ran(lines) };
 }
 
 test("a pool below its target writes its verdict, windows and counts though no alert is accepted", async (context) => {
@@ -212,4 +217,42 @@ test("each refused part is named with what it carried and the status the alert s
     "check_in:in_progress:429 check_in:error:429 event:pool_availability_failure:503 " +
       "event:pool_request_failing_now:no_answer event:pool_capture_hours_stuck:unconfigured",
   );
+});
+
+test("each run writes one closed line naming its side, never the target", async (context) => {
+  const breached = {
+    target: 99,
+    state: "breached",
+    captureAt: null,
+    current: window(20, { 503: 2 }),
+    hour: window(400, { 503: 6 }),
+    day: window(4_000, { 503: 6 }),
+  } satisfies PoolReliabilitySlo;
+  const down = async (): Promise<ProbeResult> => ({
+    ok: false,
+    failures: [{ guard: "runtime", reason: "stopped" }],
+  });
+  for (const [options, line] of [
+    [
+      { slo: breached },
+      { target: "pool", verdict: "failing", failed: "reliability", sentry: "no" },
+    ],
+    [
+      { rollupStuck: "unread" },
+      { target: "pool", verdict: "failing", failed: "reliability", sentry: "no" },
+    ],
+    [{ probe: down }, { target: "pool", verdict: "failing", failed: "availability", sentry: "no" }],
+    [
+      { probe: down, slo: breached },
+      { target: "pool", verdict: "failing", failed: "both", sentry: "no" },
+    ],
+    [
+      { target: "not a pool id!" },
+      { target: "invalid", verdict: "failing", failed: "availability", sentry: "no" },
+    ],
+  ] as const) {
+    const { ran: lines } = await probeRun(context, options);
+    assert.deepEqual(lines, [line]);
+    assert.doesNotMatch(JSON.stringify(lines), /fixture-pool|not a pool id/);
+  }
 });

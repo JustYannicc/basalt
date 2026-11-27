@@ -4,7 +4,7 @@ import { PGlite } from "../../.upstream/node_modules/@electric-sql/pglite/dist/i
 import { digest } from "../../src/pool/backend-users.ts";
 import { migrateModelHistory, type HistoryDatabase } from "../../src/pool/model-history/schema.ts";
 import { readPoolReliabilitySlo } from "../../src/pool/model-history/reliability-slo.ts";
-import { historyMemoryOwnerFixture } from "./history-fixture.ts";
+import { historyMemoryOwnerFixture, homeMetadataFixture } from "./history-fixture.ts";
 
 const now = Date.parse("2026-11-18T12:00:00Z"),
   at = new Date(now).toISOString();
@@ -27,7 +27,7 @@ async function pool(
   };
   await historyMemoryOwnerFixture(db);
   await migrateModelHistory(db);
-  await db.query("CREATE TABLE usage (id bigint PRIMARY KEY)");
+  await homeMetadataFixture(db);
   const ids = {
     pool: (await digest("fixture")).slice(0, 16),
     home: await digest("home-local-v1"),

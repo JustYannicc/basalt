@@ -7,6 +7,10 @@ import { decodeProviderApplication } from "./runtime-provider/application.ts";
 import { providerDigest } from "./runtime-provider/canonical.ts";
 import { runtimeApplicationSettings } from "./runtime-provider/settings.ts";
 import { RuntimeProviderReader, ProviderObservationRefused } from "./runtime-provider/read.ts";
+import {
+  destroyedInstance as destroyed,
+  runningInstance as running,
+} from "../../scripts/pool-fleet/test/cloudflare-shapes.ts";
 
 async function fixture(
   options: {
@@ -187,24 +191,6 @@ test("retirement releases no resource guard until the exact provider instance is
   }
 });
 
-// The two instance shapes production returned on 22 Nov 2026, ids, times and places replaced:
-// a destroyed instance still listed under state=active, and a running one.
-const destroyed = (id: string, image: string, application: string) => ({
-  id,
-  application_id: application,
-  status: { state: "inactive", updated_at: "2026-11-22T14:47:13Z" },
-  image,
-});
-const running = (id: string, image: string, application: string) => ({
-  id,
-  application_id: application,
-  started_at: "2026-11-22T12:22:43.448999936Z",
-  status: { state: "running", updated_at: "2026-11-22T12:22:43.448999936Z", exit_code: 0 },
-  location: { name: "synthetic01", region: "WEUR" },
-  image,
-  name: "synthetic-instance",
-});
-
 test("the production listing, one destroyed instance beside none running, is absent once the driver reported it stopped", async () => {
   const f = await fixture({ listing: (target, image, app) => [destroyed(target, image, app)] });
   const stopped = { driverStopped: true } as const;
@@ -361,18 +347,34 @@ test("an instance in any other state still counts as present, and only a running
   );
 });
 
-test("a sibling in any state but running or inactive still refuses observation and absence, as before", async () => {
+test("a sibling no ledger counts, in any state but running or inactive, refuses absence and a cell's retire read, never another named observation", async () => {
   const f = await fixture({ absent: true, siblingState: "provisioning" });
   const stopped = { driverStopped: true } as const;
   assert.equal(
     await f.reader.absent(f.expected, f.manifest.target.instanceId, undefined, stopped),
     false,
   );
-  const present = await fixture({ siblingState: "provisioning" });
-  await assert.rejects(
-    present.reader.observe("attested", present.expected, present.manifest.target.instanceId),
-    /^Error: Pool provider observation refused$/,
+  const retiring = await fixture({ siblingState: "provisioning" });
+  assert.deepEqual(
+    await refusal(
+      retiring.reader.retiring(retiring.expected, retiring.manifest.target.instanceId, new Set()),
+    ),
+    refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
   );
+  // A cell's activation, and the root's recovery and retirement, read alike.
+  for (const read of ["attested", "recovery", "root_retire"] as const) {
+    const present = await fixture({ siblingState: "provisioning" });
+    const proof = await present.reader.observe(
+      read,
+      present.expected,
+      present.manifest.target.instanceId,
+    );
+    assert.equal(
+      "instanceId" in proof ? proof.instanceId : undefined,
+      present.manifest.target.instanceId,
+      read,
+    );
+  }
 });
 
 test("an application counts as empty only with no listed instance at all, a stopped one included", async () => {
@@ -632,10 +634,13 @@ const inState = (shape: ReturnType<typeof running>, state: string) => ({
   status: { ...shape.status, state },
 });
 
-test("a sibling still stopping or starting beside the running target refuses with its closed state", async () => {
+test("an attested start beside a sibling still stopping or starting proves the named instance, while a cell's retirement and absence wait on one no ledger counts", async (context) => {
+  const lines = context.mock.method(console, "info", () => {});
   for (const [state, closed] of [
     ["stopping", "stopping"],
     ["provisioning", "provisioning"],
+    ["failed", "failed"],
+    ["unhealthy", "unhealthy"],
     ["unknown", "unknown"],
     ["hibernating", "other"],
   ] as const) {
@@ -645,10 +650,183 @@ test("a sibling still stopping or starting beside the running target refuses wit
         inState(running("sibling", image, app), state),
       ],
     });
+    const proof = await f.reader.observe("attested", f.expected, f.manifest.target.instanceId);
+    assert.equal(
+      "instanceId" in proof ? proof.instanceId : undefined,
+      f.manifest.target.instanceId,
+      state,
+    );
+    // The retire read that begins a release refuses with the sibling's closed state.
+    assert.deepEqual(
+      await refusal(f.reader.retiring(f.expected, f.manifest.target.instanceId, new Set())),
+      refused("retire", { reason: "sibling_unsettled", state: closed }),
+      state,
+    );
+    // The same listing still proves no absence of a gone target: a sibling may yet start or stop.
+    const gone = await fixture({
+      listing: (_target, image, app) => [inState(running("sibling", image, app), state)],
+    });
+    assert.equal(
+      await gone.reader.absent(gone.expected, gone.manifest.target.instanceId),
+      false,
+      state,
+    );
+  }
+  assert.deepEqual(
+    lines.mock.calls.map((call) => call.arguments),
+    [
+      ...Array.from({ length: 5 }, () => ["POOL_PROVIDER_ABSENCE", { reason: "instances" }]),
+      ["POOL_PROVIDER_ABSENCE", { reason: "unknown_state" }],
+    ],
+  );
+});
+
+test("a sibling the ledger counts holds neither a fleet cell's absence nor its retire read, whatever it is doing", async () => {
+  const stopped = { driverStopped: true } as const;
+  for (const state of ["provisioning", "stopping", "stopped", "failed", "unhealthy", "unknown"]) {
+    const sibling = (image: string, app: string) => inState(running("sibling", image, app), state);
+    const gone = await fixture({
+      listing: (target, image, app) => [destroyed(target, image, app), sibling(image, app)],
+    });
+    const target = gone.manifest.target.instanceId;
+    // The ledger counts the cell's own row too; that never stands in for the cell's own absence.
+    const counted = new Set([target, "sibling"]);
+    assert.equal(
+      await gone.reader.absent(gone.expected, target, undefined, { ...stopped, counted }),
+      true,
+      state,
+    );
+    assert.equal(
+      await gone.reader.absent(gone.expected, target, undefined, {
+        ...stopped,
+        counted: new Set([target]),
+      }),
+      false,
+      `${state}, uncounted`,
+    );
+    const present = await fixture({
+      listing: (target, image, app) => [running(target, image, app), sibling(image, app)],
+    });
+    await present.reader.retiring(present.expected, target, counted);
+    assert.deepEqual(
+      await refusal(present.reader.retiring(present.expected, target, new Set([target]))),
+      refused("retire", { reason: "sibling_unsettled", state }),
+      `${state}, uncounted`,
+    );
+  }
+});
+
+test("beside a counted sibling, an uncounted unsettled one still holds, and the cell's own instance is still judged", async () => {
+  const stopped = { driverStopped: true } as const;
+  const counted = new Set(["counted"]);
+  const listing =
+    (state: string, uncounted?: string) => (target: string, image: string, app: string) => [
+      inState(running(target, image, app), state),
+      inState(running("counted", image, app), "stopping"),
+      ...(uncounted ? [inState(running("stray", image, app), uncounted)] : []),
+    ];
+  const absent = async (state: string, uncounted?: string) => {
+    const f = await fixture({ listing: listing(state, uncounted) });
+    const id = f.manifest.target.instanceId;
+    return f.reader.absent(f.expected, id, undefined, {
+      ...stopped,
+      counted: new Set([...counted, id]),
+    });
+  };
+  assert.equal(await absent("inactive"), true);
+  assert.equal(await absent("inactive", "provisioning"), false, "an uncounted start holds");
+  assert.equal(await absent("inactive", "stopping"), false, "an uncounted stop holds");
+  assert.equal(await absent("inactive", "running"), true, "a running one settled");
+  assert.equal(await absent("inactive", "inactive"), true, "a destroyed one settled");
+  // Counting the cell's own instance never makes it absent: it must still be gone.
+  assert.equal(await absent("running"), false);
+  assert.equal(await absent("stopping"), false);
+  const f = await fixture({ listing: listing("running", "provisioning") });
+  const id = f.manifest.target.instanceId;
+  assert.deepEqual(
+    await refusal(f.reader.retiring(f.expected, id, new Set([...counted, id]))),
+    refused("retire", { reason: "sibling_unsettled", state: "provisioning" }),
+  );
+  // A state the reader can't read refuses the absence even for a counted instance, so the retire
+  // read that would begin that release refuses too, and the row waits draining.
+  const unread = await fixture({
+    listing: (target, image, app) => [
+      destroyed(target, image, app),
+      inState(running("counted", image, app), "hibernating"),
+    ],
+  });
+  assert.equal(
+    await unread.reader.absent(unread.expected, unread.manifest.target.instanceId, undefined, {
+      ...stopped,
+      counted,
+    }),
+    false,
+  );
+  const unreadRunning = await fixture({
+    listing: (target, image, app) => [
+      running(target, image, app),
+      inState(running("counted", image, app), "hibernating"),
+    ],
+  });
+  const own = unreadRunning.manifest.target.instanceId;
+  assert.deepEqual(
+    await refusal(
+      unreadRunning.reader.retiring(unreadRunning.expected, own, new Set([...counted, own])),
+    ),
+    refused("retire", { reason: "sibling_unsettled", state: "other" }),
+  );
+});
+
+// What the attested proof still judges, each beside a sibling that is stopping: the named instance.
+test("beside a stopping sibling, the proof still refuses a named instance not running, on another image, or an application that changed", async () => {
+  const stopping = (image: string, app: string) =>
+    inState(running("sibling", image, app), "stopping");
+  const cases = [
+    // Not running: still starting, stopping, destroyed, in an undocumented state, or not listed.
+    ...["provisioning", "stopping", "inactive", "hibernating"].map(
+      (state) =>
+        [
+          (target: string, image: string, app: string) => [
+            inState(running(target, image, app), state),
+            stopping(image, app),
+          ],
+          {},
+          { reason: "instance_not_running" },
+        ] as const,
+    ),
+    [
+      (_target: string, image: string, app: string) => [
+        running("other", image, app),
+        stopping(image, app),
+      ],
+      {},
+      { reason: "instance_not_running" },
+    ],
+    // Running, but not the admitted image.
+    [
+      (target: string, image: string, app: string) => [
+        running(target, image.replace(/@sha256:.*/u, `@sha256:${"f".repeat(64)}`), app),
+        stopping(image, app),
+      ],
+      {},
+      { reason: "mismatch", field: "image" },
+    ],
+    // Running the admitted image, while the application was recreated between the two reads.
+    [
+      (target: string, image: string, app: string) => [
+        running(target, image, app),
+        stopping(image, app),
+      ],
+      { recreated: true },
+      { reason: "changed_between_reads" },
+    ],
+  ] as const;
+  for (const [index, [listing, options, why]] of cases.entries()) {
+    const f = await fixture({ listing, ...options });
     assert.deepEqual(
       await refusal(f.reader.observe("attested", f.expected, f.manifest.target.instanceId)),
-      refused("attested", { reason: "sibling_unsettled", state: closed }),
-      state,
+      refused("attested", why),
+      `case ${index}`,
     );
   }
 });
@@ -667,7 +845,7 @@ test("each attested refusal of the instance listing carries its own closed reaso
   ] as const) {
     const f = await fixture(options);
     assert.deepEqual(
-      await refusal(f.reader.observe("retire", f.expected, f.manifest.target.instanceId)),
+      await refusal(f.reader.retiring(f.expected, f.manifest.target.instanceId, new Set())),
       refused("retire", why),
       JSON.stringify(options),
     );

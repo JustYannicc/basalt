@@ -5,6 +5,7 @@ import { decodeTunnelFrame, tunnelLimits } from "../contracts/tunnel.ts";
 import type { Capability, ConnectionTransport } from "../contracts/connection.ts";
 import type { ClientOperation } from "../contracts/transport.ts";
 import { LocalRequestRefused } from "../contracts/model-error.ts";
+import { forwardedRequestHeaders } from "../contracts/tunnel-headers.ts";
 
 type DeviceTransport = Extract<ConnectionTransport, { mode: "device" }>;
 function operation(
@@ -14,22 +15,8 @@ function operation(
   signal: AbortSignal,
   websocket = false,
 ) {
-  const headers: Record<string, string> = {};
+  const headers = forwardedRequestHeaders(incoming.headers, capability);
   const url = new URL(incoming.url ?? "/", "http://localhost");
-  for (const key of [
-    "accept",
-    "content-type",
-    "content-encoding",
-    "mcp-session-id",
-    "mcp-protocol-version",
-    "last-event-id",
-    "anthropic-version",
-    "anthropic-beta",
-    "openai-beta",
-  ]) {
-    const value = incoming.headers[key];
-    if (typeof value === "string") headers[key] = value;
-  }
   let checked;
   try {
     checked = decodeTunnelFrame(
