@@ -718,6 +718,26 @@ test("every held row is reserved, not only the first or the repaired one", async
       ),
       JSON.stringify(held),
     );
+  // The case is folded on both sides: an upper-case live id or a mixed-case row name.
+  for (const [actual, row, reserved] of [
+    [live({ applicationId: "APPLICATION-1" }), placeholder(), { applicationId: "application-1" }],
+    [
+      live({ applicationName: "GateWay" }),
+      placeholder({
+        props: { name: "GateWay", className: "RouteGateway" },
+        attr: { applicationId: "dev:precreated", applicationName: "GateWay", accountId: ACCOUNT },
+      }),
+      { applicationId: "held-live", applicationName: "gateway" },
+    ],
+  ] as const)
+    refusedAsTaken(
+      await commandRun(
+        { RouteGateway: row, PoolWorker: worker, Held: { attr: reserved } },
+        { status: "drifted", actual, account: ACCOUNT },
+        policy,
+      ),
+      JSON.stringify(reserved),
+    );
   // Applications of their own leave a legitimate adopt alone.
   const own = await commandRun(
     {
