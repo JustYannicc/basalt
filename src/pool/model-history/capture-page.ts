@@ -1,3 +1,4 @@
+import { markWrittenHours } from "./capture-hours-mark.ts";
 import { homeHistorySelect, homeRequest } from "./home.ts";
 import { counter, invalidHistory } from "./record.ts";
 import type { HistoryDatabase } from "./schema.ts";
@@ -39,7 +40,11 @@ const pageRead = `WITH cursor AS MATERIALIZED (
  * included. `saved` counts the incoming ids already retained, so the caller knows whether
  * ON CONFLICT skipped a row this statement's snapshot could not see.
  */
-const pageWrite = (selected: string, types: string) => `WITH incoming AS MATERIALIZED (
+const pageWrite = (
+  selected: string,
+  types: string,
+  captureHours: boolean,
+) => `WITH incoming AS MATERIALIZED (
     SELECT * FROM jsonb_to_recordset($1::jsonb) AS incoming(${types})
   ), saved AS MATERIALIZED (
     SELECT incoming.id, saved.source IS DISTINCT FROM incoming.source
@@ -49,8 +54,8 @@ const pageWrite = (selected: string, types: string) => `WITH incoming AS MATERIA
   ), inserted AS (
     INSERT INTO basalt_model_requests (${selected})
     SELECT ${selected} FROM incoming WHERE NOT EXISTS (SELECT 1 FROM saved WHERE differs)
-    ON CONFLICT (id) DO NOTHING RETURNING id
-  ), moved AS (
+    ON CONFLICT (id) DO NOTHING RETURNING id, pool, timestamp, source
+  ),${captureHours ? ` ${markWrittenHours("inserted", "$2")},` : ""} moved AS (
     UPDATE basalt_model_history_cursor SET forward_id=$3::bigint,updated_at=CURRENT_TIMESTAMP
     WHERE source=$2 AND NOT EXISTS (SELECT 1 FROM saved WHERE differs) RETURNING 1
   )
@@ -67,7 +72,7 @@ const pageWrite = (selected: string, types: string) => `WITH incoming AS MATERIA
 export async function captureForwardPage(
   db: HistoryDatabase,
   source: string,
-  appAttribution: boolean,
+  { appAttribution, captureHours }: { appAttribution: boolean; captureHours: boolean },
 ): Promise<ForwardPage> {
   await db.query("BEGIN");
   try {
@@ -87,7 +92,7 @@ export async function captureForwardPage(
     const through = counter(rows.at(-1)!.source_id) ?? invalidHistory();
     const { selected, types } = historyRecordLayout(appAttribution);
     const written = (
-      await db.query(pageWrite(selected, types), [
+      await db.query(pageWrite(selected, types, captureHours), [
         JSON.stringify(records.map((row) => recordValues(row, appAttribution))),
         source,
         through,
