@@ -42,8 +42,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (!resolved)
     console.log("::warning::Changed inputs could not be resolved; this is the full lane.");
   console.log("Lane: " + lane);
-  // The fast job's e2e config step runs on the configs this lane reaches, as select computes
-  // them for the heavy jobs, so fast need not wait for select.
+  // The e2e configs this lane reaches, for the run's record. The fast job runs all of them in
+  // every Check, so no step reads this.
   const configs = fastConfigs(selection.full ? null : selection.declaredFiles);
   // lane_base is what the aggregate compares with select's lane and comparison commit.
   if (env.GITHUB_OUTPUT)

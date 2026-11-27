@@ -164,13 +164,32 @@ const blockAt = (lines, index) => {
   return record.join("\n");
 };
 
-/** A sweep's per-app failure, reduced to the error class from a closed list and the app's kind. */
+// A source failure's reason, the SDK's closed list (`SourceError` in its source contract).
+const sourceReasons = new Set([
+  "not-found",
+  "conflict",
+  "invalid-source",
+  "git",
+  "storage",
+  "limit",
+  "protected",
+]);
+
+/**
+ * A sweep's per-app failure, reduced to the error class from a closed list, a source failure's
+ * reason when it is one of that list's words, and the app's kind.
+ */
 const sweepFailure = (record) => {
   const cause = field(record, "cause");
+  const reason = field(record, "reason");
   const entry = field(record, "entry");
+  const named = cause !== undefined && sweepCauses.has(cause) ? cause : "other";
   return {
     message: sweepMessage,
-    cause: cause !== undefined && sweepCauses.has(cause) ? cause : "other",
+    cause: named,
+    ...(named === "SourceError" && reason !== undefined && sourceReasons.has(reason)
+      ? { reason }
+      : {}),
     ...(entry !== undefined && appKind.test(entry) ? { app: entry } : {}),
   };
 };
@@ -203,4 +222,97 @@ export const provisioningHistory = (jobs, log) => {
     logged.get(job).push({ message, ...(reason === undefined ? {} : { reason }) });
   });
   return jobs.map((job) => ({ ...job, logged: logged.get(job.id) }));
+};
+
+// The repository steps that log their own failure before it becomes a `git` source failure
+// (carry 0809), and the Git adapter's own failure line. Both run where the failing call runs,
+// sometimes in another Worker, so they are read run-wide rather than per job.
+const repositoryMessages = ["Repository step failed", "Managed Git operation failed"];
+const repositorySteps = new Set([
+  "credentials",
+  "decrypt",
+  "history",
+  "resolve",
+  "tree",
+  "blobs",
+  "file",
+  "initialize",
+  "coordinator-open",
+  "coordinator-token",
+  "coordinator-mint",
+  "coordinator-history",
+  "coordinator-resolve",
+  "coordinator-tree",
+  "coordinator-blobs",
+  "coordinator-file",
+  "coordinator-create",
+  "coordinator-initialize",
+]);
+// The Git adapter's own fixed list (`cloudflare-git.ts`).
+const gitCategories = [
+  "redirect",
+  "signal",
+  "header",
+  "body",
+  "url",
+  "certificate",
+  "request",
+  "fetch",
+  "i/o",
+];
+// The provider failure code's own words (`provider-failure.ts`); its `instance.*` form is read from
+// message text, so it is never published.
+const failureWords = new Set([
+  "non_error",
+  "internal",
+  "overloaded",
+  "memory_limit",
+  "cpu_limit",
+  "reset",
+  "disconnected",
+  "timeout",
+  "unclassified",
+]);
+// An error class: a tag or constructor name, or one of those words.
+const errorClass = (value) => /^[A-Z][A-Za-z0-9]{0,39}$/.test(value) || failureWords.has(value);
+// A provider's own code (`NOT_FOUND`), one of those words, or a storage status.
+const failureCode = (value) =>
+  /^[A-Z][A-Z_]{0,39}$/.test(value) || failureWords.has(value) || /^r2\.\d{4,5}$/.test(value);
+
+/**
+ * Each distinct repository failure the Cloud log recorded, with how often: its step or the Git
+ * adapter's line, the error class, the source failure's reason, an HTTP status and the adapter's
+ * categories, each only from a closed list or shape, never a message, URL or stack frame.
+ */
+export const repositoryFailures = (log) => {
+  const lines = log.split("\n");
+  const seen = new Map();
+  lines.forEach((line, index) => {
+    const message = repositoryMessages.find((name) => line.includes(name));
+    if (message === undefined) return;
+    const record = blockAt(lines, index);
+    const at = record.lastIndexOf("annotations");
+    const fields = at < 0 ? record : record.slice(0, at);
+    const step = field(fields, "step");
+    const error = field(fields, "error") ?? field(fields, "type");
+    const reason = field(fields, "reason");
+    const code = field(fields, "code");
+    const status = Number(/["']?\bstatus\b["']?\s*[:=]\s*(\d{3})\b/.exec(fields)?.[1]);
+    const list = /["']?\bcategories\b["']?\s*[:=]\s*\[([^\]]*)\]/.exec(fields)?.[1] ?? "";
+    const categories = gitCategories.filter(
+      (word) => list.includes(`'${word}'`) || list.includes(`"${word}"`),
+    );
+    const entry = {
+      message,
+      ...(step !== undefined && repositorySteps.has(step) ? { step } : {}),
+      ...(error !== undefined && errorClass(error) ? { error } : {}),
+      ...(code !== undefined && failureCode(code) ? { code } : {}),
+      ...(reason !== undefined && sourceReasons.has(reason) ? { reason } : {}),
+      ...(status >= 100 && status <= 599 ? { status } : {}),
+      ...(categories.length > 0 ? { categories } : {}),
+    };
+    const key = JSON.stringify(entry);
+    seen.set(key, { ...entry, count: (seen.get(key)?.count ?? 0) + 1 });
+  });
+  return [...seen.values()].slice(0, 20);
 };
