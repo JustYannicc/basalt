@@ -1,7 +1,9 @@
 // One repository's tag list, read page by page (OCI distribution) and failing closed. Each stop says
-// which rule tripped, on which page and after how many tags, and carries a record of closed facts:
-// counts, booleans, known names and character classes, never a tag, a cursor value or a URL.
-import { fail, tagPageOf } from "./answers.mjs";
+// which rule tripped, on which page and after how many entries, and carries a record of closed facts:
+// counts, booleans, known names and character classes, never an entry, a cursor value or a URL.
+// Cloudflare's registry lists one `sha256:<hex>` entry for every manifest besides the tags; such an
+// entry is a digest reference, held to the stage's own digest rule, and never read as a tag.
+import { DIGEST, fail, tagPageOf } from "./answers.mjs";
 
 /** A registry tag (OCI distribution): no separator, and no leading dot, so never a dot segment. */
 export const TAG = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/u;
@@ -10,6 +12,8 @@ export const MAX_TAG_PAGES = 100;
 const CURSOR_NAME = /^[A-Za-z_]{1,32}$/u;
 const CURSOR_VALUE = /^[A-Za-z0-9._~+/=:-]{1,1024}$/u;
 const MAX_CURSOR_PARAMS = 4;
+/** OCI's digest grammar, only to record whether a refused entry looked like one. */
+const DIGEST_SHAPE = /^[a-z0-9]+(?:[+._-][a-z0-9]+)*:[a-zA-Z0-9=_-]+$/u;
 /** Parameter names a record may name; any other is recorded as `other`. */
 const KNOWN_PARAMS = new Set(["n", "last", "cursor", "page", "next", "marker", "token"]);
 const CLASSES = [
@@ -166,10 +170,10 @@ export async function readTagPages(first, fetchPage) {
     }
     const found = answer.tags;
     pages.push({ status: 200, tags: found.length, next: answer.next });
-    const unnamed = found.find((tag) => !TAG.test(tag));
+    const unnamed = found.find((entry) => !TAG.test(entry) && !DIGEST.test(entry));
     if (unnamed !== undefined)
       throw stop("cannot-name", "A registry tag list answered a tag it cannot name", {
-        tag: shapeOf(unnamed),
+        tag: Object.freeze({ ...shapeOf(unnamed), digestShaped: DIGEST_SHAPE.test(unnamed) }),
       });
     const onPage = new Set(found);
     const repeats = found.filter((tag) => seen.has(tag)).length;
@@ -188,8 +192,26 @@ export async function readTagPages(first, fetchPage) {
     if (!answer.next) return Object.freeze(tags);
     const cursor = cursorOf(answer.target, first);
     pages.at(-1).link = cursor.facts;
-    if (!found.length)
+    // An empty page ends the list when its link leads nowhere new: every cursor value empty, or the
+    // very query just sent. An empty page whose link carries a fresh cursor could hide the rest.
+    if (!found.length) {
+      let pairs;
+      try {
+        pairs =
+          answer.target === undefined
+            ? undefined
+            : queryPairs(new URL(answer.target, first).search);
+      } catch {
+        pairs = undefined;
+      }
+      // `n` is a page size, not a cursor.
+      if (
+        pairs !== undefined &&
+        (pairs.every(([name, value]) => name === "n" || value === "") || cursor.url === url)
+      )
+        return Object.freeze(tags);
       throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
+    }
     if (cursor.url === undefined)
       throw stop("link-not-plain", "A registry tag list's next link is not plain cursor values");
     url = cursor.url;
