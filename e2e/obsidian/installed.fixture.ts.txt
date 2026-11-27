@@ -13,7 +13,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Deferred, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
 import { pgliteLayer } from "fumadb-effect/pglite";
-import { nativeRepositories } from "../../.upstream/packages/app-source/src/node.ts";
+import { nativeRepositories, systemGit } from "../../.upstream/packages/app-source/src/node.ts";
 import {
   createExecutor,
   makeExecutorStorage,
@@ -22,6 +22,7 @@ import {
   CurrentActor,
   ExecutorApi,
   executorHandlers,
+  requestRejections,
   type Executor,
 } from "../../.upstream/packages/sdk/src/core.ts";
 import { filesystemBlobStore, workerdApps } from "../../.upstream/packages/sdk/src/node.ts";
@@ -95,7 +96,7 @@ const verify = async () => {
             database: storage,
             secret,
             blobs,
-            git: nativeRepositories(join(directory, "repositories")),
+            git: nativeRepositories(join(directory, "repositories"), systemGit),
             runtime: host.runtime,
             workflows: host.workflows,
             registry: memoryRegistry(),
@@ -229,7 +230,10 @@ const verify = async () => {
           assert.match(JSON.stringify(quotaResult), /limit 1024/);
           assert.equal(yield* Effect.promise(() => f.service.read({ path: "over.md" })), null);
           const routes = Layer.mergeAll(
-            HttpApiBuilder.layer(ExecutorApi).pipe(Layer.provide(executorHandlers(executor))),
+            HttpApiBuilder.layer(ExecutorApi).pipe(
+              Layer.provide(executorHandlers(executor)),
+              Layer.provide(requestRejections),
+            ),
             mcp({
               name: "Cloud drive fixture",
               instructions: "Synthetic local proof",
