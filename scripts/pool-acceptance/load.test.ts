@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -180,8 +180,24 @@ test("a clean run across the three protocols passes and keeps ids out of its pub
     assert.match(summary, /^load witness=read sends=6$/mu);
     const witness = (await readFile(join(directory, "witness.jsonl"), "utf8")).trim().split("\n");
     assert.equal(witness.length, 6);
-    for (const secret of [pool.origin, pool.witnessEnv.POOL_LOAD_WITNESS_KEY])
-      assert.ok(!summary.includes(secret) && !logged.join("\n").includes(secret));
+    const judged = (await readFile(join(directory, "judged.jsonl"), "utf8")).trim().split("\n");
+    assert.equal(judged.length, 6);
+    assert.deepEqual(
+      judged.map((text) => (JSON.parse(text) as { classes: unknown }).classes),
+      Array(6).fill([]),
+    );
+    // Neither the mock's origin nor its key reaches a line or any file the run leaves.
+    const files = await readdir(directory);
+    assert.ok(files.length >= 5, files.join(", "));
+    for (const secret of [
+      pool.origin,
+      new URL(pool.origin).host,
+      pool.witnessEnv.POOL_LOAD_WITNESS_KEY,
+    ]) {
+      assert.ok(!logged.join("\n").includes(secret), "a witness secret in a logged line");
+      for (const file of files)
+        assert.ok(!(await readFile(join(directory, file), "utf8")).includes(secret), file);
+    }
     assert.doesNotMatch(summary, /^load restart/mu);
     for (const id of [
       boot,

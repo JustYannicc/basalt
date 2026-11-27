@@ -77,6 +77,16 @@ test("a 200 record cut before any content vouches for nothing, though its wait s
   const alone = await load([streamed({ says: (send) => [empty(send)] })], 1);
   assert.deepEqual(alone.run.calls[0]!.classes, ["mock_missing"]);
   assert.equal(alone.run.verdict.passed, false);
+  // A refusal's content is no answer's content: a 429 beside it still leaves the 200 unvouched.
+  const refused = await load(
+    [
+      streamed({
+        says: (send) => [empty(send), { ...send, status: 429 }],
+      }),
+    ],
+    1,
+  );
+  assert.deepEqual(refused.run.calls[0]!.classes, ["mock_missing"]);
   // A try cut late, beside the send that carried the content in time: the mock says late.
   const beside = await load([streamed({ says: (send) => [empty(send, late), send] })], 1);
   assert.deepEqual(beside.run.calls[0]!.classes, ["witnesses_disagree"]);
