@@ -35,8 +35,9 @@ export function registryOperations(send) {
     );
 
   /**
-   * Deletes every manifest of one repository `images` found: each tag's index and the platforms it
-   * names, then every digest entry the list still names. Every delete is tried. Returns the entries
+   * Deletes every manifest of one repository `images` found, as the platform's own tool deletes an
+   * image: each tag by its tag first, then, from the list read again, each tag still listed by its
+   * index and the platforms it names, and every digest entry still listed. Every delete is tried. Returns the entries
    * the registry keeps and `deletes`, closed counts of what each request answered; throws, with a
    * record of the same closed facts, when anything else is left.
    */
@@ -51,12 +52,14 @@ export function registryOperations(send) {
     const deletes = {
       tags: tags.length,
       digests: digests.length,
+      byTag: { sent: 0, accepted: 0, absent: 0, refused: 0 },
       tagRead: { ok: 0, absent: 0 },
       delete: { accepted: 0, absent: 0, refused: 0 },
     };
     const counted = () =>
       Object.freeze({
         ...deletes,
+        byTag: Object.freeze({ ...deletes.byTag }),
         tagRead: Object.freeze({ ...deletes.tagRead }),
         delete: Object.freeze({ ...deletes.delete }),
       });
@@ -83,7 +86,21 @@ export function registryOperations(send) {
           return { kind, type, refusal };
         }
       };
+      // Each tag by its tag. A registry may keep a tagged manifest whose digest delete it accepts.
       for (const tag of tags) {
+        deletes.byTag.sent += 1;
+        try {
+          deletes.byTag[(await remove(image, tag)) ? "accepted" : "absent"] += 1;
+        } catch (error) {
+          const refusal = error !== null && typeof error === "object" ? error.refusal : undefined;
+          if (refusal === undefined) throw error;
+          deletes.byTag.refused += 1;
+          refused.push({ kind: "tag", type: undefined, refusal });
+        }
+      }
+      // What the list still names once its tags are gone.
+      const left = await send({ kind: "images", operation: "tags", target: image });
+      for (const tag of left.filter((entry) => !DIGEST.test(entry))) {
         const tagged = await read(image, tag);
         deletes.tagRead[tagged ? "ok" : "absent"] += 1;
         if (!tagged) continue;
@@ -99,17 +116,26 @@ export function registryOperations(send) {
           if (failed) refused.push(failed);
         }
       }
-      const kept = [];
-      for (const digest of digests) {
+      const candidates = [];
+      for (const digest of left.filter((entry) => DIGEST.test(entry))) {
         if (tried.has(digest)) continue;
         const type = await typeOf(image, digest);
         const failed = await attempt(digest, "digest", type);
         if (!failed) continue;
-        // Kept only once no tag's manifest was refused: an entry a tag reached is the stage's image.
-        if (!refused.some((entry) => entry.kind === "tag") && keptByRegistry(type, failed.refusal))
-          kept.push({ type, class: refusalClass(failed.refusal), digest });
+        if (keptByRegistry(type, failed.refusal)) candidates.push({ ...failed, digest });
         else refused.push(failed);
       }
+      // Kept only once nothing of the stage's own image was refused, by tag or by digest: an entry
+      // beside a refused image is never the registry's.
+      const imageRefused = refused.length > 0;
+      const kept = imageRefused
+        ? []
+        : candidates.map(({ type, refusal, digest }) => ({
+            type,
+            class: refusalClass(refusal),
+            digest,
+          }));
+      if (imageRefused) refused.push(...candidates);
       if (refused.length) {
         const error = fail(
           `Registry repository ${image.name}: ${refused.length} manifest${refused.length === 1 ? "" : "s"} refused deletion (${[...new Set(refused.map((entry) => `HTTP ${refusalClass(entry.refusal)}`))].join(", ")})`,

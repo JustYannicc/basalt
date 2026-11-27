@@ -962,7 +962,7 @@ test("kept is proven entry by entry, not by count", async () => {
   for (const line of lines) assert.doesNotMatch(line, /sha256/u, line);
 });
 
-test("two tags naming one refused index send one delete and count one refusal", async () => {
+test("two tags naming one refused index: each tag's delete is refused, and the index's own delete is sent once", async () => {
   const fake = cloudflareStage({ emptyEnd: true, refuse: { [ownIndex]: { status: 403 } } }, [
     "h1",
     "h2",
@@ -972,7 +972,11 @@ test("two tags naming one refused index send one delete and count one refusal", 
     (caught) => caught,
   );
   const [deletes] = error.record.teardown;
-  assert.equal(deletes.registryDeletes.refused.length, 1);
+  assert.deepEqual(deletes.registryDeletes.byTag, { sent: 2, accepted: 0, absent: 0, refused: 2 });
+  assert.deepEqual(
+    deletes.registryDeletes.refused.map((entry) => entry.entry),
+    ["tag", "tag", "tag"],
+  );
   assert.equal(
     fake.calls.filter(
       (call) => call.method === "DELETE" && call.url.endsWith(`/manifests/${ownIndex}`),
@@ -1169,13 +1173,14 @@ test("entries the list names with no manifest behind them end the destroy green,
   assert.deepEqual(saved.teardown.listedWithoutManifest, [facts]);
   assert.deepEqual(saved.teardown.record.foundRepositories, [{ ...facts, placed: "gone" }]);
   assert.deepEqual(saved.teardown.record.reads.at(-1).repositories, [{ ...facts, placed: "gone" }]);
-  // A read can miss what a delete reaches, so each digest entry is still deleted; all three
-  // answered 404, and the two tags have no digest to delete by.
-  assert.equal(registryCalls(fake, "DELETE").length, 3);
+  // A read can miss what a delete reaches, so each tag and each digest entry is still deleted:
+  // each tag by its tag, then each digest; all five answered 404.
+  assert.equal(registryCalls(fake, "DELETE").length, 5);
   assert.deepEqual(saved.teardown.record.registryDeletes, [
     {
       tags: 2,
       digests: 3,
+      byTag: { sent: 2, accepted: 0, absent: 2, refused: 0 },
       tagRead: { ok: 0, absent: 2 },
       delete: { accepted: 0, absent: 3, refused: 0 },
     },
@@ -1200,7 +1205,8 @@ test("a manifest a read misses but its delete reaches is deleted, never set apar
   });
   const { lines } = await destroyOn(fake);
   assert.ok(lines.includes(nothingLeft), lines.join("\n"));
-  assert.equal(registryCalls(fake, "DELETE").length, 1);
+  // The first tag's delete reaches the manifest; the second tag is then gone with it.
+  assert.equal(registryCalls(fake, "DELETE").length, 2);
   assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
 });
 
@@ -1400,6 +1406,47 @@ test("a read-back the budget cuts between its reads stops as unread, never as a 
   );
   assert.equal(error.record.readBack, "not-completed");
   assert.equal(error.record.readBackCut, true);
+});
+
+test("on a registry that keeps a tagged manifest whose digest delete it accepts, tags go by tag first, then digests, and nothing is left", async () => {
+  const fake = cloudflareStage({ emptyEnd: true, keepsTagged: true });
+  const { lines, saved } = await destroyOn(fake);
+  assert.ok(lines.includes(nothingLeft), lines.join("\n"));
+  const deletes = registryCalls(fake, "DELETE").map((call) => call.path.split("/").at(-1));
+  const firstDigest = deletes.findIndex((reference) => reference.startsWith("sha256:"));
+  // Every tag's own delete is sent before any digest's.
+  assert.equal(firstDigest, 7, deletes.join(" "));
+  assert.ok(deletes.slice(firstDigest).every((reference) => reference.startsWith("sha256:")));
+  // Each manifest still listed once its tags were gone was deleted by its digest.
+  assert.equal(fake.live.manifests[`acct/${prefix}-mock`].size, 0);
+  assert.deepEqual(saved.teardown.record.registryDeletes[0].byTag, {
+    sent: 7,
+    accepted: 7,
+    absent: 0,
+    refused: 0,
+  });
+  assert.deepEqual(saved.teardown.record.registryDeletes[0].delete, {
+    accepted: 2,
+    absent: 0,
+    refused: 0,
+  });
+});
+
+test("a refused tag delete fails the destroy closed, with its record, and keeps nothing", async () => {
+  const fake = cloudflareStage({
+    emptyEnd: true,
+    keepsTagged: true,
+    refuseTag: { h1: { status: 403 } },
+  });
+  const error = await destroyOn(fake).then(
+    () => assert.fail("the destroy succeeded"),
+    (caught) => caught,
+  );
+  assert.match(error.message, /remain after teardown: .*refused deletion \(HTTP 403\)/u);
+  const [deletes] = error.record.teardown;
+  assert.equal(deletes.registryDeletes.byTag.refused, 1);
+  assert.deepEqual(deletes.registryDeletes.kept, []);
+  assert.ok(deletes.registryDeletes.refused.some((entry) => entry.entry === "tag"));
 });
 
 test("a colon entry that is not a sha256 digest still stops the read closed, and says it looked like one", async () => {

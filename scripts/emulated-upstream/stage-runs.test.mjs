@@ -452,18 +452,19 @@ test("a destroy the registry refuses keeps its record of closed facts before it 
   assert.equal(code, 1);
   const [deletes] = saved["stopped-destroy"].teardown;
   assert.deepEqual(deletes.registryDeletes, {
-    // The list held the tag and the two manifests of its image; the tag's read reached both, the
-    // index's delete was accepted and the platform's refused.
+    // The list held the tag and the two manifests of its image. The tag's own delete was accepted
+    // and took the index with it; the platform manifest, still listed, was refused by digest.
     tags: 1,
     digests: 2,
-    tagRead: { ok: 1, absent: 0 },
-    delete: { accepted: 1, absent: 0, refused: 1 },
+    byTag: { sent: 1, accepted: 1, absent: 0, refused: 0 },
+    tagRead: { ok: 0, absent: 0 },
+    delete: { accepted: 0, absent: 0, refused: 1 },
     kept: [],
     refused: [
       {
-        entry: "tag",
-        digestShaped: false,
-        type: "application/vnd.oci.image.index.v1+json",
+        entry: "digest",
+        digestShaped: true,
+        type: "application/vnd.oci.image.manifest.v1+json",
         class: "403",
       },
     ],
@@ -507,10 +508,10 @@ test("a teardown spends at most its budget on stage requests, and stops between 
 });
 
 test("a teardown out of time during its deletes keeps everything it gathered", async () => {
-  // Forty seconds a request: every delete is sent, then the read back runs out. Fifty: the
+  // Thirty-five seconds a request: every delete is sent, then the read back runs out. Fifty: the
   // repository's own delete runs out too, and the line names it.
   for (const [step, failedDeletes] of [
-    [40_000, 0],
+    [35_000, 0],
     [50_000, 1],
   ]) {
     const fake = fakeAccount({

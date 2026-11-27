@@ -58,6 +58,9 @@ export function fakeAccount({
    * maps a digest to the refusal its delete answers. `ghosts` are digest entries the list names
    * with no manifest behind them (with `own: false`, the tags are too). `collectAfter: n` keeps an
    * accepted delete's manifest listed and readable until n more first pages of the list are read.
+   * `keepsTagged` accepts a digest delete of a manifest a tag still names and does nothing, as the
+   * registry did on 28-11-2026; a tag's own delete removes the tag. `refuseTag` maps a tag to the
+   * refusal its delete answers.
    */
   cloudflare,
 } = {}) {
@@ -277,7 +280,23 @@ export function fakeAccount({
     const found = manifests.get(digest);
     if (!found) return json({}, { status: 404 });
     if (method === "DELETE") {
-      const refusal = found.refuse ?? cloudflare.refuse?.[digest];
+      const byTag = digest !== reference;
+      const refusal =
+        (byTag ? cloudflare.refuseTag?.[reference] : undefined) ??
+        found.refuse ??
+        cloudflare.refuse?.[digest];
+      // As destroy 46081919333 saw it: a digest delete of a manifest a tag still names is accepted
+      // and changes nothing; a tag's own delete removes that tag.
+      if (cloudflare.keepsTagged && !refusal) {
+        if (byTag) {
+          live.tags[name] = live.tags[name].filter((tag) => tag !== reference);
+          return new Response(null, init({ status: 202 }));
+        }
+        const named = live.tags[name].some(
+          (tag) => (cloudflare.tagged?.[tag] ?? DIGEST) === digest,
+        );
+        if (named) return new Response(null, init({ status: 202 }));
+      }
       // A delete the transport itself fails, as a dropped connection does.
       if (refusal?.throws) throw new TypeError("fetch failed");
       // Accepted, yet still listed after: the registry kept it without saying so.
