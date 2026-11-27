@@ -28,6 +28,8 @@ runtimeStopTiming.stopGrace = () => timed.stopGrace();
 
 export async function fleetCellFixture(
   staleFailure: "flagged" | "plain" | "overloaded" | "non-error" | "http" = "flagged",
+  /** `abort: false`: the cell's endpoint object can't reset itself. */
+  endpoint: { abort?: false } = {},
 ) {
   const providerFixture = await runtimeProofFixture();
   const target = { ...providerFixture.manifest.target, homePeerOrdinal: 1 };
@@ -40,7 +42,7 @@ export async function fleetCellFixture(
     POOL_DEPLOYMENT_KEY: "b".repeat(64),
     POOL_IMAGE_HASH: target.imageInput,
   };
-  const runtime = await handoffRuntime(target, env);
+  const runtime = await handoffRuntime(target, env, endpoint);
   const storage = new RuntimeSqlite(),
     background: Promise<unknown>[] = [];
   const root = {
@@ -129,10 +131,13 @@ export async function fleetCellFixture(
    */
   const timing = { stopGrace: async () => {} };
   timed = timing;
-  const makeCell = (code: ControllerCode = runtimeFixtureCode) =>
+  const makeCell = (
+    code: ControllerCode = runtimeFixtureCode,
+    changed: { POOL_DATABASE_URL?: string } = {},
+  ) =>
     boundFleetCell({
       ctx: root,
-      env,
+      env: { ...env, ...changed },
       target,
       code,
       provider,
@@ -214,8 +219,9 @@ export async function fleetCellFixture(
   const cell = makeCell();
   return {
     // The same cell over the same storage, as the controller's replaced isolate builds it; with
-    // `code`, as one on that code builds it.
-    replacedCell: (code?: ControllerCode) => makeCell(code),
+    // `code`, as one on that code builds it, and with `changed`, under changed settings.
+    replacedCell: (code?: ControllerCode, changed?: { POOL_DATABASE_URL?: string }) =>
+      makeCell(code, changed),
     ...runtime,
     cell,
     storage,

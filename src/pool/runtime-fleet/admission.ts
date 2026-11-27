@@ -14,7 +14,8 @@ import {
   runtimeAttestationFormat,
 } from "../runtime-slots/admission-proof.ts";
 import { configurationDigest, type RuntimeConfiguration } from "../runtime-slots/configuration.ts";
-import { CodeAdopting } from "../runtime-slots/code-adoption.ts";
+import { CodeAdopting, codeAdoptionWindowMs } from "../runtime-slots/code-adoption.ts";
+import { runtimeRouteDiagnostic } from "../runtime-route-diagnostic.ts";
 import type { RuntimeHandoff } from "../runtime-slots/integration.ts";
 import type { RuntimeProviderReader, RuntimeProviderTarget } from "../runtime-provider/read.ts";
 import { providerDigest } from "../runtime-provider/canonical.ts";
@@ -29,6 +30,12 @@ const Observed = Schema.Union([
   }),
   CodeAdopting,
 ]);
+
+/**
+ * A first start its own witness shows can never attest, so its controller quarantines it at once
+ * instead of at its start bound.
+ */
+export class UnprovableStart extends SlotRefused {}
 
 interface Dependencies {
   handoff: RuntimeHandoff;
@@ -66,11 +73,23 @@ export class FleetAdmission {
     });
     let witness: typeof StartupWitness.Type | undefined;
     if (kind === "initial-attested") {
-      const observed = Schema.decodeUnknownSync(Observed)(await handoff.startWitness(target));
-      // It resets onto the deployed code once this answer has left; the next pass reads it there.
-      if (observed.kind === "adopting") throw new SlotRefused("controller_code");
+      const observed = Schema.decodeUnknownSync(Observed)(
+        await handoff.startWitness(target).catch((error: unknown) => {
+          // Its endpoint won't adopt this controller's code, so no later pass can prove it.
+          if (runtimeRouteDiagnostic(error)?.runtimeReason === "slot_controller_code")
+            throw new UnprovableStart("controller_code");
+          throw error;
+        }),
+      );
+      if (observed.kind === "adopting") {
+        // Still on its old code a window after its reset: the platform didn't serve it the new one.
+        if (Date.now() - observed.since >= codeAdoptionWindowMs)
+          throw new UnprovableStart("controller_code");
+        // It resets onto the deployed code once this answer has left; the next pass reads it there.
+        throw new SlotRefused("controller_code");
+      }
       witness = observed.witness;
-      // An endpoint on older code never saw this controller's code, so it can't adopt it.
+      // An endpoint on older code never saw this controller's code, so it waits for its bound.
       if (!sameControllerCode(observed.controllerCode, code))
         throw new SlotRefused("controller_code");
       if (
@@ -80,7 +99,7 @@ export class FleetAdmission {
         !sameTarget(witness.target, target) ||
         !witness.bootId
       )
-        throw new SlotRefused("identity");
+        throw new UnprovableStart("identity");
     }
     const observation = await provider.observe(
       kind === "initial-attested" ? "attested" : "launch",

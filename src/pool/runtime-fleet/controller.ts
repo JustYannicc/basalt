@@ -30,6 +30,7 @@ import {
   type PhaseBound,
 } from "./phase-bounds.ts";
 import { FleetDispatches } from "./dispatches.ts";
+import { UnprovableStart } from "./admission.ts";
 import { GrowthRefusals } from "./growth-refusals.ts";
 import {
   resumeGone,
@@ -423,8 +424,8 @@ export class RuntimeFleet {
   }
   /**
    * A start the endpoint refused before anything was sent leaves at once with the refusal, rather
-   * than holding growth for the whole start bound. The remote step and reason win over the
-   * admission step.
+   * than holding growth for the whole start bound, as does a sent one its own witness proved can
+   * never attest. The remote step and reason win over the admission step.
    */
   private startRefused(target: SlotTarget, error: unknown, began: number) {
     const read = failureRead(
@@ -1025,7 +1026,11 @@ export class RuntimeFleet {
       } catch (error) {
         // The observation retries an unsent start, which can be refused just as growth's was.
         if (!row.identity) this.refusals.startRefused(row.target.slotId, error);
-        if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
+        // A witness proving it can never attest quarantines it now. Growth's own start that met one
+        // was left uncertain, so its next observation here decides it.
+        if (!row.identity && error instanceof UnprovableStart)
+          await this.startRefused(row.target, error, began);
+        else if (!row.identity && (await this.refusedUnsent(cell, row.target, error))) {
           if (deploymentRefused(error)) await this.deferStart(cell, row.target, error, began);
           else await this.startRefused(row.target, error, began);
         }

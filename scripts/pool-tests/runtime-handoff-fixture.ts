@@ -84,6 +84,8 @@ export async function handoffRuntime(
     endpoint?: EndpointOptions;
     /** The endpoint's code; an object on another Worker version runs code the controller lacks. */
     code?: ControllerCode;
+    /** `false`: a state that can't reset its object, as one scoped over another object's. */
+    abort?: false;
   } = {},
 ) {
   const home = options.home ?? (await fixture()).home;
@@ -149,15 +151,19 @@ export async function handoffRuntime(
   // What the object scheduled for after an answer, such as its reset: it runs once one has left.
   const replies: (() => void)[] = [];
   const ctx = {
-    /**
-     * Resets the object as the platform does: storage and container stay, and its next event runs
-     * a fresh endpoint on the code the platform serves it.
-     */
-    abort(reason: string) {
-      calls.resets.push(reason);
-      generation++;
-      endpoint = build(served);
-    },
+    ...(options.abort === false
+      ? {}
+      : {
+          /**
+           * Resets the object as the platform does: storage and container stay, and its next
+           * event runs a fresh endpoint on the code the platform serves it.
+           */
+          abort(reason: string) {
+            calls.resets.push(reason);
+            generation++;
+            endpoint = build(served);
+          },
+        }),
     exports: { PoolHomePeer: ({ props }: { props: { source: HomePeerSource } }) => ({ props }) },
     id: { toString: () => target.instanceId },
     storage,

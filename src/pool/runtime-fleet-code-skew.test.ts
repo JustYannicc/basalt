@@ -13,7 +13,9 @@ import {
   runtimeGrant,
 } from "../../scripts/pool-tests/runtime-handoff-proofs.ts";
 import { RuntimeSqlite } from "../../scripts/pool-tests/runtime-handoff-storage.ts";
-import { startingBoundMs } from "./runtime-fleet/phase-bounds.ts";
+import { startingBoundMs, upkeepCadenceMs } from "./runtime-fleet/phase-bounds.ts";
+import { readFailure } from "./runtime-fleet/failure-record.ts";
+import { forcedStopGraceMs } from "./runtime-slots/forced-restart-timing.ts";
 import { codeAdoptionWindowMs } from "./runtime-slots/code-adoption.ts";
 import { isLaunchAuthorization } from "./runtime-slots/admission-proof.ts";
 import { RuntimeWitnessStore } from "./runtime-slots/witness-store.ts";
@@ -25,9 +27,12 @@ import { slotSelectionKey } from "./runtime-slots/storage.ts";
  * endpoint object keeps running the old one. The held read answers, the readiness reads after it
  * refuse until `healthy()`, so the old isolate's start ends without its attest, as the handover's
  * reset ends it on production. Without `deployed`, the platform still serves the object the old
- * code when it resets.
+ * code when it resets; `replace` is how the controller changed instead of the release.
  */
-async function startAcrossRelease(s: Stuck, { deployed = true } = {}) {
+async function startAcrossRelease(
+  s: Stuck,
+  { deployed = true, replace = () => s.replaceController(releasedCode) } = {},
+) {
   await s.state.reserve(s.f.target);
   await s.state.dispatch(s.f.target);
   const boot = gate();
@@ -45,7 +50,7 @@ async function startAcrossRelease(s: Stuck, { deployed = true } = {}) {
   const starting = s.f.cell.start(s.f.target);
   await boot.arrived;
   if (deployed) s.f.deploy(releasedCode);
-  s.replaceController(releasedCode);
+  replace();
   boot.open();
   await assert.rejects(starting, "the old isolate's start activated");
   assert.equal(s.f.calls.start, 1);
@@ -59,16 +64,47 @@ async function startAcrossRelease(s: Stuck, { deployed = true } = {}) {
   };
 }
 
+/** The start left its starting phase at this pass, quarantined with a read of `cause`. */
+function quarantinedAtOnce(row: Awaited<ReturnType<Stuck["row"]>>, cause: string) {
+  assert.equal(row?.phase, "quarantined", `left as ${row?.phase}, not quarantined at once`);
+  assert.equal(row?.reason, "start_unproven");
+  assert.equal(row?.identity, undefined);
+  const failure = readFailure(row?.failure);
+  assert.equal(failure?.path, "start");
+  assert.deepEqual(
+    failure?.reads.map((read) => read.cause),
+    [cause],
+  );
+}
+
 /**
- * Passes for `milliseconds`: the endpoint is asked to adopt and refuses for `held` alone, never
- * resets, and the cell is never admitted.
+ * Its next pass stops the quarantined start's container, which never activated; once the provider
+ * lists it gone for the absence bound its place frees, and the pass after reserves a fresh slot.
  */
-async function neverAdopts(s: Stuck, held: string, milliseconds = 10_000) {
+async function stoppedAndReplaced(s: Stuck) {
   const from = Date.now();
-  while (Date.now() - from < milliseconds) {
-    const row = await s.pass();
-    assert.notEqual(row?.phase, "ready", "a start whose endpoint can't adopt was admitted");
-  }
+  await s.pass();
+  assert.deepEqual(s.f.calls.signals, [15], "not stopped once, SIGTERM first");
+  assert.equal(await s.fenced(), true);
+  while ((await s.pass()) !== undefined)
+    assert.ok(
+      Date.now() - from <= forcedStopGraceMs + startingBoundMs + 3 * upkeepCadenceMs,
+      "its place was held past the stop and the absence bound",
+    );
+  await s.pass();
+  const rows = await s.state.inspect();
+  assert.equal(rows.length, 1, "growth reserved no replacement");
+  assert.notEqual(rows[0]!.target.slotId, s.f.target.slotId);
+}
+
+/**
+ * Its endpoint is asked to adopt once and refuses for `held` alone, never resetting: the start is
+ * quarantined at that pass, never admitted.
+ */
+async function neverAdopts(s: Stuck, held: string) {
+  quarantinedAtOnce(await s.pass(), "slot_controller_code");
+  for (let index = 0; index < 4; index++)
+    assert.notEqual((await s.pass())?.phase, "ready", "a start that can't adopt was admitted");
   const lines = s.adoptions();
   assert.notDeepEqual(lines, [], "the endpoint was never asked to adopt");
   assert.deepEqual(
@@ -111,6 +147,20 @@ test("a start in flight across a release adopts the controller's new code once a
   assert.equal(await s.forward(), 200);
   assert.equal(s.rootCalls(), before, "the call went to the root");
   assert.notDeepEqual(s.f.transport.modelStubs, [], "no call reached the cell");
+});
+
+test("a start in flight across a release whose endpoint can't adopt is quarantined at once and stopped, never holding its place for its container's life", async (context) => {
+  const s = await stuckFleet(context, { demand: 1, abort: false });
+  const start = await startAcrossRelease(s);
+  start.healthy();
+  const row = await s.pass();
+  quarantinedAtOnce(row, "slot_controller_code");
+  assert.ok(row!.phaseAt! - start.since < startingBoundMs, "it waited for its bound");
+  assert.deepEqual(
+    s.adoptions().map((line) => [line.outcome, line.held]),
+    [["refused", "no_reset"]],
+  );
+  await stoppedAndReplaced(s);
 });
 
 test("a start its endpoint attested never adopts, since the controller may have committed it", async (context) => {
@@ -246,6 +296,32 @@ test("an endpoint resets at most once per window, and an instance still on the o
     assert.equal(line.outcome, "waiting");
     assert.equal(line.adoptingMs, (index + 1) * 2_000);
   }
+  // Still on the old code a window after the reset: the skew outlasted adoption.
+  const row = await s.pass();
+  quarantinedAtOnce(row, "slot_controller_code");
+  assert.ok(row!.phaseAt! - start.since < startingBoundMs, "it waited for its bound");
+  assert.equal(s.f.calls.resets.length, 2, "not one reset per window");
+  await stoppedAndReplaced(s);
+});
+
+test("a witness that differs in anything but the code quarantines its start at once, after one observation, and it is stopped", async (context) => {
+  const s = await stuckFleet(context, { demand: 1 });
+  const witnesses = () => s.f.transport.sent.filter((value) => value === "/witness").length;
+  // The controller keeps its code, but its runtime settings changed under the start in flight, so
+  // the configuration it signs for is not the one the witness was started with.
+  const start = await startAcrossRelease(s, {
+    deployed: false,
+    replace: () =>
+      s.replaceController(undefined, {
+        POOL_DATABASE_URL: "postgresql://synthetic@moved.invalid/pool",
+      }),
+  });
+  start.healthy();
+  const before = witnesses();
+  quarantinedAtOnce(await s.pass(), "slot_identity");
+  assert.equal(witnesses() - before, 1, "not decided after one observation");
+  assert.deepEqual(s.f.calls.resets, []);
+  await stoppedAndReplaced(s);
 });
 
 test("an endpoint on older code, which never sees the controller's code, ends as before: held to its bound, quarantined and stopped, with no loop and no pass that throws", async (context) => {

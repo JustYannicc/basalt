@@ -27,13 +27,13 @@ export const gate = () => {
  */
 export async function stuckFleet(
   context: TestContext,
-  options: { demand?: number; grace?: () => Promise<void> } = {},
+  options: { demand?: number; grace?: () => Promise<void>; abort?: false } = {},
 ) {
   context.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const warn = context.mock.method(console, "warn", () => {});
   const info = context.mock.method(console, "info", () => {});
   context.mock.method(console, "error", () => {});
-  const f = await fleetCellFixture();
+  const f = await fleetCellFixture("flagged", options.abort === false ? { abort: false } : {});
   context.after(f.cleanup);
   f.timing.stopGrace = options.grace ?? (async () => context.mock.timers.tick(forcedStopGraceMs));
   const state = new RuntimeFleetState(f.storage, 1, () => Date.now());
@@ -144,10 +144,11 @@ export async function stuckFleet(
     rootCalls: () => rootCalls,
     /**
      * The controller's isolate replaced: a fresh fleet controller and cell over the same storage.
-     * With `code`, the replacement runs that code, as after the controller's code handover.
+     * With `code`, the replacement runs that code, as after the controller's code handover; with
+     * `changed`, under settings changed since the start.
      */
-    replaceController(code?: ControllerCode) {
-      fleet = controller(f.replacedCell(code));
+    replaceController(code?: ControllerCode, changed?: { POOL_DATABASE_URL?: string }) {
+      fleet = controller(f.replacedCell(code, changed));
     },
     /** The cell's runtime object replaced: a fresh endpoint over the same storage and container. */
     replaceEndpoint() {
