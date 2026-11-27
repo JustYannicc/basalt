@@ -45,10 +45,14 @@ jobs:
       EMULATED_STAGE: ${{ inputs.stage }}
       EMULATED_GO: ${{ inputs.go }}
       EMULATED_OUTPUT: .local/emulated-upstream
+      # The job's own limit, as timeout-minutes above: a teardown's requests end before it.
+      EMULATED_JOB_LIMIT_MINUTES: 60
     steps:
       # Expressions compare case-insensitively, so a branch named MAIN would pass the job's condition.
       - name: Refuse every ref but main
         run: test "$GITHUB_REF" = refs/heads/main
+      - name: Note when the job started
+        run: echo "EMULATED_JOB_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -109,9 +113,12 @@ jobs:
       EMULATED_MODE: expire
       EMULATED_STAGE: test-emulated-upstream
       EMULATED_OUTPUT: .local/emulated-upstream
+      EMULATED_JOB_LIMIT_MINUTES: 20
     steps:
       - name: Refuse every ref but main
         run: test "$GITHUB_REF" = refs/heads/main
+      - name: Note when the job started
+        run: echo "EMULATED_JOB_STARTED_MS=$(date +%s%3N)" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           persist-credentials: false

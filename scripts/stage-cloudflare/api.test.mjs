@@ -500,6 +500,39 @@ test("the spec's cursor is only ever an entry the read accepted", () => {
     assert.deepEqual(cursorOf("", first, entry).url, undefined, String(entry));
 });
 
+test("next links that disagree, or one carrying only a page size, give no cursor: the spec's last decides", async () => {
+  for (const link of [`<?last=zzzz>; rel="next", <?last=h1>; rel="next"`, "<?n=1000>; rel=next"]) {
+    const { fetcher, sent } = scripted([[["h1"], link], [["h2"]]]);
+    const [image] = await stage(fetcher).images();
+    assert.deepEqual([...image.tags], ["h1", "h2"], link);
+    assert.equal(new URL(sent[1]).search, "?n=1000&last=h1", link);
+  }
+});
+
+test("a list longer than the page limit stops closed, and its record stays small", async () => {
+  // One entry a page, each a fresh tag, a next link on every one.
+  let index = 0;
+  const fake = paged();
+  const endless = async (url, init) => {
+    if (!new URL(url).pathname.endsWith("/tags/list")) return fake.fetcher(url, init);
+    index += 1;
+    return Response.json(
+      { tags: [`t${index}`] },
+      { headers: { link: `</v2/acct/${prefix}-mock/tags/list?n=1000&last=t${index}>; rel=next` } },
+    );
+  };
+  const error = await stage(endless)
+    .images()
+    .then(
+      () => assert.fail("the read finished"),
+      (caught) => caught,
+    );
+  assert.match(error.message, /exceeded its page limit of 1000 \(page 1000, after 1000 tags\)/u);
+  assert.equal(error.record.tagRead.pages.length, 40);
+  assert.equal(error.record.tagRead.pagesOmitted, 960);
+  assert.ok(JSON.stringify(error.record).length < 100_000);
+});
+
 test("a later page that fails, cannot be sent or answers without its tags stops with its page and record", async () => {
   const failed = await stopOf([
     [["h1"], next("last=h1")],

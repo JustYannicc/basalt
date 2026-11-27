@@ -21,6 +21,22 @@ export const mockWaitBoundMs = 120_000;
  * (request.mjs), and it is under the expiry job's 20-minute limit with its setup steps.
  */
 export const teardownBudgetMs = 15 * 60_000;
+/** What a job keeps after its teardown's last request: the record's save and the artifact upload. */
+export const jobReserveMs = 3 * 60_000;
+
+/**
+ * When a teardown's last request must have ended: its own budget from now, or earlier when the job
+ * it runs in (`EMULATED_JOB_STARTED_MS`, `EMULATED_JOB_LIMIT_MINUTES`) would end first, less what
+ * the job keeps for itself after it.
+ */
+export function teardownDeadline(env, at) {
+  const own = at + teardownBudgetMs;
+  const started = Number(env.EMULATED_JOB_STARTED_MS);
+  const limit = Number(env.EMULATED_JOB_LIMIT_MINUTES);
+  if (!Number.isSafeInteger(started) || !Number.isSafeInteger(limit) || started <= 0 || limit <= 0)
+    return own;
+  return Math.min(own, started + limit * 60_000 - jobReserveMs);
+}
 export const mockWaitPauseMs = 5_000;
 const streamCount = Object.keys(paths).length * 2;
 const wholeCount = Object.keys(paths).length;
@@ -376,9 +392,10 @@ export async function main(env, { fetcher = fetch, now = Date.now, error = conso
       token: env.CLOUDFLARE_API_TOKEN,
       prefix,
       fetcher,
-      // A teardown's stage requests all end within its budget, so the job's limit never cuts one.
+      // A teardown's stage requests all end within its budget and before its job's own limit, so
+      // that limit never cuts one, whatever ran in the job before it.
       ...(mode === "destroy" || mode === "expire"
-        ? { deadline: now() + teardownBudgetMs, now }
+        ? { deadline: teardownDeadline(env, now()), now }
         : {}),
     });
     await emulatedStage({ api, key: env.EMULATED_UPSTREAM_KEY, fetcher, now, ...io })[mode]();

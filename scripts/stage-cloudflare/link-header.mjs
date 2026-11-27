@@ -106,9 +106,12 @@ export function linkValues(header) {
   return values;
 }
 
-/** The header's link-value whose relation types include `next`; undefined when it has none. */
-export const nextLinkOf = (header) =>
-  linkValues(header).find((value) => value.rel.includes("next"));
+/** The header's link-values whose relation types include `next`, in order. */
+export const nextLinksOf = (header) =>
+  linkValues(header).filter((value) => value.rel.includes("next"));
+
+/** The header's first link-value whose relation types include `next`; undefined when it has none. */
+export const nextLinkOf = (header) => nextLinksOf(header)[0];
 
 /** Whether the header offers a next page at all, even in a form the reader cannot take apart. */
 export const offersNextIn = (header) =>

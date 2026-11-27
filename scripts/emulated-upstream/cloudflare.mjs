@@ -82,7 +82,23 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch, dea
       );
       if (kept) keptBy.set(image.name, kept);
     }
-    const after = await inventory();
+    let after;
+    try {
+      after = await inventory();
+    } catch (error) {
+      // The read that proves the teardown could not finish (its budget, or the registry): the
+      // teardown fails with everything it gathered, never as that read's own bare error.
+      if (error !== null && typeof error === "object" && Object.hasOwn(error, "record"))
+        records.push(error.record);
+      const failed = new StageError(
+        `Emulated upstream teardown could not read back what remains: ${publicMessage(error)}${failures.length ? `; failed: ${failures.join("; ")}` : ""}`,
+      );
+      failed.record = Object.freeze({
+        teardown: Object.freeze(records),
+        readBack: "not-completed",
+      });
+      throw failed;
+    }
     // An entry is the registry's only when this run's delete pass for its repository returned and
     // was refused that very entry, by digest; the read after is what says it is still there.
     const proven = (row) => new Set((keptBy.get(row.name) ?? []).map((entry) => entry.digest));

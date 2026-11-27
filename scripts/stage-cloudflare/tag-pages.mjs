@@ -4,7 +4,7 @@
 // Cloudflare's registry lists one `sha256:<hex>` entry for every manifest besides the tags; such an
 // entry is a digest reference, held to the stage's own digest rule, and never read as a tag.
 import { DIGEST, fail, tagPageOf } from "./answers.mjs";
-import { linkShape, nextLinkOf, queryPairsOf, shapeOf } from "./link-header.mjs";
+import { linkShape, nextLinksOf, queryPairsOf, shapeOf } from "./link-header.mjs";
 
 export { shapeOf };
 /** A registry tag (OCI distribution): no separator, and no leading dot, so never a dot segment. */
@@ -23,12 +23,15 @@ const DIGEST_SHAPE = /^[a-z0-9]+(?:[+._-][a-z0-9]+)*:[a-zA-Z0-9=_-]+$/u;
 /**
  * The cursor the registry's next link carries, as name and value pairs: the last value of each
  * name in its target's query, so a query the registry appended twice reads as its latest. Undefined
- * when the header has no next link the stage can take apart, the target holds a fragment, or a part
- * does not decode.
+ * when the header has no next link the stage can take apart, several that disagree, a target with
+ * a fragment, or a part that does not decode.
  */
 function linkCursor(header) {
-  const link = nextLinkOf(header);
-  if (link === undefined || link.target.includes("#")) return undefined;
+  const links = nextLinksOf(header);
+  // Several next links that disagree name no one cursor: the spec's own `last` decides instead.
+  if (new Set(links.map((value) => value.target)).size !== 1) return undefined;
+  const [link] = links;
+  if (link.target.includes("#")) return undefined;
   const pairs = queryPairsOf(link.target);
   return pairs === undefined ? undefined : [...new Map(pairs)];
 }
@@ -92,7 +95,13 @@ export async function readTagPages(first, fetchPage) {
         rule,
         pagesRead: pages.length,
         tagsAccepted: tags.length,
-        pages: Object.freeze(pages.map((page) => Object.freeze(page))),
+        // A long read keeps its first and last pages' details, so a record stays small.
+        pages: Object.freeze(
+          (pages.length > 40 ? [...pages.slice(0, 20), ...pages.slice(-20)] : pages).map((page) =>
+            Object.freeze(page),
+          ),
+        ),
+        pagesOmitted: Math.max(0, pages.length - 40),
         ...facts,
       }),
     });
@@ -159,10 +168,8 @@ export async function readTagPages(first, fetchPage) {
     // is neither empty (`n` is a page size, not a cursor) nor the query just sent, could mean more:
     // that stops the read instead of ending it.
     if (!found.length) {
-      const fresh =
-        cursor.facts.cursor === "link" &&
-        cursor.url !== url &&
-        !linkCursor(answer.link).every(([name, value]) => name === "n" || value === "");
+      // A link cursor is plain by then: a name besides `n`, and no empty value.
+      const fresh = cursor.facts.cursor === "link" && cursor.url !== url;
       if (!fresh) return Object.freeze(tags);
       throw stop("next-after-empty", "A registry tag list offered another page after an empty one");
     }
