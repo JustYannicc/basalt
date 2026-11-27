@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Data, Effect } from "effect";
 import {
   type Answer,
   ask,
+  notObserved,
   owned,
+  ownershipReadAnswers,
   person,
   pool,
   seed,
@@ -278,4 +281,37 @@ test("25. stale envelopes and a missing signing key keep their answers and write
   silent(await ask({ organization: person, at: now + 60_000, expiresAt: now + 61_000 }), 401);
   silent(await ask({ organization: person, at: now - 60_000, expiresAt: now - 1 }), 401);
   silent(await ask({ organization: person, key: null }), 503);
+});
+
+class ReadFailed extends Data.TaggedError("ReadFailed") {}
+
+test("an ownership read that hangs leaves the answer on time and says it was not observed", async () => {
+  await seed({ organizations: { [person]: { basaltPools: {} } }, ...personPool });
+  const started = performance.now();
+  const answer = await ask({ organization: person, database: ownershipReadAnswers(Effect.never) });
+  const took = performance.now() - started;
+  assert.equal(answer.status, 204);
+  assert.deepEqual(answer.lines, [notObserved(person, "timeout")]);
+  // The bound is 300 ms; the rest is the existing read and the test's own work.
+  assert.ok(took < 1_000, String(took));
+});
+
+test("an ownership read that fails changes nothing and says it was not observed", async () => {
+  await seed({ organizations: { [person]: { basaltPools: {} } }, ...personPool });
+  const answer = await ask({
+    organization: person,
+    database: ownershipReadAnswers(Effect.fail(new ReadFailed())),
+  });
+  assert.equal(answer.status, 204);
+  assert.deepEqual(answer.lines, [notObserved(person, "read-failed")]);
+});
+
+test("a refused organization's answer is unchanged when its ownership read fails", async () => {
+  await seed({ organizations: { other: { basaltPools: {} } }, ...personPool });
+  const answer = await ask({
+    organization: "other",
+    database: ownershipReadAnswers(Effect.fail(new ReadFailed())),
+  });
+  assert.equal(answer.status, 204, "today's answer: the organization exists");
+  assert.deepEqual(answer.lines, [notObserved("other", "read-failed")]);
 });

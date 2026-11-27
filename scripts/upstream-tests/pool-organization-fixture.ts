@@ -72,6 +72,8 @@ export interface Ask {
   readonly expiresAt?: number;
   readonly key?: string | null;
   readonly tombstoned?: readonly string[];
+  /** The database the handler is given, in place of this file's own. */
+  readonly database?: (db: SqlClient.SqlClient) => SqlClient.SqlClient;
 }
 
 /** The tools service's answer to one signed organization read, and the lines it wrote. */
@@ -90,7 +92,7 @@ export const ask = async (input: Ask): Promise<Answer> => {
 /** Run the real handler over this file's database for an already encoded request body. */
 export const answer = async (
   body: string,
-  input: Pick<Ask, "key" | "tombstoned"> = {},
+  input: Pick<Ask, "key" | "tombstoned" | "database"> = {},
 ): Promise<Answer> => {
   await schema();
   const lines: Line[] = [];
@@ -115,7 +117,7 @@ export const answer = async (
             }),
           ),
         ),
-        Effect.provideService(GroupDatabase, Effect.succeed(db)),
+        Effect.provideService(GroupDatabase, Effect.succeed(input.database?.(db) ?? db)),
         Effect.provideService(OrganizationTombstones, (organization: string) =>
           Effect.succeed(tombstoned.has(organization)),
         ),
@@ -136,3 +138,23 @@ export const wouldRefuse = (organization: string, shape: string, target = pool) 
   message: "Pool organization would be refused",
   fields: { pool: target, organization, shape },
 });
+
+/** The line a cut or failed observation writes instead of a verdict. */
+export const notObserved = (organization: string, reason: string, target = pool) => ({
+  level: "WARN",
+  message: "Pool organization ownership not observed",
+  fields: { pool: target, organization, reason },
+});
+
+/**
+ * This file's database, except that the ownership rule's read (the one that walks an
+ * organization's pool records) answers with `read` instead. Every other query is the real one.
+ */
+export const ownershipReadAnswers =
+  <E>(read: Effect.Effect<never, E>) =>
+  (db: SqlClient.SqlClient): SqlClient.SqlClient =>
+    new Proxy(db, {
+      apply(target, self, args: [TemplateStringsArray, ...unknown[]]) {
+        return args[0].join("").includes("jsonb_each") ? read : Reflect.apply(target, self, args);
+      },
+    });

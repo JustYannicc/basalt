@@ -18,7 +18,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 @@ -1,10 +1,12 @@
  import { AppId } from "@executor-js/sdk/core";
 -import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
-+import { Clock, Config, Effect, Exit, Option, Redacted, Schema } from "effect";
++import { Clock, Config, Duration, Effect, Exit, Option, Redacted, Schema } from "effect";
  import { HttpServerRequest, HttpServerResponse } from "effect/http";
 -import { OrganizationId } from "../contracts/organization.ts";
 +import { SqlClient } from "effect/sql";
@@ -30,7 +30,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  
  export const poolOrganizationReadPath = "/api/internal/pool-organization";
  const Read = Schema.Struct({
-@@ -14,6 +16,80 @@ const Read = Schema.Struct({
+@@ -14,6 +16,98 @@ const Read = Schema.Struct({
    expiresAt: Schema.Finite,
  });
  
@@ -91,9 +91,19 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +    return shape;
 +  });
 +
++/** The longest the observation may hold an answer back; past it the answer goes unobserved. */
++const observationBoundMs = 300;
++/** A read the observation could not finish, so a quiet log is not taken for a clean one. */
++const notObserved = (
++  organization: OrganizationId,
++  pool: AppId,
++  reason: "timeout" | "read-failed",
++) => Effect.logWarning("Pool organization ownership not observed", { pool, organization, reason });
++
 +/**
 + * The ownership rule answers nothing yet: it only reports, once per read, an existing organization it
-+ * would refuse, so live pools prove the rule before it decides. Nothing it does can change the answer.
++ * would refuse, so live pools prove the rule before it decides. Nothing it does can change the answer,
++ * and it holds the answer back at most `observationBoundMs`.
 + */
 +const observeOwnership = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
 +  Effect.gen(function* () {
@@ -106,12 +116,20 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +    const shape = yield* refusal(sql, organization, pool, Exit.isFailure(owns));
 +    if (shape !== undefined)
 +      yield* Effect.logWarning("Pool organization would be refused", { pool, organization, shape });
-+  }).pipe(Effect.catchCause(() => Effect.void));
++    else if (Exit.isFailure(owns)) yield* notObserved(organization, pool, "read-failed");
++  }).pipe(
++    Effect.catchCause(() => notObserved(organization, pool, "read-failed")),
++    Effect.timeoutOption(Duration.millis(observationBoundMs)),
++    Effect.flatMap((done) =>
++      Option.isSome(done) ? Effect.void : notObserved(organization, pool, "timeout"),
++    ),
++    Effect.catchCause(() => Effect.void),
++  );
 +
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -32,6 +108,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -32,6 +126,7 @@ export const readPoolOrganization = Effect.gen(function* () {
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;
    const rows = yield* sql`select id from organization where id = ${value.organization}`;

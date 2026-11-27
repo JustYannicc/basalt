@@ -1,7 +1,7 @@
 {
   "identity": "basalt-pool-ownership-observation",
   "file": "0801-pool-ownership-observation.patch",
-  "content_sha256": "e47a78087f86cfea86deab50152d37e96a43272c8a0a3c10bd161dddf19b8a76",
+  "content_sha256": "05a93399772901e7fac5b6a896f68ec41d8da6ca16a4e2fc4aeafd078f5077aa",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
