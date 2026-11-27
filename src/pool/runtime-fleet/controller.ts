@@ -16,7 +16,13 @@ import {
   type SlotIdentity,
   type SlotTarget,
 } from "../runtime-slots/contract.ts";
-import { FleetRefused, RuntimeFleetState, type FleetRow, type PrimaryRoute } from "./state.ts";
+import {
+  FleetRefused,
+  RuntimeFleetState,
+  unprovenStart,
+  type FleetRow,
+  type PrimaryRoute,
+} from "./state.ts";
 import {
   cellHealthReadMs,
   countStillMs,
@@ -65,6 +71,7 @@ type PlacementDecision =
   | "admit_alone"
   | "admit_after_limit"
   | "admit_replacement"
+  | "admit_late"
   | "admit_needed"
   | "redraw";
 
@@ -159,9 +166,11 @@ export interface FleetCell {
   lastEnd?(identity: SlotIdentity): RuntimeEnd | undefined;
   /**
    * True only once no instance can run for a start that never served: nothing was ever sent, or the
-   * provider proves the instance absent. Without it, such a row holds its place.
+   * provider proves the instance absent. Without it, such a row holds its place. With `stop`, a
+   * container that a start which never activated left running is stopped once, so its absence can
+   * be proven at all.
    */
-  abandon?(target: SlotTarget): Promise<boolean>;
+  abandon?(target: SlotTarget, stop?: boolean): Promise<boolean>;
 }
 interface Dependencies {
   state: RuntimeFleetState;
@@ -439,10 +448,12 @@ export class RuntimeFleet {
     const row = (await this.deps.state.inspect()).find(
       (value) => value.target.slotId === identity.slotId,
     );
+    // A start whose activation completed after its bound quarantined it is admitted late.
+    const late = row !== undefined && unprovenStart(row);
     // Growth and upkeep can both observe one start; only the first admits it.
     if (
       !row ||
-      !["warming", "uncertain"].includes(row.phase) ||
+      (!["warming", "uncertain"].includes(row.phase) && !late) ||
       (row.identity && !sameIdentity(row.identity, identity))
     )
       return;
@@ -454,20 +465,23 @@ export class RuntimeFleet {
     const place = distanceClass(database);
     // A replacement keeps the demand that reserved it, so it serves wherever it landed.
     const replacing = row.replaces !== undefined || row.replacement === true;
+    // A late start already spent a whole start bound, so it serves wherever it landed too.
     const decision: PlacementDecision =
       place === "near"
         ? "admit"
         : place === "unknown"
           ? "admit_unknown"
-          : replacing
-            ? "admit_replacement"
-            : draw >= placementDraws
-              ? "admit_after_limit"
-              : !(await this.othersServing(identity))
-                ? "admit_alone"
-                : (await this.neededNow(identity, database))
-                  ? "admit_needed"
-                  : "redraw";
+          : late
+            ? "admit_late"
+            : replacing
+              ? "admit_replacement"
+              : draw >= placementDraws
+                ? "admit_after_limit"
+                : !(await this.othersServing(identity))
+                  ? "admit_alone"
+                  : (await this.neededNow(identity, database))
+                    ? "admit_needed"
+                    : "redraw";
     // Only once the admission's own write has committed: a failed write leaves the episode open.
     if (decision === "redraw") {
       if (!(await this.deps.state.redraw(identity, database))) return;
@@ -1062,9 +1076,19 @@ export class RuntimeFleet {
       this.reported.set(row.target.slotId, reports);
       logQuarantine("held", row, age);
     }
+    if (!row.identity) {
+      // A start that activated after its bound fired proved itself, so it serves after all.
+      const proven = await cell.selected().catch(() => undefined);
+      if (proven && sameTarget(proven, row.target)) {
+        this.reported.delete(row.target.slotId);
+        return this.admit(cell, proven);
+      }
+    }
+    // Only a start that never activated has its container stopped; one with an identity activated
+    // and keeps the failure path.
     const absent = row.identity
       ? await cell.failed(row.identity, row.active)
-      : ((await cell.abandon?.(row.target)) ?? false);
+      : ((await cell.abandon?.(row.target, true)) ?? false);
     if (!absent) return;
     if (row.identity)
       await this.deps.state.reclaimQuarantined(row.identity, cell.lastEnd?.(row.identity));

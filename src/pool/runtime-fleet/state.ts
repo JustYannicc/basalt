@@ -115,6 +115,14 @@ const tier = (placement: FleetPlacement | undefined, place: DistanceClass, activ
   return near ? 2 : 3;
 };
 
+/**
+ * A start its bound quarantined before it had an identity. One that activates later proved itself,
+ * so it is still admitted; nothing else leaves quarantine for ready.
+ */
+export function unprovenStart(row: Row) {
+  return row.phase === "quarantined" && row.reason === "start_unproven" && !row.identity;
+}
+
 export class FleetRefused extends Error {
   readonly reason: "capacity" | "identity" | "uncertain" | "draining";
   constructor(reason: FleetRefused["reason"]) {
@@ -347,14 +355,17 @@ export class RuntimeFleetState {
     const identity = Schema.decodeUnknownSync(SlotIdentity)(value);
     return this.change(async (rows, transaction) => {
       const row = this.row(rows, identity);
+      const late = unprovenStart(row);
       if (
-        !["warming", "uncertain", "ready"].includes(row.phase) ||
+        (!["warming", "uncertain", "ready"].includes(row.phase) && !late) ||
         (row.identity && !sameIdentity(row.identity, identity))
       )
         throw new FleetRefused("uncertain");
       const primary = await selectedPrimary(transaction);
+      // A late start's quarantine reason no longer holds once it proved itself.
+      const { reason: _reason, failure: _failure, ...proven } = row;
       rows[rows.indexOf(row)] = {
-        ...row,
+        ...(late ? proven : row),
         phase:
           primary &&
           primary.instanceId !== primary.controllerId &&
