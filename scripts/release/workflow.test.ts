@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
 const workflow = readFileSync(
@@ -78,11 +81,11 @@ test("a failed apply or acceptance rolls PoolWorker back by itself and ends red"
   const rollback = step("Roll back a failed release");
   assert.equal(
     condition("Roll back a failed release"),
-    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))",
+    "always() && env.MODE == 'apply' && env.POLICY_MODE != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.serving.outcome == 'success' && (steps.apply.outcome == 'failure' || (steps.accept.outcome == 'failure' && steps.accept.outputs.acceptance != 'could-not-test'))",
   );
   assert.match(rollback, /rollback --stage production --from .local\/release\/serving.json/u);
   assert.match(rollback, /exit 1/u);
-  assert.match(rollback, /POLICY_NAME != 'cutover-classes'/u);
+  assert.match(rollback, /POLICY_MODE != 'cutover-classes'/u);
   assert.match(step("Apply the reviewed plan"), /continue-on-error: true/u);
   assert.match(step("Accept the release through the live pool"), /continue-on-error: true/u);
 });
@@ -91,7 +94,7 @@ test("an acceptance that could not test stops the run red without rolling back",
   // The pool refused the acceptance device: nothing failed to serve, so nothing is undone.
   assert.equal(
     condition("Stop on an acceptance that could not test"),
-    "always() && env.MODE == 'apply' && env.POLICY_NAME != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'",
+    "always() && env.MODE == 'apply' && env.POLICY_MODE != 'cutover-classes' && env.POLICY_NAME != 'code-restart' && steps.accept.outputs.acceptance == 'could-not-test'",
   );
   const [rollback, counts, stop, record] = order(
     "Roll back a failed release",
@@ -148,6 +151,73 @@ test("the class change states what was verified first and never pretends it can 
   );
   assert.ok(summary! < apply!);
   assert.match(step("Stop on a failed class change"), /cannot be rolled back/u);
+});
+
+test("every class change stops on failure without a rollback, keyed on its policy's check mode", () => {
+  assert.equal(
+    condition("Stop on a failed class change"),
+    "always() && env.MODE == 'apply' && env.POLICY_MODE == 'cutover-classes' && (steps.apply.outcome == 'failure' || steps.accept.outcome == 'failure')",
+  );
+  for (const name of [
+    "Roll back a failed release",
+    "Stop on a failed class change",
+    "Stop on an acceptance that could not test",
+  ])
+    assert.doesNotMatch(condition(name) ?? "", /POLICY_NAME [!=]= 'cutover-classes'/u, name);
+  // Only the fleet's own class change may say the fleet is not configured.
+  const stop = step("Stop on a failed class change");
+  assert.match(
+    stop,
+    /if \[ "\$POLICY_NAME" = "cutover-classes" \]; then state="the fleet is not configured[^"]*"\n\s+else state="(?![^"]*fleet)[^"]+"; fi/u,
+  );
+  assert.match(stop, /It cannot be rolled back; \$state\./u);
+});
+
+test("the policy's check mode is read before anything uses it, and a policy without one stops the job", () => {
+  assert.match(workflow, /\[[^\]]*\bcutover-classes, route-gateway-class\]/u);
+  const read = "Read the policy's check mode";
+  assert.equal(condition(read), undefined);
+  const [first] = order(read);
+  for (const later of order(
+    "Respect the release hold",
+    "Plan and check",
+    "Roll back a failed release",
+    "Stop on a failed class change",
+    "Stop on an acceptance that could not test",
+  ))
+    assert.ok(first! < later);
+  const run = parsedSteps.find((entry) => entry.name === read)?.run;
+  assert.ok(run);
+  const dir = mkdtempSync(join(tmpdir(), "policy-mode-"));
+  try {
+    const exec = (policy: string) => {
+      const env = join(dir, "env");
+      writeFileSync(env, "");
+      const result = spawnSync("bash", ["-eo", "pipefail", "-c", run], {
+        env: { PATH: process.env.PATH, POLICY: join(dir, policy), GITHUB_ENV: env },
+        encoding: "utf8",
+      });
+      return { status: result.status, env: readFileSync(env, "utf8") };
+    };
+    writeFileSync(
+      join(dir, "classes.json"),
+      JSON.stringify({ check: { mode: "cutover-classes" } }),
+    );
+    writeFileSync(join(dir, "none.json"), JSON.stringify({ check: {} }));
+    writeFileSync(join(dir, "empty.json"), JSON.stringify({ check: { mode: "" } }));
+    assert.deepEqual(exec("classes.json"), { status: 0, env: "POLICY_MODE=cutover-classes\n" });
+    for (const policy of ["none.json", "empty.json", "missing.json"])
+      assert.deepEqual(exec(policy), { status: 1, env: "" }, policy);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  // Every policy the dispatch offers names its mode, so the read passes for each.
+  for (const name of ["release", "code", "code-restart", "cutover-code", "cutover-classes"]) {
+    const policy = JSON.parse(
+      readFileSync(new URL(`./policies/${name}.json`, import.meta.url), "utf8"),
+    ) as { check?: { mode?: unknown } };
+    assert.equal(typeof policy.check?.mode, "string", name);
+  }
 });
 
 test("a plan runs the apply's read-only steps too, so an apply is never their first run", () => {
@@ -354,6 +424,18 @@ test("the root's boot is read before the apply and must still serve after it", (
     step("Accept the release through the live pool"),
     /env\.POLICY_NAME == 'code' \|\| env\.POLICY_NAME == 'cutover-code'\) && 'same-boot'/u,
   );
+});
+
+test("the controller storage bookmark and its summary stay the fleet's own class change", () => {
+  for (const name of [
+    "Take the controller storage bookmark",
+    "What was verified before the irreversible step",
+  ])
+    assert.equal(
+      condition(name),
+      "env.MODE == 'apply' && env.POLICY_NAME == 'cutover-classes'",
+      name,
+    );
 });
 
 test("the class change takes the controller storage bookmark first, under the same GO", () => {

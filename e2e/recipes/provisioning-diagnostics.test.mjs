@@ -10,6 +10,7 @@ import {
   provisioningHistory,
   provisioningMoved,
   provisioningSettled,
+  repositoryFailures,
 } from "./provisioning-diagnostics.mjs";
 
 const job = (id, status, attempts) => ({
@@ -293,4 +294,154 @@ test("a sweep line is attributed only by its own record's annotations", () => {
     { message: "Provisioning attempt failed" },
     { message: "Catalog app update failed", cause: "SqlError", app: "other" },
   ]);
+});
+
+test("a sweep's source failure carries its reason only when it is one of the SDK's words", () => {
+  const sweep = "basalt-catalog-apps:edb15509:3c4d5e6f-7a8b-4c9d-8e0f-1a2b3c4d5e6f";
+  const line = (fields) =>
+    JSON.stringify({
+      message: ["Catalog app update failed; the job will retry", fields],
+      level: "WARN",
+      annotations: { job: sweep, attempt: 1 },
+    });
+  const multiLine = inspect(
+    {
+      message: [
+        "Catalog app update failed; the job will retry",
+        {
+          app: "app_5ec2e7aa-0000-4000-8000-00000000c0de",
+          organization: "OrgSentinelPrivate0000000000000000",
+          entry: "provider-openai",
+          cause: "SourceError",
+          reason: "not-found",
+        },
+      ],
+      level: "WARN",
+      annotations: { job: sweep, attempt: 2 },
+    },
+    { depth: 6, breakLength: 80 },
+  )
+    .split("\n")
+    .map((text) => `[Api] ${text}`);
+  const log = [
+    `[Api] ${line({ entry: "provider-openai", cause: "SourceError", reason: "git" })}`,
+    ...multiLine,
+    // A reason outside the list, or one that carries text, is dropped.
+    `[Api] ${line({ entry: "provider-openai", cause: "SourceError", reason: "Error: SECRET /home/x" })}`,
+    `[Api] ${line({ entry: "provider-openai", cause: "SourceError", reason: "lost" })}`,
+    // Only a source failure's reason is published.
+    `[Api] ${line({ entry: "provider-openai", cause: "StorageError", reason: "git" })}`,
+  ].join("\n");
+  const [history] = provisioningHistory([job(sweep, "running", 5)], log);
+  assert.deepEqual(history.logged, [
+    {
+      message: "Catalog app update failed",
+      cause: "SourceError",
+      reason: "git",
+      app: "provider-openai",
+    },
+    {
+      message: "Catalog app update failed",
+      cause: "SourceError",
+      reason: "not-found",
+      app: "provider-openai",
+    },
+    { message: "Catalog app update failed", cause: "SourceError", app: "provider-openai" },
+    { message: "Catalog app update failed", cause: "SourceError", app: "provider-openai" },
+    { message: "Catalog app update failed", cause: "StorageError", app: "provider-openai" },
+  ]);
+  const published = JSON.stringify(history.logged);
+  for (const sentinel of ["SECRET", "/home", "lost", "OrgSentinel", "app_5ec2"])
+    assert.ok(!published.includes(sentinel), sentinel);
+});
+
+test("repository failures carry their step, class, reason, status and categories, nothing else", () => {
+  const gitLine = (fields) =>
+    `[Api] ${JSON.stringify({
+      message: ["Managed Git operation failed", fields],
+      level: "WARN",
+      annotations: { job: "basalt-catalog-apps:x:1", attempt: 1 },
+    })}`;
+  const coordinator = inspect(
+    {
+      message: ["Repository step failed", { step: "coordinator-token", error: "ArtifactsError" }],
+      level: "WARN",
+      annotations: {},
+    },
+    { depth: 6, breakLength: 40 },
+  )
+    .split("\n")
+    .map((text) => `[ArtifactsCredentials] ${text}`);
+  const log = [
+    gitLine({
+      reason: "git",
+      type: "HttpError",
+      status: 401,
+      frames: ["    at secretFunction (/home/runner/SECRET/path.js:1:2)"],
+      categories: ["fetch", "request", "secret-category"],
+    }),
+    gitLine({
+      reason: "git",
+      type: "HttpError",
+      status: 401,
+      frames: [],
+      categories: ["fetch", "request"],
+    }),
+    ...coordinator,
+    ...coordinator,
+    // A message in the class, an unknown step, an impossible status: each dropped.
+    `[Api] ${JSON.stringify({ message: ["Repository step failed", { step: "made-up", error: "Error: SECRET text" }] })}`,
+    // Lowercase words and `instance.*` codes come from message text: dropped too.
+    `[Api] ${JSON.stringify({ message: ["Repository step failed", { step: "credentials", error: "secretword", code: "instance.secrethost" }] })}`,
+    // A tag with its provider code, and a transport failure with how it failed.
+    `[ArtifactsCredentials] ${JSON.stringify({ message: ["Repository step failed", { step: "coordinator-create", error: "ArtifactsError", code: "NOT_FOUND" }] })}`,
+    `[Api] ${JSON.stringify({ message: ["Repository step failed", { step: "initialize", error: "RpcCallError", code: "reset" }] })}`,
+    gitLine({ reason: "lost", type: "TypeError", status: 9999 }),
+    "an unrelated line",
+  ].join("\n");
+  assert.deepEqual(repositoryFailures(log), [
+    {
+      message: "Managed Git operation failed",
+      error: "HttpError",
+      reason: "git",
+      status: 401,
+      categories: ["request", "fetch"],
+      count: 2,
+    },
+    {
+      message: "Repository step failed",
+      step: "coordinator-token",
+      error: "ArtifactsError",
+      count: 2,
+    },
+    { message: "Repository step failed", count: 1 },
+    { message: "Repository step failed", step: "credentials", count: 1 },
+    {
+      message: "Repository step failed",
+      step: "coordinator-create",
+      error: "ArtifactsError",
+      code: "NOT_FOUND",
+      count: 1,
+    },
+    {
+      message: "Repository step failed",
+      step: "initialize",
+      error: "RpcCallError",
+      code: "reset",
+      count: 1,
+    },
+    { message: "Managed Git operation failed", error: "TypeError", count: 1 },
+  ]);
+  const published = JSON.stringify(repositoryFailures(log));
+  for (const sentinel of [
+    "SECRET",
+    "secret",
+    "/home",
+    "made-up",
+    "lost",
+    "9999",
+    "frames",
+    "instance.",
+  ])
+    assert.ok(!published.includes(sentinel), sentinel);
 });
