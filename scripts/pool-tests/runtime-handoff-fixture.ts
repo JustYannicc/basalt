@@ -124,6 +124,11 @@ export async function handoffRuntime(
     model: async (_request: Request): Promise<Response | undefined> => undefined,
     connections: async () => 0,
     /**
+     * Runs before a running container is destroyed; a throw is a destroy the platform failed. It is
+     * synchronous, so a destroy that succeeds settles in the same turn it was called.
+     */
+    destroy: (): void => {},
+    /**
      * Whether SIGTERM ends the container at once. Fixtures run a zero stop grace, so by default
      * Home is still draining when the grace ends and the stop falls to `destroy()`.
      */
@@ -218,6 +223,7 @@ export async function handoffRuntime(
       async destroy() {
         // Like the platform, which sends nothing for a container that isn't running.
         if (!running) return;
+        hooks.destroy();
         calls.destroy++;
         running = false;
         for (const stop of stops) stop();

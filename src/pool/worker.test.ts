@@ -2,6 +2,7 @@ import { RuntimeMap } from "../../scripts/pool-tests/runtime-map.ts";
 import assert from "node:assert/strict";
 import { registerHooks } from "node:module";
 import { test } from "node:test";
+import { poolOperationsAnswered } from "./operations-call.ts";
 import { openEnvelope, signEnvelope, signPoolToken } from "./token.ts";
 import {
   membershipPrefix,
@@ -1802,6 +1803,8 @@ test("the operator entrypoint writes one closed line when its handoff call throw
     new Request("https://pool.example/runtime-handoff", { method: "POST", body: "{}" }),
   );
   assert.equal(response.status, 500);
+  // The entrypoint's own answer, so the lane reads its origin as the pool, not the bridge.
+  assert.equal(poolOperationsAnswered(response), true);
   assert.deepEqual(
     log.mock.calls.map((call) => [call.arguments[0], JSON.parse(String(call.arguments[1]))]),
     [

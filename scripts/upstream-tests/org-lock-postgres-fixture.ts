@@ -67,6 +67,9 @@ after(() => {
     execFileSync("docker", ["rm", "--force", "--volumes", container], { stdio: "ignore" });
 });
 
+/** The fixture database's own URL, for a test that needs its own connections or a proxy to it. */
+export const postgresUrl = () => `postgresql://postgres@127.0.0.1:${port}/postgres`;
+
 export const app = AppId.make("app_shared_authority");
 export const organization = OrganizationId.make("org_shared_authority");
 export const owner = "owner";
