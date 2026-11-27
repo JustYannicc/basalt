@@ -1,0 +1,66 @@
+diff --git a/packages/ui/src/implementation/components/input.tsx b/packages/ui/src/implementation/components/input.tsx
+--- a/packages/ui/src/implementation/components/input.tsx
++++ b/packages/ui/src/implementation/components/input.tsx
+@@ -3,16 +3,61 @@ import * as React from "react";
+ import { DisabledTooltip } from "./disabled-tooltip.tsx";
+ import { cn } from "../lib/utils.ts";
+ 
+-/** Input primitive; accepts native props and composes caller styles. */
++/**
++ * Input primitive; accepts native props and composes caller styles.
++ *
++ * A value the product writes while the field has focus and the person has not touched it since,
++ * such as a default name that arrives after a prompt opens, is selected, so what they type next
++ * replaces it instead of landing after it.
++ */
++// A modifier alone, such as Shift for a capital letter, places nothing in the field.
++const modifiers = new Set(["Shift", "Control", "Alt", "AltGraph", "Meta", "CapsLock", "Fn", "OS"]);
++
+ function Input({
+   className,
+   type,
+   disabledReason,
++  ref,
++  onFocusCapture,
++  onInputCapture,
++  onKeyDownCapture,
+   ...props
+ }: React.ComponentProps<"input"> & { readonly disabledReason?: string | undefined }) {
++  const element = React.useRef<HTMLInputElement | null>(null);
++  // Typing, pasting or a key since the field took focus: the value is then the person's to place.
++  const touched = React.useRef(false);
++  const written = React.useRef(props.value);
++  React.useLayoutEffect(() => {
++    if (Object.is(written.current, props.value)) return;
++    written.current = props.value;
++    const input = element.current;
++    if (input === null || touched.current || typeof props.value !== "string") return;
++    if (input.ownerDocument.activeElement === input) input.select();
++  }, [props.value]);
++  const attach = React.useCallback(
++    (input: HTMLInputElement | null) => {
++      element.current = input;
++      if (typeof ref === "function") return ref(input);
++      if (ref) ref.current = input;
++    },
++    [ref],
++  );
+   const control = (
+     // oxlint-disable-next-line react/forbid-elements
+     <input
++      ref={attach}
++      onFocusCapture={(event) => {
++        touched.current = false;
++        onFocusCapture?.(event);
++      }}
++      onInputCapture={(event) => {
++        touched.current = true;
++        onInputCapture?.(event);
++      }}
++      onKeyDownCapture={(event) => {
++        if (!modifiers.has(event.key)) touched.current = true;
++        onKeyDownCapture?.(event);
++      }}
+       type={type}
+       data-slot="input"
+       className={cn(
