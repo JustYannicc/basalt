@@ -18,7 +18,6 @@ import { inventoryCron } from "./inventory.ts";
 import { availabilityCron, validProbeTarget } from "./availability-config.ts";
 import { ArtifactsCredentials } from "../../.upstream/apps/hosted/cloud/src/infrastructure/artifacts-credentials-worker.ts";
 import { Api } from "../../.upstream/apps/hosted/cloud/src/infrastructure/api-worker.ts";
-import { routeGatewayBinding } from "../route/deployment.ts";
 
 /**
  * Killing the elected Home master can lose a provider token rotation, which logs an account out.
@@ -66,7 +65,6 @@ export const poolWorker = Effect.gen(function* () {
     env: {
       PoolContainer: image,
       ...fleetBindings(fleet, yield* fleetClasses),
-      ...(yield* routeGatewayBinding),
       POOL_CONTAINER_APPLICATION_ID: application.applicationId,
       ...(yield* masterCrashBinding),
       // No release in this layer names a candidate image, so a pinned root expects the pin.
