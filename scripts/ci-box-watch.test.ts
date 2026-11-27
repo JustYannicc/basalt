@@ -431,15 +431,19 @@ test("box-watch watches a routed first attempt, keeps its verdict before it canc
   assert.ok(conditionalJobs.includes("box-watch"));
 });
 
-test("box-rerun runs the default branch's file after a cancelled Check, with nothing but its script", () => {
+test("box-rerun runs the default branch's file after a cancelled Check or a failed main push, with nothing but its script", () => {
   const rerun = read(".github/workflows/box-rerun.yml");
   assert.deepEqual(rerun.on, { workflow_run: { workflows: ["Check"], types: ["completed"] } });
   assert.deepEqual(rerun.permissions, {});
   const job = rerun.jobs.rerun;
-  // Only this repository's own first attempt: a fork's or a re-run's cancel never acts.
+  // Only this repository's own first attempt: a fork's or a re-run's cancel never acts, and a
+  // failure only on main's push, the light lane's only user.
   assert.equal(
     job.if,
-    "github.event.workflow_run.conclusion == 'cancelled' && " +
+    "(github.event.workflow_run.conclusion == 'cancelled' || " +
+      "(github.event.workflow_run.conclusion == 'failure' && " +
+      "github.event.workflow_run.event == 'push' && " +
+      "github.event.workflow_run.head_branch == 'main')) && " +
       "github.event.workflow_run.run_attempt == 1 && " +
       "github.event.workflow_run.head_repository.full_name == github.repository",
   );
