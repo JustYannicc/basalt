@@ -16,6 +16,8 @@ export interface ModelHistoryPass {
   reliability?: () => Promise<unknown>;
   rollup: () => Promise<unknown>;
   hours: () => Promise<unknown>;
+  /** How far history is from Home, logged in counts (capture-gap.ts); absent where not wired. */
+  gap?: () => Promise<unknown>;
   /** True once a code handover drains: no new page starts and no new session opens. */
   stopped: () => boolean;
   now?: () => number;
@@ -87,4 +89,7 @@ export async function runModelHistoryPass(pass: ModelHistoryPass, progress: Repo
   await timed("hoursMs", () =>
     pass.hours().catch(() => console.error("POOL_CAPTURE_HOURS_TICK_PENDING")),
   );
+  // Last, from the counts just taken; its failure costs only the line.
+  if (pass.gap && !pass.stopped())
+    await pass.gap().catch(() => console.error("POOL_MODEL_HISTORY_GAP_PENDING"));
 }
