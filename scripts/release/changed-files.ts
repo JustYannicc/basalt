@@ -25,10 +25,15 @@ export const perReleaseFiles = [
   ".upstream/apps/hosted/server/src/implementation/pool-worker-revision.ts",
 ];
 
+/** A row an apply began and did not finish: its State still holds what came before that apply. */
+const inFlight = new Set(["creating", "updating", "deleting", "replacing", "replaced"]);
+
 /**
  * The commit State's last apply ran, from the plan's own State rows: every settled command that
  * records the release commit (`GITHUB_SHA`, the budget checks that run on every release) must
- * name the same one. Anything else is unknown; no account is read for it.
+ * name the same one. Anything else is unknown; no account is read for it. So is any row an apply
+ * left unfinished: the commands can have recorded the new commit while that row kept the old
+ * code, and every line diffing from the new commit would then miss what that row still lacks.
  */
 export function deployedCommit(plan: AlchemyPlan.Plan): string | undefined {
   const named = new Set<string>();
@@ -36,6 +41,7 @@ export function deployedCommit(plan: AlchemyPlan.Plan): string | undefined {
     const state = node?.state as
       | { resourceType?: unknown; status?: unknown; props?: { env?: Record<string, unknown> } }
       | undefined;
+    if (inFlight.has(String(state?.status))) return undefined;
     if (state?.resourceType !== "Command.Exec") continue;
     if (state.status !== "created" && state.status !== "updated") continue;
     const sha = state.props?.env?.GITHUB_SHA;
@@ -58,6 +64,38 @@ export const patchTargets = (patch: string) => {
 };
 
 /**
+ * A patch's sections by the file each changes, without the lines a re-base moves (`index`, hunk
+ * offsets), so a carry only re-based or changed in one file names only what really differs.
+ */
+const patchSections = (patch: string) => {
+  const sections = new Map<string, string>();
+  for (const section of patch.split(/^(?=diff --git )/mu)) {
+    const header = /^diff --git a\/(\S+) b\/(\S+)$/mu.exec(section);
+    if (!header) continue;
+    const body = section
+      .split("\n")
+      .filter((line) => !line.startsWith("index ") && !line.startsWith("@@"))
+      .join("\n");
+    for (const target of new Set([header[1]!, header[2]!]))
+      sections.set(target, (sections.get(target) ?? "") + body);
+  }
+  return sections;
+};
+
+/** The upstream files two versions of one carry change differently; a patch without git headers, all. */
+export const carryTargets = (before: string | undefined, after: string | undefined) => {
+  const texts = [before, after].filter((text) => text !== undefined);
+  if (texts.some((text) => !/^diff --git /mu.test(text)))
+    return [...new Set(texts.flatMap(patchTargets))];
+  const [from, to] = [before, after].map((text) =>
+    text === undefined ? new Map<string, string>() : patchSections(text),
+  );
+  return [...new Set([...from!.keys(), ...to!.keys()])].filter(
+    (target) => from!.get(target) !== to!.get(target),
+  );
+};
+
+/**
  * `git diff --name-only <deployed>..<candidate>` in the checkout, with each changed carry's files.
  * Undefined when either commit is not in the checkout.
  */
@@ -72,6 +110,8 @@ export function changedFiles(
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 256 * 1024 * 1024,
+      // The checkout is local, so a git that takes this long is stuck; the reasons give up.
+      timeout: 30_000,
     });
   let from: string;
   let to: string;
@@ -88,16 +128,15 @@ export function changedFiles(
   const files = new Set(names);
   for (const name of names) {
     if (!/^patches\/[^/]+\.patch$/u.test(name)) continue;
-    for (const commit of [from, to]) {
-      let text: string;
+    const [before, after] = [from, to].map((commit) => {
       try {
-        text = git("show", `${commit}:${name}`);
+        return git("show", `${commit}:${name}`);
       } catch {
         // Added or retired in this range: the other side names its files.
-        continue;
+        return undefined;
       }
-      for (const target of patchTargets(text)) files.add(`.upstream/${target}`);
-    }
+    });
+    for (const target of carryTargets(before, after)) files.add(`.upstream/${target}`);
   }
   if (from !== to) for (const file of perReleaseFiles) files.add(file);
   return { deployed: from, files, upstreamPin: names.includes("upstream.json") };

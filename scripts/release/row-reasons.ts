@@ -11,7 +11,12 @@ import { Context, Effect, Option } from "effect";
 import * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type { PlatformError } from "effect/PlatformError";
-import { changedFiles, deployedCommit, type ChangedFiles } from "./changed-files.ts";
+import {
+  changedFiles,
+  deployedCommit,
+  perReleaseFiles,
+  type ChangedFiles,
+} from "./changed-files.ts";
 
 /**
  * Why a planned row plans, past what the plan itself says: which changed files are among a
@@ -60,6 +65,15 @@ const short = (value: unknown) =>
       ? value.slice(0, 12)
       : "not a hash";
 const posix = (file: string) => file.split(path.sep).join("/");
+const stamps = new Set(perReleaseFiles);
+/**
+ * Files that change a bundle without being one of its sources: the dependencies the bundler
+ * resolves from the package store, and the build's own configuration. A source map never names them.
+ */
+const buildInput = (file: string) =>
+  /(^|\/)(bun\.lockb?|package\.json|upstream\.json|tsconfig[^/]*\.json|alchemy\.run\.[^/]+|(vite|rolldown)\.config\.[^/]+)$/u.test(
+    file,
+  );
 
 /** The repository path of a file on disk: under the checkout, or `.upstream/…` in its prepared tree. */
 const repoPaths = (root: string) => {
@@ -179,6 +193,9 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
 
   const commandLines = async (row: ReasonRow, props: { cwd?: string; memo?: unknown }) => {
     if (props.memo === false) return [`${row.fqn}: runs on every release; it has no key files`];
+    // Its diff stops at these before it hashes any file, so the key files are not why it plans.
+    if (row.action === "create") return [`${row.fqn}: new, so it runs`];
+    if (row.changedProps.length) return [];
     if (!changed) return [];
     // The command's key as its diff hashes it (Command/Exec.ts): every file it reads whole.
     const { files } = await run(
@@ -193,7 +210,10 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
     return [
       hit.length
         ? `${row.fqn}: key files changed: ${listed(hit)} (${hit.length} of ${files.length} key files)`
-        : `${row.fqn}: no key file changed (${files.length} key files)`,
+        : `${row.fqn}: no key file changed (${files.length} key files)` +
+          (row.type === "Command.Build"
+            ? "; a build also plans when its output hash differs, which this entry does not compare"
+            : ""),
     ];
   };
 
@@ -209,7 +229,11 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
             existsSync(file),
           )
         : [];
-      const reached = changedPaths(sources);
+      const touched = changedPaths(sources);
+      const reached = touched.filter((file) => !stamps.has(file));
+      // Every release rewrites these, so a Worker that reaches one always changes; listed apart.
+      const stamped = touched.length > reached.length ? ", plus the per-release stamp" : "";
+      const inputs = [...changed.files].filter(buildInput).sort();
       const vite = Boolean(("props" in node ? (node.props as WorkerProps) : {}).vite);
       lines.push(
         !bundle
@@ -217,8 +241,12 @@ export async function rowReasons(input: ReasonInput): Promise<string[]> {
           : !sources.length
             ? `${row.fqn}: its bundle's source map names no file in this checkout, so which changed files reach it is not known`
             : reached.length
-              ? `${row.fqn}: ${reached.length} changed ${reached.length === 1 ? "file reaches" : "files reach"} this Worker: ${listed(reached)}`
-              : `${row.fqn}: no changed file reaches this Worker`,
+              ? `${row.fqn}: ${reached.length} changed ${reached.length === 1 ? "file reaches" : "files reach"} this Worker: ${listed(reached)}${stamped}`
+              : stamped
+                ? `${row.fqn}: only the per-release stamp reaches this Worker`
+                : inputs.length
+                  ? `${row.fqn}: no changed source file reaches this Worker; dependencies or build configuration changed: ${listed(inputs)}`
+                  : `${row.fqn}: no changed file reaches this Worker`,
       );
     }
     if (row.action === "update" && !row.changedProps.length && !row.bindings.length)
@@ -271,6 +299,8 @@ async function providerDiff(
   };
   if (props.source)
     return "planned by the provider's own diff; an external source computes its hashes, which this entry does not compare";
+  if (props.script !== undefined)
+    return "planned by the provider's own diff; an inline script's hash is not compared here";
   if (props.vite) {
     const Vite = await loadVite();
     const workspaces = recorded.additionalWorkspaces;
@@ -285,12 +315,14 @@ async function providerDiff(
     );
     // Counted only: the files are the release tree's, and the log is public.
     compare("input", value.hash, `, over ${files.length} files`);
-  } else if (props.main !== undefined && props.script === undefined) {
+  } else if (props.main !== undefined) {
     if (bundle) compare("bundle", bundle.hash);
     else
       differs.push(
-        `the plan built no bundle, so its diff stopped before the code: the metadata hash differs or a binding is unresolved (State metadata ${short(recorded.metadata)})`,
+        `the plan built no bundle, so its diff stopped before the code: its metadata hash differs (State metadata ${short(recorded.metadata)})`,
       );
+  } else if (recorded.bundle !== undefined) {
+    differs.push("it no longer has an entry file, while State still records a bundle");
   }
   if (props.assets && !props.vite) {
     const { assets } = props;
@@ -298,7 +330,7 @@ async function providerDiff(
       typeof assets === "object" && assets.hash !== undefined
         ? assets.hash
         : typeof assets === "object" && assets.directory === undefined
-          ? undefined
+          ? null
           : await run(
               Cloudflare.Workers.readAssets(
                 // As the provider reads it: a hash-less shape without its `hash` key.
@@ -309,26 +341,46 @@ async function providerDiff(
                     ) as unknown as Cloudflare.Workers.AssetsProps),
               ).pipe(
                 Effect.map((read) => read.hash),
-                Effect.orElseSucceed(() => undefined),
+                Effect.orElseSucceed(() => null),
               ),
             );
+    if (computed === null || computed === undefined)
+      // The provider counts assets it cannot read as changed.
+      differs.push(
+        `assets not readable here, which the provider counts as changed (State ${short(recorded.assets)})`,
+      );
     // A hash another row's build supplies is not known until that build runs.
-    if (computed !== undefined && typeof computed !== "string")
+    else if (typeof computed !== "string")
       differs.push(
         `assets not known until the build it reads resolves (State ${short(recorded.assets)})`,
       );
-    else if (computed !== undefined) compare("assets", computed);
+    else compare("assets", computed);
   }
   return differs.length
     ? `planned by the provider's own diff: ${differs.join("; ")}`
-    : "planned by the provider's own diff, but no hash this entry computes (input, bundle, assets) differs from State's";
+    : "planned by the provider's own diff, but no hash this entry computes (input, bundle, assets) differs from State's; the metadata hash is not compared";
 }
 
-/** The printed lines; a failure to read them never changes the plan's outcome. */
-export const reasonLines = (input: ReasonInput) =>
-  rowReasons(input).catch(() => [
+/** A deploy waits on these between its digest and its apply, so they get a bound. */
+export const REASONS_TIMEOUT_MS = 60_000;
+
+/** The printed lines; a failure or a stall reading them never changes the plan's outcome. */
+export const reasonLines = (input: ReasonInput, timeoutMs = REASONS_TIMEOUT_MS) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stalled = new Promise<string[]>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve([
+          `Why these rows plan: not read within ${timeoutMs / 1000} s; the plan is unaffected`,
+        ]),
+      timeoutMs,
+    );
+  });
+  const read = rowReasons(input).catch(() => [
     "Why these rows plan: could not be read for this plan; the plan is unaffected",
   ]);
+  return Promise.race([read, stalled]).finally(() => clearTimeout(timer));
+};
 
 /**
  * The lines for a plan Alchemy's `Stack.plan` returned: the deployed commit from its State rows,
@@ -343,6 +395,7 @@ export function planReasonLines(options: {
   readonly rows: readonly ReasonRow[];
   readonly root: string;
   readonly candidate: string;
+  readonly timeoutMs?: number;
 }) {
   const { snapshot } = options;
   const context = snapshot.session?.context;
@@ -352,18 +405,21 @@ export function planReasonLines(options: {
   } catch {
     changed = undefined;
   }
-  return reasonLines({
-    plan: snapshot.native,
-    rows: options.rows,
-    root: options.root,
-    changed,
-    artifacts: context
-      ? Option.getOrUndefined(
-          Context.getOption(context as Context.Context<ArtifactStore>, ArtifactStore),
-        )
-      : undefined,
-    // A plan's session holds the services its own diff read the same files with.
-    provide: (effect) =>
-      Effect.provide(effect, (context ?? Context.empty()) as Context.Context<Reads>),
-  });
+  return reasonLines(
+    {
+      plan: snapshot.native,
+      rows: options.rows,
+      root: options.root,
+      changed,
+      artifacts: context
+        ? Option.getOrUndefined(
+            Context.getOption(context as Context.Context<ArtifactStore>, ArtifactStore),
+          )
+        : undefined,
+      // A plan's session holds the services its own diff read the same files with.
+      provide: (effect) =>
+        Effect.provide(effect, (context ?? Context.empty()) as Context.Context<Reads>),
+    },
+    options.timeoutMs,
+  );
 }

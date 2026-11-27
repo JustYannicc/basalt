@@ -7,10 +7,14 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { AlchemyContext } from "alchemy/AlchemyContext";
+import { ArtifactStore } from "alchemy/Artifacts";
 import type * as AlchemyPlan from "alchemy/Plan";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Effect } from "effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import {
+  carryTargets,
   changedFiles,
   deployedCommit,
   perReleaseFiles,
@@ -18,7 +22,7 @@ import {
 } from "./changed-files.ts";
 import { planDigest } from "./plan-check.ts";
 import { changedRows } from "./plan-summary.ts";
-import { rowReasons, type ReasonInput } from "./row-reasons.ts";
+import { planReasonLines, reasonLines, rowReasons, type ReasonInput } from "./row-reasons.ts";
 import { calledRows, makePlan, productionRows } from "./test/plan-fixture.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -145,6 +149,14 @@ test("a Worker names the changed files its bundle's source map reaches, or says 
   const none = await reasons(planned, changes("README.md"));
   assert.ok(none.includes("Api: no changed file reaches this Worker"), none.join("\n"));
   assert.ok(!none.some((line) => line.includes("README.md")));
+  // A dependency or build setting changes the bundle although no source map names it.
+  const lock = await reasons(planned, changes("bun.lock", "README.md"));
+  assert.ok(
+    lock.includes(
+      "Api: no changed source file reaches this Worker; dependencies or build configuration changed: bun.lock",
+    ),
+    lock.join("\n"),
+  );
 });
 
 test("a Worker the provider alone changes names the bundle hash that differs, both shortened", async (context) => {
@@ -281,6 +293,19 @@ test("the deployed commit is the one every settled release command recorded, or 
   // Two commits recorded (an apply that stopped between them) or one still running: unknown.
   assert.equal(deployedCommit(plannedWith(commandNode(a), commandNode("b".repeat(40)))), undefined);
   assert.equal(deployedCommit(plannedWith(commandNode(a, "updating"))), undefined);
+  // The commands finished and recorded the new commit, but another row the apply began did not:
+  // that row still holds what came before, so no one commit describes State.
+  for (const status of ["creating", "updating", "replacing", "replaced", "deleting"])
+    assert.equal(
+      deployedCommit(
+        plannedWith(commandNode(a), {
+          action: "update",
+          state: { resourceType: "Cloudflare.Worker", status },
+        }),
+      ),
+      undefined,
+      status,
+    );
   assert.equal(deployedCommit(plannedWith(commandNode("not-a-sha"))), undefined);
 });
 
@@ -320,4 +345,111 @@ test("the changed files are git's, with each changed carry's files and the per-r
   );
   assert.equal(result?.deployed, from);
   assert.equal(result?.upstreamPin, false);
+});
+
+test("a changed carry names only the files whose section really differs", () => {
+  const section = (target: string, line: string, index = "1111111..2222222", at = "@@ -1 +1 @@") =>
+    `diff --git a/${target} b/${target}\nindex ${index} 100644\n--- a/${target}\n+++ b/${target}\n${at}\n-old\n+${line}\n`;
+  const before = section("apps/one.ts", "a") + section("apps/two.ts", "b");
+  // Re-based: only the index and hunk offsets moved.
+  const rebased =
+    section("apps/one.ts", "a", "3333333..4444444", "@@ -40 +40 @@") +
+    section("apps/two.ts", "b", "5555555..6666666", "@@ -7 +7 @@");
+  assert.deepEqual(carryTargets(before, rebased), []);
+  assert.deepEqual(
+    carryTargets(before, section("apps/one.ts", "a") + section("apps/two.ts", "c")),
+    ["apps/two.ts"],
+  );
+  // Added or retired: every file the one side changes.
+  assert.deepEqual(carryTargets(undefined, before).sort(), ["apps/one.ts", "apps/two.ts"]);
+  // Without git headers no section is known, so every file either side names counts.
+  assert.deepEqual(carryTargets("--- a/x.ts\n+++ b/x.ts\n", "--- a/y.ts\n+++ b/y.ts\n").sort(), [
+    "x.ts",
+    "y.ts",
+  ]);
+});
+
+test("assets the provider cannot read are named as changed, as its diff counts them", async () => {
+  const plan = providerOnly(
+    { assets: { directory: join(tmpdir(), "row-reasons-no-such-assets") } },
+    { assets: "b".repeat(64) },
+  );
+  const lines = await rowReasons({
+    plan,
+    rows: [row],
+    root,
+    changed: undefined,
+    artifacts: undefined,
+    provide,
+  });
+  assert.ok(
+    lines.includes(
+      "Site: planned by the provider's own diff: assets not readable here, which the provider counts as changed (State bbbbbbbbbbbb)",
+    ),
+    lines.join("\n"),
+  );
+});
+
+test("reasons that stall give way to a fixed line within their bound", async () => {
+  const lines = await reasonLines(
+    {
+      plan: providerOnly({}, {}),
+      rows: [row],
+      root,
+      changed: undefined,
+      artifacts: undefined,
+      provide: () => Effect.never,
+    },
+    50,
+  );
+  assert.deepEqual(lines, ["Why these rows plan: not read within 0.05 s; the plan is unaffected"]);
+});
+
+/** Every settled release command in the rows records the given commit, as each release's do. */
+const releasedAt = (rows: Readonly<Record<string, unknown>>, sha: string) =>
+  Object.fromEntries(
+    Object.entries(rows).map(([fqn, value]) => {
+      const state = value as { resourceType?: string; props?: { env?: Record<string, unknown> } };
+      return [
+        fqn,
+        state.resourceType === "Command.Exec"
+          ? { ...state, props: { ...state.props, env: { ...state.props?.env, GITHUB_SHA: sha } } }
+          : value,
+      ];
+    }),
+  ) as unknown as Record<string, ResourceState>;
+
+test("the entry's reasons read a real plan's State and session and change neither", async (context) => {
+  const head = execFileSync("git", ["-C", root, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const built = await workerPlan(context);
+  const planned = await makePlan(context, {
+    rows: releasedAt(built.rows, head),
+    declared: { credentials: {} },
+  });
+  assert.equal(deployedCommit(planned.plan), head);
+  const session = Effect.runSync(
+    Effect.context<FileSystem.FileSystem | Path.Path | AlchemyContext | ArtifactStore>().pipe(
+      Effect.provideService(ArtifactStore, planned.artifacts),
+      Effect.provideService(AlchemyContext, { dotAlchemy: ".alchemy", dev: false, adopt: false }),
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+  const digest = planDigest(planned.plan);
+  const stored = () =>
+    JSON.stringify(
+      [...planned.artifacts].map(([fqn, entries]) => [fqn, [...entries.keys()].sort()]),
+    );
+  const before = stored();
+  const rows = changedRows({ resources: rowsOf(planned.plan), summary: {}, native: planned.plan });
+  const lines = await planReasonLines({
+    snapshot: { native: planned.plan, session: { context: session as never } },
+    rows,
+    root,
+    candidate: head,
+  });
+  assert.equal(lines[0], `Changed files since the deployed commit ${head.slice(0, 12)}: 0`);
+  // The bundle came from the session's artifact store, so its source map was read.
+  assert.ok(lines.includes("Api: no changed file reaches this Worker"), lines.join("\n"));
+  assert.equal(planDigest(planned.plan), digest);
+  assert.equal(stored(), before);
 });
