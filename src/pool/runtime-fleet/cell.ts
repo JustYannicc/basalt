@@ -151,17 +151,16 @@ export class FleetHandoffCell implements FleetCell {
     this.abandoned = true;
     // A start or activation still returning here owns the instance.
     if (this.starting || this.activating > 0) return this.present();
-    // A start that activated proved itself to its endpoint, so it is fenced but never asked to stop.
-    // The ledger never makes a quarantined row ready, so it takes no call, and the fence ends its
-    // endpoint's renewals, so its container stops at its inactivity timeout and its place frees
-    // once that container is gone. A selection can still commit after this read, from another
-    // isolate's activation or one this cell observes later. The endpoint keeps that safe: it fences
-    // in its serialized section, then refuses every later attestation and read and never stops an
-    // attested start.
+    // A start that activated is fenced but never asked to stop. The ledger never makes a quarantined
+    // row ready, so it takes no call, and the fence ends its endpoint's renewals, so its container
+    // stops at its inactivity timeout and its place frees once that container is gone. A selection
+    // can still commit after this read, from another isolate's activation or one this cell observes
+    // later, and its container may then be stopped. That selection serves nothing: the endpoint
+    // fences in its serialized section, then refuses every later attestation, read and call.
     const activated = await this.activated();
     // The endpoint is fenced first, so it refuses every later admission and start for this slot and
     // the wait below covers every start that could ever run, a replaced isolate's included. With
-    // `stop`, the endpoint then stops a container that a start which never attested left running.
+    // `stop`, the endpoint then stops the container a start that never activated left running.
     const fenced = await this.fence(target, stop && !activated);
     if (activated)
       return (await this.ended(target)) ? this.provenAbsent(target, true) : this.present();

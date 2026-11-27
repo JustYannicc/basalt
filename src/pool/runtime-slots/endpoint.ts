@@ -598,8 +598,8 @@ export class RuntimeEndpoint {
   /**
    * Fences a fleet start its controller abandoned. Queued behind any start already running here, it
    * is durable before it answers, and from then on this slot is never admitted or started again, so
-   * a container it finds stopped can't come back. With `stop`, a container that a first start which
-   * never attested left running is then stopped, once (`RuntimeAbandonedStop`).
+   * a container it finds stopped can't come back. With `stop`, which its cell asks only for a first
+   * start that never activated, that start's container is then stopped, once (`RuntimeAbandonedStop`).
    */
   abandonStart(target: SlotTarget, stop = false) {
     return this.serialize(async () => {
