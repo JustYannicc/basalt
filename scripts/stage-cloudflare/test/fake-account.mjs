@@ -44,6 +44,8 @@ export function fakeAccount({
   tags = {},
   redirects = {},
   workersSubdomain = "acct-sub",
+  // The registry's own page size for a tag list: a page holds at most this many tags, whatever `n`.
+  tagPageSize = Infinity,
 } = {}) {
   const live = {
     applications: [],
@@ -75,7 +77,7 @@ export function fakeAccount({
         method: followedMethod(redirect.status, method),
       });
     }
-    if (hostname === "registry.cloudflare.com") return registry(method, pathname);
+    if (hostname === "registry.cloudflare.com") return registry(method, pathname, searchParams);
     const prefix = `/client/v4/accounts/${accountId}/`;
     if (!pathname.startsWith(prefix)) return json({}, { status: 404 });
     const rest = pathname.slice(prefix.length);
@@ -109,14 +111,27 @@ export function fakeAccount({
     return found ? json(envelope(found)) : json({}, { status: 404 });
   };
 
-  function registry(method, pathname) {
+  function registry(method, pathname, searchParams) {
     if (pathname === "/v2/_catalog") return json(catalog(Object.keys(live.tags)));
     const listing = /^\/v2\/(.+)\/tags\/list$/u.exec(pathname);
     if (listing) {
       const name = decodeURIComponent(listing[1]);
-      return name in live.tags
-        ? json(tagList(name, live.tags[name].length ? live.tags[name] : null))
-        : json({}, { status: 404 });
+      if (!(name in live.tags)) return json({}, { status: 404 });
+      // OCI distribution paging: tags in lexical order, up to `n` after `last`, and a `next` link
+      // while more remain.
+      const sorted = [...live.tags[name]].sort();
+      const last = searchParams.get("last");
+      const after = last === null ? sorted : sorted.filter((tag) => tag > last);
+      const size = Math.min(Number(searchParams.get("n") ?? Infinity), tagPageSize);
+      const page = after.slice(0, size);
+      const more = after.length > page.length;
+      return json(tagList(name, sorted.length ? page : null), {
+        headers: more
+          ? {
+              link: `</v2/${listing[1]}/tags/list?n=${page.length}&last=${encodeURIComponent(page.at(-1))}>; rel="next"`,
+            }
+          : {},
+      });
     }
     const manifest = /^\/v2\/(.+)\/manifests\/(.+)$/u.exec(pathname);
     if (!manifest) return json({}, { status: 404 });

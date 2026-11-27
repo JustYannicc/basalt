@@ -78,7 +78,7 @@ const EXPORTS = {
     envelopeOf: "reads an answer it is handed; sends nothing",
     credentialsOf: "reads an answer it is handed; sends nothing",
     catalogOf: "reads an answer it is handed; sends nothing",
-    tagsOf: "reads an answer it is handed; sends nothing",
+    tagPageOf: "reads an answer it is handed; sends nothing",
     manifestOf: "reads an answer it is handed; sends nothing",
     deletedOf: "reads an answer it is handed; sends nothing",
   },
