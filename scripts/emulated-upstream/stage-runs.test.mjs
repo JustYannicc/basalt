@@ -50,6 +50,11 @@ function fakeApi({ resources = none(), lease } = {}) {
       return "acctsub";
     },
     empty: (found) => Object.values(found).every((rows) => rows.length === 0),
+    inert: (found) =>
+      found.applications.length === 0 &&
+      found.scripts.length === 0 &&
+      found.namespaces.length === 0,
+    repositoryLeft: (found) => ({ repositories: found.images.length, entries: 0 }),
     counted: (found) =>
       Object.fromEntries(Object.entries(found).map(([kind, rows]) => [kind, rows.length])),
     describe: (found) => found.scripts.map((row) => `Worker ${row.id}`).join(", "),
@@ -689,6 +694,17 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
       1,
       "stopped-expire",
     ],
+    // Nothing runs and only the stage's own repository is left: green, and it says so.
+    [
+      "expire, only its repository left",
+      expire,
+      fakeAccount({
+        tags: { [`acct/${prefix}-mock`]: ["h1"] },
+        cloudflare: { pageSize: 5, emptyEnd: true, collectAfter: 1_000 },
+      }),
+      0,
+      "expire",
+    ],
     // An expiry whose token may mint pull but not push: its deletes fail, and it says so.
     [
       "expire, push refused",
@@ -700,6 +716,16 @@ test("every exit of a destroy or an expiry leaves its file", async () => {
   ];
   for (const [name, env, fake, code, file] of cases) {
     const run = await runOf(env, fake.fetcher);
+    if (name === "expire, only its repository left") {
+      assert.equal(run.saved.expire.outcome, "repository-only");
+      assert.ok(
+        run.printed.includes(
+          `- nothing named ${prefix}-* runs; only its own image repository is left (3 entries), which the next deploy pushes to`,
+        ),
+        run.printed.join("\n"),
+      );
+      assert.equal(fake.calls.filter((call) => call.method === "DELETE").length, 0);
+    }
     if (name === "expire, push refused") {
       assert.match(
         run.printed.join("\n"),

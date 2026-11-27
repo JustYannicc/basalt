@@ -1000,7 +1000,7 @@ test("a repository the registry keeps is tried again by the next teardown, and s
   assert.equal(deletes.length, 2);
 });
 
-test("the deploy's guard ignores a repository only when every entry is the registry's", async () => {
+test("the deploy's guard refuses only what runs: the stage's own repository, whatever it holds, is inert", async () => {
   const other = `sha256:${"d".repeat(64)}`;
   const repositories = {
     "only the registry's artifact": [
@@ -1079,14 +1079,9 @@ test("the deploy's guard ignores a repository only when every entry is the regis
         () => undefined,
         (caught) => caught,
       );
-    assert.equal(
-      /already exists/u.test(error?.message ?? ""),
-      refused,
-      `${name}: ${error?.message}`,
-    );
-    if (!refused) assert.equal(error?.message, "past the guard", name);
-    // The refusal says what the guard read, in counts.
-    else assert.equal(error.record.found.images, 1, name);
+    // Nothing of the stage runs: every repository case passes the guard, whatever it once refused.
+    void refused;
+    assert.equal(error?.message, "past the guard", `${name}: ${error?.message}`);
   }
 });
 
@@ -1099,6 +1094,66 @@ const control =
   "the repository's tag list, answered to the run's pull credential, named each entry";
 const registryCalls = (fake, method) =>
   fake.calls.filter((call) => call.host === "registry.cloudflare.com" && call.method === method);
+
+test("a prefixed Worker, application or namespace left still refuses a deploy, and says what it read", async () => {
+  for (const keep of ["applications", "scripts", "namespaces"]) {
+    const fake = cloudflareStage({ emptyEnd: true });
+    for (const kind of ["applications", "scripts", "namespaces"])
+      if (kind !== keep) fake.live[kind].length = 0;
+    let started = false;
+    const error = await emulatedStage({
+      api: account(fake.fetcher),
+      key: "k".repeat(43),
+      fetcher: fake.fetcher,
+      summary: () => {},
+      save: (name) => {
+        if (name === "deploy-started") started = true;
+      },
+      deployEntry: () => {
+        throw new Error("past the guard");
+      },
+    })
+      .deploy()
+      .then(
+        () => undefined,
+        (caught) => caught,
+      );
+    assert.match(error?.message ?? "", /already exists/u, keep);
+    assert.equal(error.record.found[keep], 1, keep);
+    assert.equal(started, false, keep);
+  }
+});
+
+test("a deploy over the stage's own leftover repository says so and records what it found", async () => {
+  const fake = cloudflareStage({ emptyEnd: true });
+  for (const kind of ["applications", "scripts", "namespaces"]) fake.live[kind].length = 0;
+  const lines = [];
+  const saved = {};
+  const error = await emulatedStage({
+    api: account(fake.fetcher),
+    key: "k".repeat(43),
+    fetcher: fake.fetcher,
+    summary: (line) => lines.push(line),
+    save: (name, value) => (saved[name] = value),
+    deployEntry: () => {
+      throw new Error("past the guard");
+    },
+  })
+    .deploy()
+    .then(
+      () => undefined,
+      (caught) => caught,
+    );
+  assert.equal(error?.message, "past the guard");
+  assert.ok(
+    lines.includes(
+      "- the stage's own image repository is left from an earlier run (9 entries); nothing runs, and the deploy pushes its image there",
+    ),
+    lines.join("\n"),
+  );
+  assert.equal(saved["deploy-started"].leftover.found.images, 1);
+  assert.doesNotMatch(JSON.stringify(saved), /sha256:|acct\//u);
+});
 
 test("entries the list names with no manifest behind them end the destroy green, counted, and pass the deploy's guard", async () => {
   const fake = listedOnly();
