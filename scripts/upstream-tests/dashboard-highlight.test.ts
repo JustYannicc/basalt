@@ -12,6 +12,8 @@ const { AsyncResult, AtomRegistry } = (await import(
 
 type Token = { readonly content: string; readonly htmlStyle?: Readonly<Record<string, string>> };
 type Lines = ReadonlyArray<ReadonlyArray<Token>>;
+/** What an engine or the contract fails with when it cannot highlight. */
+type Unavailable = { readonly _tag: "HighlightUnavailable" };
 type Highlighter = {
   readonly codeToTokens: (code: string, options: object) => { readonly tokens: Lines };
   readonly getLoadedLanguages: () => ReadonlyArray<string>;
@@ -23,20 +25,20 @@ const contract = (await import(
     readonly code: string;
     readonly language: string;
   }) => import("effect/reactivity").Atom.Atom<
-    import("effect/reactivity").AsyncResult.AsyncResult<Lines, unknown>
+    import("effect/reactivity").AsyncResult.AsyncResult<Lines, Unavailable>
   >;
   readonly highlightLines: (
     highlighter: Highlighter,
     code: string,
     language: string,
-  ) => import("effect").Effect.Effect<Lines, { readonly _tag: string }>;
+  ) => import("effect").Effect.Effect<Lines, Unavailable>;
 };
 const { highlighter: serverEngine } = (await import(
   new URL("packages/ui/src/implementation/server-highlight-engine.ts", upstream).href
 )) as {
   readonly highlighter: import("effect").Effect.Effect<
     Highlighter,
-    unknown,
+    Unavailable,
     import("effect").Scope.Scope
   >;
 };
