@@ -1,0 +1,143 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts b/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
+--- a/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
++++ b/apps/hosted/cloud/src/infrastructure/billing-catalog-seed.ts
+@@ -78,7 +78,8 @@
+ 
+ /**
+  * Runs while the deployment resolves the catalog binding, never inside a Worker request.
+- * Seeding is an upsert keyed by ID, so repeating a deployment converges on the declaration.
++ * Seeding is an upsert keyed by ID, so repeating it converges on the declaration: a request that
++ * hangs is abandoned and sent again, as emulator setup's other repeatable calls are.
+  */
+ export const seedBillingCatalog = (
+   serverUrl: Redacted.Redacted<string>,
+@@ -129,6 +130,7 @@
+         }),
+       ),
+     (attempts, last) => new BillingCatalogSeedFailed({ ...last, category: "timeout", attempts }),
++    { attemptTimeout: "6 seconds" },
+   ).pipe(
+     Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
+     Effect.provide(FetchHttpClient.layer),
+diff --git a/e2e/support/emulators.ts b/e2e/support/emulators.ts
+--- a/e2e/support/emulators.ts
++++ b/e2e/support/emulators.ts
+@@ -417,17 +417,23 @@
+   );
+ 
+ /**
+- * Instances are lazy; keyed credentials and reset converge when repeated with the same input, so a
+- * hung request is abandoned and sent again. Four 6 s attempts and their backoff fit the 30 s budget,
+- * which still caps the total when Retry-After lengthens a wait.
++ * Instances are lazy; keyed credentials and reset converge when repeated with the same input, and
++ * discovery is a read, so a hung request is abandoned and sent again. Four 6 s attempts and their
++ * backoff fit the 30 s budget, which still caps the total when Retry-After lengthens a wait.
+  */
+ export const provisionEmulatorRequest = <A>(
+   origin: string,
+-  path: "/_emulate/instances" | "/_emulate/credentials" | "/_emulate/reset",
++  path:
++    | "/_emulate/instances"
++    | "/_emulate/credentials"
++    | "/_emulate/reset"
++    | "/.well-known/openid-configuration",
++  /** Without a payload the request is a GET. */
+   payload: unknown,
+   schema: Schema.Codec<A>,
+-) =>
+-  provisioningRequest(
++) => {
++  const operation = `${payload === undefined ? "GET" : "POST"} ${path}`;
++  return provisioningRequest(
+     (attempts) =>
+       emulatorRequestAttempt(origin, path, payload).pipe(
+         Effect.flatMap((response) =>
+@@ -435,7 +441,7 @@
+             Effect.mapError(
+               () =>
+                 new EmulatorFailed({
+-                  operation: `POST ${path}`,
++                  operation,
+                   emulator: emulatorTarget(origin)?.label,
+                   reason: "invalid response",
+                   status: response.status,
+@@ -450,16 +456,15 @@
+     (attempts, last) =>
+       new EmulatorFailed({
+         ...last,
+-        operation: `POST ${path}`,
++        operation,
+         emulator: emulatorTarget(origin)?.label,
+         reason: "timeout",
+         category: "timeout",
+         attempts,
+       }),
+     { attemptTimeout: "6 seconds" },
+-  ).pipe(
+-    Effect.annotateLogs({ operation: `POST ${path}`, emulator: emulatorTarget(origin)?.label }),
+-  );
++  ).pipe(Effect.annotateLogs({ operation, emulator: emulatorTarget(origin)?.label }));
++};
+ 
+ /**
+  * Provision actual hosted instances and credentials through emulators.dev's control plane, for a
+@@ -512,9 +517,11 @@
+         };
+       });
+     const googleClient = yield* oauth("google");
+-    const discovery = yield* emulatorRequest(
++    const discovery = yield* provisionEmulatorRequest(
+       googleClient.baseUrl,
+       "/.well-known/openid-configuration",
++      undefined,
++      Schema.Unknown,
+     );
+     const google = yield* Schema.decodeUnknownEffect(GoogleProvider)({
+       ...googleClient,
+diff --git a/e2e/tests/emulator-fixture-provisioning.spec.ts b/e2e/tests/emulator-fixture-provisioning.spec.ts
+--- a/e2e/tests/emulator-fixture-provisioning.spec.ts
++++ b/e2e/tests/emulator-fixture-provisioning.spec.ts
+@@ -7,7 +7,11 @@
+ import { createEmulatorFixture } from "../support/emulators.ts";
+ 
+ /** The real fixture client talks HTTP to this control-plane stand-in instead of the hosted service. */
+-const controlPlane = (failOauth: boolean | "once" | "mismatch") =>
++const controlPlane = (
++  failOauth: boolean | "once" | "mismatch",
++  /** Leaves this many discovery requests unanswered, as a hung emulator does. */
++  hungDiscovery = 0,
++) =>
+   Effect.acquireRelease(
+     Effect.callback<{
+       origin: string;
+@@ -47,6 +51,7 @@
+           if (request.url === "/_emulate/instances") {
+             send(service === "github" && count === 1 ? 500 : 200, { providerBaseUrl: original });
+           } else if (request.url === "/.well-known/openid-configuration") {
++            if (count <= hungDiscovery) return;
+             send(200, {
+               issuer: original,
+               authorization_endpoint: `${original}/authorize`,
+@@ -167,6 +172,22 @@
+     }).pipe(Effect.provide(FetchHttpClient.layer)),
+   );
+ 
++  it.effect("a hung Google discovery read is abandoned and sent again", () =>
++    Effect.gen(function* () {
++      const stub = yield* controlPlane(false, 1);
++      const http = yield* HttpClient.HttpClient;
++      const fixture = yield* createEmulatorFixture(stub.origin).pipe(
++        Effect.provideService(HttpClient.HttpClient, routed(http, stub.origin)),
++        // A read with no attempt bound waits out the whole 30 s budget on the hung request.
++        Effect.timeout("20 seconds"),
++      );
++      expect(stub.counts.get("google /.well-known/openid-configuration")).toBe(2);
++      expect(Redacted.value(fixture).services.google.discovery.issuer).toBe(
++        "https://google.emulators.dev",
++      );
++    }).pipe(Effect.provide(FetchHttpClient.layer)),
++  );
++
+   it.effect("persistent OAuth setup failure remains blocking after bounded keyed attempts", () =>
+     Effect.gen(function* () {
+       const stub = yield* controlPlane(true);

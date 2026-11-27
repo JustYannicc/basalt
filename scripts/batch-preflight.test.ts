@@ -34,16 +34,33 @@ test("ordinary PRs and local pre-push run the same unconditional preflight with 
   assert.ok(!plan.steps.some((step) => step.command === "node scripts/ci/style.ts"));
 });
 
+test("the fast job reads the new commits for secrets first: in CI right after the comparison, locally before anything else", () => {
+  const workflow = parse(
+    readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  );
+  const steps = workflow.jobs.fast.steps as { id?: string; run?: string }[];
+  const comparison = steps.findIndex((step) => step.id === "comparison");
+  assert.ok(comparison >= 0);
+  assert.equal(steps[comparison + 1]?.run, "node scripts/check-git-secrets.ts");
+  const context = { root: "/fixture", base: "a".repeat(40), head: "b".repeat(40) };
+  const [first] = fastPlan(workflow, context).steps;
+  assert.equal(first?.command, "node scripts/check-git-secrets.ts");
+  assert.equal(first?.env.BASE_SHA, context.base);
+  assert.equal(first?.env.HEAD_SHA, context.head);
+});
+
 test("preflight checks prepared source and shipped types, and every failure stops subsequent work", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "basalt-preflight-")));
   const expected = [
     [".", "scripts/check-git-secrets.ts"],
     [".upstream", "e2e/check-boundary.ts"],
     [".", "scripts/ci/style.ts"],
+    [".", "scripts/owned-lint/check.ts"],
     [".upstream", "run mcp:apps --check"],
     [".", "scripts/check-connectors.ts --preflight"],
     [".upstream", "run apps:build"],
     [".", "scripts/typecheck.ts"],
+    [".", "scripts/effect-diagnostics.ts"],
   ];
   try {
     for (const path of ["scripts/failure", ".upstream", "bin"])

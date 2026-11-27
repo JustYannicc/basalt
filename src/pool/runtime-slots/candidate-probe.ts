@@ -1,3 +1,4 @@
+import { failedOn } from "../runtime-placement.worker.ts";
 import { Schema } from "effect";
 import { brand } from "../../../brand.ts";
 import { PoolDirectory } from "../directory.ts";
@@ -223,6 +224,15 @@ export class RuntimeCandidateProbe {
       ticket.pool,
       beforeDispatch,
     );
+    // The candidate answered: a refusal of that answer is the candidate's, for the request event.
+    try {
+      return await this.accept(ticket, response);
+    } catch (error) {
+      failedOn(error, ticket.candidate, "candidate");
+      throw error;
+    }
+  }
+  private async accept(ticket: Ticket, response: Response) {
     if (
       response.status !== 200 ||
       response.headers.get("X-Signalbox-Pool-Boot") !== ticket.candidate.bootId

@@ -2,7 +2,7 @@
 
 Use `npm run ci:fast -- --base origin/main` when the candidate is committed and the checkout is clean. It catches the format, lint and type errors checked by the ordinary pull request fast job before they consume a remote CI cycle.
 
-Prepare the checkout with `HEAVY_SLOTS=6 heavy-slot npm run prepare:upstream` first. Use the exact Node and Bun versions declared by the `fast` job. Fetch the intended target before choosing `--base`; the command resolves the target and candidate to immutable commits without fetching or changing branches.
+Prepare the checkout with `HEAVY_SLOTS=6 heavy-slot npm run prepare:upstream` first. The fast job's Cloud startup and listener configs start a local Postgres container, so the command needs a running Docker daemon and network access to pull its pinned image. Use the exact Node and Bun versions declared by the `fast` job. Fetch the intended target before choosing `--base`; the command resolves the target and candidate to immutable commits without fetching or changing branches.
 
 The complete command automatically enters `heavy-slot` before running any checks, using six machine-wide slots by default. It fails if the wrapper is unavailable and waits while the machine-wide pause is active. A command already running inside a slot reuses that slot. The `--list` option only reads the plan and needs no slot.
 
@@ -20,7 +20,7 @@ After changing `upstream.json`, fetch its exact commit into `.upstream` and run 
 
 ## Affected lane
 
-A pull request from this repository runs the fast jobs plus the heavy jobs its changed files reach; [architecture/README.md](../../architecture/README.md) states the rule. A `ci.yml` change outside the job blocks runs every heavy job; one inside a job's block runs that job and the jobs that need it, with the block's synthetic `ci.yml#<job>` path as the reason. The selection and gate scripts listed in `selectionInputs` in `areas.ts` run no heavy job; setup and preparation scripts stay in `sharedInputs`. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
+No event requests the affected lane since 26-11-2026: pull requests run the fast lane, and a missed heavy failure is found in their batch's full Check. The lane, the fast jobs plus the heavy jobs a candidate's changed files reach, stays for a local candidate; [architecture/README.md](../../architecture/README.md) states the rule. A `ci.yml` change outside the job blocks runs every heavy job; one inside a job's block runs that job and the jobs that need it, with the block's synthetic `ci.yml#<job>` path as the reason. The selection and gate scripts listed in `selectionInputs` in `areas.ts` run no heavy job; setup and preparation scripts stay in `sharedInputs`. `node scripts/ci/select-jobs.ts` with `BASE_SHA` and `HEAD_SHA` set prints the selection and each job's reasons for a local candidate.
 
 The import graph sees imports, relative file literals, literal path arguments and scripts started with `node` or `bun`. A file read through a computed path is invisible to it: declare that read in `runtimeReads` in `areas.ts`, or give the data an area. A missed dependency still fails in the batch and main Checks, which run every heavy job.
 
@@ -35,3 +35,13 @@ A file that fails runs once more in the same job; one that times out or is cance
 `bun scripts/ci/check-e2e-coverage.ts` runs in the fast lane after preparation. It names test calls and standalone checks that no declared runner or workflow reaches. Wire each omission into a CI group or job, or add a reviewed entry to `scripts/ci/e2e-exceptions.json` with a reason and the exact fingerprint from `.generated/ci/e2e-coverage.json`. The fingerprint includes the prepared spec and its plan. Changed fingerprints require renewed review, and selected or deleted entries must be removed. Exceptions never expand automatically to new tests in the same file.
 
 `--no-exceptions` reports the full ungated inventory, including the frozen inherited baseline. A temporary exception for a broken check must name its owning fix. Wiring that check makes the exception fail, so the fix removes both together.
+
+## Effect diagnostics only go down
+
+`node scripts/typecheck.ts` runs Effect's language service inside the type checker: `tsconfig.effect.json` raises the gated rules in `scripts/effect-diagnostics-config.ts` to errors, and every type-check config extends it. Only a program whose config reaches it, without replacing its plugin or setting `noCheck`, counts as checking a file. The preflight then runs `node scripts/effect-diagnostics.ts`, which holds the TypeScript files in `scripts/**` and `src/**` to `scripts/effect-diagnostics.baseline.json`, a count per rule and file. Any rise fails and lists the new sites. A fall fails until the baseline is lowered, so fixes are recorded; a deleted file never fails.
+
+With `BASE_SHA` set, the gate only tightens against the base commit. No file or rule total in the baseline may rise; a site may only move, matched by its line text being removed elsewhere in the change, and whole-file counts follow renames. `tsconfig.effect.json` may only raise more rules to error; any other change to it fails. A newly gated rule starts from the counts its change records. `scripts/effect-diagnostics-canary.ts` holds fixed violations the gate must see on every run, so anything that silences the diagnostics fails.
+
+After fixing sites, or after a rebase or merge changes the counts, run `node scripts/effect-diagnostics.ts --write`. It rewrites `tsconfig.effect.json` from the rule list, runs the type check and rewrites the baseline. Two branches that each lower the same entry merge cleanly and then fail with "fell"; run the command on the merge.
+
+Three more counts share the baseline: `notTypeChecked` (a file no program in `scripts/typecheck.ts` reads), `suppressionComment` (a `ts-nocheck` or Effect diagnostics tag, which hides sites from the gate wherever it appears) and `effectInJavaScript` (a JavaScript file that names the effect package or calls an `Effect.` function, which no program checks). A rule name the pinned compiler does not know, such as `effectTryWithoutCatch`, fails the gate; it needs a compiler update in the upstream toolchain first.

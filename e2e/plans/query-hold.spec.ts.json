@@ -1,0 +1,15 @@
+{
+  "scenarios": {},
+  "runs": {},
+  "config": [
+    {
+      "job": "account-usage",
+      "config": "query-hold.config.ts"
+    }
+  ],
+  "inputs": [
+    ".upstream/e2e/support/query-transition.ts",
+    ".upstream/e2e/support/query-hold-fixture.ts",
+    ".upstream/e2e/support/read-batches.ts"
+  ]
+}

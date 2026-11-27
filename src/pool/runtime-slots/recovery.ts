@@ -331,7 +331,7 @@ export class RuntimeSlotRecovery {
         slot: previous.slotId,
       });
       const observation = await provider
-        .observe(application, attested ? previous.instanceId : undefined, signal)
+        .observe("recovery", application, attested ? previous.instanceId : undefined, signal)
         .catch((error: unknown) => {
           // Without a credential the provider accepts, no pass restarts the root until a person acts.
           if (error instanceof ProviderCredentialRefused) this.stalled = true;

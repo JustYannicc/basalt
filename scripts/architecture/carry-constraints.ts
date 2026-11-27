@@ -74,8 +74,9 @@ const reviewRegistry = "src/catalog/oauth-reviews.json";
 const pinLine = /^[+-]\s*"metadataSha256": "[a-f0-9]{64}",?$/;
 
 /**
- * A reviewed OAuth metadata re-pin moves only snapshots and their digests. The runtime never reads
- * the snapshots and ignores the digests, so the drift job's re-pin needs no architecture change.
+ * A reviewed OAuth metadata re-pin moves only snapshots and their digests. The runtime ignores the
+ * digests and reads a snapshot only for a whole-list connection's scopes, which its catalog test
+ * requires to change together with the requested scopes, so the drift job's re-pin needs no architecture change.
  */
 export function withoutMetadataRepins(changed: readonly string[], registryDiff: string) {
   const content = registryDiff

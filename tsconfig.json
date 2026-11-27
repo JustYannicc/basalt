@@ -1,4 +1,5 @@
 {
+  "extends": "./tsconfig.effect.json",
   "compilerOptions": {
     "target": "ES2024",
     "module": "NodeNext",
@@ -35,6 +36,8 @@
     "scripts/preview/stack",
     "scripts/scale-test/stack.ts",
     "scripts/scale-test/worker.ts",
+    "scripts/emulated-upstream/stack.ts",
+    "scripts/emulated-upstream/worker.ts",
     "scripts/release/test/plan-worker.ts"
   ]
 }

@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { failurePlacementHeaders } from "../runtime-placement.worker.ts";
 import { RemoteRuntimeDefect } from "../runtime-slots/request-error.ts";
 import {
   runtimeFailureDiagnostic,
@@ -141,7 +142,10 @@ function acceptedCrash(request: Request, error: unknown) {
   if (request.method !== "POST" || modelCallReplayable(pathname))
     return nativeRuntimeUnavailable(request, error);
   const response = upstreamOutcomeUnknown(undefined, pathname);
-  for (const [name, value] of Object.entries(runtimeFailureHeaders(error, "fleet_forward")))
+  for (const [name, value] of Object.entries({
+    ...runtimeFailureHeaders(error, "fleet_forward"),
+    ...failurePlacementHeaders(error),
+  }))
     response.headers.set(name, value);
   if (error instanceof Error) retainEndpointRequestId(error, response);
   return response;

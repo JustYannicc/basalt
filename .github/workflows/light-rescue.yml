@@ -1,0 +1,40 @@
+name: Light rescue
+
+# A Check job queued for the box's light runners can't move to hosted runners. While the box's
+# heartbeat shows it down, this force-cancels each first attempt of this repository's own Check
+# whose light job has waited 3 minutes (scripts/ci/light-rescue.ts); box-rerun.yml then re-runs its
+# failed and cancelled jobs as attempt 2, which runs every job hosted, unless a job failed for real.
+# It runs hosted, as the box may be down, and whether or not the light lane's variable is set:
+# emptying it during an outage must still free the Checks the box holds.
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+# One rescue at a time; a second waits for the first.
+concurrency:
+  group: light-rescue
+  cancel-in-progress: false
+
+jobs:
+  rescue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node
+        with:
+          node-version: 24.18.0
+      - name: Cancel the Checks whose light jobs a down box holds
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BOX_LABEL: ${{ vars.BASALT_CI_BOX_LABEL }}
+          BOX_HEARTBEAT_LABEL: ${{ vars.BASALT_CI_BOX_HEARTBEAT_LABEL }}
+        run: node scripts/ci/light-rescue.ts
