@@ -14,14 +14,13 @@ import {
   readPoolOrganization,
 } from "../../.upstream/apps/hosted/server/src/implementation/pool-organization.ts";
 import { signEnvelope } from "../../src/pool/token.ts";
-import { localPostgres } from "./account-change-postgres-fixture.ts";
+import { postgresUrl } from "./org-lock-postgres-fixture.ts";
 
 const require = createRequire(
   new URL("../../.upstream/packages/fumadb-effect/package.json", import.meta.url),
 );
 const PgClient: typeof import("../../.upstream/packages/fumadb-effect/node_modules/@effect/sql-pg/dist/PgClient.js") =
   await import(require.resolve("@effect/sql-pg/PgClient"));
-const adminUrl = process.env.POOL_TEST_ADMIN_URL;
 const signingKey = "ab".repeat(32);
 const person = "org_person";
 const pool = "app_person_pool";
@@ -124,58 +123,55 @@ async function busy(admin: pg.Client) {
   return rows[0].n as number;
 }
 
-test(
-  "an observation read stuck behind a lock ends in the database, so it keeps no connection",
-  { skip: !localPostgres, timeout: 30_000 },
-  async () => {
-    const schema = `observation_${randomUUID().replaceAll("-", "")}`;
-    const admin = new pg.Client({ connectionString: adminUrl });
-    const locker = new pg.Client({ connectionString: adminUrl });
-    await Promise.all([admin.connect(), locker.connect()]);
-    const proxy = await withoutCancels(new URL(adminUrl!));
-    const ask = () => check(proxy.url, schema);
-    try {
-      await admin.query(`create schema ${schema}`);
-      await admin.query(`set search_path = ${schema}`);
-      await admin.query("create table organization (id text primary key, metadata text)");
-      await admin.query(
-        "create table executor_apps (id text primary key, owner text not null, active_deployment text)",
-      );
-      await admin.query("insert into organization values ($1, $2)", [
-        person,
-        JSON.stringify({ basaltPools: { [pool]: { app: pool, membership: "executor-links-v1" } } }),
-      ]);
-      await admin.query("insert into executor_apps values ($1, $2, $3)", [
-        pool,
-        `organization:${person}`,
-        `dpl_${pool}`,
-      ]);
-      assert.deepEqual(await ask().then((answer) => answer.status), 204);
+test("an observation read stuck behind a lock ends in the database, so it keeps no connection", async () => {
+  const adminUrl = postgresUrl();
+  const schema = `observation_${randomUUID().replaceAll("-", "")}`;
+  const admin = new pg.Client({ connectionString: adminUrl });
+  const locker = new pg.Client({ connectionString: adminUrl });
+  await Promise.all([admin.connect(), locker.connect()]);
+  const proxy = await withoutCancels(new URL(adminUrl));
+  const ask = () => check(proxy.url, schema);
+  try {
+    await admin.query(`create schema ${schema}`);
+    await admin.query(`set search_path = ${schema}`);
+    await admin.query("create table organization (id text primary key, metadata text)");
+    await admin.query(
+      "create table executor_apps (id text primary key, owner text not null, active_deployment text)",
+    );
+    await admin.query("insert into organization values ($1, $2)", [
+      person,
+      JSON.stringify({ basaltPools: { [pool]: { app: pool, membership: "executor-links-v1" } } }),
+    ]);
+    await admin.query("insert into executor_apps values ($1, $2, $3)", [
+      pool,
+      `organization:${person}`,
+      `dpl_${pool}`,
+    ]);
+    assert.deepEqual(await ask().then((answer) => answer.status), 204);
 
-      // A migration holds the apps table: every ownership read now waits on its lock.
-      await locker.query("begin");
-      await locker.query(`lock table ${schema}.executor_apps in access exclusive mode`);
-      const answers = await Promise.all(Array.from({ length: 24 }, () => ask()));
-      assert.ok(
-        answers.every((answer) => answer.status === 204),
-        answers.map((answer) => answer.status).join(","),
-      );
-      // Each answer waited at most the observation's 300 ms bound beyond the existing read.
-      assert.ok(Math.max(...answers.map((answer) => answer.ms)) < 1_500);
-      // The database ends each stuck read after 250 ms, though no cancel reaches it.
-      const deadline = performance.now() + 1_500;
-      while ((await busy(admin)) > 0 && performance.now() < deadline);
-      assert.equal(await busy(admin), 0, "a cut observation read still holds its connection");
-      // The next request gets a connection without waiting on the cut ones.
-      const next = await ask();
-      assert.equal(next.status, 204);
-      assert.ok(next.ms < 1_000, String(next.ms));
-    } finally {
-      // The lock goes first, so a failed run can still clean up after itself.
-      await locker.query("rollback").catch(() => {});
-      await proxy.close();
-      await admin.query(`drop schema if exists ${schema} cascade`);
-      await Promise.all([admin.end(), locker.end()]);
-    }
-  },
-);
+    // A migration holds the apps table: every ownership read now waits on its lock.
+    await locker.query("begin");
+    await locker.query(`lock table ${schema}.executor_apps in access exclusive mode`);
+    const answers = await Promise.all(Array.from({ length: 24 }, () => ask()));
+    assert.ok(
+      answers.every((answer) => answer.status === 204),
+      answers.map((answer) => answer.status).join(","),
+    );
+    // Each answer waited at most the observation's 300 ms bound beyond the existing read.
+    assert.ok(Math.max(...answers.map((answer) => answer.ms)) < 1_500);
+    // The database ends each stuck read after 250 ms, though no cancel reaches it.
+    const deadline = performance.now() + 1_500;
+    while ((await busy(admin)) > 0 && performance.now() < deadline);
+    assert.equal(await busy(admin), 0, "a cut observation read still holds its connection");
+    // The next request gets a connection without waiting on the cut ones.
+    const next = await ask();
+    assert.equal(next.status, 204);
+    assert.ok(next.ms < 1_000, String(next.ms));
+  } finally {
+    // The lock goes first, so a failed run can still clean up after itself.
+    await locker.query("rollback").catch(() => {});
+    await proxy.close();
+    await admin.query(`drop schema if exists ${schema} cascade`);
+    await Promise.all([admin.end(), locker.end()]);
+  }
+});

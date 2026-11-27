@@ -2684,11 +2684,11 @@ jobs:
         with:
           bun-version: ${{ env.E2E_BUN_VERSION }}
       - run: npm run prepare:upstream
-      - name: Prove committed change locks, account source read contention and bounded pool ownership reads on PostgreSQL
+      - name: Prove committed change locks and account source read contention on PostgreSQL
         if: matrix.shard == 'compatibility'
         env:
           POOL_TEST_ADMIN_URL: postgresql://fixture_root:fixture-only@localhost:5432/postgres
-        run: node --experimental-transform-types --test --test-concurrency=1 scripts/upstream-tests/account-change-postgres.test.ts scripts/upstream-tests/change-serializable-postgres.test.ts scripts/upstream-tests/account-source-read-locks-postgres.test.ts scripts/upstream-tests/pool-organization-postgres.test.ts
+        run: node --experimental-transform-types --test --test-concurrency=1 scripts/upstream-tests/account-change-postgres.test.ts scripts/upstream-tests/change-serializable-postgres.test.ts scripts/upstream-tests/account-source-read-locks-postgres.test.ts
       - name: Stage the pinned app release for provider fixtures
         working-directory: .upstream
         run: bun run e2e:prepare
