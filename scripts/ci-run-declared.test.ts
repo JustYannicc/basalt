@@ -365,3 +365,64 @@ test("retries past a step's annotation limit collapse into one line but stay in 
     const table = readFileSync(join(root, "summary.md"), "utf8");
     assert.equal(table.match(/\| passed on retry \|/g)?.length, 11);
   }));
+
+/** Run `hangs` with a `ps` that refuses the tree listing, always or only the first time. */
+const hangWithRefusedListing = async (root: string, once: boolean) => {
+  // Only the tree listing fails; process snapshots and the test's own probes still work.
+  const bin = join(root, "bin");
+  mkdirSync(bin);
+  const ps = spawnSync("sh", ["-c", "command -v ps"], { encoding: "utf8" }).stdout.trim();
+  // With `once`, a marker beside the script makes only the first listing fail.
+  const refuse = `${once ? '[ -e "$0.refused" ] && exec ' + ps + ' "$@"; : > "$0.refused"; ' : ""}echo "listing refused" >&2; exit 1`;
+  writeFileSync(
+    join(bin, "ps"),
+    `#!/bin/sh\nif [ "$*" = "-A -o pid=,ppid=,pgid=" ]; then ${refuse}; fi\nexec ${ps} "$@"\n`,
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  const lines: string[] = [];
+  const pid = join(root, "hung-Hangs.pid");
+  try {
+    const [result] = await runDeclaredShard([pair("hangs")], {
+      root,
+      evidence: join(root, "evidence"),
+      deadlineMs: 3_000,
+      graceMs: 1_000,
+      log: (line) => lines.push(line),
+    });
+    assert.equal(result!.outcome, "timed-out");
+    assert.equal(result!.attempts.length, 1);
+    const state = spawnSync("ps", ["-o", "stat=", "-p", readFileSync(pid, "utf8")], {
+      encoding: "utf8",
+    }).stdout.trim();
+    return { lines, left: state !== "" && !state.startsWith("Z") };
+  } finally {
+    process.env.PATH = path;
+    // Unlisted, its detached child was never signalled; it is this test's to stop.
+    if (existsSync(pid))
+      try {
+        process.kill(Number(readFileSync(pid, "utf8")), "SIGKILL");
+      } catch {}
+  }
+};
+const leftoverLine =
+  "::error::declared:self-host hangs.spec.ts may have left processes running: could not list its process tree (ps exited 1: listing refused)";
+
+test("a file whose process tree cannot be listed reports an error instead of losing its detached processes", () =>
+  fixture(async (root) => {
+    const { lines, left } = await hangWithRefusedListing(root, false);
+    assert.equal(left, true, "the unlisted detached child is never signalled");
+    assert.ok(lines.includes(leftoverLine), lines.join("\n"));
+  }));
+
+test("a listing that works again after a failed one still finds and stops the detached processes", () =>
+  fixture(async (root) => {
+    // The deadline's listing fails; the escalation's works and finds the hung child's group.
+    const { lines, left } = await hangWithRefusedListing(root, true);
+    assert.equal(left, false);
+    assert.ok(
+      !lines.some((line) => line.includes("may have left processes running")),
+      lines.join("\n"),
+    );
+  }));

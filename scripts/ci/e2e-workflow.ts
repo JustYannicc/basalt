@@ -32,7 +32,10 @@ const matrixCanRun = (expression: string, matrix: Matrix | string | undefined) =
 
 /** A step condition true only in the full suite: the affected lane never runs that step. */
 export const fullOnly = "steps.lane.outputs.full_suite == 'true'";
-/** The fast job's e2e config step: the full suite, or a lane change that reaches a config. */
+/**
+ * The full suite, or a lane change that reaches a fast e2e config. No step uses it: the fast job
+ * runs its configs in every Check. Kept for the condition lists that read it.
+ */
 export const configsReached = fullOnly + " || steps.lane.outputs.fast_configs != '[]'";
 
 const conditionCanRun = (

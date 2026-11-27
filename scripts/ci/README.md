@@ -2,7 +2,7 @@
 
 Use `npm run ci:fast -- --base origin/main` when the candidate is committed and the checkout is clean. It catches the format, lint and type errors checked by the ordinary pull request fast job before they consume a remote CI cycle.
 
-Prepare the checkout with `HEAVY_SLOTS=6 heavy-slot npm run prepare:upstream` first. Use the exact Node and Bun versions declared by the `fast` job. Fetch the intended target before choosing `--base`; the command resolves the target and candidate to immutable commits without fetching or changing branches.
+Prepare the checkout with `HEAVY_SLOTS=6 heavy-slot npm run prepare:upstream` first. The fast job's Cloud startup and listener configs start a local Postgres container, so the command needs a running Docker daemon and network access to pull its pinned image. Use the exact Node and Bun versions declared by the `fast` job. Fetch the intended target before choosing `--base`; the command resolves the target and candidate to immutable commits without fetching or changing branches.
 
 The complete command automatically enters `heavy-slot` before running any checks, using six machine-wide slots by default. It fails if the wrapper is unavailable and waits while the machine-wide pause is active. A command already running inside a slot reuses that slot. The `--list` option only reads the plan and needs no slot.
 
