@@ -11,6 +11,13 @@ import { runtimeErrorResponse } from "../../src/pool/runtime-slots/request-error
 import { SlotRefused } from "../../src/pool/runtime-slots/contract.ts";
 import { runtimeStopTiming } from "../../src/pool/runtime-slots/forced-stop.ts";
 
+/**
+ * The stop's grace runs the latest fixture's `timing`. It is installed once, here, as the handoff
+ * fixture installs its zero one, so building a fixture never replaces a grace a test mocked first.
+ */
+let timed = { stopGrace: async () => {} };
+runtimeStopTiming.stopGrace = () => timed.stopGrace();
+
 export async function fleetCellFixture(
   staleFailure: "flagged" | "plain" | "overloaded" | "non-error" | "http" = "flagged",
 ) {
@@ -108,7 +115,7 @@ export async function fleetCellFixture(
    * that holds or spends a grace sets this instead of replacing the production timing.
    */
   const timing = { stopGrace: async () => {} };
-  runtimeStopTiming.stopGrace = () => timing.stopGrace();
+  timed = timing;
   const makeCell = () =>
     boundFleetCell({
       ctx: root,
