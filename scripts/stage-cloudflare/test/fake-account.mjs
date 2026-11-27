@@ -55,7 +55,9 @@ export function fakeAccount({
    * with `emptyEnd`, a last page that is empty and still links on; `linkForm` picks how the link is
    * written (see below). `artifacts` are manifests the
    * registry made itself: `{ digest, type, refuse?: { status, code? }, read?: status }`. `refuse`
-   * maps a digest to the refusal its delete answers.
+   * maps a digest to the refusal its delete answers. `ghosts` are digest entries the list names
+   * with no manifest behind them (with `own: false`, the tags are too). `collectAfter: n` keeps an
+   * accepted delete's manifest listed and readable until n more first pages of the list are read.
    */
   cloudflare,
 } = {}) {
@@ -110,11 +112,15 @@ export function fakeAccount({
     ),
   };
   const calls = [];
+  // Accepted deletes the registry has not collected yet, and how many first pages it has served.
+  const pending = [];
+  let firstPages = 0;
   const fetcher = async (url, options = {}) => {
     const { hostname, pathname, searchParams } = new URL(url);
     const method = options.method ?? "GET";
     const mode = options.redirect ?? "follow";
     const call = { method, host: hostname, path: pathname, url: String(url), redirect: mode };
+    if (options.headers?.Authorization) call.authorization = options.headers.Authorization;
     if (typeof options.body === "string") call.body = options.body;
     calls.push(call);
     const redirect = redirects[`${method} ${url}`];
@@ -136,8 +142,14 @@ export function fakeAccount({
     if (!pathname.startsWith(prefix)) return json({}, { status: 404 });
     const rest = pathname.slice(prefix.length);
     if (rest === "workers/subdomain") return json(subdomain(workersSubdomain));
-    if (rest === "containers/registries/registry.cloudflare.com/credentials")
-      return json(registryCredentials());
+    if (rest === "containers/registries/registry.cloudflare.com/credentials") {
+      // A credential names what it was minted for, so a test can tell which one a request carried.
+      const asked = typeof options.body === "string" ? JSON.parse(options.body).permissions : [];
+      return json({
+        ...registryCredentials(),
+        result: { username: `<${asked.join("+")}>`, password: "<secret>" },
+      });
+    }
     const settingsOf = /^workers\/scripts\/([^/]+)\/settings$/u.exec(rest);
     if (settingsOf) {
       const name = decodeURIComponent(settingsOf[1]);
@@ -171,11 +183,19 @@ export function fakeAccount({
     if (listing && cloudflare) {
       const name = decodeURIComponent(listing[1]);
       if (!(name in live.tags)) return json({}, { status: 404 });
-      const digests = [...live.manifests[name].keys()].sort();
+      const last = searchParams.get("last");
+      if (last === null || last === "") {
+        firstPages += 1;
+        for (const due of pending.filter((row) => row.name === name && row.at <= firstPages)) {
+          pending.splice(pending.indexOf(due), 1);
+          live.manifests[name].delete(due.digest);
+          untag(name, due.digest);
+        }
+      }
+      const digests = [...live.manifests[name].keys(), ...(cloudflare.ghosts ?? [])].sort();
       const named = [...live.tags[name]].sort();
       const entries =
         cloudflare.order === "lexical" ? [...digests, ...named].sort() : [...digests, ...named];
-      const last = searchParams.get("last");
       const after =
         last === null || last === "" ? entries : entries.slice(entries.indexOf(last) + 1);
       const page = after.slice(0, cloudflare.pageSize ?? 5);
@@ -239,6 +259,13 @@ export function fakeAccount({
     });
   }
 
+  /** Removes the tags of a Cloudflare-mode repository that name `digest`, as its delete does. */
+  function untag(name, digest) {
+    live.tags[name] = live.tags[name].filter(
+      (tag) => (cloudflare.tagged?.[tag] ?? DIGEST) !== digest,
+    );
+  }
+
   /** A manifest of the Cloudflare-mode registry: deleting a digest removes the tags naming it. */
   function cloudflareManifest(method, name, reference, accept) {
     const manifests = live.manifests[name];
@@ -262,13 +289,19 @@ export function fakeAccount({
           { errors: refusal.code ? [{ code: refusal.code, message: "refused" }] : [] },
           { status: refusal.status },
         );
+      if (cloudflare.collectAfter !== undefined) {
+        if (!pending.some((row) => row.name === name && row.digest === digest))
+          pending.push({ name, digest, at: firstPages + cloudflare.collectAfter });
+        return new Response(null, init({ status: 202 }));
+      }
       manifests.delete(digest);
-      if (digest === DIGEST) live.tags[name] = [];
+      untag(name, digest);
       return new Response(null, init({ status: 202 }));
     }
     if (found.read) return json({}, { status: found.read });
     // A registry that serves an artifact only to a read that accepts its own type.
-    if (found.acceptOnly && !accept.split(/,\s*/u).includes(found.acceptOnly))
+    const accepted = accept.split(/,\s*/u);
+    if (found.acceptOnly && !accepted.includes("*/*") && !accepted.includes(found.acceptOnly))
       return json({}, { status: 406 });
     return json(found.body, { headers: { "docker-content-digest": digest } });
   }
