@@ -212,6 +212,60 @@ test("the population read holds each organization's metadata once, however many 
       const line = JSON.parse(poolOwnershipLine(Exit.succeed(facts), "run", "snapshot"));
       assert.equal(line.counts.owned, 40);
       assert.equal(line.counts["deleted-pool"], 1);
+      // Of the metadata, only its pool records are read.
+      for (const pair of facts.pairs)
+        assert.doesNotMatch(pair.metadata ?? "", /never-in-a-line|secret/u);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
+test("the narrowed metadata classifies every pair as the whole metadata would, in any id order", async () => {
+  await withInventoryDatabase(async ({ admin, schema }) => {
+    // Ids whose order differs between collations pin that the read and its window order alike.
+    const mixed = ["app_a", "app_B", "app-c", "App_d"];
+    for (const [id, metadata] of [
+      ["org_m", record(...mixed)],
+      ["Org_n", record("app_n")],
+      ["org-o", record("app_o")],
+      ["org_missing", JSON.stringify({ other: 1 })],
+      ["org_null", JSON.stringify({ basaltPools: null })],
+      ["org_array", JSON.stringify(["basaltPools"])],
+      ["org_text", "not json"],
+    ])
+      await admin.query("insert into organization values ($1, $2)", [id, metadata]);
+    for (const [id, owner] of [
+      ...mixed.map((pool) => [pool, "organization:org_m"]),
+      ["app_n", "organization:Org_n"],
+      ["app_o", "organization:org-o"],
+      ["app_x", "organization:org_missing"],
+      ["app_y", "organization:org_null"],
+      ["app_z", "organization:org_array"],
+    ])
+      await admin.query("insert into executor_apps values ($1, $2, $3)", [id, owner, poolCopy]);
+    const runtime = clientOn(schema);
+    try {
+      const facts = await runtime.runPromise(
+        Effect.gen(function* () {
+          return yield* readPoolPopulation(yield* SqlClient.SqlClient);
+        }),
+      );
+      const { rows } = await admin.query("select id, metadata from organization");
+      const whole = new Map(rows.map((row) => [row.id as string, row.metadata as string | null]));
+      // The same pairs with each organization's whole metadata on every row.
+      const reference = {
+        ...facts,
+        pairs: facts.pairs.map((pair) => ({
+          ...pair,
+          metadata: whole.get(pair.organization) ?? null,
+        })),
+      };
+      const line = (read: typeof facts) =>
+        JSON.parse(poolOwnershipLine(Exit.succeed(read), "run", "snapshot"));
+      assert.deepEqual(line(facts), line(reference));
+      assert.equal(line(facts).counts.owned, 6);
+      assert.equal(line(facts).counts["invalid-metadata"], 1);
     } finally {
       await runtime.dispose();
     }

@@ -63,7 +63,7 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/app
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
-@@ -0,0 +1,182 @@
+@@ -0,0 +1,189 @@
 +import type { AppId } from "@executor-js/sdk/core";
 +import type { OrganizationId } from "@executor-js/hosted-server/organization";
 +import { poolSource } from "@executor-js/hosted-server/pool-defaults";
@@ -78,8 +78,10 @@ new file mode 100644
 + * app is a copy whose origin is the pool app's source, whatever name it was given: the catalog
 + * names it `basalt-pool`, a person's default pool `<brand> pool`. Per pair it reads the facts the
 + * ownership check's shape read takes; the check's own `shapeOf` classifies them, so the rule is
-+ * never written twice. Each cast in the statement is guarded. An organization's metadata comes on its
-+ * first pair's row only, so the read holds each organization's metadata once, as the inventory does.
++ * never written twice. Each cast in the statement is guarded. Of an organization's metadata only
++ * its `basaltPools` is sent, as the one key of an object, and only on the organization's first pair's
++ * row: the read holds no other metadata, and no organization's records twice. A missing key is sent
++ * as `{}` and a key holding JSON null as itself, so the check's own parse reads each the same.
 + */
 +const populationQuery = `with records as (
 +    select o.id as organization, entry.value ->> 'app' as pool
@@ -104,7 +106,12 @@ new file mode 100644
 +  )
 +  select pairs.organization, pairs.pool,
 +    case when row_number() over (partition by pairs.organization order by pairs.pool) = 1
-+      then o.metadata end as metadata,
++        and pg_input_is_valid(o.metadata, 'jsonb')
++      then case when jsonb_typeof(o.metadata::jsonb) = 'object'
++          and (o.metadata::jsonb -> 'basaltPools') is not null
++        then jsonb_build_object('basaltPools', o.metadata::jsonb -> 'basaltPools')::text
++        else '{}' end
++      end as metadata,
 +    pg_input_is_valid(o.metadata, 'jsonb') as valid,
 +    (select app.owner from executor_apps app where app.id = pairs.pool) as owner,
 +    o.id is not null as present
@@ -129,8 +136,8 @@ new file mode 100644
 +
 +/**
 + * The facts the report is made from, as read in the inventory's transaction, ordered by
-+ * organization: a pair's `metadata` is its organization's on that organization's first pair and
-+ * null on the rest.
++ * organization: a pair's `metadata` is its organization's `basaltPools`, as the one key of an
++ * object, on that organization's first pair, and null on the rest.
 + */
 +export interface PopulationFacts {
 +  readonly pairs: typeof Pairs.Type;
