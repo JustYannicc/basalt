@@ -513,8 +513,9 @@ test("an empty page whose link carries a fresh cursor stops the read; one that l
       [["h1"], next("n=1000&last=h1")],
       [[], next("n=1000&last=h5")],
     ],
-    // A link the stage cannot read on an empty page leads nowhere it can check.
+    // A link the stage cannot read, or cannot parse, on an empty page leads nowhere it can check.
     [[[], 'rel="next"']],
+    [[[], "<http://[>; rel=next"]],
   ]) {
     const { error, record } = await stopOf(pages);
     assert.match(error.message, /another page after an empty one/u, JSON.stringify(pages));

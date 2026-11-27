@@ -21,6 +21,7 @@ export const IMAGE_TYPES = Object.freeze([
   "application/vnd.docker.distribution.manifest.v2+json",
 ]);
 const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
+const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
 const IMAGE_CONFIGS = new Set([
   "application/vnd.oci.image.config.v1+json",
   "application/vnd.docker.container.image.v1+json",
@@ -42,11 +43,15 @@ export function typeOfManifest(data) {
   const media = field(data, "mediaType");
   const config = field(field(data, "config"), "mediaType");
   // An index, a Docker manifest or a manifest with an image's config is an image, whatever else it
-  // names: an artifact type never makes one the registry's.
+  // names, and whether or not it says its own media type (OCI makes that field optional): an
+  // artifact type never makes one the registry's.
+  if (Array.isArray(field(data, "manifests")))
+    return typeof media === "string" && IMAGE_TYPES.includes(media) ? media : OCI_INDEX;
+  if (typeof config === "string" && IMAGE_CONFIGS.has(config))
+    return typeof media === "string" && IMAGE_TYPES.includes(media) ? media : OCI_MANIFEST;
   if (typeof media === "string" && IMAGE_TYPES.includes(media) && media !== OCI_MANIFEST)
     return media;
-  if (media === OCI_MANIFEST && (typeof config !== "string" || IMAGE_CONFIGS.has(config)))
-    return media;
+  if (media === OCI_MANIFEST && typeof config !== "string") return media;
   const artifact = field(data, "artifactType");
   if (typeof artifact === "string") return artifact;
   if (typeof config === "string") return config;

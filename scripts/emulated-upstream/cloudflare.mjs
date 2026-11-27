@@ -81,7 +81,9 @@ export function emulatedAccount({ accountId, token, prefix, fetcher = fetch }) {
       if (records.length) error.record = Object.freeze({ teardown: Object.freeze(records) });
       throw error;
     }
-    return { before, failures, kept: [...keptBy.values()].flat() };
+    // Only what is still there is kept: an entry refused, then gone by the read after, is not.
+    const kept = after.kept.flatMap((row) => keptBy.get(row.name) ?? []);
+    return { before, failures, kept };
   }
 
   /** The Worker's DELETE_BY lease in epoch milliseconds, or undefined when it has none. */

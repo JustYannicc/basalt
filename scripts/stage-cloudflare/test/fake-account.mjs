@@ -99,6 +99,7 @@ export function fakeAccount({
                     },
                     refuse: artifact.refuse,
                     read: artifact.read,
+                    acceptOnly: artifact.acceptOnly,
                   },
                 ]),
               ]
@@ -128,7 +129,8 @@ export function fakeAccount({
         method: followedMethod(redirect.status, method),
       });
     }
-    if (hostname === "registry.cloudflare.com") return registry(method, pathname, searchParams);
+    if (hostname === "registry.cloudflare.com")
+      return registry(method, pathname, searchParams, options.headers?.Accept ?? "");
     const prefix = `/client/v4/accounts/${accountId}/`;
     if (!pathname.startsWith(prefix)) return json({}, { status: 404 });
     const rest = pathname.slice(prefix.length);
@@ -162,7 +164,7 @@ export function fakeAccount({
     return found ? json(envelope(found)) : json({}, { status: 404 });
   };
 
-  function registry(method, pathname, searchParams) {
+  function registry(method, pathname, searchParams, accept) {
     if (pathname === "/v2/_catalog") return json(catalog(Object.keys(live.tags)));
     const listing = /^\/v2\/(.+)\/tags\/list$/u.exec(pathname);
     if (listing && cloudflare) {
@@ -213,7 +215,7 @@ export function fakeAccount({
     if (!manifest) return json({}, { status: 404 });
     const name = decodeURIComponent(manifest[1]);
     const reference = decodeURIComponent(manifest[2]);
-    if (cloudflare) return cloudflareManifest(method, name, reference);
+    if (cloudflare) return cloudflareManifest(method, name, reference, accept);
     if (!live.tags[name]?.length) return json({}, { status: 404 });
     if (method === "DELETE") {
       // The index goes first; once it is gone no tag reaches the platform manifest either.
@@ -227,7 +229,7 @@ export function fakeAccount({
   }
 
   /** A manifest of the Cloudflare-mode registry: deleting a digest removes the tags naming it. */
-  function cloudflareManifest(method, name, reference) {
+  function cloudflareManifest(method, name, reference, accept) {
     const manifests = live.manifests[name];
     if (!manifests) return json({}, { status: 404 });
     // A tag names the stage's own index unless `tagged` points it at another manifest.
@@ -240,6 +242,10 @@ export function fakeAccount({
       const refusal = found.refuse ?? cloudflare.refuse?.[digest];
       // A delete the transport itself fails, as a dropped connection does.
       if (refusal?.throws) throw new TypeError("fetch failed");
+      // Accepted, yet still listed after: the registry kept it without saying so.
+      if (refusal?.stays) return new Response(null, init({ status: 202 }));
+      // Refused, yet collected by the registry before the read after.
+      if (refusal?.removes) manifests.delete(digest);
       if (refusal)
         return json(
           { errors: refusal.code ? [{ code: refusal.code, message: "refused" }] : [] },
@@ -250,6 +256,9 @@ export function fakeAccount({
       return new Response(null, init({ status: 202 }));
     }
     if (found.read) return json({}, { status: found.read });
+    // A registry that serves an artifact only to a read that accepts its own type.
+    if (found.acceptOnly && !accept.split(/,\s*/u).includes(found.acceptOnly))
+      return json({}, { status: 406 });
     return json(found.body, { headers: { "docker-content-digest": digest } });
   }
 

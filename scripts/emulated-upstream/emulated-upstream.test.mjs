@@ -755,7 +755,8 @@ test("the registry's own artifact, refused as the registry keeps it, is reported
   ]) {
     const fake = cloudflareStage({
       emptyEnd: true,
-      artifacts: [{ digest: chain, type: chainType, refuse }],
+      // Served only to a read that accepts its own type, as a registry may.
+      artifacts: [{ digest: chain, type: chainType, refuse, acceptOnly: chainType }],
     });
     const { lines, saved } = await destroyOn(fake);
     assert.ok(!lines.includes(nothingLeft), lines.join("\n"));
@@ -814,6 +815,42 @@ test("anything else the registry refuses fails the destroy closed, with a record
         },
       ],
     },
+    // OCI makes a manifest's own media type optional: the body still says what it is.
+    "an image manifest without its media type, naming the chain type, refused 403": {
+      artifacts: [
+        {
+          digest: chain,
+          body: {
+            schemaVersion: 2,
+            artifactType: chainType,
+            config: imageManifest().config,
+            layers: [],
+          },
+          refuse: { status: 403 },
+        },
+      ],
+    },
+    "an index without its media type, naming the chain type, refused 403": {
+      artifacts: [
+        {
+          digest: chain,
+          body: { schemaVersion: 2, artifactType: chainType, manifests: [] },
+          refuse: { status: 403 },
+        },
+      ],
+    },
+    "an OCI manifest with no config, naming the chain type, refused 403": {
+      artifacts: [
+        {
+          digest: chain,
+          body: { schemaVersion: 2, mediaType: imageManifest().mediaType, artifactType: chainType },
+          refuse: { status: 403 },
+        },
+      ],
+    },
+    "a kept-type delete accepted yet still listed": {
+      artifacts: [{ digest: chain, type: chainType, refuse: { stays: true } }],
+    },
     "a kept type refused 409 without the registry's code": {
       artifacts: [{ digest: chain, type: chainType, refuse: { status: 409 } }],
     },
@@ -834,6 +871,13 @@ test("anything else the registry refuses fails the destroy closed, with a record
       (caught) => caught,
     );
     assert.match(error.message, /^Emulated upstream resources remain after teardown: /u, name);
+    if (name === "the stage's own platform manifest")
+      assert.match(error.message, /\(0 tags, 1 digest entries\)/u, name);
+    if (name === "a kept-type delete accepted yet still listed") {
+      // Nothing was refused, so nothing is proven kept: the read after is what fails it.
+      assert.match(error.message, /not proven kept in this run/u, name);
+      continue;
+    }
     const [deletes] = error.record.teardown;
     assert.ok(deletes.registryDeletes.refused.length > 0, name);
     for (const refused of deletes.registryDeletes.refused) {
@@ -854,6 +898,35 @@ test("an artifact whose delete could not be sent is never kept, though a read fi
   await assert.rejects(
     destroyOn(fake),
     /^Error: Emulated upstream resources remain after teardown: .*not proven kept in this run/u,
+  );
+});
+
+test("an entry refused, then collected by the registry before the read after, is not reported kept", async () => {
+  const fake = cloudflareStage({
+    emptyEnd: true,
+    artifacts: [{ digest: chain, type: chainType, refuse: { ...singleton, removes: true } }],
+  });
+  const { lines, saved } = await destroyOn(fake);
+  assert.ok(lines.includes(nothingLeft), lines.join("\n"));
+  assert.deepEqual(saved.teardown.kept, []);
+});
+
+test("two tags naming one refused index send one delete and count one refusal", async () => {
+  const fake = cloudflareStage({ emptyEnd: true, refuse: { [ownIndex]: { status: 403 } } }, [
+    "h1",
+    "h2",
+  ]);
+  const error = await destroyOn(fake).then(
+    () => assert.fail("the destroy succeeded"),
+    (caught) => caught,
+  );
+  const [deletes] = error.record.teardown;
+  assert.equal(deletes.registryDeletes.refused.length, 1);
+  assert.equal(
+    fake.calls.filter(
+      (call) => call.method === "DELETE" && call.url.endsWith(`/manifests/${ownIndex}`),
+    ).length,
+    1,
   );
 });
 

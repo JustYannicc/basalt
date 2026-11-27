@@ -195,8 +195,15 @@ export async function readTagPages(first, fetchPage) {
     // An empty page ends the list when its link leads nowhere new: every cursor value empty, or the
     // very query just sent. An empty page whose link carries a fresh cursor could hide the rest.
     if (!found.length) {
-      const pairs =
-        answer.target === undefined ? undefined : queryPairs(new URL(answer.target, first).search);
+      let pairs;
+      try {
+        pairs =
+          answer.target === undefined
+            ? undefined
+            : queryPairs(new URL(answer.target, first).search);
+      } catch {
+        pairs = undefined;
+      }
       // `n` is a page size, not a cursor.
       if (
         pairs !== undefined &&
