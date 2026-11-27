@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check streams each shape; destroy removes it
+        description: deploy builds the keyed mock, checks it and starts a 10-hour lease; check calls each shape streamed and whole, and through both account profiles; destroy removes it
         required: true
         type: choice
         options: [deploy, check, destroy]
@@ -133,7 +133,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json') != '' }}
+        if: ${{ always() && hashFiles('.local/emulated-upstream/teardown.json', '.local/emulated-upstream/stopped-*.json') != '' }}
         with:
           name: emulated-upstream-expiry-${{ github.run_id }}
           path: .local/emulated-upstream

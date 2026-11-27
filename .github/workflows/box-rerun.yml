@@ -7,7 +7,7 @@ name: Box re-run
 # only on the light runners. workflow_run always runs this file
 # from the default branch, so no pull request's code runs here; it acts only on box-watch's own
 # verdict for that run and attempt or on that light job's own record, and re-runs no job that
-# failed off the box and light runners; a job that failed on a light runner is re-run hosted once.
+# failed off the box and light runners; a job that failed or timed out on a light runner is re-run hosted once.
 on:
   workflow_run:
     workflows: [Check]
