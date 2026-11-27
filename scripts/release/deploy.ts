@@ -946,6 +946,14 @@ try {
     const plan = await run(
       Effect.gen(function* () {
         const { state, at } = yield* stageState;
+        // The repair writes State, so it holds the store to the contract every release holds it to.
+        const refused = stateStoreRefusal(
+          { id: state.id, version: yield* state.getVersion() },
+          stackState,
+          stage,
+          runnerLocalStateVersion,
+        );
+        if (refused) return yield* refused;
         const input = {
           fqn,
           worker: policy?.check?.poolWorker ?? "PoolWorker",

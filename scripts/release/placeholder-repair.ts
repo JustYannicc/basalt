@@ -50,7 +50,10 @@ export const observeRow = (fqn: string, row: ResourceState) =>
         output: row.attr as never,
       })
       .pipe(
-        // Alchemy types every provider read's error as `any`; the repair carries it as the cause.
+        // The pinned Alchemy types every provider read's error as `any`; the repair carries it as
+        // the cause. alchemy-run/alchemy#3200 types it (`ProviderError`), and this file's one
+        // `anyUnknownInErrorContext` entry in the Effect diagnostics baseline goes with the
+        // framework upgrade that brings it.
         Effect.mapError((cause) => new ProviderReadFailed({ fqn, cause })),
         Effect.provideService(Artifacts, makeScopedArtifacts(store, fqn)),
         Effect.provideService(InstanceId, row.instanceId),
