@@ -1,3 +1,67 @@
+diff --git a/apps/hosted/cloud/src/infrastructure/invocation-database.ts b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+--- a/apps/hosted/cloud/src/infrastructure/invocation-database.ts
++++ b/apps/hosted/cloud/src/infrastructure/invocation-database.ts
+@@ -42,11 +42,13 @@ export const cloudInvocationDatabase = Layer.effect(
+   InvocationDatabase,
+   Effect.gen(function* () {
+     const connection = yield* cloudDatabaseConnection;
+-    const statementGroups = yield* InvocationStatementGroups;
++    const workerGroups = yield* InvocationStatementGroups;
+     return yield* makeBatchExecutionMemo(
+       Effect.gen(function* () {
+         const object = yield* Effect.serviceOption(ObjectDatabase);
+         if (Option.isSome(object)) return yield* object.value.sql;
++        // A Worker groups every event's statements, or one route asks for it for its own events.
++        const statementGroups = workerGroups || (yield* InvocationStatementGroups);
+         const url = yield* connection.connectionString;
+         // Forked before the pool, so it closes after the pool has shut down with the event.
+         const reservations = yield* Scope.fork(yield* Effect.scope, "sequential");
+diff --git a/apps/hosted/cloud/src/main.ts b/apps/hosted/cloud/src/main.ts
+--- a/apps/hosted/cloud/src/main.ts
++++ b/apps/hosted/cloud/src/main.ts
+@@ -1,3 +1,6 @@
++import { PgPool } from "@effect/sql-pg";
++import * as PgConnection from "@effect/sql-pg/PgConnection";
++import { InvocationStatementGroups } from "./infrastructure/invocation-database.ts";
+ import { makeMcpGrantRpc } from "./infrastructure/mcp-grant-server.ts";
+ import { cloudChangeRevisions } from "./infrastructure/change-revisions.ts";
+ import {
+@@ -70,7 +73,7 @@ import {
+   localRemovalStalls,
+   removalStallBindings,
+ } from "./infrastructure/organization-removal-stalls.ts";
+-import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
++import { HostedExecutor, lazyHostedApiDocument, StatementBatch } from "@executor-js/hosted-server";
+ import {
+   poolMembershipReadPath,
+   readNativePoolMembership,
+@@ -745,9 +748,23 @@ export default Api.make(
+       HttpRouter.add("POST", poolMembershipReadPath, readNativePoolMembership).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
+-      HttpRouter.add("POST", poolOrganizationReadPath, readPoolOrganization).pipe(
+-        HttpRouter.provideRequest(executor),
+-      ),
++      HttpRouter.add(
++        "POST",
++        poolOrganizationReadPath,
++        // The ownership observation's settings, shape and rule leave in one write: the
++        // event's pool groups statements and the batch is one read-only transaction.
++        readPoolOrganization.pipe(
++          Effect.provideService(InvocationStatementGroups, true),
++          Effect.provideService(StatementBatch, (leaves, { outside }) =>
++            PgPool.held(
++              PgConnection.pipelined(leaves, {
++                outside,
++                begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
++              }),
++            ),
++          ),
++        ),
++      ).pipe(HttpRouter.provideRequest(executor)),
+       HttpRouter.add("POST", poolUsageImportAdmissionPath, readPoolUsageImportAdmission).pipe(
+         HttpRouter.provideRequest(executor),
+       ),
 diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
 --- a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
 +++ b/apps/hosted/server/src/implementation/pool-membership-reconcile.ts
@@ -15,13 +79,14 @@ diff --git a/apps/hosted/server/src/implementation/pool-membership-reconcile.ts 
 diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
 --- a/apps/hosted/server/src/implementation/pool-organization.ts
 +++ b/apps/hosted/server/src/implementation/pool-organization.ts
-@@ -1,10 +1,12 @@
+@@ -1,10 +1,13 @@
  import { AppId } from "@executor-js/sdk/core";
 -import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
 +import { Cause, Clock, Config, Effect, Exit, Fiber, Option, Redacted, Schema } from "effect";
  import { HttpServerRequest, HttpServerResponse } from "effect/http";
 -import { OrganizationId } from "../contracts/organization.ts";
 +import { SqlClient } from "effect/sql";
++import { StatementBatch } from "../contracts/executor.ts";
 +import { OrganizationId, organizationOwner } from "../contracts/organization.ts";
  import { OrganizationTombstones } from "../contracts/organization-removal.ts";
  import { policyDatabase } from "./resource-policy.ts";
@@ -30,7 +95,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  
  export const poolOrganizationReadPath = "/api/internal/pool-organization";
  const Read = Schema.Struct({
-@@ -14,6 +16,176 @@ const Read = Schema.Struct({
+@@ -14,6 +17,244 @@ const Read = Schema.Struct({
    expiresAt: Schema.Finite,
  });
  
@@ -171,7 +236,75 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
 +      : notObserved(organization, pool, "timeout");
 +  }).pipe(Effect.catchCause(() => Effect.void));
 +
-+const observation = (
++/** Whether the event's client leases one connection at a time and sends a batch in one write. */
++const sendsBatches = (sql: SqlClient.SqlClient) => {
++  const config: unknown = Reflect.get(sql, "config");
++  return isRecord(config) && config.multiplex === true && config.multiplexConcurrency === 1;
++};
++
++type Batch = (
++  leaves: ReadonlyArray<Effect.Effect<unknown>>,
++  options: { readonly outside: number },
++) => Effect.Effect<Array<Exit.Exit<unknown, unknown>>>;
++
++/** One leaf of a batch: its own exit, kept where the batch's exit would lose its type. */
++const leaf = <A, E>(read: Effect.Effect<A, E>) => {
++  let exit: Exit.Exit<A, E> = Exit.die("not sent");
++  const effect = read.pipe(
++    Effect.exit,
++    Effect.tap((ended) => Effect.sync(() => (exit = ended))),
++  );
++  return { effect, exit: () => exit };
++};
++
++/**
++ * The settings, the shape read and the rule in one write and one read-only transaction (Cloud's
++ * grouped event pool): one round trip. The shape goes before the rule, so a rule that fails on
++ * metadata the database cannot read still has its facts, and nothing is read again.
++ */
++const inOneFlight = (
++  batch: Batch,
++  sql: SqlClient.SqlClient,
++  organization: OrganizationId,
++  pool: AppId,
++): Effect.Effect<Seen> =>
++  Effect.gen(function* () {
++    const settings = leaf(
++      sql`select set_config('transaction_read_only', 'on', true),
++        set_config('statement_timeout', ${readBound}, true),
++        set_config('lock_timeout', ${readBound}, true)`,
++    );
++    const facts = leaf(factsOf(sql, organization, pool));
++    const rule = leaf(
++      organizationOwnsPool(organization, pool).pipe(
++        Effect.provideService(SqlClient.SqlClient, sql),
++      ),
++    );
++    yield* batch([settings.effect, facts.effect, rule.effect], { outside: 0 });
++    const [set, read, owns] = [settings.exit(), facts.exit(), rule.exit()];
++    if (Exit.isSuccess(owns) && owns.value) return undefined;
++    const causes: Array<Cause.Cause<unknown>> = [];
++    if (Exit.isFailure(set)) causes.push(set.cause);
++    if (Exit.isFailure(read)) causes.push(read.cause);
++    if (Exit.isFailure(owns)) causes.push(owns.cause);
++    if (causes.some(endedByDatabase)) return { unobserved: "timeout" as const };
++    if (Exit.isFailure(set) || Exit.isFailure(read)) return { unobserved: "read-failed" as const };
++    const shape = shapeOf(read.value, organization, pool, Exit.isFailure(owns));
++    if (shape !== undefined) return { shape };
++    if (Exit.isFailure(owns)) return { unobserved: "read-failed" as const };
++    return { unobserved: "changed" as const };
++  }).pipe(Effect.catchCause(() => Effect.succeed({ unobserved: "read-failed" as const })));
++
++const observation = (sql: SqlClient.SqlClient, organization: OrganizationId, pool: AppId) =>
++  Effect.gen(function* () {
++    const batch = yield* StatementBatch;
++    return batch !== undefined && sendsBatches(sql)
++      ? yield* inOneFlight(batch, sql, organization, pool)
++      : yield* inTransactions(sql, organization, pool);
++  });
++
++/** The rule and its shape in bounded transactions, for a client that cannot send them in one write. */
++const inTransactions = (
 +  sql: SqlClient.SqlClient,
 +  organization: OrganizationId,
 +  pool: AppId,
@@ -207,7 +340,7 @@ diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/h
  /** No positive cache: an unexpired pool credential cannot outlive organization removal. */
  export const readPoolOrganization = Effect.gen(function* () {
    const key = yield* Config.Redacted("POOL_APP_SIGNING_KEY").pipe(Config.option);
-@@ -32,6 +204,7 @@ export const readPoolOrganization = Effect.gen(function* () {
+@@ -32,6 +273,7 @@ export const readPoolOrganization = Effect.gen(function* () {
    if (yield* removed(value.organization)) return HttpServerResponse.empty({ status: 403 });
    const sql = yield* policyDatabase;
    const rows = yield* sql`select id from organization where id = ${value.organization}`;
