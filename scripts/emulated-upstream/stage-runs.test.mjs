@@ -21,7 +21,7 @@ import {
 } from "./stage.mjs";
 import { prefix } from "./settings.ts";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
-import { application, script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
+import { application, refusalBody, script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
 
 const worker = "basalt-emulated-upstream-gateway";
@@ -586,10 +586,7 @@ const pushRefused = (fake) => ({
   fetcher: (url, init) =>
     url.endsWith("/credentials") && JSON.parse(init.body).permissions.includes("push")
       ? Promise.resolve(
-          Response.json(
-            { success: false, errors: [{ code: 10000, message: "x" }] },
-            { status: 403 },
-          ),
+          Response.json(refusalBody([{ code: 10000, message: "x" }]), { status: 403 }),
         )
       : fake.fetcher(url, init),
 });
