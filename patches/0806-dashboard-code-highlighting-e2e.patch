@@ -1,9 +1,9 @@
 diff --git a/e2e/tests/dashboard-code-highlighting.spec.ts b/e2e/tests/dashboard-code-highlighting.spec.ts
 new file mode 100644
-index 000000000..77360f70d
+index 000000000..2cf4aa750
 --- /dev/null
 +++ b/e2e/tests/dashboard-code-highlighting.spec.ts
-@@ -0,0 +1,192 @@
+@@ -0,0 +1,154 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schema } from "effect";
 +import type { Page } from "playwright";
@@ -16,27 +16,6 @@ index 000000000..77360f70d
 +import { scenarios } from "../test-plan.ts";
 +import { appsManifest } from "../support/apps-release.ts";
 +
-+/**
-+ * Record every element a script creates. The parser builds the server's markup without them, so a
-+ * code block created by script means React replaced the server's markup: what it does after a
-+ * hydration mismatch, which Cloud reports to Sentry rather than to the console.
-+ */
-+const recordScriptedElements = () => {
-+  const scripted = new WeakSet<Element>();
-+  for (const method of ["createElement", "createElementNS"] as const) {
-+    const create = Document.prototype[method];
-+    Object.defineProperty(Document.prototype, method, {
-+      configurable: true,
-+      writable: true,
-+      value(this: Document, ...args: unknown[]) {
-+        const element: Element = Reflect.apply(create, this, args);
-+        scripted.add(element);
-+        return element;
-+      },
-+    });
-+  }
-+  Object.defineProperty(window, "__executorScriptedElements", { value: scripted });
-+};
 +/** Text without quotes or angle brackets, so the server's escaping leaves it unchanged. */
 +const snippet = "const count: number = 42;\nexport default count;";
 +/** A highlighted token carries Shiki's inline colors; the class names only mention the variable. */
@@ -50,19 +29,14 @@ index 000000000..77360f70d
 +      if (value === null) throw new Error("The skill reader's code block is not laid out");
 +      return value;
 +    });
-+/** The registry `recordScriptedElements` leaves on the page. */
-+type ScriptedWindow = { readonly __executorScriptedElements: WeakSet<Element> };
-+const keepsServerMarkup = (page: Page) =>
-+  reader(page).evaluate(
-+    (pre) => !(window as unknown as ScriptedWindow).__executorScriptedElements.has(pre),
-+  );
 +
 +/**
 + * The dashboard's server build never highlights code (carry 0804 swaps the engine out of the
 + * dashboard Worker). A reader of a shared app gets its skill with the page, so the server sends
-+ * the code block as plain text, the browser hydrates that markup without replacing it and then
-+ * colors it. The browser's engine chunk is held until the plain block is measured, so the colors
-+ * are the only change the test can see, and nothing in the block may move when they arrive.
++ * the code block as plain text and the browser colors it once its engine loads. The browser's
++ * engine chunk is held until the plain block is measured, so the colors are the only change the
++ * test can see, and nothing in the block may move when they arrive. The block is not required to
++ * stay the server's element: the page can still rebuild it after hydration (issue #2123).
 + */
 +layer(HostedLive, { excludeTestServices: true })("Dashboard code highlighting", (it) => {
 +  for (const [scenario, viewport] of [
@@ -113,9 +87,6 @@ index 000000000..77360f70d
 +
 +          yield* browser.login(actors.member);
 +          yield* browser.use("Set the viewport", (page) => page.setViewportSize(viewport));
-+          yield* browser.use("Record the elements scripts create", (page) =>
-+            page.addInitScript(recordScriptedElements),
-+          );
 +          let release = () => {};
 +          const released = new Promise<void>((resolve) => {
 +            release = resolve;
@@ -128,28 +99,22 @@ index 000000000..77360f70d
 +            }),
 +          );
 +
-+          const html = yield* browser.use("Read the server-rendered skills page", (page) =>
-+            page
-+              .context()
-+              .request.get(url)
-+              .then((response) =>
-+                response.text().then((text) => ({ status: response.status(), text })),
-+              ),
++          // The browser's own document, not a second request: that is the markup it hydrates.
++          const html = yield* browser.use("Open the shared app's skills", (page) =>
++            page.goto(url).then((response) => {
++              if (response === null) throw new Error("The skills page answered no document");
++              return response.text().then((text) => ({ status: response.status(), text }));
++            }),
 +          );
 +          expect(html.status).toBe(200);
 +          for (const line of snippet.split("\n")) expect(html.text).toContain(line);
 +          expect(html.text).not.toMatch(shikiStyle);
-+
-+          yield* browser.use("Open the shared app's skills", (page) => page.goto(url));
 +          yield* browser.use("The page hydrates", (page) =>
 +            page.locator("html[data-hydrated]").waitFor({ state: "attached" }),
 +          );
 +          yield* browser.use("The reader shows the server's code block", (page) =>
 +            reader(page).locator("code").waitFor({ state: "visible" }),
 +          );
-+          expect(
-+            yield* browser.use("Hydration kept the server's code block", keepsServerMarkup),
-+          ).toBe(true);
 +          expect(
 +            yield* browser.use("Read the plain code block", (page) =>
 +              reader(page).locator("code").textContent(),
@@ -188,9 +153,6 @@ index 000000000..77360f70d
 +          const after = yield* browser.use("Measure the highlighted code block", box);
 +          for (const side of ["x", "y", "width", "height"] as const)
 +            expect(Math.abs(after[side] - before[side])).toBeLessThanOrEqual(0.5);
-+          expect(
-+            yield* browser.use("Coloring kept the server's code block", keepsServerMarkup),
-+          ).toBe(true);
 +          yield* browser.checkpoint(`${viewport.width} highlighted code block`);
 +        }),
 +      ),

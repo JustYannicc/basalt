@@ -1,7 +1,7 @@
 {
   "identity": "basalt-dashboard-code-highlighting-e2e",
   "file": "0806-dashboard-code-highlighting-e2e.patch",
-  "content_sha256": "29b985ec4da10b88d1dbe4b24925a8ecd8cb7ab7644920e1d9e84046f14eaf6e",
+  "content_sha256": "9172c19483b3b1ddff10ce5ade925cc867892bdee15d79c319a88d26ef22d0cd",
   "kind": "overlay",
   "upstream_pull_request": null,
   "database_sensitive": false,
