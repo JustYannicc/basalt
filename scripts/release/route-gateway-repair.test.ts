@@ -17,7 +17,7 @@ import {
 import { decodeReleasePolicy } from "./policy.ts";
 import { routeGatewayClassFor, routeGatewayRecorded } from "./route-gateway-class.ts";
 import { asDeclared, declareTo, seeded, type Outcome, type Rows } from "./test/declare-run.ts";
-import { accountId, makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
+import { makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
 
 // Every way the declare can stop after Alchemy committed the application's placeholder row.
 const stops: Outcome[] = ["upload-refused", "create-refused", "commit-lost"];
