@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
 import type * as Plan from "alchemy/Plan";
 import { Cause, Effect, Exit } from "effect";
-import { checkPlan, decodePlanPolicy, PlanRefused } from "./plan-check.ts";
+import { checkPlan, decodePlanPolicy, PlanRefused, sameDeclaration } from "./plan-check.ts";
 import {
   applyRepair,
   type Observation,
@@ -15,7 +17,7 @@ import {
 import { decodeReleasePolicy } from "./policy.ts";
 import { routeGatewayClassFor, routeGatewayRecorded } from "./route-gateway-class.ts";
 import { asDeclared, declareTo, seeded, type Outcome, type Rows } from "./test/declare-run.ts";
-import { makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
+import { accountId, makePlan, pinnedImage, type FakeApplication } from "./test/plan-fixture.ts";
 
 // Every way the declare can stop after Alchemy committed the application's placeholder row.
 const stops: Outcome[] = ["upload-refused", "create-refused", "commit-lost"];
@@ -120,7 +122,7 @@ const repairOn = (context: TestContext, rows: Rows, applications: Map<string, Fa
       });
       return read.result;
     });
-  return { fqn: "RouteGateway", worker: "PoolWorker", store, observe };
+  return { fqn: "RouteGateway", account: accountId, worker: "PoolWorker", store, observe };
 };
 
 for (const stop of stops)
@@ -333,4 +335,56 @@ test("every policy that admits a container's attachment holds its application at
     for (const fqn of check.attachmentOnly ?? [])
       assert.ok(wire.heldApplications?.includes(fqn), `${name}: ${fqn}`);
   }
+});
+
+test("the allowance takes only a settled row of the gateway", async (context) => {
+  const applications = new Map<string, FakeApplication>();
+  const { rows } = await declareTo(context, "finished", applications);
+  for (const status of ["replaced", "replacing", "creating", "updating"]) {
+    const exit = await planAs(context, rows, "cutover-classes", applications);
+    assert.ok(Exit.isSuccess(exit));
+    const node = exit.value.plan.resources.RouteGateway as unknown as { state: { status: string } };
+    // The plan as an unsettled row would give it; Alchemy's own planner refuses most of these
+    // under the cutover's selection, so the allowance has to as well.
+    node.state = { ...node.state, status };
+    assert.ok(
+      (await verdict(exit.value.plan, "cutover-classes")).includes(
+        "outside-cutover-classes RouteGateway update",
+      ),
+      status,
+    );
+  }
+});
+
+test("a declaration is the recorded one only with the same props and the same build context", () => {
+  const checkout = fileURLToPath(new URL("../../", import.meta.url));
+  const here = join(checkout, "containers", "route-gateway");
+  const props = { name: "basalt-production-route-gateway", className: "RouteGateway" };
+  assert.ok(sameDeclaration({ ...props, context: here }, { ...props, context: here }));
+  // The same context under the checkout of the release that declared it.
+  assert.ok(
+    sameDeclaration(
+      { ...props, context: "/elsewhere/basalt/containers/route-gateway" },
+      { ...props, context: here },
+    ),
+  );
+  for (const recorded of [
+    { ...props, context: "/elsewhere/basalt/containers/pool" },
+    { ...props },
+    { ...props, context: here, instanceType: "standard" },
+  ])
+    assert.equal(
+      sameDeclaration(recorded, { ...props, context: here }),
+      false,
+      JSON.stringify(recorded),
+    );
+  assert.equal(sameDeclaration({ ...props, context: here }, { ...props }), false);
+});
+
+test("a policy admitting a container's attachment without holding it does not decode", async () => {
+  const raw = JSON.parse(
+    await readFile(new URL("./policies/cutover-classes.json", import.meta.url), "utf8"),
+  ) as { wire: Record<string, unknown> };
+  const { heldApplications: _held, ...wire } = raw.wire;
+  assert.throws(() => decodeReleasePolicy({ ...raw, wire }), /without wire.heldApplications/u);
 });

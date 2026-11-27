@@ -30,6 +30,7 @@ import { assignEnvironment } from "./process-env.ts";
 import { failureReport, progressTracker } from "./public-report.ts";
 import { isRehearsalStage } from "./rehearsal-stage.ts";
 import { safeJson } from "./safe-json.ts";
+import { readOnlyRun, type RecordedApplication, wireHolds } from "./wire-config.ts";
 import { assertStateStage, isTestStage, stackConfig, stateStoreRefusal } from "./stack-config.ts";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -539,17 +540,14 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           anyNewSqliteClass: stage !== "production" && !policy,
           rootApplications: [] as string[],
           rootApplicationNames: [] as string[],
-          heldApplications: [] as { id: string; name?: string }[],
+          heldApplications: [] as ReturnType<typeof wireHolds>["heldApplications"],
           // Production keeps the root from the first request on: until both its id and its name
           // are pushed below, no container application write leaves.
           rootRequired: stage === "production",
           deletable,
           stage: undefined as StageScope | undefined,
           // Reads of production send nothing but reads; the guard refuses anything else.
-          readOnly:
-            stage === "production" &&
-            (["plan", "preflight", "snapshot", "serving"].includes(command) ||
-              (command === "repair" && !values["plan-digest"])),
+          readOnly: readOnlyRun(stage, command, values["plan-digest"]),
         };
         const guard = yield* WireGuard.install(wire);
         journal = guard.journal;
@@ -615,27 +613,22 @@ const run = <A>(effect: Fx.Effect<A, unknown, unknown>): Promise<A> =>
           const rootFqn =
             policy?.check?.poolContainer.fqn ??
             (stage === "production" ? "PoolContainer" : undefined);
-          if (rootFqn) {
-            const root = yield* recordedApplication(rootFqn);
-            if (root) {
-              wire.rootApplications.push(root.id);
-              wire.rootRequired = true;
-              if (root.name) wire.rootApplicationNames.push(root.name);
-              else
-                yield* Effect.promise(() =>
-                  summary(
-                    "Warning: the root's State row records no application name, so every container application write in this run is refused.",
-                  ),
-                );
-            } else if (stage === "production" && policy?.check)
-              return yield* Effect.die(new Error("No root application recorded on production"));
-          }
-          // Held as the root is, but apart from it: knowing the root still takes the root's own id
-          // and name (rootRequired), whatever the policy holds besides.
-          for (const fqn of policy?.wire.heldApplications ?? []) {
-            const held = yield* recordedApplication(fqn);
-            if (held) wire.heldApplications.push(held.name ? held : { id: held.id });
-          }
+          const root = rootFqn ? yield* recordedApplication(rootFqn) : undefined;
+          if (root) {
+            wire.rootRequired = true;
+            if (!root.name)
+              yield* Effect.promise(() =>
+                summary(
+                  "Warning: the root's State row records no application name, so every container application write in this run is refused.",
+                ),
+              );
+          } else if (rootFqn && stage === "production" && policy?.check)
+            return yield* Effect.die(new Error("No root application recorded on production"));
+          // Held as the root is, but apart from it (wire-config.ts).
+          const held: (RecordedApplication | undefined)[] = [];
+          for (const fqn of policy?.wire.heldApplications ?? [])
+            held.push(yield* recordedApplication(fqn));
+          Object.assign(wire, wireHolds(root, held));
           // A refused request fails the run at once instead of after the SDK's retries.
           return yield* Effect.raceFirst(
             effect.pipe(Effect.provideService(Alchemist.Progress, reporter)) as Fx.Effect<
@@ -947,17 +940,19 @@ try {
     const result = await run(
       Effect.gen(function* () {
         const { state, at } = yield* stageState;
-        // The repair writes State, so it holds the store to the contract every release holds it to.
-        const refused = stateStoreRefusal(
-          { id: state.id, version: yield* state.getVersion() },
-          stackState,
-          stage,
-          runnerLocalStateVersion,
-        );
-        if (refused) return yield* refused;
-        const input = {
+        return yield* repair.runRepair({
           fqn,
+          account: process.env.CLOUDFLARE_ACCOUNT_ID ?? "",
           worker: policy?.check?.poolWorker ?? "PoolWorker",
+          digest,
+          // The repair writes State: the store is held to the contract every release holds it to.
+          contract: {
+            id: state.id,
+            version: state.getVersion(),
+            state: stackState,
+            stage,
+            runnerLocal: runnerLocalStateVersion,
+          },
           store: {
             get: (row: string) => state.get({ ...at, fqn: row }),
             set: (row: string, value: unknown) =>
@@ -975,14 +970,11 @@ try {
                 .observeRow(row, recorded as never)
                 .pipe(Effect.provide(session.context));
             }).pipe(Effect.mapError((cause) => new StateReadFailed({ fqn: row, cause }))),
-        };
-        if (!digest) return { plan: (yield* repair.readRepair(input)).plan, before: undefined };
-        return yield* repair.applyRepair({ ...input, digest });
+        });
       }),
     );
     // Names and the account stay in the private record; the summary says what and what next.
-    // The sealed record keeps the row as it was before a write, so a wrong repair can be undone.
-    await keepPrivate("repair", safeJson(result, 2));
+    await keepPrivate("repair", result.sealed);
     await summary(
       `${digest ? "Repaired" : "Planned the repair of"} ${fqn}: ${result.plan.action === "forget" ? "forget the placeholder row (no application exists under its name)" : "adopt the live application under its name"}; digest \`${repair.repairDigest(result.plan)}\`. Next: ${repair.nextRelease(result.plan)}.`,
     );

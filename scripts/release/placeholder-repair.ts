@@ -30,6 +30,8 @@ import { findProviderByType } from "alchemy/Provider";
 import { stampedMode } from "alchemy/ProviderMode";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { Data, Effect, Option } from "effect";
+import { safeJson } from "./safe-json.ts";
+import { type StackState, stateStoreRefusal } from "./stack-config.ts";
 
 /** A provider lifecycle failure as alchemy-run/alchemy#3200 types it: tagged, with a message. */
 type ProviderError = { readonly _tag: string; readonly message?: string };
@@ -39,9 +41,13 @@ type ProviderError = { readonly _tag: string; readonly message?: string };
  * own provider, in the mode that wrote it, reads with the row's props and attributes. The
  * container provider reads a placeholder by its application's explicit name. It reads only.
  */
-export const observeRow = (fqn: string, row: ResourceState) =>
+export const observeRow = (
+  fqn: string,
+  row: ResourceState,
+  find: typeof findProviderByType = findProviderByType,
+) =>
   Effect.gen(function* () {
-    const provider = yield* findProviderByType(row.resourceType as never, stampedMode(row));
+    const provider = yield* find(row.resourceType as never, stampedMode(row));
     if (!provider.read) return undefined;
     const store = Option.getOrElse(yield* Effect.serviceOption(ArtifactStore), createArtifactStore);
     // The pinned Alchemy declares every provider read's error `any`. alchemy-run/alchemy#3200
@@ -164,6 +170,8 @@ export function placeholderOf(fqn: string, value: unknown) {
  */
 export function planRepair(input: {
   readonly fqn: string;
+  /** The account this run reads and writes: a row recorded under another is never touched. */
+  readonly account: string;
   readonly row: unknown;
   readonly hostedNamespace: (className: string) => string | undefined;
   readonly observed: Observation | undefined;
@@ -172,6 +180,10 @@ export function planRepair(input: {
   if (placeholder instanceof RepairRefused) return placeholder;
   const { id, name, accountId, className } = placeholder;
   const refuse = (why: string) => new RepairRefused({ fqn: input.fqn, why });
+  // The provider reads the run's own account: a row recorded under another would read as missing
+  // there and be forgotten while its application lives on.
+  if (accountId !== input.account)
+    return refuse("its row records another account than this run reads");
   const base = { fqn: input.fqn, placeholder: id, name, accountId };
   if (!input.observed) return refuse("Alchemy's drift read did not read the row");
   if (input.observed.status === "missing") return { ...base, action: "forget" };
@@ -257,6 +269,8 @@ export interface RepairStore<E> {
 
 export interface RepairInput<E, L, R> {
   readonly fqn: string;
+  /** The account this run reads and writes (CLOUDFLARE_ACCOUNT_ID). */
+  readonly account: string;
   /** The Worker that binds the container: its row records the class's namespace. */
   readonly worker: string;
   readonly store: RepairStore<E>;
@@ -282,6 +296,7 @@ export const readRepair = <E, L, R>(input: RepairInput<E, L, R>) =>
       .pipe(Effect.mapError(failed("read the account")));
     const plan = planRepair({
       fqn: input.fqn,
+      account: input.account,
       row,
       hostedNamespace: (className) => {
         const id = worker?.attr?.durableObjectNamespaces?.[className];
@@ -302,6 +317,20 @@ export const applyRepair = <E, L, R>(input: RepairInput<E, L, R> & { readonly di
         fqn: input.fqn,
         why: "the repair differs from the one approved",
       });
+    // The row is read again just before the write: one a running apply committed since is not
+    // the row this repair was planned from, and is left alone.
+    const now = yield* input.store
+      .get(input.fqn)
+      .pipe(
+        Effect.mapError(
+          (cause) => new RepairStepFailed({ fqn: input.fqn, check: "read State", cause }),
+        ),
+      );
+    if (!sameRow(now, row))
+      return yield* new RepairRefused({
+        fqn: input.fqn,
+        why: "the row changed after the repair was planned",
+      });
     const write =
       plan.action === "forget"
         ? input.store.delete(input.fqn)
@@ -313,4 +342,48 @@ export const applyRepair = <E, L, R>(input: RepairInput<E, L, R> & { readonly di
     );
     // The row as it was before the write, so a wrong repair can be put back by hand.
     return { plan, before: row };
+  });
+
+/** Whether two reads of a row are the same generation: its status, instance and application id. */
+const sameRow = (a: unknown, b: unknown) => {
+  const key = (value: unknown) => {
+    const row = value as (Row & { instanceId?: unknown }) | undefined;
+    return [row?.status, row?.instanceId, row?.attr?.applicationId];
+  };
+  const [x, y] = [key(a), key(b)];
+  return x.every((part, index) => part !== undefined && part === y[index]);
+};
+
+/**
+ * The repair command (deploy.ts repair): it holds the State store to the release's contract
+ * first, then plans the repair, or applies the approved one when a digest is given. The record it
+ * returns is what the run seals: the plan, and before a write the row as it was, so a wrong repair
+ * can be undone.
+ */
+export const runRepair = <E, L, R, V>(
+  input: RepairInput<E, L, R> & {
+    readonly digest: string | undefined;
+    /** The State store, judged by the contract every release holds it to (stateStoreRefusal). */
+    readonly contract: {
+      readonly id: string;
+      readonly version: Effect.Effect<number, V>;
+      readonly state: StackState;
+      readonly stage: string;
+      readonly runnerLocal: number;
+    };
+  },
+) =>
+  Effect.gen(function* () {
+    const { contract } = input;
+    const refused = stateStoreRefusal(
+      { id: contract.id, version: yield* contract.version },
+      contract.state,
+      contract.stage,
+      contract.runnerLocal,
+    );
+    if (refused) return yield* refused;
+    const record = input.digest
+      ? yield* applyRepair({ ...input, digest: input.digest })
+      : { plan: (yield* readRepair(input)).plan, before: undefined };
+    return { ...record, sealed: safeJson(record, 2) };
   });

@@ -532,6 +532,19 @@ export function attachmentWaitsOnWorker(
 }
 
 /**
+ * Whether a container's declared props are its recorded ones. A build context is an absolute path
+ * in this checkout; the recorded one may sit in the checkout of the release that declared it, as
+ * an entry file may (sameEntryFile).
+ */
+export function sameDeclaration(recordedProps: unknown, declaredProps: unknown): boolean {
+  const { context: recordedContext, ...kept } = record(recordedProps) ? recordedProps : {};
+  const { context: declaredContext, ...declared } = record(declaredProps) ? declaredProps : {};
+  const sameContext =
+    declaredContext === recordedContext || sameEntryFile(recordedContext, declaredContext);
+  return sameContext && propChanges(kept, declared).length === 0;
+}
+
+/**
  * Whether the root's planned update is one the apply settles with reads only, explained by one or
  * both of: the image hash the old release layer recorded (a pinned declaration hashes the reference
  * instead), and an attachment the plan cannot know while the pool Worker updates.
@@ -774,21 +787,12 @@ export const checkPlan = (
         const props: Record<string, unknown> = record(node.resource.Props)
           ? node.resource.Props
           : {};
-        const before = recorded(node)?.props;
-        const was: Record<string, unknown> = record(before) ? before : {};
-        // A build context is an absolute path in this checkout; the recorded one may sit in the
-        // checkout of the release that declared it, as an entry file may (sameEntryFile).
-        const { context: declaredContext, ...declared } = props;
-        const { context: recordedContext, ...kept } = was;
-        const sameContext =
-          declaredContext === recordedContext || sameEntryFile(recordedContext, declaredContext);
         return (
           node.resource.Type === "Cloudflare.Container" &&
           // A settled row only: an update of a `replaced` one also collects older generations.
           (node.state?.status === "created" || node.state?.status === "updated") &&
           node.action === "update" &&
-          sameContext &&
-          propChanges(kept, declared).length === 0 &&
+          sameDeclaration(recorded(node)?.props, props) &&
           attachmentWaitsOnWorker(node, policy.poolWorker, workerContext)
         );
       };
