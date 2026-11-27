@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { emulatedAccount } from "./cloudflare.mjs";
-import { entryConfig, entryRefusals, publicEntryLines } from "./entry-output.mjs";
+import { entryConfig, entryRefusals, publicEntryLines, releaseCause } from "./entry-output.mjs";
 import { mockRefusal, mockStarter } from "./mock-start.ts";
 import { countingText, fixtures, fixturesFile, fixturesText } from "./fixtures.mjs";
 import { LONG_COUNT, longMatch, longPrompt, shortPrompt } from "./prompts.ts";
@@ -391,4 +391,72 @@ test("a missing Worker reads as no lease; any other refusal of its settings thro
   );
   // The lease is read only from the stage's own Worker.
   await assert.rejects(account(fetcher).lease("basalt-production-poolworker"), /^Error: Refused/u);
+});
+
+test("a failed entry names its cause from a closed set, and never its message", () => {
+  const account = "0123456789abcdef0123456789abcdef";
+  const host = "basalt-emulated-upstream-gateway.example-subdomain.workers.dev";
+  const leak = `${account} ${host} https://${host}/v1 /accounts/${account}/workers/scripts/x`;
+  const cases = [
+    [
+      "Release stopped in deploy: Error (failed): Error: State store version 5, expected 8: upgrade it deliberately first",
+      "release cause: state_store_version store=5 expected=8",
+    ],
+    [
+      `Release stopped in deploy at Mock (Worker): WireRefused (refused): WireRefused: wire guard refused PUT /accounts/${account}/workers/scripts/x (Worker): migrations.deleted_classes = ["Mock"]. ${leak} Fix: none`,
+      "release cause: wire_refused field=migrations.deleted_classes",
+    ],
+    [
+      `Release stopped in plan: Unauthorized (failed): Unauthorized: Authentication failed (status: 400) ${leak}`,
+      "release cause: unauthorized",
+    ],
+    [
+      `Release stopped in deploy at Gateway (Worker): TypeError (failed): TypeError: fetch to ${host} failed for ${account}`,
+      "release cause: unclassified class=TypeError step=deploy",
+    ],
+    [`something else entirely: ${leak}`, "release cause: unclassified class=unknown step=unknown"],
+    [
+      `Release stopped in ${host}: ${account} (failed): ${leak}`,
+      "release cause: unclassified class=unknown step=unknown",
+    ],
+    ["", "release cause: no_detail"],
+    [undefined, "release cause: no_detail"],
+  ];
+  for (const [detail, line] of cases) {
+    const cause = releaseCause(detail);
+    assert.equal(cause, line);
+    assert.doesNotMatch(cause, /[0-9a-f]{32}|workers\.dev|example|https?:|\/accounts\//u, line);
+  }
+  // A field that could hold anything but a plain name is not printed as one.
+  assert.equal(
+    releaseCause(
+      `Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (Worker): ${host}/a = 1. why`,
+    ),
+    "release cause: unclassified class=WireRefused step=deploy",
+  );
+});
+
+test("a cause line never carries an id, a host or a field outside the wire guard's own words", () => {
+  const hex = "0123456789abcdef0123456789abcdef";
+  for (const [detail, line] of [
+    // An unknown migration key that is an id, and an error tag that is one.
+    [
+      `Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (Worker): migrations.${hex} = 1. why`,
+      "release cause: unclassified class=WireRefused step=deploy",
+    ],
+    [
+      `Release stopped in deploy: ${hex} (failed): x`,
+      "release cause: unclassified class=unknown step=deploy",
+    ],
+    // A resource text that imitates the refusal's own shape.
+    [
+      "Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (W): secret-host.example.com = 1). y",
+      "release cause: unclassified class=WireRefused step=deploy",
+    ],
+    [
+      "Release stopped in deploy: WireRefused (refused): wire guard refused PUT /x (Worker): exports.Mock.state = deleted. y",
+      "release cause: wire_refused field=exports.Mock.state",
+    ],
+  ])
+    assert.equal(releaseCause(detail), line);
 });
