@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { cloudPoolGateway } from "../../.upstream/e2e/support/cloud-pool-gateway.ts";
 
 /**
@@ -51,17 +52,17 @@ const throughGateway = async (api: URL, count: number) => {
       Effect.scoped(
         Effect.gen(function* () {
           const gateway = yield* cloudPoolGateway(api.origin, directory, api);
+          const http = yield* HttpClient.HttpClient;
           const answers: Array<{ status: number; body: string }> = [];
           for (let sent = 0; sent < count; sent++) {
-            const response = yield* Effect.promise(() =>
-              fetch(new URL("/api/internal/production-ops", gateway), { method: "POST" }),
+            const response = yield* http.execute(
+              HttpClientRequest.post(new URL("/api/internal/production-ops", gateway)),
             );
-            const body = yield* Effect.promise(() => response.text());
-            answers.push({ status: response.status, body });
+            answers.push({ status: response.status, body: yield* response.text });
           }
           return answers;
         }),
-      ).pipe(Effect.provide(NodeServices.layer)),
+      ).pipe(Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
     );
     const log = join(directory, "cloud-forwarding-errors.ndjson");
     const records = existsSync(log)
