@@ -7,7 +7,10 @@ import { SqlClient } from "effect/sql";
 import pg from "pg";
 import { GroupDatabase } from "../../.upstream/apps/hosted/server/src/contracts/groups.ts";
 import { reportHostPoolInventory } from "../../.upstream/apps/hosted/cloud/src/infrastructure/pool-inventory.ts";
-import { poolOwnershipLine } from "../../.upstream/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts";
+import {
+  poolOwnershipLine,
+  readPoolPopulation,
+} from "../../.upstream/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts";
 import { postgresUrl } from "./org-lock-postgres-fixture.ts";
 
 /** Every table the hourly inventory reads, with only the columns it reads, all as text. */
@@ -61,9 +64,8 @@ async function withInventoryDatabase(
   }
 }
 
-/** One run of the hourly job, with every line it writes. */
-async function inventoryLines(schema: string) {
-  const runtime = ManagedRuntime.make(
+const clientOn = (schema: string) =>
+  ManagedRuntime.make(
     PgClient.layer({
       url: Redacted.make(postgresUrl()),
       maxConnections: 2,
@@ -71,6 +73,10 @@ async function inventoryLines(schema: string) {
       prepare: false,
     }),
   );
+
+/** One run of the hourly job, with every line it writes. */
+async function inventoryLines(schema: string) {
+  const runtime = clientOn(schema);
   const lines: string[] = [];
   const captured: Console.Console = {
     ...globalThis.console,
@@ -115,6 +121,11 @@ test("the population report counts every pair a pool token can name by the check
       ["org_c", record("app_c")],
       ["org_x", "{}"],
       ["org_d", "{}"],
+      // Records whose app is not an id can match no pool a token names: no pair.
+      [
+        "org_e",
+        JSON.stringify({ basaltPools: { n: { app: 5 }, o: { app: { x: 1 } }, e: { app: "" } } }),
+      ],
     ])
       await admin.query("insert into organization values ($1, $2)", [id, metadata]);
     for (const [id, owner, copied] of [
@@ -125,6 +136,8 @@ test("the population report counts every pair a pool token can name by the check
       ["app_p", "organization:org_d", poolCopy],
       ["app_q", "organization:org_gone", poolCopy],
       ["app_r", "organization:org_d", defaultPool],
+      // A pool app no organization owns: no organization's token can name it.
+      ["app_u", "user:someone", poolCopy],
       // Not a pool app and recorded by nobody: outside the population.
       [
         "app_other",
@@ -172,6 +185,39 @@ test("the population report counts every pair a pool token can name by the check
   });
 });
 
+test("the population read holds each organization's metadata once, however many pairs it has", async () => {
+  await withInventoryDatabase(async ({ admin, schema }) => {
+    const pools = Array.from({ length: 40 }, (_, index) => `app_${index}`);
+    await admin.query("insert into organization values ('org_a', $1), ('org_b', $2)", [
+      record(...pools),
+      record("app_b"),
+    ]);
+    for (const pool of pools)
+      await admin.query("insert into executor_apps values ($1, 'organization:org_a', null)", [
+        pool,
+      ]);
+    const runtime = clientOn(schema);
+    try {
+      const facts = await runtime.runPromise(
+        Effect.gen(function* () {
+          return yield* readPoolPopulation(yield* SqlClient.SqlClient);
+        }),
+      );
+      assert.equal(facts.pairs.length, 41);
+      assert.deepEqual(
+        facts.pairs.filter((pair) => pair.metadata !== null).map((pair) => pair.organization),
+        ["org_a", "org_b"],
+      );
+      // Each pair is still classified against its own organization's records.
+      const line = JSON.parse(poolOwnershipLine(Exit.succeed(facts), "run", "snapshot"));
+      assert.equal(line.counts.owned, 40);
+      assert.equal(line.counts["deleted-pool"], 1);
+    } finally {
+      await runtime.dispose();
+    }
+  });
+});
+
 test("a report statement cancelled behind a lock leaves the inventory exactly as it is, and says so", async () => {
   await withInventoryDatabase(async ({ admin, locker, schema }) => {
     await admin.query("insert into organization values ('org_a', $1)", [record("app_a")]);
@@ -215,10 +261,12 @@ test("above its row cap, or when the inventory itself fails, the report still wr
       [full.complete, full.pairs, (full.refusing as unknown[]).length, full.refusingOmitted],
       [true, 1_000, 50, 950],
     );
-    // One more is the report's cap, while the inventory, which reads no apps, completes.
-    await admin.query("insert into executor_apps values ('app_1000', 'organization:org_a', $1)", [
-      poolCopy,
-    ]);
+    // Past it the read stops at its cap, while the inventory, which reads no apps, completes.
+    for (const id of ["app_1000", "app_1001"])
+      await admin.query("insert into executor_apps values ($1, 'organization:org_a', $2)", [
+        id,
+        poolCopy,
+      ]);
     const capped = await inventoryLines(schema);
     assert.equal(inventoryOnly(capped).at(-1)?.complete, true);
     const [line] = ownership(capped);

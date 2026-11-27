@@ -63,9 +63,10 @@ diff --git a/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts b/app
 new file mode 100644
 --- /dev/null
 +++ b/apps/hosted/cloud/src/infrastructure/pool-ownership-report.ts
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,182 @@
 +import type { AppId } from "@executor-js/sdk/core";
 +import type { OrganizationId } from "@executor-js/hosted-server/organization";
++import { poolSource } from "@executor-js/hosted-server/pool-defaults";
 +import { Facts, type Refusal, shapeOf } from "@executor-js/hosted-server/pool-organization";
 +import { Effect, Exit, Schema } from "effect";
 +import type { SqlClient } from "effect/sql";
@@ -77,7 +78,8 @@ new file mode 100644
 + * app is a copy whose origin is the pool app's source, whatever name it was given: the catalog
 + * names it `basalt-pool`, a person's default pool `<brand> pool`. Per pair it reads the facts the
 + * ownership check's shape read takes; the check's own `shapeOf` classifies them, so the rule is
-+ * never written twice. Each cast in the statement is guarded.
++ * never written twice. Each cast in the statement is guarded. An organization's metadata comes on its
++ * first pair's row only, so the read holds each organization's metadata once, as the inventory does.
 + */
 +const populationQuery = `with records as (
 +    select o.id as organization, entry.value ->> 'app' as pool
@@ -86,6 +88,8 @@ new file mode 100644
 +      then case when jsonb_typeof(o.metadata::jsonb -> 'basaltPools') = 'object'
 +        then o.metadata::jsonb -> 'basaltPools' else '{}'::jsonb end
 +      else '{}'::jsonb end) entry
++    -- A pool token names a pool by its id, so only a record whose app is an id can match one.
++    where jsonb_typeof(entry.value -> 'app') = 'string' and entry.value ->> 'app' <> ''
 +  ), owned as (
 +    select substr(a.owner, length('organization:') + 1) as organization, a.id as pool
 +    from executor_apps a
@@ -94,20 +98,19 @@ new file mode 100644
 +        or case when pg_input_is_valid(a.copied_from::text, 'jsonb')
 +          then a.copied_from::text::jsonb ->> 'reference' = $1 else false end)
 +  ), pairs as (
-+    select organization, pool from records where pool is not null
++    select organization, pool from records
 +    union
 +    select organization, pool from owned
 +  )
-+  select pairs.organization, pairs.pool, o.metadata,
++  select pairs.organization, pairs.pool,
++    case when row_number() over (partition by pairs.organization order by pairs.pool) = 1
++      then o.metadata end as metadata,
 +    pg_input_is_valid(o.metadata, 'jsonb') as valid,
 +    (select app.owner from executor_apps app where app.id = pairs.pool) as owner,
 +    o.id is not null as present
 +  from pairs left join organization o on o.id = pairs.organization
 +  order by pairs.organization, pairs.pool
 +  limit 1001`;
-+
-+/** The source every pool app is copied from (pools.ts, pool-defaults.ts, catalog.ts). */
-+const poolSourceReference = "https://github.com/JustYannicc/basalt/tree/main/apps/pool";
 +
 +const invalidMetadataQuery = `select count(*)::int as n from organization
 +  where metadata is not null and not pg_input_is_valid(metadata, 'jsonb')`;
@@ -124,7 +127,11 @@ new file mode 100644
 +);
 +const Count = Schema.Array(Schema.Struct({ n: Schema.Int }));
 +
-+/** The facts the report is made from, as read in the inventory's transaction. */
++/**
++ * The facts the report is made from, as read in the inventory's transaction, ordered by
++ * organization: a pair's `metadata` is its organization's on that organization's first pair and
++ * null on the rest.
++ */
 +export interface PopulationFacts {
 +  readonly pairs: typeof Pairs.Type;
 +  readonly invalidMetadataOrganizations: number;
@@ -138,7 +145,7 @@ new file mode 100644
 +  sql.withTransaction(
 +    Effect.gen(function* () {
 +      const pairs = yield* sql
-+        .unsafe(populationQuery, [poolSourceReference])
++        .unsafe(populationQuery, [poolSource.reference])
 +        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Pairs)));
 +      const [count] = yield* sql
 +        .unsafe(invalidMetadataQuery)
@@ -181,8 +188,9 @@ new file mode 100644
 +      pairs: pairs.length,
 +      migrationGo: false,
 +    });
-+  // cleared-association and other-organization need a token claim that no record and no owner
-+  // holds, so no read of the database can show them; the line names them as not observable.
++  // cleared-association and other-organization are pairs the token names and nothing in the
++  // database does: no record and no owner. The population is read from the database, so it holds
++  // none of them, and the line names them as not observable instead of counting 0.
 +  const counts: Record<
 +    | "owned"
 +    | "organization-missing"
@@ -197,14 +205,20 @@ new file mode 100644
 +    "invalid-metadata": 0,
 +  };
 +  const refusing: Array<{ pool: string; shape: Refusal }> = [];
++  let organization: string | undefined;
++  let metadata: string | null = null;
 +  for (const pair of pairs) {
++    if (pair.organization !== organization) {
++      organization = pair.organization;
++      metadata = pair.metadata;
++    }
 +    if (!pair.present) {
 +      counts["organization-missing"] += 1;
 +      continue;
 +    }
 +    const shape = shapeOf(
 +      {
-+        metadata: pair.metadata,
++        metadata,
 +        valid: pair.valid,
 +        owner: pair.owner,
 +      } satisfies (typeof Facts.Type)[number],
@@ -232,6 +246,19 @@ new file mode 100644
 +    migrationGo: false,
 +  });
 +}
+diff --git a/apps/hosted/server/src/implementation/pool-defaults.ts b/apps/hosted/server/src/implementation/pool-defaults.ts
+--- a/apps/hosted/server/src/implementation/pool-defaults.ts
++++ b/apps/hosted/server/src/implementation/pool-defaults.ts
+@@ -65,7 +65,8 @@ const repairPoolAccess = (
+     return true;
+   });
+ const Member = Schema.Struct({ name: Schema.String, email: Schema.String });
+-const poolSource = {
++/** The source every pool app is copied from. */
++export const poolSource = {
+   reference: "https://github.com/JustYannicc/basalt/tree/main/apps/pool",
+   commit: null,
+ };
 diff --git a/apps/hosted/server/src/implementation/pool-organization.ts b/apps/hosted/server/src/implementation/pool-organization.ts
 --- a/apps/hosted/server/src/implementation/pool-organization.ts
 +++ b/apps/hosted/server/src/implementation/pool-organization.ts
