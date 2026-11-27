@@ -495,6 +495,29 @@ test("a start failure that is not plain words reaches no caller", async () => {
   }
 });
 
+test("the stage prints a Worker's start reason only as plain words, and never a body's own field", async () => {
+  const clock = { ms: NOW };
+  for (const [status, body, cause] of [
+    [503, { error: { type: "mock_unavailable", message: noInstance } }, noInstance],
+    [503, { error: { type: "mock_unavailable", message: "Down at acct.workers.dev" } }, "HTTP 503"],
+    [503, { error: { type: "mock_unavailable", message: "Down\n::warning::x" } }, "HTTP 503"],
+    [401, { error: { type: "mock_unavailable", message: "Plain words" } }, "HTTP 401"],
+    [401, { reason: "Down at acct.workers.dev" }, "HTTP 401"],
+    [503, { failed: "Down at acct.workers.dev" }, "HTTP 503"],
+  ]) {
+    // A Worker that answers anything: the stage's own rule is all that stands before the line.
+    const fetcher = async () => Response.json(body, { status });
+    await assert.rejects(
+      stageOf(fakeApi({ lease: NOW + hour }), {
+        fetcher,
+        now: () => clock.ms,
+        wait: async (ms) => (clock.ms += ms),
+      }).deploy(),
+      (error) => error.message.endsWith(`of the deploy: ${cause}`) || assert.fail(error.message),
+    );
+  }
+});
+
 test("only plain words pass as a platform reason, and a dot only ends a sentence", () => {
   assert.equal(plainReason(noInstance), noInstance);
   assert.equal(plainReason("The mock stopped while starting."), "The mock stopped while starting.");

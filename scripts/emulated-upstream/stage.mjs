@@ -282,7 +282,8 @@ export function emulatedStage({
   /**
    * After a deploy, the platform can take a while to hand the mock's Durable Object a container
    * instance. Waits for the mock to answer, a try every `mockWaitPauseMs` for at most
-   * `mockWaitBoundMs`, and fails with the first reason it was given, word for word.
+   * `mockWaitBoundMs`, and fails with the first reason it was given when that is plain words, or
+   * its status otherwise.
    */
   async function waitForMock() {
     // A deploy that left no Worker says so now, not as a timeout.
