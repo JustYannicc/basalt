@@ -8,6 +8,7 @@ import { gate, mockCalls, plainReason } from "./gateway.ts";
 import { SLOW_MS } from "./profile-check.mjs";
 import { publicMessage } from "./public-error.mjs";
 import { checkFailures, emulatedStage, keyedRoutes, LONG_MIN_MS, main, paced } from "./stage.mjs";
+import { prefix } from "./settings.ts";
 import { fakeAimock, memoryStore } from "./test/fake-aimock.mjs";
 import { script } from "../stage-cloudflare/test/cloudflare-shapes.mjs";
 import { fakeAccount } from "../stage-cloudflare/test/fake-account.mjs";
@@ -368,6 +369,42 @@ test("a failing stage fetch prints no hostname, at the top level or in the summa
   const raw = new TypeError(`fetch failed for ${worker}.${subdomain}.workers.dev`);
   assert.doesNotMatch(publicMessage(raw), /workers\.dev/u);
   assert.doesNotMatch(inspect(publicMessage(raw)), /workers\.dev/u);
+});
+
+test("a destroy stopped by the registry's tag list keeps its record of closed facts before it ends", async () => {
+  const repository = `acct/${prefix}-mock`;
+  const { fetcher: account } = fakeAccount({ tags: { [repository]: ["h1", "h2"] } });
+  // A registry that ignores the cursor: every page is the first one, with a next link.
+  const fetcher = async (url, init) =>
+    new URL(url).pathname.endsWith("/tags/list")
+      ? Response.json(
+          { name: repository, tags: ["h1", "h2"] },
+          { headers: { link: `</v2/${repository}/tags/list?n=2&last=h2>; rel="next"` } },
+        )
+      : account(url, init);
+  const printed = [];
+  const saved = {};
+  const code = await main(
+    { ...dispatch, EMULATED_MODE: "destroy" },
+    {
+      fetcher,
+      now: () => NOW,
+      error: (line) => printed.push(line),
+      summary: (line) => printed.push(line),
+      save: (name, value) => (saved[name] = value),
+      deployEntry: () => {},
+    },
+  );
+  assert.equal(code, 1);
+  assert.equal(
+    printed[0],
+    "A registry tag list answered a tag it had already listed (page 2, after 2 tags)",
+  );
+  assert.equal(saved["stopped-destroy"].tagRead.rule, "already-listed");
+  assert.equal(saved["stopped-destroy"].tagRead.sameAsFirstPage, true);
+  assert.equal(saved.teardown, undefined);
+  assert.ok(printed[1].startsWith("- stop record: {"), printed.join("\n"));
+  for (const line of printed) assert.doesNotMatch(line, /h1|h2|acct|https?:/u, line);
 });
 
 test("a refused guard prints only its token", async () => {
