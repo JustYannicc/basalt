@@ -125,7 +125,7 @@ test("a send the bridge answers without the Worker names the step and the answer
     assert.equal(result.ok, false);
     assert.match(
       cause(result),
-      /handoff\.command\.action=fleet-configure handoff\.response\.http=503 handoff\.response\.step=unclassified .*\) at step send$/u,
+      /handoff\.command\.action=fleet-configure handoff\.response\.http=503 handoff\.response\.origin=unmarked handoff\.response\.step=unclassified .*\) at step send$/u,
     );
   } finally {
     await lane.close();
@@ -140,7 +140,10 @@ test("a refused inspect prints the answer's status, so a non-Worker answer shows
   try {
     const result = await runPoolFleet(dispatch("inspect"), lane.deps());
     assert.equal(result.ok, false);
-    assert.match(cause(result), /handoff\.command\.action=inspect handoff\.response\.http=502/u);
+    assert.match(
+      cause(result),
+      /handoff\.command\.action=inspect handoff\.response\.http=502 handoff\.response\.origin=unmarked /u,
+    );
   } finally {
     await lane.close();
   }
