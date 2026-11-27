@@ -3,9 +3,9 @@ export const stateCommandStage = "placeholder";
 const readOnlyStateCommands = new Set(["list", "ls", "read", "cat"]);
 
 /**
- * The stage a cleanup run acts for. A state command opens the placeholder stage, and reads the
- * store for the configured stage only when it is a read: `state delete` and `state unsafe nuke`
- * reach any path in the shared store, production's included, so they never pass.
+ * The stage a cleanup run acts for. A state command opens the placeholder stage and passes only
+ * when it is a read, which reaches the whole shared store, read-only. `state delete` and
+ * `state unsafe nuke` reach any path in that store, production's included, so they never pass.
  */
 export function cleanupStage(opened: string, argv: readonly string[], configured?: string) {
   if (opened !== stateCommandStage) return opened;

@@ -203,17 +203,39 @@ function runStateCommand(
 ): string {
   const result = command(args, cloudDirectory, env);
   if (result.error || result.status !== 0) {
-    // Alchemy reports some failures on stdout, so a failed read shows the tail of both streams.
+    // Alchemy reports some failures on stdout, so a failed list shows the tail of both streams. A
+    // read's stdout is the State document itself, whose values no redaction knows, so the report
+    // of a failed read keeps stderr only: it can reach a public step summary.
     const ended = result.error
       ? notStarted(result.error)
       : { exitCode: result.status, signal: null };
+    const reads = args.includes("read");
     throw new Error("Authenticated Alchemy remote state read failed", {
       cause: new ChildProcessFailure(
-        childReport("alchemy", ended, { stdout: result.stdout, stderr: result.stderr ?? "" }, env),
+        childReport(
+          "alchemy",
+          ended,
+          { stdout: reads ? "" : result.stdout, stderr: result.stderr ?? "" },
+          env,
+        ),
       ),
     });
   }
   return result.stdout;
+}
+
+/**
+ * One level of a State listing: every line but Alchemy's progress lines must be an entry of that
+ * level, so output the parser does not know fails the read instead of reading as an absent stack.
+ */
+function listedEntries(stdout: string, entry: RegExp, environment: NodeJS.ProcessEnv): string[] {
+  const lines = stdoutLines(stdout);
+  for (const line of lines)
+    if (!entry.test(line))
+      throw new Error(
+        `Alchemy returned an unexpected remote state listing line: ${JSON.stringify(redactCredentials(line, environment).slice(0, 160))}`,
+      );
+  return lines;
 }
 
 // Alchemy writes progress lines ("• Refreshing …", "✓ Refreshing …") to stdout beside its result.
@@ -304,10 +326,17 @@ export function alchemyPreviewStateReader(
       const stacks = {} as Record<PreviewStack, PreviewStateEntry[]>;
       // Listing a path the store never held fails, so each level is listed only once it is known
       // to exist: the store's stack names, a stack's stage directories, then this one stage.
-      const known = stdoutLines(list());
+      const known = listedEntries(list(), /^[^/\s]+\/$/u, env);
       for (const stack of previewStacks) {
         const prefix = `${stack}/${stage}/`;
-        if (!known.includes(`${stack}/`) || !stdoutLines(list(stack)).includes(prefix)) {
+        const stages = known.includes(`${stack}/`)
+          ? listedEntries(
+              list(stack),
+              new RegExp(`^${stack.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}/[^/\\s]+/$`, "u"),
+              env,
+            )
+          : [];
+        if (!stages.includes(prefix)) {
           stacks[stack] = [];
           continue;
         }

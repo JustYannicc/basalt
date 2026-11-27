@@ -238,6 +238,50 @@ test("a listing line outside the stage is refused and named, with secrets redact
   );
 });
 
+test("a listing line the parser does not know fails the read instead of reading as an absent stack", async () => {
+  for (const [level, stdout] of [
+    ["root", "basalt/\nunexpected log line\n"],
+    ["stack", `basalt/${stage}/\nunexpected log line\n`],
+  ] as const) {
+    const reader = alchemyPreviewStateReader({
+      environment: {},
+      command: (args) => {
+        const at = args[args.indexOf("list") + 1];
+        if (at === "--config")
+          return { status: 0, stdout: level === "root" ? stdout : "basalt/\n" };
+        if (at === "basalt") return { status: 0, stdout };
+        return { status: 0, stdout: "" };
+      },
+    });
+    await assert.rejects(reader.read(stage), /unexpected remote state listing line/u, level);
+  }
+});
+
+test("a failed state read never reports the State document it printed", async () => {
+  const reader = alchemyPreviewStateReader({
+    environment: {},
+    command: (args) => {
+      if (args.includes("read"))
+        return {
+          status: 1,
+          stdout: '{"attr":{"password":"held-in-state"}}',
+          stderr: "flush failed",
+        };
+      const at = args[args.indexOf("list") + 1];
+      if (at === "--config") return { status: 0, stdout: "basalt/\n" };
+      if (at === "basalt") return { status: 0, stdout: `basalt/${stage}/\n` };
+      return { status: 0, stdout: `basalt/${stage}/Router\n` };
+    },
+  });
+  const error = await reader.read(stage).then(
+    () => undefined,
+    (failure: unknown) => failure,
+  );
+  assert.ok(error instanceof Error && error.cause instanceof Error);
+  assert.match(error.cause.message, /flush failed/u);
+  assert.doesNotMatch(error.cause.message, /held-in-state/u);
+});
+
 test("a brand-new stage whose stacks the store never held reads as empty without listing them", async () => {
   const listed: string[] = [];
   const reader = alchemyPreviewStateReader({
