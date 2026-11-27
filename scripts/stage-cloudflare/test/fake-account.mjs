@@ -52,7 +52,8 @@ export function fakeAccount({
    * A registry that answers as Cloudflare's did on 27-11-2026: its list names a `sha256:` entry for
    * every manifest besides the tags, `pageSize` entries a page whatever `n` asks, a next link of
    * `n=1000&last=<the page's last entry>`, digest entries first (`order: "lexical"` sorts all), and,
-   * with `emptyEnd`, a last page that is empty and still links on. `artifacts` are manifests the
+   * with `emptyEnd`, a last page that is empty and still links on; `linkForm` picks how the link is
+   * written (see below). `artifacts` are manifests the
    * registry made itself: `{ digest, type, refuse?: { status, code? }, read?: status }`. `refuse`
    * maps a digest to the refusal its delete answers.
    */
@@ -179,9 +180,19 @@ export function fakeAccount({
         last === null || last === "" ? entries : entries.slice(entries.indexOf(last) + 1);
       const page = after.slice(0, cloudflare.pageSize ?? 5);
       const more = after.length > page.length;
+      const cursor = encodeURIComponent(page.at(-1) ?? "");
+      // `linkForm`: "bracketed" (RFC 8288, relative); "recorded", the form recorded for this
+      // registry: the full request URL with no brackets, a second query appended, `rel` unquoted;
+      // "unknown", a header that offers a next page in a form no reader can take apart.
+      const forms = {
+        bracketed: () => `</v2/${listing[1]}/tags/list?n=1000&last=${cursor}>; rel="next"`,
+        recorded: () =>
+          `https://registry.cloudflare.com/v2/${listing[1]}/tags/list?${searchParams}?n=1000&last=${cursor}; rel=next`,
+        unknown: () => `{next: ${cursor}}; rel=next ~`,
+      };
       const link =
         more || (cloudflare.emptyEnd && last !== "")
-          ? `</v2/${listing[1]}/tags/list?n=1000&last=${encodeURIComponent(page.at(-1) ?? "")}>; rel="next"`
+          ? forms[cloudflare.linkForm ?? "bracketed"]()
           : undefined;
       return json(tagList(name, page), { headers: link ? { link } : {} });
     }
