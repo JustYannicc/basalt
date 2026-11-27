@@ -27,6 +27,30 @@ const directories = (path: string) =>
         .map((entry) => join(path, entry.name))
     : [];
 
+/**
+ * The identity of a checkout's `.bun` link directory. Installers replace the whole tree, which
+ * changes its inode; replacing one link changes its mtime, except within one tick of a coarse
+ * clock (on some Linux file systems, a few milliseconds). A whole-second mtime may come from a
+ * clock that coarse, so it proves nothing.
+ */
+export function linkFingerprint(bun: string) {
+  const stat = lstatSync(bun, { bigint: true, throwIfNoEntry: false });
+  if (!stat?.isDirectory() || stat.mtimeNs % 1_000_000_000n === 0n) return undefined;
+  return { dev: String(stat.dev), ino: String(stat.ino), mtimeNs: String(stat.mtimeNs) };
+}
+
+const sameLinks = (recorded: unknown, bun: string) => {
+  const current = linkFingerprint(bun);
+  return (
+    current !== undefined &&
+    typeof recorded === "object" &&
+    recorded !== null &&
+    (["dev", "ino", "mtimeNs"] as const).every(
+      (field) => (recorded as Record<string, unknown>)[field] === current[field],
+    )
+  );
+};
+
 function references(prepared: string) {
   const found = new Set<string>();
   const add = (path: string) => {
@@ -39,6 +63,7 @@ function references(prepared: string) {
   };
   const checkout = (root: string) => {
     const marker = join(root, ".basalt-dependencies.json");
+    let covered = false;
     if (existsSync(marker)) {
       const record: unknown = JSON.parse(readFileSync(marker, "utf8"));
       if (
@@ -49,11 +74,17 @@ function references(prepared: string) {
       )
         throw new Error("Invalid registered dependency reference");
       add(record.store);
+      covered = sameLinks(
+        "links" in record ? record.links : undefined,
+        join(root, "node_modules/.bun"),
+      );
     }
-    // A legacy install can replace package links before updating its marker.
+    // A legacy install can replace package links before updating its marker. Links unchanged since
+    // their install wrote this marker point only into its store, which is already protected.
     const modules = join(root, "node_modules");
     if (!existsSync(modules)) return;
     if (lstatSync(modules).isSymbolicLink()) add(realpathSync(modules));
+    else if (covered) return;
     const bun = join(modules, ".bun");
     if (existsSync(bun))
       for (const entry of readdirSync(bun)) {

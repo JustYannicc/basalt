@@ -43,11 +43,43 @@ export const entryRefusals = [
 ];
 const refusals = new Set(entryRefusals.map((message) => `error: ${message}`));
 
-const isEvent = (line) => {
-  if (!line.startsWith("{")) return false;
+/**
+ * Every progress tag Alchemy 2.0.0-beta.80 emits, exactly as its event union declares them
+ * (alchemy/src/Report.ts). A dotted tag is shown only when it is one of these, so no hostname can
+ * pass as a tag; any other value goes through the dot-free identifier rule like every other field.
+ */
+export const progressTags = Object.freeze([
+  "apply.resource.note",
+  "apply.resource.status",
+  "plan.resource.started",
+  "plan.resource.completed",
+  "plan.action.completed",
+  "plan.phase",
+  "state.bootstrap.started",
+  "state.bootstrap.completed",
+  "nuke.scan.started",
+  "nuke.scan.provider.started",
+  "nuke.pass.started",
+  "nuke.scan.provider.completed",
+  "nuke.resource.deleted",
+  "nuke.resource.failed",
+  "provider.configure.started",
+  "provider.configure.completed",
+  "provider.refresh.started",
+  "provider.refresh.completed",
+]);
+// The set is private, so nothing that imports the list can add to what passes.
+const progressTagSet = new Set(progressTags);
+
+/**
+ * The event a line holds, re-serialised from what was checked, or undefined. The line itself is
+ * never printed: a duplicate key or an escape would make its text differ from the parsed object.
+ */
+const publicEvent = (line) => {
+  if (!line.startsWith("{")) return undefined;
   try {
     const event = JSON.parse(line);
-    return (
+    const shown =
       event !== null &&
       typeof event === "object" &&
       !Array.isArray(event) &&
@@ -55,12 +87,12 @@ const isEvent = (line) => {
         ([key, value]) =>
           EVENT_KEYS.has(key) &&
           (typeof value === "string"
-            ? IDENTIFIER.test(value)
+            ? IDENTIFIER.test(value) || (key === "_tag" && progressTagSet.has(value))
             : Number.isFinite(value) || typeof value === "boolean"),
-      )
-    );
+      );
+    return shown ? JSON.stringify(event) : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 };
 const applied =
@@ -79,7 +111,11 @@ export function publicEntryLines(stdout = "", stderr = "") {
       if (report) {
         if (!reported.has(line)) kept.push(line);
         reported.add(line);
-      } else if (isEvent(line) || applied.test(line) || refusals.has(line)) kept.push(line);
+      } else {
+        const event = publicEvent(line);
+        if (event !== undefined) kept.push(event);
+        else if (applied.test(line) || refusals.has(line)) kept.push(line);
+      }
     }
   }
   return kept.filter((line) => !ACCOUNT_ID.test(line));
