@@ -32,9 +32,9 @@
         }
       }
     },
-    "dashboardHydrationKeepsServerMarkupSafari": {
+    "dashboardHydrationKeepsServerMarkupWithoutIdleCallbacks": {
       "fixtures": "actors",
-      "title": "An app's server-rendered skills stay the server's markup after hydration in Safari at phone width",
+      "title": "An app's server-rendered skills stay the server's markup after hydration without idle callbacks at phone width",
       "targets": {
         "self-host": {
           "status": "scheduled"
@@ -58,7 +58,7 @@
       "declared:self-host",
       "declared:cloud"
     ],
-    "dashboardHydrationKeepsServerMarkupSafari": [
+    "dashboardHydrationKeepsServerMarkupWithoutIdleCallbacks": [
       "declared:self-host",
       "declared:cloud"
     ]

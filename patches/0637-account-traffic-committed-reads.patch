@@ -911,7 +911,7 @@ diff --git a/e2e/tests/dashboard-hydration-markup.spec.ts b/e2e/tests/dashboard-
 new file mode 100644
 --- /dev/null
 +++ b/e2e/tests/dashboard-hydration-markup.spec.ts
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,242 @@
 +import { expect, layer } from "@effect/vitest";
 +import { Effect, Schedule, Schema } from "effect";
 +import type { Page } from "playwright";
@@ -919,7 +919,7 @@ new file mode 100644
 +import { Actors } from "../support/actors.ts";
 +import { Api, body } from "../support/api.ts";
 +import { Browser } from "../support/browser.ts";
-+import { HostedLive, WebKitLive, withHostedCase } from "../support/case.ts";
++import { HostedLive, withHostedCase } from "../support/case.ts";
 +import { App } from "../support/contracts.ts";
 +import { Evidence } from "../support/evidence.ts";
 +import { scenarios } from "../test-plan.ts";
@@ -993,7 +993,7 @@ new file mode 100644
 + * hydration and after the change feed's handshake.
 + */
 +const keepsServerMarkupCase =
-+  (viewport: { readonly width: number; readonly height: number }, engine = "chromium") =>
++  (viewport: { readonly width: number; readonly height: number }, idleCallbacks = true) =>
 +  (context: Parameters<typeof withHostedCase>[0]) =>
 +    withHostedCase(
 +      context,
@@ -1082,6 +1082,14 @@ new file mode 100644
 +        yield* browser.use("Record the elements scripts create", (page) =>
 +          page.addInitScript(recordScriptedElements),
 +        );
++        // A browser without idle callbacks (Safari) ends the document by a short delay instead.
++        if (!idleCallbacks)
++          yield* browser.use("Take away idle callbacks", (page) =>
++            page.addInitScript(() => {
++              Reflect.deleteProperty(window, "requestIdleCallback");
++              Reflect.deleteProperty(window, "cancelIdleCallback");
++            }),
++          );
 +        const html = yield* browser.use("Open the shared app's skills", (page) =>
 +          page.goto(url).then((response) => {
 +            if (response === null) throw new Error("The skills page answered no document");
@@ -1097,10 +1105,9 @@ new file mode 100644
 +        yield* browser.use("The page hydrates", (page) =>
 +          page.locator("html[data-hydrated]").waitFor({ state: "attached" }),
 +        );
-+        // Safari has no idle callbacks, so its run covers the stand-in that ends the document.
-+        if (engine === "webkit")
++        if (!idleCallbacks)
 +          expect(
-+            yield* browser.use("The engine has no idle callbacks", (page) =>
++            yield* browser.use("The page has no idle callbacks", (page) =>
 +              page.evaluate(() => "requestIdleCallback" in window),
 +            ),
 +          ).toBe(false);
@@ -1139,16 +1146,11 @@ new file mode 100644
 +      [scenarios.dashboardHydrationKeepsServerMarkupMobile, { width: 390, height: 844 }],
 +    ] as const)
 +      it.effect(scenario.title, keepsServerMarkupCase(viewport));
-+  },
-+);
-+
-+// Safari's engine has no idle callbacks, so the document's end comes from their stand-in.
-+layer(WebKitLive, { excludeTestServices: true })(
-+  "Dashboard hydration keeps server markup in Safari",
-+  (it) => {
++    // Safari's difference here is one missing API. CI's runners carry only Chromium, so Chromium
++    // without that API stands in and takes the same path that ends the document.
 +    it.effect(
-+      scenarios.dashboardHydrationKeepsServerMarkupSafari.title,
-+      keepsServerMarkupCase({ width: 390, height: 844 }, "webkit"),
++      scenarios.dashboardHydrationKeepsServerMarkupWithoutIdleCallbacks.title,
++      keepsServerMarkupCase({ width: 390, height: 844 }, false),
 +    );
 +  },
 +);
