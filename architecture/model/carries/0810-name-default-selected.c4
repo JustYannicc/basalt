@@ -1,0 +1,7 @@
+model {
+  extend basalt.build {
+    metadata {
+      constraint "A text field's value that the product writes while the field has focus and the person has not typed, pasted or pressed a key in it since focusing, such as an account's default name arriving after the naming prompt opened, is selected, so what the person types next replaces it instead of landing after it. A value the person's own typing or keys produced is never selected, a value written while the field has no focus is unchanged, and a field's first value is not selected."
+    }
+  }
+}

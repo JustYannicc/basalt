@@ -693,6 +693,8 @@ jobs:
         uses: ./.github/actions/setup-browser
       - name: Verify the pool accounts-ready measurement contract
         run: node --test scripts/pool-ui-tests/accounts-ready.test.mjs scripts/pool-ui-tests/history-coverage.test.mjs scripts/pool-ui-tests/history-activity.test.mjs scripts/pool-ui-tests/history-backend.test.mjs
+      - name: Verify a default name that arrives in a focused field is replaced by typing
+        run: node --test scripts/pool-ui-tests/name-default-replaced.test.ts
       - name: Verify tool search and incomplete catalogs
         run: node --test scripts/pool-ui-tests/tool-router-failures.test.ts scripts/pool-ui-tests/tool-search.test.ts
       - name: Verify app query phase diagnostics
