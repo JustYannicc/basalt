@@ -4,7 +4,8 @@ run-name: "${{ inputs.override_reason && format('Release (override: {0})', input
 
 # The release path: Alchemy's own plan and apply, wrapped by the checks no tool provides
 # (scripts/release/deploy.ts). A main push that passes Check plans and applies automatically;
-# a dispatch can plan only, or apply exactly a plan digest someone reviewed.
+# a dispatch can plan only, or apply exactly a plan digest someone reviewed. A repair dispatch runs
+# no release: it plans, or applies exactly, a State repair of one row a stopped apply left behind.
 on:
   workflow_run:
     workflows: [Check]
@@ -13,10 +14,10 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: plan prints the checked plan and its digest; apply applies exactly that digest
+        description: plan prints the checked plan and its digest; apply applies exactly that digest; repair plans a State repair of the fqn row, or with plan_digest applies exactly that repair
         required: true
         type: choice
-        options: [plan, apply]
+        options: [plan, apply, repair]
         default: plan
       policy:
         description: Plan policy in scripts/release/policies (release, or a cutover step)
@@ -26,7 +27,7 @@ on:
         options: [release, code, code-restart, cutover-code, cutover-classes]
         default: code
       plan_digest:
-        description: For apply, the digest printed by the reviewed plan run
+        description: For apply, the digest printed by the reviewed plan run; for repair, the digest its reviewed repair plan printed
         required: false
         type: string
       attempt:
@@ -34,7 +35,7 @@ on:
         required: false
         type: string
       go:
-        description: Required while the release hold is set; recorded in the run summary
+        description: Required while the release hold is set, and for a repair apply; recorded in the run summary
         required: false
         type: string
       override_reason:
@@ -49,6 +50,11 @@ on:
         description: 'For a policy that declares a root restart: the {"controllerCode": ...} packet of the pool Worker deployed now, as the crash operator takes it'
         required: false
         type: string
+      fqn:
+        description: For repair, the container row a stopped apply left holding a placeholder
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -152,6 +158,8 @@ jobs:
       ATTEMPT_INPUT: ${{ inputs.attempt }}
       GO_INPUT: ${{ inputs.go }}
       MODE: ${{ inputs.mode || 'apply' }}
+      # Only ever read as "$FQN" in a script: a value never becomes shell text.
+      FQN: ${{ inputs.fqn }}
       # An automatic release is code-only; anything else needs a dispatch with its policy named.
       POLICY_NAME: ${{ inputs.policy || 'code' }}
       POLICY: scripts/release/policies/${{ inputs.policy || 'code' }}.json
@@ -168,6 +176,29 @@ jobs:
           ref: ${{ env.BASALT_RELEASE_CANDIDATE }}
           fetch-depth: 0
           persist-credentials: false
+      # Right after the checkout (the secrets guard requires the checkout first), before anything else
+      # runs. The value is never printed: a stray `::` or newline in it would be a workflow command.
+      - name: A repair names one plain row, and its apply carries a coordinator GO
+        if: env.MODE == 'repair'
+        env:
+          LC_ALL: C
+        run: |
+          if [ -z "$FQN" ]; then
+            echo "::error::A repair needs the fqn input: the container row a stopped apply left holding a placeholder."
+            exit 1
+          fi
+          # Matched against the whole value, newlines included; a leading dash would read as a flag.
+          plain='^[A-Za-z0-9_][A-Za-z0-9_./-]{0,127}$'
+          if ! [[ "$FQN" =~ $plain ]]; then
+            echo "::error::fqn is not a plain row name: a letter, digit or _, then letters, digits and _ . / -, at most 128 characters."
+            exit 1
+          fi
+          # A repair apply writes production State, so it carries the GO whether or not the hold is set,
+          # in the form the hold step takes.
+          if [ -n "$PLAN_DIGEST_INPUT" ] && ! printf '%s' "$GO_INPUT" | grep -Eq '^coordinator-20[0-9]{2}-[0-9]{2}-[0-9]{2}T'; then
+            echo "::error::A repair apply writes production State: it needs a coordinator GO in the go input."
+            exit 1
+          fi
       - name: Respect the release hold
         env:
           GO: ${{ inputs.go }}
@@ -216,9 +247,10 @@ jobs:
         run: |
           npm run build
           npm run check:startup
-      # Read-only, every run: the State store version, every State row, the retired layer's records
+      # Read-only, every release run: the State store version, every State row, the retired layer's records
       # exported sealed, no unresolved Home schema migration in its journal, and the root pin.
       - name: Preflight against State
+        if: env.MODE != 'repair'
         env: &release-secrets
           GITHUB_TOKEN: ${{ github.token }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -274,6 +306,25 @@ jobs:
           # POOL_APP_SIGNING_KEY_PREVIOUS, the key the Worker serving before the apply knows.
           POOL_ACCEPTANCE_DEVICE: ${{ secrets.POOL_ACCEPTANCE_DEVICE }}
         run: bun scripts/release/deploy.ts preflight --stage production
+      # A State repair, not a release (scripts/release/placeholder-repair.ts): a container row a stopped
+      # apply left holding a local placeholder, repaired after Alchemy's own drift read of the account.
+      # Without plan_digest it only plans, read-only (the wire guard sends production nothing but
+      # reads), and its summary says what it would do and the repair's digest. It records no GitHub
+      # Deployment: nothing is deployed. Until the entry's `repair` command is on main, a dispatch
+      # stops at the entry as an unknown command, before it reads anything.
+      - name: Plan the State repair
+        if: env.MODE == 'repair' && env.PLAN_DIGEST_INPUT == ''
+        env: *release-secrets
+        run: |
+          bun scripts/release/deploy.ts repair --stage production --fqn "$FQN"
+          echo "To apply exactly this repair, dispatch repair again with the same fqn, candidate \`$BASALT_RELEASE_CANDIDATE\`, plan_digest set to the digest above and a coordinator GO in go." >> "$GITHUB_STEP_SUMMARY"
+      # The entry re-reads the row and the account, and applies only if the repair's digest still matches.
+      - name: Apply the reviewed State repair
+        if: env.MODE == 'repair' && env.PLAN_DIGEST_INPUT != ''
+        env: *release-secrets
+        run: |
+          printf 'Repair GO: %s\n' "$GO_INPUT" >> "$GITHUB_STEP_SUMMARY"
+          bun scripts/release/deploy.ts repair --stage production --fqn "$FQN" --plan-digest "$PLAN_DIGEST_INPUT"
       # A declared root restart stops the stuck root, and the restart after it reads the provider
       # with the pool Worker's own token. Two reads through that Worker, before anything is planned
       # and again right before the apply: the live application's pins (does the token read?) and the
@@ -285,6 +336,7 @@ jobs:
       # reply is not tied to its request by a nonce; the path has no cache.
       - name: Read the provider observation before a declared root restart
         id: provider
+        if: env.MODE != 'repair'
         # A plan still runs its read-only plan after a failed read, and the run fails after it
         # ("Stop on an unread provider observation"); an apply stops here.
         continue-on-error: ${{ env.MODE == 'plan' }}
@@ -361,6 +413,7 @@ jobs:
       # A dispatched apply re-plans with the reviewed attempt id, so the digest must come out the same:
       # every record below names the plan that is applied.
       - name: Plan and check
+        if: env.MODE != 'repair'
         env: *release-secrets
         id: plan
         run: |
@@ -406,6 +459,7 @@ jobs:
       # The serving read, the light counts and the boot read only read, so a plan runs them too: an
       # apply is never the first run of a step that comes before its upload.
       - name: Record the serving version of every Worker the plan updates
+        if: env.MODE != 'repair'
         env: *release-secrets
         id: serving
         run: |
@@ -416,12 +470,14 @@ jobs:
         if: env.MODE == 'apply'
         run: bun scripts/release/deploy.ts backup --stage production --name "basalt-release-v3-${BASALT_RELEASE_CANDIDATE:0:12}-$GITHUB_RUN_ID"
       - name: Count accounts and history before
+        if: env.MODE != 'repair'
         env: *release-secrets
         # A code-only release changes no data by itself, and a plan only proves the read: skip the
         # multi-million-row count then.
         run: bun scripts/release/deploy.ts snapshot --stage production --out .local/release/before.json ${{ (env.MODE == 'plan' || env.POLICY_NAME == 'cutover-code' || env.POLICY_NAME == 'code' || env.POLICY_NAME == 'code-restart') && '--light' || '' }}
       # No release may restart the root: its boot is read now and must still serve after the apply.
       - name: Record the root's boot before the apply
+        if: env.MODE != 'repair'
         env: *release-secrets
         # A release that declares a root restart (its policy's acceptance.rootRestart) may start on a
         # pool that does not serve the read; every other release needs the root's boot.
